@@ -71,7 +71,20 @@ Three kinds, defined in `variables.toml`:
 2. **Enumerated** — a named list of options, each option having a value and a **description** (e.g. `user`: "alice — admin, active sub", "bob — expired trial"). Options can be defined per environment (qa-milestone's user list differs from qa-staging's) or shared with per-environment value overrides. The currently selected option is per-environment local state.
 3. **Groups** — a group binds several variables that travel together (e.g. `user_id` + `customer_id`). Options are defined at group level: one option = one description + a value for every member variable. Selecting an option sets all members atomically. The picker for *any* member variable shows the group's options, including what the linked variables will become.
 
+**Scopes:** variables are normally project-scoped (defined in `variables.toml`), but a request file may also define **request-scoped** variables/overrides that apply only to that request. Request scope wins over project scope.
+
+**Variable Manager (dedicated editor screen):** a single full-screen view of every variable — organized by scope (project / request) and by group, with groupings rendered visually (indented under a group header, description column aligned). Keyboard actions to: create/rename/delete variables, **move a variable between scopes** (promote request → project, demote project → request), **add/remove variables from groups**, create groups, and edit per-environment values and option lists in place (environment columns side by side). The goal is that reorganizing variables is a first-class, intuitive operation — never hand-editing TOML.
+
 **Picker UX:** with the cursor on a `{{var}}` token (or via a keybinding in any editor field), a dropdown lists options with descriptions for the active environment; typing filters. Inserting a new variable reference offers autocomplete over defined names.
+
+**Zero-friction in-context editing:** the variable system must be fully usable without leaving the request editor. From any field (e.g. editing a header value):
+
+- The picker on a `{{var}}` includes **"add new option…"** — type a value + description inline and it's saved to the variable's option list for the active environment, selected immediately.
+- **Extract to variable:** with a literal value in a field, one action turns it into a new (or existing) variable — prompts for name/scope, saves the value for the active environment, and replaces the field text with `{{name}}`.
+- **Edit option in place:** from the picker, edit the highlighted option's value/description without opening the Variable Manager.
+- New-variable and new-option flows are small modals over the editor — never a navigation away; on close, focus returns exactly where it was.
+
+The Variable Manager (above) is for *reorganizing*; day-to-day creation and editing happens in context.
 
 **Scripts and variables:** scripts read via `pt.vars.get(name)` and write via `pt.vars.set(name, value)`. Writes go to local state, never to shared files — a `/login` post-script saving a token can't dirty the git-tracked project.
 
@@ -99,7 +112,7 @@ The concrete visual direction (palette values, spacing rules, component looks) i
 
 ## 6. Scripting
 
-**Pre-request** and **post-response** JavaScript, per request and optionally per project (project script runs first). Engine: boa, executed in a background task with a timeout; no filesystem or network access from scripts initially.
+**Post-response first:** the initial scripting milestone is post-response scripts that process the response and set variables (the login-saves-token case). **Pre-request** scripts (mutating the outgoing request) follow within the same stage once post-response works. Per request and optionally per project (project script runs first). Engine: boa, executed in a background task with a timeout; no filesystem or network access from scripts initially.
 
 API surface (`pt.*`, Postman-inspired but smaller):
 
@@ -132,8 +145,8 @@ Error handling: all user-facing failures (network, parse, script, storage) becom
 | **1. Foundation** | Workspace skeleton, event loop, component framework, keybindings, **theme/token system**, core chrome (panes, modals, toasts, palette), pane layout with placeholders | App runs, looks designed, navigation works |
 | **2. HTTP core** | Request TOML files, editor (method/URL/params/headers/body), send via reqwest, response viewer (highlighting, collapse, search) | Usable as a basic daily HTTP client |
 | **3. Projects & environments** | Sidebar tree, project switcher, environment files + selector, simple variables with `{{var}}` substitution + picker + autocomplete, default headers | Multi-project, multi-env workflows |
-| **4. Advanced variables** | Enumerated options with descriptions, groups with linked updates, secrets | The differentiator works end-to-end |
-| **5. Scripting** | boa integration, `pt.*` API, pre/post hooks, script-set variables, console pane for script output | Login-saves-token flow works |
+| **4. Advanced variables** | Enumerated options with descriptions, groups with linked updates, secrets, request scope, **Variable Manager editor screen** | The differentiator works end-to-end; variables reorganizable without touching TOML |
+| **5. Scripting** | boa integration, `pt.*` API, **post-response scripts + script-set variables first**, then pre-request hooks; console pane for script output | Login-saves-token flow works |
 | **6. Interop & polish** | Copy actions/clipboard, export to curl, paste-curl import, Postman v2.1 collection + environment import, project export | Migration from Postman is real |
 | **7. Console & history** | Wire log (resolved request as actually sent), searchable history, promote history entry to saved request | Debugging parity with Postman's console |
 
