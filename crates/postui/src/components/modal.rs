@@ -1,10 +1,21 @@
+use super::line_input::LineInput;
 use crate::action::Action;
 use crate::theme::Theme;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph, Wrap};
 use ratatui::Frame;
+
+/// What a `Modal::Prompt`'s confirmed text becomes: which `Action` it maps
+/// to, and (for rename) which slug is prefilled/being renamed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptKind {
+    NewRequest,
+    RenameRequest { from: String },
+    SaveAs,
+}
 
 pub enum Modal {
     Message { title: String, body: String },
@@ -12,6 +23,11 @@ pub enum Modal {
     /// pressing `key` (case-insensitive) dispatches `actions` and closes the
     /// modal; `Esc` closes with no actions.
     Confirm { title: String, body: String, choices: Vec<(char, String, Vec<Action>)> },
+    /// A single-line text prompt (new request name, rename, save-as).
+    /// `Enter` on non-empty text closes and dispatches the action matching
+    /// `kind`; `Enter` on empty text is swallowed; `Esc` closes with no
+    /// action.
+    Prompt { title: String, input: LineInput, kind: PromptKind },
     Palette(crate::components::palette::PaletteState),
 }
 
@@ -66,6 +82,28 @@ impl ModalStack {
                 }
                 _ => None, // swallowed: modals capture all input
             },
+            Modal::Prompt { input, kind, .. } => match key.code {
+                KeyCode::Esc => Some(ModalResult { actions: vec![], close: true }),
+                KeyCode::Enter => {
+                    let text = input.text().trim();
+                    if text.is_empty() {
+                        None // swallowed: nothing to confirm yet
+                    } else {
+                        let action = match kind {
+                            PromptKind::NewRequest => Action::CreateRequest(text.to_string()),
+                            PromptKind::RenameRequest { from } => {
+                                Action::RenameRequest { from: from.clone(), to: text.to_string() }
+                            }
+                            PromptKind::SaveAs => Action::SaveRequestAs(text.to_string()),
+                        };
+                        Some(ModalResult { actions: vec![action], close: true })
+                    }
+                }
+                _ => {
+                    input.handle_key(key);
+                    None // swallowed: modals capture all input
+                }
+            },
             Modal::Palette(state) => state.handle_key(key),
         }
     }
@@ -114,6 +152,32 @@ impl ModalStack {
                         .wrap(Wrap { trim: false })
                         .block(block),
                     area,
+                );
+            }
+            Modal::Prompt { title, input, .. } => {
+                let area = centered_rect(screen, 60.min(screen.width), 6);
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(theme.border_focused))
+                    .padding(Padding::uniform(1))
+                    .style(Style::default().bg(theme.surface_raised))
+                    .title(format!(" {title} "))
+                    .title_style(Style::default().fg(theme.accent));
+                frame.render_widget(Clear, area);
+                let inner = block.inner(area);
+                frame.render_widget(block, area);
+
+                let input_area = Rect { height: 1, ..inner };
+                frame.render_widget(Paragraph::new(input.draw_line(true, theme)), input_area);
+
+                let hint_area = Rect { y: inner.y + 2, height: 1, ..inner };
+                frame.render_widget(
+                    Paragraph::new(Line::from(Span::styled(
+                        "[enter] confirm  [esc] cancel",
+                        Style::default().fg(theme.text_muted),
+                    ))),
+                    hint_area,
                 );
             }
             Modal::Palette(state) => state.draw(frame, screen, theme),

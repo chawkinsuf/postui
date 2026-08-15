@@ -20,6 +20,14 @@ pub fn all_commands() -> Vec<Command> {
         Command { name: "Focus: editor", action: Action::FocusPane(PaneId::Editor) },
         Command { name: "Focus: response", action: Action::FocusPane(PaneId::Response) },
         Command { name: "Help: about postui", action: Action::ShowAbout },
+        Command { name: "Request: new", action: Action::PromptNewRequest },
+        Command { name: "Request: save", action: Action::SaveRequest },
+        Command { name: "Request: rename", action: Action::PromptRenameRequest },
+        Command { name: "Request: delete", action: Action::ConfirmDeleteRequest },
+        Command { name: "Method: cycle", action: Action::CycleMethod },
+        Command { name: "Body: format JSON", action: Action::FormatBody },
+        Command { name: "Body: minify JSON", action: Action::MinifyBody },
+        Command { name: "Body: open in $EDITOR", action: Action::OpenBodyInEditor },
         Command { name: "Quit", action: Action::Quit },
     ]
 }

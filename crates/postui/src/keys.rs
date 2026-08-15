@@ -91,6 +91,7 @@ fn named_actions() -> Vec<(&'static str, Action)> {
         ("format_body", Action::FormatBody),
         ("minify_body", Action::MinifyBody),
         ("open_body_editor", Action::OpenBodyInEditor),
+        ("save", Action::SaveRequest),
     ]
 }
 
@@ -135,6 +136,7 @@ impl Keymap {
             ("alt+f", Action::FormatBody),
             ("alt+g", Action::MinifyBody),
             ("ctrl+e", Action::OpenBodyInEditor),
+            ("ctrl+s", Action::SaveRequest),
         ];
         let mut map = Self { bindings: HashMap::new() };
         for (s, a) in defaults {

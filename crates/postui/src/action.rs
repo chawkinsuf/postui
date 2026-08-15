@@ -42,4 +42,18 @@ pub enum Action {
     ShowRequestError(String),
     /// Re-read the project directory and rebuild the sidebar listing.
     RefreshSidebar,
+    /// Open the "New request" name prompt.
+    PromptNewRequest,
+    /// Create a fresh request at `name` (a slug), then open it.
+    CreateRequest(String),
+    /// Open the rename prompt, prefilled with the selected sidebar slug.
+    PromptRenameRequest,
+    /// Rename the request at `from` to `to` on disk.
+    RenameRequest { from: String, to: String },
+    /// Open the delete confirmation for the selected sidebar slug.
+    ConfirmDeleteRequest,
+    /// Delete the request at `slug` from disk.
+    DeleteRequest(String),
+    /// Save the request currently open in the editor as `name` (a slug).
+    SaveRequestAs(String),
 }

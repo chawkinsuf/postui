@@ -70,6 +70,16 @@ impl Sidebar {
         self.scroll = 0;
     }
 
+    /// Selects the request row for `slug`, if one exists. A no-op (leaves
+    /// the current selection untouched) when `slug` isn't in `rows`.
+    pub fn select_slug(&mut self, slug: &str) {
+        if let Some(i) =
+            self.rows.iter().position(|r| matches!(r, Row::Request { slug: s, .. } if s == slug))
+        {
+            self.selected = i;
+        }
+    }
+
     fn first_request_index(&self) -> Option<usize> {
         self.rows.iter().position(|r| matches!(r, Row::Request { .. }))
     }
@@ -82,7 +92,9 @@ impl Sidebar {
             .collect()
     }
 
-    fn selected_slug(&self) -> Option<String> {
+    /// The slug of the currently selected request row, or `None` if the
+    /// sidebar is empty or the selection is (transiently) on a `Dir` row.
+    pub fn selected_slug(&self) -> Option<String> {
         match self.rows.get(self.selected) {
             Some(Row::Request { slug, .. }) => Some(slug.clone()),
             _ => None,
@@ -122,6 +134,13 @@ impl Component for Sidebar {
                 Row::Request { slug, broken: Some(_) } => Some(Action::ShowRequestError(slug.clone())),
                 Row::Dir(_) => None,
             },
+            KeyCode::Char('n') => Some(Action::PromptNewRequest),
+            KeyCode::Char('r') => {
+                matches!(self.selected_row()?, Row::Request { .. }).then_some(Action::PromptRenameRequest)
+            }
+            KeyCode::Char('d') => {
+                matches!(self.selected_row()?, Row::Request { .. }).then_some(Action::ConfirmDeleteRequest)
+            }
             _ => None,
         }
     }

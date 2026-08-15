@@ -1,6 +1,6 @@
 use crate::action::Action;
 use crate::components::editor::{Editor, EditorTab, SubFocus};
-use crate::components::modal::{Modal, ModalStack};
+use crate::components::modal::{Modal, ModalStack, PromptKind};
 use crate::components::sidebar::Row;
 use crate::components::toast::{ToastKind, Toasts};
 use crate::components::{response::Response, sidebar::Sidebar, Component};
@@ -242,12 +242,12 @@ impl App {
                             }
                         }
                     }
-                    // TODO(Task 14): replace this stub with save-as (name prompt).
                     None => {
-                        self.toasts.push(
-                            "No name yet — save-as arrives with Task 14",
-                            ToastKind::Info,
-                        );
+                        self.modals.push(Modal::Prompt {
+                            title: "Save request as".into(),
+                            input: crate::components::line_input::LineInput::new(""),
+                            kind: PromptKind::SaveAs,
+                        });
                     }
                 }
                 true
@@ -269,6 +269,124 @@ impl App {
                 let listing = postui_core::storage::list_requests(&self.project_root);
                 self.sidebar.refresh(listing);
                 true
+            }
+            Action::PromptNewRequest => {
+                self.modals.push(Modal::Prompt {
+                    title: "New request".into(),
+                    input: crate::components::line_input::LineInput::new(""),
+                    kind: PromptKind::NewRequest,
+                });
+                true
+            }
+            Action::PromptRenameRequest => {
+                if let Some(slug) = self.sidebar.selected_slug() {
+                    self.modals.push(Modal::Prompt {
+                        title: "Rename request".into(),
+                        input: crate::components::line_input::LineInput::new(&slug),
+                        kind: PromptKind::RenameRequest { from: slug },
+                    });
+                }
+                true
+            }
+            Action::ConfirmDeleteRequest => {
+                if let Some(slug) = self.sidebar.selected_slug() {
+                    self.modals.push(Modal::Confirm {
+                        title: "Delete request".into(),
+                        body: format!("Delete \"{slug}\"? This cannot be undone."),
+                        choices: vec![
+                            ('y', "Delete".into(), vec![Action::DeleteRequest(slug)]),
+                            ('n', "Keep".into(), vec![]),
+                        ],
+                    });
+                }
+                true
+            }
+            Action::CreateRequest(name) => {
+                self.create_or_save_as(&name, |_| postui_core::model::HttpRequest {
+                    method: postui_core::model::Method::Get,
+                    url: String::new(),
+                    params: Default::default(),
+                    headers: Default::default(),
+                    body: None,
+                });
+                true
+            }
+            Action::RenameRequest { from, to } => {
+                if postui_core::storage::validate_slug(&to).is_err() {
+                    self.toasts.push(
+                        "invalid name: lowercase letters, digits, - _ and / only",
+                        ToastKind::Error,
+                    );
+                    return true;
+                }
+                match postui_core::storage::rename_request(&self.project_root, &from, &to) {
+                    Ok(()) => {
+                        let listing = postui_core::storage::list_requests(&self.project_root);
+                        self.sidebar.refresh(listing);
+                        if self.editor.slug.as_deref() == Some(from.as_str()) {
+                            self.editor.slug = Some(to.clone());
+                            self.sidebar.open_slug = Some(to);
+                        }
+                    }
+                    Err(e) => {
+                        self.toasts.push(format!("could not rename {from}: {e}"), ToastKind::Error);
+                    }
+                }
+                true
+            }
+            Action::DeleteRequest(slug) => {
+                match postui_core::storage::delete_request(&self.project_root, &slug) {
+                    Ok(()) => {
+                        let listing = postui_core::storage::list_requests(&self.project_root);
+                        self.sidebar.refresh(listing);
+                        if self.editor.slug.as_deref() == Some(slug.as_str()) {
+                            self.editor = Editor::default();
+                        }
+                    }
+                    Err(e) => {
+                        self.toasts.push(format!("could not delete {slug}: {e}"), ToastKind::Error);
+                    }
+                }
+                true
+            }
+            Action::SaveRequestAs(name) => {
+                let req = self.editor.current_request();
+                self.create_or_save_as(&name, move |_| req.clone());
+                true
+            }
+        }
+    }
+
+    /// Shared validate/exists-check/save/refresh/open path for `CreateRequest`
+    /// and `SaveRequestAs`: both save a fresh `HttpRequest` (a default one, or
+    /// the editor's current one) to a brand-new slug and switch the editor
+    /// over to it. `build` receives the slug in case a future caller needs it;
+    /// today's callers ignore it.
+    fn create_or_save_as(&mut self, name: &str, build: impl FnOnce(&str) -> postui_core::model::HttpRequest) {
+        if postui_core::storage::validate_slug(name).is_err() {
+            self.toasts.push(
+                "invalid name: lowercase letters, digits, - _ and / only",
+                ToastKind::Error,
+            );
+            return;
+        }
+        let existing = postui_core::storage::list_requests(&self.project_root);
+        if existing.iter().any(|l| l.slug == name) {
+            self.toasts.push(format!("request already exists: {name:?}"), ToastKind::Error);
+            return;
+        }
+        let req = build(name);
+        match postui_core::storage::save_request(&self.project_root, name, &req) {
+            Ok(()) => {
+                self.editor.load(Some(name.to_string()), req);
+                self.editor.mark_saved();
+                self.toasts.push(format!("Saved {name}"), ToastKind::Success);
+                let listing = postui_core::storage::list_requests(&self.project_root);
+                self.sidebar.refresh(listing);
+                self.sidebar.select_slug(name);
+            }
+            Err(e) => {
+                self.toasts.push(format!("could not save {name}: {e}"), ToastKind::Error);
             }
         }
     }
@@ -599,5 +717,113 @@ mod tests {
         terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains('\u{25cf}'), "expected a dirty dot in the sidebar: {content}");
+    }
+
+    #[test]
+    fn new_request_prompt_flow_creates_file_and_opens_it() {
+        let mut app = App::new_for_test();
+        let keymap = Keymap::default_bindings();
+        app.focus = PaneId::Sidebar;
+        app.handle_key(&keymap, plain('n'));
+        assert!(matches!(app.modals.top(), Some(Modal::Prompt { kind: PromptKind::NewRequest, .. })));
+        for c in "api/ping".chars() {
+            app.handle_key(&keymap, plain(c));
+        }
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.modals.is_empty());
+        assert_eq!(app.editor.slug.as_deref(), Some("api/ping"));
+        assert!(postui_core::storage::load_request(&app.project_root, "api/ping").is_ok());
+        assert!(
+            app.sidebar.rows.iter().any(|r| matches!(r, Row::Request { slug, .. } if slug == "api/ping")),
+            "sidebar should list the new request: {:?}",
+            app.sidebar.rows
+        );
+    }
+
+    #[test]
+    fn new_request_invalid_name_toasts_and_creates_nothing() {
+        let mut app = App::new_for_test();
+        let keymap = Keymap::default_bindings();
+        app.update(Action::PromptNewRequest);
+        for c in "Bad Name".chars() {
+            app.handle_key(&keymap, plain(c));
+        }
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.modals.is_empty(), "modal closes even though the save is rejected");
+        assert!(!app.toasts.is_empty(), "an invalid name must toast");
+        assert!(postui_core::storage::list_requests(&app.project_root).is_empty());
+    }
+
+    #[test]
+    fn rename_request_updates_disk_and_open_slug() {
+        let mut app = App::new_for_test();
+        postui_core::storage::save_request(&app.project_root, "old", &req("https://x/old")).unwrap();
+        app.update(Action::RefreshSidebar);
+        app.update(Action::ForceOpenRequest("old".into()));
+        let keymap = Keymap::default_bindings();
+        app.focus = PaneId::Sidebar;
+        app.handle_key(&keymap, plain('r'));
+        match app.modals.top() {
+            Some(Modal::Prompt { kind: PromptKind::RenameRequest { from }, .. }) => {
+                assert_eq!(from, "old");
+            }
+            _ => panic!("expected a RenameRequest prompt"),
+        }
+        for _ in 0.."old".len() {
+            app.handle_key(&keymap, KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        }
+        for c in "new".chars() {
+            app.handle_key(&keymap, plain(c));
+        }
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.modals.is_empty());
+        assert!(postui_core::storage::load_request(&app.project_root, "old").is_err());
+        assert!(postui_core::storage::load_request(&app.project_root, "new").is_ok());
+        assert_eq!(app.editor.slug.as_deref(), Some("new"));
+        assert_eq!(app.sidebar.open_slug.as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn delete_open_request_clears_editor_and_removes_file() {
+        let mut app = App::new_for_test();
+        postui_core::storage::save_request(&app.project_root, "gone", &req("https://x/gone")).unwrap();
+        app.update(Action::RefreshSidebar);
+        app.update(Action::ForceOpenRequest("gone".into()));
+        let keymap = Keymap::default_bindings();
+        app.focus = PaneId::Sidebar;
+        app.handle_key(&keymap, plain('d'));
+        assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+        app.handle_key(&keymap, plain('y'));
+        assert!(app.modals.is_empty());
+        assert!(app.editor.slug.is_none(), "editor must reset once its open request is deleted");
+        assert!(postui_core::storage::load_request(&app.project_root, "gone").is_err());
+    }
+
+    #[test]
+    fn save_with_no_slug_opens_save_as_prompt() {
+        let mut app = App::new_for_test();
+        app.editor.url = crate::components::line_input::LineInput::new("https://x/new");
+        let keymap = Keymap::default_bindings();
+        app.update(Action::SaveRequest);
+        assert!(matches!(app.modals.top(), Some(Modal::Prompt { kind: PromptKind::SaveAs, .. })));
+        for c in "fresh".chars() {
+            app.handle_key(&keymap, plain(c));
+        }
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.modals.is_empty());
+        assert_eq!(app.editor.slug.as_deref(), Some("fresh"));
+        let saved = postui_core::storage::load_request(&app.project_root, "fresh").unwrap();
+        assert_eq!(saved.url, "https://x/new");
+    }
+
+    #[test]
+    fn rename_and_delete_on_empty_sidebar_do_nothing() {
+        let mut app = App::new_for_test();
+        let keymap = Keymap::default_bindings();
+        app.focus = PaneId::Sidebar;
+        app.handle_key(&keymap, plain('r'));
+        assert!(app.modals.is_empty());
+        app.handle_key(&keymap, plain('d'));
+        assert!(app.modals.is_empty());
     }
 }
