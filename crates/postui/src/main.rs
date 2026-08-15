@@ -17,6 +17,16 @@ use std::time::Duration;
 async fn main() -> anyhow::Result<()> {
     let mut terminal = ratatui::init(); // installs a panic hook that restores the terminal
     let _ = execute!(std::io::stdout(), EnableMouseCapture);
+
+    // ratatui::init()'s panic hook restores the terminal but doesn't know about
+    // mouse capture (enabled separately above), so wrap it: disable mouse capture
+    // first, then delegate to ratatui's hook to do the rest of the restoration.
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = execute!(std::io::stdout(), DisableMouseCapture);
+        prev_hook(info);
+    }));
+
     let result = run(&mut terminal).await;
     let _ = execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
@@ -41,35 +51,46 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
 
         tokio::select! {
             maybe_event = events.next() => {
-                if let Some(Ok(event)) = maybe_event {
-                    match event {
-                        Event::Key(ev) if ev.kind == KeyEventKind::Press => {
-                            let action = if !app.modals.is_empty() {
-                                app.modals.handle_key(ev)
-                            } else {
-                                keymap.lookup(&KeyCombo::from_event(&ev))
-                            };
-                            if let Some(action) = action {
-                                if !app.modals.is_empty() && action != Action::Close {
-                                    let _ = app.modals.pop();
-                                }
-                                app.update(action);
-                            }
-                        }
-                        Event::Mouse(MouseEvent {
-                            kind: MouseEventKind::Down(MouseButton::Left),
-                            column,
-                            row,
-                            ..
-                        }) if app.modals.is_empty() => {
-                            let size = terminal.size()?;
-                            let layout = compute_layout(Rect::new(0, 0, size.width, size.height));
-                            if let Some(pane) = hit_test(&layout, column, row) {
-                                app.update(Action::FocusPane(pane));
-                            }
-                        }
-                        _ => {}
+                match maybe_event {
+                    None => {
+                        // The event stream ended, which means stdin/the terminal input
+                        // source is gone. There's nothing left to read events from, so
+                        // continuing the loop would busy-spin forever re-selecting on an
+                        // already-terminated stream. Quit cleanly instead.
+                        app.should_quit = true;
                     }
+                    Some(Ok(event)) => {
+                        match event {
+                            Event::Key(ev) if ev.kind == KeyEventKind::Press => {
+                                let action = if !app.modals.is_empty() {
+                                    app.modals.handle_key(ev)
+                                } else {
+                                    keymap.lookup(&KeyCombo::from_event(&ev))
+                                };
+                                if let Some(action) = action {
+                                    if !app.modals.is_empty() && action != Action::Close {
+                                        let _ = app.modals.pop();
+                                    }
+                                    app.update(action);
+                                }
+                            }
+                            Event::Mouse(MouseEvent {
+                                kind: MouseEventKind::Down(MouseButton::Left),
+                                column,
+                                row,
+                                ..
+                            }) if app.modals.is_empty() => {
+                                let size = terminal.size()?;
+                                let layout =
+                                    compute_layout(Rect::new(0, 0, size.width, size.height));
+                                if let Some(pane) = hit_test(&layout, column, row) {
+                                    app.update(Action::FocusPane(pane));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    Some(Err(_)) => {}
                 }
             }
             _ = tick.tick() => app.update(Action::Tick),
