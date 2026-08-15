@@ -12,6 +12,6 @@ ratatui = "0.30"
 crossterm = { version = "0.29", features = ["event-stream"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 futures = "0.3"
-directories = "6"
+directories.workspace = true
 
 [dev-dependencies]
