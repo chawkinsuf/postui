@@ -2,6 +2,8 @@ mod action;
 mod app;
 mod keys;
 mod theme;
+mod layout;
+mod components;
 
 use action::Action;
 use app::App;
