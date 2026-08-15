@@ -13,5 +13,6 @@ crossterm = { version = "0.29", features = ["event-stream"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 futures = "0.3"
 directories.workspace = true
+indexmap.workspace = true
 
 [dev-dependencies]

@@ -1038,6 +1038,7 @@ dependencies = [
  "crossterm",
  "directories",
  "futures",
+ "indexmap",
  "postui-core",
  "ratatui",
  "serde",

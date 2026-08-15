@@ -41,5 +41,9 @@ mod tests {
         assert!(content.contains('╭'));              // rounded chrome
         assert!(content.contains("No project open")); // sidebar empty state
         assert!(content.contains("response will appear here")); // response empty state
+        assert!(content.contains("GET"));            // editor method badge (default method)
+        assert!(content.contains("Params"));         // editor tab bar
+        assert!(content.contains("Headers"));        // editor tab bar
+        assert!(content.contains("Body"));           // editor tab bar
     }
 }

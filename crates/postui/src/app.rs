@@ -1,7 +1,8 @@
 use crate::action::Action;
+use crate::components::editor::{Editor, EditorTab, SubFocus};
 use crate::components::modal::ModalStack;
 use crate::components::toast::Toasts;
-use crate::components::{editor::Editor, response::Response, sidebar::Sidebar, Component};
+use crate::components::{response::Response, sidebar::Sidebar, Component};
 use crate::keys::{KeyCombo, Keymap};
 use crate::layout::PaneId;
 use crate::theme::Theme;
@@ -33,7 +34,7 @@ impl App {
             focus: PaneId::Sidebar,
             theme: Theme::for_terminal(),
             sidebar: Sidebar,
-            editor: Editor,
+            editor: Editor::default(),
             response: Response,
             toasts: Toasts::default(),
             modals: ModalStack::default(),
@@ -105,6 +106,25 @@ impl App {
                     title: "postui".into(),
                     body: "A fast, local-first terminal HTTP client.".into(),
                 });
+                true
+            }
+            Action::EditorTabSelect(i) => {
+                self.editor.active_tab = EditorTab::from_index(i);
+                true
+            }
+            Action::EditorTabCycle(delta) => {
+                let cur = self.editor.active_tab.index() as i8;
+                let next = (cur + delta).rem_euclid(3);
+                self.editor.active_tab = EditorTab::from_index(next as usize);
+                true
+            }
+            Action::CycleMethod => {
+                self.editor.method = self.editor.method.cycle();
+                true
+            }
+            Action::FocusUrl => {
+                self.focus = PaneId::Editor;
+                self.editor.sub_focus = SubFocus::Url;
                 true
             }
         }

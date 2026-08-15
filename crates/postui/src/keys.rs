@@ -81,6 +81,13 @@ fn named_actions() -> Vec<(&'static str, Action)> {
         ("focus_prev", Action::FocusPrev),
         ("open_palette", Action::OpenPalette),
         ("close", Action::Close),
+        ("editor_tab_1", Action::EditorTabSelect(0)),
+        ("editor_tab_2", Action::EditorTabSelect(1)),
+        ("editor_tab_3", Action::EditorTabSelect(2)),
+        ("editor_tab_next", Action::EditorTabCycle(1)),
+        ("editor_tab_prev", Action::EditorTabCycle(-1)),
+        ("cycle_method", Action::CycleMethod),
+        ("focus_url", Action::FocusUrl),
     ]
 }
 
@@ -115,6 +122,13 @@ impl Keymap {
             ("shift+tab", Action::FocusPrev),
             ("ctrl+p", Action::OpenPalette),
             ("esc", Action::Close),
+            ("alt+1", Action::EditorTabSelect(0)),
+            ("alt+2", Action::EditorTabSelect(1)),
+            ("alt+3", Action::EditorTabSelect(2)),
+            ("alt+right", Action::EditorTabCycle(1)),
+            ("alt+left", Action::EditorTabCycle(-1)),
+            ("alt+m", Action::CycleMethod),
+            ("alt+u", Action::FocusUrl),
         ];
         let mut map = Self { bindings: HashMap::new() };
         for (s, a) in defaults {
@@ -206,6 +220,16 @@ mod tests {
     }
 
     #[test]
+    fn parses_alt_combo_with_arrow_keys() {
+        let c = KeyCombo::parse("alt+left").unwrap();
+        assert_eq!(c.code, KeyCode::Left);
+        assert_eq!(c.modifiers, KeyModifiers::ALT);
+        let c = KeyCombo::parse("alt+right").unwrap();
+        assert_eq!(c.code, KeyCode::Right);
+        assert_eq!(c.modifiers, KeyModifiers::ALT);
+    }
+
+    #[test]
     fn default_bindings_cover_core_actions() {
         let m = Keymap::default_bindings();
         let get = |s: &str| m.lookup(&KeyCombo::parse(s).unwrap());
@@ -215,6 +239,13 @@ mod tests {
         assert_eq!(get("shift+tab"), Some(Action::FocusPrev));
         assert_eq!(get("ctrl+p"), Some(Action::OpenPalette));
         assert_eq!(get("esc"), Some(Action::Close));
+        assert_eq!(get("alt+1"), Some(Action::EditorTabSelect(0)));
+        assert_eq!(get("alt+2"), Some(Action::EditorTabSelect(1)));
+        assert_eq!(get("alt+3"), Some(Action::EditorTabSelect(2)));
+        assert_eq!(get("alt+right"), Some(Action::EditorTabCycle(1)));
+        assert_eq!(get("alt+left"), Some(Action::EditorTabCycle(-1)));
+        assert_eq!(get("alt+m"), Some(Action::CycleMethod));
+        assert_eq!(get("alt+u"), Some(Action::FocusUrl));
     }
 
     #[test]

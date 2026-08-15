@@ -14,4 +14,8 @@ pub enum Action {
     Close,
     ShowToast(String, ToastKind),
     ShowAbout,
+    EditorTabSelect(usize),
+    EditorTabCycle(i8),
+    CycleMethod,
+    FocusUrl,
 }

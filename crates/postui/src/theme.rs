@@ -50,6 +50,19 @@ impl Theme {
         Self::dark()
     }
 
+    /// Maps an HTTP method to a theme token color for its badge, reusing
+    /// existing palette tokens rather than inventing new ones.
+    pub fn method_color(&self, method: postui_core::model::Method) -> Color {
+        use postui_core::model::Method;
+        match method {
+            Method::Get => self.success,
+            Method::Post => self.accent,
+            Method::Put | Method::Patch => self.warning,
+            Method::Delete => self.error,
+            Method::Head | Method::Options => self.text_muted,
+        }
+    }
+
     pub fn downgrade_to_256(&self) -> Self {
         let f = |c: Color| match c {
             Color::Rgb(r, g, b) => Color::Indexed(rgb_to_indexed(r, g, b)),
@@ -137,6 +150,19 @@ mod tests {
         ] {
             assert!(matches!(c, Color::Indexed(_)), "expected indexed, got {c:?}");
         }
+    }
+
+    #[test]
+    fn method_color_maps_each_method_to_a_distinct_semantic_token() {
+        use postui_core::model::Method;
+        let t = Theme::dark();
+        assert_eq!(t.method_color(Method::Get), t.success);
+        assert_eq!(t.method_color(Method::Post), t.accent);
+        assert_eq!(t.method_color(Method::Put), t.warning);
+        assert_eq!(t.method_color(Method::Patch), t.warning);
+        assert_eq!(t.method_color(Method::Delete), t.error);
+        assert_eq!(t.method_color(Method::Head), t.text_muted);
+        assert_eq!(t.method_color(Method::Options), t.text_muted);
     }
 
     #[test]

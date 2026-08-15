@@ -1,5 +1,6 @@
 pub mod sidebar;
 pub mod editor;
+pub mod line_input;
 pub mod response;
 pub mod header_bar;
 pub mod footer;
