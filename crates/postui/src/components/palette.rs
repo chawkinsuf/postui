@@ -16,7 +16,7 @@ pub struct Command {
 
 pub fn all_commands() -> Vec<Command> {
     vec![
-        Command { name: "Focus: sidebar", action: Action::FocusPane(PaneId::Sidebar) },
+        Command { name: "Focus: request tree", action: Action::FocusPane(PaneId::Sidebar) },
         Command { name: "Focus: editor", action: Action::FocusPane(PaneId::Editor) },
         Command { name: "Focus: response", action: Action::FocusPane(PaneId::Response) },
         Command { name: "Help: about postui", action: Action::ShowAbout },
