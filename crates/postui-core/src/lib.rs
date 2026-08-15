@@ -1,6 +1,8 @@
 /// Working name; final app name TBD (spec header).
 pub const APP_NAME: &str = "postui";
 
+pub mod model;
+
 #[cfg(test)]
 mod tests {
     #[test]

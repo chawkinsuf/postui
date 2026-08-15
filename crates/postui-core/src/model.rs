@@ -1,0 +1,318 @@
+use indexmap::IndexMap;
+use serde::de::{self, MapAccess, SeqAccess, Visitor};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use std::fmt;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum Method {
+    #[default]
+    Get,
+    Post,
+    Put,
+    Patch,
+    Delete,
+    Head,
+    Options,
+}
+
+impl Method {
+    pub const ALL: [Method; 7] = [
+        Method::Get,
+        Method::Post,
+        Method::Put,
+        Method::Patch,
+        Method::Delete,
+        Method::Head,
+        Method::Options,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Method::Get => "GET",
+            Method::Post => "POST",
+            Method::Put => "PUT",
+            Method::Patch => "PATCH",
+            Method::Delete => "DELETE",
+            Method::Head => "HEAD",
+            Method::Options => "OPTIONS",
+        }
+    }
+
+    pub fn cycle(self) -> Method {
+        let i = Method::ALL.iter().position(|m| *m == self).unwrap_or(0);
+        Method::ALL[(i + 1) % Method::ALL.len()]
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    pub value: String,
+    pub enabled: bool,
+}
+
+impl Serialize for Entry {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if self.enabled {
+            serializer.serialize_str(&self.value)
+        } else {
+            let mut s = serializer.serialize_struct("Entry", 2)?;
+            s.serialize_field("value", &self.value)?;
+            s.serialize_field("enabled", &self.enabled)?;
+            s.end()
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Entry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct EntryVisitor;
+
+        impl<'de> Visitor<'de> for EntryVisitor {
+            type Value = Entry;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a string or a table with `value` and optional `enabled`")
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(Entry { value: v.to_string(), enabled: true })
+            }
+
+            fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(Entry { value: v, enabled: true })
+            }
+
+            fn visit_seq<A>(self, _seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                Err(de::Error::custom(
+                    "array values are reserved for a future version; use a single string or { value = \"…\", enabled = false }",
+                ))
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut value: Option<String> = None;
+                let mut enabled: Option<bool> = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "value" => {
+                            if value.is_some() {
+                                return Err(de::Error::duplicate_field("value"));
+                            }
+                            value = Some(map.next_value()?);
+                        }
+                        "enabled" => {
+                            if enabled.is_some() {
+                                return Err(de::Error::duplicate_field("enabled"));
+                            }
+                            enabled = Some(map.next_value()?);
+                        }
+                        other => {
+                            return Err(de::Error::unknown_field(other, &["value", "enabled"]));
+                        }
+                    }
+                }
+                let value = value.ok_or_else(|| de::Error::missing_field("value"))?;
+                Ok(Entry { value, enabled: enabled.unwrap_or(true) })
+            }
+        }
+
+        deserializer.deserialize_any(EntryVisitor)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
+pub enum Body {
+    Json { text: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HttpRequest {
+    #[serde(default)]
+    pub method: Method,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub params: IndexMap<String, Entry>,
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub headers: IndexMap<String, Entry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<Body>,
+}
+
+impl HttpRequest {
+    pub fn from_toml_str(s: &str) -> Result<Self, toml::de::Error> {
+        toml::from_str(s)
+    }
+
+    /// Hand-built with toml_edit for exact formatting control: enabled entries
+    /// as plain strings, disabled as *inline* tables (sub-table sections would
+    /// force reordering), body text verbatim.
+    pub fn to_toml_string(&self) -> String {
+        use toml_edit::{DocumentMut, Item, Table, Value, value};
+        let mut doc = DocumentMut::new();
+        doc["method"] = value(self.method.as_str());
+        doc["url"] = value(&self.url);
+        let kv_table = |map: &IndexMap<String, Entry>| {
+            let mut t = Table::new();
+            for (k, e) in map {
+                if e.enabled {
+                    t[k] = value(&e.value);
+                } else {
+                    let mut inline = toml_edit::InlineTable::new();
+                    inline.insert("value", Value::from(e.value.as_str()));
+                    inline.insert("enabled", Value::from(false));
+                    t[k] = Item::Value(Value::InlineTable(inline));
+                }
+            }
+            Item::Table(t)
+        };
+        if !self.params.is_empty() {
+            doc["params"] = kv_table(&self.params);
+        }
+        if !self.headers.is_empty() {
+            doc["headers"] = kv_table(&self.headers);
+        }
+        if let Some(Body::Json { text }) = &self.body {
+            let mut t = Table::new();
+            t["type"] = value("json");
+            t["text"] = value(text.as_str());
+            doc["body"] = Item::Table(t);
+        }
+        doc.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use indexmap::IndexMap;
+
+    fn sample() -> HttpRequest {
+        let mut params = IndexMap::new();
+        params.insert("page".into(), Entry { value: "2".into(), enabled: true });
+        params.insert("verbose".into(), Entry { value: "1".into(), enabled: false });
+        let mut headers = IndexMap::new();
+        headers.insert(
+            "Authorization".into(),
+            Entry { value: "Bearer abc123".into(), enabled: true },
+        );
+        HttpRequest {
+            method: Method::Post,
+            url: "https://api.example.com/users".into(),
+            params,
+            headers,
+            body: Some(Body::Json { text: "{ \"broken\": ".into() }), // invalid JSON must round-trip
+        }
+    }
+
+    #[test]
+    fn round_trips_preserving_content_and_order() {
+        let req = sample();
+        let toml_str = req.to_toml_string();
+        let back = HttpRequest::from_toml_str(&toml_str).unwrap();
+        assert_eq!(back, req);
+        let keys: Vec<&String> = back.params.keys().collect();
+        assert_eq!(keys, ["page", "verbose"], "insertion order preserved");
+    }
+
+    #[test]
+    fn enabled_entries_serialize_as_plain_strings_disabled_as_inline_tables() {
+        let out = sample().to_toml_string();
+        assert!(out.contains(r#"page = "2""#), "enabled entry is a plain string:\n{out}");
+        assert!(out.contains("verbose = {"), "disabled entry is an inline table:\n{out}");
+        assert!(!out.contains("[params.verbose]"), "no sub-table sections (they break ordering):\n{out}");
+    }
+
+    #[test]
+    fn parses_string_and_table_entry_forms() {
+        let req = HttpRequest::from_toml_str(
+            r#"
+        method = "GET"
+        url = "https://x.test"
+        [headers]
+        A = "1"
+        B = { value = "2", enabled = false }
+        C = { value = "3", enabled = true }
+    "#,
+        )
+        .unwrap();
+        assert_eq!(req.headers["A"], Entry { value: "1".into(), enabled: true });
+        assert_eq!(req.headers["B"], Entry { value: "2".into(), enabled: false });
+        assert_eq!(req.headers["C"], Entry { value: "3".into(), enabled: true });
+    }
+
+    #[test]
+    fn missing_method_defaults_to_get_missing_sections_default_empty() {
+        let req = HttpRequest::from_toml_str(r#"url = "https://x.test""#).unwrap();
+        assert_eq!(req.method, Method::Get);
+        assert!(req.params.is_empty() && req.headers.is_empty() && req.body.is_none());
+    }
+
+    #[test]
+    fn rejects_unknown_keys_arrays_and_bad_entries() {
+        assert!(
+            HttpRequest::from_toml_str(
+                r#"url = "u"
+        bogus = 1"#
+            )
+            .is_err(),
+            "unknown top-level key"
+        );
+        let arr = HttpRequest::from_toml_str(
+            r#"url = "u"
+        [params]
+        id = ["1", "2"]"#,
+        );
+        let msg = arr.unwrap_err().to_string();
+        assert!(msg.contains("reserved"), "array rejection names the reservation: {msg}");
+        assert!(
+            HttpRequest::from_toml_str(
+                r#"url = "u"
+        [headers]
+        A = { value = "1", typo = true }"#
+            )
+            .is_err(),
+            "unknown entry field"
+        );
+        assert!(
+            HttpRequest::from_toml_str(
+                r#"url = "u"
+        [body]
+        type = "yaml"
+        text = "x""#
+            )
+            .is_err(),
+            "unknown body type"
+        );
+    }
+
+    #[test]
+    fn method_cycles_through_all_and_wraps() {
+        let mut m = Method::Get;
+        for _ in 0..Method::ALL.len() {
+            m = m.cycle();
+        }
+        assert_eq!(m, Method::Get);
+        assert_eq!(Method::Delete.as_str(), "DELETE");
+    }
+}

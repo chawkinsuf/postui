@@ -9,4 +9,8 @@ version = "0.1.0"
 [workspace.dependencies]
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
-toml = "0.8"
+toml = "1"
+indexmap = { version = "2", features = ["serde"] }
+thiserror = "2"
+serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision"] }
+toml_edit = "0.23"
