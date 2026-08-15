@@ -1,7 +1,7 @@
 use crate::action::Action;
 use crate::layout::PaneId;
 use crate::theme::Theme;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -87,7 +87,7 @@ impl PaletteState {
                 self.input.pop();
                 self.refilter();
             }
-            KeyCode::Char(c) => {
+            KeyCode::Char(c) if key.modifiers.difference(KeyModifiers::SHIFT).is_empty() => {
                 self.input.push(c);
                 self.refilter();
             }
@@ -149,7 +149,6 @@ impl PaletteState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::crossterm::event::KeyModifiers;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)

@@ -2,7 +2,7 @@ use futures::StreamExt;
 use postui::action::Action;
 use postui::app::App;
 use postui::components::toast::ToastKind;
-use postui::keys::{KeyCombo, Keymap};
+use postui::keys::Keymap;
 use postui::layout::{compute_layout, hit_test};
 use postui::ui;
 use ratatui::crossterm::event::{
@@ -62,20 +62,7 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
                     Some(Ok(event)) => {
                         match event {
                             Event::Key(ev) if ev.kind == KeyEventKind::Press => {
-                                if !app.modals.is_empty() {
-                                    if let Some(res) = app.modals.handle_key(ev) {
-                                        if res.close {
-                                            app.modals.pop();
-                                        }
-                                        for action in res.actions {
-                                            app.update(action);
-                                        }
-                                    }
-                                } else if let Some(action) =
-                                    keymap.lookup(&KeyCombo::from_event(&ev))
-                                {
-                                    app.update(action);
-                                }
+                                app.handle_key(&keymap, ev);
                             }
                             Event::Mouse(MouseEvent {
                                 kind: MouseEventKind::Down(MouseButton::Left),
