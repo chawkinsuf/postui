@@ -92,6 +92,7 @@ fn named_actions() -> Vec<(&'static str, Action)> {
         ("minify_body", Action::MinifyBody),
         ("open_body_editor", Action::OpenBodyInEditor),
         ("save", Action::SaveRequest),
+        ("send", Action::Send),
     ]
 }
 
@@ -137,6 +138,8 @@ impl Keymap {
             ("alt+g", Action::MinifyBody),
             ("ctrl+e", Action::OpenBodyInEditor),
             ("ctrl+s", Action::SaveRequest),
+            ("ctrl+r", Action::Send),
+            ("ctrl+enter", Action::Send),
         ];
         let mut map = Self { bindings: HashMap::new() };
         for (s, a) in defaults {
@@ -257,6 +260,15 @@ mod tests {
         assert_eq!(get("alt+f"), Some(Action::FormatBody));
         assert_eq!(get("alt+g"), Some(Action::MinifyBody));
         assert_eq!(get("ctrl+e"), Some(Action::OpenBodyInEditor));
+        assert_eq!(get("ctrl+r"), Some(Action::Send));
+        assert_eq!(get("ctrl+enter"), Some(Action::Send));
+    }
+
+    #[test]
+    fn ctrl_enter_parses_as_enter_with_control_modifier() {
+        let c = KeyCombo::parse("ctrl+enter").unwrap();
+        assert_eq!(c.code, KeyCode::Enter);
+        assert_eq!(c.modifiers, KeyModifiers::CONTROL);
     }
 
     #[test]

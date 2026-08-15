@@ -20,6 +20,7 @@ pub fn all_commands() -> Vec<Command> {
         Command { name: "Focus: editor", action: Action::FocusPane(PaneId::Editor) },
         Command { name: "Focus: response", action: Action::FocusPane(PaneId::Response) },
         Command { name: "Help: about postui", action: Action::ShowAbout },
+        Command { name: "Send request", action: Action::Send },
         Command { name: "Request: new", action: Action::PromptNewRequest },
         Command { name: "Request: save", action: Action::SaveRequest },
         Command { name: "Request: rename", action: Action::PromptRenameRequest },

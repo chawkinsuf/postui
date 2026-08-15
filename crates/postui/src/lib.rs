@@ -1,6 +1,7 @@
 pub mod action;
 pub mod app;
 pub mod components;
+pub mod http;
 pub mod keys;
 pub mod layout;
 pub mod theme;

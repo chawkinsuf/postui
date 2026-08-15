@@ -1,6 +1,7 @@
 use crate::action::Action;
 use crate::components::editor::{Editor, EditorTab, SubFocus};
 use crate::components::modal::{Modal, ModalStack, PromptKind};
+use crate::components::response::ResponseState;
 use crate::components::sidebar::Row;
 use crate::components::toast::{ToastKind, Toasts};
 use crate::components::{response::Response, sidebar::Sidebar, Component};
@@ -10,7 +11,18 @@ use crate::theme::Theme;
 use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Instant;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+
+/// Bookkeeping for a request currently in flight: when it started (for a
+/// future spinner), which generation it belongs to (so a stale result can
+/// be told apart from the current one), and the task itself (so it can be
+/// aborted on cancel or on a newer send superseding it).
+pub struct InFlight {
+    pub started: Instant,
+    pub generation: u64,
+    pub task: tokio::task::JoinHandle<()>,
+}
 
 pub struct App {
     pub should_quit: bool,
@@ -23,6 +35,17 @@ pub struct App {
     pub modals: ModalStack,
     /// The project's root directory (`requests/**/*.toml` lives under it).
     pub project_root: PathBuf,
+    /// The HTTP client used for every send. Built eagerly and cheaply
+    /// (`reqwest::Client::builder().build()` needs no running Tokio
+    /// reactor — verified in `http::tests::client_builds_without_a_tokio_runtime`
+    /// — so `App` stays constructible in the many plain `#[test]`s that
+    /// never touch the network).
+    pub client: reqwest::Client,
+    /// The currently in-flight send, if any.
+    pub in_flight: Option<InFlight>,
+    /// Bumped on every `ForceSend`; tags each spawned send so a result that
+    /// arrives after a newer send has started can be told apart and dropped.
+    pub send_generation: u64,
     /// Sender for background tasks (e.g. in-flight requests) to push
     /// `Action`s back into the main loop without blocking on it.
     pub tx: UnboundedSender<Action>,
@@ -80,10 +103,13 @@ impl App {
             theme: Theme::for_terminal(),
             sidebar: Sidebar::default(),
             editor: Editor::default(),
-            response: Response,
+            response: Response::default(),
             toasts: Toasts::default(),
             modals: ModalStack::default(),
             project_root: root,
+            client: crate::http::client(),
+            in_flight: None,
+            send_generation: 0,
             tx,
             pending_terminal_action: None,
             _test_rx: None,
@@ -354,6 +380,76 @@ impl App {
                 self.create_or_save_as(&name, move |_| req.clone());
                 true
             }
+            Action::Send => {
+                if self.editor.url.text().trim().is_empty() {
+                    self.toasts.push("cannot send: URL is empty", ToastKind::Error);
+                    return true;
+                }
+                let body = self.editor.body_text();
+                if !body.is_empty() && postui_core::json::validate(&body).is_err() {
+                    self.modals.push(Modal::Confirm {
+                        title: "Invalid body".into(),
+                        body: "Body is not valid JSON — send anyway?".into(),
+                        choices: vec![
+                            ('y', "Send anyway".into(), vec![Action::ForceSend]),
+                            ('n', "Cancel".into(), vec![]),
+                        ],
+                    });
+                    return true;
+                }
+                self.apply(Action::ForceSend)
+            }
+            Action::ForceSend => {
+                let (prepared, warnings) = postui_core::prepare::prepare(&self.editor.current_request());
+                for w in &warnings {
+                    self.toasts.push(w.to_string(), ToastKind::Warning);
+                }
+                if let Some(prev) = self.in_flight.take() {
+                    prev.task.abort();
+                }
+                self.send_generation += 1;
+                let generation = self.send_generation;
+                self.response.state = ResponseState::InFlight { started: Instant::now() };
+                let tx = self.tx.clone();
+                let client = self.client.clone();
+                let task = tokio::spawn(async move {
+                    match crate::http::send(&client, &prepared).await {
+                        Ok(data) => {
+                            let _ =
+                                tx.send(Action::ResponseArrived { generation, data: Box::new(data) });
+                        }
+                        Err(error) => {
+                            let _ = tx.send(Action::RequestFailed { generation, error });
+                        }
+                    }
+                });
+                self.in_flight = Some(InFlight { started: Instant::now(), generation, task });
+                true
+            }
+            Action::CancelSend => match self.in_flight.take() {
+                Some(inflight) => {
+                    inflight.task.abort();
+                    self.response.state = ResponseState::Cancelled;
+                    true
+                }
+                None => false,
+            },
+            Action::ResponseArrived { generation, data } => {
+                if generation != self.send_generation {
+                    return false; // stale: a newer send has already superseded it
+                }
+                self.in_flight = None;
+                self.response.state = ResponseState::Ready(data);
+                true
+            }
+            Action::RequestFailed { generation, error } => {
+                if generation != self.send_generation {
+                    return false; // stale, see above
+                }
+                self.in_flight = None;
+                self.response.state = ResponseState::Failed(error);
+                true
+            }
         }
     }
 
@@ -415,10 +511,9 @@ impl App {
     }
 
     /// Whether any in-flight HTTP request is still ticking (e.g. animating
-    /// a spinner) and therefore needs a redraw. Always `false` until
-    /// Task 15 introduces in-flight request state.
+    /// a spinner) and therefore needs a redraw.
     fn in_flight_ticking(&self) -> bool {
-        false
+        self.in_flight.is_some()
     }
 
     /// Central key router. Order (each step tested):
@@ -825,5 +920,92 @@ mod tests {
         assert!(app.modals.is_empty());
         app.handle_key(&keymap, plain('d'));
         assert!(app.modals.is_empty());
+    }
+
+    #[tokio::test]
+    async fn send_with_invalid_body_prompts_first() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
+        app.editor.url = crate::components::line_input::LineInput::new("http://127.0.0.1:9"); // unroutable, never actually hit
+        app.editor.set_body_text("{oops");
+        app.update(Action::Send);
+        assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+        assert!(app.in_flight.is_none());
+    }
+
+    #[tokio::test]
+    async fn stale_generation_results_are_ignored() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
+        app.send_generation = 5;
+        app.update(Action::RequestFailed { generation: 4, error: "old".into() });
+        assert!(matches!(app.response.state, ResponseState::Empty), "stale result dropped");
+    }
+
+    #[tokio::test]
+    async fn empty_url_toasts_instead_of_sending() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
+        app.update(Action::Send);
+        assert!(app.in_flight.is_none());
+        assert!(!app.toasts.is_empty(), "empty URL must toast rather than send");
+    }
+
+    #[tokio::test]
+    async fn force_send_spawns_a_task_and_marks_response_in_flight() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
+        app.editor.url = crate::components::line_input::LineInput::new("http://127.0.0.1:9"); // unroutable, never actually hit
+        app.update(Action::ForceSend);
+        assert!(app.in_flight.is_some());
+        assert!(matches!(app.response.state, ResponseState::InFlight { .. }));
+        assert_eq!(app.send_generation, 1);
+    }
+
+    #[tokio::test]
+    async fn cancel_send_aborts_task_and_marks_cancelled() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
+        app.editor.url = crate::components::line_input::LineInput::new("http://127.0.0.1:9");
+        app.update(Action::ForceSend);
+        assert!(app.in_flight.is_some());
+        app.update(Action::CancelSend);
+        assert!(app.in_flight.is_none());
+        assert!(matches!(app.response.state, ResponseState::Cancelled));
+        // no-op when nothing is in flight
+        assert!(!app.update(Action::CancelSend));
+    }
+
+    #[tokio::test]
+    async fn response_arrived_with_current_generation_clears_in_flight() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
+        app.send_generation = 1;
+        let data = crate::http::ResponseData {
+            status: 200,
+            headers: vec![],
+            body: "ok".into(),
+            elapsed: std::time::Duration::from_millis(1),
+            size: 2,
+            content_type: None,
+        };
+        app.update(Action::ResponseArrived { generation: 1, data: Box::new(data.clone()) });
+        assert!(app.in_flight.is_none());
+        assert!(matches!(app.response.state, ResponseState::Ready(ref d) if **d == data));
+    }
+
+    #[test]
+    fn esc_on_in_flight_response_pane_requests_cancel() {
+        let mut app = App::new_for_test();
+        app.response.state = ResponseState::InFlight { started: std::time::Instant::now() };
+        let action = app.response.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(action, Some(Action::CancelSend));
+    }
+
+    #[test]
+    fn esc_on_idle_response_pane_does_nothing() {
+        let mut app = App::new_for_test();
+        let action = app.response.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(action, None);
     }
 }

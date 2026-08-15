@@ -56,4 +56,23 @@ pub enum Action {
     DeleteRequest(String),
     /// Save the request currently open in the editor as `name` (a slug).
     SaveRequestAs(String),
+    /// User asked to send the current request. Validates first: an empty
+    /// URL toasts and stops; a non-empty body that fails JSON validation
+    /// opens a confirm-anyway modal instead of sending. Otherwise behaves
+    /// like `ForceSend`.
+    Send,
+    /// Actually issue the request, bypassing the body-validity confirm
+    /// (used directly, or as the tail action of the confirm modal's "send
+    /// anyway" choice).
+    ForceSend,
+    /// Cancel the in-flight request, if any: aborts its task and marks the
+    /// response pane `Cancelled`.
+    CancelSend,
+    /// A background send task completed successfully. `generation` ties the
+    /// result back to the send that produced it; stale generations (a newer
+    /// send started before this one finished) are dropped.
+    ResponseArrived { generation: u64, data: Box<crate::http::ResponseData> },
+    /// A background send task failed. Same staleness handling as
+    /// `ResponseArrived`.
+    RequestFailed { generation: u64, error: String },
 }
