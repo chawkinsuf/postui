@@ -9,7 +9,7 @@ use ratatui::Frame;
 pub struct Response;
 
 impl Component for Response {
-    fn draw(&self, frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
+    fn draw(&mut self, frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
         let block = pane_block("Response", ctx);
         let empty = Paragraph::new(vec![
             Line::raw(""),

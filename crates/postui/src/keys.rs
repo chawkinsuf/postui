@@ -88,6 +88,9 @@ fn named_actions() -> Vec<(&'static str, Action)> {
         ("editor_tab_prev", Action::EditorTabCycle(-1)),
         ("cycle_method", Action::CycleMethod),
         ("focus_url", Action::FocusUrl),
+        ("format_body", Action::FormatBody),
+        ("minify_body", Action::MinifyBody),
+        ("open_body_editor", Action::OpenBodyInEditor),
     ]
 }
 
@@ -129,6 +132,9 @@ impl Keymap {
             ("alt+left", Action::EditorTabCycle(-1)),
             ("alt+m", Action::CycleMethod),
             ("alt+u", Action::FocusUrl),
+            ("alt+f", Action::FormatBody),
+            ("alt+g", Action::MinifyBody),
+            ("ctrl+e", Action::OpenBodyInEditor),
         ];
         let mut map = Self { bindings: HashMap::new() };
         for (s, a) in defaults {
@@ -246,6 +252,27 @@ mod tests {
         assert_eq!(get("alt+left"), Some(Action::EditorTabCycle(-1)));
         assert_eq!(get("alt+m"), Some(Action::CycleMethod));
         assert_eq!(get("alt+u"), Some(Action::FocusUrl));
+        assert_eq!(get("alt+f"), Some(Action::FormatBody));
+        assert_eq!(get("alt+g"), Some(Action::MinifyBody));
+        assert_eq!(get("ctrl+e"), Some(Action::OpenBodyInEditor));
+    }
+
+    #[test]
+    fn body_actions_are_rebindable_by_name() {
+        let mut m = Keymap::default_bindings();
+        m.apply_overrides(
+            r#"
+            format_body = "ctrl+j"
+            minify_body = "ctrl+k"
+            open_body_editor = "f4"
+            "#,
+        )
+        .unwrap();
+        let get = |s: &str| m.lookup(&KeyCombo::parse(s).unwrap());
+        assert_eq!(get("ctrl+j"), Some(Action::FormatBody));
+        assert_eq!(get("ctrl+k"), Some(Action::MinifyBody));
+        assert_eq!(get("f4"), Some(Action::OpenBodyInEditor));
+        assert_eq!(get("alt+f"), None, "rebind clears the default combo");
     }
 
     #[test]

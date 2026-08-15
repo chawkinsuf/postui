@@ -27,7 +27,7 @@ pub trait Component {
         None
     }
     fn handle_scroll(&mut self, _delta: i16) {}
-    fn draw(&self, frame: &mut Frame, area: Rect, ctx: &DrawCtx);
+    fn draw(&mut self, frame: &mut Frame, area: Rect, ctx: &DrawCtx);
 }
 
 /// Standard pane chrome: rounded borders, interior padding, focus styling.

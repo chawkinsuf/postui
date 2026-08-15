@@ -1,6 +1,11 @@
 use ratatui::style::Color;
 
 pub struct Theme {
+    /// Whether this is a dark-background palette. Consumers that must pick
+    /// between a dark and a light variant of an external asset (e.g. the
+    /// bundled syntect themes used for JSON syntax highlighting) key off
+    /// this rather than guessing from a color token.
+    dark: bool,
     pub surface: Color,
     pub surface_raised: Color,
     pub text: Color,
@@ -18,6 +23,7 @@ impl Theme {
     /// these values during stage-1 polish with the frontend-design skill.
     pub fn dark() -> Self {
         Self {
+            dark: true,
             surface: Color::Rgb(0x13, 0x17, 0x20),
             surface_raised: Color::Rgb(0x1a, 0x1f, 0x2b),
             text: Color::Rgb(0xd8, 0xde, 0xe9),
@@ -33,6 +39,7 @@ impl Theme {
 
     pub fn light() -> Self {
         Self {
+            dark: false,
             surface: Color::Rgb(0xf7, 0xf8, 0xfa),
             surface_raised: Color::Rgb(0xff, 0xff, 0xff),
             text: Color::Rgb(0x24, 0x29, 0x2f),
@@ -48,6 +55,11 @@ impl Theme {
 
     pub fn for_terminal() -> Self {
         Self::dark()
+    }
+
+    /// Whether this palette is the dark variant.
+    pub fn is_dark(&self) -> bool {
+        self.dark
     }
 
     /// Maps an HTTP method to a theme token color for its badge, reusing
@@ -69,6 +81,7 @@ impl Theme {
             other => other,
         };
         Self {
+            dark: self.dark,
             surface: f(self.surface),
             surface_raised: f(self.surface_raised),
             text: f(self.text),
@@ -131,6 +144,13 @@ mod tests {
         for c in [t.surface, t.text, t.accent, t.border, t.border_focused] {
             assert!(matches!(c, Color::Rgb(..)), "token must be truecolor: {c:?}");
         }
+    }
+
+    #[test]
+    fn variant_is_reported_and_survives_downgrade() {
+        assert!(Theme::dark().is_dark());
+        assert!(!Theme::light().is_dark());
+        assert!(Theme::dark().downgrade_to_256().is_dark(), "downgrade keeps the variant");
     }
 
     #[test]

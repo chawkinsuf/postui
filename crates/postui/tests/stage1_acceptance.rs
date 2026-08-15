@@ -5,7 +5,7 @@ use postui::layout::PaneId;
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 
-fn render(app: &App) -> String {
+fn render(app: &mut App) -> String {
     let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
     terminal.draw(|f| postui::ui::draw(f, app)).unwrap();
     format!("{:?}", terminal.backend().buffer())
@@ -16,7 +16,7 @@ fn stage1_acceptance_flow() {
     let mut app = App::new_for_test();
 
     // 1. Initial frame: all chrome present, sidebar focused.
-    let frame = render(&app);
+    let frame = render(&mut app);
     assert!(frame.contains("Requests") && frame.contains("Response"));
 
     // 2. Focus cycling reaches every pane.
@@ -27,22 +27,22 @@ fn stage1_acceptance_flow() {
 
     // 3. Toast renders and expires.
     app.update(Action::ShowToast("Welcome to postui".into(), ToastKind::Info));
-    assert!(render(&app).contains("Welcome to postui"));
+    assert!(render(&mut app).contains("Welcome to postui"));
     for _ in 0..40 {
         app.update(Action::Tick);
     }
-    assert!(!render(&app).contains("Welcome to postui"));
+    assert!(!render(&mut app).contains("Welcome to postui"));
 
     // 4. Palette opens as a modal and renders.
     app.update(Action::OpenPalette);
     assert!(!app.modals.is_empty());
-    assert!(render(&app).contains("Commands"));
+    assert!(render(&mut app).contains("Commands"));
     app.update(Action::Close);
     assert!(app.modals.is_empty());
 
     // 5. About modal via its action.
     app.update(Action::ShowAbout);
-    assert!(render(&app).contains("local-first"));
+    assert!(render(&mut app).contains("local-first"));
     app.update(Action::Close);
 
     // 6. Quit.

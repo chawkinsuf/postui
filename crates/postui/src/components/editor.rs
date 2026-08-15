@@ -4,18 +4,20 @@ use super::toast::ToastKind;
 use super::{pane_block, Component, DrawCtx};
 use crate::action::Action;
 use crate::theme::Theme;
+use edtui::{
+    EditorEventHandler, EditorMode, EditorState, EditorTheme, EditorView, LineNumbers, Lines,
+    SyntaxHighlighter,
+};
 use indexmap::IndexMap;
 use postui_core::model::{Body, Entry, HttpRequest, Method};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-/// Which editor tab is active. Params/Headers content is a placeholder
-/// paragraph until Task 11 adds the shared table editor; Body is a
-/// placeholder until Task 12 swaps in edtui.
+/// Which editor tab is active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditorTab {
     Params,
@@ -64,9 +66,13 @@ pub struct Editor {
     pub url: LineInput,
     pub params: IndexMap<String, Entry>,
     pub headers: IndexMap<String, Entry>,
-    /// Placeholder for the request body text until Task 12 swaps in edtui
-    /// state.
-    pub body_text: String,
+    /// The request body buffer. edtui owns the text, cursor and undo stack;
+    /// it is only ever rewritten wholesale by an explicit user action
+    /// (load / format / minify / external editor), so half-typed JSON
+    /// survives a save verbatim.
+    pub body: EditorState,
+    /// Emacs-mode (modeless) key handling for `body`.
+    body_handler: EditorEventHandler,
     pub active_tab: EditorTab,
     pub sub_focus: SubFocus,
     /// Shared cursor/edit state for the key/value table, reused by both the
@@ -83,7 +89,8 @@ impl Default for Editor {
             url: LineInput::new(""),
             params: IndexMap::new(),
             headers: IndexMap::new(),
-            body_text: String::new(),
+            body: new_body_state(""),
+            body_handler: EditorEventHandler::emacs_mode(),
             active_tab: EditorTab::Params,
             sub_focus: SubFocus::Url,
             table: TableEditorState::default(),
@@ -100,10 +107,10 @@ impl Editor {
         self.url = LineInput::new(&req.url);
         self.params = req.params.clone();
         self.headers = req.headers.clone();
-        self.body_text = match &req.body {
-            Some(Body::Json { text }) => text.clone(),
-            None => String::new(),
-        };
+        self.set_body_text(match &req.body {
+            Some(Body::Json { text }) => text,
+            None => "",
+        });
         self.saved = Some(req);
     }
 
@@ -114,10 +121,13 @@ impl Editor {
             url: self.url.text().to_string(),
             params: self.params.clone(),
             headers: self.headers.clone(),
-            body: if self.body_text.is_empty() {
-                None
-            } else {
-                Some(Body::Json { text: self.body_text.clone() })
+            body: {
+                let text = self.body_text();
+                if text.is_empty() {
+                    None
+                } else {
+                    Some(Body::Json { text })
+                }
             },
         }
     }
@@ -135,6 +145,36 @@ impl Editor {
     pub fn mark_saved(&mut self) {
         self.saved = Some(self.current_request());
     }
+
+    /// The body buffer's text, with lines joined by `\n`.
+    pub fn body_text(&self) -> String {
+        self.body.lines.to_string()
+    }
+
+    /// Replaces the whole body buffer. Only explicit user actions (loading a
+    /// request, format, minify, the `$EDITOR` round-trip) may call this;
+    /// typing goes through `body_handler`, so the text is never rewritten
+    /// behind the user's back.
+    pub fn set_body_text(&mut self, s: &str) {
+        self.body = new_body_state(s);
+    }
+
+    /// Whether the body parses as JSON. An empty body is vacuously valid:
+    /// there is nothing to be wrong with yet.
+    fn body_is_valid(&self) -> bool {
+        let text = self.body_text();
+        text.is_empty() || postui_core::json::validate(&text).is_ok()
+    }
+}
+
+/// edtui's emacs keybindings are all registered against `EditorMode::Insert`,
+/// so a state left in the default `Normal` mode silently swallows every
+/// keystroke. Building body buffers through here keeps that invariant in one
+/// place.
+fn new_body_state(text: &str) -> EditorState {
+    let mut state = EditorState::new(Lines::from(text));
+    state.mode = EditorMode::Insert;
+    state
 }
 
 impl Component for Editor {
@@ -150,10 +190,10 @@ impl Component for Editor {
                 }
                 None
             }
-            // Line-aware Up navigation within Body content arrives in Task 12;
-            // for now Up always returns focus to the URL line, except on the
-            // Params/Headers tabs where the table editor gets first crack at
-            // every key (including Up/Down navigation within the table).
+            // On the Params/Headers tabs the table editor gets first crack at
+            // every key (including Up/Down navigation within the table); on
+            // the Body tab edtui does, except for the two keys that are the
+            // only keyboard route back out of the buffer.
             SubFocus::Content => {
                 if matches!(self.active_tab, EditorTab::Params | EditorTab::Headers) {
                     let map = match self.active_tab {
@@ -177,16 +217,22 @@ impl Component for Editor {
                     }
                     return None;
                 }
-                if ev.code == KeyCode::Up {
+                // Esc always leaves the buffer; Up only does so from the top
+                // row, so it can still navigate a multi-line body. CTRL/ALT
+                // combos never reach here — the router hands them to the
+                // global keymap first — so edtui's own modified bindings are
+                // unreachable by design.
+                if ev.code == KeyCode::Esc || (ev.code == KeyCode::Up && self.body.cursor.row == 0) {
                     self.sub_focus = SubFocus::Url;
                     return Some(Action::Render);
                 }
-                None
+                self.body_handler.on_key_event(ev, &mut self.body);
+                Some(Action::Render)
             }
         }
     }
 
-    fn draw(&self, frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
+    fn draw(&mut self, frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
         let block = pane_block("Request", ctx);
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -223,40 +269,75 @@ impl Editor {
     }
 
     fn draw_tab_bar(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        let spans: Vec<Span> = [EditorTab::Params, EditorTab::Headers, EditorTab::Body]
-            .into_iter()
-            .map(|tab| {
-                let style = if tab == self.active_tab {
-                    Style::default().fg(theme.accent).bold()
+        let mut spans: Vec<Span> = Vec::new();
+        for tab in [EditorTab::Params, EditorTab::Headers, EditorTab::Body] {
+            let style = if tab == self.active_tab {
+                Style::default().fg(theme.accent).bold()
+            } else {
+                Style::default().fg(theme.text_muted)
+            };
+            spans.push(Span::styled(format!(" {} ", tab.label()), style));
+            // The Body tab carries a live JSON validity badge, colored from
+            // the semantic tokens so it also reads without the glyph.
+            if tab == EditorTab::Body {
+                let (glyph, color) = if self.body_is_valid() {
+                    ('✓', theme.success)
                 } else {
-                    Style::default().fg(theme.text_muted)
+                    ('✗', theme.error)
                 };
-                Span::styled(format!(" {} ", tab.label()), style)
-            })
-            .collect();
+                spans.push(Span::styled(format!("{glyph} "), Style::default().fg(color)));
+            }
+        }
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
-    fn draw_tab_content(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    fn draw_tab_content(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let focused = self.sub_focus == SubFocus::Content;
         match self.active_tab {
             EditorTab::Params => {
-                let ctx = DrawCtx { theme, focused: self.sub_focus == SubFocus::Content };
+                let ctx = DrawCtx { theme, focused };
                 self.table.draw(frame, area, &self.params, &ctx, "No params yet — press a to add");
             }
             EditorTab::Headers => {
-                let ctx = DrawCtx { theme, focused: self.sub_focus == SubFocus::Content };
+                let ctx = DrawCtx { theme, focused };
                 self.table.draw(frame, area, &self.headers, &ctx, "No headers yet — press a to add");
             }
-            // Placeholder content until Task 12 swaps in the edtui body
-            // editor.
             EditorTab::Body => {
-                frame.render_widget(
-                    Paragraph::new("Body editing coming soon.").style(Style::default().fg(theme.text_muted)),
-                    area,
-                );
+                let highlighter = json_highlighter(theme);
+                let mut edtui_theme = EditorTheme::default()
+                    .base(Style::default().bg(theme.surface).fg(theme.text))
+                    .cursor_style(Style::default().add_modifier(Modifier::REVERSED))
+                    .line_numbers_style(Style::default().bg(theme.surface).fg(theme.text_muted))
+                    .hide_status_line();
+                // A cursor block on an unfocused pane reads as "you are typing
+                // here", so only the focused editor shows one.
+                if !focused {
+                    edtui_theme = edtui_theme.hide_cursor();
+                }
+                let view = EditorView::new(&mut self.body)
+                    .theme(edtui_theme)
+                    .wrap(true)
+                    .line_numbers(LineNumbers::Absolute)
+                    .syntax_highlighter(highlighter);
+                frame.render_widget(view, area);
             }
         }
     }
+}
+
+/// The bundled syntect theme closest to the app palette. edtui's theme names
+/// use dashes rather than syntect's dotted defaults. Matching the app's own
+/// colors exactly is stage-6 polish; until then a missing theme or JSON
+/// syntax definition degrades to unhighlighted text rather than failing the
+/// draw.
+///
+/// Rebuilt per draw because `SyntaxHighlighter` is not `Clone` and the view
+/// takes it by value. That is cheap: the theme and syntax *sets* behind it are
+/// `Arc`-shared process-wide statics, so only one theme and one syntax
+/// reference are cloned, and draws are event-driven rather than continuous.
+fn json_highlighter(theme: &Theme) -> Option<SyntaxHighlighter> {
+    let name = if theme.is_dark() { "base16-ocean-dark" } else { "base16-ocean-light" };
+    SyntaxHighlighter::new(name, "json").ok()
 }
 
 #[cfg(test)]
@@ -399,6 +480,138 @@ mod tests {
         );
         assert_eq!(e.params.len(), 1);
         assert_eq!(e.params["a"].value, "9");
+    }
+
+    #[test]
+    fn body_text_roundtrip_and_empty_means_no_body() {
+        let mut e = Editor::default();
+        e.set_body_text("{\n  \"a\": 1\n}");
+        assert_eq!(e.body_text(), "{\n  \"a\": 1\n}");
+        assert!(matches!(e.current_request().body, Some(Body::Json { .. })));
+        e.set_body_text("");
+        assert!(e.current_request().body.is_none());
+    }
+
+    #[test]
+    fn typing_in_body_tab_inserts_text_modelessly() {
+        let mut e = Editor {
+            active_tab: EditorTab::Body,
+            sub_focus: SubFocus::Content,
+            ..Editor::default()
+        };
+        e.handle_key(key(KeyCode::Char('{')));
+        assert_eq!(e.body_text(), "{", "emacs mode: chars insert without entering a vim insert mode");
+    }
+
+    #[test]
+    fn esc_in_body_returns_focus_to_url_without_editing() {
+        let mut e = Editor {
+            active_tab: EditorTab::Body,
+            sub_focus: SubFocus::Content,
+            ..Editor::default()
+        };
+        e.set_body_text("{}");
+        assert_eq!(e.handle_key(key(KeyCode::Esc)), Some(Action::Render));
+        assert_eq!(e.sub_focus, SubFocus::Url);
+        assert_eq!(e.body_text(), "{}");
+    }
+
+    #[test]
+    fn body_up_leaves_editor_only_from_the_first_row() {
+        let mut e = Editor {
+            active_tab: EditorTab::Body,
+            sub_focus: SubFocus::Content,
+            ..Editor::default()
+        };
+        e.set_body_text("one\ntwo");
+        e.handle_key(key(KeyCode::Down)); // move to row 1 inside the body
+        assert_eq!(e.sub_focus, SubFocus::Content, "Up/Down navigate inside a multi-line body");
+        e.handle_key(key(KeyCode::Up)); // back to row 0, still inside
+        assert_eq!(e.sub_focus, SubFocus::Content);
+        e.handle_key(key(KeyCode::Up)); // at row 0 → leave for the URL line
+        assert_eq!(e.sub_focus, SubFocus::Url);
+    }
+
+    #[test]
+    fn save_preserves_invalid_body_verbatim() {
+        let mut e = Editor::default();
+        e.set_body_text("{ \"in-progress\": ");
+        let req = e.current_request();
+        let back = HttpRequest::from_toml_str(&req.to_toml_string()).unwrap();
+        assert_eq!(back.body, Some(Body::Json { text: "{ \"in-progress\": ".into() }));
+    }
+
+    #[test]
+    fn format_body_pretty_prints_only_valid_json() {
+        let mut app = App::new_for_test();
+        app.editor.set_body_text("{\"a\":1}");
+        app.update(Action::FormatBody);
+        assert!(app.editor.body_text().contains('\n'));
+        app.editor.set_body_text("{oops");
+        app.update(Action::FormatBody);
+        assert_eq!(app.editor.body_text(), "{oops", "invalid body untouched");
+        app.editor.set_body_text("{ \"a\": 1 }");
+        app.update(Action::MinifyBody);
+        assert_eq!(app.editor.body_text(), "{\"a\":1}");
+    }
+
+    #[test]
+    fn format_body_on_invalid_json_toasts_position_and_empty_body_is_a_noop() {
+        let mut app = App::new_for_test();
+        app.editor.set_body_text("{\n  \"a\": oops\n}");
+        assert!(app.update(Action::FormatBody));
+        let theme = Theme::dark();
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.toasts.draw(f, f.area(), &theme)).unwrap();
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(content.contains("line 2"), "toast must carry the error position: {content}");
+
+        let mut app = App::new_for_test();
+        assert!(app.update(Action::MinifyBody), "empty body is a no-op, not an error");
+        assert_eq!(app.editor.body_text(), "");
+        assert!(app.toasts.is_empty(), "no toast for an empty body");
+    }
+
+    #[test]
+    fn open_body_in_editor_defers_to_the_main_loop() {
+        let mut app = App::new_for_test();
+        assert!(app.update(Action::OpenBodyInEditor));
+        assert_eq!(
+            app.pending_terminal_action.take(),
+            Some(Action::OpenBodyInEditor),
+            "App::update must not touch the terminal itself"
+        );
+    }
+
+    #[test]
+    fn body_tab_label_shows_json_validity() {
+        let render = |text: &str| {
+            let mut e = Editor { active_tab: EditorTab::Body, ..Editor::default() };
+            e.set_body_text(text);
+            let theme = Theme::dark();
+            let ctx = DrawCtx { theme: &theme, focused: true };
+            let backend = TestBackend::new(60, 10);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|f| e.draw(f, f.area(), &ctx)).unwrap();
+            format!("{:?}", terminal.backend().buffer())
+        };
+        assert!(render("").contains("Body ✓"), "empty body counts as valid");
+        assert!(render("{\"a\": 1}").contains("Body ✓"));
+        assert!(render("{oops").contains("Body ✗"));
+    }
+
+    #[test]
+    fn body_tab_renders_its_text() {
+        let mut e = Editor { active_tab: EditorTab::Body, ..Editor::default() };
+        e.set_body_text("{\"marker\": 1}");
+        let theme = Theme::dark();
+        let ctx = DrawCtx { theme: &theme, focused: true };
+        let backend = TestBackend::new(60, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| e.draw(f, f.area(), &ctx)).unwrap();
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(content.contains("marker"), "body text must render: {content}");
     }
 
     #[test]

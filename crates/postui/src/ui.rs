@@ -3,16 +3,23 @@ use crate::components::{Component, DrawCtx};
 use crate::layout::{compute_layout, PaneId};
 use ratatui::Frame;
 
-pub fn draw(frame: &mut Frame, app: &App) {
+/// Takes `&mut App` because components draw through `Component::draw(&mut
+/// self, ..)`: the body editor's widget needs `&mut EditorState` to record the
+/// viewport it was rendered into.
+pub fn draw(frame: &mut Frame, app: &mut App) {
     let layout = compute_layout(frame.area());
-    crate::components::header_bar::draw_header(frame, layout.header, &app.theme);
-    let ctx = |pane: PaneId| DrawCtx { theme: &app.theme, focused: app.focus == pane };
-    app.sidebar.draw(frame, layout.sidebar, &ctx(PaneId::Sidebar));
-    app.editor.draw(frame, layout.editor, &ctx(PaneId::Editor));
-    app.response.draw(frame, layout.response, &ctx(PaneId::Response));
-    crate::components::footer::draw_footer(frame, layout.footer, &app.theme);
-    app.toasts.draw(frame, frame.area(), &app.theme);
-    app.modals.draw(frame, frame.area(), &app.theme);
+    let focus = app.focus;
+    // Destructured so each component can be borrowed mutably alongside the
+    // shared theme reference its DrawCtx holds.
+    let App { theme, sidebar, editor, response, toasts, modals, .. } = app;
+    crate::components::header_bar::draw_header(frame, layout.header, theme);
+    let ctx = |pane: PaneId| DrawCtx { theme, focused: focus == pane };
+    sidebar.draw(frame, layout.sidebar, &ctx(PaneId::Sidebar));
+    editor.draw(frame, layout.editor, &ctx(PaneId::Editor));
+    response.draw(frame, layout.response, &ctx(PaneId::Response));
+    crate::components::footer::draw_footer(frame, layout.footer, theme);
+    toasts.draw(frame, frame.area(), theme);
+    modals.draw(frame, frame.area(), theme);
 }
 
 #[cfg(test)]
@@ -21,7 +28,7 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
-    fn render(app: &App) -> String {
+    fn render(app: &mut App) -> String {
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| draw(f, app)).unwrap();
@@ -30,8 +37,8 @@ mod tests {
 
     #[test]
     fn full_frame_shows_all_panes_and_chrome() {
-        let app = App::new_for_test();
-        let content = render(&app);
+        let mut app = App::new_for_test();
+        let content = render(&mut app);
         assert!(content.contains("Requests"));       // sidebar title
         assert!(content.contains("Request"));        // editor title
         assert!(content.contains("Response"));       // response title

@@ -21,6 +21,10 @@ pub struct App {
     /// Sender for background tasks (e.g. in-flight requests) to push
     /// `Action`s back into the main loop without blocking on it.
     pub tx: UnboundedSender<Action>,
+    /// An action that can only be applied by suspending the terminal, parked
+    /// here by `update` for the main loop to take and run. Keeps `update`
+    /// itself terminal-free (and therefore testable without a TTY).
+    pub pending_terminal_action: Option<Action>,
     /// Keeps the test-only channel's receiver alive so `tx` doesn't become
     /// a dangling sender in `App::new_for_test()`. Always `None` outside
     /// of tests.
@@ -39,6 +43,7 @@ impl App {
             toasts: Toasts::default(),
             modals: ModalStack::default(),
             tx,
+            pending_terminal_action: None,
             _test_rx: None,
         }
     }
@@ -127,6 +132,37 @@ impl App {
             Action::FocusUrl => {
                 self.focus = PaneId::Editor;
                 self.editor.sub_focus = SubFocus::Url;
+                true
+            }
+            Action::FormatBody => self.transform_body(postui_core::json::format),
+            Action::MinifyBody => self.transform_body(postui_core::json::minify),
+            // Suspending the terminal is the main loop's job; park the action
+            // and let it pick this up after the current key is handled.
+            Action::OpenBodyInEditor => {
+                self.pending_terminal_action = Some(Action::OpenBodyInEditor);
+                true
+            }
+        }
+    }
+
+    /// Rewrites the body through a JSON transform. An empty body is a no-op
+    /// (nothing to format), and invalid JSON leaves the buffer exactly as the
+    /// user typed it, reporting the parse position in a toast.
+    fn transform_body(
+        &mut self,
+        transform: fn(&str) -> Result<String, postui_core::json::JsonError>,
+    ) -> bool {
+        let text = self.editor.body_text();
+        if text.is_empty() {
+            return true;
+        }
+        match transform(&text) {
+            Ok(formatted) => {
+                self.editor.set_body_text(&formatted);
+                true
+            }
+            Err(e) => {
+                self.toasts.push(e.to_string(), crate::components::toast::ToastKind::Error);
                 true
             }
         }
