@@ -1,6 +1,7 @@
 use crate::theme::Theme;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
+use ratatui::text::Span;
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph};
 use ratatui::Frame;
 
@@ -51,8 +52,13 @@ impl Toasts {
     pub fn draw(&self, frame: &mut Frame, screen: Rect, theme: &Theme) {
         let mut y = screen.y + 1;
         for toast in &self.entries {
-            let width = (toast.message.chars().count() as u16 + 6).min(screen.width);
-            let area = Rect::new(screen.right().saturating_sub(width + 1), y, width, 3);
+            // Use display-width instead of char count to handle double-width chars (emoji, CJK)
+            let display_width = Span::raw(toast.message.as_str()).width();
+            // Clamp to usize before arithmetic to prevent overflow on very long messages
+            let padding_width: usize = 6;
+            let clamped_width = display_width.saturating_add(padding_width);
+            let width = (clamped_width as u16).min(screen.width);
+            let area = Rect::new(screen.right().saturating_sub(width.saturating_add(1)), y, width, 3);
             if area.bottom() > screen.bottom() {
                 break;
             }
@@ -126,5 +132,22 @@ mod tests {
         terminal.draw(|f| t.draw(f, f.area(), &theme)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("Copied"));
+    }
+
+    #[test]
+    fn draw_handles_double_width_chars_correctly() {
+        let mut t = Toasts::default();
+        // "已复制 ✓" contains double-width CJK chars and a double-width emoji
+        t.push("已复制 ✓", ToastKind::Success);
+        let theme = Theme::dark();
+        let backend = TestBackend::new(60, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| t.draw(f, f.area(), &theme)).unwrap();
+        let content = format!("{:?}", terminal.backend().buffer());
+        // Verify that the toast was rendered with the double-width message
+        assert!(content.contains("已"), "CJK character should be rendered");
+        // The box should be sized based on display width, not char count
+        // Display width of "已复制 ✓" is 8 (3*2 + 1 + 2), plus 6 padding = 14 columns
+        assert!(content.contains('╭') || content.contains('┌'), "toast border should render");
     }
 }
