@@ -16,12 +16,13 @@ use ratatui::crossterm::event::{
     MouseEvent, MouseEventKind,
 };
 use ratatui::crossterm::execute;
+use ratatui::layout::Rect;
 use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let mut terminal = ratatui::init(); // installs a panic hook that restores the terminal
-    execute!(std::io::stdout(), EnableMouseCapture)?;
+    let _ = execute!(std::io::stdout(), EnableMouseCapture);
     let result = run(&mut terminal).await;
     let _ = execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
@@ -63,7 +64,7 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
                             ..
                         }) if app.modals.is_empty() => {
                             let size = terminal.size()?;
-                            let layout = compute_layout(ratatui::layout::Rect::new(0, 0, size.width, size.height));
+                            let layout = compute_layout(Rect::new(0, 0, size.width, size.height));
                             if let Some(pane) = hit_test(&layout, column, row) {
                                 app.update(Action::FocusPane(pane));
                             }
