@@ -8,7 +8,7 @@
 
 - Request TOML files stored in a **default project** at `~/.config/postui/default/requests/**/*.toml`.
 - Sidebar listing those requests: open, create, rename, delete.
-- Request editor: method, URL, query params, headers, JSON body.
+- Request editor: method, URL, query params, headers, JSON body (edtui editor widget + `$EDITOR` escape hatch).
 - Async send via reqwest with cancellation and live elapsed-time spinner.
 - Response viewer: summary line, syntect-highlighted collapsible JSON tree, raw view, headers view, search.
 - The parked stage-1 review fixes (§7).
@@ -69,6 +69,8 @@ The crate stays terminal-free **and** IO-runtime-free (no reqwest, no tokio). Ne
 
 The TUI crate owns the actual reqwest send, taking `PreparedRequest` from core.
 
+**New dependencies** (all verified actively maintained against crates.io, 2026-08-15): core — `indexmap` 2 (serde feature), `thiserror` 2, `serde_json` 1; TUI — `reqwest` 0.13 (rustls-tls), `edtui` 0.11 (`syntax-highlighting` feature); dev — `wiremock` 0.6, `tempfile` 3. Workspace `toml` bumps 0.8 → 1.
+
 ## 5. UI: sidebar and request editor
 
 **Sidebar** (replaces the stage-1 placeholder):
@@ -85,8 +87,8 @@ The TUI crate owns the actual reqwest send, taking `PreparedRequest` from core.
 - **Method + URL bar.** Method is a cycling colored badge (Space/Enter or `m` cycles GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS, colors from stage-1 tokens). URL is a single-line input; a literal `?query` in the URL is permitted and simply stays there (§3.1 arbitrates conflicts with `[params]`).
 - **Sub-tabs: Params / Headers / Body.** No Scripts placeholder tab (arrives in stage 5).
   - **Params & Headers** share one table-editor component: key/value rows with an enabled-checkbox column; `a` add row, `d`/Delete remove, Space toggle enabled, Enter edit focused cell inline, Tab key→value. Disabled rows render muted.
-  - **Body:** `tui-textarea` with JSON syntect highlighting, line numbers; **Format** action (serde_json pretty-print; on parse failure, toast with error position, buffer unchanged); `Ctrl+E` (rebindable) suspends the TUI and opens the body in `$EDITOR`, resuming on exit. Validity indicator in the tab bar (`Body ✓` / `Body ✗`).
-- **Save:** `Ctrl+S`, atomic. **Send does not auto-save** — what is sent is the live editor state, so experimentation never dirties the file implicitly.
+  - **Body:** `edtui` editor widget (chosen over the design's original `tui-textarea`, which is dormant — last release Oct 2024, ratatui 0.29 only, incompatible with our ratatui 0.30; edtui is actively maintained and built on ratatui-core 0.1/ratatui-widgets 0.3, i.e. ratatui 0.30's own components). edtui runs in **modeless "emacs mode"** (`EditorEventHandler::emacs_mode()`) — plain type-to-insert editing, no vim modes (a vim-mode config toggle is possible future work, not stage 2). JSON syntect highlighting via edtui's `syntax-highlighting` feature; the `$EDITOR` escape hatch uses edtui's `system-editor` feature; the URL bar may reuse the widget via `single_line(true)`; **Format** and **Minify** actions (serde_json pretty-print / compact; on parse failure, toast with error position, buffer unchanged — these are the *only* operations that ever rewrite body text; save never reformats); `Ctrl+E` (rebindable) suspends the TUI and opens the body in `$EDITOR`, resuming on exit. Validity indicator in the tab bar (`Body ✓` / `Body ✗`).
+- **Save:** `Ctrl+S`, atomic. Saving works with invalid JSON — work-in-progress bodies are first-class; the body is written verbatim, never normalized or reformatted on save. The validity confirm modal guards *send* only. **Send does not auto-save** — what is sent is the live editor state, so experimentation never dirties the file implicitly.
 - Sub-tab switching bound to `[`/`]` or `1`–`3` while the editor pane is focused (exact combos settled in the implementation plan against existing keymap conflicts).
 
 Focus model unchanged from stage 1: Tab/Shift+Tab and mouse click move between sidebar / editor / response panes.
