@@ -135,6 +135,10 @@ impl Keymap {
     }
 
     pub fn apply_overrides(&mut self, toml_str: &str) -> anyhow::Result<()> {
+        let ctrl_c = KeyCombo::parse("ctrl+c").unwrap();
+        // Phase 1: validate the entire document before mutating any state, so a
+        // late error can't leave earlier actions half-applied.
+        let mut resolved: Vec<(Action, Vec<KeyCombo>)> = Vec::new();
         for (action_name, combo_strs) in parse_overrides(toml_str)? {
             let action = named_actions()
                 .into_iter()
@@ -147,17 +151,20 @@ impl Keymap {
                     KeyCombo::parse(s).ok_or_else(|| anyhow::anyhow!("bad key combo: {s}"))
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
-            let ctrl_c = KeyCombo::parse("ctrl+c").unwrap();
             if action != Action::Quit && combos.contains(&ctrl_c) {
                 anyhow::bail!("ctrl+c is reserved for quit");
             }
+            resolved.push((action, combos));
+        }
+        // Phase 2: everything validated, now apply.
+        for (action, combos) in resolved {
             self.bindings.retain(|_, a| *a != action); // rebind removes old combo(s)
             for combo in combos {
                 self.bind(combo, action.clone());
             }
         }
         // ctrl+c is always reserved for quit, regardless of overrides.
-        self.bind(KeyCombo::parse("ctrl+c").unwrap(), Action::Quit);
+        self.bind(ctrl_c, Action::Quit);
         Ok(())
     }
 
@@ -238,6 +245,25 @@ mod tests {
         assert!(m.apply_overrides(r#"unknown_action = "x""#).is_err());
         assert!(m.apply_overrides(r#"quit = "not+a+key""#).is_err());
         assert!(m.apply_overrides(r#"quit = ["q", "not+a+key"]"#).is_err());
+    }
+
+    #[test]
+    fn override_document_is_atomic_on_error() {
+        let mut m = Keymap::default_bindings();
+        let result = m.apply_overrides(
+            r#"
+            quit = "ctrl+q"
+            open_palette = "not+a+key"
+            "#,
+        );
+        assert!(result.is_err(), "a bad combo later in the doc must error");
+
+        // Nothing should have been applied: defaults intact, no new combos present.
+        let get = |s: &str| m.lookup(&KeyCombo::parse(s).unwrap());
+        assert_eq!(get("q"), Some(Action::Quit), "default quit binding intact");
+        assert_eq!(get("ctrl+c"), Some(Action::Quit), "ctrl+c still quit");
+        assert_eq!(get("ctrl+p"), Some(Action::OpenPalette), "default palette binding intact");
+        assert_eq!(get("ctrl+q"), None, "earlier valid rebind must not have been applied");
     }
 
     #[test]
