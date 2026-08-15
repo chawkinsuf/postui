@@ -17,7 +17,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     sidebar.draw(frame, layout.sidebar, &ctx(PaneId::Sidebar));
     editor.draw(frame, layout.editor, &ctx(PaneId::Editor));
     response.draw(frame, layout.response, &ctx(PaneId::Response));
-    crate::components::footer::draw_footer(frame, layout.footer, theme);
+    crate::components::footer::draw_footer(frame, layout.footer, theme, focus);
     toasts.draw(frame, frame.area(), theme);
     modals.draw(frame, frame.area(), theme);
 }

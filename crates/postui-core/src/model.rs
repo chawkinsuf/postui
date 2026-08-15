@@ -46,6 +46,17 @@ impl Method {
     }
 }
 
+/// # Serialization warning
+///
+/// `Entry`'s and `HttpRequest`'s derived/hand-rolled `Serialize` impls exist
+/// for round-tripping through `serde`-based paths (e.g. tests); their TOML
+/// output uses `[params.foo]`/`[headers.foo]` *sub-table* sections, which
+/// reorders keys when re-serialized. Do not use `toml::to_string` (or
+/// anything that goes through `Serialize`) to persist a request to disk.
+/// [`HttpRequest::to_toml_string`] is the only canonical writer: it builds
+/// the document by hand with `toml_edit` so enabled entries stay plain
+/// strings, disabled entries stay inline tables, and insertion order is
+/// preserved exactly.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
     pub value: String,
@@ -145,6 +156,10 @@ pub enum Body {
     Json { text: String },
 }
 
+/// See the serialization warning on [`Entry`]: the derived `Serialize` here
+/// emits `[params.*]`/`[headers.*]` sub-table sections and is not
+/// order-preserving. Persist requests with [`HttpRequest::to_toml_string`],
+/// never `toml::to_string(&req)`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HttpRequest {

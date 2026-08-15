@@ -326,6 +326,37 @@ mod tests {
     }
 
     #[test]
+    fn nested_collapse_state_survives_an_outer_collapse_and_re_expand() {
+        // {"outer": {"inner": {"leaf": 1}, "sibling": 2}}
+        let mut t = JsonTree::parse(r#"{"outer": {"inner": {"leaf": 1}, "sibling": 2}}"#).unwrap();
+        // visible: 0 "{", 1 "outer": {, 2 "inner": {, 3 "leaf": 1, 4 }, 5 "sibling": 2, 6 }, 7 }
+        let inner_line = t
+            .visible_lines()
+            .iter()
+            .position(|l| l.plain_text().contains("\"inner\""))
+            .expect("inner line visible before any collapsing");
+        t.toggle(inner_line); // collapse inner
+        let inner_summary = t.visible_lines()[inner_line].plain_text();
+        assert!(inner_summary.contains("1 key"), "inner collapsed summary: {inner_summary}");
+
+        let outer_line = t
+            .visible_lines()
+            .iter()
+            .position(|l| l.plain_text().contains("\"outer\""))
+            .expect("outer line visible");
+        t.toggle(outer_line); // collapse outer (inner is now hidden, still collapsed)
+        let outer_summary = t.visible_lines()[outer_line].plain_text();
+        assert!(outer_summary.contains("2 keys"), "outer collapsed summary: {outer_summary}");
+
+        t.toggle(outer_line); // re-expand outer
+        let inner_summary_again = t.visible_lines()[inner_line].plain_text();
+        assert!(
+            inner_summary_again.contains("1 key"),
+            "inner must still be collapsed after outer re-expands: {inner_summary_again}"
+        );
+    }
+
+    #[test]
     fn search_lines_cover_collapsed_content() {
         let mut t = JsonTree::parse(r#"{"outer": {"needle": "x"}}"#).unwrap();
         t.toggle(1); // collapse outer

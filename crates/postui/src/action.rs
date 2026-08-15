@@ -35,8 +35,8 @@ pub enum Action {
     /// Actually load `slug` into the editor, bypassing the dirty check
     /// (used directly, or as the tail action of a dirty-prompt choice).
     ForceOpenRequest(String),
-    /// Save the request currently open in the editor. A no-name editor is a
-    /// stub until Task 14 adds save-as.
+    /// Save the request currently open in the editor. A no-name editor
+    /// opens the save-as prompt instead of saving directly.
     SaveRequest,
     /// Show the stored parse/read error for a broken sidebar row.
     ShowRequestError(String),

@@ -272,10 +272,10 @@ impl TableEditorState {
         frame: &mut Frame,
         area: Rect,
         map: &IndexMap<String, Entry>,
-        _ctx: &DrawCtx,
+        ctx: &DrawCtx,
         empty_label: &str,
     ) {
-        let theme = _ctx.theme;
+        let theme = ctx.theme;
         if map.is_empty() && self.editing.is_none() {
             frame.render_widget(Paragraph::new(empty_label).style(Style::default().fg(theme.text_muted)), area);
             return;

@@ -34,7 +34,8 @@ pub fn prepare(req: &HttpRequest) -> (PreparedRequest, Vec<PrepareWarning>) {
             Some((b, q)) => (b, q),
             None => (req.url.as_str(), ""),
         };
-        // (key, value, from_table) triples; URL pairs first, in order.
+        // (key, value) pairs; URL pairs first, in order, before the
+        // `[params]` table's entries are merged in below.
         let mut pairs: Vec<(String, String)> =
             form_urlencoded::parse(query.as_bytes()).into_owned().collect();
         for (k, e) in &enabled {
