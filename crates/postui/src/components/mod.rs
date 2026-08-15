@@ -7,6 +7,7 @@ pub mod footer;
 pub mod toast;
 pub mod modal;
 pub mod palette;
+pub mod table_editor;
 
 use crate::action::Action;
 use crate::theme::Theme;

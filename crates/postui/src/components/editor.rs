@@ -1,4 +1,6 @@
 use super::line_input::LineInput;
+use super::table_editor::TableEditorState;
+use super::toast::ToastKind;
 use super::{pane_block, Component, DrawCtx};
 use crate::action::Action;
 use crate::theme::Theme;
@@ -67,6 +69,9 @@ pub struct Editor {
     pub body_text: String,
     pub active_tab: EditorTab,
     pub sub_focus: SubFocus,
+    /// Shared cursor/edit state for the key/value table, reused by both the
+    /// Params and Headers tabs (never holds the entry data itself).
+    pub table: TableEditorState,
 }
 
 impl Default for Editor {
@@ -81,6 +86,7 @@ impl Default for Editor {
             body_text: String::new(),
             active_tab: EditorTab::Params,
             sub_focus: SubFocus::Url,
+            table: TableEditorState::default(),
         }
     }
 }
@@ -145,8 +151,26 @@ impl Component for Editor {
                 None
             }
             // Line-aware Up navigation within Body content arrives in Task 12;
-            // for now Up always returns focus to the URL line.
+            // for now Up always returns focus to the URL line, except on the
+            // Params/Headers tabs where the table editor gets first crack at
+            // every key (including Up/Down navigation within the table).
             SubFocus::Content => {
+                if matches!(self.active_tab, EditorTab::Params | EditorTab::Headers) {
+                    let map = match self.active_tab {
+                        EditorTab::Params => &mut self.params,
+                        EditorTab::Headers => &mut self.headers,
+                        EditorTab::Body => unreachable!(),
+                    };
+                    let outcome = self.table.handle_key(ev, map);
+                    return if outcome.consumed {
+                        Some(match outcome.warning {
+                            Some(w) => Action::ShowToast(w, ToastKind::Warning),
+                            None => Action::Render,
+                        })
+                    } else {
+                        None
+                    };
+                }
                 if ev.code == KeyCode::Up {
                     self.sub_focus = SubFocus::Url;
                     return Some(Action::Render);
@@ -208,17 +232,24 @@ impl Editor {
     }
 
     fn draw_tab_content(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        // Placeholder content until Task 11 (params/headers table) and
-        // Task 12 (body editor) land.
-        let text = match self.active_tab {
-            EditorTab::Params => "Params editing coming soon.",
-            EditorTab::Headers => "Headers editing coming soon.",
-            EditorTab::Body => "Body editing coming soon.",
-        };
-        frame.render_widget(
-            Paragraph::new(text).style(Style::default().fg(theme.text_muted)),
-            area,
-        );
+        match self.active_tab {
+            EditorTab::Params => {
+                let ctx = DrawCtx { theme, focused: self.sub_focus == SubFocus::Content };
+                self.table.draw(frame, area, &self.params, &ctx, "No params yet — press a to add");
+            }
+            EditorTab::Headers => {
+                let ctx = DrawCtx { theme, focused: self.sub_focus == SubFocus::Content };
+                self.table.draw(frame, area, &self.headers, &ctx, "No headers yet — press a to add");
+            }
+            // Placeholder content until Task 12 swaps in the edtui body
+            // editor.
+            EditorTab::Body => {
+                frame.render_widget(
+                    Paragraph::new("Body editing coming soon.").style(Style::default().fg(theme.text_muted)),
+                    area,
+                );
+            }
+        }
     }
 }
 
@@ -293,12 +324,28 @@ mod tests {
 
     #[test]
     fn up_down_moves_between_url_and_content() {
-        let mut e = Editor::default();
+        // Body tab has no table editor to intercept Up, so it keeps the
+        // original Up-returns-to-url-line fallback.
+        let mut e = Editor { active_tab: EditorTab::Body, ..Editor::default() };
         assert_eq!(e.sub_focus, SubFocus::Url, "default sub_focus starts on the URL line");
         e.handle_key(key(KeyCode::Down));
         assert_eq!(e.sub_focus, SubFocus::Content);
         e.handle_key(key(KeyCode::Up));
         assert_eq!(e.sub_focus, SubFocus::Url);
+    }
+
+    #[test]
+    fn params_tab_up_falls_through_to_global_when_table_is_empty() {
+        // On Params/Headers, the table editor gets first crack at every key
+        // in Content focus; an empty table doesn't consume Up, so it must
+        // NOT fall back to the old "return to url" behavior (that's the
+        // global keymap's job, per the wiring ruling).
+        let mut e = Editor::default();
+        e.handle_key(key(KeyCode::Down));
+        assert_eq!(e.sub_focus, SubFocus::Content);
+        let action = e.handle_key(key(KeyCode::Up));
+        assert_eq!(action, None);
+        assert_eq!(e.sub_focus, SubFocus::Content, "sub_focus must not change");
     }
 
     #[test]

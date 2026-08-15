@@ -110,12 +110,14 @@ impl App {
             }
             Action::EditorTabSelect(i) => {
                 self.editor.active_tab = EditorTab::from_index(i);
+                self.editor.table.reset();
                 true
             }
             Action::EditorTabCycle(delta) => {
                 let cur = self.editor.active_tab.index() as i8;
                 let next = (cur + delta).rem_euclid(3);
                 self.editor.active_tab = EditorTab::from_index(next as usize);
+                self.editor.table.reset();
                 true
             }
             Action::CycleMethod => {

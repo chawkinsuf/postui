@@ -10,6 +10,7 @@ pub enum ToastKind {
     Info,
     Success,
     Error,
+    Warning,
 }
 
 const TOAST_LIFETIME_TICKS: u32 = 30; // 3 s at the 100 ms tick
@@ -66,6 +67,7 @@ impl Toasts {
                 ToastKind::Info => theme.accent,
                 ToastKind::Success => theme.success,
                 ToastKind::Error => theme.error,
+                ToastKind::Warning => theme.warning,
             };
             let block = Block::default()
                 .borders(Borders::ALL)
