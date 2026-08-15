@@ -1,12 +1,15 @@
 use crate::action::Action;
+use crate::components::{editor::Editor, response::Response, sidebar::Sidebar};
 use crate::layout::PaneId;
 use crate::theme::Theme;
 
 pub struct App {
     pub should_quit: bool,
     pub focus: PaneId,
-    #[allow(dead_code)]
     pub theme: Theme,
+    pub sidebar: Sidebar,
+    pub editor: Editor,
+    pub response: Response,
 }
 
 impl App {
@@ -15,6 +18,9 @@ impl App {
             should_quit: false,
             focus: PaneId::Sidebar,
             theme: Theme::for_terminal(),
+            sidebar: Sidebar,
+            editor: Editor,
+            response: Response,
         }
     }
 }

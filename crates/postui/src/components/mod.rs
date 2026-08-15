@@ -1,3 +1,9 @@
+pub mod sidebar;
+pub mod editor;
+pub mod response;
+pub mod header_bar;
+pub mod footer;
+
 use crate::action::Action;
 use crate::theme::Theme;
 use ratatui::crossterm::event::KeyEvent;
@@ -6,14 +12,13 @@ use ratatui::style::Style;
 use ratatui::widgets::{Block, BorderType, Borders, Padding};
 use ratatui::Frame;
 
-#[allow(dead_code)]
 pub struct DrawCtx<'a> {
     pub theme: &'a Theme,
     pub focused: bool,
 }
 
-#[allow(dead_code)]
 pub trait Component {
+    #[allow(dead_code)]
     fn handle_key(&mut self, _key: KeyEvent) -> Option<Action> {
         None
     }
@@ -21,7 +26,6 @@ pub trait Component {
 }
 
 /// Standard pane chrome: rounded borders, interior padding, focus styling.
-#[allow(dead_code)]
 pub fn pane_block<'a>(title: &'a str, ctx: &DrawCtx) -> Block<'a> {
     let t = ctx.theme;
     let (border_color, title_color) = if ctx.focused {

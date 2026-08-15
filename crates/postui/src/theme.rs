@@ -1,6 +1,5 @@
 use ratatui::style::Color;
 
-#[allow(dead_code)]
 pub struct Theme {
     pub surface: Color,
     pub surface_raised: Color,
@@ -48,7 +47,6 @@ impl Theme {
         }
     }
 
-    #[allow(dead_code)]
     pub fn for_terminal() -> Self {
         Self::dark()
     }

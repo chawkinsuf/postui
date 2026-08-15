@@ -21,7 +21,6 @@ impl PaneId {
     }
 }
 
-#[allow(dead_code)]
 pub struct AppLayout {
     pub header: Rect,
     pub sidebar: Rect,
@@ -30,7 +29,6 @@ pub struct AppLayout {
     pub footer: Rect,
 }
 
-#[allow(dead_code)]
 pub fn compute_layout(area: Rect) -> AppLayout {
     let rows = Layout::default()
         .direction(Direction::Vertical)

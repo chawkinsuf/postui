@@ -4,13 +4,13 @@ mod keys;
 mod theme;
 mod layout;
 mod components;
+mod ui;
 
 use action::Action;
 use app::App;
 use futures::StreamExt;
 use keys::{KeyCombo, Keymap};
 use ratatui::crossterm::event::{Event, EventStream, KeyEventKind};
-use ratatui::text::Line;
 use std::time::Duration;
 
 #[tokio::main]
@@ -29,10 +29,7 @@ async fn run(mut terminal: ratatui::DefaultTerminal) -> anyhow::Result<()> {
 
     while !app.should_quit {
         terminal.draw(|frame| {
-            frame.render_widget(
-                Line::from("postui — press q to quit"),
-                frame.area(),
-            );
+            ui::draw(frame, &app);
         })?;
 
         tokio::select! {
