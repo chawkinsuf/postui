@@ -30,7 +30,7 @@ mod tests {
 
     #[test]
     fn full_frame_shows_all_panes_and_chrome() {
-        let app = App::new();
+        let app = App::new_for_test();
         let content = render(&app);
         assert!(content.contains("Requests"));       // sidebar title
         assert!(content.contains("Request"));        // editor title

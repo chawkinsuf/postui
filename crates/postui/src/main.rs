@@ -34,7 +34,8 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
-    let mut app = App::new();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Action>();
+    let mut app = App::new(tx);
     let mut events = EventStream::new();
     let mut tick = tokio::time::interval(Duration::from_millis(100));
     let keymap = Keymap::load();
@@ -44,10 +45,14 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
         ToastKind::Info,
     ));
 
+    let mut redraw = true;
     while !app.should_quit {
-        terminal.draw(|frame| {
-            ui::draw(frame, &app);
-        })?;
+        if redraw {
+            terminal.draw(|frame| {
+                ui::draw(frame, &app);
+            })?;
+            redraw = false;
+        }
 
         tokio::select! {
             maybe_event = events.next() => {
@@ -58,11 +63,12 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
                         // continuing the loop would busy-spin forever re-selecting on an
                         // already-terminated stream. Quit cleanly instead.
                         app.should_quit = true;
+                        redraw = true;
                     }
                     Some(Ok(event)) => {
                         match event {
                             Event::Key(ev) if ev.kind == KeyEventKind::Press => {
-                                app.handle_key(&keymap, ev);
+                                redraw |= app.handle_key(&keymap, ev);
                             }
                             Event::Mouse(MouseEvent {
                                 kind: MouseEventKind::Down(MouseButton::Left),
@@ -74,8 +80,11 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
                                 let layout =
                                     compute_layout(Rect::new(0, 0, size.width, size.height));
                                 if let Some(pane) = hit_test(&layout, column, row) {
-                                    app.update(Action::FocusPane(pane));
+                                    redraw |= app.update(Action::FocusPane(pane));
                                 }
+                            }
+                            Event::Resize(..) => {
+                                redraw = true;
                             }
                             _ => {}
                         }
@@ -83,7 +92,12 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
                     Some(Err(_)) => {}
                 }
             }
-            _ = tick.tick() => app.update(Action::Tick),
+            Some(action) = rx.recv() => {
+                redraw |= app.update(action);
+            }
+            _ = tick.tick() => {
+                redraw |= app.update(Action::Tick);
+            }
         }
     }
     Ok(())

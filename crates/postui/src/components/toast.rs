@@ -34,11 +34,15 @@ impl Toasts {
         });
     }
 
-    pub fn on_tick(&mut self) {
+    /// Advances every toast's countdown by one tick and drops any that
+    /// expired. Returns `true` while any toast is still visible/animating
+    /// (i.e. a redraw is needed), `false` when idle.
+    pub fn on_tick(&mut self) -> bool {
         for t in &mut self.entries {
             t.remaining_ticks = t.remaining_ticks.saturating_sub(1);
         }
         self.entries.retain(|t| t.remaining_ticks > 0);
+        !self.entries.is_empty()
     }
 
     pub fn is_empty(&self) -> bool {

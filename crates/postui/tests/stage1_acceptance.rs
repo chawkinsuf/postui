@@ -13,7 +13,7 @@ fn render(app: &App) -> String {
 
 #[test]
 fn stage1_acceptance_flow() {
-    let mut app = App::new();
+    let mut app = App::new_for_test();
 
     // 1. Initial frame: all chrome present, sidebar focused.
     let frame = render(&app);
