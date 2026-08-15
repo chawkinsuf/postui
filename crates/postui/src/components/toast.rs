@@ -39,11 +39,17 @@ impl Toasts {
     /// expired. Returns `true` while any toast is still visible/animating
     /// (i.e. a redraw is needed), `false` when idle.
     pub fn on_tick(&mut self) -> bool {
+        // Captured before pruning: on the tick where the last toast expires,
+        // `entries` goes from non-empty to empty, and that transition is
+        // itself a state change that needs one final redraw to erase the
+        // toast. Returning based on the post-prune state would swallow that
+        // frame and leave the toast painted until the next keypress.
+        let was_visible = !self.entries.is_empty();
         for t in &mut self.entries {
             t.remaining_ticks = t.remaining_ticks.saturating_sub(1);
         }
         self.entries.retain(|t| t.remaining_ticks > 0);
-        !self.entries.is_empty()
+        was_visible
     }
 
     pub fn is_empty(&self) -> bool {
@@ -104,6 +110,18 @@ mod tests {
         assert!(!t.is_empty(), "alive one tick before expiry");
         t.on_tick();
         assert!(t.is_empty(), "expired at lifetime");
+    }
+
+    #[test]
+    fn on_tick_returns_true_on_the_expiring_tick_and_false_after() {
+        let mut t = Toasts::default();
+        t.push("bye", ToastKind::Info);
+        for _ in 0..TOAST_LIFETIME_TICKS - 1 {
+            assert!(t.on_tick(), "still visible while counting down");
+        }
+        assert!(t.on_tick(), "the expiring tick must still request a redraw to erase it");
+        assert!(t.is_empty(), "the toast is gone after the expiring tick");
+        assert!(!t.on_tick(), "the tick after expiry is idle: no redraw needed");
     }
 
     #[test]

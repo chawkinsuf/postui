@@ -169,7 +169,10 @@ impl ModalStack {
                 frame.render_widget(block, area);
 
                 let input_area = Rect { height: 1, ..inner };
-                frame.render_widget(Paragraph::new(input.draw_line(true, theme)), input_area);
+                frame.render_widget(
+                    Paragraph::new(input.draw_line_windowed(true, theme, input_area.width)),
+                    input_area,
+                );
 
                 let hint_area = Rect { y: inner.y + 2, height: 1, ..inner };
                 frame.render_widget(

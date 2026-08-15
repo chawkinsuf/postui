@@ -113,6 +113,43 @@ impl LineInput {
         }
         Line::from(spans)
     }
+
+    /// Like [`Self::draw_line`], but windowed to `width` columns: when
+    /// focused, the window scrolls so the cursor always stays visible
+    /// (in `[0, width)`), which matters once the text is longer than the
+    /// pane — otherwise the caret (and everything past it) renders off
+    /// the edge of the pane and the user can't see what they're typing.
+    /// Unfocused text is never scrolled; it always renders from char 0
+    /// (matching `draw_line`, just clipped to `width`).
+    pub fn draw_line_windowed(&self, focused: bool, theme: &Theme, width: u16) -> Line<'static> {
+        let base = Style::default().fg(theme.text);
+        let width = width.max(1) as usize;
+        let chars: Vec<char> = self.text.chars().collect();
+        if !focused {
+            let visible: String = chars.iter().take(width).collect();
+            return Line::styled(visible, base);
+        }
+        // Smallest `start` that keeps `cursor` within the last column of the
+        // window; 0 when the cursor already fits without scrolling.
+        let start = (self.cursor + 1).saturating_sub(width);
+        let cursor_style = base.add_modifier(Modifier::REVERSED);
+        let mut spans = Vec::new();
+        if self.cursor > start {
+            let before: String = chars[start..self.cursor].iter().collect();
+            spans.push(Span::styled(before, base));
+        }
+        if self.cursor < chars.len() {
+            spans.push(Span::styled(chars[self.cursor].to_string(), cursor_style));
+            let after_end = (start + width).min(chars.len());
+            if self.cursor + 1 < after_end {
+                let after: String = chars[self.cursor + 1..after_end].iter().collect();
+                spans.push(Span::styled(after, base));
+            }
+        } else {
+            spans.push(Span::styled(" ", cursor_style));
+        }
+        Line::from(spans)
+    }
 }
 
 #[cfg(test)]
@@ -179,5 +216,43 @@ mod tests {
     fn unhandled_key_returns_false() {
         let mut input = LineInput::new("hi");
         assert!(!input.handle_key(code(KeyCode::Esc)));
+    }
+
+    fn line_text(line: &Line<'static>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn windowed_cursor_at_end_of_long_text_scrolls_so_the_slice_ends_at_the_cursor() {
+        let text: String = (0..200).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
+        let input = LineInput::new(&text); // cursor defaults to end (200)
+        let theme = Theme::dark();
+        let line = input.draw_line_windowed(true, &theme, 20);
+        let rendered = line_text(&line);
+        // 19 chars of visible text before the caret, plus the trailing
+        // caret cell: exactly `width` columns, ending right at the cursor.
+        assert_eq!(rendered.chars().count(), 20);
+        let expected_before: String = text.chars().skip(181).collect(); // chars[181..200]
+        assert!(rendered.starts_with(&expected_before));
+    }
+
+    #[test]
+    fn windowed_cursor_at_zero_renders_from_zero() {
+        let mut input = LineInput::new("hello world, this is long");
+        input.handle_key(code(KeyCode::Home));
+        let theme = Theme::dark();
+        let line = input.draw_line_windowed(true, &theme, 10);
+        let rendered = line_text(&line);
+        assert!(rendered.starts_with('h'), "must start from char 0: {rendered:?}");
+    }
+
+    #[test]
+    fn windowed_unfocused_long_text_renders_from_zero() {
+        let text: String = (0..200).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
+        let input = LineInput::new(&text);
+        let theme = Theme::dark();
+        let line = input.draw_line_windowed(false, &theme, 20);
+        let rendered = line_text(&line);
+        assert_eq!(rendered, text.chars().take(20).collect::<String>());
     }
 }

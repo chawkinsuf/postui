@@ -166,6 +166,15 @@ impl TableEditorState {
                 TableOutcome::consumed()
             }
             KeyCode::Tab | KeyCode::Enter => {
+                let key_text = match edit.col {
+                    Col::Key => edit.input.text(),
+                    Col::Value => edit.pending_key.as_deref().unwrap_or(""),
+                };
+                if key_text.trim().is_empty() {
+                    // An empty key is never a valid row: behave like Esc and
+                    // discard the edit rather than inserting a "" key.
+                    return TableOutcome::consumed();
+                }
                 let warning = self.commit_row(map, &edit);
                 match warning {
                     Some(w) => TableOutcome::warn(w),
@@ -376,6 +385,18 @@ mod tests {
         t.handle_key(key(KeyCode::Enter), &mut map);
         assert_eq!(map["page"], Entry { value: "2".into(), enabled: true });
         assert!(t.editing.is_none());
+    }
+
+    #[test]
+    fn committing_an_empty_key_cancels_the_row_like_esc() {
+        let mut map = IndexMap::new();
+        let mut t = TableEditorState::default();
+        t.handle_key(key(KeyCode::Char('a')), &mut map); // start a new row
+        let out = t.handle_key(key(KeyCode::Enter), &mut map); // commit with empty key
+        assert!(map.is_empty(), "no \"\" key must be inserted");
+        assert!(t.editing.is_none(), "editing ends, same as Esc");
+        assert!(out.consumed);
+        assert!(out.warning.is_none());
     }
 
     #[test]

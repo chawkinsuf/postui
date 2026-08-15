@@ -444,7 +444,7 @@ impl Component for Response {
         frame.render_widget(Paragraph::new(body), rows[2]);
 
         if footer {
-            frame.render_widget(Paragraph::new(search_footer(view, t)), rows[3]);
+            frame.render_widget(Paragraph::new(search_footer(view, t, rows[3].width)), rows[3]);
         }
     }
 }
@@ -612,12 +612,14 @@ fn highlighted(pieces: Vec<(String, Style)>, hits: &LineMatches) -> Line<'static
 }
 
 /// `/query   3/17` — or the live input while the search is being typed.
-fn search_footer(view: &ReadyView, t: &Theme) -> Line<'static> {
+fn search_footer(view: &ReadyView, t: &Theme, width: u16) -> Line<'static> {
     let Some(search) = &view.search else { return Line::raw("") };
     let accent = Style::default().fg(t.accent);
     let mut spans = vec![Span::styled("/", accent)];
     if search.active {
-        spans.extend(search.input.draw_line(true, t).spans);
+        // The leading "/" already claims one column of `width`.
+        let input_width = width.saturating_sub(1);
+        spans.extend(search.input.draw_line_windowed(true, t, input_width).spans);
         return Line::from(spans);
     }
     spans.push(Span::styled(search.query.clone(), Style::default().fg(t.text)));

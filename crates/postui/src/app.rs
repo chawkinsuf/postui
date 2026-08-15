@@ -237,6 +237,12 @@ impl App {
                             (
                                 's',
                                 "Save & open".into(),
+                                // Safe to sequence these: SaveRequest completes
+                                // synchronously (it's a local disk write, not a
+                                // spawned task) and always has a slug to save to
+                                // here, since this branch only runs when the
+                                // editor is dirty, which requires an open (thus
+                                // slugged) request.
                                 vec![Action::SaveRequest, Action::ForceOpenRequest(slug.clone())],
                             ),
                             ('d', "Discard changes".into(), vec![Action::ForceOpenRequest(slug)]),
@@ -437,6 +443,13 @@ impl App {
             Action::CancelSend => match self.in_flight.take() {
                 Some(inflight) => {
                     inflight.task.abort();
+                    // Bump the generation too, not just abort the task: the
+                    // task may have already raced past the abort point and
+                    // queued a ResponseArrived/RequestFailed for the old
+                    // generation. Without this, that stale result would
+                    // still pass the `generation == self.send_generation`
+                    // staleness check and silently overwrite Cancelled.
+                    self.send_generation += 1;
                     self.response.set_state(ResponseState::Cancelled);
                     true
                 }
@@ -992,6 +1005,33 @@ mod tests {
         assert!(matches!(app.response.state(), ResponseState::Cancelled));
         // no-op when nothing is in flight
         assert!(!app.update(Action::CancelSend));
+    }
+
+    #[tokio::test]
+    async fn cancelled_send_ignores_a_result_that_was_already_queued() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
+        app.editor.url = crate::components::line_input::LineInput::new("http://127.0.0.1:9");
+        app.update(Action::ForceSend);
+        let generation = app.send_generation;
+        app.update(Action::CancelSend);
+        assert!(matches!(app.response.state(), ResponseState::Cancelled));
+
+        // Simulate the in-flight task's result landing after cancellation,
+        // still tagged with the generation it was spawned under.
+        let data = crate::http::ResponseData {
+            status: 200,
+            headers: vec![],
+            body: "late".into(),
+            elapsed: std::time::Duration::from_millis(1),
+            size: 4,
+            content_type: None,
+        };
+        app.update(Action::ResponseArrived { generation, data: Box::new(data) });
+        assert!(
+            matches!(app.response.state(), ResponseState::Cancelled),
+            "a result racing the cancel must not overwrite it"
+        );
     }
 
     #[tokio::test]

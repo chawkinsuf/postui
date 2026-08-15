@@ -219,9 +219,11 @@ impl Component for Editor {
                 }
                 // Esc always leaves the buffer; Up only does so from the top
                 // row, so it can still navigate a multi-line body. CTRL/ALT
-                // combos never reach here — the router hands them to the
-                // global keymap first — so edtui's own modified bindings are
-                // unreachable by design.
+                // combos the keymap binds to an app action are shadowed here
+                // (the router hands those to the global keymap first); any
+                // unbound modified combo falls through to this component and
+                // reaches edtui's own emacs-style bindings (ctrl+a/e/k etc.)
+                // deliberately, so those keep working for body editing.
                 if ev.code == KeyCode::Esc || (ev.code == KeyCode::Up && self.body.cursor.row == 0) {
                     self.sub_focus = SubFocus::Url;
                     return Some(Action::Render);
@@ -265,7 +267,10 @@ impl Editor {
         frame.render_widget(badge, cols[0]);
 
         let url_focused = self.sub_focus == SubFocus::Url;
-        frame.render_widget(Paragraph::new(self.url.draw_line(url_focused, theme)), cols[1]);
+        frame.render_widget(
+            Paragraph::new(self.url.draw_line_windowed(url_focused, theme, cols[1].width)),
+            cols[1],
+        );
     }
 
     fn draw_tab_bar(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
