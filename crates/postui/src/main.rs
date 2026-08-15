@@ -43,6 +43,9 @@ async fn run(mut terminal: ratatui::DefaultTerminal) -> anyhow::Result<()> {
                         keymap.lookup(&KeyCombo::from_event(&ev))
                     };
                     if let Some(action) = action {
+                        if !app.modals.is_empty() && action != Action::Close {
+                            let _ = app.modals.pop();
+                        }
                         app.update(action);
                     }
                 }

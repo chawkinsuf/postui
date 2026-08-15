@@ -45,11 +45,23 @@ impl App {
             Action::Render => {}
             Action::FocusNext => self.focus = self.focus.next(),
             Action::FocusPrev => self.focus = self.focus.prev(),
-            Action::OpenPalette => {}
+            Action::FocusPane(pane) => self.focus = pane,
+            Action::OpenPalette => {
+                use crate::components::modal::Modal;
+                use crate::components::palette::PaletteState;
+                self.modals.push(Modal::Palette(PaletteState::new()));
+            }
             Action::Close => {
                 let _ = self.modals.pop(); // no-op when empty
             }
             Action::ShowToast(msg, kind) => self.toasts.push(msg, kind),
+            Action::ShowAbout => {
+                use crate::components::modal::Modal;
+                self.modals.push(Modal::Message {
+                    title: "postui".into(),
+                    body: "A fast, local-first terminal HTTP client.".into(),
+                });
+            }
         }
     }
 }
@@ -91,5 +103,12 @@ mod tests {
         app.update(Action::Close);
         assert!(app.modals.is_empty());
         assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn open_palette_pushes_modal() {
+        let mut app = App::new();
+        app.update(Action::OpenPalette);
+        assert!(!app.modals.is_empty());
     }
 }

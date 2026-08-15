@@ -5,6 +5,7 @@ pub mod header_bar;
 pub mod footer;
 pub mod toast;
 pub mod modal;
+pub mod palette;
 
 use crate::action::Action;
 use crate::theme::Theme;

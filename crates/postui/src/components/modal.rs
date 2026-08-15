@@ -6,9 +6,9 @@ use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph, Wrap};
 use ratatui::Frame;
 
-#[allow(dead_code)]
 pub enum Modal {
     Message { title: String, body: String },
+    Palette(crate::components::palette::PaletteState),
 }
 
 #[derive(Default)]
@@ -17,12 +17,10 @@ pub struct ModalStack {
 }
 
 impl ModalStack {
-    #[allow(dead_code)]
     pub fn push(&mut self, modal: Modal) {
         self.stack.push(modal);
     }
 
-    #[allow(dead_code)]
     pub fn pop(&mut self) -> Option<Modal> {
         self.stack.pop()
     }
@@ -38,6 +36,7 @@ impl ModalStack {
                 KeyCode::Esc | KeyCode::Enter => Some(Action::Close),
                 _ => None, // swallowed: modals capture all input
             },
+            Modal::Palette(state) => state.handle_key(key),
         }
     }
 
@@ -64,6 +63,7 @@ impl ModalStack {
                     area,
                 );
             }
+            Modal::Palette(state) => state.draw(frame, screen, theme),
         }
     }
 }
@@ -79,7 +79,6 @@ pub fn centered_rect(screen: Rect, width: u16, height: u16) -> Rect {
     )
 }
 
-#[allow(dead_code)]
 pub fn dim_backdrop(frame: &mut Frame, screen: Rect) {
     frame
         .buffer_mut()
