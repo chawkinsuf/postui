@@ -32,7 +32,6 @@ pub fn fuzzy_match(needle: &str, haystack: &str) -> bool {
 }
 
 pub struct PaletteState {
-    #[allow(dead_code)]
     input: String,
     selected: usize,
     filtered: Vec<Command>,
