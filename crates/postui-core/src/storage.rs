@@ -7,8 +7,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum StorageError {
-    #[error("{0}")]
-    Io(#[from] std::io::Error),
+    #[error("{}: {source}", path.display())]
+    Io { path: PathBuf, source: std::io::Error },
     #[error("failed to parse request: {0}")]
     Parse(String),
     #[error("invalid slug {0:?}")]
@@ -17,6 +17,12 @@ pub enum StorageError {
     NotFound(String),
     #[error("request already exists: {0:?}")]
     AlreadyExists(String),
+}
+
+/// Builds a closure that wraps an `io::Error` with the path it concerns,
+/// for use as `.map_err(io_err(&path))`.
+fn io_err(path: &Path) -> impl FnOnce(std::io::Error) -> StorageError + '_ {
+    move |source| StorageError::Io { path: path.to_path_buf(), source }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,7 +116,7 @@ pub fn load_request(root: &Path, slug: &str) -> Result<HttpRequest, StorageError
     if !path.is_file() {
         return Err(StorageError::NotFound(slug.to_string()));
     }
-    let contents = std::fs::read_to_string(&path)?;
+    let contents = std::fs::read_to_string(&path).map_err(io_err(&path))?;
     HttpRequest::from_toml_str(&contents).map_err(|e| StorageError::Parse(e.to_string()))
 }
 
@@ -120,11 +126,11 @@ pub fn save_request(root: &Path, slug: &str, req: &HttpRequest) -> Result<(), St
     validate_slug(slug)?;
     let path = request_path(root, slug);
     let parent = path.parent().expect("request path always has a parent");
-    std::fs::create_dir_all(parent)?;
-    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+    std::fs::create_dir_all(parent).map_err(io_err(parent))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(parent).map_err(io_err(parent))?;
     use std::io::Write;
-    tmp.write_all(req.to_toml_string().as_bytes())?;
-    tmp.persist(&path).map_err(|e| StorageError::Io(e.error))?;
+    tmp.write_all(req.to_toml_string().as_bytes()).map_err(io_err(&path))?;
+    tmp.persist(&path).map_err(|e| StorageError::Io { path: path.clone(), source: e.error })?;
     Ok(())
 }
 
@@ -140,9 +146,9 @@ pub fn rename_request(root: &Path, from: &str, to: &str) -> Result<(), StorageEr
         return Err(StorageError::AlreadyExists(to.to_string()));
     }
     if let Some(parent) = to_path.parent() {
-        std::fs::create_dir_all(parent)?;
+        std::fs::create_dir_all(parent).map_err(io_err(parent))?;
     }
-    std::fs::rename(&from_path, &to_path)?;
+    std::fs::rename(&from_path, &to_path).map_err(io_err(&from_path))?;
     Ok(())
 }
 
@@ -152,7 +158,7 @@ pub fn delete_request(root: &Path, slug: &str) -> Result<(), StorageError> {
     if !path.is_file() {
         return Err(StorageError::NotFound(slug.to_string()));
     }
-    std::fs::remove_file(&path)?;
+    std::fs::remove_file(&path).map_err(io_err(&path))?;
     Ok(())
 }
 
@@ -197,6 +203,28 @@ mod tests {
             err.contains('2') || err.to_lowercase().contains("duplicate"),
             "error should locate/describe the duplicate key: {err}"
         );
+    }
+
+    #[test]
+    fn io_error_display_includes_the_offending_path() {
+        let err = StorageError::Io {
+            path: PathBuf::from("/nonexistent/requests/x.toml"),
+            source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"),
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("/nonexistent/requests/x.toml"),
+            "message should include the offending path: {msg}"
+        );
+    }
+
+    #[test]
+    fn load_of_missing_root_reports_not_found_not_io() {
+        // Sanity check: a missing file surfaces as NotFound (checked up front),
+        // not as a bare Io error lacking path context.
+        let dir = tempfile::tempdir().unwrap();
+        let err = load_request(dir.path(), "missing").unwrap_err();
+        assert!(matches!(err, StorageError::NotFound(_)));
     }
 
     #[test]
