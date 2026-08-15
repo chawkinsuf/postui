@@ -1,12 +1,15 @@
 use crate::action::Action;
 use crate::components::editor::{Editor, EditorTab, SubFocus};
-use crate::components::modal::ModalStack;
-use crate::components::toast::Toasts;
+use crate::components::modal::{Modal, ModalStack};
+use crate::components::sidebar::Row;
+use crate::components::toast::{ToastKind, Toasts};
 use crate::components::{response::Response, sidebar::Sidebar, Component};
 use crate::keys::{KeyCombo, Keymap};
 use crate::layout::PaneId;
 use crate::theme::Theme;
 use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 pub struct App {
@@ -18,6 +21,8 @@ pub struct App {
     pub response: Response,
     pub toasts: Toasts,
     pub modals: ModalStack,
+    /// The project's root directory (`requests/**/*.toml` lives under it).
+    pub project_root: PathBuf,
     /// Sender for background tasks (e.g. in-flight requests) to push
     /// `Action`s back into the main loop without blocking on it.
     pub tx: UnboundedSender<Action>,
@@ -32,16 +37,53 @@ pub struct App {
 }
 
 impl App {
+    /// Resolves the default project directory and opens it. If it cannot be
+    /// determined at all (no home/config dir on this platform), the app
+    /// still starts, with an empty sidebar and a toast explaining why.
     pub fn new(tx: UnboundedSender<Action>) -> Self {
+        match postui_core::storage::default_project_dir() {
+            Some(root) => Self::with_root(tx, root),
+            None => {
+                let mut app = Self::bare(tx, PathBuf::new());
+                app.toasts.push(
+                    "could not determine a project directory for this platform",
+                    ToastKind::Error,
+                );
+                app
+            }
+        }
+    }
+
+    /// Opens `root` as the project directory: ensures `root/requests/`
+    /// exists and populates the sidebar from it. A failure to create the
+    /// directory surfaces as a toast rather than a crash; the app keeps
+    /// working with whatever the sidebar already had (empty, on a fresh
+    /// app).
+    pub fn with_root(tx: UnboundedSender<Action>, root: PathBuf) -> Self {
+        let mut app = Self::bare(tx, root);
+        match postui_core::storage::ensure_project(&app.project_root) {
+            Ok(()) => {
+                let listing = postui_core::storage::list_requests(&app.project_root);
+                app.sidebar.refresh(listing);
+            }
+            Err(e) => {
+                app.toasts.push(format!("could not open project: {e}"), ToastKind::Error);
+            }
+        }
+        app
+    }
+
+    fn bare(tx: UnboundedSender<Action>, root: PathBuf) -> Self {
         Self {
             should_quit: false,
             focus: PaneId::Sidebar,
             theme: Theme::for_terminal(),
-            sidebar: Sidebar,
+            sidebar: Sidebar::default(),
             editor: Editor::default(),
             response: Response,
             toasts: Toasts::default(),
             modals: ModalStack::default(),
+            project_root: root,
             tx,
             pending_terminal_action: None,
             _test_rx: None,
@@ -49,11 +91,14 @@ impl App {
     }
 
     /// Constructs an `App` for tests, with its own channel so `tx` is
-    /// always a live sender. Task 13 later extends this with a temp
-    /// project root; keep it compiling forward from here.
+    /// always a live sender, and a fresh throwaway project directory under
+    /// the system temp dir (unique per call, so tests never collide).
     pub fn new_for_test() -> Self {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = Self::new(tx);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!("postui-test-{}-{n}", std::process::id()));
+        let mut app = Self::with_root(tx, root);
         app._test_rx = Some(rx);
         app
     }
@@ -64,6 +109,16 @@ impl App {
     /// way that requires a redraw, `false` if the caller can skip drawing
     /// this iteration.
     pub fn update(&mut self, action: Action) -> bool {
+        let changed = self.apply(action);
+        // Keeps the sidebar's dirty dot and its notion of "which slug is
+        // open" in lockstep with the editor after every action, rather than
+        // threading that bookkeeping through each arm individually.
+        self.sidebar.open_slug = self.editor.slug.clone();
+        self.sidebar.open_dirty = self.editor.is_dirty();
+        changed
+    }
+
+    fn apply(&mut self, action: Action) -> bool {
         match action {
             Action::Quit => {
                 self.should_quit = true;
@@ -140,6 +195,79 @@ impl App {
             // and let it pick this up after the current key is handled.
             Action::OpenBodyInEditor => {
                 self.pending_terminal_action = Some(Action::OpenBodyInEditor);
+                true
+            }
+            Action::OpenRequest(slug) => {
+                if self.editor.is_dirty() {
+                    let current = self.editor.slug.clone().unwrap_or_default();
+                    self.modals.push(Modal::Confirm {
+                        title: "Unsaved changes".into(),
+                        body: format!("\"{current}\" has unsaved changes."),
+                        choices: vec![
+                            (
+                                's',
+                                "Save & open".into(),
+                                vec![Action::SaveRequest, Action::ForceOpenRequest(slug.clone())],
+                            ),
+                            ('d', "Discard changes".into(), vec![Action::ForceOpenRequest(slug)]),
+                        ],
+                    });
+                    true
+                } else {
+                    self.apply(Action::ForceOpenRequest(slug))
+                }
+            }
+            Action::ForceOpenRequest(slug) => {
+                match postui_core::storage::load_request(&self.project_root, &slug) {
+                    Ok(req) => self.editor.load(Some(slug), req),
+                    Err(e) => {
+                        self.toasts.push(format!("could not open {slug}: {e}"), ToastKind::Error);
+                    }
+                }
+                true
+            }
+            Action::SaveRequest => {
+                match self.editor.slug.clone() {
+                    Some(slug) => {
+                        let req = self.editor.current_request();
+                        match postui_core::storage::save_request(&self.project_root, &slug, &req) {
+                            Ok(()) => {
+                                self.editor.mark_saved();
+                                self.toasts.push(format!("Saved {slug}"), ToastKind::Success);
+                                let listing = postui_core::storage::list_requests(&self.project_root);
+                                self.sidebar.refresh(listing);
+                            }
+                            Err(e) => {
+                                self.toasts.push(format!("could not save {slug}: {e}"), ToastKind::Error);
+                            }
+                        }
+                    }
+                    // TODO(Task 14): replace this stub with save-as (name prompt).
+                    None => {
+                        self.toasts.push(
+                            "No name yet — save-as arrives with Task 14",
+                            ToastKind::Info,
+                        );
+                    }
+                }
+                true
+            }
+            Action::ShowRequestError(slug) => {
+                let body = self
+                    .sidebar
+                    .rows
+                    .iter()
+                    .find_map(|r| match r {
+                        Row::Request { slug: s, broken: Some(b) } if *s == slug => Some(b.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| "unknown error".to_string());
+                self.modals.push(Modal::Message { title: format!("{slug}: parse error"), body });
+                true
+            }
+            Action::RefreshSidebar => {
+                let listing = postui_core::storage::list_requests(&self.project_root);
+                self.sidebar.refresh(listing);
                 true
             }
         }
@@ -358,5 +486,118 @@ mod tests {
         let before = app.focus;
         assert!(app.update(Action::ScrollPane(PaneId::Response, 3)));
         assert_eq!(app.focus, before, "scrolling must not steal focus");
+    }
+
+    fn req(url: &str) -> postui_core::model::HttpRequest {
+        postui_core::model::HttpRequest::from_toml_str(&format!(r#"url = "{url}""#)).unwrap()
+    }
+
+    #[test]
+    fn sidebar_lists_requests_grouped_and_enter_opens() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let dir = tempfile::tempdir().unwrap();
+        postui_core::storage::ensure_project(dir.path()).unwrap();
+        postui_core::storage::save_request(dir.path(), "auth/login", &req("https://x/login")).unwrap();
+        postui_core::storage::save_request(dir.path(), "ping", &req("https://x/ping")).unwrap();
+        let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+        assert_eq!(
+            app.sidebar.rows,
+            vec![
+                Row::Request { slug: "ping".into(), broken: None },
+                Row::Dir("auth".into()),
+                Row::Request { slug: "auth/login".into(), broken: None },
+            ]
+        );
+
+        // navigate from "ping" (index 0) down to "auth/login" (index 2, Dir skipped)
+        app.handle_key(&Keymap::default_bindings(), plain('j'));
+        app.handle_key(&Keymap::default_bindings(), KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.editor.slug.as_deref(), Some("auth/login"));
+    }
+
+    #[test]
+    fn opening_over_dirty_editor_prompts_save_discard_cancel() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let dir = tempfile::tempdir().unwrap();
+        postui_core::storage::ensure_project(dir.path()).unwrap();
+        postui_core::storage::save_request(dir.path(), "a", &req("https://x/a")).unwrap();
+        postui_core::storage::save_request(dir.path(), "b", &req("https://x/b")).unwrap();
+        let mut app = App::with_root(tx, dir.path().to_path_buf());
+        let keymap = Keymap::default_bindings();
+
+        // Open "a", then edit its URL so the editor becomes dirty.
+        app.update(Action::ForceOpenRequest("a".into()));
+        app.focus = PaneId::Editor;
+        app.editor.sub_focus = SubFocus::Url;
+        app.handle_key(&keymap, plain('/'));
+        assert!(app.editor.is_dirty());
+
+        // Requesting to open "b" while dirty must prompt instead of opening.
+        app.update(Action::OpenRequest("b".into()));
+        assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+        assert_eq!(app.editor.slug.as_deref(), Some("a"), "still on the original request");
+
+        // 'd' discards the edit and opens "b".
+        app.handle_key(&keymap, plain('d'));
+        assert_eq!(app.editor.slug.as_deref(), Some("b"));
+        assert!(!app.editor.is_dirty());
+
+        // Back to "a", dirty it again, this time choose 's' to save & open.
+        let mut app = App::with_root(app.tx.clone(), dir.path().to_path_buf());
+        app.update(Action::ForceOpenRequest("a".into()));
+        app.focus = PaneId::Editor;
+        app.editor.sub_focus = SubFocus::Url;
+        app.handle_key(&keymap, plain('/'));
+        assert!(app.editor.is_dirty());
+        app.update(Action::OpenRequest("b".into()));
+        assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+        app.handle_key(&keymap, plain('s'));
+        assert_eq!(app.editor.slug.as_deref(), Some("b"));
+        let saved = postui_core::storage::load_request(dir.path(), "a").unwrap();
+        assert_eq!(saved.url, "https://x/a/", "the edit was persisted before opening b");
+    }
+
+    #[test]
+    fn broken_file_shows_marker_and_error_modal() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let dir = tempfile::tempdir().unwrap();
+        postui_core::storage::ensure_project(dir.path()).unwrap();
+        std::fs::write(dir.path().join("requests/bad.toml"), "url = \"x\"\nurl = \"dup\"\n").unwrap();
+        let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+        let Row::Request { broken, .. } = &app.sidebar.rows[0] else { panic!("expected a request row") };
+        assert!(broken.is_some());
+
+        app.handle_key(&Keymap::default_bindings(), KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        match app.modals.top() {
+            Some(Modal::Message { body, .. }) => {
+                assert!(body.contains('2') || body.to_lowercase().contains("duplicate"));
+            }
+            _ => panic!("expected a Message modal"),
+        }
+    }
+
+    #[test]
+    fn dirty_dot_renders_in_sidebar() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let dir = tempfile::tempdir().unwrap();
+        postui_core::storage::ensure_project(dir.path()).unwrap();
+        postui_core::storage::save_request(dir.path(), "a", &req("https://x/a")).unwrap();
+        let mut app = App::with_root(tx, dir.path().to_path_buf());
+        app.update(Action::ForceOpenRequest("a".into()));
+        app.focus = PaneId::Editor;
+        app.editor.sub_focus = SubFocus::Url;
+        app.handle_key(&Keymap::default_bindings(), plain('/'));
+        assert!(app.editor.is_dirty());
+
+        let backend = TestBackend::new(60, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(content.contains('\u{25cf}'), "expected a dirty dot in the sidebar: {content}");
     }
 }

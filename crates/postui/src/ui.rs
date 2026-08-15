@@ -46,7 +46,7 @@ mod tests {
         assert!(content.contains("No environment")); // header env selector placeholder
         assert!(content.contains("quit"));           // footer hint mentions quit key
         assert!(content.contains('╭'));              // rounded chrome
-        assert!(content.contains("No project open")); // sidebar empty state
+        assert!(content.contains("No requests yet")); // sidebar empty state
         assert!(content.contains("response will appear here")); // response empty state
         assert!(content.contains("GET"));            // editor method badge (default method)
         assert!(content.contains("Params"));         // editor tab bar

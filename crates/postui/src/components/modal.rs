@@ -8,6 +8,10 @@ use ratatui::Frame;
 
 pub enum Modal {
     Message { title: String, body: String },
+    /// A choice prompt: each entry in `choices` is `(key, label, actions)` —
+    /// pressing `key` (case-insensitive) dispatches `actions` and closes the
+    /// modal; `Esc` closes with no actions.
+    Confirm { title: String, body: String, choices: Vec<(char, String, Vec<Action>)> },
     Palette(crate::components::palette::PaletteState),
 }
 
@@ -51,6 +55,17 @@ impl ModalStack {
                 }
                 _ => None, // swallowed: modals capture all input
             },
+            Modal::Confirm { choices, .. } => match key.code {
+                KeyCode::Esc => Some(ModalResult { actions: vec![], close: true }),
+                KeyCode::Char(c) => {
+                    let c = c.to_ascii_lowercase();
+                    choices
+                        .iter()
+                        .find(|(choice, _, _)| choice.to_ascii_lowercase() == c)
+                        .map(|(_, _, actions)| ModalResult { actions: actions.clone(), close: true })
+                }
+                _ => None, // swallowed: modals capture all input
+            },
             Modal::Palette(state) => state.handle_key(key),
         }
     }
@@ -72,6 +87,29 @@ impl ModalStack {
                 frame.render_widget(Clear, area);
                 frame.render_widget(
                     Paragraph::new(body.as_str())
+                        .style(Style::default().fg(theme.text))
+                        .wrap(Wrap { trim: false })
+                        .block(block),
+                    area,
+                );
+            }
+            Modal::Confirm { title, body, choices } => {
+                let area = centered_rect(screen, 60.min(screen.width), 9);
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(theme.border_focused))
+                    .padding(Padding::uniform(1))
+                    .style(Style::default().bg(theme.surface_raised))
+                    .title(format!(" {title} "))
+                    .title_style(Style::default().fg(theme.accent));
+                let mut hint =
+                    choices.iter().map(|(c, label, _)| format!("[{c}] {label}")).collect::<Vec<_>>();
+                hint.push("[esc] Cancel".to_string());
+                let text = format!("{body}\n\n{}", hint.join("   "));
+                frame.render_widget(Clear, area);
+                frame.render_widget(
+                    Paragraph::new(text)
                         .style(Style::default().fg(theme.text))
                         .wrap(Wrap { trim: false })
                         .block(block),
