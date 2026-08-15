@@ -96,10 +96,13 @@ impl TableEditorState {
                 TableOutcome::consumed()
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                if map.is_empty() {
+                // Row 0 (and an empty table) leaves Up unconsumed so the
+                // caller (Editor) can fall back to moving focus to the URL
+                // line instead of leaving the user stuck with no way back.
+                if map.is_empty() || self.selected == 0 {
                     return TableOutcome::not_consumed();
                 }
-                self.selected = self.selected.saturating_sub(1);
+                self.selected -= 1;
                 TableOutcome::consumed()
             }
             KeyCode::Char('a') => {
@@ -419,6 +422,27 @@ mod tests {
         t.handle_key(key(KeyCode::Enter), &mut map); // commit rename to "ax"
         assert_eq!(map.get_index(0).unwrap().0, "ax", "renamed key keeps original position");
         assert_eq!(map.get_index(1).unwrap().0, "b");
+    }
+
+    #[test]
+    fn rename_onto_later_key_merges_and_shifts_index() {
+        // a, b, c; rename "a" -> "c" (a key that appears AFTER it in the
+        // map). Removing "a" shifts every later index down by one, so the
+        // duplicate-merge target's index must be adjusted accordingly.
+        let mut map = IndexMap::new();
+        map.insert("a".into(), Entry { value: "1".into(), enabled: true });
+        map.insert("b".into(), Entry { value: "2".into(), enabled: true });
+        map.insert("c".into(), Entry { value: "3".into(), enabled: true });
+        let mut t = TableEditorState { selected: 0, ..TableEditorState::default() };
+        t.handle_key(key(KeyCode::Enter), &mut map); // edit "a"'s key cell (seeded with "a")
+        t.handle_key(key(KeyCode::Backspace), &mut map); // clear it
+        t.handle_key(key(KeyCode::Char('c')), &mut map);
+        let out = t.handle_key(key(KeyCode::Enter), &mut map); // commit rename a -> c
+        assert!(out.warning.is_some());
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get_index(0).unwrap().0, "b", "b shifts down to fill a's old slot");
+        assert_eq!(map.get_index(1).unwrap().0, "c", "c keeps its relative position after b");
+        assert_eq!(map["c"].value, "1", "c takes a's value");
     }
 
     #[test]

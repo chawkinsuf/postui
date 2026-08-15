@@ -162,14 +162,20 @@ impl Component for Editor {
                         EditorTab::Body => unreachable!(),
                     };
                     let outcome = self.table.handle_key(ev, map);
-                    return if outcome.consumed {
-                        Some(match outcome.warning {
+                    if outcome.consumed {
+                        return Some(match outcome.warning {
                             Some(w) => Action::ShowToast(w, ToastKind::Warning),
                             None => Action::Render,
-                        })
-                    } else {
-                        None
-                    };
+                        });
+                    }
+                    // An unconsumed Up (empty table, or already at row 0)
+                    // falls back to the Task-10 behavior instead of being a
+                    // dead end with no keyboard path back to the URL line.
+                    if ev.code == KeyCode::Up {
+                        self.sub_focus = SubFocus::Url;
+                        return Some(Action::Render);
+                    }
+                    return None;
                 }
                 if ev.code == KeyCode::Up {
                     self.sub_focus = SubFocus::Url;
@@ -324,9 +330,11 @@ mod tests {
 
     #[test]
     fn up_down_moves_between_url_and_content() {
-        // Body tab has no table editor to intercept Up, so it keeps the
-        // original Up-returns-to-url-line fallback.
-        let mut e = Editor { active_tab: EditorTab::Body, ..Editor::default() };
+        // Default tab is Params with an empty table; Up on an empty table
+        // is unconsumed by the table editor, so Editor falls back to the
+        // Task-10 behavior instead of leaving the user stuck with no way
+        // back to the URL line.
+        let mut e = Editor::default();
         assert_eq!(e.sub_focus, SubFocus::Url, "default sub_focus starts on the URL line");
         e.handle_key(key(KeyCode::Down));
         assert_eq!(e.sub_focus, SubFocus::Content);
@@ -335,17 +343,62 @@ mod tests {
     }
 
     #[test]
-    fn params_tab_up_falls_through_to_global_when_table_is_empty() {
-        // On Params/Headers, the table editor gets first crack at every key
-        // in Content focus; an empty table doesn't consume Up, so it must
-        // NOT fall back to the old "return to url" behavior (that's the
-        // global keymap's job, per the wiring ruling).
-        let mut e = Editor::default();
+    fn body_tab_up_returns_to_url() {
+        // Body tab has no table editor to intercept Up at all; it keeps the
+        // original Up-returns-to-url-line fallback unconditionally.
+        let mut e = Editor { active_tab: EditorTab::Body, ..Editor::default() };
         e.handle_key(key(KeyCode::Down));
         assert_eq!(e.sub_focus, SubFocus::Content);
+        e.handle_key(key(KeyCode::Up));
+        assert_eq!(e.sub_focus, SubFocus::Url);
+    }
+
+    #[test]
+    fn params_tab_up_at_row_zero_returns_to_url() {
+        // A non-empty table still doesn't consume Up at row 0 (the top),
+        // so Editor's fallback kicks in even though the table has rows.
+        let mut e = Editor::default();
+        e.params.insert("a".into(), Entry { value: "1".into(), enabled: true });
+        e.params.insert("b".into(), Entry { value: "2".into(), enabled: true });
+        e.sub_focus = SubFocus::Content;
+        assert_eq!(e.table.selected, 0);
         let action = e.handle_key(key(KeyCode::Up));
-        assert_eq!(action, None);
-        assert_eq!(e.sub_focus, SubFocus::Content, "sub_focus must not change");
+        assert_eq!(action, Some(Action::Render));
+        assert_eq!(e.sub_focus, SubFocus::Url);
+    }
+
+    #[test]
+    fn params_tab_up_below_row_zero_navigates_within_table() {
+        // Once selected has moved off row 0, Up navigates the table instead
+        // of returning focus to the URL line.
+        let mut e = Editor::default();
+        e.params.insert("a".into(), Entry { value: "1".into(), enabled: true });
+        e.params.insert("b".into(), Entry { value: "2".into(), enabled: true });
+        e.sub_focus = SubFocus::Content;
+        e.table.selected = 1;
+        let action = e.handle_key(key(KeyCode::Up));
+        assert_eq!(action, Some(Action::Render));
+        assert_eq!(e.sub_focus, SubFocus::Content, "table navigation must not move focus");
+        assert_eq!(e.table.selected, 0);
+    }
+
+    #[test]
+    fn duplicate_key_commit_in_params_tab_shows_warning_toast() {
+        let mut e = Editor::default();
+        e.params.insert("a".into(), Entry { value: "1".into(), enabled: true });
+        e.sub_focus = SubFocus::Content;
+        // Append a new row keyed "a", which duplicates the existing entry.
+        e.handle_key(key(KeyCode::Char('a')));
+        e.handle_key(key(KeyCode::Char('a')));
+        e.handle_key(key(KeyCode::Tab));
+        e.handle_key(key(KeyCode::Char('9')));
+        let action = e.handle_key(key(KeyCode::Enter));
+        assert!(
+            matches!(action, Some(Action::ShowToast(_, ToastKind::Warning))),
+            "expected a warning toast, got {action:?}"
+        );
+        assert_eq!(e.params.len(), 1);
+        assert_eq!(e.params["a"].value, "9");
     }
 
     #[test]
