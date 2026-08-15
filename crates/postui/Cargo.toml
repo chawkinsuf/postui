@@ -20,3 +20,4 @@ edtui = { version = "0.11", default-features = false, features = ["syntax-highli
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 
 [dev-dependencies]
+wiremock = "0.6"
