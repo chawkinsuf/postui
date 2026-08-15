@@ -4,4 +4,8 @@ pub enum Action {
     Tick,
     #[allow(dead_code)]
     Render,
+    FocusNext,
+    FocusPrev,
+    OpenPalette,
+    Close,
 }

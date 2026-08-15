@@ -14,6 +14,7 @@ impl App {
         match action {
             Action::Quit => self.should_quit = true,
             Action::Tick | Action::Render => {}
+            Action::FocusNext | Action::FocusPrev | Action::OpenPalette | Action::Close => {}
         }
     }
 }

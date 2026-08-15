@@ -1,11 +1,13 @@
 mod action;
 mod app;
+mod keys;
 mod theme;
 
 use action::Action;
 use app::App;
 use futures::StreamExt;
-use ratatui::crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyModifiers};
+use keys::{KeyCombo, Keymap};
+use ratatui::crossterm::event::{Event, EventStream, KeyEventKind};
 use ratatui::text::Line;
 use std::time::Duration;
 
@@ -21,6 +23,7 @@ async fn run(mut terminal: ratatui::DefaultTerminal) -> anyhow::Result<()> {
     let mut app = App::new();
     let mut events = EventStream::new();
     let mut tick = tokio::time::interval(Duration::from_millis(100));
+    let keymap = Keymap::load();
 
     while !app.should_quit {
         terminal.draw(|frame| {
@@ -32,8 +35,9 @@ async fn run(mut terminal: ratatui::DefaultTerminal) -> anyhow::Result<()> {
 
         tokio::select! {
             maybe_event = events.next() => {
-                if let Some(Ok(event)) = maybe_event
-                    && let Some(action) = map_event(&event) {
+                if let Some(Ok(Event::Key(ev))) = maybe_event
+                    && ev.kind == KeyEventKind::Press
+                    && let Some(action) = keymap.lookup(&KeyCombo::from_event(&ev)) {
                     app.update(action);
                 }
             }
@@ -41,13 +45,4 @@ async fn run(mut terminal: ratatui::DefaultTerminal) -> anyhow::Result<()> {
         }
     }
     Ok(())
-}
-
-fn map_event(event: &Event) -> Option<Action> {
-    match event {
-        Event::Key(KeyEvent { code: KeyCode::Char('q'), .. }) => Some(Action::Quit),
-        Event::Key(KeyEvent { code: KeyCode::Char('c'), modifiers, .. })
-            if modifiers.contains(KeyModifiers::CONTROL) => Some(Action::Quit),
-        _ => None,
-    }
 }
