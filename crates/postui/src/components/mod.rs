@@ -3,6 +3,7 @@ pub mod editor;
 pub mod response;
 pub mod header_bar;
 pub mod footer;
+pub mod toast;
 
 use crate::action::Action;
 use crate::theme::Theme;

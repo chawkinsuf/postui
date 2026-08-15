@@ -1,3 +1,5 @@
+use crate::components::toast::ToastKind;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     Quit,
@@ -8,4 +10,6 @@ pub enum Action {
     FocusPrev,
     OpenPalette,
     Close,
+    #[allow(dead_code)]
+    ShowToast(String, ToastKind),
 }

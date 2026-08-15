@@ -1,4 +1,5 @@
 use crate::action::Action;
+use crate::components::toast::Toasts;
 use crate::components::{editor::Editor, response::Response, sidebar::Sidebar};
 use crate::layout::PaneId;
 use crate::theme::Theme;
@@ -10,6 +11,7 @@ pub struct App {
     pub sidebar: Sidebar,
     pub editor: Editor,
     pub response: Response,
+    pub toasts: Toasts,
 }
 
 impl App {
@@ -21,6 +23,7 @@ impl App {
             sidebar: Sidebar,
             editor: Editor,
             response: Response,
+            toasts: Toasts::default(),
         }
     }
 }
@@ -35,10 +38,12 @@ impl App {
     pub fn update(&mut self, action: Action) {
         match action {
             Action::Quit => self.should_quit = true,
-            Action::Tick | Action::Render => {}
+            Action::Tick => self.toasts.on_tick(),
+            Action::Render => {}
             Action::FocusNext => self.focus = self.focus.next(),
             Action::FocusPrev => self.focus = self.focus.prev(),
             Action::OpenPalette | Action::Close => {}
+            Action::ShowToast(msg, kind) => self.toasts.push(msg, kind),
         }
     }
 }
