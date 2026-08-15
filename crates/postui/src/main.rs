@@ -62,15 +62,18 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
                     Some(Ok(event)) => {
                         match event {
                             Event::Key(ev) if ev.kind == KeyEventKind::Press => {
-                                let action = if !app.modals.is_empty() {
-                                    app.modals.handle_key(ev)
-                                } else {
-                                    keymap.lookup(&KeyCombo::from_event(&ev))
-                                };
-                                if let Some(action) = action {
-                                    if !app.modals.is_empty() && action != Action::Close {
-                                        let _ = app.modals.pop();
+                                if !app.modals.is_empty() {
+                                    if let Some(res) = app.modals.handle_key(ev) {
+                                        if res.close {
+                                            app.modals.pop();
+                                        }
+                                        for action in res.actions {
+                                            app.update(action);
+                                        }
                                     }
+                                } else if let Some(action) =
+                                    keymap.lookup(&KeyCombo::from_event(&ev))
+                                {
                                     app.update(action);
                                 }
                             }

@@ -11,6 +11,15 @@ pub enum Modal {
     Palette(crate::components::palette::PaletteState),
 }
 
+/// The outcome of a modal handling a key event: any actions the caller
+/// should dispatch, and whether the modal should be popped off the stack.
+/// The stack never pops itself — the caller pops on `close`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ModalResult {
+    pub actions: Vec<Action>,
+    pub close: bool,
+}
+
 #[derive(Default)]
 pub struct ModalStack {
     stack: Vec<Modal>,
@@ -29,11 +38,17 @@ impl ModalStack {
         self.stack.is_empty()
     }
 
-    pub fn handle_key(&mut self, key: KeyEvent) -> Option<Action> {
+    pub fn top(&self) -> Option<&Modal> {
+        self.stack.last()
+    }
+
+    pub fn handle_key(&mut self, key: KeyEvent) -> Option<ModalResult> {
         let top = self.stack.last_mut()?;
         match top {
             Modal::Message { .. } => match key.code {
-                KeyCode::Esc | KeyCode::Enter => Some(Action::Close),
+                KeyCode::Esc | KeyCode::Enter => {
+                    Some(ModalResult { actions: vec![], close: true })
+                }
                 _ => None, // swallowed: modals capture all input
             },
             Modal::Palette(state) => state.handle_key(key),
@@ -111,16 +126,49 @@ mod tests {
         let mut m = ModalStack::default();
         m.push(Modal::Message { title: "A".into(), body: "a".into() });
         m.push(Modal::Message { title: "B".into(), body: "b".into() });
-        let action = m.handle_key(key(KeyCode::Esc));
-        assert_eq!(action, Some(Action::Close));
+        let res = m.handle_key(key(KeyCode::Esc)).unwrap();
+        assert!(res.close);
+        assert!(res.actions.is_empty());
+        // the stack does not pop itself: the caller pops on close.
+        assert_eq!(m.stack.len(), 2);
     }
 
     #[test]
     fn other_keys_are_swallowed_by_message_modal() {
         let mut m = ModalStack::default();
         m.push(Modal::Message { title: "A".into(), body: "a".into() });
-        assert_eq!(m.handle_key(key(KeyCode::Char('q'))), None,
+        assert!(m.handle_key(key(KeyCode::Char('q'))).is_none(),
             "keys must not leak through a modal to global bindings");
+    }
+
+    #[test]
+    fn palette_enter_returns_action_and_closes() {
+        let mut m = ModalStack::default();
+        m.push(Modal::Palette(crate::components::palette::PaletteState::new()));
+        for c in "quit".chars() {
+            assert!(m.handle_key(key(KeyCode::Char(c))).is_none());
+        }
+        let res = m.handle_key(key(KeyCode::Enter)).unwrap();
+        assert!(res.close);
+        assert_eq!(res.actions, vec![Action::Quit]);
+        // note: the STACK does not pop itself — the caller pops on close.
+        assert!(!m.is_empty());
+    }
+
+    #[test]
+    fn message_modal_closes_without_action() {
+        let mut m = ModalStack::default();
+        m.push(Modal::Message { title: "t".into(), body: "b".into() });
+        let res = m.handle_key(key(KeyCode::Esc)).unwrap();
+        assert!(res.close && res.actions.is_empty());
+    }
+
+    #[test]
+    fn top_returns_the_top_modal() {
+        let mut m = ModalStack::default();
+        assert!(m.top().is_none());
+        m.push(Modal::Message { title: "t".into(), body: "b".into() });
+        assert!(matches!(m.top(), Some(Modal::Message { .. })));
     }
 
     #[test]

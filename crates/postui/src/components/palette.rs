@@ -68,11 +68,14 @@ impl PaletteState {
         self.selected = 0;
     }
 
-    pub fn handle_key(&mut self, key: KeyEvent) -> Option<Action> {
+    pub fn handle_key(&mut self, key: KeyEvent) -> Option<super::modal::ModalResult> {
         match key.code {
-            KeyCode::Esc => return Some(Action::Close),
+            KeyCode::Esc => {
+                return Some(super::modal::ModalResult { actions: vec![], close: true })
+            }
             KeyCode::Enter => {
-                return self.filtered.get(self.selected).map(|c| c.action.clone());
+                let chosen = self.filtered.get(self.selected)?.action.clone();
+                return Some(super::modal::ModalResult { actions: vec![chosen], close: true });
             }
             KeyCode::Up => self.selected = self.selected.saturating_sub(1),
             KeyCode::Down => {
@@ -187,12 +190,14 @@ mod tests {
     }
 
     #[test]
-    fn enter_returns_selected_action() {
+    fn enter_returns_selected_action_and_closes() {
         let mut p = PaletteState::new();
         for c in "quit".chars() {
             p.handle_key(key(KeyCode::Char(c)));
         }
-        assert_eq!(p.handle_key(key(KeyCode::Enter)), Some(Action::Quit));
+        let res = p.handle_key(key(KeyCode::Enter)).unwrap();
+        assert!(res.close);
+        assert_eq!(res.actions, vec![Action::Quit]);
     }
 
     #[test]
@@ -202,7 +207,15 @@ mod tests {
             p.handle_key(key(KeyCode::Char(c)));
         }
         assert!(p.filtered().is_empty());
-        assert_eq!(p.handle_key(key(KeyCode::Enter)), None);
+        assert!(p.handle_key(key(KeyCode::Enter)).is_none());
+    }
+
+    #[test]
+    fn esc_closes_without_action() {
+        let mut p = PaletteState::new();
+        let res = p.handle_key(key(KeyCode::Esc)).unwrap();
+        assert!(res.close);
+        assert!(res.actions.is_empty());
     }
 
     #[test]
