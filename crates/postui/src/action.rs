@@ -9,6 +9,7 @@ pub enum Action {
     FocusNext,
     FocusPrev,
     FocusPane(PaneId),
+    ScrollPane(PaneId, i16),
     OpenPalette,
     Close,
     ShowToast(String, ToastKind),

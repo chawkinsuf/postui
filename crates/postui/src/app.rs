@@ -80,6 +80,14 @@ impl App {
                 self.focus = pane;
                 true
             }
+            Action::ScrollPane(pane, delta) => {
+                match pane {
+                    PaneId::Sidebar => self.sidebar.handle_scroll(delta),
+                    PaneId::Editor => self.editor.handle_scroll(delta),
+                    PaneId::Response => self.response.handle_scroll(delta),
+                }
+                true
+            }
             Action::OpenPalette => {
                 use crate::components::modal::Modal;
                 use crate::components::palette::PaletteState;
@@ -284,5 +292,13 @@ mod tests {
     fn render_action_requests_redraw() {
         let mut app = App::new_for_test();
         assert!(app.update(Action::Render));
+    }
+
+    #[test]
+    fn scroll_dispatches_without_changing_focus() {
+        let mut app = App::new_for_test();
+        let before = app.focus;
+        assert!(app.update(Action::ScrollPane(PaneId::Response, 3)));
+        assert_eq!(app.focus, before, "scrolling must not steal focus");
     }
 }

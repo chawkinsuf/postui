@@ -24,6 +24,7 @@ pub trait Component {
     fn handle_key(&mut self, _key: KeyEvent) -> Option<Action> {
         None
     }
+    fn handle_scroll(&mut self, _delta: i16) {}
     fn draw(&self, frame: &mut Frame, area: Rect, ctx: &DrawCtx);
 }
 

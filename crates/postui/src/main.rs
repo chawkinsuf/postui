@@ -7,7 +7,7 @@ use postui::layout::{compute_layout, hit_test};
 use postui::ui;
 use ratatui::crossterm::event::{
     DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyEventKind, MouseButton,
-    MouseEvent, MouseEventKind,
+    MouseEventKind,
 };
 use ratatui::crossterm::execute;
 use ratatui::layout::Rect;
@@ -70,17 +70,23 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
                             Event::Key(ev) if ev.kind == KeyEventKind::Press => {
                                 redraw |= app.handle_key(&keymap, ev);
                             }
-                            Event::Mouse(MouseEvent {
-                                kind: MouseEventKind::Down(MouseButton::Left),
-                                column,
-                                row,
-                                ..
-                            }) if app.modals.is_empty() => {
+                            Event::Mouse(m) if app.modals.is_empty() => {
                                 let size = terminal.size()?;
                                 let layout =
                                     compute_layout(Rect::new(0, 0, size.width, size.height));
-                                if let Some(pane) = hit_test(&layout, column, row) {
-                                    redraw |= app.update(Action::FocusPane(pane));
+                                match m.kind {
+                                    MouseEventKind::Down(MouseButton::Left) => {
+                                        if let Some(pane) = hit_test(&layout, m.column, m.row) {
+                                            redraw |= app.update(Action::FocusPane(pane));
+                                        }
+                                    }
+                                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                                        if let Some(pane) = hit_test(&layout, m.column, m.row) {
+                                            let d = if m.kind == MouseEventKind::ScrollUp { -3 } else { 3 };
+                                            redraw |= app.update(Action::ScrollPane(pane, d));
+                                        }
+                                    }
+                                    _ => {}
                                 }
                             }
                             Event::Resize(..) => {
