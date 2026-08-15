@@ -1,4 +1,5 @@
 use crate::action::Action;
+use crate::components::modal::ModalStack;
 use crate::components::toast::Toasts;
 use crate::components::{editor::Editor, response::Response, sidebar::Sidebar};
 use crate::layout::PaneId;
@@ -12,6 +13,7 @@ pub struct App {
     pub editor: Editor,
     pub response: Response,
     pub toasts: Toasts,
+    pub modals: ModalStack,
 }
 
 impl App {
@@ -24,6 +26,7 @@ impl App {
             editor: Editor,
             response: Response,
             toasts: Toasts::default(),
+            modals: ModalStack::default(),
         }
     }
 }
@@ -42,7 +45,10 @@ impl App {
             Action::Render => {}
             Action::FocusNext => self.focus = self.focus.next(),
             Action::FocusPrev => self.focus = self.focus.prev(),
-            Action::OpenPalette | Action::Close => {}
+            Action::OpenPalette => {}
+            Action::Close => {
+                let _ = self.modals.pop(); // no-op when empty
+            }
             Action::ShowToast(msg, kind) => self.toasts.push(msg, kind),
         }
     }
@@ -75,5 +81,15 @@ mod tests {
         assert_ne!(app.focus, start);
         app.update(Action::FocusPrev);
         assert_eq!(app.focus, start);
+    }
+
+    #[test]
+    fn close_pops_modal_instead_of_quitting() {
+        use crate::components::modal::Modal;
+        let mut app = App::new();
+        app.modals.push(Modal::Message { title: "t".into(), body: "b".into() });
+        app.update(Action::Close);
+        assert!(app.modals.is_empty());
+        assert!(!app.should_quit);
     }
 }

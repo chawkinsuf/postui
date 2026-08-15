@@ -36,8 +36,15 @@ async fn run(mut terminal: ratatui::DefaultTerminal) -> anyhow::Result<()> {
             maybe_event = events.next() => {
                 if let Some(Ok(Event::Key(ev))) = maybe_event
                     && ev.kind == KeyEventKind::Press
-                    && let Some(action) = keymap.lookup(&KeyCombo::from_event(&ev)) {
-                    app.update(action);
+                {
+                    let action = if !app.modals.is_empty() {
+                        app.modals.handle_key(ev)
+                    } else {
+                        keymap.lookup(&KeyCombo::from_event(&ev))
+                    };
+                    if let Some(action) = action {
+                        app.update(action);
+                    }
                 }
             }
             _ = tick.tick() => app.update(Action::Tick),

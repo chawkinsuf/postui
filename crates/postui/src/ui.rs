@@ -12,6 +12,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     app.response.draw(frame, layout.response, &ctx(PaneId::Response));
     crate::components::footer::draw_footer(frame, layout.footer, &app.theme);
     app.toasts.draw(frame, frame.area(), &app.theme);
+    app.modals.draw(frame, frame.area(), &app.theme);
 }
 
 #[cfg(test)]

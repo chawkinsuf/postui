@@ -4,6 +4,7 @@ pub mod response;
 pub mod header_bar;
 pub mod footer;
 pub mod toast;
+pub mod modal;
 
 use crate::action::Action;
 use crate::theme::Theme;
