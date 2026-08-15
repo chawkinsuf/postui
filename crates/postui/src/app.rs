@@ -400,6 +400,10 @@ impl App {
                 self.apply(Action::ForceSend)
             }
             Action::ForceSend => {
+                if self.editor.url.text().trim().is_empty() {
+                    self.toasts.push("cannot send: URL is empty", ToastKind::Error);
+                    return true;
+                }
                 let (prepared, warnings) = postui_core::prepare::prepare(&self.editor.current_request());
                 for w in &warnings {
                     self.toasts.push(w.to_string(), ToastKind::Warning);
@@ -949,6 +953,16 @@ mod tests {
         app.update(Action::Send);
         assert!(app.in_flight.is_none());
         assert!(!app.toasts.is_empty(), "empty URL must toast rather than send");
+    }
+
+    #[tokio::test]
+    async fn force_send_with_empty_url_toasts_and_does_not_spawn() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
+        app.update(Action::ForceSend);
+        assert!(app.in_flight.is_none(), "no task should be spawned for an empty URL");
+        assert!(!app.toasts.is_empty(), "empty URL must toast even via ForceSend directly");
+        assert_eq!(app.send_generation, 0, "generation must not advance without a send");
     }
 
     #[tokio::test]
