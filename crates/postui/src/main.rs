@@ -1,16 +1,10 @@
-mod action;
-mod app;
-mod keys;
-mod theme;
-mod layout;
-mod components;
-mod ui;
-
-use action::Action;
-use app::App;
 use futures::StreamExt;
-use keys::{KeyCombo, Keymap};
-use layout::{compute_layout, hit_test};
+use postui::action::Action;
+use postui::app::App;
+use postui::components::toast::ToastKind;
+use postui::keys::{KeyCombo, Keymap};
+use postui::layout::{compute_layout, hit_test};
+use postui::ui;
 use ratatui::crossterm::event::{
     DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyEventKind, MouseButton,
     MouseEvent, MouseEventKind,
@@ -34,6 +28,11 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
     let mut events = EventStream::new();
     let mut tick = tokio::time::interval(Duration::from_millis(100));
     let keymap = Keymap::load();
+
+    app.update(Action::ShowToast(
+        "Welcome to postui".into(),
+        ToastKind::Info,
+    ));
 
     while !app.should_quit {
         terminal.draw(|frame| {

@@ -21,7 +21,6 @@ pub struct DrawCtx<'a> {
 }
 
 pub trait Component {
-    #[allow(dead_code)]
     fn handle_key(&mut self, _key: KeyEvent) -> Option<Action> {
         None
     }

@@ -37,22 +37,25 @@ pub struct PaletteState {
     filtered: Vec<Command>,
 }
 
+impl Default for PaletteState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PaletteState {
     pub fn new() -> Self {
         Self { input: String::new(), selected: 0, filtered: all_commands() }
     }
 
-    #[allow(dead_code)]
     pub fn input(&self) -> &str {
         &self.input
     }
 
-    #[allow(dead_code)]
     pub fn filtered(&self) -> &[Command] {
         &self.filtered
     }
 
-    #[allow(dead_code)]
     pub fn selected(&self) -> usize {
         self.selected
     }

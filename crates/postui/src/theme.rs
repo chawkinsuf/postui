@@ -31,7 +31,6 @@ impl Theme {
         }
     }
 
-    #[allow(dead_code)]
     pub fn light() -> Self {
         Self {
             surface: Color::Rgb(0xf7, 0xf8, 0xfa),
@@ -51,7 +50,6 @@ impl Theme {
         Self::dark()
     }
 
-    #[allow(dead_code)]
     pub fn downgrade_to_256(&self) -> Self {
         let f = |c: Color| match c {
             Color::Rgb(r, g, b) => Color::Indexed(rgb_to_indexed(r, g, b)),
@@ -74,7 +72,6 @@ impl Theme {
 
 /// Nearest xterm-256 color: compares the best 6x6x6 cube match against the
 /// best grayscale-ramp match and returns the closer of the two.
-#[allow(dead_code)]
 pub fn rgb_to_indexed(r: u8, g: u8, b: u8) -> u8 {
     const STEPS: [u8; 6] = [0, 95, 135, 175, 215, 255];
     let nearest_step = |v: u8| -> (u8, u8) {

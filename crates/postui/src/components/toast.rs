@@ -7,11 +7,8 @@ use ratatui::Frame;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToastKind {
-    #[allow(dead_code)]
     Info,
-    #[allow(dead_code)]
     Success,
-    #[allow(dead_code)]
     Error,
 }
 
@@ -44,7 +41,6 @@ impl Toasts {
         self.entries.retain(|t| t.remaining_ticks > 0);
     }
 
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }

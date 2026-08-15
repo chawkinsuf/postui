@@ -118,7 +118,6 @@ impl Keymap {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub fn load() -> Self {
         let mut map = Self::default_bindings();
         if let Some(dirs) = directories::ProjectDirs::from("", "", postui_core::APP_NAME) {
