@@ -1,17 +1,29 @@
+use super::json_tree::{JsonTree, TokenKind};
+use super::line_input::LineInput;
 use super::{pane_block, Component, DrawCtx};
 use crate::action::Action;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
-use ratatui::layout::Rect;
-use ratatui::style::Style;
-use ratatui::text::Line;
+use crate::components::toast::ToastKind;
+use crate::theme::Theme;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+/// Bodies larger than this are never parsed or pretty-printed — the raw view
+/// is the only one offered, so a huge response can't stall the UI thread.
+pub const MAX_PRETTY_BYTES: usize = 2 * 1024 * 1024;
+
+const OVERSIZE_HINT: &str = "body exceeds 2 MiB — raw view only";
+
+/// Braille spinner frames, cycled while a request is in flight.
+pub const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /// The response pane's lifecycle: nothing sent yet, a request in flight (and
 /// since when — used to animate a spinner), a completed response, a failed
-/// send, or a send the user cancelled. Real rendering of `Ready`/`Failed`
-/// bodies arrives in Task 16; this task only wires the states through.
+/// send, or a send the user cancelled.
 #[derive(Default)]
 pub enum ResponseState {
     #[default]
@@ -22,37 +34,909 @@ pub enum ResponseState {
     Cancelled,
 }
 
+/// Which of the three renderings of a ready response is on screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewMode {
+    Pretty,
+    Raw,
+    Headers,
+}
+
+/// The in-pane search: a live input while `active`, then a committed query
+/// with its match list. Matches are `(full line index, char column)` into the
+/// current view's *fully expanded* text, so a hit inside a collapsed
+/// container is still found (and jumped to).
+pub struct SearchState {
+    pub input: LineInput,
+    pub active: bool,
+    pub query: String,
+    pub matches: Vec<(usize, usize)>,
+    pub current: usize,
+}
+
+/// Everything about *how* a ready response is being looked at. Rebuilt from
+/// scratch whenever a new response lands, so no state leaks between requests.
+pub struct ReadyView {
+    pub mode: ViewMode,
+    /// The body view (`Pretty` or `Raw`) to come back to from `Headers`.
+    body_mode: ViewMode,
+    pub tree: Option<JsonTree>,
+    /// True when the body tripped [`MAX_PRETTY_BYTES`].
+    oversize: bool,
+    /// Verbatim body lines — never reformatted, never re-wrapped.
+    raw_lines: Vec<String>,
+    header_lines: Vec<String>,
+    pub cursor: usize,
+    pub scroll: usize,
+    pub search: Option<SearchState>,
+    /// Height of the body viewport as of the last draw, so key handling can
+    /// keep the cursor on screen. A sane guess until the first frame.
+    height: usize,
+}
+
+impl ReadyView {
+    fn new(data: &crate::http::ResponseData) -> Self {
+        let oversize = data.body.len() > MAX_PRETTY_BYTES;
+        let tree = if oversize { None } else { JsonTree::parse(&data.body) };
+        let mode = if tree.is_some() { ViewMode::Pretty } else { ViewMode::Raw };
+        let width = data.headers.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0);
+        Self {
+            mode,
+            body_mode: mode,
+            tree,
+            oversize,
+            raw_lines: data.body.split('\n').map(|l| l.to_string()).collect(),
+            header_lines: data
+                .headers
+                .iter()
+                .map(|(k, v)| format!("{:<width$} {v}", format!("{k}:"), width = width + 1))
+                .collect(),
+            cursor: 0,
+            scroll: 0,
+            search: None,
+            height: 10,
+        }
+    }
+
+    /// How many lines the current view shows right now (collapse included).
+    pub fn visible_len(&self) -> usize {
+        match self.mode {
+            ViewMode::Pretty => self.tree.as_ref().map_or(0, |t| t.visible_indices().len()),
+            ViewMode::Raw => self.raw_lines.len(),
+            ViewMode::Headers => self.header_lines.len().max(1),
+        }
+    }
+
+    /// The current view's text with nothing hidden — the corpus search runs
+    /// over, and the coordinate space its match positions live in.
+    fn search_corpus(&self) -> Vec<String> {
+        match self.mode {
+            ViewMode::Pretty => self.tree.as_ref().map(|t| t.full_text_lines()).unwrap_or_default(),
+            ViewMode::Raw => self.raw_lines.clone(),
+            ViewMode::Headers => self.header_lines.clone(),
+        }
+    }
+
+    fn clamp_cursor(&mut self) {
+        self.cursor = self.cursor.min(self.visible_len().saturating_sub(1));
+    }
+
+    /// Keeps the cursor inside the viewport after a move.
+    fn follow_cursor(&mut self) {
+        let h = self.height.max(1);
+        if self.cursor < self.scroll {
+            self.scroll = self.cursor;
+        } else if self.cursor >= self.scroll + h {
+            self.scroll = self.cursor + 1 - h;
+        }
+    }
+
+    fn move_cursor(&mut self, delta: i32) {
+        let max = self.visible_len().saturating_sub(1) as i32;
+        self.cursor = (self.cursor as i32 + delta).clamp(0, max) as usize;
+        self.follow_cursor();
+    }
+
+    fn set_mode(&mut self, mode: ViewMode) {
+        if self.mode == mode {
+            return;
+        }
+        self.mode = mode;
+        if mode != ViewMode::Headers {
+            self.body_mode = mode;
+        }
+        self.cursor = 0;
+        self.scroll = 0;
+        // Match positions are per-view coordinates; the query survives, the
+        // positions do not.
+        self.recompute_matches();
+    }
+
+    fn recompute_matches(&mut self) {
+        let Some(search) = &self.search else { return };
+        if search.query.is_empty() {
+            return;
+        }
+        let needle = search.query.to_lowercase();
+        let mut matches = Vec::new();
+        for (i, line) in self.search_corpus().iter().enumerate() {
+            let hay = line.to_lowercase();
+            // Column is a char offset so it lines up with rendered spans.
+            let mut from = 0;
+            while let Some(at) = hay[from..].find(&needle) {
+                let byte = from + at;
+                matches.push((i, hay[..byte].chars().count()));
+                from = byte + needle.len();
+            }
+        }
+        let search = self.search.as_mut().expect("checked above");
+        search.matches = matches;
+        search.current = 0;
+    }
+
+    /// Moves the cursor onto match `current`, expanding whatever containers
+    /// hide it.
+    fn jump_to_match(&mut self) {
+        let Some(search) = &self.search else { return };
+        let Some(&(line, _)) = search.matches.get(search.current) else { return };
+        match (self.mode, self.tree.as_mut()) {
+            (ViewMode::Pretty, Some(tree)) => {
+                tree.expand_ancestors(line);
+                self.cursor = tree.visible_index_of(line).unwrap_or(0);
+            }
+            _ => self.cursor = line,
+        }
+        self.clamp_cursor();
+        self.follow_cursor();
+    }
+
+    fn step_match(&mut self, delta: i32) {
+        let Some(search) = self.search.as_mut() else { return };
+        let len = search.matches.len();
+        if len == 0 {
+            return;
+        }
+        search.current = (search.current as i32 + delta).rem_euclid(len as i32) as usize;
+        self.jump_to_match();
+    }
+
+    /// Char ranges of every match on `line`, plus the current one.
+    fn match_ranges(&self, line: usize) -> LineMatches {
+        let none = LineMatches { ranges: Vec::new(), current: None };
+        let Some(search) = &self.search else { return none };
+        if search.active || search.query.is_empty() {
+            return none;
+        }
+        let width = search.query.chars().count();
+        let ranges = search
+            .matches
+            .iter()
+            .filter(|(l, _)| *l == line)
+            .map(|(_, c)| (*c, c + width))
+            .collect();
+        let current = search
+            .matches
+            .get(search.current)
+            .filter(|(l, _)| *l == line)
+            .map(|(_, c)| (*c, c + width));
+        LineMatches { ranges, current }
+    }
+}
+
+/// The search hits that fall on one rendered line, as char ranges.
+struct LineMatches {
+    ranges: Vec<(usize, usize)>,
+    current: Option<(usize, usize)>,
+}
+
 #[derive(Default)]
 pub struct Response {
-    pub state: ResponseState,
+    state: ResponseState,
+    view: Option<ReadyView>,
+}
+
+impl Response {
+    pub fn state(&self) -> &ResponseState {
+        &self.state
+    }
+
+    /// The only way to change state, so the view (tree, cursor, search) is
+    /// always rebuilt for — and only for — the response actually on screen.
+    pub fn set_state(&mut self, state: ResponseState) {
+        self.view = match &state {
+            ResponseState::Ready(data) => Some(ReadyView::new(data)),
+            _ => None,
+        };
+        self.state = state;
+    }
+
+    pub fn view(&self) -> Option<&ReadyView> {
+        self.view.as_ref()
+    }
+
+    /// Ready-state key handling. Split out so [`Component::handle_key`] stays
+    /// a readable state dispatch.
+    fn ready_key(&mut self, ev: KeyEvent) -> Option<Action> {
+        let view = self.view.as_mut()?;
+
+        // An active search input swallows everything: chars and editing keys
+        // go to the LineInput, Enter commits, Esc closes.
+        if view.search.as_ref().is_some_and(|s| s.active) {
+            match ev.code {
+                KeyCode::Enter => {
+                    let search = view.search.as_mut().expect("checked above");
+                    search.active = false;
+                    search.query = search.input.text().to_string();
+                    view.recompute_matches();
+                    view.jump_to_match();
+                }
+                KeyCode::Esc => view.search = None,
+                _ => {
+                    let search = view.search.as_mut().expect("checked above");
+                    search.input.handle_key(ev);
+                }
+            }
+            return Some(Action::Render);
+        }
+
+        match ev.code {
+            KeyCode::Char('r') => {
+                if view.oversize {
+                    return Some(Action::ShowToast(OVERSIZE_HINT.into(), ToastKind::Warning));
+                }
+                if view.tree.is_some() {
+                    let next = match view.body_mode {
+                        ViewMode::Pretty => ViewMode::Raw,
+                        _ => ViewMode::Pretty,
+                    };
+                    view.set_mode(next);
+                }
+                Some(Action::Render)
+            }
+            KeyCode::Char('h') => {
+                let next =
+                    if view.mode == ViewMode::Headers { view.body_mode } else { ViewMode::Headers };
+                view.set_mode(next);
+                Some(Action::Render)
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                view.move_cursor(1);
+                Some(Action::Render)
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                view.move_cursor(-1);
+                Some(Action::Render)
+            }
+            KeyCode::Char('g') => {
+                view.cursor = 0;
+                view.follow_cursor();
+                Some(Action::Render)
+            }
+            KeyCode::Char('G') => {
+                view.cursor = view.visible_len().saturating_sub(1);
+                view.follow_cursor();
+                Some(Action::Render)
+            }
+            KeyCode::Char(' ') | KeyCode::Enter => {
+                if view.mode == ViewMode::Pretty && let Some(tree) = view.tree.as_mut() {
+                    tree.toggle(view.cursor);
+                    view.clamp_cursor();
+                    view.follow_cursor();
+                }
+                Some(Action::Render)
+            }
+            KeyCode::Char('/') => {
+                view.search = Some(SearchState {
+                    input: LineInput::new(""),
+                    active: true,
+                    query: String::new(),
+                    matches: Vec::new(),
+                    current: 0,
+                });
+                Some(Action::Render)
+            }
+            KeyCode::Char('n') => {
+                view.step_match(1);
+                Some(Action::Render)
+            }
+            KeyCode::Char('N') => {
+                view.step_match(-1);
+                Some(Action::Render)
+            }
+            KeyCode::Esc if view.search.is_some() => {
+                view.search = None;
+                Some(Action::Render)
+            }
+            _ => None,
+        }
+    }
 }
 
 impl Component for Response {
     fn handle_key(&mut self, ev: KeyEvent) -> Option<Action> {
-        if ev.code == KeyCode::Esc && matches!(self.state, ResponseState::InFlight { .. }) {
-            return Some(Action::CancelSend);
+        match self.state {
+            ResponseState::InFlight { .. } if ev.code == KeyCode::Esc => Some(Action::CancelSend),
+            // Modified combos belong to the global keymap, not the pane.
+            ResponseState::Ready(_)
+                if !ev.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                self.ready_key(ev)
+            }
+            _ => None,
         }
-        None
+    }
+
+    fn handle_scroll(&mut self, delta: i16) {
+        let Some(view) = self.view.as_mut() else { return };
+        // Stop once the last line reaches the bottom of the viewport, rather
+        // than letting the document scroll off the top entirely.
+        let max = view.visible_len().saturating_sub(view.height.max(1)) as i32;
+        view.scroll = (view.scroll as i32 + delta as i32).clamp(0, max) as usize;
     }
 
     fn draw(&mut self, frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
         let block = pane_block("Response", ctx);
-        let lines = match &self.state {
-            ResponseState::Empty => vec![
-                Line::raw(""),
-                Line::raw("Send a request — the response will appear here."),
-            ],
-            ResponseState::InFlight { .. } => vec![Line::raw(""), Line::raw("sending…")],
-            ResponseState::Ready(data) => {
-                vec![Line::raw(""), Line::raw(format!("{} — {} bytes", data.status, data.size))]
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        let t = ctx.theme;
+
+        let data = match &self.state {
+            ResponseState::Ready(data) => data,
+            other => {
+                let muted = Style::default().fg(t.text_muted);
+                let lines = match other {
+                    ResponseState::Empty => vec![
+                        Line::raw(""),
+                        Line::styled("Send a request — the response will appear here.", muted),
+                    ],
+                    ResponseState::InFlight { started } => {
+                        let e = started.elapsed();
+                        let frame_i = (e.subsec_millis() / 100) as usize % SPINNER.len();
+                        vec![
+                            Line::raw(""),
+                            Line::styled(
+                                format!("{} sending… {}", SPINNER[frame_i], human_elapsed(e)),
+                                Style::default().fg(t.accent),
+                            ),
+                            Line::styled("esc to cancel", muted),
+                        ]
+                    }
+                    ResponseState::Failed(err) => vec![
+                        Line::raw(""),
+                        Line::styled(err.clone(), Style::default().fg(t.error)),
+                    ],
+                    ResponseState::Cancelled => {
+                        vec![Line::raw(""), Line::styled("Request cancelled", muted)]
+                    }
+                    ResponseState::Ready(_) => unreachable!("handled above"),
+                };
+                let widget = Paragraph::new(lines).style(muted).centered();
+                frame.render_widget(widget, inner);
+                return;
             }
-            ResponseState::Failed(err) => vec![Line::raw(""), Line::raw(format!("Failed: {err}"))],
-            ResponseState::Cancelled => vec![Line::raw(""), Line::raw("Cancelled")],
         };
-        let widget = Paragraph::new(lines)
-            .style(Style::default().fg(ctx.theme.text_muted))
-            .centered()
-            .block(block);
-        frame.render_widget(widget, area);
+        let Some(view) = self.view.as_mut() else { return };
+
+        let hint = view.oversize;
+        let footer = view.search.is_some();
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),                          // summary
+                Constraint::Length(if hint { 1 } else { 0 }),   // guard hint
+                Constraint::Min(0),                             // body
+                Constraint::Length(if footer { 1 } else { 0 }), // search footer
+            ])
+            .split(inner);
+
+        frame.render_widget(Paragraph::new(summary_line(data, t)), rows[0]);
+        if hint {
+            frame.render_widget(
+                Paragraph::new(Line::styled(OVERSIZE_HINT, Style::default().fg(t.warning))),
+                rows[1],
+            );
+        }
+
+        view.height = rows[2].height as usize;
+        // `body_lines` already starts at `view.scroll`, so the paragraph
+        // itself is drawn unscrolled.
+        let body = body_lines(view, t, ctx.focused);
+        frame.render_widget(Paragraph::new(body), rows[2]);
+
+        if footer {
+            frame.render_widget(Paragraph::new(search_footer(view, t)), rows[3]);
+        }
+    }
+}
+
+/// `[ 200 ]  342 ms  1.4 KB  application/json`
+fn summary_line(data: &crate::http::ResponseData, t: &Theme) -> Line<'static> {
+    let muted = Style::default().fg(t.text_muted);
+    let mut spans = vec![
+        Span::styled(
+            format!(" {} ", data.status),
+            Style::default().fg(t.surface).bg(status_color(data.status, t)).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!("  {}", human_elapsed(data.elapsed)), muted),
+        Span::styled(format!("  {}", human_size(data.size)), muted),
+    ];
+    if let Some(ct) = &data.content_type {
+        spans.push(Span::styled(format!("  {ct}"), muted));
+    }
+    Line::from(spans)
+}
+
+fn status_color(status: u16, t: &Theme) -> Color {
+    match status {
+        200..=299 => t.success,
+        300..=399 => t.accent,
+        400..=499 => t.warning,
+        500..=599 => t.error,
+        _ => t.text_muted,
+    }
+}
+
+fn human_elapsed(d: Duration) -> String {
+    let ms = d.as_millis();
+    if ms < 1000 { format!("{ms} ms") } else { format!("{:.1} s", d.as_secs_f64()) }
+}
+
+fn human_size(bytes: usize) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    let b = bytes as f64;
+    if b < KB {
+        format!("{bytes} B")
+    } else if b < MB {
+        format!("{:.1} KB", b / KB)
+    } else {
+        format!("{:.1} MB", b / MB)
+    }
+}
+
+/// Builds the body viewport's lines for whichever view is active, applying
+/// search highlighting and the cursor row's background.
+///
+/// Only the `view.scroll .. view.scroll + view.height` window is built — a
+/// 2 MiB body is a lot of lines, and none of the ones off screen are worth
+/// styling. The caller therefore renders the result at scroll offset 0.
+fn body_lines(view: &ReadyView, t: &Theme, focused: bool) -> Vec<Line<'static>> {
+    let text = Style::default().fg(t.text);
+    let cursor_bg = Style::default().bg(t.surface_raised);
+    let mut out = Vec::new();
+    let start = view.scroll;
+    let end = start.saturating_add(view.height.max(1));
+
+    let mut push = |i: usize, full: usize, pieces: Vec<(String, Style)>, highlightable: bool| {
+        let hits = if highlightable {
+            view.match_ranges(full)
+        } else {
+            LineMatches { ranges: Vec::new(), current: None }
+        };
+        let mut line = highlighted(pieces, &hits);
+        if focused && i == view.cursor {
+            line = line.style(cursor_bg);
+        }
+        out.push(line);
+    };
+
+    match view.mode {
+        ViewMode::Pretty => {
+            let Some(tree) = &view.tree else { return out };
+            let lines = tree.visible_lines();
+            let indices = tree.visible_indices();
+            for i in start..end.min(lines.len()) {
+                let line = lines[i];
+                let mut pieces = vec![(" ".repeat(line.indent), text)];
+                for tok in line.render_tokens() {
+                    pieces.push((tok.text.clone(), Style::default().fg(token_color(tok.kind, t))));
+                }
+                // A collapsed line renders its summary, not its real text, so
+                // the match columns computed over the expanded text no longer
+                // apply to it.
+                push(i, indices[i], pieces, !line.collapsed);
+            }
+        }
+        ViewMode::Raw => {
+            for i in start..end.min(view.raw_lines.len()) {
+                push(i, i, vec![(view.raw_lines[i].clone(), text)], true);
+            }
+        }
+        ViewMode::Headers => {
+            if view.header_lines.is_empty() {
+                out.push(Line::styled("(no headers)", Style::default().fg(t.text_muted)));
+                return out;
+            }
+            for (i, line) in view.header_lines.iter().enumerate().take(end).skip(start) {
+                let (name, value) = line.split_once(':').unwrap_or((line.as_str(), ""));
+                let pieces = vec![
+                    (format!("{name}:"), Style::default().fg(t.accent)),
+                    (value.to_string(), text),
+                ];
+                push(i, i, pieces, true);
+            }
+        }
+    }
+    out
+}
+
+fn token_color(kind: TokenKind, t: &Theme) -> Color {
+    match kind {
+        TokenKind::Key => t.accent,
+        TokenKind::Str => t.success,
+        TokenKind::Number => t.warning,
+        TokenKind::Literal => t.text_muted,
+        TokenKind::Punct => t.text,
+    }
+}
+
+/// Re-slices `pieces` at match boundaries so highlighting can be added
+/// without losing the syntax colors underneath it. Offsets are char indices
+/// into the concatenated text.
+fn highlighted(pieces: Vec<(String, Style)>, hits: &LineMatches) -> Line<'static> {
+    if hits.ranges.is_empty() {
+        return Line::from(
+            pieces.into_iter().map(|(s, st)| Span::styled(s, st)).collect::<Vec<_>>(),
+        );
+    }
+    let hit = |at: usize| -> (bool, bool) {
+        (
+            hits.ranges.iter().any(|(s, e)| at >= *s && at < *e),
+            hits.current.is_some_and(|(s, e)| at >= s && at < e),
+        )
+    };
+    let mut spans = Vec::new();
+    let mut offset = 0;
+    for (piece_text, base) in pieces {
+        let chars: Vec<char> = piece_text.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            let class = hit(offset + i);
+            let mut j = i + 1;
+            while j < chars.len() && hit(offset + j) == class {
+                j += 1;
+            }
+            let mut style = base;
+            if class.0 {
+                style = style.add_modifier(Modifier::REVERSED);
+            }
+            if class.1 {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+            spans.push(Span::styled(chars[i..j].iter().collect::<String>(), style));
+            i = j;
+        }
+        offset += chars.len();
+    }
+    Line::from(spans)
+}
+
+/// `/query   3/17` — or the live input while the search is being typed.
+fn search_footer(view: &ReadyView, t: &Theme) -> Line<'static> {
+    let Some(search) = &view.search else { return Line::raw("") };
+    let accent = Style::default().fg(t.accent);
+    let mut spans = vec![Span::styled("/", accent)];
+    if search.active {
+        spans.extend(search.input.draw_line(true, t).spans);
+        return Line::from(spans);
+    }
+    spans.push(Span::styled(search.query.clone(), Style::default().fg(t.text)));
+    let muted = Style::default().fg(t.text_muted);
+    if search.matches.is_empty() {
+        spans.push(Span::styled("  no matches", muted));
+    } else {
+        spans.push(Span::styled(
+            format!("  {}/{}", search.current + 1, search.matches.len()),
+            muted,
+        ));
+    }
+    Line::from(spans)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::Theme;
+    use ratatui::backend::TestBackend;
+    use ratatui::crossterm::event::KeyModifiers;
+    use ratatui::Terminal;
+    use std::time::Duration;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+    fn ch(c: char) -> KeyEvent {
+        key(KeyCode::Char(c))
+    }
+
+    fn data(body: &str) -> crate::http::ResponseData {
+        crate::http::ResponseData {
+            status: 200,
+            headers: vec![("content-type".into(), "application/json".into())],
+            body: body.to_string(),
+            elapsed: Duration::from_millis(342),
+            size: body.len(),
+            content_type: Some("application/json".into()),
+        }
+    }
+
+    fn ready(body: &str) -> Response {
+        let mut r = Response::default();
+        r.set_state(ResponseState::Ready(Box::new(data(body))));
+        r
+    }
+
+    fn render(resp: &mut Response) -> String {
+        render_sized(resp, 60, 20)
+    }
+
+    fn render_sized(resp: &mut Response, w: u16, h: u16) -> String {
+        let theme = Theme::dark();
+        let ctx = DrawCtx { theme: &theme, focused: true };
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        terminal.draw(|f| resp.draw(f, f.area(), &ctx)).unwrap();
+        format!("{:?}", terminal.backend().buffer())
+    }
+
+    #[test]
+    fn ready_summary_shows_status_elapsed_size_and_a_json_key() {
+        let mut r = ready(r#"{"hello": "world"}"#);
+        let out = render(&mut r);
+        assert!(out.contains("200"), "status pill: {out}");
+        assert!(out.contains("342 ms"), "elapsed: {out}");
+        assert!(out.contains(" B"), "human size: {out}");
+        assert!(out.contains("application/json"), "content type: {out}");
+        assert!(out.contains("\"hello\""), "pretty body key: {out}");
+    }
+
+    #[test]
+    fn human_size_and_elapsed_scale_up() {
+        let mut d = data("x");
+        d.size = 1434;
+        d.elapsed = Duration::from_millis(1234);
+        let mut r = Response::default();
+        r.set_state(ResponseState::Ready(Box::new(d)));
+        let out = render(&mut r);
+        assert!(out.contains("1.4 KB"), "{out}");
+        assert!(out.contains("1.2 s"), "{out}");
+    }
+
+    #[test]
+    fn status_class_colors_the_pill() {
+        let t = Theme::dark();
+        assert_eq!(status_color(204, &t), t.success);
+        assert_eq!(status_color(301, &t), t.accent);
+        assert_eq!(status_color(404, &t), t.warning);
+        assert_eq!(status_color(503, &t), t.error);
+        assert_eq!(status_color(101, &t), t.text_muted);
+    }
+
+    #[test]
+    fn r_toggles_between_pretty_and_raw_verbatim() {
+        let body = "{\"a\": 1,\n     \"b\": 2}";
+        let mut r = ready(body);
+        assert!(render(&mut r).contains("  \"a\": 1,"), "pretty re-indents");
+        assert_eq!(r.handle_key(ch('r')), Some(Action::Render));
+        let out = render(&mut r);
+        assert!(out.contains("{\"a\": 1,"), "raw is verbatim: {out}");
+        assert!(out.contains("     \"b\": 2}"), "raw keeps original spacing: {out}");
+        assert_eq!(r.handle_key(ch('r')), Some(Action::Render));
+        assert!(render(&mut r).contains("  \"a\": 1,"), "toggles back to pretty");
+    }
+
+    #[test]
+    fn non_json_defaults_to_raw() {
+        let mut r = ready("<html>hi</html>");
+        assert!(render(&mut r).contains("<html>hi</html>"));
+        // No tree, so `r` has nothing to toggle to.
+        assert_eq!(r.handle_key(ch('r')), Some(Action::Render));
+        assert!(render(&mut r).contains("<html>hi</html>"));
+    }
+
+    #[test]
+    fn oversize_body_falls_back_to_raw_with_a_hint() {
+        let body = format!("{{\"a\": \"{}\"}}", "x".repeat(MAX_PRETTY_BYTES));
+        assert!(body.len() > MAX_PRETTY_BYTES);
+        let mut r = ready(&body);
+        let out = render(&mut r);
+        assert!(out.contains("exceeds 2 MiB"), "guard hint: {out}");
+        match r.handle_key(ch('r')) {
+            Some(Action::ShowToast(msg, _)) => assert!(msg.contains("2 MiB"), "{msg}"),
+            other => panic!("expected a toast refusing the pretty toggle, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn headers_view_toggles_and_renders_a_header() {
+        let mut r = ready(r#"{"a": 1}"#);
+        assert_eq!(r.handle_key(ch('h')), Some(Action::Render));
+        let out = render(&mut r);
+        assert!(out.contains("content-type: application/json"), "{out}");
+        assert_eq!(r.handle_key(ch('h')), Some(Action::Render));
+        assert!(render(&mut r).contains("\"a\""), "h again returns to the body view");
+    }
+
+    #[test]
+    fn cursor_moves_and_clamps_at_both_ends() {
+        let mut r = ready(r#"{"a": 1, "b": 2}"#); // 4 lines
+        for _ in 0..20 {
+            r.handle_key(ch('j'));
+        }
+        assert_eq!(r.view().unwrap().cursor, 3, "clamped to the last line");
+        for _ in 0..20 {
+            r.handle_key(key(KeyCode::Up));
+        }
+        assert_eq!(r.view().unwrap().cursor, 0, "clamped to the first line");
+        r.handle_key(ch('G'));
+        assert_eq!(r.view().unwrap().cursor, 3);
+        r.handle_key(ch('g'));
+        assert_eq!(r.view().unwrap().cursor, 0);
+    }
+
+    #[test]
+    fn scroll_clamps_and_is_independent_of_the_cursor() {
+        let body = format!("[{}]", (0..50).map(|i| i.to_string()).collect::<Vec<_>>().join(","));
+        let mut r = ready(&body);
+        render_sized(&mut r, 40, 10); // teaches the view its viewport height
+        r.handle_scroll(-5);
+        assert_eq!(r.view().unwrap().scroll, 0, "clamped at the top");
+        assert_eq!(r.view().unwrap().cursor, 0, "scrolling does not move the cursor");
+        r.handle_scroll(500);
+        let v = r.view().unwrap();
+        assert!(v.scroll > 0 && v.scroll < 52, "clamped inside the document: {}", v.scroll);
+        assert_eq!(v.cursor, 0);
+    }
+
+    #[test]
+    fn scrolling_moves_the_rendered_window() {
+        let body = format!("[{}]", (0..50).map(|i| format!("\"e{i}\"")).collect::<Vec<_>>().join(","));
+        let mut r = ready(&body);
+        let top = render_sized(&mut r, 40, 10);
+        assert!(top.contains("\"e0\""));
+        assert!(!top.contains("\"e40\""), "the tail is off screen: {top}");
+        r.handle_scroll(40);
+        let down = render_sized(&mut r, 40, 10);
+        assert!(down.contains("\"e40\""), "scrolling reveals later lines: {down}");
+        assert!(!down.contains("\"e0\""), "and hides earlier ones: {down}");
+    }
+
+    #[test]
+    fn space_toggles_collapse_at_the_cursor() {
+        let mut r = ready(r#"{"a": {"b": 1, "c": 2}}"#);
+        let before = r.view().unwrap().visible_len();
+        r.handle_key(ch('j')); // onto the "a" container line
+        assert_eq!(r.handle_key(key(KeyCode::Char(' '))), Some(Action::Render));
+        assert!(r.view().unwrap().visible_len() < before, "collapsed");
+        assert!(render(&mut r).contains("2 keys"));
+        r.handle_key(key(KeyCode::Enter));
+        assert_eq!(r.view().unwrap().visible_len(), before, "re-expanded");
+    }
+
+    #[test]
+    fn search_commits_counts_matches_and_wraps() {
+        let mut r = ready(r#"{"aa": "zz", "bb": "zz"}"#);
+        assert_eq!(r.handle_key(ch('/')), Some(Action::Render));
+        for c in "zz".chars() {
+            assert_eq!(r.handle_key(ch(c)), Some(Action::Render));
+        }
+        // While the input is active, other response keys are suspended.
+        assert_eq!(r.view().unwrap().cursor, 0);
+        assert!(render(&mut r).contains("/zz"), "the query echoes in the footer");
+        r.handle_key(key(KeyCode::Enter));
+        let out = render(&mut r);
+        assert!(out.contains("1/2"), "match counter: {out}");
+        assert_eq!(r.view().unwrap().cursor, 1, "jumped to the first match");
+        r.handle_key(ch('n'));
+        assert!(render(&mut r).contains("2/2"));
+        r.handle_key(ch('n'));
+        assert!(render(&mut r).contains("1/2"), "n wraps around");
+        r.handle_key(ch('N'));
+        assert!(render(&mut r).contains("2/2"), "N wraps backwards");
+        r.handle_key(key(KeyCode::Esc));
+        assert!(r.view().unwrap().search.is_none(), "esc closes search");
+    }
+
+    #[test]
+    fn typing_while_search_is_active_does_not_move_the_cursor() {
+        let mut r = ready(r#"{"a": 1, "b": 2}"#);
+        r.handle_key(ch('/'));
+        for c in "jjG".chars() {
+            assert_eq!(r.handle_key(ch(c)), Some(Action::Render));
+        }
+        assert_eq!(r.view().unwrap().cursor, 0, "navigation keys are suspended");
+        assert_eq!(r.view().unwrap().search.as_ref().unwrap().input.text(), "jjG");
+    }
+
+    #[test]
+    fn search_jumps_into_a_collapsed_container() {
+        let mut r = ready(r#"{"a": {"b": {"c": "needle"}}}"#);
+        r.handle_key(ch('j'));
+        r.handle_key(key(KeyCode::Char(' '))); // collapse "a"
+        assert!(!render(&mut r).contains("needle"), "hidden while collapsed");
+        r.handle_key(ch('/'));
+        for c in "needle".chars() {
+            r.handle_key(ch(c));
+        }
+        r.handle_key(key(KeyCode::Enter));
+        let out = render(&mut r);
+        assert!(out.contains("needle"), "jumping expands the ancestors: {out}");
+        assert!(out.contains("1/1"));
+    }
+
+    #[test]
+    fn search_is_case_insensitive_and_finds_nothing_gracefully() {
+        let mut r = ready(r#"{"Needle": 1}"#);
+        r.handle_key(ch('/'));
+        for c in "NEEDLE".chars() {
+            r.handle_key(ch(c));
+        }
+        r.handle_key(key(KeyCode::Enter));
+        assert!(render(&mut r).contains("1/1"));
+        r.handle_key(ch('/'));
+        for c in "absent".chars() {
+            r.handle_key(ch(c));
+        }
+        r.handle_key(key(KeyCode::Enter));
+        let out = render(&mut r);
+        assert!(out.contains("no matches"), "{out}");
+        assert_eq!(r.handle_key(ch('n')), Some(Action::Render), "n with no matches is inert");
+    }
+
+    #[test]
+    fn search_works_in_raw_view_too() {
+        let mut r = ready("plain text with a needle inside");
+        r.handle_key(ch('/'));
+        for c in "needle".chars() {
+            r.handle_key(ch(c));
+        }
+        r.handle_key(key(KeyCode::Enter));
+        assert!(render(&mut r).contains("1/1"));
+    }
+
+    #[test]
+    fn in_flight_shows_a_spinner_and_the_cancel_hint() {
+        let mut r = Response::default();
+        r.set_state(ResponseState::InFlight { started: Instant::now() });
+        let out = render(&mut r);
+        assert!(SPINNER.iter().any(|g| out.contains(*g)), "a spinner glyph: {out}");
+        assert!(out.contains("esc to cancel"), "{out}");
+    }
+
+    #[test]
+    fn failed_and_cancelled_render_their_messages() {
+        let mut r = Response::default();
+        r.set_state(ResponseState::Failed("connection refused".into()));
+        assert!(render(&mut r).contains("connection refused"));
+        r.set_state(ResponseState::Cancelled);
+        assert!(render(&mut r).contains("Request cancelled"));
+        r.set_state(ResponseState::Empty);
+        assert!(render(&mut r).contains("response will appear here"));
+    }
+
+    #[test]
+    fn keys_do_nothing_outside_the_ready_state() {
+        let mut r = Response::default();
+        assert_eq!(r.handle_key(ch('j')), None, "an empty pane ignores navigation");
+        assert_eq!(r.handle_key(ch('/')), None);
+        r.set_state(ResponseState::InFlight { started: Instant::now() });
+        assert_eq!(r.handle_key(key(KeyCode::Esc)), Some(Action::CancelSend));
+        assert_eq!(r.handle_key(ch('j')), None);
+    }
+
+    #[test]
+    fn a_new_response_resets_the_view() {
+        let mut r = ready("{\"a\": 1,\n \"b\": 2}");
+        r.handle_key(ch('G'));
+        assert_eq!(r.view().unwrap().cursor, 3, "last pretty line");
+        r.handle_key(ch('r'));
+        assert_eq!(r.view().unwrap().cursor, 0, "switching views restarts at the top");
+        r.handle_key(ch('G'));
+        assert_eq!(r.view().unwrap().cursor, 1, "last raw line");
+        r.set_state(ResponseState::Ready(Box::new(data(r#"{"z": 1}"#))));
+        let v = r.view().unwrap();
+        assert_eq!(v.cursor, 0);
+        assert_eq!(v.scroll, 0);
+        assert!(v.search.is_none());
+        assert!(render(&mut r).contains("\"z\""), "back to pretty for the new body");
     }
 }

@@ -7,6 +7,7 @@ version.workspace = true
 postui-core = { path = "../postui-core" }
 anyhow.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 toml.workspace = true
 ratatui = "0.30"
 crossterm = { version = "0.29", features = ["event-stream"] }

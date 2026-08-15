@@ -10,7 +10,6 @@ use crate::layout::PaneId;
 use crate::theme::Theme;
 use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -57,6 +56,9 @@ pub struct App {
     /// a dangling sender in `App::new_for_test()`. Always `None` outside
     /// of tests.
     _test_rx: Option<UnboundedReceiver<Action>>,
+    /// Owns (and, on drop, removes) the throwaway project directory made by
+    /// `App::new_for_test()`. Always `None` outside of tests.
+    _test_dir: Option<tempfile::TempDir>,
 }
 
 impl App {
@@ -113,19 +115,21 @@ impl App {
             tx,
             pending_terminal_action: None,
             _test_rx: None,
+            _test_dir: None,
         }
     }
 
     /// Constructs an `App` for tests, with its own channel so `tx` is
-    /// always a live sender, and a fresh throwaway project directory under
-    /// the system temp dir (unique per call, so tests never collide).
+    /// always a live sender, and a fresh throwaway project directory the
+    /// `App` owns and deletes on drop. A name derived from pid + a counter
+    /// is *not* enough: this leaves the directory behind, and a later run
+    /// that happens to reuse the pid inherits its files.
     pub fn new_for_test() -> Self {
-        static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!("postui-test-{}-{n}", std::process::id()));
-        let mut app = Self::with_root(tx, root);
+        let dir = tempfile::tempdir().expect("a temp dir for the test project");
+        let mut app = Self::with_root(tx, dir.path().to_path_buf());
         app._test_rx = Some(rx);
+        app._test_dir = Some(dir);
         app
     }
 }
@@ -413,7 +417,7 @@ impl App {
                 }
                 self.send_generation += 1;
                 let generation = self.send_generation;
-                self.response.state = ResponseState::InFlight { started: Instant::now() };
+                self.response.set_state(ResponseState::InFlight { started: Instant::now() });
                 let tx = self.tx.clone();
                 let client = self.client.clone();
                 let task = tokio::spawn(async move {
@@ -433,7 +437,7 @@ impl App {
             Action::CancelSend => match self.in_flight.take() {
                 Some(inflight) => {
                     inflight.task.abort();
-                    self.response.state = ResponseState::Cancelled;
+                    self.response.set_state(ResponseState::Cancelled);
                     true
                 }
                 None => false,
@@ -443,7 +447,7 @@ impl App {
                     return false; // stale: a newer send has already superseded it
                 }
                 self.in_flight = None;
-                self.response.state = ResponseState::Ready(data);
+                self.response.set_state(ResponseState::Ready(data));
                 true
             }
             Action::RequestFailed { generation, error } => {
@@ -451,7 +455,7 @@ impl App {
                     return false; // stale, see above
                 }
                 self.in_flight = None;
-                self.response.state = ResponseState::Failed(error);
+                self.response.set_state(ResponseState::Failed(error));
                 true
             }
         }
@@ -943,7 +947,7 @@ mod tests {
         let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
         app.send_generation = 5;
         app.update(Action::RequestFailed { generation: 4, error: "old".into() });
-        assert!(matches!(app.response.state, ResponseState::Empty), "stale result dropped");
+        assert!(matches!(app.response.state(), ResponseState::Empty), "stale result dropped");
     }
 
     #[tokio::test]
@@ -972,7 +976,7 @@ mod tests {
         app.editor.url = crate::components::line_input::LineInput::new("http://127.0.0.1:9"); // unroutable, never actually hit
         app.update(Action::ForceSend);
         assert!(app.in_flight.is_some());
-        assert!(matches!(app.response.state, ResponseState::InFlight { .. }));
+        assert!(matches!(app.response.state(), ResponseState::InFlight { .. }));
         assert_eq!(app.send_generation, 1);
     }
 
@@ -985,7 +989,7 @@ mod tests {
         assert!(app.in_flight.is_some());
         app.update(Action::CancelSend);
         assert!(app.in_flight.is_none());
-        assert!(matches!(app.response.state, ResponseState::Cancelled));
+        assert!(matches!(app.response.state(), ResponseState::Cancelled));
         // no-op when nothing is in flight
         assert!(!app.update(Action::CancelSend));
     }
@@ -1005,15 +1009,37 @@ mod tests {
         };
         app.update(Action::ResponseArrived { generation: 1, data: Box::new(data.clone()) });
         assert!(app.in_flight.is_none());
-        assert!(matches!(app.response.state, ResponseState::Ready(ref d) if **d == data));
+        assert!(matches!(app.response.state(), ResponseState::Ready(d) if **d == data));
     }
 
     #[test]
     fn esc_on_in_flight_response_pane_requests_cancel() {
         let mut app = App::new_for_test();
-        app.response.state = ResponseState::InFlight { started: std::time::Instant::now() };
+        app.response.set_state(ResponseState::InFlight { started: std::time::Instant::now() });
         let action = app.response.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(action, Some(Action::CancelSend));
+    }
+
+    #[test]
+    fn plain_keys_reach_the_focused_response_pane() {
+        let mut app = App::new_for_test();
+        app.response.set_state(ResponseState::Ready(Box::new(crate::http::ResponseData {
+            status: 200,
+            headers: vec![],
+            body: r#"{"a": 1}"#.into(),
+            elapsed: std::time::Duration::from_millis(5),
+            size: 8,
+            content_type: None,
+        })));
+        app.focus = PaneId::Response;
+        let keymap = Keymap::default_bindings();
+        app.handle_key(&keymap, plain('j'));
+        assert_eq!(app.response.view().unwrap().cursor, 1, "j moved the response cursor");
+        // 'q' quits globally, but the pane's search input takes it first.
+        app.handle_key(&keymap, plain('/'));
+        app.handle_key(&keymap, plain('q'));
+        assert!(!app.should_quit, "a key the pane consumed must not fall through");
+        assert_eq!(app.response.view().unwrap().search.as_ref().unwrap().input.text(), "q");
     }
 
     #[test]
