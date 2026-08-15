@@ -38,6 +38,12 @@ impl KeyCombo {
             "down" => KeyCode::Down,
             "left" => KeyCode::Left,
             "right" => KeyCode::Right,
+            k if k.len() >= 2 && k.len() <= 3 && k.starts_with('f') && k[1..].bytes().all(|b| b.is_ascii_digit()) => {
+                match k[1..].parse::<u8>() {
+                    Ok(n) if (1..=12).contains(&n) => KeyCode::F(n),
+                    _ => return None,
+                }
+            }
             k => {
                 let mut chars = k.chars();
                 match (chars.next(), chars.next()) {
@@ -78,6 +84,28 @@ fn named_actions() -> Vec<(&'static str, Action)> {
     ]
 }
 
+fn parse_overrides(toml_str: &str) -> anyhow::Result<Vec<(String, Vec<String>)>> {
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+    let table: HashMap<String, OneOrMany> = toml::from_str(toml_str)?;
+    Ok(table
+        .into_iter()
+        .map(|(k, v)| {
+            (
+                k,
+                match v {
+                    OneOrMany::One(s) => vec![s],
+                    OneOrMany::Many(v) => v,
+                },
+            )
+        })
+        .collect())
+}
+
 impl Keymap {
     pub fn default_bindings() -> Self {
         let defaults = [
@@ -88,33 +116,48 @@ impl Keymap {
             ("ctrl+p", Action::OpenPalette),
             ("esc", Action::Close),
         ];
-        let mut bindings = HashMap::new();
+        let mut map = Self { bindings: HashMap::new() };
         for (s, a) in defaults {
             // Combos in this table are compile-time constants; parse cannot fail.
             if let Some(c) = KeyCombo::parse(s) {
-                bindings.insert(c, a);
+                map.bind(c, a);
             }
         }
-        Self { bindings }
+        map
     }
 
     pub fn lookup(&self, combo: &KeyCombo) -> Option<Action> {
         self.bindings.get(combo).cloned()
     }
 
+    pub fn bind(&mut self, combo: KeyCombo, action: Action) {
+        self.bindings.insert(combo, action);
+    }
+
     pub fn apply_overrides(&mut self, toml_str: &str) -> anyhow::Result<()> {
-        let table: HashMap<String, String> = toml::from_str(toml_str)?;
-        for (action_name, combo_str) in table {
+        for (action_name, combo_strs) in parse_overrides(toml_str)? {
             let action = named_actions()
                 .into_iter()
                 .find(|(n, _)| *n == action_name)
                 .map(|(_, a)| a)
                 .ok_or_else(|| anyhow::anyhow!("unknown action: {action_name}"))?;
-            let combo = KeyCombo::parse(&combo_str)
-                .ok_or_else(|| anyhow::anyhow!("bad key combo: {combo_str}"))?;
-            self.bindings.retain(|_, a| *a != action); // rebind removes old combo
-            self.bindings.insert(combo, action);
+            let combos = combo_strs
+                .iter()
+                .map(|s| {
+                    KeyCombo::parse(s).ok_or_else(|| anyhow::anyhow!("bad key combo: {s}"))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            let ctrl_c = KeyCombo::parse("ctrl+c").unwrap();
+            if action != Action::Quit && combos.contains(&ctrl_c) {
+                anyhow::bail!("ctrl+c is reserved for quit");
+            }
+            self.bindings.retain(|_, a| *a != action); // rebind removes old combo(s)
+            for combo in combos {
+                self.bind(combo, action.clone());
+            }
         }
+        // ctrl+c is always reserved for quit, regardless of overrides.
+        self.bind(KeyCombo::parse("ctrl+c").unwrap(), Action::Quit);
         Ok(())
     }
 
@@ -168,18 +211,49 @@ mod tests {
     }
 
     #[test]
-    fn toml_overrides_rebind_and_reject_unknown() {
+    fn override_accepts_string_or_list_and_replaces_all_defaults() {
         let mut m = Keymap::default_bindings();
-        m.apply_overrides(r#"
-            quit = "ctrl+q"
-            open_palette = "ctrl+k"
-        "#).unwrap();
-        let get = |s: &str| m.lookup(&KeyCombo::parse(s).unwrap());
-        assert_eq!(get("ctrl+q"), Some(Action::Quit));
-        assert_eq!(get("ctrl+k"), Some(Action::OpenPalette));
-        assert_eq!(get("ctrl+p"), None, "old binding removed on rebind");
+        m.apply_overrides(r#"quit = ["ctrl+q", "f10"]"#).unwrap();
+        let get = |m: &Keymap, s: &str| m.lookup(&KeyCombo::parse(s).unwrap());
+        assert_eq!(get(&m, "ctrl+q"), Some(Action::Quit));
+        assert_eq!(get(&m, "q"), None, "default 'q' replaced by explicit list");
+        m.apply_overrides(r#"open_palette = "ctrl+k""#).unwrap();
+        assert_eq!(get(&m, "ctrl+k"), Some(Action::OpenPalette));
+        assert_eq!(get(&m, "ctrl+p"), None);
+    }
+
+    #[test]
+    fn ctrl_c_is_always_quit_and_cannot_be_taken() {
+        let mut m = Keymap::default_bindings();
+        m.apply_overrides(r#"quit = "ctrl+q""#).unwrap();
+        assert_eq!(m.lookup(&KeyCombo::parse("ctrl+c").unwrap()), Some(Action::Quit),
+            "ctrl+c survives a quit rebind");
+        assert!(m.apply_overrides(r#"open_palette = "ctrl+c""#).is_err(),
+            "ctrl+c cannot be bound to another action");
+    }
+
+    #[test]
+    fn unknown_action_and_bad_combo_still_error() {
+        let mut m = Keymap::default_bindings();
         assert!(m.apply_overrides(r#"unknown_action = "x""#).is_err());
         assert!(m.apply_overrides(r#"quit = "not+a+key""#).is_err());
+        assert!(m.apply_overrides(r#"quit = ["q", "not+a+key"]"#).is_err());
+    }
+
+    #[test]
+    fn parses_function_keys() {
+        for n in 1..=12u8 {
+            let s = format!("f{n}");
+            let c = KeyCombo::parse(&s).unwrap_or_else(|| panic!("failed to parse {s}"));
+            assert_eq!(c.code, KeyCode::F(n));
+        }
+    }
+
+    #[test]
+    fn parse_edge_cases_return_none() {
+        assert!(KeyCombo::parse("ctrl+").is_none());
+        assert!(KeyCombo::parse("q+").is_none());
+        assert!(KeyCombo::parse("qq").is_none());
     }
 
     #[test]
