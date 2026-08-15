@@ -1,5 +1,6 @@
 mod action;
 mod app;
+mod theme;
 
 use action::Action;
 use app::App;
