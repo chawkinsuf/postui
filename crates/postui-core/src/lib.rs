@@ -3,6 +3,7 @@ pub const APP_NAME: &str = "postui";
 
 pub mod model;
 pub mod storage;
+pub mod prepare;
 
 #[cfg(test)]
 mod tests {
