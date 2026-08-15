@@ -7,7 +7,7 @@ version.workspace = true
 serde.workspace = true
 indexmap.workspace = true
 thiserror.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["preserve_order", "arbitrary_precision"] }
 toml.workspace = true
 toml_edit.workspace = true
 tempfile.workspace = true
