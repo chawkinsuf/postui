@@ -1,6 +1,6 @@
 use crate::action::{Action, CopyTarget};
 use crate::components::editor::{Editor, EditorTab, SubFocus};
-use crate::components::modal::{Modal, ModalStack, PromptKind};
+use crate::components::modal::{Modal, ModalResult, ModalStack, PromptKind};
 use crate::components::response::ResponseState;
 use crate::components::sidebar::Row;
 use crate::components::toast::{ToastKind, Toasts};
@@ -1307,14 +1307,7 @@ impl App {
             let Some(res) = self.modals.handle_key(ev) else {
                 return true; // typed into modal
             };
-            let mut changed = res.close;
-            if res.close {
-                self.modals.pop();
-            }
-            for a in res.actions {
-                changed |= self.update(a);
-            }
-            return changed;
+            return self.apply_modal_result(res);
         }
 
         // 3. Modified combos prefer the global keymap (app shortcuts beat editors).
@@ -1381,18 +1374,6 @@ impl App {
                 false
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                // Modal-open guard: until a later task registers modal
-                // hits (so modal draw order makes them win), clicks while a
-                // modal is open would otherwise resolve to whatever pane
-                // hit happens to be underneath. Keep clicks inert here —
-                // except for Dropdown, whose hits (DropdownRow, plus the
-                // ModalOutside backdrop) are already registered, so clicks
-                // must flow through to `on_hit`. A later task removes this
-                // guard entirely once every modal registers its hits.
-                if !self.modals.is_empty() && !matches!(self.modals.top(), Some(Modal::Dropdown(_)))
-                {
-                    return false;
-                }
                 let Some(hit) = self.hits.hit_at(m.column, m.row).cloned() else {
                     return false;
                 };
@@ -1411,7 +1392,12 @@ impl App {
             MouseEventKind::Up(MouseButton::Left) => self.drag.take().is_some(),
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 if !self.modals.is_empty() {
-                    return false;
+                    let d = if m.kind == MouseEventKind::ScrollUp {
+                        -3
+                    } else {
+                        3
+                    };
+                    return self.modals.scroll_top(d);
                 }
                 if matches!(self.hits.hit_at(m.column, m.row), Some(Hit::BodyEditor))
                     && self.editor.handle_mouse(m)
@@ -1485,6 +1471,21 @@ impl App {
                 self.editor.scrollbar_spec().map(|s| s.offset) != Some(spec.offset)
             }
         }
+    }
+
+    /// Pops the top modal on `close` and dispatches each of `res`'s
+    /// actions, exactly like the key path used to inline — shared by
+    /// `handle_key`'s modal branch and `on_hit`'s modal click arms so a
+    /// click and the equivalent keypress can never disagree.
+    fn apply_modal_result(&mut self, res: ModalResult) -> bool {
+        let mut changed = res.close;
+        if res.close {
+            self.modals.pop();
+        }
+        for a in res.actions {
+            changed |= self.update(a);
+        }
+        changed
     }
 
     /// The central click dispatch: maps a resolved `Hit` (plus click count
@@ -1584,6 +1585,60 @@ impl App {
                 self.update(action)
             }
             Hit::ModalOutside => self.update(Action::Close),
+            Hit::PaletteRow(i) => {
+                let Some(Modal::Palette(state)) = self.modals.top_mut() else {
+                    return false;
+                };
+                // Single click runs the command (spec §6) — no
+                // select-then-confirm step for the palette.
+                state.select(i);
+                let Some(res) = state.confirm() else {
+                    return false;
+                };
+                self.apply_modal_result(res)
+            }
+            Hit::ChooserRow(i) => {
+                let Some(Modal::Chooser(state)) = self.modals.top_mut() else {
+                    return false;
+                };
+                if state.selected() == i || clicks == 2 {
+                    let Some(res) = state.confirm() else {
+                        return false;
+                    };
+                    self.apply_modal_result(res)
+                } else {
+                    state.select(i);
+                    self.update(Action::Render)
+                }
+            }
+            Hit::VarPickerRow(i) => {
+                let Some(Modal::VarPicker(state)) = self.modals.top_mut() else {
+                    return false;
+                };
+                if state.selected() == i || clicks == 2 {
+                    let Some(res) = state.confirm() else {
+                        return false;
+                    };
+                    self.apply_modal_result(res)
+                } else {
+                    state.select(i);
+                    self.update(Action::Render)
+                }
+            }
+            Hit::ConfirmChoice(c) => {
+                let Some(Modal::Confirm { choices, .. }) = self.modals.top() else {
+                    return false;
+                };
+                let Some((_, _, actions)) = choices.iter().find(|(choice, _, _)| *choice == c)
+                else {
+                    return false;
+                };
+                let res = ModalResult {
+                    actions: actions.clone(),
+                    close: true,
+                };
+                self.apply_modal_result(res)
+            }
             Hit::ResponseTab(mode) => {
                 self.update(Action::FocusPane(PaneId::Response));
                 self.update(Action::ResponseViewMode(mode))
@@ -1622,7 +1677,6 @@ impl App {
             Hit::ScrollbarTrack(pane, delta) => {
                 self.update(Action::ScrollPane(pane, delta.clamp(-30, 30)))
             }
-            _ => false,
         }
     }
 }
@@ -3242,6 +3296,134 @@ mod tests {
         app.handle_mouse(left_down(row3.x, row3.y));
         assert_eq!(app.editor.method, postui_core::model::Method::Patch);
         assert!(app.modals.is_empty());
+    }
+
+    #[test]
+    fn click_palette_row_runs_immediately() {
+        let mut app = App::new_for_test();
+        app.update(Action::OpenPalette);
+        for c in "quit".chars() {
+            app.handle_key(&Keymap::default_bindings(), plain(c));
+        }
+        render_once(&mut app);
+        let row = app.hits.rect_of(&Hit::PaletteRow(0)).unwrap();
+        assert!(app.handle_mouse(left_down(row.x, row.y)));
+        assert!(app.should_quit, "single click on the Quit row runs it");
+        assert!(app.modals.is_empty());
+    }
+
+    #[test]
+    fn click_chooser_row_selects_then_click_again_confirms() {
+        let (mut app, _a, b) = two_projects();
+        app.update(Action::OpenProjectChooser);
+        render_once(&mut app);
+        // Row 0 is alpha (the currently open project); row 1 is beta.
+        let row1 = app.hits.rect_of(&Hit::ChooserRow(1)).unwrap();
+        assert!(app.handle_mouse(left_down(row1.x, row1.y)));
+        assert!(
+            matches!(app.modals.top(), Some(Modal::Chooser(_))),
+            "first click only selects: modal stays open"
+        );
+        let Some(Modal::Chooser(c)) = app.modals.top() else {
+            unreachable!()
+        };
+        assert_eq!(c.selected(), 1, "selection moved to the clicked row");
+        assert_ne!(app.project.root, b.path(), "not switched yet");
+
+        render_once(&mut app);
+        let row1 = app.hits.rect_of(&Hit::ChooserRow(1)).unwrap();
+        assert!(app.handle_mouse(left_down(row1.x, row1.y)));
+        assert_eq!(
+            app.project.root,
+            b.path(),
+            "second click on the already-selected row confirms"
+        );
+        assert!(app.modals.is_empty());
+    }
+
+    #[test]
+    fn click_outside_the_palette_closes_it_with_no_action() {
+        let mut app = App::new_for_test();
+        app.update(Action::OpenPalette);
+        render_once(&mut app);
+        let palette_row = app.hits.rect_of(&Hit::PaletteRow(0)).unwrap();
+        // A point in the screen's top-left corner, clear of the centered
+        // palette rect.
+        assert!(
+            palette_row.y > 0,
+            "sanity: the palette isn't flush against the top edge"
+        );
+        assert!(app.handle_mouse(left_down(0, 0)));
+        assert!(app.modals.is_empty());
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn click_confirm_choice_chip_deletes_the_request() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let dir = tempfile::tempdir().unwrap();
+        postui_core::storage::ensure_project(dir.path()).unwrap();
+        postui_core::storage::save_request(dir.path(), "ping", &req("https://x/ping")).unwrap();
+        let mut app = App::with_root(tx, dir.path().to_path_buf());
+        app.sidebar.selected = 0;
+        app.update(Action::ConfirmDeleteRequest);
+        assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+
+        render_once(&mut app);
+        let chip = app.hits.rect_of(&Hit::ConfirmChoice('y')).unwrap();
+        assert!(app.handle_mouse(left_down(chip.x, chip.y)));
+        assert!(app.modals.is_empty());
+        assert!(
+            !postui_core::storage::request_exists(dir.path(), "ping"),
+            "clicking the [y] chip must delete the request"
+        );
+    }
+
+    #[test]
+    fn chooser_keys_and_wheel_keep_a_long_list_scrolling_correctly() {
+        use crate::components::chooser::{ChooserItem, ChooserState};
+        let mut app = App::new_for_test();
+        let items: Vec<ChooserItem> = (0..25)
+            .map(|i| ChooserItem {
+                label: format!("item{i:02}"),
+                detail: None,
+                actions: vec![Action::Render],
+            })
+            .collect();
+        app.modals
+            .push(Modal::Chooser(ChooserState::new("Many", items)));
+        // A tall-enough terminal that the modal clamps to its 16-row cap.
+        {
+            use ratatui::Terminal;
+            use ratatui::backend::TestBackend;
+            let backend = TestBackend::new(120, 40);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        }
+
+        let keymap = Keymap::default_bindings();
+        for _ in 0..20 {
+            app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        }
+        render_once(&mut app);
+        let Some(Modal::Chooser(c)) = app.modals.top() else {
+            panic!("expected a Chooser modal on top");
+        };
+        assert_eq!(c.selected(), 20);
+        assert!(
+            app.hits.rect_of(&Hit::ChooserRow(20)).is_some(),
+            "row 20 must be drawn (and hit-registered) once scroll caught up: {}",
+            c.selected()
+        );
+
+        // Wheel scrolling must move the viewport without moving selection.
+        let area = app.hits.rect_of(&Hit::ChooserRow(20)).unwrap();
+        app.handle_mouse(scroll_down(area.x, area.y));
+        render_once(&mut app);
+        let Some(Modal::Chooser(c)) = app.modals.top() else {
+            panic!("expected a Chooser modal on top");
+        };
+        assert_eq!(c.selected(), 20, "wheel must not move the selection");
     }
 
     #[tokio::test]

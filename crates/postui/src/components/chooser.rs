@@ -28,6 +28,14 @@ pub struct ChooserState {
     selected: usize,
     items: Vec<ChooserItem>,
     filtered: Vec<usize>,
+    /// First visible row's index into `filtered`. Kept in view of `selected`
+    /// on the next `draw` whenever `ensure_visible` is set; free to roam
+    /// otherwise (wheel scrolling).
+    scroll: usize,
+    /// Set whenever `selected` changes via keys (or on refilter) so the next
+    /// `draw` scrolls it back into view; wheel scrolling clears it so a free
+    /// scroll survives the following draw untouched.
+    ensure_visible: bool,
 }
 
 impl ChooserState {
@@ -39,6 +47,8 @@ impl ChooserState {
             selected: 0,
             items,
             filtered,
+            scroll: 0,
+            ensure_visible: true,
         }
     }
 
@@ -46,10 +56,44 @@ impl ChooserState {
         &self.input
     }
 
+    pub fn selected(&self) -> usize {
+        self.selected
+    }
+
     pub fn selected_label(&self) -> Option<&str> {
         self.filtered
             .get(self.selected)
             .map(|&i| self.items[i].label.as_str())
+    }
+
+    /// Moves the keyboard/mouse cursor to filtered row `i` (clamped in
+    /// range) and asks the next draw to scroll it into view.
+    pub fn select(&mut self, i: usize) {
+        if i < self.filtered.len() {
+            self.selected = i;
+            self.ensure_visible = true;
+        }
+    }
+
+    /// The `ModalResult` an `Enter` (or a confirming click) on the current
+    /// selection produces — `None` when nothing is selected (empty filter).
+    pub fn confirm(&self) -> Option<super::modal::ModalResult> {
+        let &idx = self.filtered.get(self.selected)?;
+        Some(super::modal::ModalResult {
+            actions: self.items[idx].actions.clone(),
+            close: true,
+        })
+    }
+
+    /// Adjusts `scroll` by `delta` lines, clamped to the filtered list's
+    /// bounds, without moving `selected`. A no-op on an empty list.
+    pub fn scroll_by(&mut self, delta: i16) {
+        if self.filtered.is_empty() {
+            return;
+        }
+        let max = self.filtered.len().saturating_sub(1);
+        self.scroll = (self.scroll as i32 + delta as i32).clamp(0, max as i32) as usize;
+        self.ensure_visible = false;
     }
 
     fn refilter(&mut self) {
@@ -67,6 +111,8 @@ impl ChooserState {
             .map(|(i, _)| i)
             .collect();
         self.selected = 0;
+        self.scroll = 0;
+        self.ensure_visible = true;
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<super::modal::ModalResult> {
@@ -77,18 +123,16 @@ impl ChooserState {
                     close: true,
                 });
             }
-            KeyCode::Enter => {
-                let &idx = self.filtered.get(self.selected)?;
-                return Some(super::modal::ModalResult {
-                    actions: self.items[idx].actions.clone(),
-                    close: true,
-                });
+            KeyCode::Enter => return self.confirm(),
+            KeyCode::Up => {
+                self.selected = self.selected.saturating_sub(1);
+                self.ensure_visible = true;
             }
-            KeyCode::Up => self.selected = self.selected.saturating_sub(1),
             KeyCode::Down => {
                 if self.selected + 1 < self.filtered.len() {
                     self.selected += 1;
                 }
+                self.ensure_visible = true;
             }
             KeyCode::Backspace => {
                 self.input.pop();
@@ -104,11 +148,12 @@ impl ChooserState {
     }
 
     pub fn draw(
-        &self,
+        &mut self,
         frame: &mut Frame,
         screen: Rect,
         theme: &Theme,
-        _hits: &mut crate::hit::HitMap,
+        hits: &mut crate::hit::HitMap,
+        hovered: Option<&crate::hit::Hit>,
     ) {
         let width = 60.min(screen.width);
         let height = (self.filtered.len() as u16 + 4)
@@ -140,17 +185,36 @@ impl ChooserState {
             height: inner.height.saturating_sub(2),
             ..inner
         };
+        let list_h = list_area.height as usize;
+        if self.ensure_visible {
+            if list_h > 0 {
+                if self.selected < self.scroll {
+                    self.scroll = self.selected;
+                } else if self.selected >= self.scroll + list_h {
+                    self.scroll = self.selected + 1 - list_h;
+                }
+                let max_scroll = self.filtered.len().saturating_sub(list_h);
+                self.scroll = self.scroll.min(max_scroll);
+            }
+            self.ensure_visible = false;
+        }
+
         let items: Vec<ListItem> = self
             .filtered
             .iter()
             .enumerate()
+            .skip(self.scroll)
+            .take(list_h.max(1))
             .map(|(i, &idx)| {
                 let item = &self.items[idx];
-                let style = if i == self.selected {
+                let mut style = if i == self.selected {
                     Style::default().fg(theme.accent).bold()
                 } else {
                     Style::default().fg(theme.text)
                 };
+                if hovered == Some(&crate::hit::Hit::ChooserRow(i)) {
+                    style = style.bg(theme.surface_raised);
+                }
                 let marker = if i == self.selected { "› " } else { "  " };
                 let mut spans = vec![
                     Span::styled(marker, style),
@@ -162,7 +226,14 @@ impl ChooserState {
                         Style::default().fg(theme.text_muted),
                     ));
                 }
-                ListItem::new(Line::from(spans))
+                let row_area = Rect {
+                    x: list_area.x,
+                    y: list_area.y + (i - self.scroll) as u16,
+                    width: list_area.width,
+                    height: 1,
+                };
+                hits.register(row_area, crate::hit::Hit::ChooserRow(i));
+                ListItem::new(Line::from(spans).style(style))
             })
             .collect();
         frame.render_widget(List::new(items), list_area);
@@ -240,7 +311,7 @@ mod tests {
 
     #[test]
     fn draw_renders_title_labels_and_dim_details() {
-        let c = ChooserState::new(
+        let mut c = ChooserState::new(
             "Projects",
             vec![
                 ChooserItem {
@@ -260,7 +331,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
-            .draw(|f| c.draw(f, f.area(), &theme, &mut hits))
+            .draw(|f| c.draw(f, f.area(), &theme, &mut hits, None))
             .unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("Projects"), "title should render");

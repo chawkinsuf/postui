@@ -251,21 +251,49 @@ impl ModalStack {
         self.stack.last_mut()
     }
 
+    /// Scrolls the top modal's list by `delta` lines (positive = down),
+    /// without moving its selection — the wheel-over-an-open-modal
+    /// behavior. A no-op (returns `false`) for modals with no scrollable
+    /// list, or when the stack is empty.
+    pub fn scroll_top(&mut self, delta: i16) -> bool {
+        match self.stack.last_mut() {
+            Some(Modal::Palette(state)) => {
+                state.scroll_by(delta);
+                true
+            }
+            Some(Modal::Chooser(state)) => {
+                state.scroll_by(delta);
+                true
+            }
+            Some(Modal::VarPicker(state)) => {
+                state.scroll_by(delta);
+                true
+            }
+            _ => false,
+        }
+    }
+
     pub fn draw(
-        &self,
+        &mut self,
         frame: &mut Frame,
         screen: Rect,
         theme: &Theme,
         hits: &mut crate::hit::HitMap,
         hovered: Option<&crate::hit::Hit>,
     ) {
-        let Some(top) = self.stack.last() else { return };
+        let Some(top) = self.stack.last_mut() else {
+            return;
+        };
         // Every variant dims the backdrop except Dropdown: it's a small
         // anchored popup (e.g. the method selector), not a screen-owning
         // modal, so dimming everything behind it would be jarring.
         if !matches!(top, Modal::Dropdown(_)) {
             dim_backdrop(frame, screen);
         }
+        // Registered before the modal's own hits so any click landing
+        // outside them (topmost-wins in `HitMap`) closes the modal, same as
+        // Esc — live for every variant, not just Dropdown.
+        hits.register(screen, crate::hit::Hit::ModalOutside);
         match top {
             Modal::Message { title, body } => {
                 let area = centered_rect(screen, 60.min(screen.width), 9);
@@ -300,19 +328,63 @@ impl ModalStack {
                     .style(Style::default().bg(theme.surface_raised))
                     .title(format!(" {title} "))
                     .title_style(Style::default().fg(theme.accent));
-                let mut hint = choices
-                    .iter()
-                    .map(|(c, label, _)| format!("[{c}] {label}"))
-                    .collect::<Vec<_>>();
-                hint.push("[esc] Cancel".to_string());
-                let text = format!("{body}\n\n{}", hint.join("   "));
                 frame.render_widget(Clear, area);
+                let inner = block.inner(area);
+                frame.render_widget(block, area);
+
+                let body_area = Rect {
+                    height: inner.height.saturating_sub(2),
+                    ..inner
+                };
                 frame.render_widget(
-                    Paragraph::new(text)
+                    Paragraph::new(body.as_str())
                         .style(Style::default().fg(theme.text))
-                        .wrap(Wrap { trim: false })
-                        .block(block),
-                    area,
+                        .wrap(Wrap { trim: false }),
+                    body_area,
+                );
+
+                // Each `[c] Label` choice is its own clickable chip
+                // (`Hit::ConfirmChoice(c)`); `[esc] Cancel` stays plain text
+                // since Esc already closes the modal from anywhere.
+                let hint_area = Rect {
+                    y: inner.y + inner.height.saturating_sub(1),
+                    height: 1,
+                    ..inner
+                };
+                let mut x = hint_area.x;
+                for (c, label, _) in choices.iter() {
+                    let text = format!("[{c}] {label}");
+                    let w = (text.chars().count() as u16).min(hint_area.right().saturating_sub(x));
+                    let chip_area = Rect {
+                        x,
+                        y: hint_area.y,
+                        width: w,
+                        height: 1,
+                    };
+                    crate::hit::chip(
+                        frame,
+                        hits,
+                        chip_area,
+                        &text,
+                        crate::hit::Hit::ConfirmChoice(*c),
+                        hovered,
+                        None,
+                        theme,
+                    );
+                    x = (x + w + 3).min(hint_area.right());
+                }
+                let esc_area = Rect {
+                    x,
+                    y: hint_area.y,
+                    width: hint_area.right().saturating_sub(x),
+                    height: 1,
+                };
+                frame.render_widget(
+                    Paragraph::new(Span::styled(
+                        "[esc] Cancel",
+                        Style::default().fg(theme.text_muted),
+                    )),
+                    esc_area,
                 );
             }
             Modal::Prompt { title, input, .. } => {
@@ -348,9 +420,9 @@ impl ModalStack {
                     hint_area,
                 );
             }
-            Modal::Palette(state) => state.draw(frame, screen, theme, hits),
-            Modal::Chooser(state) => state.draw(frame, screen, theme, hits),
-            Modal::VarPicker(state) => state.draw(frame, screen, theme, hits),
+            Modal::Palette(state) => state.draw(frame, screen, theme, hits, hovered),
+            Modal::Chooser(state) => state.draw(frame, screen, theme, hits, hovered),
+            Modal::VarPicker(state) => state.draw(frame, screen, theme, hits, hovered),
             Modal::NewProject {
                 name,
                 path,
@@ -437,8 +509,6 @@ fn draw_dropdown(
     hovered: Option<&crate::hit::Hit>,
     state: &DropdownState,
 ) {
-    hits.register(screen, crate::hit::Hit::ModalOutside);
-
     let max_label = state
         .items
         .iter()
