@@ -316,10 +316,13 @@ impl PaletteState {
                     height: 1,
                 };
                 hits.register(row_area, crate::hit::Hit::PaletteRow(i));
-                ListItem::new(Line::from(vec![
-                    Span::styled(marker, style),
-                    Span::styled(c.name, style),
-                ]))
+                ListItem::new(
+                    Line::from(vec![
+                        Span::styled(marker, style),
+                        Span::styled(c.name, style),
+                    ])
+                    .style(style),
+                )
             })
             .collect();
         frame.render_widget(List::new(items), list_area);
@@ -403,5 +406,39 @@ mod tests {
         p.handle_key(key(KeyCode::Down));
         p.handle_key(key(KeyCode::Char('q')));
         assert_eq!(p.selected(), 0);
+    }
+
+    #[test]
+    fn hovered_row_background_fills_the_full_row_width() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut p = PaletteState::new();
+        let theme = Theme::dark();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| {
+                p.draw(
+                    f,
+                    f.area(),
+                    &theme,
+                    &mut hits,
+                    Some(&crate::hit::Hit::PaletteRow(0)),
+                )
+            })
+            .unwrap();
+        let row0 = hits.rect_of(&crate::hit::Hit::PaletteRow(0)).unwrap();
+        let buffer = terminal.backend().buffer();
+        // The label ("Focus: request tree") is well short of the row's
+        // right edge, so a cell out there only picks up the hover
+        // background if it comes from the whole `Line`'s style rather than
+        // just the marker/label spans.
+        let right_edge = (row0.x + row0.width - 1, row0.y);
+        assert_eq!(
+            buffer[right_edge].bg, theme.surface_raised,
+            "hover background must fill the full row width, not just the label glyphs"
+        );
     }
 }
