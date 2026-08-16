@@ -135,7 +135,8 @@ confirmation prompt if it lacks `project.toml`) and registers it in `known`.
   order, wrapping; a toast confirms the switch. No modal.
 - **Environment chooser + cycle**: same pair of interactions over the project's
   environment files, plus a **"no environment"** entry (defaults-only
-  resolution). Active environment is per-project local state.
+  resolution) in the chooser; the cycle key skips "no environment". Active
+  environment is per-project local state.
 - Switching projects with a dirty editor prompts with the existing dirty-prompt
   (save / discard / cancel) before proceeding; it never auto-saves. After the switch, the target project's
   `.local/state.toml` restores its active environment, open request, and sidebar
