@@ -1432,7 +1432,15 @@ impl App {
                     }
                     _ => 1,
                 };
-                self.last_click = Some((hit.clone(), now));
+                // Clear on a double so a third click within the window
+                // starts a fresh count as a single, rather than pairing
+                // with the second click and double-firing (e.g. a fast
+                // triple-click toggling a folder twice, net reverting it).
+                self.last_click = if clicks == 2 {
+                    None
+                } else {
+                    Some((hit.clone(), now))
+                };
                 self.on_hit(hit, clicks, m)
             }
             MouseEventKind::Up(MouseButton::Left) => self.drag.take().is_some(),
@@ -1634,6 +1642,11 @@ impl App {
                 self.update(action)
             }
             Hit::ModalOutside => self.update(Action::Close),
+            // A click on the modal's own chrome (body/borders/query line)
+            // — not one of its interactive hits, which register on top and
+            // so win first. Inert: neither closes the modal nor dispatches
+            // anything.
+            Hit::ModalBody => false,
             Hit::PaletteRow(i) => {
                 let Some(Modal::Palette(state)) = self.modals.top_mut() else {
                     return false;
@@ -2034,6 +2047,20 @@ mod tests {
         terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
     }
 
+    /// Button-held motion, the event kind real terminals send for a drag
+    /// (as opposed to the synthetic `Moved` events used elsewhere in these
+    /// tests) — see the `handle_mouse` doc comment on why both drive drags.
+    fn dragged(x: u16, y: u16) -> ratatui::crossterm::event::MouseEvent {
+        ratatui::crossterm::event::MouseEvent {
+            kind: ratatui::crossterm::event::MouseEventKind::Drag(
+                ratatui::crossterm::event::MouseButton::Left,
+            ),
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
     fn left_up(x: u16, y: u16) -> ratatui::crossterm::event::MouseEvent {
         ratatui::crossterm::event::MouseEvent {
             kind: ratatui::crossterm::event::MouseEventKind::Up(
@@ -2087,6 +2114,57 @@ mod tests {
         app.handle_mouse(left_up(thumb.x, thumb.y + 3));
         assert!(app.drag.is_none());
         app.handle_mouse(moved(thumb.x, thumb.y + 6));
+        assert_eq!(
+            app.sidebar.scroll, after,
+            "motion after release no longer scrolls"
+        );
+    }
+
+    #[test]
+    fn dragging_the_sidebar_thumb_with_drag_events_scrolls_the_same_as_moved() {
+        // Real terminals report button-held motion as `Drag(Left)`, not
+        // `Moved` — the prior test only drove `Moved`. Same scenario, same
+        // assertions, `Drag(Left)` motion instead.
+        use crate::hit::{Hit, offset_for_thumb_top};
+        let mut app = App::new_for_test();
+        let slugs: Vec<postui_core::storage::RequestListing> = (0..60)
+            .map(|i| postui_core::storage::RequestListing {
+                slug: format!("r{i:02}"),
+                broken: None,
+            })
+            .collect();
+        app.sidebar.refresh(slugs, &Default::default());
+        render_once(&mut app);
+
+        let thumb = app
+            .hits
+            .rect_of(&Hit::ScrollbarThumb(PaneId::Sidebar))
+            .expect("sidebar thumb");
+        let track = app.hits.track_of(PaneId::Sidebar).expect("sidebar track");
+        let spec = app
+            .scrollbar_spec(PaneId::Sidebar)
+            .expect("sidebar scrollbar spec");
+        assert_eq!(app.sidebar.scroll, 0);
+
+        assert!(app.handle_mouse(left_down(thumb.x, thumb.y)));
+        assert!(app.drag.is_some(), "pressing the thumb starts a drag");
+
+        assert!(app.handle_mouse(dragged(thumb.x, thumb.y + 3)));
+        let after = app.sidebar.scroll;
+        assert_eq!(
+            after,
+            offset_for_thumb_top(&spec, track.height, 3),
+            "Drag(Left) motion maps the thumb's new top back to a content offset"
+        );
+        assert!(after > 0);
+        assert!(
+            !app.sidebar.ensure_visible,
+            "a free-scroll drag must not snap back to the selection"
+        );
+
+        app.handle_mouse(left_up(thumb.x, thumb.y + 3));
+        assert!(app.drag.is_none());
+        app.handle_mouse(dragged(thumb.x, thumb.y + 6));
         assert_eq!(
             app.sidebar.scroll, after,
             "motion after release no longer scrolls"
@@ -2412,6 +2490,30 @@ mod tests {
     }
 
     #[test]
+    fn triple_click_toggles_the_folder_exactly_once() {
+        // Regression: `last_click` used to survive a double, so a third
+        // click within the 400ms window paired with the second and counted
+        // as another double — a fast triple-click toggled the folder twice
+        // (expand then immediately collapse again), netting no change.
+        let (mut app, _dir) = sidebar_test_app();
+        render_once(&mut app);
+        let before = app.sidebar.rows.len();
+        let r = app.hits.rect_of(&crate::hit::Hit::SidebarRow(1)).unwrap();
+
+        app.handle_mouse(left_down(r.x, r.y)); // 1st: select
+        app.handle_mouse(left_down(r.x, r.y)); // 2nd: double -> expand
+        assert!(app.sidebar.rows.len() > before, "double click expands");
+        let expanded = app.sidebar.rows.len();
+
+        app.handle_mouse(left_down(r.x, r.y)); // 3rd: fresh single, not another double
+        assert_eq!(
+            app.sidebar.rows.len(),
+            expanded,
+            "a third rapid click must not re-toggle the folder"
+        );
+    }
+
+    #[test]
     fn click_new_request_button_opens_prompt_modal() {
         let (mut app, _dir) = sidebar_test_app();
         render_once(&mut app);
@@ -2427,6 +2529,48 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn clicking_a_prompts_own_body_does_not_close_it_or_touch_the_input() {
+        // Regression for the merge blocker: `ModalOutside` used to cover
+        // the whole screen with nothing swallowing clicks on the modal's
+        // own box, so clicking the input line (or any other point inside
+        // the border) resolved to `ModalOutside` and closed the modal,
+        // discarding typed input.
+        let (mut app, _dir) = sidebar_test_app();
+        render_once(&mut app);
+        let r = app
+            .hits
+            .rect_of(&crate::hit::Hit::SidebarNewRequest)
+            .unwrap();
+        app.handle_mouse(left_down(r.x, r.y));
+        assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })));
+
+        let keymap = Keymap::default_bindings();
+        for c in "ping".chars() {
+            app.handle_key(&keymap, plain(c));
+        }
+        render_once(&mut app);
+
+        let body = app.hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
+        let inside = (body.x + body.width / 2, body.y + body.height / 2);
+        app.handle_mouse(left_down(inside.0, inside.1));
+
+        assert!(
+            matches!(
+                app.modals.top(),
+                Some(Modal::Prompt {
+                    kind: PromptKind::NewRequest,
+                    ..
+                })
+            ),
+            "clicking the modal's own chrome must not close it"
+        );
+        let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
+            unreachable!()
+        };
+        assert_eq!(input.text(), "ping", "typed input must be untouched");
     }
 
     #[test]

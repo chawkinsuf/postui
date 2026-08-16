@@ -309,6 +309,7 @@ impl ModalStack {
         match top {
             Modal::Message { title, body } => {
                 let area = centered_rect(screen, 60.min(screen.width), 9);
+                hits.register(area, crate::hit::Hit::ModalBody);
                 let block = Block::default()
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
@@ -332,6 +333,7 @@ impl ModalStack {
                 choices,
             } => {
                 let area = centered_rect(screen, 60.min(screen.width), 9);
+                hits.register(area, crate::hit::Hit::ModalBody);
                 let block = Block::default()
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
@@ -401,6 +403,7 @@ impl ModalStack {
             }
             Modal::Prompt { title, input, .. } => {
                 let area = centered_rect(screen, 60.min(screen.width), 6);
+                hits.register(area, crate::hit::Hit::ModalBody);
                 let block = Block::default()
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
@@ -442,6 +445,7 @@ impl ModalStack {
                 ..
             } => {
                 let area = centered_rect(screen, 60.min(screen.width), 8);
+                hits.register(area, crate::hit::Hit::ModalBody);
                 let block = Block::default()
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
@@ -550,6 +554,7 @@ fn draw_dropdown(
         width,
         height,
     };
+    hits.register(area, crate::hit::Hit::ModalBody);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)

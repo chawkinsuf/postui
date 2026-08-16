@@ -158,6 +158,7 @@ impl VarPickerState {
             .clamp(5, 16)
             .min(screen.height);
         let area = super::modal::centered_rect(screen, width, height);
+        hits.register(area, crate::hit::Hit::ModalBody);
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)

@@ -99,6 +99,11 @@ impl Clipboard {
         if let Some(mut stdin) = child.stdin.take()
             && let Err(e) = stdin.write_all(text.as_bytes())
         {
+            // The child may already have exited (e.g. EPIPE from a command
+            // that closed stdin without reading it); reap it here so it
+            // doesn't linger as a zombie until the app exits.
+            let _ = child.kill();
+            let _ = child.wait();
             return CopyResult::Failed(e.to_string());
         }
 
@@ -170,6 +175,28 @@ mod tests {
         assert!(
             matches!(result, CopyResult::Failed(_)),
             "cmd is authoritative when set: {result:?}"
+        );
+    }
+
+    #[test]
+    fn cmd_that_exits_before_reading_stdin_fails_without_hanging() {
+        // `exit 0` closes stdin immediately without reading it. A payload
+        // larger than a pipe buffer forces `write_all` to hit EPIPE once
+        // the child is gone. This exercises the write-error path in
+        // `copy_via_cmd`, which now kills+waits the child before
+        // returning — proving the call still terminates (rather than
+        // hanging on a full pipe) and reports Failed. Full absence of a
+        // zombie process isn't practical to assert deterministically from
+        // a unit test (no access to the child's pid); verified by
+        // inspection of the kill()+wait() added on the error path.
+        let big = "x".repeat(4 * 1024 * 1024);
+        let mut clipboard = Clipboard::new_for_test(Some("exit 0".to_string()), 65536, true);
+
+        let result = clipboard.copy(&big);
+
+        assert!(
+            matches!(result, CopyResult::Failed(_)),
+            "expected the broken pipe to surface as Failed: {result:?}"
         );
     }
 

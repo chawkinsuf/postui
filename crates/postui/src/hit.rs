@@ -49,6 +49,10 @@ pub enum Hit {
     ConfirmChoice(char),
     /// Full-screen region under an open modal; click closes (same as Esc).
     ModalOutside,
+    /// A modal's own box (borders/body), registered over `ModalOutside` so
+    /// clicking the modal's chrome — anywhere that isn't one of its own
+    /// interactive hits — does nothing instead of closing it.
+    ModalBody,
 }
 
 /// Rebuilt each frame during render; maps screen regions to typed [`Hit`]s.
