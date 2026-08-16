@@ -434,8 +434,16 @@ impl App {
                         .push("cannot send: URL is empty", ToastKind::Error);
                     return true;
                 }
-                let (prepared, warnings) =
-                    postui_core::prepare::prepare(&self.editor.current_request());
+                let (prepared, warnings) = match postui_core::prepare::prepare(
+                    &self.editor.current_request(),
+                    &Default::default(),
+                ) {
+                    Ok(x) => x,
+                    Err(e) => {
+                        self.toasts.push(e.to_string(), ToastKind::Error);
+                        return true;
+                    }
+                };
                 for w in &warnings {
                     self.toasts.push(w.to_string(), ToastKind::Warning);
                 }

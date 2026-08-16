@@ -1,6 +1,6 @@
 use postui::http;
 use postui_core::model::*;
-use postui_core::prepare::prepare;
+use postui_core::prepare::{PrepareContext, prepare};
 use std::time::Duration;
 use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -27,7 +27,11 @@ async fn sends_json_with_auto_content_type_and_reads_response() {
         .respond_with(ResponseTemplate::new(201).set_body_string("{\"ok\":true}"))
         .mount(&server)
         .await;
-    let (prepared, _) = prepare(&req_to(format!("{}/x", server.uri())));
+    let (prepared, _) = prepare(
+        &req_to(format!("{}/x", server.uri())),
+        &PrepareContext::default(),
+    )
+    .unwrap();
     let data = http::send(&http::client(), &prepared).await.unwrap();
     assert_eq!(data.status, 201);
     assert_eq!(data.body, "{\"ok\":true}");
@@ -52,7 +56,7 @@ async fn merged_query_params_reach_the_server() {
             enabled: true,
         },
     );
-    let (prepared, warns) = prepare(&r);
+    let (prepared, warns) = prepare(&r, &PrepareContext::default()).unwrap();
     assert_eq!(warns.len(), 1);
     assert_eq!(
         http::send(&http::client(), &prepared).await.unwrap().status,
@@ -68,7 +72,11 @@ async fn non_2xx_is_a_response_not_an_error() {
         .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
         .mount(&server)
         .await;
-    let (prepared, _) = prepare(&req_to(format!("{}/x", server.uri())));
+    let (prepared, _) = prepare(
+        &req_to(format!("{}/x", server.uri())),
+        &PrepareContext::default(),
+    )
+    .unwrap();
     let data = http::send(&http::client(), &prepared).await.unwrap();
     assert_eq!(data.status, 500);
     assert_eq!(data.body, "boom");
@@ -82,7 +90,11 @@ async fn timeout_produces_err() {
         .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(2)))
         .mount(&server)
         .await;
-    let (prepared, _) = prepare(&req_to(format!("{}/x", server.uri())));
+    let (prepared, _) = prepare(
+        &req_to(format!("{}/x", server.uri())),
+        &PrepareContext::default(),
+    )
+    .unwrap();
     let client = http::client_with_timeout(Duration::from_millis(200));
     let started = std::time::Instant::now();
     let result = http::send(&client, &prepared).await;
@@ -112,7 +124,7 @@ async fn redirects_are_followed() {
     let mut r = req_to(format!("{}/a", server.uri()));
     r.method = Method::Get;
     r.body = None;
-    let (prepared, _) = prepare(&r);
+    let (prepared, _) = prepare(&r, &PrepareContext::default()).unwrap();
     let data = http::send(&http::client(), &prepared).await.unwrap();
     assert_eq!(data.status, 200);
     assert_eq!(data.body, "done");
@@ -130,7 +142,7 @@ async fn large_body_is_handled() {
     let mut r = req_to(format!("{}/big", server.uri()));
     r.method = Method::Get;
     r.body = None;
-    let (prepared, _) = prepare(&r);
+    let (prepared, _) = prepare(&r, &PrepareContext::default()).unwrap();
     let data = http::send(&http::client(), &prepared).await.unwrap();
     assert_eq!(data.status, 200);
     assert_eq!(data.size, big.len());
@@ -138,14 +150,18 @@ async fn large_body_is_handled() {
 
 #[tokio::test]
 async fn connection_refused_yields_readable_error() {
-    let (prepared, _) = prepare(&HttpRequest {
-        method: Method::Get,
-        url: "http://127.0.0.1:1/".into(),
-        substitute_body: false,
-        params: Default::default(),
-        headers: Default::default(),
-        body: None,
-    });
+    let (prepared, _) = prepare(
+        &HttpRequest {
+            method: Method::Get,
+            url: "http://127.0.0.1:1/".into(),
+            substitute_body: false,
+            params: Default::default(),
+            headers: Default::default(),
+            body: None,
+        },
+        &PrepareContext::default(),
+    )
+    .unwrap();
     let err = http::send(&http::client(), &prepared).await.unwrap_err();
     assert!(
         !err.is_empty() && !err.contains("Error {"),
