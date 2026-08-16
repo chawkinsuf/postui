@@ -32,10 +32,14 @@ pub fn client_with_timeout(timeout: Duration) -> reqwest::Client {
     // it only sets up connection pooling/TLS config, and does not touch I/O
     // until the first request is actually sent. Verified with a plain
     // `#[test]` (no `#[tokio::test]`) below.
+    // `build()` can only fail on TLS backend initialization; with the config
+    // above (no custom certs/proxies) that's practically unreachable. Fall
+    // back to the plain default client rather than panicking if it ever
+    // does — a client without our timeout beats no client at all.
     reqwest::Client::builder()
         .timeout(timeout)
         .build()
-        .expect("reqwest client config is static and always valid")
+        .unwrap_or_else(|_| reqwest::Client::new())
 }
 
 /// Sends `req` and shapes the result (or the error chain) for the UI.

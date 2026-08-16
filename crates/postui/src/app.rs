@@ -955,7 +955,13 @@ impl App {
     /// `list_requests` + `sidebar.refresh` pair so the tree/expansion
     /// state stays consistent at every call site.
     fn refresh_sidebar(&mut self) {
-        let listing = postui_core::storage::list_requests(&self.project.root);
+        let (listing, walk_err) = postui_core::storage::list_requests(&self.project.root);
+        if let Some(e) = walk_err {
+            self.toasts.push(
+                format!("could not fully list requests: {e}"),
+                ToastKind::Error,
+            );
+        }
         self.project
             .expanded
             .append(&mut self.sidebar.pending_expand);
@@ -998,8 +1004,7 @@ impl App {
             );
             return;
         }
-        let existing = postui_core::storage::list_requests(&self.project.root);
-        if existing.iter().any(|l| l.slug == name) {
+        if postui_core::storage::request_exists(&self.project.root, name) {
             self.toasts.push(
                 format!("request already exists: {name:?}"),
                 ToastKind::Error,
@@ -1598,7 +1603,39 @@ mod tests {
             "modal closes even though the save is rejected"
         );
         assert!(!app.toasts.is_empty(), "an invalid name must toast");
-        assert!(postui_core::storage::list_requests(&app.project.root).is_empty());
+        assert!(
+            postui_core::storage::list_requests(&app.project.root)
+                .0
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn new_request_duplicate_name_toasts_and_leaves_existing_file_alone() {
+        let mut app = App::new_for_test();
+        postui_core::storage::save_request(
+            &app.project.root,
+            "api/ping",
+            &req("https://x/existing"),
+        )
+        .unwrap();
+        app.update(Action::RefreshSidebar);
+        let keymap = Keymap::default_bindings();
+        app.update(Action::PromptNewRequest);
+        for c in "api/ping".chars() {
+            app.handle_key(&keymap, plain(c));
+        }
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(
+            app.modals.is_empty(),
+            "modal closes even though the save is rejected"
+        );
+        assert!(!app.toasts.is_empty(), "a duplicate name must toast");
+        let existing = postui_core::storage::load_request(&app.project.root, "api/ping").unwrap();
+        assert_eq!(
+            existing.url, "https://x/existing",
+            "existing file must not be overwritten"
+        );
     }
 
     #[test]

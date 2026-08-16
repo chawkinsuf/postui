@@ -95,11 +95,14 @@ fn walk_toml_files(dir: &Path, f: &mut dyn FnMut(PathBuf)) -> std::io::Result<()
 
 /// Lists all requests under `root/requests`, sorted by slug. Files that fail
 /// to parse are included with `broken` set to a description of the error,
-/// rather than causing the whole listing to fail.
-pub fn list_requests(root: &Path) -> Vec<RequestListing> {
+/// rather than causing the whole listing to fail. The second element of the
+/// return is the first directory-walk IO error encountered (e.g. a
+/// permission-denied subdirectory), if any — the listing itself still
+/// contains everything that *was* successfully walked.
+pub fn list_requests(root: &Path) -> (Vec<RequestListing>, Option<String>) {
     let base = requests_dir(root);
     let mut out = Vec::new();
-    let _ = walk_toml_files(&base, &mut |path| {
+    let walk_err = walk_toml_files(&base, &mut |path| {
         let rel = path.strip_prefix(&base).unwrap_or(&path);
         let slug = rel.with_extension("");
         let slug = slug
@@ -113,9 +116,18 @@ pub fn list_requests(root: &Path) -> Vec<RequestListing> {
             Err(e) => Some(e.to_string()),
         };
         out.push(RequestListing { slug, broken });
-    });
+    })
+    .err()
+    .map(|e| e.to_string());
     out.sort_by(|a, b| a.slug.cmp(&b.slug));
-    out
+    (out, walk_err)
+}
+
+/// Whether `root/requests/<slug>.toml` exists, without attempting to parse
+/// it — used for exists-checks that shouldn't reject a present-but-broken
+/// file the way [`load_request`] would.
+pub fn request_exists(root: &Path, slug: &str) -> bool {
+    request_path(root, slug).is_file()
 }
 
 pub fn load_request(root: &Path, slug: &str) -> Result<HttpRequest, StorageError> {
@@ -149,12 +161,18 @@ pub fn save_request(root: &Path, slug: &str, req: &HttpRequest) -> Result<(), St
 pub fn rename_request(root: &Path, from: &str, to: &str) -> Result<(), StorageError> {
     validate_slug(from)?;
     validate_slug(to)?;
+    if from == to {
+        // Renaming onto the same slug is a no-op, not a conflict: there is
+        // nothing to move, so treat it as trivially successful rather than
+        // reporting "already exists" against itself.
+        return Ok(());
+    }
     let from_path = request_path(root, from);
     let to_path = request_path(root, to);
     if !from_path.is_file() {
         return Err(StorageError::NotFound(from.to_string()));
     }
-    if from == to || to_path.is_file() {
+    if to_path.is_file() {
         return Err(StorageError::AlreadyExists(to.to_string()));
     }
     if let Some(parent) = to_path.parent() {
@@ -196,7 +214,8 @@ mod tests {
         ensure_project(dir.path()).unwrap();
         save_request(dir.path(), "auth/login", &req()).unwrap();
         save_request(dir.path(), "get-user", &req()).unwrap();
-        let listing = list_requests(dir.path());
+        let (listing, walk_err) = list_requests(dir.path());
+        assert!(walk_err.is_none());
         let slugs: Vec<&str> = listing.iter().map(|l| l.slug.as_str()).collect();
         assert_eq!(
             slugs,
@@ -216,7 +235,8 @@ mod tests {
             "url = \"x\"\nurl = \"dup\"\n",
         )
         .unwrap();
-        let listing = list_requests(dir.path());
+        let (listing, walk_err) = list_requests(dir.path());
+        assert!(walk_err.is_none());
         assert_eq!(listing[0].slug, "bad");
         assert!(listing[0].broken.is_some());
         let err = load_request(dir.path(), "bad").unwrap_err().to_string();
@@ -281,11 +301,58 @@ mod tests {
         rename_request(dir.path(), "a", "sub/b").unwrap();
         assert!(load_request(dir.path(), "a").is_err());
         assert_eq!(load_request(dir.path(), "sub/b").unwrap(), req());
-        assert!(
-            rename_request(dir.path(), "sub/b", "sub/b").is_err(),
-            "rename onto itself"
-        );
         delete_request(dir.path(), "sub/b").unwrap();
-        assert!(list_requests(dir.path()).is_empty());
+        assert!(list_requests(dir.path()).0.is_empty());
+    }
+
+    #[test]
+    fn rename_onto_itself_is_a_no_op() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_project(dir.path()).unwrap();
+        save_request(dir.path(), "a", &req()).unwrap();
+        assert!(rename_request(dir.path(), "a", "a").is_ok());
+        assert_eq!(load_request(dir.path(), "a").unwrap(), req());
+    }
+
+    #[test]
+    fn request_exists_reflects_presence_without_parsing() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_project(dir.path()).unwrap();
+        assert!(!request_exists(dir.path(), "a"));
+        save_request(dir.path(), "a", &req()).unwrap();
+        assert!(request_exists(dir.path(), "a"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn list_requests_surfaces_permission_denied_subdir_as_walk_error() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        ensure_project(dir.path()).unwrap();
+        // "aaa" sorts before the "sub" directory, so the walk (which visits
+        // entries in sorted order) reaches it before hitting the
+        // permission-denied error.
+        save_request(dir.path(), "aaa", &req()).unwrap();
+        let sub = dir.path().join("requests/sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        save_request(dir.path(), "sub/inner", &req()).unwrap();
+
+        let original_perms = std::fs::metadata(&sub).unwrap().permissions();
+        std::fs::set_permissions(&sub, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let (listing, walk_err) = list_requests(dir.path());
+
+        // Restore perms before any assertion so tempdir cleanup can't fail.
+        std::fs::set_permissions(&sub, original_perms).unwrap();
+
+        assert!(
+            walk_err.is_some(),
+            "permission-denied subdir should surface an error"
+        );
+        assert!(
+            listing.iter().any(|l| l.slug == "aaa"),
+            "listing should still include everything walked before the error: {listing:?}"
+        );
     }
 }
