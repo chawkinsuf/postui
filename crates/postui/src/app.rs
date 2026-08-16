@@ -584,7 +584,10 @@ impl App {
             }
             Action::ForceOpenRequest(slug) => {
                 match postui_core::storage::load_request(&self.project.root, &slug) {
-                    Ok(req) => self.editor.load(Some(slug), req),
+                    Ok(req) => {
+                        self.editor.load(Some(slug), req);
+                        self.apply(Action::PersistLocalState);
+                    }
                     Err(e) => {
                         self.toasts
                             .push(format!("could not open {slug}: {e}"), ToastKind::Error);
@@ -1022,7 +1025,7 @@ impl App {
                     );
                     return true;
                 }
-                self.registry.register(path.clone());
+                self.registry.add_known(path.clone());
                 if let Some(p) = &self.registry_path {
                     let _ = self.registry.save_to(p);
                 }
@@ -1065,6 +1068,7 @@ impl App {
                 true
             }
             Action::CycleEnv => {
+                self.apply(Action::ReloadProjectFiles);
                 self.project.environments =
                     postui_core::project::list_environments(&self.project.root);
                 if self.project.environments.is_empty() {
@@ -1090,8 +1094,11 @@ impl App {
             }
             Action::SwitchEnv(env) => {
                 let warnings = self.project.set_env(env);
-                for w in warnings {
-                    self.toasts.push(w, ToastKind::Warning);
+                if !warnings.is_empty() {
+                    for w in warnings {
+                        self.toasts.push(w, ToastKind::Warning);
+                    }
+                    return true;
                 }
                 self.apply(Action::PersistLocalState);
                 let label = self.project.env_label();
@@ -3019,6 +3026,92 @@ mod tests {
         assert_eq!(app.project.root, expected);
         assert_eq!(app.project.display_name(), "My Svc");
         assert!(app.registry.known.contains(&expected));
+    }
+
+    #[test]
+    fn create_project_with_dirty_editor_defers_last_until_dirty_gate_resolves() {
+        let (mut app, dir, _b) = two_projects();
+        // Dirty the editor on the current (old) project.
+        postui_core::storage::save_request(&app.project.root, "r", &req("https://x/r")).unwrap();
+        app.update(Action::RefreshSidebar);
+        app.update(Action::ForceOpenRequest("r".into()));
+        app.focus = PaneId::Editor;
+        app.editor.sub_focus = SubFocus::Url;
+        app.handle_key(&Keymap::default_bindings(), plain('/'));
+        assert!(app.editor.is_dirty());
+
+        let old_last = app.registry.last.clone();
+        let fresh = tempfile::tempdir().unwrap();
+        let new_path = fresh.path().join("newproj");
+        app.update(Action::CreateProject {
+            name: "New Proj".into(),
+            path: new_path.to_string_lossy().into_owned(),
+        });
+        assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+        assert_eq!(
+            app.registry.last, old_last,
+            "last must not change before the dirty gate resolves"
+        );
+        assert!(
+            app.registry.known.contains(&new_path),
+            "new path is known even though not yet current"
+        );
+        assert_eq!(app.project.root, dir.path(), "not switched yet");
+
+        app.handle_key(&Keymap::default_bindings(), plain('d'));
+        assert_eq!(app.project.root, new_path);
+        assert_eq!(app.registry.last, Some(new_path));
+    }
+
+    #[test]
+    fn cycle_env_reloads_project_files_before_switching() {
+        let (mut app, dir) = app_with_envs();
+        // Rewrite variables.toml on disk with a bumped mtime so
+        // reload_if_changed picks it up.
+        std::fs::write(
+            dir.path().join("variables.toml"),
+            "[greeting]\ndefault = \"hi\"\n",
+        )
+        .unwrap();
+        let t = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+        let f = std::fs::File::options()
+            .append(true)
+            .open(dir.path().join("variables.toml"))
+            .unwrap();
+        f.set_modified(t).unwrap();
+
+        app.update(Action::CycleEnv);
+        assert_eq!(
+            app.project.variables["greeting"].default.as_deref(),
+            Some("hi"),
+            "CycleEnv must reload project files (spec sec7 symmetry with OpenEnvChooser)"
+        );
+    }
+
+    #[test]
+    fn force_open_request_persists_open_request_to_local_state() {
+        let mut app = App::new_for_test();
+        postui_core::storage::save_request(&app.project.root, "a", &req("https://x/a")).unwrap();
+        app.update(Action::RefreshSidebar);
+        app.update(Action::ForceOpenRequest("a".into()));
+        let st = postui_core::project::load_local_state(&app.project.root).unwrap();
+        assert_eq!(st.open_request.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn switch_env_failure_shows_warning_without_stale_success_toast() {
+        let (mut app, dir) = app_with_envs();
+        std::fs::write(dir.path().join("environments/broken.toml"), "not toml [").unwrap();
+        app.update(Action::SwitchEnv(Some("broken".into())));
+        let text = rendered_text(&mut app);
+        assert!(
+            text.contains("could not load environment"),
+            "warning shown: {text}"
+        );
+        assert!(
+            !text.contains("env:"),
+            "no stale success toast on failure: {text}"
+        );
     }
 
     #[test]

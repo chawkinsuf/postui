@@ -90,10 +90,17 @@ impl ProjectsRegistry {
     /// path: if `path` is already known it is not re-pushed, but `last` is
     /// always updated.
     pub fn register(&mut self, path: PathBuf) {
-        if !self.known.contains(&path) {
-            self.known.push(path.clone());
-        }
+        self.add_known(path.clone());
         self.last = Some(path);
+    }
+
+    /// Adds `path` to `known` if not already present. Does not touch
+    /// `last` — for callers that must not commit to a project as current
+    /// until some later gate (e.g. a dirty-editor confirm) resolves.
+    pub fn add_known(&mut self, path: PathBuf) {
+        if !self.known.contains(&path) {
+            self.known.push(path);
+        }
     }
 
     /// The configured root, or `~/postui-projects` if unset (falling back to
@@ -106,20 +113,27 @@ impl ProjectsRegistry {
         })
     }
 
-    /// The next project after `current` in cycle order, wrapping. `None`
-    /// when fewer than two projects are known. An unknown `current` starts
-    /// the cycle from the top.
+    /// The next project after `current` in cycle order, wrapping, skipping
+    /// over entries that no longer exist on disk or that equal `current`.
+    /// `None` when fewer than two projects are known or none qualify.
     pub fn next_after(&self, current: &Path) -> Option<PathBuf> {
         if self.known.len() < 2 {
             return None;
         }
-        let idx = self
+        let start = self
             .known
             .iter()
             .position(|p| p == current)
             .map(|i| (i + 1) % self.known.len())
             .unwrap_or(0);
-        Some(self.known[idx].clone())
+        for step in 0..self.known.len() {
+            let idx = (start + step) % self.known.len();
+            let candidate = &self.known[idx];
+            if candidate != current && candidate.is_dir() {
+                return Some(candidate.clone());
+            }
+        }
+        None
     }
 }
 
@@ -240,22 +254,42 @@ mod tests {
             r.next_after(&PathBuf::from("/tmp/a")).is_none(),
             "fewer than two projects"
         );
-        r.register(PathBuf::from("/tmp/a"));
-        r.register(PathBuf::from("/tmp/b"));
-        r.register(PathBuf::from("/tmp/c"));
+        let a = tempdir().unwrap();
+        let b = tempdir().unwrap();
+        let c = tempdir().unwrap();
+        r.register(a.path().to_path_buf());
+        r.register(b.path().to_path_buf());
+        r.register(c.path().to_path_buf());
+        assert_eq!(r.next_after(b.path()), Some(c.path().to_path_buf()));
         assert_eq!(
-            r.next_after(&PathBuf::from("/tmp/b")),
-            Some(PathBuf::from("/tmp/c"))
-        );
-        assert_eq!(
-            r.next_after(&PathBuf::from("/tmp/c")),
-            Some(PathBuf::from("/tmp/a")),
+            r.next_after(c.path()),
+            Some(a.path().to_path_buf()),
             "wraps"
         );
         assert_eq!(
             r.next_after(&PathBuf::from("/elsewhere")),
-            Some(PathBuf::from("/tmp/a")),
+            Some(a.path().to_path_buf()),
             "unknown current starts from the top"
+        );
+    }
+
+    #[test]
+    fn next_after_skips_dead_registry_paths() {
+        let live_a = tempdir().unwrap();
+        let dead = tempdir().unwrap();
+        let dead_path = dead.path().to_path_buf();
+        drop(dead); // directory no longer exists on disk
+        let live_b = tempdir().unwrap();
+
+        let mut r = ProjectsRegistry::default();
+        r.register(live_a.path().to_path_buf());
+        r.register(dead_path);
+        r.register(live_b.path().to_path_buf());
+
+        assert_eq!(
+            r.next_after(live_a.path()),
+            Some(live_b.path().to_path_buf()),
+            "dead entry between the two live ones is skipped"
         );
     }
 

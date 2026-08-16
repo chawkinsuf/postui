@@ -208,12 +208,22 @@ impl ProjectContext {
     /// expanded sidebar dirs, and (when given) the currently-open request.
     /// A failed save never breaks interaction, so errors are dropped.
     pub fn persist_local_state(&self, open_request: Option<&str>) {
+        if !self.can_persist() {
+            return;
+        }
         let state = postui_core::project::LocalState {
             environment: self.active_env.clone(),
             open_request: open_request.map(|s| s.to_string()),
             expanded: self.expanded.iter().cloned().collect(),
         };
         let _ = postui_core::project::save_local_state(&self.root, &state);
+    }
+
+    /// Whether this context's root is persistable: a bare (empty) root —
+    /// as constructed when the app starts outside any project — must never
+    /// write a stray `./.local/state.toml` relative to the process's cwd.
+    pub fn can_persist(&self) -> bool {
+        !self.root.as_os_str().is_empty()
     }
 
     /// The `open_request` recorded in the local state read at `open()`.
@@ -269,6 +279,15 @@ mod tests {
         let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf());
         assert_eq!(ctx.env_label(), "no env");
         assert!(!warns.is_empty(), "stale env must be surfaced");
+    }
+
+    #[test]
+    fn bare_root_context_cannot_persist_local_state() {
+        let (ctx, _warns) = ProjectContext::open(PathBuf::new());
+        assert!(
+            !ctx.can_persist(),
+            "a bare (empty) root must not be persistable"
+        );
     }
 
     fn bump_mtime(p: &std::path::Path) {
