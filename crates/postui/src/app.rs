@@ -432,7 +432,7 @@ impl App {
                 use crate::components::modal::Modal;
                 self.modals.push(Modal::Message {
                     title: "postui".into(),
-                    body: "A fast, local-first terminal HTTP client.".into(),
+                    body: "A fast, local-first terminal HTTP client.\n\nText selection: hold Shift while dragging (mouse capture is on).".into(),
                 });
                 true
             }
