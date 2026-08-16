@@ -47,10 +47,14 @@ impl Clipboard {
 
     /// Test-only constructor that lets tests disable the arboard tier so
     /// the cmd and OSC 52 tiers can be exercised deterministically without
-    /// touching a real OS clipboard. Not `#[cfg(test)]`-gated: integration
-    /// tests under `tests/` link against the crate as an ordinary
-    /// dependency (without `cfg(test)`), so it must stay a normal `pub` item
-    /// for `App::set_clipboard_for_test` to be usable there too.
+    /// touching a real OS clipboard. Gated on the `test-util` feature
+    /// (rather than plain `#[cfg(test)]`) because integration tests under
+    /// `tests/` link against the crate as an ordinary dependency — `cfg(test)`
+    /// never applies there. The crate's own `[dev-dependencies]` pulls
+    /// itself back in with `test-util` enabled so `cargo test` gets this for
+    /// free; a plain `cargo build`/`cargo build --release` does not enable
+    /// the feature, so this stays unreachable outside tests.
+    #[cfg(any(test, feature = "test-util"))]
     pub fn new_for_test(cmd: Option<String>, limit: usize, allow_arboard: bool) -> Self {
         Self {
             cmd,

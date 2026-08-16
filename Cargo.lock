@@ -1861,6 +1861,7 @@ dependencies = [
  "edtui",
  "futures",
  "indexmap",
+ "postui",
  "postui-core",
  "ratatui",
  "reqwest",

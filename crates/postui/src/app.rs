@@ -353,8 +353,10 @@ impl App {
 
     /// Swaps in a test-configured clipboard (e.g. `Clipboard::new_for_test`)
     /// so copy tests can exercise the cmd/OSC-52 tiers deterministically.
-    /// Not `#[cfg(test)]`-gated so integration tests under `tests/` (which
-    /// compile against this crate without `cfg(test)`) can use it too.
+    /// Gated on the `test-util` feature (see `Clipboard::new_for_test`) so
+    /// integration tests under `tests/` can use it while a plain build
+    /// never exposes it.
+    #[cfg(any(test, feature = "test-util"))]
     pub fn set_clipboard_for_test(&mut self, c: crate::clipboard::Clipboard) {
         self.clipboard = c;
     }

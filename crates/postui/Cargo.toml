@@ -22,5 +22,17 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 arboard = "3"
 base64 = "0.22"
 
+[features]
+# Exposes test-only helpers (e.g. `Clipboard::new_for_test`,
+# `App::set_clipboard_for_test`) that are otherwise `#[cfg(test)]`-only and
+# so invisible to integration tests under `tests/`, which compile against
+# this crate as an ordinary dependency. Enabled automatically for `cargo
+# test` via the dev-dependency below; never enabled for a plain build.
+test-util = []
+
 [dev-dependencies]
 wiremock = "0.6"
+# Re-declares this crate as its own dev-dependency with `test-util` on, so
+# integration tests get the feature-gated test helpers without callers
+# having to pass `--features test-util` by hand.
+postui = { path = ".", features = ["test-util"] }
