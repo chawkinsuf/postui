@@ -123,6 +123,48 @@ impl ProjectsRegistry {
     }
 }
 
+/// Mouse-first-GUI UI settings stored at the top level of `config.toml`:
+/// the tiered clipboard's optional external command and the OSC 52 size
+/// threshold.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UiSettings {
+    pub clipboard_cmd: Option<String>,
+    pub osc52_limit: usize,
+}
+
+impl Default for UiSettings {
+    fn default() -> Self {
+        Self {
+            clipboard_cmd: None,
+            osc52_limit: 65536,
+        }
+    }
+}
+
+/// Reads the top-level `clipboard_cmd` (string) and `osc52_limit` (integer)
+/// keys from `config.toml`. Never errors: a missing file, corrupt TOML, or a
+/// mistyped key degrades that piece to its default.
+pub fn load_ui_settings(path: &Path) -> UiSettings {
+    let mut settings = UiSettings::default();
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return settings;
+    };
+    let Ok(value) = toml::from_str::<toml::Value>(&contents) else {
+        return settings;
+    };
+
+    if let Some(cmd) = value.get("clipboard_cmd").and_then(|v| v.as_str()) {
+        settings.clipboard_cmd = Some(cmd.to_string());
+    }
+    if let Some(limit) = value.get("osc52_limit").and_then(|v| v.as_integer())
+        && let Ok(limit) = usize::try_from(limit)
+    {
+        settings.osc52_limit = limit;
+    }
+
+    settings
+}
+
 /// The path to the global config file: `<config dir>/config.toml`.
 pub fn config_file_path() -> Option<PathBuf> {
     directories::ProjectDirs::from("", "", postui_core::APP_NAME)
@@ -208,6 +250,44 @@ mod tests {
             Some(PathBuf::from("/tmp/a")),
             "unknown current starts from the top"
         );
+    }
+
+    #[test]
+    fn load_ui_settings_missing_file_is_default() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        let s = load_ui_settings(&p);
+        assert_eq!(s, UiSettings::default());
+        assert_eq!(s.clipboard_cmd, None);
+        assert_eq!(s.osc52_limit, 65536);
+    }
+
+    #[test]
+    fn load_ui_settings_parses_configured_values() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        std::fs::write(&p, "clipboard_cmd = \"xclip\"\nosc52_limit = 1000\n").unwrap();
+        let s = load_ui_settings(&p);
+        assert_eq!(s.clipboard_cmd, Some("xclip".to_string()));
+        assert_eq!(s.osc52_limit, 1000);
+    }
+
+    #[test]
+    fn load_ui_settings_wrong_types_degrade_to_defaults() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        std::fs::write(&p, "clipboard_cmd = 5\nosc52_limit = \"not a number\"\n").unwrap();
+        let s = load_ui_settings(&p);
+        assert_eq!(s, UiSettings::default());
+    }
+
+    #[test]
+    fn load_ui_settings_corrupt_file_is_default() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        std::fs::write(&p, "not valid toml [[[").unwrap();
+        let s = load_ui_settings(&p);
+        assert_eq!(s, UiSettings::default());
     }
 
     #[test]
