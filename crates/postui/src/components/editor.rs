@@ -67,6 +67,10 @@ pub struct Editor {
     pub substitute_body: bool,
     pub params: IndexMap<String, Entry>,
     pub headers: IndexMap<String, Entry>,
+    /// Enabled default headers inherited from the project, synced by `App`
+    /// on every `update()` alongside `open_slug`. Draw-only: rendered above
+    /// the request headers table but never edited directly here.
+    pub inherited_headers: IndexMap<String, Entry>,
     /// The request body buffer. edtui owns the text, cursor and undo stack;
     /// it is only ever rewritten wholesale by an explicit user action
     /// (load / format / minify / external editor), so half-typed JSON
@@ -91,6 +95,7 @@ impl Default for Editor {
             substitute_body: false,
             params: IndexMap::new(),
             headers: IndexMap::new(),
+            inherited_headers: IndexMap::new(),
             body: new_body_state(""),
             body_handler: EditorEventHandler::emacs_mode(),
             active_tab: EditorTab::Params,
@@ -310,6 +315,34 @@ impl Editor {
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
+    /// Builds the muted status lines for enabled inherited (project-default)
+    /// headers, shown above the request headers table. Each line notes
+    /// whether the name is untouched by the request (`project`), overridden
+    /// by an enabled request header (`overridden`), or shadowed by a
+    /// disabled request header (`disabled`); the match against `self.headers`
+    /// is case-insensitive.
+    fn inherited_header_lines(&self, theme: &Theme) -> Vec<Line<'static>> {
+        self.inherited_headers
+            .iter()
+            .filter(|(_, entry)| entry.enabled)
+            .map(|(name, entry)| {
+                let status = match self
+                    .headers
+                    .iter()
+                    .find(|(n, _)| n.eq_ignore_ascii_case(name))
+                {
+                    Some((_, req_entry)) if req_entry.enabled => "overridden",
+                    Some(_) => "disabled",
+                    None => "project",
+                };
+                Line::styled(
+                    format!("  ✓ {name}  {}  ({status})", entry.value),
+                    Style::default().fg(theme.text_muted),
+                )
+            })
+            .collect()
+    }
+
     fn draw_tab_content(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let focused = self.sub_focus == SubFocus::Content;
         match self.active_tab {
@@ -324,10 +357,24 @@ impl Editor {
                 );
             }
             EditorTab::Headers => {
+                let inherited_lines = self.inherited_header_lines(theme);
+                let table_area = if inherited_lines.is_empty() {
+                    area
+                } else {
+                    let split = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints([
+                            Constraint::Length(inherited_lines.len() as u16),
+                            Constraint::Min(0),
+                        ])
+                        .split(area);
+                    frame.render_widget(Paragraph::new(inherited_lines), split[0]);
+                    split[1]
+                };
                 let ctx = DrawCtx { theme, focused };
                 self.table.draw(
                     frame,
-                    area,
+                    table_area,
                     &self.headers,
                     &ctx,
                     "No headers yet — press a to add",
@@ -764,5 +811,61 @@ url = "https://api.example.com/users""#,
         assert!(content.contains("Params"), "params tab label: {content}");
         assert!(content.contains("Headers"), "headers tab label: {content}");
         assert!(content.contains("Body"), "body tab label: {content}");
+    }
+
+    #[test]
+    fn headers_tab_shows_inherited_rows_with_status() {
+        let mut e = Editor {
+            active_tab: EditorTab::Headers,
+            ..Editor::default()
+        };
+        e.inherited_headers.insert(
+            "accept".into(),
+            Entry {
+                value: "application/json".into(),
+                enabled: true,
+            },
+        );
+        e.inherited_headers.insert(
+            "x-a".into(),
+            Entry {
+                value: "1".into(),
+                enabled: true,
+            },
+        );
+        e.inherited_headers.insert(
+            "x-b".into(),
+            Entry {
+                value: "2".into(),
+                enabled: true,
+            },
+        );
+        e.headers.insert(
+            "X-A".into(),
+            Entry {
+                value: "9".into(),
+                enabled: true,
+            },
+        );
+        e.headers.insert(
+            "X-B".into(),
+            Entry {
+                value: "n".into(),
+                enabled: false,
+            },
+        );
+        let theme = Theme::dark();
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+        };
+        let backend = TestBackend::new(70, 14);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| e.draw(f, f.area(), &ctx)).unwrap();
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(content.contains("(project)"), "{content}");
+        assert!(content.contains("(overridden)"), "{content}");
+        assert!(content.contains("(disabled)"), "{content}");
+        assert!(content.contains("application/json"));
     }
 }

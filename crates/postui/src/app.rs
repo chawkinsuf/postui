@@ -273,6 +273,7 @@ impl App {
         // threading that bookkeeping through each arm individually.
         self.sidebar.open_slug = self.editor.slug.clone();
         self.sidebar.open_dirty = self.editor.is_dirty();
+        self.editor.inherited_headers = self.project.meta.default_headers.clone();
         changed
     }
 
