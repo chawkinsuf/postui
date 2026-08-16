@@ -112,6 +112,9 @@ pub fn list_environments(root: &Path) -> Vec<String> {
 }
 
 pub fn load_environment(root: &Path, name: &str) -> Result<IndexMap<String, String>, ProjectError> {
+    if name.contains('/') || crate::storage::validate_slug(name).is_err() {
+        return Err(ProjectError::BadName(name.to_string()));
+    }
     let path = root.join("environments").join(format!("{name}.toml"));
     let contents = std::fs::read_to_string(&path)?;
     toml::from_str(&contents).map_err(|e| ProjectError::Parse(e.to_string()))
@@ -162,7 +165,11 @@ pub fn init_project(root: &Path, name: Option<&str>) -> std::io::Result<()> {
     std::fs::create_dir_all(root.join("environments"))?;
 
     let project_toml = match name {
-        Some(n) => format!("name = \"{n}\"\n"),
+        Some(n) => {
+            let mut doc = toml_edit::DocumentMut::new();
+            doc["name"] = toml_edit::value(n);
+            doc.to_string()
+        }
         None => "# project.toml: optional `name`, optional [default_headers]\n".to_string(),
     };
     write_if_absent(&root.join("project.toml"), &project_toml)?;
@@ -206,6 +213,31 @@ mod tests {
             "custom\n"
         );
         assert!(is_project(dir.path()));
+    }
+
+    #[test]
+    fn init_project_escapes_names_with_quotes_and_backslashes() {
+        let dir = tempdir().unwrap();
+        init_project(dir.path(), Some(r#"Bob's "Cool" API"#)).unwrap();
+        let meta = load_meta(dir.path()).unwrap();
+        assert_eq!(meta.name.as_deref(), Some(r#"Bob's "Cool" API"#));
+    }
+
+    #[test]
+    fn load_environment_rejects_path_traversal_names() {
+        let dir = tempdir().unwrap();
+        assert!(matches!(
+            load_environment(dir.path(), "../x"),
+            Err(ProjectError::BadName(_))
+        ));
+        assert!(matches!(
+            load_environment(dir.path(), "a/b"),
+            Err(ProjectError::BadName(_))
+        ));
+        assert!(matches!(
+            load_environment(dir.path(), "Bad Name"),
+            Err(ProjectError::BadName(_))
+        ));
     }
 
     #[test]
