@@ -57,6 +57,10 @@ pub fn all_commands() -> Vec<Command> {
             action: Action::CycleMethod,
         },
         Command {
+            name: "Method: choose…",
+            action: Action::OpenMethodDropdown,
+        },
+        Command {
             name: "Body: format JSON",
             action: Action::FormatBody,
         },

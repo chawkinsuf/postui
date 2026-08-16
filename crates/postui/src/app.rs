@@ -404,6 +404,32 @@ impl App {
                 self.editor.method = self.editor.method.cycle();
                 true
             }
+            Action::OpenMethodDropdown => {
+                use crate::components::modal::DropdownState;
+                use postui_core::model::Method;
+                let items: Vec<(String, Action)> = Method::ALL
+                    .iter()
+                    .map(|&m| (m.as_str().to_string(), Action::SetMethod(m)))
+                    .collect();
+                let selected = Method::ALL
+                    .iter()
+                    .position(|&m| m == self.editor.method)
+                    .unwrap_or(0);
+                let anchor = self
+                    .editor
+                    .last_method_area
+                    .unwrap_or_else(|| ratatui::layout::Rect::new(0, 0, 0, 0));
+                self.modals.push(Modal::Dropdown(DropdownState {
+                    anchor,
+                    items,
+                    selected,
+                }));
+                true
+            }
+            Action::SetMethod(m) => {
+                self.editor.method = m;
+                true
+            }
             Action::FocusUrl => {
                 self.focus = PaneId::Editor;
                 self.editor.sub_focus = SubFocus::Url;
@@ -1226,8 +1252,13 @@ impl App {
                 // Modal-open guard: until a later task registers modal
                 // hits (so modal draw order makes them win), clicks while a
                 // modal is open would otherwise resolve to whatever pane
-                // hit happens to be underneath. Keep clicks inert here.
-                if !self.modals.is_empty() {
+                // hit happens to be underneath. Keep clicks inert here —
+                // except for Dropdown, whose hits (DropdownRow, plus the
+                // ModalOutside backdrop) are already registered, so clicks
+                // must flow through to `on_hit`. A later task removes this
+                // guard entirely once every modal registers its hits.
+                if !self.modals.is_empty() && !matches!(self.modals.top(), Some(Modal::Dropdown(_)))
+                {
                     return false;
                 }
                 let Some(hit) = self.hits.hit_at(m.column, m.row).cloned() else {
@@ -1351,7 +1382,21 @@ impl App {
                 }
                 self.update(Action::Render)
             }
-            Hit::MethodSelector => false,
+            Hit::MethodSelector => {
+                self.update(Action::FocusPane(PaneId::Editor));
+                self.update(Action::OpenMethodDropdown)
+            }
+            Hit::DropdownRow(i) => {
+                let Some(Modal::Dropdown(state)) = self.modals.top_mut() else {
+                    return false;
+                };
+                let Some((_, action)) = state.items.get(i).cloned() else {
+                    return false;
+                };
+                self.modals.pop();
+                self.update(action)
+            }
+            Hit::ModalOutside => self.update(Action::Close),
             _ => false,
         }
     }
@@ -2748,6 +2793,69 @@ mod tests {
             .as_ref()
             .expect("double click begins editing");
         assert_eq!(edit.input.text(), "page", "key cell seeded");
+    }
+
+    #[test]
+    fn open_method_dropdown_has_all_seven_methods_selected_at_current() {
+        let mut app = App::new_for_test();
+        app.editor.method = postui_core::model::Method::Put;
+        app.update(Action::OpenMethodDropdown);
+        let Some(Modal::Dropdown(state)) = app.modals.top() else {
+            panic!("expected a Dropdown modal on top");
+        };
+        assert_eq!(state.items.len(), 7);
+        assert_eq!(state.selected, 2, "Put is index 2 in Method::ALL");
+        assert_eq!(
+            state.items[2].1,
+            Action::SetMethod(postui_core::model::Method::Put)
+        );
+    }
+
+    #[test]
+    fn dropdown_down_down_enter_changes_method_and_closes() {
+        let mut app = App::new_for_test();
+        let keymap = Keymap::default_bindings();
+        app.update(Action::OpenMethodDropdown);
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.editor.method, postui_core::model::Method::Put); // 3rd entry
+        assert!(app.modals.is_empty());
+    }
+
+    #[test]
+    fn dropdown_esc_closes_without_change_and_keys_dont_leak() {
+        let mut app = App::new_for_test();
+        let keymap = Keymap::default_bindings();
+        let original = app.editor.method;
+        app.update(Action::OpenMethodDropdown);
+        // A key with no dropdown binding (and no global binding either)
+        // must not leak through to the app — proven here by 'q', which
+        // would otherwise quit.
+        app.handle_key(
+            &keymap,
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
+        );
+        assert!(!app.should_quit, "'q' must not leak through the dropdown");
+        assert!(!app.modals.is_empty(), "dropdown must still be open");
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.modals.is_empty());
+        assert_eq!(app.editor.method, original, "Esc makes no change");
+    }
+
+    #[test]
+    fn click_method_selector_opens_dropdown_then_click_row_sets_method() {
+        let mut app = App::new_for_test();
+        render_once(&mut app);
+        let badge = app.hits.rect_of(&Hit::MethodSelector).unwrap();
+        app.handle_mouse(left_down(badge.x, badge.y));
+        assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))));
+
+        render_once(&mut app);
+        let row3 = app.hits.rect_of(&Hit::DropdownRow(3)).unwrap();
+        app.handle_mouse(left_down(row3.x, row3.y));
+        assert_eq!(app.editor.method, postui_core::model::Method::Patch);
+        assert!(app.modals.is_empty());
     }
 
     #[tokio::test]

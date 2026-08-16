@@ -55,6 +55,19 @@ pub enum Modal {
         /// Whether the one-shot name->path prefill has already happened.
         prefilled: bool,
     },
+    /// An anchored popup list (currently just the method selector): opens
+    /// just below `anchor` (flipping above it when that would cross the
+    /// screen bottom), Up/Down move `selected`, Enter dispatches the
+    /// selected row's action and closes.
+    Dropdown(DropdownState),
+}
+
+/// State for `Modal::Dropdown`: the cell it opens from, its `(label,
+/// action)` rows, and which row is currently highlighted.
+pub struct DropdownState {
+    pub anchor: Rect,
+    pub items: Vec<(String, Action)>,
+    pub selected: usize,
 }
 
 /// The outcome of a modal handling a key event: any actions the caller
@@ -200,7 +213,34 @@ impl ModalStack {
                     None // swallowed: modals capture all input
                 }
             },
+            Modal::Dropdown(state) => match key.code {
+                KeyCode::Up => {
+                    state.selected = state.selected.saturating_sub(1);
+                    None // swallowed: modals capture all input
+                }
+                KeyCode::Down => {
+                    if state.selected + 1 < state.items.len() {
+                        state.selected += 1;
+                    }
+                    None // swallowed: modals capture all input
+                }
+                KeyCode::Enter => Some(ModalResult {
+                    actions: vec![state.items[state.selected].1.clone()],
+                    close: true,
+                }),
+                KeyCode::Esc => Some(ModalResult {
+                    actions: vec![],
+                    close: true,
+                }),
+                _ => None, // swallowed: modals capture all input
+            },
         }
+    }
+
+    /// The top modal, mutably — used by `App::on_hit` to read (and clone)
+    /// the action for a clicked `DropdownRow` before popping the modal.
+    pub fn top_mut(&mut self) -> Option<&mut Modal> {
+        self.stack.last_mut()
     }
 
     pub fn draw(
@@ -211,7 +251,12 @@ impl ModalStack {
         hits: &mut crate::hit::HitMap,
     ) {
         let Some(top) = self.stack.last() else { return };
-        dim_backdrop(frame, screen);
+        // Every variant dims the backdrop except Dropdown: it's a small
+        // anchored popup (e.g. the method selector), not a screen-owning
+        // modal, so dimming everything behind it would be jarring.
+        if !matches!(top, Modal::Dropdown(_)) {
+            dim_backdrop(frame, screen);
+        }
         match top {
             Modal::Message { title, body } => {
                 let area = centered_rect(screen, 60.min(screen.width), 9);
@@ -363,7 +408,84 @@ impl ModalStack {
                     hint_area,
                 );
             }
+            Modal::Dropdown(state) => draw_dropdown(frame, screen, theme, hits, state),
         }
+    }
+}
+
+/// Draws `state`'s popup at `anchor.x, anchor.y + 1`, flipping to
+/// `anchor.y - height` when it would cross the screen bottom, clamped
+/// horizontally (and vertically) to stay on screen. Registers
+/// `Hit::ModalOutside` over the whole screen first (so any other click
+/// closes the popup), then `Hit::DropdownRow(i)` per row.
+fn draw_dropdown(
+    frame: &mut Frame,
+    screen: Rect,
+    theme: &Theme,
+    hits: &mut crate::hit::HitMap,
+    state: &DropdownState,
+) {
+    hits.register(screen, crate::hit::Hit::ModalOutside);
+
+    let max_label = state
+        .items
+        .iter()
+        .map(|(label, _)| label.chars().count() as u16)
+        .max()
+        .unwrap_or(0);
+    let width = (max_label + 4).min(screen.width);
+    let height = (state.items.len() as u16 + 2).min(screen.height);
+
+    let mut x = state.anchor.x;
+    if x + width > screen.x + screen.width {
+        x = (screen.x + screen.width).saturating_sub(width);
+    }
+    x = x.max(screen.x);
+
+    let below_y = state.anchor.y + 1;
+    let y = if below_y + height > screen.y + screen.height {
+        state.anchor.y.saturating_sub(height)
+    } else {
+        below_y
+    };
+    let y = y.clamp(screen.y, (screen.y + screen.height).saturating_sub(height));
+
+    let area = Rect {
+        x,
+        y,
+        width,
+        height,
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.border_focused))
+        .style(Style::default().bg(theme.surface_raised));
+    frame.render_widget(Clear, area);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    for (i, (label, _)) in state.items.iter().enumerate() {
+        if i as u16 >= inner.height {
+            break;
+        }
+        let row_area = Rect {
+            x: inner.x,
+            y: inner.y + i as u16,
+            width: inner.width,
+            height: 1,
+        };
+        let marker = if i == state.selected { "✓ " } else { "  " };
+        let style = if i == state.selected {
+            Style::default().fg(theme.accent).bold()
+        } else {
+            Style::default().fg(theme.text)
+        };
+        frame.render_widget(
+            Paragraph::new(Line::styled(format!("{marker}{label}"), style)),
+            row_area,
+        );
+        hits.register(row_area, crate::hit::Hit::DropdownRow(i));
     }
 }
 
@@ -507,5 +629,92 @@ mod tests {
     fn slugify_lowercases_and_maps_spaces() {
         assert_eq!(slugify("My Svc"), "my-svc");
         assert_eq!(slugify("Weird!! Na@me_1"), "weird-name_1");
+    }
+
+    fn dropdown_items() -> Vec<(String, Action)> {
+        vec![
+            ("GET".into(), Action::Render),
+            ("POST".into(), Action::Render),
+            ("PUT".into(), Action::Render),
+        ]
+    }
+
+    #[test]
+    fn dropdown_up_down_clamp_and_enter_returns_selected_action() {
+        let mut m = ModalStack::default();
+        m.push(Modal::Dropdown(DropdownState {
+            anchor: Rect::new(0, 0, 8, 1),
+            items: dropdown_items(),
+            selected: 0,
+        }));
+        assert!(
+            m.handle_key(key(KeyCode::Up)).is_none(),
+            "clamped at top, swallowed"
+        );
+        assert!(m.handle_key(key(KeyCode::Down)).is_none());
+        let res = m.handle_key(key(KeyCode::Enter)).unwrap();
+        assert!(res.close);
+        assert_eq!(res.actions, vec![Action::Render]); // row 1
+    }
+
+    #[test]
+    fn dropdown_esc_closes_without_action_and_swallows_other_keys() {
+        let mut m = ModalStack::default();
+        m.push(Modal::Dropdown(DropdownState {
+            anchor: Rect::new(0, 0, 8, 1),
+            items: dropdown_items(),
+            selected: 0,
+        }));
+        assert!(
+            m.handle_key(key(KeyCode::Char('q'))).is_none(),
+            "keys must not leak through a dropdown to global bindings"
+        );
+        let res = m.handle_key(key(KeyCode::Esc)).unwrap();
+        assert!(res.close && res.actions.is_empty());
+    }
+
+    #[test]
+    fn top_mut_returns_the_top_modal_mutably() {
+        let mut m = ModalStack::default();
+        m.push(Modal::Dropdown(DropdownState {
+            anchor: Rect::new(0, 0, 8, 1),
+            items: dropdown_items(),
+            selected: 0,
+        }));
+        let Some(Modal::Dropdown(state)) = m.top_mut() else {
+            panic!("expected a Dropdown on top");
+        };
+        state.selected = 2;
+        let Some(Modal::Dropdown(state)) = m.top() else {
+            panic!("expected a Dropdown on top");
+        };
+        assert_eq!(state.selected, 2, "mutation through top_mut must persist");
+    }
+
+    #[test]
+    fn dropdown_flips_upward_near_the_screen_bottom() {
+        let screen = Rect::new(0, 0, 80, 24);
+        // Anchor sits one row above the bottom: drawing below it would
+        // cross the screen edge, so the popup must flip above instead.
+        let anchor = Rect::new(10, 23, 8, 1);
+        let state = DropdownState {
+            anchor,
+            items: dropdown_items(),
+            selected: 0,
+        };
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| draw_dropdown(f, screen, &Theme::dark(), &mut hits, &state))
+            .unwrap();
+        let row0 = hits
+            .rect_of(&crate::hit::Hit::DropdownRow(0))
+            .expect("row 0 registered");
+        assert!(
+            row0.y < anchor.y,
+            "flipped-up popup rows must sit above the anchor row, got y={}",
+            row0.y
+        );
     }
 }

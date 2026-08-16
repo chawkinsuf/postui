@@ -18,6 +18,10 @@ pub enum Action {
     EditorTabCycle(i8),
     CycleMethod,
     FocusUrl,
+    /// Open the method-selector dropdown, anchored below the method badge.
+    OpenMethodDropdown,
+    /// Set the editor's method directly (the dropdown's row action).
+    SetMethod(postui_core::model::Method),
     /// Pretty-print the JSON body in place; a no-op on an empty body and a
     /// toast (leaving the buffer untouched) on invalid JSON.
     FormatBody,
