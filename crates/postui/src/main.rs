@@ -6,8 +6,8 @@ use postui::keys::Keymap;
 use postui::layout::{compute_layout, hit_test};
 use postui::ui;
 use ratatui::crossterm::event::{
-    DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyEventKind, MouseButton,
-    MouseEventKind,
+    DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture, Event,
+    EventStream, KeyEventKind, MouseButton, MouseEventKind,
 };
 use ratatui::crossterm::execute;
 use ratatui::layout::Rect;
@@ -19,7 +19,7 @@ async fn main() -> anyhow::Result<()> {
     enable_mouse_and_wrap_panic_hook();
 
     let result = run(&mut terminal).await;
-    let _ = execute!(std::io::stdout(), DisableMouseCapture);
+    let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableFocusChange);
     ratatui::restore();
     result
 }
@@ -28,12 +28,13 @@ async fn main() -> anyhow::Result<()> {
 /// installed: that hook restores the terminal but knows nothing about mouse
 /// capture, so disable capture first and then delegate to it. Must be called
 /// after *every* `ratatui::init()` — the external-editor round-trip re-inits,
-/// which replaces the hook.
+/// which replaces the hook. Also enables focus-change reporting, which
+/// drives `Action::ReloadProjectFiles` on `Event::FocusGained`.
 fn enable_mouse_and_wrap_panic_hook() {
-    let _ = execute!(std::io::stdout(), EnableMouseCapture);
+    let _ = execute!(std::io::stdout(), EnableMouseCapture, EnableFocusChange);
     let prev_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = execute!(std::io::stdout(), DisableMouseCapture);
+        let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableFocusChange);
         prev_hook(info);
     }));
 }
@@ -100,6 +101,9 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
                             Event::Resize(..) => {
                                 redraw = true;
                             }
+                            Event::FocusGained => {
+                                redraw |= app.update(Action::ReloadProjectFiles);
+                            }
                             _ => {}
                         }
                     }
@@ -161,7 +165,7 @@ fn edit_body_externally(
     let program = parts.next().unwrap_or("vi").to_string();
     let args: Vec<&str> = parts.collect();
 
-    let _ = execute!(std::io::stdout(), DisableMouseCapture);
+    let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableFocusChange);
     ratatui::restore();
 
     let status = std::process::Command::new(&program)

@@ -136,4 +136,11 @@ pub enum Action {
     /// Switch the active environment to `env` (`None` clears it), reload
     /// its values, persist the choice, and toast the result.
     SwitchEnv(Option<String>),
+    /// Re-check the open project's files (project.toml, variables.toml,
+    /// environments/, the active env file) against their recorded mtimes
+    /// and reload anything that changed. Dispatched on terminal focus
+    /// regain and before actions that read project state from a source
+    /// that could have changed out from under the app (sending, opening a
+    /// chooser). A no-op, redraw-wise, when nothing changed.
+    ReloadProjectFiles,
 }

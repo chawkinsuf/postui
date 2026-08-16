@@ -532,6 +532,7 @@ impl App {
                 self.apply(Action::ForceSend)
             }
             Action::ForceSend => {
+                self.apply(Action::ReloadProjectFiles);
                 if self.editor.url.text().trim().is_empty() {
                     self.toasts
                         .push("cannot send: URL is empty", ToastKind::Error);
@@ -647,6 +648,7 @@ impl App {
                 true
             }
             Action::OpenProjectChooser => {
+                self.apply(Action::ReloadProjectFiles);
                 use crate::components::chooser::{ChooserItem, ChooserState};
                 let mut items: Vec<ChooserItem> = Vec::new();
                 for path in &self.registry.known {
@@ -810,6 +812,7 @@ impl App {
                 true
             }
             Action::OpenEnvChooser => {
+                self.apply(Action::ReloadProjectFiles);
                 use crate::components::chooser::{ChooserItem, ChooserState};
                 self.project.environments =
                     postui_core::project::list_environments(&self.project.root);
@@ -873,6 +876,16 @@ impl App {
                 self.toasts
                     .push(format!("env: {label}"), ToastKind::Success);
                 true
+            }
+            Action::ReloadProjectFiles => {
+                let (changed, warnings) = self.project.reload_if_changed();
+                if changed {
+                    self.refresh_sidebar();
+                }
+                for w in warnings {
+                    self.toasts.push(w, ToastKind::Warning);
+                }
+                changed
             }
         }
     }

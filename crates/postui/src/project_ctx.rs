@@ -15,9 +15,8 @@ pub struct ProjectContext {
     pub active_env: Option<String>,
     pub env_values: IndexMap<String, String>,
     pub expanded: std::collections::BTreeSet<String>,
-    /// mtimes of the files this context was built from, recorded here for
-    /// Task 12's stale-reload detection; unused until then.
-    #[allow(dead_code)]
+    /// mtimes of the files this context was built from, used by
+    /// `reload_if_changed` to detect on-disk edits between UI polls.
     stamps: Vec<(PathBuf, Option<SystemTime>)>,
     /// `open_request` from the local state loaded at `open()`, so the
     /// caller can restore the previously-open request. Not kept in sync
@@ -27,6 +26,31 @@ pub struct ProjectContext {
 
 fn mtime(path: &PathBuf) -> Option<SystemTime> {
     std::fs::metadata(path).ok().and_then(|m| m.modified().ok())
+}
+
+/// Builds the stamp vector `reload_if_changed` compares against: mtimes of
+/// `project.toml`, `variables.toml`, the `environments/` dir, and the active
+/// env file (a sentinel path with `None` when there is no active env).
+fn stamp(
+    root: &std::path::Path,
+    active_env: &Option<String>,
+) -> Vec<(PathBuf, Option<SystemTime>)> {
+    vec![
+        (root.join("project.toml"), mtime(&root.join("project.toml"))),
+        (
+            root.join("variables.toml"),
+            mtime(&root.join("variables.toml")),
+        ),
+        (root.join("environments"), mtime(&root.join("environments"))),
+        active_env
+            .as_ref()
+            .map(|env| {
+                let p = root.join("environments").join(format!("{env}.toml"));
+                let m = mtime(&p);
+                (p, m)
+            })
+            .unwrap_or_else(|| (root.join("environments").join("__none__.toml"), None)),
+    ]
 }
 
 impl ProjectContext {
@@ -73,22 +97,7 @@ impl ProjectContext {
         let expanded: std::collections::BTreeSet<String> =
             local_state.expanded.into_iter().collect();
 
-        let stamps = vec![
-            (root.join("project.toml"), mtime(&root.join("project.toml"))),
-            (
-                root.join("variables.toml"),
-                mtime(&root.join("variables.toml")),
-            ),
-            (root.join("environments"), mtime(&root.join("environments"))),
-            active_env
-                .as_ref()
-                .map(|env| {
-                    let p = root.join("environments").join(format!("{env}.toml"));
-                    let m = mtime(&p);
-                    (p, m)
-                })
-                .unwrap_or_else(|| (root.join("environments").join("__none__.toml"), None)),
-        ];
+        let stamps = stamp(&root, &active_env);
 
         let ctx = ProjectContext {
             root,
@@ -138,15 +147,13 @@ impl ProjectContext {
             None => {
                 self.active_env = None;
                 self.env_values = IndexMap::new();
-                self.stamps[3] = (self.root.join("environments").join("__none__.toml"), None);
+                self.stamps = stamp(&self.root, &self.active_env);
             }
             Some(name) => match postui_core::project::load_environment(&self.root, &name) {
                 Ok(values) => {
                     self.env_values = values;
-                    let path = self.root.join("environments").join(format!("{name}.toml"));
-                    let m = mtime(&path);
                     self.active_env = Some(name);
-                    self.stamps[3] = (path, m);
+                    self.stamps = stamp(&self.root, &self.active_env);
                 }
                 Err(e) => {
                     warnings.push(format!("could not load environment {name:?}: {e}"));
@@ -154,6 +161,47 @@ impl ProjectContext {
             },
         }
         warnings
+    }
+
+    /// Compares fresh mtime stamps against those recorded at the last
+    /// `open`/`set_env`/`reload_if_changed`; if anything differs, re-runs
+    /// the load path for the pieces that changed, keeping the current
+    /// `active_env` if it still exists (otherwise degrading to no env with
+    /// a warning). Parse failures keep the previous good value for that
+    /// file and are surfaced as warnings. Returns `(changed, warnings)`.
+    pub fn reload_if_changed(&mut self) -> (bool, Vec<String>) {
+        let fresh = stamp(&self.root, &self.active_env);
+        if fresh == self.stamps {
+            return (false, Vec::new());
+        }
+
+        let mut warnings = Vec::new();
+
+        match postui_core::project::load_meta(&self.root) {
+            Ok(meta) => self.meta = meta,
+            Err(e) => warnings.push(format!("could not read project.toml: {e}")),
+        }
+        match postui_core::project::load_variables(&self.root) {
+            Ok(vars) => self.variables = vars,
+            Err(e) => warnings.push(format!("could not read variables.toml: {e}")),
+        }
+        self.environments = postui_core::project::list_environments(&self.root);
+
+        if let Some(env) = self.active_env.clone() {
+            if !self.environments.contains(&env) {
+                warnings.push(format!("active environment {env:?} no longer exists"));
+                self.active_env = None;
+                self.env_values = IndexMap::new();
+            } else {
+                match postui_core::project::load_environment(&self.root, &env) {
+                    Ok(values) => self.env_values = values,
+                    Err(e) => warnings.push(format!("could not load environment {env:?}: {e}")),
+                }
+            }
+        }
+
+        self.stamps = stamp(&self.root, &self.active_env);
+        (true, warnings)
     }
 
     /// Best-effort save of the UI-owned local state: active environment,
@@ -221,5 +269,61 @@ mod tests {
         let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf());
         assert_eq!(ctx.env_label(), "no env");
         assert!(!warns.is_empty(), "stale env must be surfaced");
+    }
+
+    fn bump_mtime(p: &std::path::Path) {
+        let t = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+        let f = std::fs::File::options().append(true).open(p).unwrap();
+        f.set_modified(t).unwrap();
+    }
+
+    #[test]
+    fn reload_picks_up_changed_variables_and_keeps_active_env() {
+        let dir = tempfile::tempdir().unwrap();
+        postui_core::project::init_project(dir.path(), None).unwrap();
+        std::fs::write(dir.path().join("environments/qa.toml"), "tok = \"1\"\n").unwrap();
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        ctx.set_env(Some("qa".into()));
+        let (changed, _) = ctx.reload_if_changed();
+        assert!(!changed, "nothing changed yet");
+        std::fs::write(dir.path().join("environments/qa.toml"), "tok = \"2\"\n").unwrap();
+        bump_mtime(&dir.path().join("environments/qa.toml"));
+        let (changed, warns) = ctx.reload_if_changed();
+        assert!(changed && warns.is_empty());
+        assert_eq!(ctx.env_values["tok"], "2");
+        assert_eq!(ctx.env_label(), "qa");
+    }
+
+    #[test]
+    fn reload_with_broken_file_warns_and_keeps_previous_values() {
+        let dir = tempfile::tempdir().unwrap();
+        postui_core::project::init_project(dir.path(), None).unwrap();
+        std::fs::write(dir.path().join("variables.toml"), "[a]\ndefault = \"1\"\n").unwrap();
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        assert_eq!(ctx.variables["a"].default.as_deref(), Some("1"));
+        std::fs::write(dir.path().join("variables.toml"), "not toml [").unwrap();
+        bump_mtime(&dir.path().join("variables.toml"));
+        let (_, warns) = ctx.reload_if_changed();
+        assert!(!warns.is_empty(), "parse failure surfaced");
+        assert_eq!(
+            ctx.variables["a"].default.as_deref(),
+            Some("1"),
+            "previous good state kept"
+        );
+    }
+
+    #[test]
+    fn deleted_active_env_degrades_to_no_env_with_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        postui_core::project::init_project(dir.path(), None).unwrap();
+        std::fs::write(dir.path().join("environments/qa.toml"), "tok = \"1\"\n").unwrap();
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        ctx.set_env(Some("qa".into()));
+        std::fs::remove_file(dir.path().join("environments/qa.toml")).unwrap();
+        // no mtime bump needed: the active env file's stamp goes Some -> None,
+        // which is itself a difference (bump_mtime can't open a directory anyway)
+        let (changed, warns) = ctx.reload_if_changed();
+        assert!(changed && !warns.is_empty());
+        assert_eq!(ctx.env_label(), "no env");
     }
 }
