@@ -8,27 +8,54 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use std::collections::BTreeSet;
 
-/// One line of the sidebar listing: either a directory heading (not
-/// selectable) or a request (selectable, possibly broken).
+/// One visible row of the sidebar tree: either a collapsible folder (derived
+/// from a slug prefix, selectable but never "open") or a request leaf
+/// (selectable, possibly broken).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Row {
-    Dir(String),
+    Folder {
+        path: String,
+        name: String,
+        depth: usize,
+        expanded: bool,
+    },
     Request {
         slug: String,
+        depth: usize,
         broken: Option<String>,
     },
+}
+
+/// Identifies a row across a `refresh` rebuild so the previous selection can
+/// be relocated in the new tree even though row indices shift.
+enum RowId {
+    Folder(String),
+    Request(String),
 }
 
 #[derive(Default)]
 pub struct Sidebar {
     pub rows: Vec<Row>,
-    /// Always indexes a `Row::Request` when `rows` contains one; meaningless
-    /// (and never read) while `rows` has no request rows at all.
+    /// Index into `rows`; meaningless (and never read) while `rows` is empty.
     pub selected: usize,
     /// Index of the first row drawn; `draw` keeps `selected` inside the
-    /// visible window by adjusting this each time it renders.
+    /// visible window whenever `ensure_visible` is set, by adjusting this.
     pub scroll: usize,
+    /// The full flat listing behind the current tree, kept so future
+    /// rebuilds don't need a caller-supplied copy.
+    listing: Vec<RequestListing>,
+    /// Ancestor folder paths that `select_slug` needs opened to make its
+    /// target visible. The caller (`App::refresh_sidebar`) merges these into
+    /// `project.expanded` and clears this set on the next refresh.
+    pub pending_expand: BTreeSet<String>,
+    /// Set whenever the *selection* moves (`move_selection`, `select_slug`,
+    /// `refresh`) so the next `draw` scrolls it into view. Wheel scrolling
+    /// (`handle_scroll`) never sets this: it's free to move the viewport
+    /// without dragging the selection along, and `draw` must not snap it
+    /// back.
+    ensure_visible: bool,
     /// The slug currently loaded in the editor, kept in sync by
     /// `App::update` after every action.
     pub open_slug: Option<String>,
@@ -38,81 +65,119 @@ pub struct Sidebar {
 }
 
 impl Sidebar {
-    /// Rebuilds `rows` from a fresh listing: top-level requests first (no
-    /// `Dir` row), then each directory's requests grouped behind a `Dir`
-    /// row for its (immediate) parent path. `listing` is assumed sorted by
-    /// slug (as `storage::list_requests` returns it), so requests sharing a
-    /// directory are already contiguous.
-    pub fn refresh(&mut self, listing: Vec<RequestListing>) {
-        let prev_selected_slug = self.selected_slug();
+    /// Rebuilds `rows` as a tree from a fresh listing: at each level, this
+    /// level's requests come first (sorted by slug), then its subfolders
+    /// (sorted by name); a folder's children are emitted only when
+    /// `expanded` contains its path. Preserves the current selection by row
+    /// identity (folder path or request slug) across the rebuild, else
+    /// clamps to the first row.
+    pub fn refresh(&mut self, listing: Vec<RequestListing>, expanded: &BTreeSet<String>) {
+        let prev = self.selected_identity();
 
-        let (top, nested): (Vec<_>, Vec<_>) =
-            listing.into_iter().partition(|l| !l.slug.contains('/'));
+        self.listing = listing;
+        let mut sorted = self.listing.clone();
+        sorted.sort_by(|a, b| a.slug.cmp(&b.slug));
 
         let mut rows = Vec::new();
-        for l in top {
-            rows.push(Row::Request {
-                slug: l.slug,
-                broken: l.broken,
-            });
-        }
-        let mut current_dir: Option<String> = None;
-        for l in nested {
-            let dir = l
-                .slug
-                .rsplit_once('/')
-                .map(|(d, _)| d.to_string())
-                .unwrap_or_default();
-            if current_dir.as_deref() != Some(dir.as_str()) {
-                rows.push(Row::Dir(dir.clone()));
-                current_dir = Some(dir);
-            }
-            rows.push(Row::Request {
-                slug: l.slug,
-                broken: l.broken,
-            });
-        }
+        Self::build_rows(&sorted, "", 0, expanded, &mut rows);
         self.rows = rows;
 
-        self.selected = prev_selected_slug
-            .and_then(|slug| {
-                self.rows
-                    .iter()
-                    .position(|r| matches!(r, Row::Request { slug: s, .. } if *s == slug))
-            })
-            .or_else(|| self.first_request_index())
+        self.selected = prev
+            .and_then(|id| self.rows.iter().position(|r| Self::row_matches(r, &id)))
             .unwrap_or(0);
-        self.scroll = 0;
+        self.ensure_visible = true;
     }
 
-    /// Selects the request row for `slug`, if one exists. A no-op (leaves
-    /// the current selection untouched) when `slug` isn't in `rows`.
+    /// Builds the rows for one folder level (`prefix`, possibly empty for
+    /// the root): direct requests first, in slug order, then subfolders in
+    /// name order, recursing into each expanded one. `entries` must already
+    /// be sorted by slug and every entry must start with `prefix`.
+    fn build_rows(
+        entries: &[RequestListing],
+        prefix: &str,
+        depth: usize,
+        expanded: &BTreeSet<String>,
+        rows: &mut Vec<Row>,
+    ) {
+        let mut folder_children: std::collections::BTreeMap<String, Vec<RequestListing>> =
+            std::collections::BTreeMap::new();
+        for e in entries {
+            let rest = &e.slug[prefix.len()..];
+            if let Some((seg, _)) = rest.split_once('/') {
+                let path = if prefix.is_empty() {
+                    seg.to_string()
+                } else {
+                    format!("{prefix}{seg}")
+                };
+                folder_children.entry(path).or_default().push(e.clone());
+            } else {
+                rows.push(Row::Request {
+                    slug: e.slug.clone(),
+                    depth,
+                    broken: e.broken.clone(),
+                });
+            }
+        }
+        for (path, children) in folder_children {
+            let name = path.rsplit('/').next().unwrap_or(&path).to_string();
+            let is_expanded = expanded.contains(&path);
+            rows.push(Row::Folder {
+                path: path.clone(),
+                name,
+                depth,
+                expanded: is_expanded,
+            });
+            if is_expanded {
+                let child_prefix = format!("{path}/");
+                Self::build_rows(&children, &child_prefix, depth + 1, expanded, rows);
+            }
+        }
+    }
+
+    fn selected_identity(&self) -> Option<RowId> {
+        match self.rows.get(self.selected)? {
+            Row::Folder { path, .. } => Some(RowId::Folder(path.clone())),
+            Row::Request { slug, .. } => Some(RowId::Request(slug.clone())),
+        }
+    }
+
+    fn row_matches(row: &Row, id: &RowId) -> bool {
+        match (row, id) {
+            (Row::Folder { path, .. }, RowId::Folder(p)) => path == p,
+            (Row::Request { slug, .. }, RowId::Request(s)) => slug == s,
+            _ => false,
+        }
+    }
+
+    /// Selects the request row for `slug`, if one is currently visible, and
+    /// records `slug`'s ancestor folder paths in `pending_expand` so the
+    /// caller can open them before the next `refresh` (which is what
+    /// actually makes the row visible when it wasn't already).
     pub fn select_slug(&mut self, slug: &str) {
+        let mut parts: Vec<&str> = slug.split('/').collect();
+        parts.pop(); // drop the request's own basename; the rest are ancestor folders
+        let mut acc = String::new();
+        for seg in parts {
+            if acc.is_empty() {
+                acc = seg.to_string();
+            } else {
+                acc = format!("{acc}/{seg}");
+            }
+            self.pending_expand.insert(acc.clone());
+        }
+
         if let Some(i) = self
             .rows
             .iter()
             .position(|r| matches!(r, Row::Request { slug: s, .. } if s == slug))
         {
             self.selected = i;
+            self.ensure_visible = true;
         }
     }
 
-    fn first_request_index(&self) -> Option<usize> {
-        self.rows
-            .iter()
-            .position(|r| matches!(r, Row::Request { .. }))
-    }
-
-    fn request_indices(&self) -> Vec<usize> {
-        self.rows
-            .iter()
-            .enumerate()
-            .filter_map(|(i, r)| matches!(r, Row::Request { .. }).then_some(i))
-            .collect()
-    }
-
     /// The slug of the currently selected request row, or `None` if the
-    /// sidebar is empty or the selection is (transiently) on a `Dir` row.
+    /// sidebar is empty or the selection is on a `Folder` row.
     pub fn selected_slug(&self) -> Option<String> {
         match self.rows.get(self.selected) {
             Some(Row::Request { slug, .. }) => Some(slug.clone()),
@@ -124,16 +189,55 @@ impl Sidebar {
         self.rows.get(self.selected)
     }
 
-    /// Moves `selected` by `delta` request rows (skipping `Dir` rows
-    /// entirely), clamped to the first/last request row.
+    /// Reports the currently selected folder's path and the state it should
+    /// flip to (`!expanded`), without changing anything itself: the caller
+    /// owns the expanded set and is expected to update it, refresh, and
+    /// reselect the folder (which happens automatically, by identity, on
+    /// the next `refresh`).
+    pub fn toggle_selected_folder(&mut self) -> Option<(String, bool)> {
+        match self.selected_row()? {
+            Row::Folder { path, expanded, .. } => Some((path.clone(), !expanded)),
+            Row::Request { .. } => None,
+        }
+    }
+
+    /// Moves `selected` by `delta` rows over the full tree (folders
+    /// included), clamped to the first/last row.
     fn move_selection(&mut self, delta: i32) {
-        let idxs = self.request_indices();
-        if idxs.is_empty() {
+        if self.rows.is_empty() {
             return;
         }
-        let pos = idxs.iter().position(|&i| i == self.selected).unwrap_or(0);
-        let new_pos = (pos as i32 + delta).clamp(0, idxs.len() as i32 - 1) as usize;
-        self.selected = idxs[new_pos];
+        let new = (self.selected as i32 + delta).clamp(0, self.rows.len() as i32 - 1) as usize;
+        self.selected = new;
+        self.ensure_visible = true;
+    }
+
+    /// The path of the parent folder that would contain `row`, if any.
+    fn parent_path_of(row: &Row) -> Option<String> {
+        match row {
+            Row::Folder { path, .. } => path.rsplit_once('/').map(|(p, _)| p.to_string()),
+            Row::Request { slug, .. } => slug.rsplit_once('/').map(|(p, _)| p.to_string()),
+        }
+    }
+
+    /// Moves the selection to the parent folder row of the current
+    /// selection, if it has one and that row is visible. A no-op (still
+    /// redraws) when there's no parent, e.g. at the top level.
+    fn jump_to_parent(&mut self) {
+        let Some(row) = self.selected_row() else {
+            return;
+        };
+        let Some(parent) = Self::parent_path_of(row) else {
+            return;
+        };
+        if let Some(i) = self
+            .rows
+            .iter()
+            .position(|r| matches!(r, Row::Folder { path, .. } if *path == parent))
+        {
+            self.selected = i;
+            self.ensure_visible = true;
+        }
     }
 }
 
@@ -149,12 +253,30 @@ impl Component for Sidebar {
                 Some(Action::Render)
             }
             KeyCode::Enter => match self.selected_row()? {
-                Row::Request { slug, broken: None } => Some(Action::OpenRequest(slug.clone())),
+                Row::Request {
+                    slug, broken: None, ..
+                } => Some(Action::OpenRequest(slug.clone())),
                 Row::Request {
                     slug,
                     broken: Some(_),
+                    ..
                 } => Some(Action::ShowRequestError(slug.clone())),
-                Row::Dir(_) => None,
+                Row::Folder { .. } => Some(Action::ToggleSelectedFolder),
+            },
+            KeyCode::Right => matches!(
+                self.selected_row()?,
+                Row::Folder {
+                    expanded: false,
+                    ..
+                }
+            )
+            .then_some(Action::ToggleSelectedFolder),
+            KeyCode::Left => match self.selected_row()? {
+                Row::Folder { expanded: true, .. } => Some(Action::ToggleSelectedFolder),
+                _ => {
+                    self.jump_to_parent();
+                    Some(Action::Render)
+                }
             },
             KeyCode::Char('n') => Some(Action::PromptNewRequest),
             KeyCode::Char('r') => matches!(self.selected_row()?, Row::Request { .. })
@@ -171,6 +293,9 @@ impl Component for Sidebar {
         }
         let max = self.rows.len().saturating_sub(1);
         self.scroll = (self.scroll as i32 + delta as i32).clamp(0, max as i32) as usize;
+        // An explicit wheel gesture takes viewport control and cancels any
+        // snap-into-view still pending from an earlier selection change.
+        self.ensure_visible = false;
     }
 
     fn draw(&mut self, frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
@@ -187,14 +312,17 @@ impl Component for Sidebar {
         }
 
         let visible_height = inner.height as usize;
-        if visible_height > 0 {
-            if self.selected < self.scroll {
-                self.scroll = self.selected;
-            } else if self.selected >= self.scroll + visible_height {
-                self.scroll = self.selected + 1 - visible_height;
+        if self.ensure_visible {
+            if visible_height > 0 {
+                if self.selected < self.scroll {
+                    self.scroll = self.selected;
+                } else if self.selected >= self.scroll + visible_height {
+                    self.scroll = self.selected + 1 - visible_height;
+                }
+                let max_scroll = self.rows.len().saturating_sub(visible_height);
+                self.scroll = self.scroll.min(max_scroll);
             }
-            let max_scroll = self.rows.len().saturating_sub(visible_height);
-            self.scroll = self.scroll.min(max_scroll);
+            self.ensure_visible = false;
         }
 
         let lines: Vec<Line> = self
@@ -212,30 +340,50 @@ impl Component for Sidebar {
 impl Sidebar {
     fn render_row(&self, idx: usize, row: &Row, ctx: &DrawCtx) -> Line<'static> {
         let theme: &Theme = ctx.theme;
-        match row {
-            Row::Dir(name) => {
-                Line::styled(format!("▸ {name}/"), Style::default().fg(theme.text_muted))
+        let is_selected = idx == self.selected;
+        let marker_style = if is_selected {
+            if ctx.focused {
+                Style::default().fg(theme.accent).bold()
+            } else {
+                Style::default().fg(theme.text_muted)
             }
-            Row::Request { slug, broken } => {
-                let is_selected = idx == self.selected;
-                let marker_style = if is_selected {
-                    if ctx.focused {
-                        Style::default().fg(theme.accent).bold()
-                    } else {
-                        Style::default().fg(theme.text_muted)
-                    }
+        } else {
+            Style::default().fg(theme.text_muted)
+        };
+        let marker = if is_selected { "\u{203a} " } else { "  " };
+
+        match row {
+            Row::Folder {
+                name,
+                depth,
+                expanded,
+                ..
+            } => {
+                let text_style = if is_selected && ctx.focused {
+                    Style::default().fg(theme.accent).bold()
                 } else {
                     Style::default().fg(theme.text_muted)
                 };
+                let glyph = if *expanded { "\u{25be}" } else { "\u{25b8}" };
+                let indent = "  ".repeat(*depth);
+                Line::from(vec![
+                    Span::styled(marker, marker_style),
+                    Span::raw(indent),
+                    Span::styled(format!("{glyph} {name}/"), text_style),
+                ])
+            }
+            Row::Request {
+                slug,
+                depth,
+                broken,
+            } => {
                 let text_style = if is_selected && ctx.focused {
                     Style::default().fg(theme.accent).bold()
                 } else {
                     Style::default().fg(theme.text)
                 };
-
-                let marker = if is_selected { "\u{203a} " } else { "  " };
                 let basename = slug.rsplit('/').next().unwrap_or(slug.as_str());
-                let indent = if slug.contains('/') { "  " } else { "" };
+                let indent = "  ".repeat(*depth);
 
                 let mut spans = vec![Span::styled(marker, marker_style)];
                 if !indent.is_empty() {
@@ -258,6 +406,8 @@ impl Sidebar {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::DrawCtx;
+    use crate::theme::Theme;
     use ratatui::crossterm::event::KeyModifiers;
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -274,77 +424,114 @@ mod tests {
             .collect()
     }
 
+    fn expanded(paths: &[&str]) -> BTreeSet<String> {
+        paths.iter().map(|s| s.to_string()).collect()
+    }
+
     #[test]
-    fn refresh_groups_top_level_before_directories() {
+    fn tree_builds_nested_folders_and_hides_collapsed_children() {
         let mut s = Sidebar::default();
-        s.refresh(listing(&["auth/login", "ping"]));
+        s.refresh(
+            listing(&["api/users/list", "api/users/create", "api/ping", "top"]),
+            &expanded(&[]),
+        );
+        // collapsed: only top-level rows visible
         assert_eq!(
             s.rows,
             vec![
                 Row::Request {
-                    slug: "ping".into(),
+                    slug: "top".into(),
+                    depth: 0,
                     broken: None
                 },
-                Row::Dir("auth".into()),
-                Row::Request {
-                    slug: "auth/login".into(),
-                    broken: None
+                Row::Folder {
+                    path: "api".into(),
+                    name: "api".into(),
+                    depth: 0,
+                    expanded: false
                 },
             ]
         );
-        assert_eq!(s.selected, 0);
+        s.refresh(
+            listing(&["api/users/list", "api/users/create", "api/ping", "top"]),
+            &expanded(&["api"]),
+        );
+        assert_eq!(
+            s.rows,
+            vec![
+                Row::Request {
+                    slug: "top".into(),
+                    depth: 0,
+                    broken: None
+                },
+                Row::Folder {
+                    path: "api".into(),
+                    name: "api".into(),
+                    depth: 0,
+                    expanded: true
+                },
+                Row::Request {
+                    slug: "api/ping".into(),
+                    depth: 1,
+                    broken: None
+                },
+                Row::Folder {
+                    path: "api/users".into(),
+                    name: "users".into(),
+                    depth: 1,
+                    expanded: false
+                },
+            ]
+        );
     }
 
     #[test]
-    fn navigation_skips_dir_rows_and_clamps() {
+    fn enter_and_arrows_toggle_folders_and_navigate_all_rows() {
         let mut s = Sidebar::default();
-        s.refresh(listing(&["auth/login", "ping"]));
-        assert_eq!(s.selected_slug().as_deref(), Some("ping"));
-        s.handle_key(key(KeyCode::Char('j')));
+        s.refresh(listing(&["api/ping", "top"]), &expanded(&[]));
+        s.handle_key(key(KeyCode::Char('j'))); // now on the "api" folder row
+        assert!(matches!(s.rows[s.selected], Row::Folder { .. }));
+        assert_eq!(s.selected_slug(), None, "folder rows have no slug");
+        // Enter on a folder emits ToggleSelectedFolder
         assert_eq!(
-            s.selected_slug().as_deref(),
-            Some("auth/login"),
-            "Dir row skipped"
-        );
-        s.handle_key(key(KeyCode::Char('j')));
-        assert_eq!(
-            s.selected_slug().as_deref(),
-            Some("auth/login"),
-            "clamped at the end"
-        );
-        s.handle_key(key(KeyCode::Char('k')));
-        assert_eq!(s.selected_slug().as_deref(), Some("ping"));
-        s.handle_key(key(KeyCode::Char('k')));
-        assert_eq!(
-            s.selected_slug().as_deref(),
-            Some("ping"),
-            "clamped at the start"
+            s.handle_key(key(KeyCode::Enter)),
+            Some(Action::ToggleSelectedFolder)
         );
     }
 
     #[test]
-    fn enter_on_healthy_and_broken_rows() {
-        let mut s = Sidebar {
-            rows: vec![
-                Row::Request {
-                    slug: "ok".into(),
-                    broken: None,
-                },
-                Row::Request {
-                    slug: "bad".into(),
-                    broken: Some("boom".into()),
-                },
-            ],
-            ..Sidebar::default()
+    fn wheel_scroll_is_free_and_keyboard_still_tracks_selection() {
+        let mut s = Sidebar::default();
+        let slugs: Vec<String> = (0..30).map(|i| format!("r{i:02}")).collect();
+        let refs: Vec<&str> = slugs.iter().map(|s| s.as_str()).collect();
+        s.refresh(listing(&refs), &expanded(&[]));
+        s.handle_scroll(10);
+        assert_eq!(s.scroll, 10);
+        // drawing must NOT snap back to the selection
+        let theme = Theme::dark();
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
         };
-        assert_eq!(
-            s.handle_key(key(KeyCode::Enter)),
-            Some(Action::OpenRequest("ok".into()))
+        let backend = ratatui::backend::TestBackend::new(30, 10);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| s.draw(f, f.area(), &ctx)).unwrap();
+        assert_eq!(s.scroll, 10, "free scroll survives draw");
+        // moving the selection scrolls it back into view
+        s.handle_key(key(KeyCode::Char('j')));
+        terminal.draw(|f| s.draw(f, f.area(), &ctx)).unwrap();
+        assert!(
+            s.scroll <= 1,
+            "keyboard nav brings the selection into view: {}",
+            s.scroll
         );
-        s.selected = 1;
-        assert_eq!(
-            s.handle_key(key(KeyCode::Enter)),
-            Some(Action::ShowRequestError("bad".into()))
-        );
+    }
+
+    #[test]
+    fn select_slug_expands_ancestor_folders() {
+        let mut s = Sidebar::default();
+        s.refresh(listing(&["a/b/c"]), &expanded(&[]));
+        s.select_slug("a/b/c");
+        assert!(s.pending_expand.contains("a") && s.pending_expand.contains("a/b"));
     }
 }

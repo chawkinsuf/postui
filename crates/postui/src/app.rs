@@ -209,8 +209,7 @@ impl App {
         let mut app = Self::bare(tx, root);
         match postui_core::storage::ensure_project(&app.project.root) {
             Ok(()) => {
-                let listing = postui_core::storage::list_requests(&app.project.root);
-                app.sidebar.refresh(listing);
+                app.refresh_sidebar();
             }
             Err(e) => {
                 app.toasts
@@ -280,6 +279,8 @@ impl App {
     fn apply(&mut self, action: Action) -> bool {
         match action {
             Action::Quit => {
+                self.project
+                    .persist_local_state(self.editor.slug.as_deref());
                 self.should_quit = true;
                 true
             }
@@ -405,9 +406,7 @@ impl App {
                                 self.editor.mark_saved();
                                 self.toasts
                                     .push(format!("Saved {slug}"), ToastKind::Success);
-                                let listing =
-                                    postui_core::storage::list_requests(&self.project.root);
-                                self.sidebar.refresh(listing);
+                                self.refresh_sidebar();
                             }
                             Err(e) => {
                                 self.toasts
@@ -434,6 +433,7 @@ impl App {
                         Row::Request {
                             slug: s,
                             broken: Some(b),
+                            ..
                         } if *s == slug => Some(b.clone()),
                         _ => None,
                     })
@@ -445,8 +445,7 @@ impl App {
                 true
             }
             Action::RefreshSidebar => {
-                let listing = postui_core::storage::list_requests(&self.project.root);
-                self.sidebar.refresh(listing);
+                self.refresh_sidebar();
                 true
             }
             Action::PromptNewRequest => {
@@ -501,8 +500,7 @@ impl App {
                 }
                 match postui_core::storage::rename_request(&self.project.root, &from, &to) {
                     Ok(()) => {
-                        let listing = postui_core::storage::list_requests(&self.project.root);
-                        self.sidebar.refresh(listing);
+                        self.refresh_sidebar();
                         if self.editor.slug.as_deref() == Some(from.as_str()) {
                             self.editor.slug = Some(to.clone());
                             self.sidebar.open_slug = Some(to);
@@ -518,8 +516,7 @@ impl App {
             Action::DeleteRequest(slug) => {
                 match postui_core::storage::delete_request(&self.project.root, &slug) {
                     Ok(()) => {
-                        let listing = postui_core::storage::list_requests(&self.project.root);
-                        self.sidebar.refresh(listing);
+                        self.refresh_sidebar();
                         if self.editor.slug.as_deref() == Some(slug.as_str()) {
                             self.editor = Editor::default();
                         }
@@ -643,8 +640,7 @@ impl App {
                         if let Some(path) = &self.registry_path {
                             let _ = self.registry.save_to(path);
                         }
-                        let listing = postui_core::storage::list_requests(&self.project.root);
-                        self.sidebar.refresh(listing);
+                        self.refresh_sidebar();
                     }
                     Err(e) => {
                         self.toasts.push(
@@ -655,7 +651,38 @@ impl App {
                 }
                 true
             }
+            Action::ToggleSelectedFolder => {
+                if let Some((path, now_open)) = self.sidebar.toggle_selected_folder() {
+                    if now_open {
+                        self.project.expanded.insert(path);
+                    } else {
+                        self.project.expanded.remove(&path);
+                    }
+                    self.refresh_sidebar();
+                    self.apply(Action::PersistLocalState);
+                }
+                true
+            }
+            Action::PersistLocalState => {
+                self.project
+                    .persist_local_state(self.editor.slug.as_deref());
+                true
+            }
         }
+    }
+
+    /// Re-reads the project directory and rebuilds the sidebar tree,
+    /// merging any ancestor folders `select_slug` needs opened into
+    /// `project.expanded` first. Replaces every previous
+    /// `list_requests` + `sidebar.refresh` pair so the tree/expansion
+    /// state stays consistent at every call site.
+    fn refresh_sidebar(&mut self) {
+        let listing = postui_core::storage::list_requests(&self.project.root);
+        self.project
+            .expanded
+            .append(&mut self.sidebar.pending_expand);
+        let expanded = self.project.expanded.clone();
+        self.sidebar.refresh(listing, &expanded);
     }
 
     /// Shared validate/exists-check/save/refresh/open path for `CreateRequest`
@@ -690,9 +717,13 @@ impl App {
                 self.editor.mark_saved();
                 self.toasts
                     .push(format!("Saved {name}"), ToastKind::Success);
-                let listing = postui_core::storage::list_requests(&self.project.root);
-                self.sidebar.refresh(listing);
+                // Queue name's ancestor folders open, rebuild the tree with
+                // them expanded (so the new row exists at all), then select
+                // it now that it's actually visible.
                 self.sidebar.select_slug(name);
+                self.refresh_sidebar();
+                self.sidebar.select_slug(name);
+                self.apply(Action::PersistLocalState);
             }
             Err(e) => {
                 self.toasts
@@ -1015,22 +1046,25 @@ mod tests {
             vec![
                 Row::Request {
                     slug: "ping".into(),
+                    depth: 0,
                     broken: None
                 },
-                Row::Dir("auth".into()),
-                Row::Request {
-                    slug: "auth/login".into(),
-                    broken: None
+                Row::Folder {
+                    path: "auth".into(),
+                    name: "auth".into(),
+                    depth: 0,
+                    expanded: false,
                 },
             ]
         );
 
-        // navigate from "ping" (index 0) down to "auth/login" (index 2, Dir skipped)
-        app.handle_key(&Keymap::default_bindings(), plain('j'));
-        app.handle_key(
-            &Keymap::default_bindings(),
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-        );
+        // "ping" (index 0) -> "auth" folder (index 1): expand it, then
+        // "auth/login" (index 2) becomes visible and Enter opens it.
+        let keymap = Keymap::default_bindings();
+        app.handle_key(&keymap, plain('j'));
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.handle_key(&keymap, plain('j'));
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(app.editor.slug.as_deref(), Some("auth/login"));
     }
 

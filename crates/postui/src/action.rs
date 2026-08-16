@@ -87,4 +87,11 @@ pub enum Action {
     /// The opened root has no `project.toml`; user chose to create one here
     /// (from the "Not a postui project" confirm modal).
     InitProjectHere,
+    /// Toggle the currently selected sidebar folder row between collapsed
+    /// and expanded.
+    ToggleSelectedFolder,
+    /// Write `.local/state.toml` (expanded folders, active environment, the
+    /// currently open request) from current app state. Fired after any
+    /// change to that state and on quit.
+    PersistLocalState,
 }
