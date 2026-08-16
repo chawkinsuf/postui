@@ -45,6 +45,23 @@ impl LineInput {
             .unwrap_or(self.text.len())
     }
 
+    /// Inserts `s` at the cursor and advances the cursor by `s`'s char
+    /// count. Used to splice in multi-character text (e.g. a picked
+    /// variable token) in one shot, rather than one `handle_key` per char.
+    pub fn insert_str(&mut self, s: &str) {
+        let at = self.byte_offset(self.cursor);
+        self.text.insert_str(at, s);
+        self.cursor += s.chars().count();
+    }
+
+    /// Whether the text *before* the cursor ends with `suffix`. Used to spot
+    /// a just-typed `{{` trigger without caring what (if anything) follows
+    /// the cursor.
+    pub fn ends_with_at_cursor(&self, suffix: &str) -> bool {
+        let end = self.byte_offset(self.cursor);
+        self.text[..end].ends_with(suffix)
+    }
+
     /// Handles a key event, returning `true` if it was consumed (state may
     /// have changed) or `false` if the caller should treat it as unhandled.
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
@@ -217,6 +234,19 @@ mod tests {
         assert_eq!(input.cursor(), 2);
         assert!(input.handle_key(code(KeyCode::Backspace)));
         assert_eq!(input.text(), "hllo");
+    }
+
+    #[test]
+    fn insert_str_at_cursor_and_suffix_probe() {
+        let mut i = LineInput::new("ab");
+        i.handle_key(code(KeyCode::Left));
+        i.insert_str("{{x}}");
+        assert_eq!(i.text(), "a{{x}}b");
+        assert_eq!(i.cursor(), 6);
+        let mut j = LineInput::new("http://{{");
+        assert!(j.ends_with_at_cursor("{{"));
+        j.handle_key(code(KeyCode::Left));
+        assert!(!j.ends_with_at_cursor("{{"), "cursor moved off the braces");
     }
 
     #[test]

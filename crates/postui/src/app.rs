@@ -897,6 +897,55 @@ impl App {
                 }
                 changed
             }
+            Action::OpenVarPicker { completing } => {
+                self.apply(Action::ReloadProjectFiles);
+                if self.project.variables.is_empty() {
+                    self.toasts.push(
+                        "no variables declared — edit variables.toml",
+                        ToastKind::Warning,
+                    );
+                    return true;
+                }
+                let resolved = self.project.prepare_context().vars;
+                use crate::components::modal::Modal;
+                use crate::components::var_picker::{VarEntry, VarPickerState};
+                let entries: Vec<VarEntry> = self
+                    .project
+                    .variables
+                    .keys()
+                    .map(|name| VarEntry {
+                        name: name.clone(),
+                        description: self.project.variables[name].description.clone(),
+                        value: resolved.get(name).cloned(),
+                    })
+                    .collect();
+                self.modals
+                    .push(Modal::VarPicker(VarPickerState::new(entries, completing)));
+                true
+            }
+            Action::InsertVarText(text) => {
+                if self.focus == PaneId::Editor && self.editor.sub_focus == SubFocus::Url {
+                    self.editor.url.insert_str(&text);
+                } else if let Some(edit) = self.editor.table.editing.as_mut() {
+                    edit.input.insert_str(&text);
+                } else if self.focus == PaneId::Editor
+                    && self.editor.active_tab == EditorTab::Body
+                    && self.editor.sub_focus == SubFocus::Content
+                {
+                    self.editor.body_insert_str(&text);
+                    if !self.editor.substitute_body {
+                        self.editor.substitute_body = true;
+                        self.toasts
+                            .push("body {{var}} substitution enabled", ToastKind::Success);
+                    }
+                } else {
+                    self.toasts.push(
+                        "nowhere to insert — focus a text field first",
+                        ToastKind::Warning,
+                    );
+                }
+                true
+            }
         }
     }
 
@@ -1954,5 +2003,55 @@ mod tests {
         terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("vars"), "expected a vars badge: {content}");
+    }
+
+    fn app_with_vars() -> App {
+        let mut app = App::new_for_test();
+        std::fs::write(
+            app.project.root.join("variables.toml"),
+            "[base]\ndefault = \"http://x\"\n[tok]\n",
+        )
+        .unwrap();
+        app.update(Action::ReloadProjectFiles);
+        app
+    }
+
+    #[test]
+    fn typing_double_brace_in_url_opens_completing_picker_and_insert_lands_in_url() {
+        let mut app = app_with_vars();
+        let keymap = Keymap::default_bindings();
+        app.focus = PaneId::Editor;
+        app.editor.sub_focus = SubFocus::Url;
+        app.handle_key(&keymap, plain('{'));
+        assert!(app.modals.is_empty(), "one brace: no picker");
+        app.handle_key(&keymap, plain('{'));
+        let Some(Modal::VarPicker(p)) = app.modals.top() else {
+            panic!("expected picker")
+        };
+        assert!(p.completing);
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.editor.url.text(), "{{base}}");
+    }
+
+    #[test]
+    fn body_insert_autoenables_substitution() {
+        let mut app = app_with_vars();
+        app.focus = PaneId::Editor;
+        app.editor.active_tab = EditorTab::Body;
+        app.editor.sub_focus = SubFocus::Content;
+        app.update(Action::OpenVarPicker { completing: false });
+        let keymap = Keymap::default_bindings();
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.editor.body_text(), "{{base}}");
+        assert!(app.editor.substitute_body, "auto-enabled");
+        assert!(!app.toasts.is_empty());
+    }
+
+    #[test]
+    fn picker_with_no_declared_vars_toasts() {
+        let mut app = App::new_for_test();
+        app.update(Action::OpenVarPicker { completing: false });
+        assert!(app.modals.is_empty());
+        assert!(!app.toasts.is_empty());
     }
 }

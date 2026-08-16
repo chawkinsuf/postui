@@ -10,6 +10,7 @@ pub mod response;
 pub mod sidebar;
 pub mod table_editor;
 pub mod toast;
+pub mod var_picker;
 
 use crate::action::Action;
 use crate::theme::Theme;

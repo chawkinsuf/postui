@@ -146,4 +146,18 @@ pub enum Action {
     /// Flip `editor.substitute_body` — whether `{{var}}` tokens in the body
     /// are substituted at send time.
     ToggleBodyVars,
+    /// Open the variable picker: reload project files, then list declared
+    /// variables (`project.variables` order) with their resolved value (if
+    /// any). `completing` is true when triggered by typing `{{` in a text
+    /// field (Enter inserts just the closing `name}}`) and false when
+    /// triggered explicitly (Enter inserts the full `{{name}}` token).
+    /// Toasts instead of opening when no variables are declared.
+    OpenVarPicker {
+        completing: bool,
+    },
+    /// Insert `text` at the currently focused text field: the URL line, an
+    /// in-progress table cell edit, or the body buffer (Body tab +
+    /// content focus). Toasts "nowhere to insert" when focus isn't on a
+    /// text field.
+    InsertVarText(String),
 }

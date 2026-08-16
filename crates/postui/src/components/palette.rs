@@ -97,6 +97,10 @@ pub fn all_commands() -> Vec<Command> {
             action: Action::CycleEnv,
         },
         Command {
+            name: "Variables: insert…",
+            action: Action::OpenVarPicker { completing: false },
+        },
+        Command {
             name: "Quit",
             action: Action::Quit,
         },

@@ -160,6 +160,22 @@ impl Editor {
         self.body.lines.to_string()
     }
 
+    /// Feeds each char of `s` through the body's key handler as a
+    /// synthesized plain `KeyCode::Char` event, as if the user had typed it.
+    /// Used to splice a picked variable token into the body buffer, which
+    /// (unlike `LineInput`) has no direct string-insertion API of its own.
+    pub fn body_insert_str(&mut self, s: &str) {
+        for c in s.chars() {
+            self.body_handler.on_key_event(
+                KeyEvent::new(
+                    KeyCode::Char(c),
+                    ratatui::crossterm::event::KeyModifiers::NONE,
+                ),
+                &mut self.body,
+            );
+        }
+    }
+
     /// Replaces the whole body buffer. Only explicit user actions (loading a
     /// request, format, minify, the `$EDITOR` round-trip) may call this;
     /// typing goes through `body_handler`, so the text is never rewritten
@@ -191,6 +207,9 @@ impl Component for Editor {
         match self.sub_focus {
             SubFocus::Url => {
                 if self.url.handle_key(ev) {
+                    if ev.code == KeyCode::Char('{') && self.url.ends_with_at_cursor("{{") {
+                        return Some(Action::OpenVarPicker { completing: true });
+                    }
                     return Some(Action::Render);
                 }
                 if ev.code == KeyCode::Down {
@@ -212,6 +231,16 @@ impl Component for Editor {
                     };
                     let outcome = self.table.handle_key(ev, map);
                     if outcome.consumed {
+                        if ev.code == KeyCode::Char('{')
+                            && self
+                                .table
+                                .editing
+                                .as_ref()
+                                .map(|e| &e.input)
+                                .is_some_and(|i| i.ends_with_at_cursor("{{"))
+                        {
+                            return Some(Action::OpenVarPicker { completing: true });
+                        }
                         return Some(match outcome.warning {
                             Some(w) => Action::ShowToast(w, ToastKind::Warning),
                             None => Action::Render,

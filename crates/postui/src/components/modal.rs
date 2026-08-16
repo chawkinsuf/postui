@@ -42,6 +42,7 @@ pub enum Modal {
     },
     Palette(crate::components::palette::PaletteState),
     Chooser(crate::components::chooser::ChooserState),
+    VarPicker(crate::components::var_picker::VarPickerState),
     /// The "new project" prompt: a name field and a path field, tab/down
     /// (or shift-tab/up) switching focus between them. On the first hop
     /// off the name field, if the path still ends with `/`, the name is
@@ -148,6 +149,7 @@ impl ModalStack {
             },
             Modal::Palette(state) => state.handle_key(key),
             Modal::Chooser(state) => state.handle_key(key),
+            Modal::VarPicker(state) => state.handle_key(key),
             Modal::NewProject {
                 name,
                 path,
@@ -288,6 +290,7 @@ impl ModalStack {
             }
             Modal::Palette(state) => state.draw(frame, screen, theme),
             Modal::Chooser(state) => state.draw(frame, screen, theme),
+            Modal::VarPicker(state) => state.draw(frame, screen, theme),
             Modal::NewProject {
                 name,
                 path,
