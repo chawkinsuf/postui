@@ -347,7 +347,13 @@ impl Component for Editor {
         }
     }
 
-    fn draw(&mut self, frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
+    fn draw(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        ctx: &DrawCtx,
+        hits: &mut crate::hit::HitMap,
+    ) {
         let block = pane_block("Request", ctx);
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -363,7 +369,7 @@ impl Component for Editor {
 
         self.draw_method_and_url(frame, rows[0], ctx.theme);
         self.draw_tab_bar(frame, rows[1], ctx.theme);
-        self.draw_tab_content(frame, rows[2], ctx.theme);
+        self.draw_tab_content(frame, rows[2], ctx.theme, hits);
     }
 }
 
@@ -446,12 +452,22 @@ impl Editor {
             .collect()
     }
 
-    fn draw_tab_content(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    fn draw_tab_content(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        theme: &Theme,
+        hits: &mut crate::hit::HitMap,
+    ) {
         let focused = self.sub_focus == SubFocus::Content;
         self.last_body_area = None;
         match self.active_tab {
             EditorTab::Params => {
-                let ctx = DrawCtx { theme, focused };
+                let ctx = DrawCtx {
+                    theme,
+                    focused,
+                    hovered: None,
+                };
                 self.table.draw(
                     frame,
                     area,
@@ -475,7 +491,11 @@ impl Editor {
                     frame.render_widget(Paragraph::new(inherited_lines), split[0]);
                     split[1]
                 };
-                let ctx = DrawCtx { theme, focused };
+                let ctx = DrawCtx {
+                    theme,
+                    focused,
+                    hovered: None,
+                };
                 self.table.draw(
                     frame,
                     table_area,
@@ -486,6 +506,7 @@ impl Editor {
             }
             EditorTab::Body => {
                 self.last_body_area = Some(area);
+                hits.register(area, crate::hit::Hit::BodyEditor);
                 let highlighter = json_highlighter(theme);
                 let mut edtui_theme = EditorTheme::default()
                     .base(Style::default().bg(theme.surface).fg(theme.text))
@@ -855,10 +876,14 @@ mod tests {
             let ctx = DrawCtx {
                 theme: &theme,
                 focused: true,
+                hovered: None,
             };
             let backend = TestBackend::new(60, 10);
             let mut terminal = Terminal::new(backend).unwrap();
-            terminal.draw(|f| e.draw(f, f.area(), &ctx)).unwrap();
+            let mut hits = crate::hit::HitMap::default();
+            terminal
+                .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
+                .unwrap();
             format!("{:?}", terminal.backend().buffer())
         };
         assert!(render("").contains("Body ✓"), "empty body counts as valid");
@@ -877,10 +902,14 @@ mod tests {
         let ctx = DrawCtx {
             theme: &theme,
             focused: true,
+            hovered: None,
         };
         let backend = TestBackend::new(60, 10);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| e.draw(f, f.area(), &ctx)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(
             content.contains("marker"),
@@ -903,10 +932,14 @@ url = "https://api.example.com/users""#,
         let ctx = DrawCtx {
             theme: &theme,
             focused: true,
+            hovered: None,
         };
         let backend = TestBackend::new(60, 10);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| e.draw(f, f.area(), &ctx)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("POST"), "method badge: {content}");
         assert!(
@@ -963,10 +996,14 @@ url = "https://api.example.com/users""#,
         let ctx = DrawCtx {
             theme: &theme,
             focused: true,
+            hovered: None,
         };
         let backend = TestBackend::new(70, 14);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| e.draw(f, f.area(), &ctx)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("(project)"), "{content}");
         assert!(content.contains("(overridden)"), "{content}");

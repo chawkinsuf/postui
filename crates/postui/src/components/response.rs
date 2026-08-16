@@ -411,7 +411,13 @@ impl Component for Response {
         view.scroll = (view.scroll as i32 + delta as i32).clamp(0, max) as usize;
     }
 
-    fn draw(&mut self, frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
+    fn draw(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        ctx: &DrawCtx,
+        _hits: &mut crate::hit::HitMap,
+    ) {
         let block = pane_block("Response", ctx);
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -743,9 +749,13 @@ mod tests {
         let ctx = DrawCtx {
             theme: &theme,
             focused: true,
+            hovered: None,
         };
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
-        terminal.draw(|f| resp.draw(f, f.area(), &ctx)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| resp.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
         format!("{:?}", terminal.backend().buffer())
     }
 

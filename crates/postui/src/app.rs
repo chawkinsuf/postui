@@ -5,6 +5,7 @@ use crate::components::response::ResponseState;
 use crate::components::sidebar::Row;
 use crate::components::toast::{ToastKind, Toasts};
 use crate::components::{Component, response::Response, sidebar::Sidebar};
+use crate::hit::{Hit, HitMap};
 use crate::keys::{KeyCombo, Keymap};
 use crate::layout::PaneId;
 use crate::project_ctx::ProjectContext;
@@ -22,6 +23,15 @@ pub struct InFlight {
     pub started: Instant,
     pub generation: u64,
     pub task: tokio::task::JoinHandle<()>,
+}
+
+/// An in-progress drag: which pane's scrollbar thumb (or similar) is being
+/// dragged, and the grab offset within it. Not yet acted on until a later
+/// task wires up drag handling — `App::handle_mouse` only clears it on
+/// `Up` for now.
+pub struct Drag {
+    pub pane: PaneId,
+    pub grab_offset: u16,
 }
 
 pub struct App {
@@ -60,6 +70,18 @@ pub struct App {
     /// here by `update` for the main loop to take and run. Keeps `update`
     /// itself terminal-free (and therefore testable without a TTY).
     pub pending_terminal_action: Option<Action>,
+    /// Rebuilt every frame by `ui::draw`: maps screen regions to typed
+    /// [`Hit`]s for mouse routing.
+    pub hits: HitMap,
+    /// The `Hit` currently under the pointer, if any, updated by
+    /// `handle_mouse` on `Moved`. Read by `ui::draw` to style hovered
+    /// buttons/chips.
+    pub hovered: Option<Hit>,
+    /// An in-progress drag (e.g. a scrollbar thumb), if any.
+    pub drag: Option<Drag>,
+    /// The most recent left-click's hit and when it landed, used to detect
+    /// a double-click (same hit, within 400ms).
+    last_click: Option<(Hit, std::time::Instant)>,
     /// Keeps the test-only channel's receiver alive so `tx` doesn't become
     /// a dangling sender in `App::new_for_test()`. Always `None` outside
     /// of tests.
@@ -274,6 +296,10 @@ impl App {
             send_generation: 0,
             tx,
             pending_terminal_action: None,
+            hits: HitMap::default(),
+            hovered: None,
+            drag: None,
+            last_click: None,
             _test_rx: None,
             _test_dir: None,
         }
@@ -1164,50 +1190,71 @@ impl App {
         }
     }
 
-    /// Routes a raw terminal mouse event. A left-down or wheel event that
-    /// lands inside the editor pane first gets a shot at the body editor
-    /// itself (edtui owns click-to-place and its own scroll there); a click
-    /// also focuses the pane first (mirroring a click anywhere else), but a
-    /// wheel event does not — scrolling must never steal focus. Anything the
-    /// body editor doesn't consume — a click/scroll on the Params/Headers
-    /// tabs, or outside the recorded body area — falls back to the existing
-    /// pane-level focus/scroll behavior.
-    pub fn handle_mouse(
-        &mut self,
-        m: ratatui::crossterm::event::MouseEvent,
-        layout: &crate::layout::AppLayout,
-    ) -> bool {
-        use crate::layout::hit_test;
+    /// Routes a raw terminal mouse event against `self.hits`, the `HitMap`
+    /// `ui::draw` rebuilt on the last frame. No layout is needed any more:
+    /// every clickable region — pane background, button, chip — was
+    /// registered there already, topmost-wins.
+    ///
+    /// - `Moved` resolves the hit under the pointer and, if it differs from
+    ///   `self.hovered`, stores it and asks for a redraw (so hover styling
+    ///   updates); the same hit twice in a row is a no-op.
+    /// - `Down(Left)` resolves the hit, tracks single vs. double click (same
+    ///   hit within 400ms), and dispatches through `on_hit`.
+    /// - `Up(Left)` clears any in-progress drag.
+    /// - Wheel events scroll the body editor when over it, else scroll the
+    ///   pane under the pointer. While a modal is open, wheel is a no-op
+    ///   here — modal-list scrolling is a later task.
+    pub fn handle_mouse(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
         use ratatui::crossterm::event::{MouseButton, MouseEventKind};
-        use ratatui::layout::Position;
 
-        let in_editor = layout.editor.contains(Position {
-            x: m.column,
-            y: m.row,
-        });
         match m.kind {
-            MouseEventKind::Down(MouseButton::Left) if in_editor => {
-                self.update(Action::FocusPane(PaneId::Editor));
-                if self.editor.handle_mouse(m) {
+            MouseEventKind::Moved => {
+                if self.drag.is_some() {
+                    // Drag handling lands in a later task; until then a
+                    // drag in progress swallows motion without redrawing.
+                    return false;
+                }
+                let hit = self.hits.hit_at(m.column, m.row).cloned();
+                if hit != self.hovered {
+                    self.hovered = hit;
+                    return true;
+                }
+                false
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                // Modal-open guard: until a later task registers modal
+                // hits (so modal draw order makes them win), clicks while a
+                // modal is open would otherwise resolve to whatever pane
+                // hit happens to be underneath. Keep clicks inert here.
+                if !self.modals.is_empty() {
+                    return false;
+                }
+                let Some(hit) = self.hits.hit_at(m.column, m.row).cloned() else {
+                    return false;
+                };
+                let now = std::time::Instant::now();
+                let clicks = match &self.last_click {
+                    Some((last_hit, at))
+                        if *last_hit == hit && now.duration_since(*at).as_millis() < 400 =>
+                    {
+                        2
+                    }
+                    _ => 1,
+                };
+                self.last_click = Some((hit.clone(), now));
+                self.on_hit(hit, clicks, m)
+            }
+            MouseEventKind::Up(MouseButton::Left) => self.drag.take().is_some(),
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                if matches!(self.hits.hit_at(m.column, m.row), Some(Hit::BodyEditor))
+                    && self.editor.handle_mouse(m)
+                {
                     return self.update(Action::Render);
                 }
-            }
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-                if in_editor && self.editor.handle_mouse(m) =>
-            {
-                return self.update(Action::Render);
-            }
-            _ => {}
-        }
-
-        match m.kind {
-            MouseEventKind::Down(MouseButton::Left) => {
-                if let Some(pane) = hit_test(layout, m.column, m.row) {
-                    return self.update(Action::FocusPane(pane));
+                if !self.modals.is_empty() {
+                    return false;
                 }
-            }
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-                if let Some(pane) = hit_test(layout, m.column, m.row) {
+                if let Some(pane) = self.hits.pane_at(m.column, m.row) {
                     let d = if m.kind == MouseEventKind::ScrollUp {
                         -3
                     } else {
@@ -1215,10 +1262,26 @@ impl App {
                     };
                     return self.update(Action::ScrollPane(pane, d));
                 }
+                false
             }
-            _ => {}
+            _ => false,
         }
-        false
+    }
+
+    /// The central click dispatch: maps a resolved `Hit` (plus click count
+    /// and the raw event, for hits that need to forward it) to app state
+    /// changes. Only `Pane` and `BodyEditor` are wired up so far; later
+    /// tasks extend this match as more hit kinds gain behavior.
+    fn on_hit(&mut self, hit: Hit, _clicks: u8, m: ratatui::crossterm::event::MouseEvent) -> bool {
+        match hit {
+            Hit::Pane(p) => self.update(Action::FocusPane(p)),
+            Hit::BodyEditor => {
+                self.update(Action::FocusPane(PaneId::Editor));
+                self.editor.handle_mouse(m);
+                self.update(Action::Render)
+            }
+            _ => false,
+        }
     }
 }
 
@@ -1470,30 +1533,76 @@ mod tests {
         assert_eq!(app.focus, before, "scrolling must not steal focus");
     }
 
-    #[test]
-    fn click_in_body_area_places_cursor_and_focuses_content() {
+    fn left_down(x: u16, y: u16) -> ratatui::crossterm::event::MouseEvent {
+        ratatui::crossterm::event::MouseEvent {
+            kind: ratatui::crossterm::event::MouseEventKind::Down(
+                ratatui::crossterm::event::MouseButton::Left,
+            ),
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    fn moved(x: u16, y: u16) -> ratatui::crossterm::event::MouseEvent {
+        ratatui::crossterm::event::MouseEvent {
+            kind: ratatui::crossterm::event::MouseEventKind::Moved,
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    /// Renders `app` once at 120x40 so `app.hits` (and any component state
+    /// that records its own draw area, like the body editor) is populated.
+    fn render_once(app: &mut App) {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
-        use ratatui::layout::Rect;
 
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+    }
+
+    #[test]
+    fn click_on_pane_hit_focuses_that_pane() {
+        let mut app = App::new_for_test();
+        render_once(&mut app);
+        let r = app
+            .hits
+            .rect_of(&crate::hit::Hit::Pane(PaneId::Response))
+            .unwrap();
+        app.handle_mouse(left_down(r.x + 2, r.y + 2));
+        assert_eq!(app.focus, PaneId::Response);
+    }
+
+    #[test]
+    fn hover_change_requests_redraw_and_same_hover_does_not() {
+        let mut app = App::new_for_test();
+        render_once(&mut app);
+        let r = app
+            .hits
+            .rect_of(&crate::hit::Hit::Pane(PaneId::Sidebar))
+            .unwrap();
+        assert!(
+            app.handle_mouse(moved(r.x + 1, r.y + 1)),
+            "first hover redraws"
+        );
+        assert!(
+            !app.handle_mouse(moved(r.x + 1, r.y + 2)),
+            "same hit: no redraw"
+        );
+    }
+
+    #[test]
+    fn click_in_body_area_places_cursor_and_focuses_content() {
         let mut app = App::new_for_test();
         app.editor.active_tab = EditorTab::Body;
         app.editor.set_body_text("hello\nworld");
         // render once so the view records its area
-        let backend = TestBackend::new(120, 40);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        render_once(&mut app);
         let area = app.editor.last_body_area.expect("body area recorded");
-        let m = ratatui::crossterm::event::MouseEvent {
-            kind: ratatui::crossterm::event::MouseEventKind::Down(
-                ratatui::crossterm::event::MouseButton::Left,
-            ),
-            column: area.x + 4,
-            row: area.y + 1,
-            modifiers: KeyModifiers::NONE,
-        };
-        let layout = crate::layout::compute_layout(Rect::new(0, 0, 120, 40));
-        app.handle_mouse(m, &layout);
+        app.handle_mouse(left_down(area.x + 4, area.y + 1));
         assert_eq!(app.editor.sub_focus, SubFocus::Content);
         assert_eq!(app.focus, PaneId::Editor);
         assert_eq!(app.editor.body.cursor.row, 1, "clicked the second line");

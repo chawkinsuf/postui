@@ -298,7 +298,13 @@ impl Component for Sidebar {
         self.ensure_visible = false;
     }
 
-    fn draw(&mut self, frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
+    fn draw(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        ctx: &DrawCtx,
+        _hits: &mut crate::hit::HitMap,
+    ) {
         let block = pane_block("Requests", ctx);
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -512,14 +518,21 @@ mod tests {
         let ctx = DrawCtx {
             theme: &theme,
             focused: true,
+            hovered: None,
         };
         let backend = ratatui::backend::TestBackend::new(30, 10);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal.draw(|f| s.draw(f, f.area(), &ctx)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| s.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
         assert_eq!(s.scroll, 10, "free scroll survives draw");
         // moving the selection scrolls it back into view
         s.handle_key(key(KeyCode::Char('j')));
-        terminal.draw(|f| s.draw(f, f.area(), &ctx)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| s.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
         assert!(
             s.scroll <= 1,
             "keyboard nav brings the selection into view: {}",

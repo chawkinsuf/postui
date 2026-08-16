@@ -1,4 +1,4 @@
-use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneId {
@@ -55,19 +55,6 @@ pub fn compute_layout(area: Rect) -> AppLayout {
     }
 }
 
-pub fn hit_test(layout: &AppLayout, x: u16, y: u16) -> Option<PaneId> {
-    let pos = Position { x, y };
-    if layout.sidebar.contains(pos) {
-        Some(PaneId::Sidebar)
-    } else if layout.editor.contains(pos) {
-        Some(PaneId::Editor)
-    } else if layout.response.contains(pos) {
-        Some(PaneId::Response)
-    } else {
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,19 +93,5 @@ mod tests {
         assert_eq!(l.sidebar.height, 38);
         assert_eq!(l.editor.height + l.response.height, 38);
         assert_eq!(l.sidebar.width + l.editor.width, 120);
-    }
-
-    #[test]
-    fn hit_test_maps_coordinates_to_panes() {
-        let layout = compute_layout(Rect::new(0, 0, 120, 40));
-        let center = |r: Rect| (r.x + r.width / 2, r.y + r.height / 2);
-        let (x, y) = center(layout.sidebar);
-        assert_eq!(hit_test(&layout, x, y), Some(PaneId::Sidebar));
-        let (x, y) = center(layout.editor);
-        assert_eq!(hit_test(&layout, x, y), Some(PaneId::Editor));
-        let (x, y) = center(layout.response);
-        assert_eq!(hit_test(&layout, x, y), Some(PaneId::Response));
-        // header row is not a pane
-        assert_eq!(hit_test(&layout, 5, 0), None);
     }
 }

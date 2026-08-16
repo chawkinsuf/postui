@@ -609,6 +609,7 @@ mod tests {
         let ctx = DrawCtx {
             theme: &theme,
             focused: true,
+            hovered: None,
         };
         let backend = TestBackend::new(40, 5);
         let mut terminal = Terminal::new(backend).unwrap();

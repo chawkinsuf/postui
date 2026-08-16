@@ -5,7 +5,14 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-pub fn draw_header(frame: &mut Frame, area: Rect, theme: &Theme, project: &str, env: &str) {
+pub fn draw_header(
+    frame: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    project: &str,
+    env: &str,
+    _hits: &mut crate::hit::HitMap,
+) {
     let env_style = if env == "no env" {
         Style::default().fg(theme.text_muted).italic()
     } else {

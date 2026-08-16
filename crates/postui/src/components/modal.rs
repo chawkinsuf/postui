@@ -203,7 +203,13 @@ impl ModalStack {
         }
     }
 
-    pub fn draw(&self, frame: &mut Frame, screen: Rect, theme: &Theme) {
+    pub fn draw(
+        &self,
+        frame: &mut Frame,
+        screen: Rect,
+        theme: &Theme,
+        hits: &mut crate::hit::HitMap,
+    ) {
         let Some(top) = self.stack.last() else { return };
         dim_backdrop(frame, screen);
         match top {
@@ -288,9 +294,9 @@ impl ModalStack {
                     hint_area,
                 );
             }
-            Modal::Palette(state) => state.draw(frame, screen, theme),
-            Modal::Chooser(state) => state.draw(frame, screen, theme),
-            Modal::VarPicker(state) => state.draw(frame, screen, theme),
+            Modal::Palette(state) => state.draw(frame, screen, theme, hits),
+            Modal::Chooser(state) => state.draw(frame, screen, theme, hits),
+            Modal::VarPicker(state) => state.draw(frame, screen, theme, hits),
             Modal::NewProject {
                 name,
                 path,
@@ -488,7 +494,10 @@ mod tests {
         let theme = Theme::dark();
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| m.draw(f, f.area(), &theme)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| m.draw(f, f.area(), &theme, &mut hits))
+            .unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("About"));
         assert!(content.contains("hello world"));

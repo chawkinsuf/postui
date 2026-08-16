@@ -3,14 +3,12 @@ use postui::action::Action;
 use postui::app::App;
 use postui::components::toast::ToastKind;
 use postui::keys::Keymap;
-use postui::layout::compute_layout;
 use postui::ui;
 use ratatui::crossterm::event::{
     DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture, Event,
     EventStream, KeyEventKind,
 };
 use ratatui::crossterm::execute;
-use ratatui::layout::Rect;
 use std::time::Duration;
 
 #[tokio::main]
@@ -79,11 +77,8 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
                             Event::Key(ev) if ev.kind == KeyEventKind::Press => {
                                 redraw |= app.handle_key(&keymap, ev);
                             }
-                            Event::Mouse(m) if app.modals.is_empty() => {
-                                let size = terminal.size()?;
-                                let layout =
-                                    compute_layout(Rect::new(0, 0, size.width, size.height));
-                                redraw |= app.handle_mouse(m, &layout);
+                            Event::Mouse(m) => {
+                                redraw |= app.handle_mouse(m);
                             }
                             Event::Resize(..) => {
                                 redraw = true;

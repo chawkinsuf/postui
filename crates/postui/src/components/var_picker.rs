@@ -103,7 +103,13 @@ impl VarPickerState {
         None
     }
 
-    pub fn draw(&self, frame: &mut Frame, screen: Rect, theme: &Theme) {
+    pub fn draw(
+        &self,
+        frame: &mut Frame,
+        screen: Rect,
+        theme: &Theme,
+        _hits: &mut crate::hit::HitMap,
+    ) {
         let width = 60.min(screen.width);
         let height = (self.filtered.len() as u16 + 4)
             .clamp(5, 16)
@@ -260,7 +266,10 @@ mod tests {
         let theme = Theme::dark();
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| p.draw(f, f.area(), &theme)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| p.draw(f, f.area(), &theme, &mut hits))
+            .unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("base"));
         assert!(content.contains("api root"));

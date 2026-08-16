@@ -23,6 +23,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Padding};
 pub struct DrawCtx<'a> {
     pub theme: &'a Theme,
     pub focused: bool,
+    pub hovered: Option<&'a crate::hit::Hit>,
 }
 
 pub trait Component {
@@ -30,7 +31,7 @@ pub trait Component {
         None
     }
     fn handle_scroll(&mut self, _delta: i16) {}
-    fn draw(&mut self, frame: &mut Frame, area: Rect, ctx: &DrawCtx);
+    fn draw(&mut self, frame: &mut Frame, area: Rect, ctx: &DrawCtx, hits: &mut crate::hit::HitMap);
 }
 
 /// Standard pane chrome: rounded borders, interior padding, focus styling.
@@ -62,6 +63,7 @@ mod tests {
         let ctx = DrawCtx {
             theme: &theme,
             focused: true,
+            hovered: None,
         };
         let backend = TestBackend::new(20, 5);
         let mut terminal = Terminal::new(backend).unwrap();

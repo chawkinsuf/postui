@@ -15,7 +15,13 @@ fn contextual_hint(focus: PaneId) -> &'static str {
     }
 }
 
-pub fn draw_footer(frame: &mut Frame, area: Rect, theme: &Theme, focus: PaneId) {
+pub fn draw_footer(
+    frame: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    focus: PaneId,
+    _hits: &mut crate::hit::HitMap,
+) {
     let hint = |key: &'static str, desc: &'static str| {
         vec![
             Span::styled(format!(" {key} "), Style::default().fg(theme.accent)),
@@ -46,8 +52,9 @@ mod tests {
         let theme = Theme::for_terminal();
         let backend = TestBackend::new(120, 3);
         let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
         terminal
-            .draw(|f| draw_footer(f, f.area(), &theme, focus))
+            .draw(|f| draw_footer(f, f.area(), &theme, focus, &mut hits))
             .unwrap();
         format!("{:?}", terminal.backend().buffer())
     }

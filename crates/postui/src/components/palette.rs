@@ -189,7 +189,13 @@ impl PaletteState {
         None
     }
 
-    pub fn draw(&self, frame: &mut Frame, screen: Rect, theme: &Theme) {
+    pub fn draw(
+        &self,
+        frame: &mut Frame,
+        screen: Rect,
+        theme: &Theme,
+        _hits: &mut crate::hit::HitMap,
+    ) {
         let width = 50.min(screen.width);
         let height = (self.filtered.len() as u16 + 4)
             .clamp(5, 16)

@@ -1,14 +1,28 @@
 use crate::app::App;
 use crate::components::{Component, DrawCtx};
+use crate::hit::Hit;
 use crate::layout::{PaneId, compute_layout};
 use ratatui::Frame;
 
 /// Takes `&mut App` because components draw through `Component::draw(&mut
 /// self, ..)`: the body editor's widget needs `&mut EditorState` to record the
 /// viewport it was rendered into.
+///
+/// The `HitMap` is rebuilt every frame: taken out of `app` up front (so it
+/// can be threaded through each draw call as an independent `&mut` borrow
+/// alongside `app`'s other fields), cleared, and put back at the end. Pane
+/// rects are registered first so any hit a component registers later (a
+/// button, a row) is topmost at that point per [`HitMap::hit_at`]'s
+/// last-registered-wins rule.
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let layout = compute_layout(frame.area());
     let focus = app.focus;
+    let mut hits = std::mem::take(&mut app.hits);
+    hits.clear();
+    hits.register(layout.sidebar, Hit::Pane(PaneId::Sidebar));
+    hits.register(layout.editor, Hit::Pane(PaneId::Editor));
+    hits.register(layout.response, Hit::Pane(PaneId::Response));
+    let hovered = app.hovered.as_ref();
     // Destructured so each component can be borrowed mutably alongside the
     // shared theme reference its DrawCtx holds.
     let App {
@@ -26,17 +40,20 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         theme,
         &app.project.display_name(),
         &app.project.env_label(),
+        &mut hits,
     );
     let ctx = |pane: PaneId| DrawCtx {
         theme,
         focused: focus == pane,
+        hovered,
     };
-    sidebar.draw(frame, layout.sidebar, &ctx(PaneId::Sidebar));
-    editor.draw(frame, layout.editor, &ctx(PaneId::Editor));
-    response.draw(frame, layout.response, &ctx(PaneId::Response));
-    crate::components::footer::draw_footer(frame, layout.footer, theme, focus);
+    sidebar.draw(frame, layout.sidebar, &ctx(PaneId::Sidebar), &mut hits);
+    editor.draw(frame, layout.editor, &ctx(PaneId::Editor), &mut hits);
+    response.draw(frame, layout.response, &ctx(PaneId::Response), &mut hits);
+    crate::components::footer::draw_footer(frame, layout.footer, theme, focus, &mut hits);
     toasts.draw(frame, frame.area(), theme);
-    modals.draw(frame, frame.area(), theme);
+    modals.draw(frame, frame.area(), theme, &mut hits);
+    app.hits = hits;
 }
 
 #[cfg(test)]
