@@ -53,7 +53,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     response.draw(frame, layout.response, &ctx(PaneId::Response), &mut hits);
     crate::components::footer::draw_footer(frame, layout.footer, theme, focus, &mut hits, hovered);
     toasts.draw(frame, frame.area(), theme);
-    modals.draw(frame, frame.area(), theme, &mut hits);
+    modals.draw(frame, frame.area(), theme, &mut hits, hovered);
     app.hits = hits;
 }
 

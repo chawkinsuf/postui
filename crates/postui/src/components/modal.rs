@@ -63,11 +63,17 @@ pub enum Modal {
 }
 
 /// State for `Modal::Dropdown`: the cell it opens from, its `(label,
-/// action)` rows, and which row is currently highlighted.
+/// action)` rows, which row the keyboard cursor is on, and (separately)
+/// which row reflects the value already in effect (e.g. the method that
+/// was active when the dropdown opened). `selected` moves as the user
+/// arrows through the list; `current` does not — it stays put so the `✓`
+/// marker keeps pointing at the actual current value even while the
+/// highlight is elsewhere.
 pub struct DropdownState {
     pub anchor: Rect,
     pub items: Vec<(String, Action)>,
     pub selected: usize,
+    pub current: Option<usize>,
 }
 
 /// The outcome of a modal handling a key event: any actions the caller
@@ -249,6 +255,7 @@ impl ModalStack {
         screen: Rect,
         theme: &Theme,
         hits: &mut crate::hit::HitMap,
+        hovered: Option<&crate::hit::Hit>,
     ) {
         let Some(top) = self.stack.last() else { return };
         // Every variant dims the backdrop except Dropdown: it's a small
@@ -408,7 +415,7 @@ impl ModalStack {
                     hint_area,
                 );
             }
-            Modal::Dropdown(state) => draw_dropdown(frame, screen, theme, hits, state),
+            Modal::Dropdown(state) => draw_dropdown(frame, screen, theme, hits, hovered, state),
         }
     }
 }
@@ -417,12 +424,15 @@ impl ModalStack {
 /// `anchor.y - height` when it would cross the screen bottom, clamped
 /// horizontally (and vertically) to stay on screen. Registers
 /// `Hit::ModalOutside` over the whole screen first (so any other click
-/// closes the popup), then `Hit::DropdownRow(i)` per row.
+/// closes the popup), then `Hit::DropdownRow(i)` per row. `hovered` gets
+/// the row-hover treatment other lists use (`bg(theme.surface_raised)`
+/// against the popup's plain `theme.surface` base — see sidebar rows).
 fn draw_dropdown(
     frame: &mut Frame,
     screen: Rect,
     theme: &Theme,
     hits: &mut crate::hit::HitMap,
+    hovered: Option<&crate::hit::Hit>,
     state: &DropdownState,
 ) {
     hits.register(screen, crate::hit::Hit::ModalOutside);
@@ -460,7 +470,7 @@ fn draw_dropdown(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.border_focused))
-        .style(Style::default().bg(theme.surface_raised));
+        .style(Style::default().bg(theme.surface));
     frame.render_widget(Clear, area);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -475,12 +485,23 @@ fn draw_dropdown(
             width: inner.width,
             height: 1,
         };
-        let marker = if i == state.selected { "✓ " } else { "  " };
-        let style = if i == state.selected {
+        // `current` (the value already in effect) gets the checkmark;
+        // `selected` (the keyboard cursor) gets its own bold/accent
+        // highlight — the two can differ once arrow keys move the cursor
+        // away from the current value.
+        let marker = if state.current == Some(i) {
+            "✓ "
+        } else {
+            "  "
+        };
+        let mut style = if i == state.selected {
             Style::default().fg(theme.accent).bold()
         } else {
             Style::default().fg(theme.text)
         };
+        if hovered == Some(&crate::hit::Hit::DropdownRow(i)) {
+            style = style.bg(theme.surface_raised);
+        }
         frame.render_widget(
             Paragraph::new(Line::styled(format!("{marker}{label}"), style)),
             row_area,
@@ -618,7 +639,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
-            .draw(|f| m.draw(f, f.area(), &theme, &mut hits))
+            .draw(|f| m.draw(f, f.area(), &theme, &mut hits, None))
             .unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("About"));
@@ -646,6 +667,7 @@ mod tests {
             anchor: Rect::new(0, 0, 8, 1),
             items: dropdown_items(),
             selected: 0,
+            current: Some(0),
         }));
         assert!(
             m.handle_key(key(KeyCode::Up)).is_none(),
@@ -664,6 +686,7 @@ mod tests {
             anchor: Rect::new(0, 0, 8, 1),
             items: dropdown_items(),
             selected: 0,
+            current: Some(0),
         }));
         assert!(
             m.handle_key(key(KeyCode::Char('q'))).is_none(),
@@ -680,6 +703,7 @@ mod tests {
             anchor: Rect::new(0, 0, 8, 1),
             items: dropdown_items(),
             selected: 0,
+            current: Some(0),
         }));
         let Some(Modal::Dropdown(state)) = m.top_mut() else {
             panic!("expected a Dropdown on top");
@@ -701,12 +725,13 @@ mod tests {
             anchor,
             items: dropdown_items(),
             selected: 0,
+            current: Some(0),
         };
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
-            .draw(|f| draw_dropdown(f, screen, &Theme::dark(), &mut hits, &state))
+            .draw(|f| draw_dropdown(f, screen, &Theme::dark(), &mut hits, None, &state))
             .unwrap();
         let row0 = hits
             .rect_of(&crate::hit::Hit::DropdownRow(0))
@@ -715,6 +740,71 @@ mod tests {
             row0.y < anchor.y,
             "flipped-up popup rows must sit above the anchor row, got y={}",
             row0.y
+        );
+    }
+
+    #[test]
+    fn dropdown_hovered_row_gets_raised_background_others_dont() {
+        let screen = Rect::new(0, 0, 80, 24);
+        let state = DropdownState {
+            anchor: Rect::new(10, 5, 8, 1),
+            items: dropdown_items(),
+            selected: 0,
+            current: Some(0),
+        };
+        let theme = Theme::dark();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| {
+                draw_dropdown(
+                    f,
+                    screen,
+                    &theme,
+                    &mut hits,
+                    Some(&crate::hit::Hit::DropdownRow(1)),
+                    &state,
+                )
+            })
+            .unwrap();
+        let row0 = hits.rect_of(&crate::hit::Hit::DropdownRow(0)).unwrap();
+        let row1 = hits.rect_of(&crate::hit::Hit::DropdownRow(1)).unwrap();
+        let row2 = hits.rect_of(&crate::hit::Hit::DropdownRow(2)).unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(
+            buffer[(row1.x, row1.y)].bg,
+            theme.surface_raised,
+            "hovered row gets the raised hover background"
+        );
+        assert_ne!(
+            buffer[(row0.x, row0.y)].bg,
+            theme.surface_raised,
+            "non-hovered rows keep the popup's plain background"
+        );
+        assert_ne!(buffer[(row2.x, row2.y)].bg, theme.surface_raised);
+    }
+
+    #[test]
+    fn dropdown_checkmark_stays_on_current_when_cursor_moves() {
+        let mut m = ModalStack::default();
+        m.push(Modal::Dropdown(DropdownState {
+            anchor: Rect::new(0, 0, 8, 1),
+            items: dropdown_items(),
+            selected: 0,
+            current: Some(0),
+        }));
+        // Move the keyboard cursor down without confirming — `current`
+        // (the checkmark) must not follow it.
+        m.handle_key(key(KeyCode::Down));
+        let Some(Modal::Dropdown(state)) = m.top() else {
+            panic!("expected a Dropdown on top");
+        };
+        assert_eq!(state.selected, 1, "cursor moved");
+        assert_eq!(
+            state.current,
+            Some(0),
+            "checkmark stays on the original row"
         );
     }
 }

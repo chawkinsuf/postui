@@ -411,10 +411,7 @@ impl App {
                     .iter()
                     .map(|&m| (m.as_str().to_string(), Action::SetMethod(m)))
                     .collect();
-                let selected = Method::ALL
-                    .iter()
-                    .position(|&m| m == self.editor.method)
-                    .unwrap_or(0);
+                let current = Method::ALL.iter().position(|&m| m == self.editor.method);
                 let anchor = self
                     .editor
                     .last_method_area
@@ -422,7 +419,8 @@ impl App {
                 self.modals.push(Modal::Dropdown(DropdownState {
                     anchor,
                     items,
-                    selected,
+                    selected: current.unwrap_or(0),
+                    current,
                 }));
                 true
             }
