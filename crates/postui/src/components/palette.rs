@@ -69,6 +69,18 @@ pub fn all_commands() -> Vec<Command> {
             action: Action::OpenBodyInEditor,
         },
         Command {
+            name: "Project: choose…",
+            action: Action::OpenProjectChooser,
+        },
+        Command {
+            name: "Project: next",
+            action: Action::CycleProject,
+        },
+        Command {
+            name: "Project: open by path…",
+            action: Action::PromptOpenProjectPath,
+        },
+        Command {
             name: "Quit",
             action: Action::Quit,
         },

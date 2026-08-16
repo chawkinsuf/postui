@@ -171,16 +171,16 @@ impl App {
             }
             StartupDisposition::PromptCreate => {
                 let path = app.project.root.display().to_string();
+                let fallback_actions = match postui_core::storage::default_project_dir() {
+                    Some(fallback) => vec![Action::SwitchProject(fallback)],
+                    None => vec![],
+                };
                 app.modals.push(Modal::Confirm {
                     title: "Not a postui project".into(),
                     body: format!("{path} has no project.toml — create one here?"),
                     choices: vec![
                         ('y', "Create project".into(), vec![Action::InitProjectHere]),
-                        // Task 9 introduces Action::SwitchProject and
-                        // replaces this empty tail: for now the modal just
-                        // closes and the bare directory stays open, which
-                        // is harmless.
-                        ('n', "Open default project".into(), vec![]),
+                        ('n', "Open default project".into(), fallback_actions),
                     ],
                 });
             }
@@ -359,29 +359,7 @@ impl App {
             }
             Action::OpenRequest(slug) => {
                 if self.editor.is_dirty() {
-                    let current = self.editor.slug.clone().unwrap_or_default();
-                    self.modals.push(Modal::Confirm {
-                        title: "Unsaved changes".into(),
-                        body: format!("\"{current}\" has unsaved changes."),
-                        choices: vec![
-                            (
-                                's',
-                                "Save & open".into(),
-                                // Safe to sequence these: SaveRequest completes
-                                // synchronously (it's a local disk write, not a
-                                // spawned task) and always has a slug to save to
-                                // here, since this branch only runs when the
-                                // editor is dirty, which requires an open (thus
-                                // slugged) request.
-                                vec![Action::SaveRequest, Action::ForceOpenRequest(slug.clone())],
-                            ),
-                            (
-                                'd',
-                                "Discard changes".into(),
-                                vec![Action::ForceOpenRequest(slug)],
-                            ),
-                        ],
-                    });
+                    self.dirty_gate("open", Action::ForceOpenRequest(slug));
                     true
                 } else {
                     self.apply(Action::ForceOpenRequest(slug))
@@ -668,6 +646,139 @@ impl App {
                     .persist_local_state(self.editor.slug.as_deref());
                 true
             }
+            Action::OpenProjectChooser => {
+                use crate::components::chooser::{ChooserItem, ChooserState};
+                let mut items: Vec<ChooserItem> = Vec::new();
+                for path in &self.registry.known {
+                    if !path.is_dir() {
+                        self.toasts.push(
+                            format!("{} no longer exists; skipped", path.display()),
+                            ToastKind::Warning,
+                        );
+                        continue;
+                    }
+                    let label = match postui_core::project::load_meta(path) {
+                        Ok(meta) => postui_core::project::display_name(path, &meta),
+                        Err(_) => postui_core::project::display_name(
+                            path,
+                            &postui_core::project::ProjectMeta::default(),
+                        ),
+                    };
+                    items.push(ChooserItem {
+                        label,
+                        detail: Some(path.display().to_string()),
+                        actions: vec![Action::SwitchProject(path.clone())],
+                    });
+                }
+                items.push(ChooserItem {
+                    label: "open by path…".into(),
+                    detail: None,
+                    actions: vec![Action::PromptOpenProjectPath],
+                });
+                self.modals
+                    .push(Modal::Chooser(ChooserState::new("Projects", items)));
+                true
+            }
+            Action::CycleProject => {
+                match self.registry.next_after(&self.project.root) {
+                    None => {
+                        self.toasts
+                            .push("only one project registered", ToastKind::Warning);
+                    }
+                    Some(target) => {
+                        let name = postui_core::project::load_meta(&target)
+                            .map(|meta| postui_core::project::display_name(&target, &meta))
+                            .unwrap_or_else(|_| {
+                                postui_core::project::display_name(
+                                    &target,
+                                    &postui_core::project::ProjectMeta::default(),
+                                )
+                            });
+                        self.apply(Action::SwitchProject(target));
+                        self.toasts
+                            .push(format!("Switched to {name}"), ToastKind::Success);
+                    }
+                }
+                true
+            }
+            Action::SwitchProject(target) => {
+                if target == self.project.root {
+                    return false;
+                }
+                if self.editor.is_dirty() {
+                    self.dirty_gate("switch", Action::ForceSwitchProject(target));
+                } else {
+                    self.apply(Action::ForceSwitchProject(target));
+                }
+                true
+            }
+            Action::ForceSwitchProject(target) => {
+                self.project
+                    .persist_local_state(self.editor.slug.as_deref());
+                let (project, warnings) = ProjectContext::open(target.clone());
+                self.project = project;
+                for w in warnings {
+                    self.toasts.push(w, ToastKind::Warning);
+                }
+                match postui_core::storage::ensure_project(&self.project.root) {
+                    Ok(()) => self.refresh_sidebar(),
+                    Err(e) => {
+                        self.toasts
+                            .push(format!("could not open project: {e}"), ToastKind::Error);
+                    }
+                }
+                match self.project.local_open_request() {
+                    Some(slug)
+                        if postui_core::storage::load_request(&self.project.root, &slug)
+                            .is_ok() =>
+                    {
+                        self.apply(Action::ForceOpenRequest(slug));
+                    }
+                    _ => {
+                        self.editor = Editor::default();
+                    }
+                }
+                self.registry.register(target);
+                if let Some(path) = &self.registry_path {
+                    let _ = self.registry.save_to(path);
+                }
+                true
+            }
+            Action::PromptOpenProjectPath => {
+                self.modals.push(Modal::Prompt {
+                    title: "Open project at path".into(),
+                    input: crate::components::line_input::LineInput::new(""),
+                    kind: PromptKind::OpenProjectPath,
+                });
+                true
+            }
+            Action::OpenProjectByPath(text) => {
+                let path = crate::config::expand_tilde(&text);
+                if postui_core::project::is_project(&path) {
+                    self.apply(Action::SwitchProject(path));
+                } else {
+                    let display = path.display().to_string();
+                    self.modals.push(Modal::Confirm {
+                        title: "Not a postui project".into(),
+                        body: format!("create project at {display}?"),
+                        choices: vec![
+                            ('y', "Create".into(), vec![Action::CreateProjectAt(path)]),
+                            ('n', "Cancel".into(), vec![]),
+                        ],
+                    });
+                }
+                true
+            }
+            Action::CreateProjectAt(path) => {
+                if let Err(e) = postui_core::project::init_project(&path, None) {
+                    self.toasts.push(
+                        format!("could not create project at {}: {e}", path.display()),
+                        ToastKind::Error,
+                    );
+                    return true;
+                }
+                self.apply(Action::ForceSwitchProject(path))
+            }
         }
     }
 
@@ -683,6 +794,24 @@ impl App {
             .append(&mut self.sidebar.pending_expand);
         let expanded = self.project.expanded.clone();
         self.sidebar.refresh(listing, &expanded);
+    }
+
+    /// Push the standard unsaved-changes confirm whose "save" path relies on
+    /// SaveRequest completing synchronously (dirty implies a slugged request).
+    fn dirty_gate(&mut self, verb: &str, then: Action) {
+        let current = self.editor.slug.clone().unwrap_or_default();
+        self.modals.push(Modal::Confirm {
+            title: "Unsaved changes".into(),
+            body: format!("\"{current}\" has unsaved changes."),
+            choices: vec![
+                (
+                    's',
+                    format!("Save & {verb}"),
+                    vec![Action::SaveRequest, then.clone()],
+                ),
+                ('d', "Discard changes".into(), vec![then]),
+            ],
+        });
     }
 
     /// Shared validate/exists-check/save/refresh/open path for `CreateRequest`
@@ -1504,5 +1633,94 @@ mod tests {
             .response
             .handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(action, None);
+    }
+
+    fn two_projects() -> (App, tempfile::TempDir, tempfile::TempDir) {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        postui_core::project::init_project(a.path(), Some("alpha")).unwrap();
+        postui_core::project::init_project(b.path(), Some("beta")).unwrap();
+        postui_core::storage::ensure_project(b.path()).unwrap();
+        postui_core::storage::save_request(b.path(), "pong", &req("https://x/pong")).unwrap();
+        let mut app = App::with_root(tx, a.path().to_path_buf());
+        app.registry.register(a.path().to_path_buf());
+        app.registry.register(b.path().to_path_buf());
+        (app, a, b)
+    }
+
+    #[test]
+    fn cycle_switches_to_next_project_and_lists_its_requests() {
+        let (mut app, _a, b) = two_projects();
+        app.update(Action::CycleProject);
+        assert_eq!(app.project.root, b.path());
+        assert!(
+            app.sidebar
+                .rows
+                .iter()
+                .any(|r| matches!(r, Row::Request { slug, .. } if slug == "pong"))
+        );
+        assert_eq!(app.project.display_name(), "beta");
+    }
+
+    #[test]
+    fn switch_with_dirty_editor_prompts_and_discard_proceeds() {
+        let (mut app, _a, b) = two_projects();
+        postui_core::storage::save_request(&app.project.root, "r", &req("https://x/r")).unwrap();
+        app.update(Action::RefreshSidebar);
+        app.update(Action::ForceOpenRequest("r".into()));
+        app.focus = PaneId::Editor;
+        app.editor.sub_focus = SubFocus::Url;
+        app.handle_key(&Keymap::default_bindings(), plain('/'));
+        assert!(app.editor.is_dirty());
+        app.update(Action::SwitchProject(b.path().to_path_buf()));
+        assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+        assert_ne!(app.project.root, b.path(), "not switched yet");
+        app.handle_key(&Keymap::default_bindings(), plain('d'));
+        assert_eq!(app.project.root, b.path());
+    }
+
+    #[test]
+    fn switch_restores_target_projects_open_request_and_saves_state() {
+        let (mut app, a, b) = two_projects();
+        postui_core::project::save_local_state(
+            b.path(),
+            &postui_core::project::LocalState {
+                open_request: Some("pong".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        app.update(Action::SwitchProject(b.path().to_path_buf()));
+        assert_eq!(app.editor.slug.as_deref(), Some("pong"));
+        // and the old project's state got written on the way out
+        let old = postui_core::project::load_local_state(a.path()).unwrap();
+        assert_eq!(old.open_request, None);
+    }
+
+    #[test]
+    fn project_chooser_lists_known_and_open_by_path_creates() {
+        let (mut app, _a, _b) = two_projects();
+        app.update(Action::OpenProjectChooser);
+        let Some(Modal::Chooser(c)) = app.modals.top() else {
+            panic!("expected chooser")
+        };
+        assert!(
+            format!("{:?}", (c.input(), c.selected_label())).contains("alpha")
+                || c.selected_label().is_some()
+        );
+        app.update(Action::Close);
+        let fresh = tempfile::tempdir().unwrap();
+        let target = fresh.path().join("newproj");
+        app.update(Action::OpenProjectByPath(
+            target.to_string_lossy().into_owned(),
+        ));
+        assert!(
+            matches!(app.modals.top(), Some(Modal::Confirm { .. })),
+            "non-project path asks to create"
+        );
+        app.handle_key(&Keymap::default_bindings(), plain('y'));
+        assert!(postui_core::project::is_project(&target));
+        assert_eq!(app.project.root, target);
     }
 }

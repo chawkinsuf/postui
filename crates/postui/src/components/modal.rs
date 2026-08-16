@@ -15,6 +15,7 @@ pub enum PromptKind {
     NewRequest,
     RenameRequest { from: String },
     SaveAs,
+    OpenProjectPath,
 }
 
 pub enum Modal {
@@ -118,6 +119,9 @@ impl ModalStack {
                                 to: text.to_string(),
                             },
                             PromptKind::SaveAs => Action::SaveRequestAs(text.to_string()),
+                            PromptKind::OpenProjectPath => {
+                                Action::OpenProjectByPath(text.to_string())
+                            }
                         };
                         Some(ModalResult {
                             actions: vec![action],

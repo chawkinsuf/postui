@@ -94,4 +94,26 @@ pub enum Action {
     /// currently open request) from current app state. Fired after any
     /// change to that state and on quit.
     PersistLocalState,
+    /// Open the project chooser: every registered project plus a final
+    /// "open by path…" entry.
+    OpenProjectChooser,
+    /// Switch to the next registered project after the current one,
+    /// wrapping; toasts "only one project registered" when there isn't one.
+    CycleProject,
+    /// User asked to switch to `root`. If the editor is dirty this is
+    /// intercepted into a `Modal::Confirm` rather than applied directly
+    /// (see `App::dirty_gate`); a no-op when `root` equals the current
+    /// project's root.
+    SwitchProject(std::path::PathBuf),
+    /// Actually switch to `root`, bypassing the dirty check (used directly,
+    /// or as the tail action of a dirty-prompt choice).
+    ForceSwitchProject(std::path::PathBuf),
+    /// Open the "open project by path" text prompt.
+    PromptOpenProjectPath,
+    /// User typed a path in the open-by-path prompt. An existing project
+    /// switches to it directly; anything else asks to create one there.
+    OpenProjectByPath(String),
+    /// Initialize a new project at `path` (from the open-by-path
+    /// create-confirm), then switch to it.
+    CreateProjectAt(std::path::PathBuf),
 }
