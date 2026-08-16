@@ -809,6 +809,71 @@ impl App {
                 }
                 true
             }
+            Action::OpenEnvChooser => {
+                use crate::components::chooser::{ChooserItem, ChooserState};
+                self.project.environments =
+                    postui_core::project::list_environments(&self.project.root);
+                if self.project.environments.is_empty() {
+                    self.toasts.push(
+                        "no environments — create environments/<name>.toml in the project",
+                        ToastKind::Warning,
+                    );
+                    return true;
+                }
+                let mut items: Vec<ChooserItem> = self
+                    .project
+                    .environments
+                    .iter()
+                    .map(|name| ChooserItem {
+                        label: name.clone(),
+                        detail: None,
+                        actions: vec![Action::SwitchEnv(Some(name.clone()))],
+                    })
+                    .collect();
+                items.push(ChooserItem {
+                    label: "no environment".into(),
+                    detail: None,
+                    actions: vec![Action::SwitchEnv(None)],
+                });
+                self.modals
+                    .push(Modal::Chooser(ChooserState::new("Environments", items)));
+                true
+            }
+            Action::CycleEnv => {
+                self.project.environments =
+                    postui_core::project::list_environments(&self.project.root);
+                if self.project.environments.is_empty() {
+                    self.toasts.push(
+                        "no environments — create environments/<name>.toml in the project",
+                        ToastKind::Warning,
+                    );
+                    return true;
+                }
+                let next = match &self.project.active_env {
+                    None => self.project.environments[0].clone(),
+                    Some(current) => {
+                        let idx = self.project.environments.iter().position(|e| e == current);
+                        match idx {
+                            Some(i) => self.project.environments
+                                [(i + 1) % self.project.environments.len()]
+                            .clone(),
+                            None => self.project.environments[0].clone(),
+                        }
+                    }
+                };
+                self.apply(Action::SwitchEnv(Some(next)))
+            }
+            Action::SwitchEnv(env) => {
+                let warnings = self.project.set_env(env);
+                for w in warnings {
+                    self.toasts.push(w, ToastKind::Warning);
+                }
+                self.apply(Action::PersistLocalState);
+                let label = self.project.env_label();
+                self.toasts
+                    .push(format!("env: {label}"), ToastKind::Success);
+                true
+            }
         }
     }
 
@@ -1790,5 +1855,54 @@ mod tests {
         assert!(!app.modals.is_empty(), "empty name: modal stays");
         app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(app.modals.is_empty());
+    }
+
+    fn app_with_envs() -> (App, tempfile::TempDir) {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let dir = tempfile::tempdir().unwrap();
+        postui_core::project::init_project(dir.path(), Some("svc")).unwrap();
+        std::fs::write(dir.path().join("environments/prod.toml"), "tok = \"p\"\n").unwrap();
+        std::fs::write(dir.path().join("environments/qa.toml"), "tok = \"q\"\n").unwrap();
+        (App::with_root(tx, dir.path().to_path_buf()), dir)
+    }
+
+    #[test]
+    fn cycle_env_wraps_and_skips_no_env() {
+        let (mut app, dir) = app_with_envs();
+        assert_eq!(app.project.env_label(), "no env");
+        app.update(Action::CycleEnv);
+        assert_eq!(app.project.env_label(), "prod");
+        app.update(Action::CycleEnv);
+        assert_eq!(app.project.env_label(), "qa");
+        app.update(Action::CycleEnv);
+        assert_eq!(
+            app.project.env_label(),
+            "prod",
+            "wraps directly, never through no-env"
+        );
+        assert_eq!(app.project.env_values["tok"], "p");
+        let st = postui_core::project::load_local_state(dir.path()).unwrap();
+        assert_eq!(st.environment.as_deref(), Some("prod"), "persisted");
+    }
+
+    #[test]
+    fn env_chooser_includes_no_environment_entry() {
+        let (mut app, _dir) = app_with_envs();
+        app.update(Action::SwitchEnv(Some("qa".into())));
+        app.update(Action::OpenEnvChooser);
+        let Some(Modal::Chooser(_)) = app.modals.top() else {
+            panic!("expected chooser")
+        };
+        app.update(Action::Close);
+        app.update(Action::SwitchEnv(None));
+        assert_eq!(app.project.env_label(), "no env");
+    }
+
+    #[test]
+    fn cycle_env_with_no_environments_toasts() {
+        let mut app = App::new_for_test();
+        app.update(Action::CycleEnv);
+        assert!(!app.toasts.is_empty());
+        assert_eq!(app.project.env_label(), "no env");
     }
 }

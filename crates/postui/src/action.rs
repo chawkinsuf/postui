@@ -125,4 +125,15 @@ pub enum Action {
         name: String,
         path: String,
     },
+    /// Open the environment chooser: every `project.environments` entry
+    /// plus a final "no environment" entry. Toasts instead of opening the
+    /// modal when the project has no environments.
+    OpenEnvChooser,
+    /// Switch to the next environment after the active one, wrapping;
+    /// skips the "no environment" state (from `None`, starts at the
+    /// first). Toasts when the project has no environments.
+    CycleEnv,
+    /// Switch the active environment to `env` (`None` clears it), reload
+    /// its values, persist the choice, and toast the result.
+    SwitchEnv(Option<String>),
 }

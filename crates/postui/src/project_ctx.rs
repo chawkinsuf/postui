@@ -127,29 +127,32 @@ impl ProjectContext {
         }
     }
 
-    /// Switches the active environment, loading its values (or clearing
-    /// them for `None`), and persists the choice to local state. Returns
-    /// any warning from a failed environment load.
+    /// Switches the active environment, re-reading its file and loading
+    /// its values (or clearing them for `None`). A missing or corrupt env
+    /// file keeps the previous environment active and returns a warning
+    /// instead of dropping to "no env". Does not persist — callers persist
+    /// separately (see `Action::SwitchEnv`).
     pub fn set_env(&mut self, env: Option<String>) -> Vec<String> {
         let mut warnings = Vec::new();
         match env {
             None => {
                 self.active_env = None;
                 self.env_values = IndexMap::new();
+                self.stamps[3] = (self.root.join("environments").join("__none__.toml"), None);
             }
             Some(name) => match postui_core::project::load_environment(&self.root, &name) {
                 Ok(values) => {
                     self.env_values = values;
+                    let path = self.root.join("environments").join(format!("{name}.toml"));
+                    let m = mtime(&path);
                     self.active_env = Some(name);
+                    self.stamps[3] = (path, m);
                 }
                 Err(e) => {
                     warnings.push(format!("could not load environment {name:?}: {e}"));
-                    self.active_env = None;
-                    self.env_values = IndexMap::new();
                 }
             },
         }
-        self.persist_local_state(None);
         warnings
     }
 

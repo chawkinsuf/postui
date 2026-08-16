@@ -85,6 +85,14 @@ pub fn all_commands() -> Vec<Command> {
             action: Action::PromptNewProject,
         },
         Command {
+            name: "Environment: choose…",
+            action: Action::OpenEnvChooser,
+        },
+        Command {
+            name: "Environment: next",
+            action: Action::CycleEnv,
+        },
+        Command {
             name: "Quit",
             action: Action::Quit,
         },
