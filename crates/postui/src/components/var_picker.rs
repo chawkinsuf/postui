@@ -78,6 +78,7 @@ impl VarPickerState {
         Some(super::modal::ModalResult {
             actions: vec![Action::InsertVarText(text)],
             close: true,
+            ..Default::default()
         })
     }
 
@@ -117,6 +118,7 @@ impl VarPickerState {
                 return Some(super::modal::ModalResult {
                     actions: vec![],
                     close: true,
+                    ..Default::default()
                 });
             }
             KeyCode::Enter => return self.confirm(),

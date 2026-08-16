@@ -82,6 +82,7 @@ impl ChooserState {
         Some(super::modal::ModalResult {
             actions: self.items[idx].actions.clone(),
             close: true,
+            ..Default::default()
         })
     }
 
@@ -121,6 +122,7 @@ impl ChooserState {
                 return Some(super::modal::ModalResult {
                     actions: vec![],
                     close: true,
+                    ..Default::default()
                 });
             }
             KeyCode::Enter => return self.confirm(),

@@ -10,6 +10,9 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paddin
 
 #[derive(Clone)]
 pub struct Command {
+    /// A stable kebab-case identifier, independent of the display `name`,
+    /// used as the key for palette frecency stats (`UsageStore`).
+    pub id: &'static str,
     pub name: &'static str,
     pub action: Action,
 }
@@ -17,106 +20,132 @@ pub struct Command {
 pub fn all_commands() -> Vec<Command> {
     vec![
         Command {
+            id: "focus-sidebar",
             name: "Focus: request tree",
             action: Action::FocusPane(PaneId::Sidebar),
         },
         Command {
+            id: "focus-editor",
             name: "Focus: editor",
             action: Action::FocusPane(PaneId::Editor),
         },
         Command {
+            id: "focus-response",
             name: "Focus: response",
             action: Action::FocusPane(PaneId::Response),
         },
         Command {
+            id: "about",
             name: "Help: about postui",
             action: Action::ShowAbout,
         },
         Command {
+            id: "send",
             name: "Send request",
             action: Action::Send,
         },
         Command {
+            id: "request-new",
             name: "Request: new",
             action: Action::PromptNewRequest,
         },
         Command {
+            id: "request-save",
             name: "Request: save",
             action: Action::SaveRequest,
         },
         Command {
+            id: "request-rename",
             name: "Request: rename",
             action: Action::PromptRenameRequest,
         },
         Command {
+            id: "request-delete",
             name: "Request: delete",
             action: Action::ConfirmDeleteRequest,
         },
         Command {
+            id: "method-cycle",
             name: "Method: cycle",
             action: Action::CycleMethod,
         },
         Command {
+            id: "method-choose",
             name: "Method: choose…",
             action: Action::OpenMethodDropdown,
         },
         Command {
+            id: "body-format",
             name: "Body: format JSON",
             action: Action::FormatBody,
         },
         Command {
+            id: "body-minify",
             name: "Body: minify JSON",
             action: Action::MinifyBody,
         },
         Command {
+            id: "body-external-editor",
             name: "Body: open in $EDITOR",
             action: Action::OpenBodyInEditor,
         },
         Command {
+            id: "body-toggle-vars",
             name: "Body: toggle {{var}} substitution",
             action: Action::ToggleBodyVars,
         },
         Command {
+            id: "project-choose",
             name: "Project: choose…",
             action: Action::OpenProjectChooser,
         },
         Command {
+            id: "project-next",
             name: "Project: next",
             action: Action::CycleProject,
         },
         Command {
+            id: "project-open-path",
             name: "Project: open by path…",
             action: Action::PromptOpenProjectPath,
         },
         Command {
+            id: "project-new",
             name: "Project: new…",
             action: Action::PromptNewProject,
         },
         Command {
+            id: "env-choose",
             name: "Environment: choose…",
             action: Action::OpenEnvChooser,
         },
         Command {
+            id: "env-next",
             name: "Environment: next",
             action: Action::CycleEnv,
         },
         Command {
+            id: "vars-insert",
             name: "Variables: insert…",
             action: Action::OpenVarPicker { completing: false },
         },
         Command {
+            id: "response-copy-body",
             name: "Response: copy body",
             action: Action::CopyToClipboard(CopyTarget::ResponseBody),
         },
         Command {
+            id: "request-copy-url",
             name: "Request: copy URL",
             action: Action::CopyToClipboard(CopyTarget::Url),
         },
         Command {
+            id: "response-save-body",
             name: "Response: save body to file…",
             action: Action::PromptSaveBody,
         },
         Command {
+            id: "quit",
             name: "Quit",
             action: Action::Quit,
         },
@@ -133,6 +162,12 @@ pub fn fuzzy_match(needle: &str, haystack: &str) -> bool {
 pub struct PaletteState {
     input: String,
     selected: usize,
+    /// `all_commands()` sorted by frecency score descending (stable, so
+    /// zero-score commands keep declaration order) as of the moment the
+    /// palette opened. `refilter` filters *this* order rather than
+    /// re-deriving it, so an empty query shows frecency order and a typed
+    /// query fuzzy-filters within it (frecency only breaks ties — spec §6).
+    base: Vec<Command>,
     filtered: Vec<Command>,
     /// First visible row's index into `filtered`. See `ChooserState` for the
     /// `ensure_visible` contract this mirrors.
@@ -140,18 +175,23 @@ pub struct PaletteState {
     ensure_visible: bool,
 }
 
-impl Default for PaletteState {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl PaletteState {
-    pub fn new() -> Self {
+    /// Builds the palette's base (frecency-sorted) order from `usage`/
+    /// `now_secs` and opens with an empty query, so `filtered()` starts out
+    /// equal to `base`.
+    pub fn new(usage: &crate::usage::UsageStore, now_secs: i64) -> Self {
+        let mut base = all_commands();
+        base.sort_by(|a, b| {
+            usage
+                .score(b.id, now_secs)
+                .partial_cmp(&usage.score(a.id, now_secs))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         Self {
             input: String::new(),
             selected: 0,
-            filtered: all_commands(),
+            filtered: base.clone(),
+            base,
             scroll: 0,
             ensure_visible: true,
         }
@@ -181,10 +221,11 @@ impl PaletteState {
     /// The `ModalResult` an `Enter` (or a confirming click) on the current
     /// selection produces — `None` when nothing is selected.
     pub fn confirm(&self) -> Option<super::modal::ModalResult> {
-        let chosen = self.filtered.get(self.selected)?.action.clone();
+        let chosen = self.filtered.get(self.selected)?;
         Some(super::modal::ModalResult {
-            actions: vec![chosen],
+            actions: vec![chosen.action.clone()],
             close: true,
+            usage: Some(chosen.id.to_string()),
         })
     }
 
@@ -200,9 +241,11 @@ impl PaletteState {
     }
 
     fn refilter(&mut self) {
-        self.filtered = all_commands()
-            .into_iter()
+        self.filtered = self
+            .base
+            .iter()
             .filter(|c| fuzzy_match(&self.input, c.name))
+            .cloned()
             .collect();
         self.selected = 0;
         self.scroll = 0;
@@ -215,6 +258,7 @@ impl PaletteState {
                 return Some(super::modal::ModalResult {
                     actions: vec![],
                     close: true,
+                    ..Default::default()
                 });
             }
             KeyCode::Enter => return self.confirm(),
@@ -347,7 +391,7 @@ mod tests {
 
     #[test]
     fn typing_filters_and_backspace_restores() {
-        let mut p = PaletteState::new();
+        let mut p = PaletteState::new(&crate::usage::UsageStore::default(), 0);
         let total = p.filtered().len();
         for c in "quit".chars() {
             p.handle_key(key(KeyCode::Char(c)));
@@ -363,7 +407,7 @@ mod tests {
 
     #[test]
     fn arrows_move_selection_within_bounds() {
-        let mut p = PaletteState::new();
+        let mut p = PaletteState::new(&crate::usage::UsageStore::default(), 0);
         assert_eq!(p.selected(), 0);
         p.handle_key(key(KeyCode::Up)); // clamped at top
         assert_eq!(p.selected(), 0);
@@ -373,18 +417,56 @@ mod tests {
 
     #[test]
     fn enter_returns_selected_action_and_closes() {
-        let mut p = PaletteState::new();
+        let mut p = PaletteState::new(&crate::usage::UsageStore::default(), 0);
         for c in "quit".chars() {
             p.handle_key(key(KeyCode::Char(c)));
         }
         let res = p.handle_key(key(KeyCode::Enter)).unwrap();
         assert!(res.close);
         assert_eq!(res.actions, vec![Action::Quit]);
+        assert_eq!(res.usage.as_deref(), Some("quit"));
+    }
+
+    #[test]
+    fn heavily_used_command_sorts_to_top_with_empty_query() {
+        let mut usage = crate::usage::UsageStore::default();
+        // "quit" is declared last but heavy usage should put it first when
+        // the query is empty.
+        for _ in 0..50 {
+            usage.record("quit", 1_000_000);
+        }
+        let p = PaletteState::new(&usage, 1_000_000);
+        assert_eq!(p.filtered()[0].id, "quit");
+    }
+
+    #[test]
+    fn typing_still_fuzzy_filters_within_frecency_order() {
+        let mut usage = crate::usage::UsageStore::default();
+        for _ in 0..50 {
+            usage.record("quit", 1_000_000);
+        }
+        let mut p = PaletteState::new(&usage, 1_000_000);
+        for c in "focus".chars() {
+            p.handle_key(key(KeyCode::Char(c)));
+        }
+        assert!(
+            p.filtered().iter().all(|c| c.id.starts_with("focus-")),
+            "typed query must still fuzzy-filter, frecency only breaks ties"
+        );
+        assert_eq!(p.filtered().len(), 3);
+    }
+
+    #[test]
+    fn zero_score_commands_keep_declaration_order() {
+        let p = PaletteState::new(&crate::usage::UsageStore::default(), 0);
+        let ids: Vec<&str> = p.filtered().iter().map(|c| c.id).collect();
+        let declared: Vec<&str> = all_commands().iter().map(|c| c.id).collect();
+        assert_eq!(ids, declared, "stable sort must preserve order among ties");
     }
 
     #[test]
     fn enter_on_empty_results_does_nothing() {
-        let mut p = PaletteState::new();
+        let mut p = PaletteState::new(&crate::usage::UsageStore::default(), 0);
         for c in "zzzz".chars() {
             p.handle_key(key(KeyCode::Char(c)));
         }
@@ -394,7 +476,7 @@ mod tests {
 
     #[test]
     fn esc_closes_without_action() {
-        let mut p = PaletteState::new();
+        let mut p = PaletteState::new(&crate::usage::UsageStore::default(), 0);
         let res = p.handle_key(key(KeyCode::Esc)).unwrap();
         assert!(res.close);
         assert!(res.actions.is_empty());
@@ -402,7 +484,7 @@ mod tests {
 
     #[test]
     fn selection_resets_when_filter_changes() {
-        let mut p = PaletteState::new();
+        let mut p = PaletteState::new(&crate::usage::UsageStore::default(), 0);
         p.handle_key(key(KeyCode::Down));
         p.handle_key(key(KeyCode::Char('q')));
         assert_eq!(p.selected(), 0);
@@ -413,7 +495,7 @@ mod tests {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
-        let mut p = PaletteState::new();
+        let mut p = PaletteState::new(&crate::usage::UsageStore::default(), 0);
         let theme = Theme::dark();
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();

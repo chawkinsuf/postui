@@ -84,6 +84,9 @@ pub struct DropdownState {
 pub struct ModalResult {
     pub actions: Vec<Action>,
     pub close: bool,
+    /// The command id to record a use of, when this result came from
+    /// confirming a command palette row. `None` for every other modal.
+    pub usage: Option<String>,
 }
 
 #[derive(Default)]
@@ -115,6 +118,7 @@ impl ModalStack {
                 KeyCode::Esc | KeyCode::Enter => Some(ModalResult {
                     actions: vec![],
                     close: true,
+                    ..Default::default()
                 }),
                 _ => None, // swallowed: modals capture all input
             },
@@ -122,6 +126,7 @@ impl ModalStack {
                 KeyCode::Esc => Some(ModalResult {
                     actions: vec![],
                     close: true,
+                    ..Default::default()
                 }),
                 KeyCode::Char(c) => {
                     let c = c.to_ascii_lowercase();
@@ -131,6 +136,7 @@ impl ModalStack {
                         .map(|(_, _, actions)| ModalResult {
                             actions: actions.clone(),
                             close: true,
+                            ..Default::default()
                         })
                 }
                 _ => None, // swallowed: modals capture all input
@@ -139,6 +145,7 @@ impl ModalStack {
                 KeyCode::Esc => Some(ModalResult {
                     actions: vec![],
                     close: true,
+                    ..Default::default()
                 }),
                 KeyCode::Enter => {
                     let text = input.text().trim();
@@ -160,6 +167,7 @@ impl ModalStack {
                         Some(ModalResult {
                             actions: vec![action],
                             close: true,
+                            ..Default::default()
                         })
                     }
                 }
@@ -180,6 +188,7 @@ impl ModalStack {
                 KeyCode::Esc => Some(ModalResult {
                     actions: vec![],
                     close: true,
+                    ..Default::default()
                 }),
                 KeyCode::Enter => {
                     let name_text = name.text().trim();
@@ -192,6 +201,7 @@ impl ModalStack {
                                 path: path.text().trim().to_string(),
                             }],
                             close: true,
+                            ..Default::default()
                         })
                     }
                 }
@@ -235,10 +245,12 @@ impl ModalStack {
                 KeyCode::Enter => Some(ModalResult {
                     actions: vec![state.items[state.selected].1.clone()],
                     close: true,
+                    ..Default::default()
                 }),
                 KeyCode::Esc => Some(ModalResult {
                     actions: vec![],
                     close: true,
+                    ..Default::default()
                 }),
                 _ => None, // swallowed: modals capture all input
             },
@@ -665,7 +677,7 @@ mod tests {
     fn palette_enter_returns_action_and_closes() {
         let mut m = ModalStack::default();
         m.push(Modal::Palette(
-            crate::components::palette::PaletteState::new(),
+            crate::components::palette::PaletteState::new(&crate::usage::UsageStore::default(), 0),
         ));
         for c in "quit".chars() {
             assert!(m.handle_key(key(KeyCode::Char(c))).is_none());

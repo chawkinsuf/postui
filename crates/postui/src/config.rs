@@ -171,6 +171,13 @@ pub fn config_file_path() -> Option<PathBuf> {
         .map(|d| d.config_dir().join("config.toml"))
 }
 
+/// The path to the mouse-first-GUI UI-state file (currently just palette
+/// usage stats): `<config dir>/ui.toml`.
+pub fn ui_file_path() -> Option<PathBuf> {
+    directories::ProjectDirs::from("", "", postui_core::APP_NAME)
+        .map(|d| d.config_dir().join("ui.toml"))
+}
+
 /// Expands a leading `~/` to the home directory. Paths not starting with
 /// `~/` are returned unchanged.
 pub fn expand_tilde(s: &str) -> PathBuf {

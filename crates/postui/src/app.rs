@@ -57,6 +57,12 @@ pub struct App {
     /// Mouse-first-GUI UI settings (clipboard command, OSC 52 threshold),
     /// loaded from the same `config.toml` the registry uses.
     pub ui_settings: crate::config::UiSettings,
+    /// Palette command frecency stats (recency + count per command id),
+    /// loaded from `ui.toml` at startup and saved back on quit.
+    pub usage: crate::usage::UsageStore,
+    /// Where to save `usage` back to. `None` in tests, so test runs never
+    /// touch the real `ui.toml`.
+    usage_path: Option<PathBuf>,
     /// The HTTP client used for every send. Built eagerly and cheaply
     /// (`reqwest::Client::builder().build()` needs no running Tokio
     /// reactor — verified in `http::tests::client_builds_without_a_tokio_runtime`
@@ -189,6 +195,11 @@ impl App {
             .as_deref()
             .map(crate::config::load_ui_settings)
             .unwrap_or_default();
+        let usage_path = crate::config::ui_file_path();
+        let usage = usage_path
+            .as_deref()
+            .map(crate::usage::UsageStore::load_from)
+            .unwrap_or_default();
 
         let Some((root, disposition, stale_last)) = resolve_startup(
             &registry,
@@ -200,6 +211,8 @@ impl App {
             app.registry_path = registry_path;
             app.clipboard = crate::clipboard::Clipboard::new(&ui_settings);
             app.ui_settings = ui_settings;
+            app.usage = usage;
+            app.usage_path = usage_path;
             app.toasts.push(
                 "could not determine a project directory for this platform",
                 ToastKind::Error,
@@ -212,6 +225,8 @@ impl App {
         app.registry_path = registry_path;
         app.clipboard = crate::clipboard::Clipboard::new(&ui_settings);
         app.ui_settings = ui_settings;
+        app.usage = usage;
+        app.usage_path = usage_path;
 
         if let Some(missing) = stale_last {
             app.toasts.push(
@@ -306,6 +321,8 @@ impl App {
             registry_path: None,
             clipboard: crate::clipboard::Clipboard::new(&crate::config::UiSettings::default()),
             ui_settings: crate::config::UiSettings::default(),
+            usage: crate::usage::UsageStore::default(),
+            usage_path: None,
             client: crate::http::client(),
             in_flight: None,
             send_generation: 0,
@@ -363,6 +380,9 @@ impl App {
             Action::Quit => {
                 self.project
                     .persist_local_state(self.editor.slug.as_deref());
+                if let Some(path) = &self.usage_path {
+                    let _ = self.usage.save_to(path);
+                }
                 self.should_quit = true;
                 true
             }
@@ -394,7 +414,10 @@ impl App {
             Action::OpenPalette => {
                 use crate::components::modal::Modal;
                 use crate::components::palette::PaletteState;
-                self.modals.push(Modal::Palette(PaletteState::new()));
+                self.modals.push(Modal::Palette(PaletteState::new(
+                    &self.usage,
+                    crate::usage::now(),
+                )));
                 true
             }
             Action::Close => self.modals.pop().is_some(),
@@ -1482,6 +1505,9 @@ impl App {
         if res.close {
             self.modals.pop();
         }
+        if let Some(id) = &res.usage {
+            self.usage.record(id, crate::usage::now());
+        }
         for a in res.actions {
             changed |= self.update(a);
         }
@@ -1636,6 +1662,7 @@ impl App {
                 let res = ModalResult {
                     actions: actions.clone(),
                     close: true,
+                    ..Default::default()
                 };
                 self.apply_modal_result(res)
             }
@@ -1854,6 +1881,21 @@ mod tests {
         let mut app = App::new_for_test();
         app.update(Action::OpenPalette);
         assert!(!app.modals.is_empty());
+    }
+
+    #[test]
+    fn running_a_palette_command_via_enter_records_usage() {
+        let mut app = App::new_for_test();
+        assert_eq!(app.usage.score("quit", crate::usage::now()), 0.0);
+        app.update(Action::OpenPalette);
+        for c in "quit".chars() {
+            app.handle_key(&Keymap::default_bindings(), plain(c));
+        }
+        app.handle_key(
+            &Keymap::default_bindings(),
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+        assert!(app.usage.score("quit", crate::usage::now()) > 0.0);
     }
 
     fn ctrl(c: char) -> KeyEvent {
