@@ -167,14 +167,20 @@ Replaces the stage-2 single-level grouping with a real tree derived from slugs:
 - **Token syntax:** `{{name}}` where `name` matches the variable-name rules, with
   optional surrounding whitespace (`{{ base_url }}`). Anything else — unmatched
   `{{`, invalid characters — is left literal. No escape mechanism this stage
-  (documented limitation: a literal `{{name}}` cannot be sent).
+  (documented limitation: a literal `{{name}}` cannot be sent in URLs, params,
+  or headers; bodies can carry literal braces by leaving `substitute_body` off).
 - **Resolution order (stage 3):** active environment's value → `default` in
   `variables.toml`. No script layer, no request scope yet, but the resolver's
   signature anticipates them (layered lookup).
 - **Where substitution applies:** in `prepare()`, over the URL, query-param names
-  and values, header names and values (after the default-header merge), and the
-  body. Request files always keep raw `{{var}}` text; substitution is
-  send-time-only.
+  and values, and header names and values (after the default-header merge) —
+  always. The **body is opt-in per request**: a `substitute_body` boolean in the
+  request TOML (default `false`, omitted when false). With the flag off, body
+  braces are sent literally and body tokens are ignored by unresolved-variable
+  checking. Toggled from the Body tab (keybinding + palette entry) with a
+  visible indicator; inserting a variable via the body picker (§5) auto-enables
+  the flag with a toast. Request files always keep raw `{{var}}` text;
+  substitution is send-time-only.
 - **Unresolved variables block the send:** if any referenced variable has no
   value after resolution, the send is aborted with a toast listing the missing
   names (and the active environment, to hint at the fix). No partial sends, no
@@ -251,7 +257,9 @@ from-picker, scripting (`pt.vars`), history, curl/Postman interop.
 
 - **Core unit tests:** token parsing (valid/invalid/whitespace/unmatched),
   resolution precedence (env over default, lenient undeclared-env values),
-  unresolved detection, default-header merge/override/suppress semantics,
+  unresolved detection, `substitute_body` on/off behavior (literal braces
+  preserved and ignored by unresolved checks when off; TOML round-trip omits
+  the field when false), default-header merge/override/suppress semantics,
   `variables.toml` and environment parsing (friendly errors), registry
   round-trip with `~` expansion, migration idempotence, `.local/state.toml`
   degrade-to-defaults.
