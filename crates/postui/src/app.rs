@@ -1246,13 +1246,13 @@ impl App {
             }
             MouseEventKind::Up(MouseButton::Left) => self.drag.take().is_some(),
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                if !self.modals.is_empty() {
+                    return false;
+                }
                 if matches!(self.hits.hit_at(m.column, m.row), Some(Hit::BodyEditor))
                     && self.editor.handle_mouse(m)
                 {
                     return self.update(Action::Render);
-                }
-                if !self.modals.is_empty() {
-                    return false;
                 }
                 if let Some(pane) = self.hits.pane_at(m.column, m.row) {
                     let d = if m.kind == MouseEventKind::ScrollUp {
@@ -1553,6 +1553,15 @@ mod tests {
         }
     }
 
+    fn scroll_down(x: u16, y: u16) -> ratatui::crossterm::event::MouseEvent {
+        ratatui::crossterm::event::MouseEvent {
+            kind: ratatui::crossterm::event::MouseEventKind::ScrollDown,
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
     /// Renders `app` once at 120x40 so `app.hits` (and any component state
     /// that records its own draw area, like the body editor) is populated.
     fn render_once(app: &mut App) {
@@ -1592,6 +1601,47 @@ mod tests {
             !app.handle_mouse(moved(r.x + 1, r.y + 2)),
             "same hit: no redraw"
         );
+    }
+
+    #[test]
+    fn wheel_over_pane_routes_via_pane_at_to_scroll_pane() {
+        let mut app = App::new_for_test();
+        render_once(&mut app);
+        let r = app
+            .hits
+            .rect_of(&crate::hit::Hit::Pane(PaneId::Sidebar))
+            .unwrap();
+        let before = app.focus;
+        assert!(app.handle_mouse(scroll_down(r.x + 1, r.y + 1)));
+        assert_eq!(app.focus, before, "wheel must not steal focus");
+    }
+
+    #[test]
+    fn wheel_over_body_editor_forwards_to_the_editor() {
+        let mut app = App::new_for_test();
+        app.editor.active_tab = EditorTab::Body;
+        app.editor.set_body_text("hello\nworld");
+        render_once(&mut app);
+        let area = app.editor.last_body_area.expect("body area recorded");
+        assert!(app.handle_mouse(scroll_down(area.x + 2, area.y + 1)));
+    }
+
+    #[test]
+    fn wheel_over_body_editor_with_modal_open_is_a_no_op() {
+        // Regression test: the modal-open guard must be checked before the
+        // Hit::BodyEditor short-circuit in the ScrollUp/ScrollDown arm, or a
+        // wheel event over the editor body still reaches
+        // `editor.handle_mouse` while a modal is open.
+        let mut app = App::new_for_test();
+        app.editor.active_tab = EditorTab::Body;
+        app.editor.set_body_text("hello\nworld");
+        render_once(&mut app);
+        let area = app.editor.last_body_area.expect("body area recorded");
+        app.modals.push(crate::components::modal::Modal::Message {
+            title: "About".into(),
+            body: "hello".into(),
+        });
+        assert!(!app.handle_mouse(scroll_down(area.x + 2, area.y + 1)));
     }
 
     #[test]
