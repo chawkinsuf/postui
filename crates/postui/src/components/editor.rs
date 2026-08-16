@@ -462,19 +462,21 @@ impl Editor {
             .split(area);
 
         for (i, tab) in tabs.iter().enumerate() {
-            let hit = crate::hit::Hit::EditorTab(i);
-            let style = if ctx.hovered == Some(&hit) {
-                Style::default().bg(theme.accent).fg(theme.surface)
-            } else if *tab == self.active_tab {
+            let base = if *tab == self.active_tab {
                 Style::default().fg(theme.accent).bold()
             } else {
                 Style::default().fg(theme.text_muted)
             };
-            frame.render_widget(
-                Paragraph::new(Line::styled(format!(" {} ", tab.label()), style)),
+            crate::hit::chip(
+                frame,
+                hits,
                 cols[i],
+                &format!(" {} ", tab.label()),
+                crate::hit::Hit::EditorTab(i),
+                ctx.hovered,
+                Some(base),
+                theme,
             );
-            hits.register(cols[i], hit);
         }
 
         // The Body tab carries a live JSON validity badge, colored from the

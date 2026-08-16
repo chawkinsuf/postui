@@ -2739,6 +2739,7 @@ mod tests {
             app.editor.table.editing.is_none(),
             "single click only selects"
         );
+        assert_eq!(app.editor.table.selected, 0, "single click selects the row");
         app.handle_mouse(left_down(r.x, r.y));
         let edit = app
             .editor

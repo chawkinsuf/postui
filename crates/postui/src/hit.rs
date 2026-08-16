@@ -128,6 +128,11 @@ pub fn button(
 }
 
 /// Same styling contract for a plain (unbracketed) clickable chip/label.
+/// `base` overrides the rest (non-hovered) style — e.g. an active tab's
+/// accent+bold — so hover inversion still lives in exactly one place while
+/// callers vary the quiet state. `None` falls back to the plain accent
+/// foreground `button`/the original `chip` contract used.
+#[allow(clippy::too_many_arguments)]
 pub fn chip(
     frame: &mut Frame,
     hits: &mut HitMap,
@@ -135,12 +140,13 @@ pub fn chip(
     label: &str,
     hit: Hit,
     hovered: Option<&Hit>,
+    base: Option<Style>,
     theme: &Theme,
 ) {
     let style = if hovered == Some(&hit) {
         Style::default().bg(theme.accent).fg(theme.surface)
     } else {
-        Style::default().fg(theme.accent)
+        base.unwrap_or_else(|| Style::default().fg(theme.accent))
     };
     frame.render_widget(Paragraph::new(Line::styled(label.to_string(), style)), area);
     hits.register(area, hit);

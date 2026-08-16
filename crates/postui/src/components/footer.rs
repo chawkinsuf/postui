@@ -69,6 +69,7 @@ pub fn draw_footer(
                     &text,
                     Hit::FooterChip(action),
                     hovered,
+                    None,
                     theme,
                 );
             }
