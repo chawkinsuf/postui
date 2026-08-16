@@ -388,6 +388,14 @@ impl App {
                 });
                 true
             }
+            Action::ResponseViewMode(mode) => {
+                self.response.set_view_mode(mode);
+                true
+            }
+            Action::JsonRowClicked { row, toggle } => {
+                self.response.click_row(row, toggle);
+                true
+            }
             Action::EditorTabSelect(i) => {
                 self.editor.active_tab = EditorTab::from_index(i);
                 self.editor.table.reset();
@@ -1395,6 +1403,24 @@ impl App {
                 self.update(action)
             }
             Hit::ModalOutside => self.update(Action::Close),
+            Hit::ResponseTab(mode) => {
+                self.update(Action::FocusPane(PaneId::Response));
+                self.update(Action::ResponseViewMode(mode))
+            }
+            Hit::JsonRow(i) => {
+                self.update(Action::FocusPane(PaneId::Response));
+                self.update(Action::JsonRowClicked {
+                    row: i,
+                    toggle: false,
+                })
+            }
+            Hit::JsonArrow(i) => {
+                self.update(Action::FocusPane(PaneId::Response));
+                self.update(Action::JsonRowClicked {
+                    row: i,
+                    toggle: true,
+                })
+            }
             _ => false,
         }
     }
@@ -2745,6 +2771,69 @@ mod tests {
         app.handle_mouse(left_down(r.x, r.y));
         assert_eq!(app.editor.active_tab, EditorTab::Body);
         assert_eq!(app.focus, PaneId::Editor);
+    }
+
+    fn ready_response(app: &mut App, body: &str) {
+        app.response
+            .set_state(ResponseState::Ready(Box::new(crate::http::ResponseData {
+                status: 200,
+                headers: vec![("content-type".into(), "application/json".into())],
+                body: body.to_string(),
+                elapsed: std::time::Duration::from_millis(1),
+                size: body.len(),
+                content_type: Some("application/json".into()),
+            })));
+    }
+
+    #[test]
+    fn click_response_tab_switches_to_headers() {
+        use crate::components::response::ViewMode;
+        let mut app = App::new_for_test();
+        ready_response(&mut app, r#"{"a": 1}"#);
+        render_once(&mut app);
+        let r = app
+            .hits
+            .rect_of(&Hit::ResponseTab(ViewMode::Headers))
+            .unwrap();
+        app.handle_mouse(left_down(r.x, r.y));
+        assert_eq!(app.response.view().unwrap().mode, ViewMode::Headers);
+        assert_eq!(app.focus, PaneId::Response);
+    }
+
+    #[test]
+    fn click_json_arrow_collapses_the_container_row() {
+        let mut app = App::new_for_test();
+        ready_response(&mut app, r#"{"a": {"b": 1, "c": 2}}"#);
+        render_once(&mut app);
+        let before = app.response.view().unwrap().visible_len();
+        let r = app.hits.rect_of(&Hit::JsonArrow(1)).unwrap();
+        app.handle_mouse(left_down(r.x, r.y));
+        assert!(
+            app.response.view().unwrap().visible_len() < before,
+            "clicking the arrow collapsed the container"
+        );
+    }
+
+    #[test]
+    fn click_json_row_moves_the_cursor_without_collapsing() {
+        let mut app = App::new_for_test();
+        ready_response(&mut app, r#"{"a": 1, "b": 2}"#);
+        render_once(&mut app);
+        let before = app.response.view().unwrap().visible_len();
+        let r = app.hits.rect_of(&Hit::JsonRow(2)).unwrap();
+        app.handle_mouse(left_down(r.x, r.y));
+        assert_eq!(app.response.view().unwrap().cursor, 2);
+        assert_eq!(app.response.view().unwrap().visible_len(), before);
+    }
+
+    #[test]
+    fn oversize_response_does_not_register_the_tree_tab() {
+        use crate::components::response::{MAX_PRETTY_BYTES, ViewMode};
+        let mut app = App::new_for_test();
+        let body = format!("{{\"a\": \"{}\"}}", "x".repeat(MAX_PRETTY_BYTES));
+        ready_response(&mut app, &body);
+        render_once(&mut app);
+        assert_eq!(app.hits.rect_of(&Hit::ResponseTab(ViewMode::Pretty)), None);
     }
 
     #[test]

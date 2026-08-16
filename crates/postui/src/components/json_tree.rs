@@ -157,6 +157,14 @@ impl JsonTree {
         self.visible_indices().iter().position(|&i| i == full_index)
     }
 
+    /// Whether the line at `visible_index` opens a container (and so carries
+    /// a `▸`/`▾` toggle glyph). `false` for an out-of-range index.
+    pub fn is_container_at_visible(&self, visible_index: usize) -> bool {
+        self.visible_indices()
+            .get(visible_index)
+            .is_some_and(|&full| self.lines[full].container.is_some())
+    }
+
     /// Collapses or expands the container opened by the line at
     /// `visible_index`. A no-op on lines that open no container (and on an
     /// out-of-range index).

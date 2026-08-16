@@ -282,6 +282,37 @@ impl Response {
         self.view.as_ref()
     }
 
+    /// Switches to `mode` (the tabs row's click target). A no-op with no
+    /// ready response, and a no-op switching to `Pretty` when the body has
+    /// no tree (not JSON, or oversize-blocked).
+    pub fn set_view_mode(&mut self, mode: ViewMode) {
+        let Some(view) = self.view.as_mut() else {
+            return;
+        };
+        if mode == ViewMode::Pretty && view.tree.is_none() {
+            return;
+        }
+        view.set_mode(mode);
+    }
+
+    /// Clicking a body row: moves the cursor there, and — when `toggle` is
+    /// set and the view is `Pretty` — collapses/expands the container it
+    /// opens (a no-op on a scalar row).
+    pub fn click_row(&mut self, row: usize, toggle: bool) {
+        let Some(view) = self.view.as_mut() else {
+            return;
+        };
+        view.cursor = row.min(view.visible_len().saturating_sub(1));
+        if toggle
+            && view.mode == ViewMode::Pretty
+            && let Some(tree) = view.tree.as_mut()
+        {
+            tree.toggle(view.cursor);
+            view.clamp_cursor();
+            view.follow_cursor();
+        }
+    }
+
     /// Ready-state key handling. Split out so [`Component::handle_key`] stays
     /// a readable state dispatch.
     fn ready_key(&mut self, ev: KeyEvent) -> Option<Action> {
@@ -416,7 +447,7 @@ impl Component for Response {
         frame: &mut Frame,
         area: Rect,
         ctx: &DrawCtx,
-        _hits: &mut crate::hit::HitMap,
+        hits: &mut crate::hit::HitMap,
     ) {
         let block = pane_block("Response", ctx);
         let inner = block.inner(area);
@@ -468,6 +499,7 @@ impl Component for Response {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(1),                          // summary
+                Constraint::Length(1),                          // view tabs
                 Constraint::Length(if hint { 1 } else { 0 }),   // guard hint
                 Constraint::Min(0),                             // body
                 Constraint::Length(if footer { 1 } else { 0 }), // search footer
@@ -475,25 +507,73 @@ impl Component for Response {
             .split(inner);
 
         frame.render_widget(Paragraph::new(summary_line(data, t)), rows[0]);
+        draw_tabs_row(frame, hits, rows[1], view, ctx);
         if hint {
             frame.render_widget(
                 Paragraph::new(Line::styled(OVERSIZE_HINT, Style::default().fg(t.warning))),
-                rows[1],
+                rows[2],
             );
         }
 
-        view.height = rows[2].height as usize;
+        view.height = rows[3].height as usize;
         // `body_lines` already starts at `view.scroll`, so the paragraph
         // itself is drawn unscrolled.
-        let body = body_lines(view, t, ctx.focused);
-        frame.render_widget(Paragraph::new(body), rows[2]);
+        let body = body_lines(view, t, ctx.focused, hits, rows[3]);
+        frame.render_widget(Paragraph::new(body), rows[3]);
 
         if footer {
             frame.render_widget(
-                Paragraph::new(search_footer(view, t, rows[3].width)),
-                rows[3],
+                Paragraph::new(search_footer(view, t, rows[4].width)),
+                rows[4],
             );
         }
+    }
+}
+
+/// The view-mode tabs (`Tree`/`Raw`/`Headers`) under the summary line. `Tree`
+/// is only offered when the body parsed as JSON. The right side of the row
+/// is left empty — a later task adds Copy/Save buttons there.
+fn draw_tabs_row(
+    frame: &mut Frame,
+    hits: &mut crate::hit::HitMap,
+    area: Rect,
+    view: &ReadyView,
+    ctx: &DrawCtx,
+) {
+    let t = ctx.theme;
+    let mut tabs: Vec<(&str, ViewMode)> = Vec::new();
+    if view.tree.is_some() {
+        tabs.push(("Tree", ViewMode::Pretty));
+    }
+    tabs.push(("Raw", ViewMode::Raw));
+    tabs.push(("Headers", ViewMode::Headers));
+
+    let mut constraints: Vec<Constraint> = tabs
+        .iter()
+        .map(|(label, _)| Constraint::Length((label.chars().count() + 2) as u16))
+        .collect();
+    constraints.push(Constraint::Min(0)); // reserved for the copy/save buttons
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(constraints)
+        .split(area);
+
+    for (i, (label, mode)) in tabs.iter().enumerate() {
+        let base = if view.mode == *mode {
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(t.text_muted)
+        };
+        crate::hit::chip(
+            frame,
+            hits,
+            cols[i],
+            &format!(" {label} "),
+            crate::hit::Hit::ResponseTab(*mode),
+            ctx.hovered,
+            Some(base),
+            t,
+        );
     }
 }
 
@@ -555,7 +635,18 @@ fn human_size(bytes: usize) -> String {
 /// Only the `view.scroll .. view.scroll + view.height` window is built — a
 /// 2 MiB body is a lot of lines, and none of the ones off screen are worth
 /// styling. The caller therefore renders the result at scroll offset 0.
-fn body_lines(view: &ReadyView, t: &Theme, focused: bool) -> Vec<Line<'static>> {
+///
+/// In `Pretty` mode, also registers a `JsonRow` hit over each rendered row
+/// (click selects) and a `JsonArrow` hit over its first two columns when the
+/// row opens a container (click toggles). `Raw`/`Headers` register nothing
+/// per-row — the Headers copy icons are a later task.
+fn body_lines(
+    view: &ReadyView,
+    t: &Theme,
+    focused: bool,
+    hits: &mut crate::hit::HitMap,
+    area: Rect,
+) -> Vec<Line<'static>> {
     let text = Style::default().fg(t.text);
     let cursor_bg = Style::default().bg(t.surface_raised);
     let mut out = Vec::new();
@@ -596,6 +687,21 @@ fn body_lines(view: &ReadyView, t: &Theme, focused: bool) -> Vec<Line<'static>> 
                 // the match columns computed over the expanded text no longer
                 // apply to it.
                 push(i, indices[i], pieces, !line.collapsed);
+
+                let y = area.y.saturating_add((i - start) as u16);
+                if y < area.y.saturating_add(area.height) {
+                    hits.register(
+                        Rect::new(area.x, y, area.width, 1),
+                        crate::hit::Hit::JsonRow(i),
+                    );
+                    if tree.is_container_at_visible(i) {
+                        let arrow_w = area.width.min(2);
+                        hits.register(
+                            Rect::new(area.x, y, arrow_w, 1),
+                            crate::hit::Hit::JsonArrow(i),
+                        );
+                    }
+                }
             }
         }
         ViewMode::Raw => {
@@ -1055,6 +1161,48 @@ mod tests {
         });
         assert_eq!(r.handle_key(key(KeyCode::Esc)), Some(Action::CancelSend));
         assert_eq!(r.handle_key(ch('j')), None);
+    }
+
+    #[test]
+    fn set_view_mode_switches_the_view() {
+        let mut r = ready(r#"{"a": 1}"#);
+        r.set_view_mode(ViewMode::Headers);
+        assert_eq!(r.view().unwrap().mode, ViewMode::Headers);
+    }
+
+    #[test]
+    fn set_view_mode_is_a_no_op_when_oversize_blocks_pretty() {
+        let body = format!("{{\"a\": \"{}\"}}", "x".repeat(MAX_PRETTY_BYTES));
+        let mut r = ready(&body);
+        assert_eq!(
+            r.view().unwrap().mode,
+            ViewMode::Raw,
+            "oversize defaults to raw"
+        );
+        r.set_view_mode(ViewMode::Pretty);
+        assert_eq!(
+            r.view().unwrap().mode,
+            ViewMode::Raw,
+            "oversize blocks switching to pretty"
+        );
+    }
+
+    #[test]
+    fn click_row_toggle_collapses_a_container_row() {
+        let mut r = ready(r#"{"a": {"b": 1, "c": 2}}"#);
+        let before = r.view().unwrap().visible_len();
+        r.click_row(1, true); // the "a" container line
+        assert!(r.view().unwrap().visible_len() < before, "collapsed");
+        assert_eq!(r.view().unwrap().cursor, 1);
+    }
+
+    #[test]
+    fn click_row_without_toggle_only_moves_the_cursor() {
+        let mut r = ready(r#"{"a": 1, "b": 2}"#);
+        let before = r.view().unwrap().visible_len();
+        r.click_row(2, false);
+        assert_eq!(r.view().unwrap().cursor, 2);
+        assert_eq!(r.view().unwrap().visible_len(), before, "no collapse");
     }
 
     #[test]

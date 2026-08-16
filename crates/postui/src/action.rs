@@ -164,4 +164,12 @@ pub enum Action {
     /// content focus). Toasts "nowhere to insert" when focus isn't on a
     /// text field.
     InsertVarText(String),
+    /// Switch the response pane's view (the tabs row's click target).
+    ResponseViewMode(crate::components::response::ViewMode),
+    /// Click on a JSON-tree body row: moves the cursor there, and — when
+    /// `toggle` is set — collapses/expands the container it opens.
+    JsonRowClicked {
+        row: usize,
+        toggle: bool,
+    },
 }
