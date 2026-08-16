@@ -310,10 +310,20 @@ impl Component for Editor {
 
     /// Wheel-over-an-unfocused-pane path (`Action::ScrollPane`). Only the
     /// Body tab has anything under edtui's control to scroll; synthesizes
-    /// `|delta|` scroll events at the recorded area's origin and forwards
-    /// them through `handle_mouse` so both paths share edtui's own bounds
-    /// check. Other tabs are a no-op here (params/headers scrolling isn't
-    /// wired up).
+    /// `|delta|` scroll events and forwards them through `handle_mouse` so
+    /// both paths share edtui's own bounds check. Other tabs are a no-op
+    /// here (params/headers scrolling isn't wired up).
+    ///
+    /// The synthesized column must land inside the area edtui itself
+    /// recorded (`EditorState::view::screen_area`, set on every render),
+    /// which — with a line-numbers gutter always on — is `last_body_area`
+    /// *minus* the gutter's width on the left. That width is an edtui-
+    /// internal calculation we have no public access to and would have to
+    /// duplicate (and could silently drift out of sync with) if we aimed
+    /// for the area's left edge, so instead this targets the area's last
+    /// column: the gutter is only ever split off the left side, so the
+    /// rightmost column of `last_body_area` is always inside edtui's
+    /// content area, regardless of how wide the gutter is.
     fn handle_scroll(&mut self, delta: i16) {
         if self.active_tab != EditorTab::Body {
             return;
@@ -326,10 +336,11 @@ impl Component for Editor {
         } else {
             ratatui::crossterm::event::MouseEventKind::ScrollDown
         };
+        let column = area.x + area.width.saturating_sub(1);
         for _ in 0..delta.unsigned_abs() {
             self.handle_mouse(ratatui::crossterm::event::MouseEvent {
                 kind,
-                column: area.x,
+                column,
                 row: area.y,
                 modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
             });
@@ -961,5 +972,39 @@ url = "https://api.example.com/users""#,
         assert!(content.contains("(overridden)"), "{content}");
         assert!(content.contains("(disabled)"), "{content}");
         assert!(content.contains("application/json"));
+    }
+
+    /// Regression test for a bug where the synthesized scroll events landed
+    /// on the line-numbers gutter (always on, `LineNumbers::Absolute`)
+    /// rather than inside edtui's own recorded content area, so
+    /// `MouseEventHandler`'s bounds check silently dropped every event and
+    /// the wheel over an unfocused Body tab did nothing at all.
+    #[test]
+    fn wheel_scroll_over_unfocused_body_tab_actually_scrolls() {
+        let mut app = App::new_for_test();
+        app.editor.active_tab = EditorTab::Body;
+        let many_lines: String = (0..200)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        app.editor.set_body_text(&many_lines);
+        assert_eq!(app.editor.body.cursor.row, 0, "starts at the top");
+
+        // Render once for real so the view records its (gutter-inclusive)
+        // area, exactly as `EditorView::render` does on every draw.
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        assert!(app.editor.last_body_area.is_some(), "body area recorded");
+
+        // A large downward scroll, well past the visible page, should move
+        // the viewport (and, via edtui's own clamp, the cursor) down from
+        // row 0 -- not a "no panic" no-op.
+        assert!(app.update(Action::ScrollPane(crate::layout::PaneId::Editor, 100)));
+        assert!(
+            app.editor.body.cursor.row > 0,
+            "scrolling down a long body must move the cursor off row 0, got {}",
+            app.editor.body.cursor.row
+        );
     }
 }
