@@ -1,5 +1,6 @@
 use super::{Component, DrawCtx, pane_block};
 use crate::action::Action;
+use crate::hit::{self, Hit, HitMap};
 use crate::theme::Theme;
 use postui_core::storage::RequestListing;
 use ratatui::Frame;
@@ -298,26 +299,48 @@ impl Component for Sidebar {
         self.ensure_visible = false;
     }
 
-    fn draw(
-        &mut self,
-        frame: &mut Frame,
-        area: Rect,
-        ctx: &DrawCtx,
-        _hits: &mut crate::hit::HitMap,
-    ) {
+    fn draw(&mut self, frame: &mut Frame, area: Rect, ctx: &DrawCtx, hits: &mut HitMap) {
         let block = pane_block("Requests", ctx);
         let inner = block.inner(area);
         frame.render_widget(block, area);
+
+        let button_height = inner.height.min(1);
+        let button_area = Rect {
+            x: inner.x,
+            y: inner.y,
+            width: inner.width,
+            height: button_height,
+        };
+        hit::button(
+            frame,
+            hits,
+            button_area,
+            "+ New request",
+            Hit::SidebarNewRequest,
+            ctx.hovered,
+            true,
+            ctx.theme,
+        );
+
+        // One spacer line below the button; the row list starts on the
+        // third line and shrinks the usable height by 2 accordingly.
+        let list_y = inner.y.saturating_add(2).min(inner.y + inner.height);
+        let list_area = Rect {
+            x: inner.x,
+            y: list_y,
+            width: inner.width,
+            height: inner.height.saturating_sub(2),
+        };
 
         if self.rows.is_empty() {
             let empty = Paragraph::new(vec![Line::raw(""), Line::raw("No requests yet.")])
                 .style(Style::default().fg(ctx.theme.text_muted))
                 .centered();
-            frame.render_widget(empty, inner);
+            frame.render_widget(empty, list_area);
             return;
         }
 
-        let visible_height = inner.height as usize;
+        let visible_height = list_area.height as usize;
         if self.ensure_visible {
             if visible_height > 0 {
                 if self.selected < self.scroll {
@@ -331,15 +354,41 @@ impl Component for Sidebar {
             self.ensure_visible = false;
         }
 
-        let lines: Vec<Line> = self
+        for (display_pos, (i, row)) in self
             .rows
             .iter()
             .enumerate()
             .skip(self.scroll)
             .take(visible_height.max(1))
-            .map(|(i, row)| self.render_row(i, row, ctx))
-            .collect();
-        frame.render_widget(Paragraph::new(lines), inner);
+            .enumerate()
+        {
+            let row_rect = Rect {
+                x: list_area.x,
+                y: list_area.y + display_pos as u16,
+                width: list_area.width,
+                height: 1,
+            };
+            let line = self.render_row(i, row, ctx);
+            let mut para = Paragraph::new(line);
+            if ctx.hovered == Some(&Hit::SidebarRow(i)) {
+                para = para.style(Style::default().bg(ctx.theme.surface_raised));
+            }
+            frame.render_widget(para, row_rect);
+            hits.register(row_rect, Hit::SidebarRow(i));
+
+            if let Row::Folder { depth, .. } = row {
+                let arrow_x = row_rect.x + 2 + (*depth as u16) * 2;
+                if arrow_x < row_rect.x + row_rect.width {
+                    let arrow_rect = Rect {
+                        x: arrow_x,
+                        y: row_rect.y,
+                        width: 1,
+                        height: 1,
+                    };
+                    hits.register(arrow_rect, Hit::SidebarFolderArrow(i));
+                }
+            }
+        }
     }
 }
 
@@ -546,5 +595,78 @@ mod tests {
         s.refresh(listing(&["a/b/c"]), &expanded(&[]));
         s.select_slug("a/b/c");
         assert!(s.pending_expand.contains("a") && s.pending_expand.contains("a/b"));
+    }
+
+    fn draw_ctx<'a>(theme: &'a Theme, hovered: Option<&'a Hit>) -> DrawCtx<'a> {
+        DrawCtx {
+            theme,
+            focused: true,
+            hovered,
+        }
+    }
+
+    #[test]
+    fn draw_registers_new_request_button_row_hits_and_folder_arrow() {
+        let mut s = Sidebar::default();
+        s.refresh(listing(&["api/ping", "top"]), &expanded(&["api"]));
+        let theme = Theme::dark();
+        let ctx = draw_ctx(&theme, None);
+        let backend = ratatui::backend::TestBackend::new(30, 12);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut hits = HitMap::default();
+        terminal
+            .draw(|f| s.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(content.contains("+ New request"));
+
+        let button_rect = hits.rect_of(&Hit::SidebarNewRequest).expect("button hit");
+        // Button is the first drawn line, at the top of the inner pane area.
+        assert_eq!(
+            button_rect.y, 1,
+            "button sits on the first line inside the block"
+        );
+
+        // rows[0] = "top", rows[1] = folder "api" (expanded), rows[2] = "api/ping"
+        let row0 = hits.rect_of(&Hit::SidebarRow(0)).expect("row 0 hit");
+        assert!(
+            row0.y > button_rect.y + 1,
+            "rows start after the button and a spacer line"
+        );
+        assert!(hits.rect_of(&Hit::SidebarRow(1)).is_some());
+        assert!(hits.rect_of(&Hit::SidebarRow(2)).is_some());
+
+        // Folder row 1 also registers its arrow glyph cell, which must win
+        // over the row hit at that exact point (registered after it).
+        let arrow_rect = hits
+            .rect_of(&Hit::SidebarFolderArrow(1))
+            .expect("folder arrow hit");
+        assert_eq!(arrow_rect.width, 1);
+        assert_eq!(
+            hits.hit_at(arrow_rect.x, arrow_rect.y),
+            Some(&Hit::SidebarFolderArrow(1)),
+            "arrow hit wins over the row hit underneath it"
+        );
+    }
+
+    #[test]
+    fn hovered_row_gets_background_not_inverted_text() {
+        let mut s = Sidebar::default();
+        s.refresh(listing(&["top"]), &expanded(&[]));
+        let theme = Theme::dark();
+        let ctx = draw_ctx(&theme, Some(&Hit::SidebarRow(0)));
+        let backend = ratatui::backend::TestBackend::new(30, 12);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut hits = HitMap::default();
+        terminal
+            .draw(|f| s.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+        let row0 = hits.rect_of(&Hit::SidebarRow(0)).unwrap();
+        let cell = terminal.backend().buffer()[(row0.x, row0.y)].clone();
+        assert_eq!(
+            cell.bg, theme.surface_raised,
+            "hovered row uses a raised background, not inverted fg/bg"
+        );
     }
 }

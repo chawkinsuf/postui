@@ -1272,7 +1272,7 @@ impl App {
     /// and the raw event, for hits that need to forward it) to app state
     /// changes. Only `Pane` and `BodyEditor` are wired up so far; later
     /// tasks extend this match as more hit kinds gain behavior.
-    fn on_hit(&mut self, hit: Hit, _clicks: u8, m: ratatui::crossterm::event::MouseEvent) -> bool {
+    fn on_hit(&mut self, hit: Hit, clicks: u8, m: ratatui::crossterm::event::MouseEvent) -> bool {
         match hit {
             Hit::Pane(p) => self.update(Action::FocusPane(p)),
             Hit::BodyEditor => {
@@ -1283,6 +1283,34 @@ impl App {
             Hit::HeaderProject => self.update(Action::OpenProjectChooser),
             Hit::HeaderEnv => self.update(Action::OpenEnvChooser),
             Hit::FooterChip(action) => self.update(action),
+            Hit::SidebarNewRequest => self.update(Action::PromptNewRequest),
+            Hit::SidebarFolderArrow(i) => {
+                self.update(Action::FocusPane(PaneId::Sidebar));
+                self.sidebar.selected = i;
+                self.update(Action::ToggleSelectedFolder)
+            }
+            Hit::SidebarRow(i) => {
+                self.update(Action::FocusPane(PaneId::Sidebar));
+                self.sidebar.selected = i;
+                match self.sidebar.rows.get(i).cloned() {
+                    Some(Row::Request {
+                        slug, broken: None, ..
+                    }) => self.update(Action::OpenRequest(slug)),
+                    Some(Row::Request {
+                        slug,
+                        broken: Some(_),
+                        ..
+                    }) => self.update(Action::ShowRequestError(slug)),
+                    Some(Row::Folder { .. }) => {
+                        if clicks == 2 {
+                            self.update(Action::ToggleSelectedFolder)
+                        } else {
+                            self.update(Action::Render)
+                        }
+                    }
+                    None => false,
+                }
+            }
             _ => false,
         }
     }
@@ -1785,6 +1813,126 @@ mod tests {
         assert_eq!(
             saved.url, "https://x/a/",
             "the edit was persisted before opening b"
+        );
+    }
+
+    fn sidebar_test_app() -> (App, tempfile::TempDir) {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let dir = tempfile::tempdir().unwrap();
+        postui_core::storage::ensure_project(dir.path()).unwrap();
+        postui_core::storage::save_request(dir.path(), "api/ping", &req("https://x/ping")).unwrap();
+        postui_core::storage::save_request(dir.path(), "top", &req("https://x/top")).unwrap();
+        let app = App::with_root(tx, dir.path().to_path_buf());
+        (app, dir)
+    }
+
+    #[test]
+    fn click_sidebar_row_opens_that_request() {
+        let (mut app, _dir) = sidebar_test_app();
+        render_once(&mut app);
+        assert_eq!(
+            app.sidebar.rows[0],
+            Row::Request {
+                slug: "top".into(),
+                depth: 0,
+                broken: None
+            }
+        );
+        let r = app.hits.rect_of(&crate::hit::Hit::SidebarRow(0)).unwrap();
+        app.handle_mouse(left_down(r.x, r.y));
+        assert_eq!(app.editor.slug.as_deref(), Some("top"));
+    }
+
+    #[test]
+    fn click_folder_arrow_expands_the_folder() {
+        let (mut app, _dir) = sidebar_test_app();
+        render_once(&mut app);
+        assert!(matches!(app.sidebar.rows[1], Row::Folder { .. }));
+        let before = app.sidebar.rows.len();
+        let r = app
+            .hits
+            .rect_of(&crate::hit::Hit::SidebarFolderArrow(1))
+            .expect("folder arrow hit registered");
+        app.handle_mouse(left_down(r.x, r.y));
+        assert!(
+            app.sidebar.rows.len() > before,
+            "expanding the folder reveals its child row"
+        );
+    }
+
+    #[test]
+    fn single_click_folder_name_selects_only_double_click_expands() {
+        let (mut app, _dir) = sidebar_test_app();
+        render_once(&mut app);
+        let before = app.sidebar.rows.len();
+        let r = app.hits.rect_of(&crate::hit::Hit::SidebarRow(1)).unwrap();
+
+        app.handle_mouse(left_down(r.x, r.y));
+        assert_eq!(app.sidebar.selected, 1, "single click selects the folder");
+        assert_eq!(
+            app.sidebar.rows.len(),
+            before,
+            "single click must not expand the folder"
+        );
+
+        // Second Down on the same hit within 400ms is a double click.
+        app.handle_mouse(left_down(r.x, r.y));
+        assert!(
+            app.sidebar.rows.len() > before,
+            "double click expands the folder"
+        );
+    }
+
+    #[test]
+    fn click_new_request_button_opens_prompt_modal() {
+        let (mut app, _dir) = sidebar_test_app();
+        render_once(&mut app);
+        let r = app
+            .hits
+            .rect_of(&crate::hit::Hit::SidebarNewRequest)
+            .unwrap();
+        app.handle_mouse(left_down(r.x, r.y));
+        assert!(matches!(
+            app.modals.top(),
+            Some(Modal::Prompt {
+                kind: PromptKind::NewRequest,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn clicking_another_row_over_dirty_editor_is_gated_by_confirm() {
+        let (mut app, _dir) = sidebar_test_app();
+        app.project.expanded.insert("api".into());
+        app.refresh_sidebar();
+        let keymap = Keymap::default_bindings();
+        app.update(Action::ForceOpenRequest("top".into()));
+        app.focus = PaneId::Editor;
+        app.editor.sub_focus = SubFocus::Url;
+        app.handle_key(&keymap, plain('/'));
+        assert!(app.editor.is_dirty());
+
+        render_once(&mut app);
+        assert_eq!(
+            app.sidebar.rows[2],
+            Row::Request {
+                slug: "api/ping".into(),
+                depth: 1,
+                broken: None
+            },
+            "folder pre-expanded so api/ping is the third row"
+        );
+        let r = app.hits.rect_of(&crate::hit::Hit::SidebarRow(2)).unwrap();
+        app.handle_mouse(left_down(r.x, r.y));
+        assert!(
+            matches!(app.modals.top(), Some(Modal::Confirm { .. })),
+            "clicking a different request row while dirty must gate through the Confirm modal, not open silently"
+        );
+        assert_eq!(
+            app.editor.slug.as_deref(),
+            Some("top"),
+            "editor content unchanged until the modal is resolved"
         );
     }
 
