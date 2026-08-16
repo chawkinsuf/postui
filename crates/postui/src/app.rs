@@ -779,6 +779,36 @@ impl App {
                 }
                 self.apply(Action::ForceSwitchProject(path))
             }
+            Action::PromptNewProject => {
+                let prefill = format!("{}/", self.registry.default_root().display());
+                self.modals.push(Modal::NewProject {
+                    name: crate::components::line_input::LineInput::new(""),
+                    path: crate::components::line_input::LineInput::new(&prefill),
+                    on_path: false,
+                    prefilled: false,
+                });
+                true
+            }
+            Action::CreateProject { name, path } => {
+                let path = crate::config::expand_tilde(&path);
+                if let Err(e) = postui_core::project::init_project(&path, Some(&name)) {
+                    self.toasts.push(
+                        format!("could not create project at {}: {e}", path.display()),
+                        ToastKind::Error,
+                    );
+                    return true;
+                }
+                self.registry.register(path.clone());
+                if let Some(p) = &self.registry_path {
+                    let _ = self.registry.save_to(p);
+                }
+                if self.editor.is_dirty() {
+                    self.dirty_gate("create", Action::ForceSwitchProject(path));
+                } else {
+                    self.apply(Action::ForceSwitchProject(path));
+                }
+                true
+            }
         }
     }
 
@@ -1722,5 +1752,43 @@ mod tests {
         app.handle_key(&Keymap::default_bindings(), plain('y'));
         assert!(postui_core::project::is_project(&target));
         assert_eq!(app.project.root, target);
+    }
+
+    #[test]
+    fn new_project_modal_prefills_path_from_name_and_creates() {
+        let mut app = App::new_for_test();
+        let root = tempfile::tempdir().unwrap();
+        app.registry.root = Some(root.path().to_path_buf());
+        let keymap = Keymap::default_bindings();
+        app.update(Action::PromptNewProject);
+        for c in "My Svc".chars() {
+            app.handle_key(&keymap, plain(c));
+        }
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        let Some(Modal::NewProject { path, .. }) = app.modals.top() else {
+            panic!()
+        };
+        assert!(
+            path.text().ends_with("/my-svc"),
+            "slugified prefill: {}",
+            path.text()
+        );
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let expected = root.path().join("my-svc");
+        assert!(postui_core::project::is_project(&expected));
+        assert_eq!(app.project.root, expected);
+        assert_eq!(app.project.display_name(), "My Svc");
+        assert!(app.registry.known.contains(&expected));
+    }
+
+    #[test]
+    fn new_project_empty_name_swallows_enter_and_esc_cancels() {
+        let mut app = App::new_for_test();
+        let keymap = Keymap::default_bindings();
+        app.update(Action::PromptNewProject);
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(!app.modals.is_empty(), "empty name: modal stays");
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.modals.is_empty());
     }
 }

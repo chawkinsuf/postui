@@ -81,6 +81,10 @@ pub fn all_commands() -> Vec<Command> {
             action: Action::PromptOpenProjectPath,
         },
         Command {
+            name: "Project: new…",
+            action: Action::PromptNewProject,
+        },
+        Command {
             name: "Quit",
             action: Action::Quit,
         },

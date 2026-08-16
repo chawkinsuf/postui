@@ -42,6 +42,18 @@ pub enum Modal {
     },
     Palette(crate::components::palette::PaletteState),
     Chooser(crate::components::chooser::ChooserState),
+    /// The "new project" prompt: a name field and a path field, tab/down
+    /// (or shift-tab/up) switching focus between them. On the first hop
+    /// off the name field, if the path still ends with `/`, the name is
+    /// slugified and appended so the path stays a sensible default while
+    /// still being freely editable afterward.
+    NewProject {
+        name: LineInput,
+        path: LineInput,
+        on_path: bool,
+        /// Whether the one-shot name->path prefill has already happened.
+        prefilled: bool,
+    },
 }
 
 /// The outcome of a modal handling a key event: any actions the caller
@@ -136,6 +148,56 @@ impl ModalStack {
             },
             Modal::Palette(state) => state.handle_key(key),
             Modal::Chooser(state) => state.handle_key(key),
+            Modal::NewProject {
+                name,
+                path,
+                on_path,
+                prefilled,
+            } => match key.code {
+                KeyCode::Esc => Some(ModalResult {
+                    actions: vec![],
+                    close: true,
+                }),
+                KeyCode::Enter => {
+                    let name_text = name.text().trim();
+                    if name_text.is_empty() {
+                        None // swallowed: nothing to confirm yet
+                    } else {
+                        Some(ModalResult {
+                            actions: vec![Action::CreateProject {
+                                name: name_text.to_string(),
+                                path: path.text().trim().to_string(),
+                            }],
+                            close: true,
+                        })
+                    }
+                }
+                KeyCode::Tab | KeyCode::Down => {
+                    if !*on_path && !*prefilled {
+                        *prefilled = true;
+                        if path.text().ends_with('/') {
+                            let slug = slugify(name.text());
+                            let mut new_path = path.text().to_string();
+                            new_path.push_str(&slug);
+                            *path = LineInput::new(&new_path);
+                        }
+                    }
+                    *on_path = true;
+                    None // swallowed: modals capture all input
+                }
+                KeyCode::BackTab | KeyCode::Up => {
+                    *on_path = false;
+                    None // swallowed: modals capture all input
+                }
+                _ => {
+                    if *on_path {
+                        path.handle_key(key);
+                    } else {
+                        name.handle_key(key);
+                    }
+                    None // swallowed: modals capture all input
+                }
+            },
         }
     }
 
@@ -226,8 +288,84 @@ impl ModalStack {
             }
             Modal::Palette(state) => state.draw(frame, screen, theme),
             Modal::Chooser(state) => state.draw(frame, screen, theme),
+            Modal::NewProject {
+                name,
+                path,
+                on_path,
+                ..
+            } => {
+                let area = centered_rect(screen, 60.min(screen.width), 8);
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(theme.border_focused))
+                    .padding(Padding::uniform(1))
+                    .style(Style::default().bg(theme.surface_raised))
+                    .title(" New project ")
+                    .title_style(Style::default().fg(theme.accent));
+                frame.render_widget(Clear, area);
+                let inner = block.inner(area);
+                frame.render_widget(block, area);
+
+                let name_label_area = Rect { height: 1, ..inner };
+                frame.render_widget(
+                    Paragraph::new(Span::styled("Name:", Style::default().fg(theme.text_muted))),
+                    name_label_area,
+                );
+                let name_area = Rect {
+                    y: inner.y + 1,
+                    height: 1,
+                    ..inner
+                };
+                frame.render_widget(
+                    Paragraph::new(name.draw_line_windowed(!*on_path, theme, name_area.width)),
+                    name_area,
+                );
+
+                let path_label_area = Rect {
+                    y: inner.y + 2,
+                    height: 1,
+                    ..inner
+                };
+                frame.render_widget(
+                    Paragraph::new(Span::styled("Path:", Style::default().fg(theme.text_muted))),
+                    path_label_area,
+                );
+                let path_area = Rect {
+                    y: inner.y + 3,
+                    height: 1,
+                    ..inner
+                };
+                frame.render_widget(
+                    Paragraph::new(path.draw_line_windowed(*on_path, theme, path_area.width)),
+                    path_area,
+                );
+
+                let hint_area = Rect {
+                    y: inner.y + 4,
+                    height: 1,
+                    ..inner
+                };
+                frame.render_widget(
+                    Paragraph::new(Line::from(Span::styled(
+                        "[tab] switch  [enter] create  [esc] cancel",
+                        Style::default().fg(theme.text_muted),
+                    ))),
+                    hint_area,
+                );
+            }
         }
     }
+}
+
+/// Lowercases `s`, maps spaces to `-`, and keeps only `[a-z0-9_-]`
+/// characters — used to prefill the new-project path from its name.
+pub fn slugify(s: &str) -> String {
+    s.to_lowercase()
+        .chars()
+        .map(|c| if c == ' ' { '-' } else { c })
+        .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_' || *c == '-')
+        .collect()
 }
 
 pub fn centered_rect(screen: Rect, width: u16, height: u16) -> Rect {
@@ -351,5 +489,11 @@ mod tests {
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("About"));
         assert!(content.contains("hello world"));
+    }
+
+    #[test]
+    fn slugify_lowercases_and_maps_spaces() {
+        assert_eq!(slugify("My Svc"), "my-svc");
+        assert_eq!(slugify("Weird!! Na@me_1"), "weird-name_1");
     }
 }

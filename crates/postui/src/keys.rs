@@ -102,6 +102,7 @@ fn named_actions() -> Vec<(&'static str, Action)> {
         ("send", Action::Send),
         ("project_choose", Action::OpenProjectChooser),
         ("project_cycle", Action::CycleProject),
+        ("project_new", Action::PromptNewProject),
     ]
 }
 
@@ -151,6 +152,7 @@ impl Keymap {
             ("ctrl+enter", Action::Send),
             ("ctrl+o", Action::OpenProjectChooser),
             ("alt+o", Action::CycleProject),
+            ("alt+n", Action::PromptNewProject),
         ];
         let mut map = Self {
             bindings: HashMap::new(),
@@ -275,6 +277,7 @@ mod tests {
         assert_eq!(get("ctrl+enter"), Some(Action::Send));
         assert_eq!(get("ctrl+o"), Some(Action::OpenProjectChooser));
         assert_eq!(get("alt+o"), Some(Action::CycleProject));
+        assert_eq!(get("alt+n"), Some(Action::PromptNewProject));
     }
 
     #[test]
