@@ -351,6 +351,10 @@ impl App {
             }
             Action::FormatBody => self.transform_body(postui_core::json::format),
             Action::MinifyBody => self.transform_body(postui_core::json::minify),
+            Action::ToggleBodyVars => {
+                self.editor.substitute_body = !self.editor.substitute_body;
+                true
+            }
             // Suspending the terminal is the main loop's job; park the action
             // and let it pick this up after the current key is handled.
             Action::OpenBodyInEditor => {
@@ -540,11 +544,16 @@ impl App {
                 }
                 let (prepared, warnings) = match postui_core::prepare::prepare(
                     &self.editor.current_request(),
-                    &Default::default(),
+                    &self.project.prepare_context(),
                 ) {
                     Ok(x) => x,
-                    Err(e) => {
-                        self.toasts.push(e.to_string(), ToastKind::Error);
+                    Err(postui_core::prepare::PrepareError::Unresolved(names)) => {
+                        let label = self.project.env_label();
+                        let list = names.into_iter().collect::<Vec<_>>().join(", ");
+                        self.toasts.push(
+                            format!("unresolved variables ({label}): {list}"),
+                            ToastKind::Error,
+                        );
                         return true;
                     }
                 };
@@ -1917,5 +1926,32 @@ mod tests {
         app.update(Action::CycleEnv);
         assert!(!app.toasts.is_empty());
         assert_eq!(app.project.env_label(), "no env");
+    }
+
+    #[tokio::test]
+    async fn unresolved_variable_blocks_send_with_toast() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
+        app.editor.url = crate::components::line_input::LineInput::new("http://x/{{gone}}");
+        app.update(Action::ForceSend);
+        assert!(app.in_flight.is_none());
+        assert!(!app.toasts.is_empty());
+    }
+
+    #[test]
+    fn toggle_body_vars_flips_flag_and_shows_badge() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = App::new_for_test();
+        app.update(Action::ToggleBodyVars);
+        assert!(app.editor.substitute_body);
+
+        app.editor.active_tab = EditorTab::Body;
+        let backend = TestBackend::new(60, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(content.contains("vars"), "expected a vars badge: {content}");
     }
 }

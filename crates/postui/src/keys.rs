@@ -97,6 +97,7 @@ fn named_actions() -> Vec<(&'static str, Action)> {
         ("focus_url", Action::FocusUrl),
         ("format_body", Action::FormatBody),
         ("minify_body", Action::MinifyBody),
+        ("toggle_body_vars", Action::ToggleBodyVars),
         ("open_body_editor", Action::OpenBodyInEditor),
         ("save", Action::SaveRequest),
         ("send", Action::Send),
@@ -148,6 +149,7 @@ impl Keymap {
             ("alt+u", Action::FocusUrl),
             ("alt+f", Action::FormatBody),
             ("alt+g", Action::MinifyBody),
+            ("alt+b", Action::ToggleBodyVars),
             ("ctrl+e", Action::OpenBodyInEditor),
             ("ctrl+s", Action::SaveRequest),
             ("ctrl+r", Action::Send),
@@ -276,6 +278,7 @@ mod tests {
         assert_eq!(get("alt+u"), Some(Action::FocusUrl));
         assert_eq!(get("alt+f"), Some(Action::FormatBody));
         assert_eq!(get("alt+g"), Some(Action::MinifyBody));
+        assert_eq!(get("alt+b"), Some(Action::ToggleBodyVars));
         assert_eq!(get("ctrl+e"), Some(Action::OpenBodyInEditor));
         assert_eq!(get("ctrl+r"), Some(Action::Send));
         assert_eq!(get("ctrl+enter"), Some(Action::Send));

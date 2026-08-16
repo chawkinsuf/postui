@@ -302,6 +302,9 @@ impl Editor {
                     format!("{glyph} "),
                     Style::default().fg(color),
                 ));
+                if self.substitute_body {
+                    spans.push(Span::styled("vars ", Style::default().fg(theme.accent)));
+                }
             }
         }
         frame.render_widget(Paragraph::new(Line::from(spans)), area);

@@ -143,4 +143,7 @@ pub enum Action {
     /// that could have changed out from under the app (sending, opening a
     /// chooser). A no-op, redraw-wise, when nothing changed.
     ReloadProjectFiles,
+    /// Flip `editor.substitute_body` — whether `{{var}}` tokens in the body
+    /// are substituted at send time.
+    ToggleBodyVars,
 }

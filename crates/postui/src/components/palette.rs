@@ -69,6 +69,10 @@ pub fn all_commands() -> Vec<Command> {
             action: Action::OpenBodyInEditor,
         },
         Command {
+            name: "Body: toggle {{var}} substitution",
+            action: Action::ToggleBodyVars,
+        },
+        Command {
             name: "Project: choose…",
             action: Action::OpenProjectChooser,
         },

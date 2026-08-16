@@ -1,3 +1,4 @@
+use postui::action::Action;
 use postui::http;
 use postui_core::model::*;
 use postui_core::prepare::{PrepareContext, prepare};
@@ -167,4 +168,123 @@ async fn connection_refused_yields_readable_error() {
         !err.is_empty() && !err.contains("Error {"),
         "human string, not Debug dump: {err}"
     );
+}
+
+async fn drain_until_settled(
+    app: &mut postui::app::App,
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<Action>,
+) {
+    let generation = app.send_generation;
+    loop {
+        let action = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timed out waiting for a send result")
+            .expect("channel closed before a result arrived");
+        let settled = matches!(
+            &action,
+            Action::ResponseArrived { generation: g, .. } | Action::RequestFailed { generation: g, .. }
+            if *g == generation
+        );
+        app.update(action);
+        if settled {
+            break;
+        }
+    }
+}
+
+#[tokio::test]
+async fn send_substitutes_vars_and_applies_default_headers() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/users/7"))
+        .and(header("authorization", "Bearer tok-qa"))
+        .and(header("accept", "application/json"))
+        .and(wiremock::matchers::body_string(r#"{"id": "7"}"#))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::project::init_project(dir.path(), Some("svc")).unwrap();
+    std::fs::write(
+        dir.path().join("project.toml"),
+        "name = \"svc\"\n[default_headers]\naccept = \"application/json\"\nauthorization = \"Bearer {{tok}}\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("variables.toml"),
+        "[base]\n[tok]\n[uid]\ndefault = \"7\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("environments/qa.toml"),
+        format!("base = \"{}\"\ntok = \"tok-qa\"\n", server.uri()),
+    )
+    .unwrap();
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = postui::app::App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::SwitchEnv(Some("qa".into())));
+    app.editor.method = Method::Post;
+    app.editor.url = postui::components::line_input::LineInput::new("{{base}}/users/{{uid}}");
+    app.editor.set_body_text(r#"{"id": "{{uid}}"}"#);
+    app.editor.substitute_body = true;
+    app.update(Action::ForceSend);
+    assert!(app.in_flight.is_some());
+
+    drain_until_settled(&mut app, &mut rx).await;
+    match app.response.state() {
+        postui::components::response::ResponseState::Ready(data) => {
+            assert_eq!(data.status, 200);
+        }
+        _ => panic!("expected a ready response"),
+    }
+}
+
+#[tokio::test]
+async fn disabled_request_header_row_suppresses_a_default_header() {
+    let server = MockServer::start().await;
+    // The request disables its own `accept` row, and the project default
+    // for `accept` must not leak through. Strictly matching on reqwest's
+    // own implicit `accept: */*` (rather than the project default
+    // `application/json`) proves the default header was suppressed, not
+    // merely overridden — a leaked default would match no mock and 404.
+    Mock::given(method("GET"))
+        .and(path("/x"))
+        .and(header("accept", "*/*"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::project::init_project(dir.path(), Some("svc")).unwrap();
+    std::fs::write(
+        dir.path().join("project.toml"),
+        "name = \"svc\"\n[default_headers]\naccept = \"application/json\"\n",
+    )
+    .unwrap();
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = postui::app::App::with_root(tx, dir.path().to_path_buf());
+    app.editor.url = postui::components::line_input::LineInput::new(&format!("{}/x", server.uri()));
+    app.editor.headers.insert(
+        "accept".into(),
+        Entry {
+            value: "ignored".into(),
+            enabled: false,
+        },
+    );
+    app.update(Action::ForceSend);
+    assert!(app.in_flight.is_some());
+
+    drain_until_settled(&mut app, &mut rx).await;
+    match app.response.state() {
+        postui::components::response::ResponseState::Ready(data) => {
+            assert_eq!(
+                data.status, 200,
+                "default `accept` header must be suppressed"
+            );
+        }
+        _ => panic!("expected a ready response"),
+    }
 }
