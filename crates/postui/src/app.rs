@@ -332,6 +332,7 @@ impl App {
         self.sidebar.open_slug = self.editor.slug.clone();
         self.sidebar.open_dirty = self.editor.is_dirty();
         self.editor.inherited_headers = self.project.meta.default_headers.clone();
+        self.editor.sending = self.in_flight.is_some();
         changed
     }
 
@@ -1311,6 +1312,46 @@ impl App {
                     None => false,
                 }
             }
+            Hit::EditorTab(i) => {
+                self.update(Action::FocusPane(PaneId::Editor));
+                self.update(Action::EditorTabSelect(i))
+            }
+            Hit::SendButton => {
+                if self.in_flight.is_some() {
+                    self.update(Action::CancelSend)
+                } else {
+                    self.update(Action::Send)
+                }
+            }
+            Hit::TableCheckbox(i) => {
+                self.update(Action::FocusPane(PaneId::Editor));
+                self.editor.sub_focus = SubFocus::Content;
+                self.editor.table.selected = i;
+                let map = match self.editor.active_tab {
+                    EditorTab::Params => &mut self.editor.params,
+                    EditorTab::Headers => &mut self.editor.headers,
+                    EditorTab::Body => unreachable!("TableCheckbox only fires on Params/Headers"),
+                };
+                if let Some((_, e)) = map.get_index_mut(i) {
+                    e.enabled = !e.enabled;
+                }
+                self.update(Action::Render)
+            }
+            Hit::TableRow(i) => {
+                self.update(Action::FocusPane(PaneId::Editor));
+                self.editor.sub_focus = SubFocus::Content;
+                self.editor.table.selected = i;
+                if clicks == 2 {
+                    let map = match self.editor.active_tab {
+                        EditorTab::Params => &mut self.editor.params,
+                        EditorTab::Headers => &mut self.editor.headers,
+                        EditorTab::Body => unreachable!("TableRow only fires on Params/Headers"),
+                    };
+                    self.editor.table.begin_edit_selected(map);
+                }
+                self.update(Action::Render)
+            }
+            Hit::MethodSelector => false,
             _ => false,
         }
     }
@@ -2651,5 +2692,89 @@ mod tests {
         app.update(Action::OpenVarPicker { completing: false });
         assert!(app.modals.is_empty());
         assert!(!app.toasts.is_empty());
+    }
+
+    #[test]
+    fn click_editor_tab_selects_it() {
+        let mut app = App::new_for_test();
+        render_once(&mut app);
+        let r = app.hits.rect_of(&Hit::EditorTab(2)).unwrap();
+        app.handle_mouse(left_down(r.x, r.y));
+        assert_eq!(app.editor.active_tab, EditorTab::Body);
+        assert_eq!(app.focus, PaneId::Editor);
+    }
+
+    #[test]
+    fn click_table_checkbox_toggles_enabled() {
+        let mut app = App::new_for_test();
+        app.editor.params.insert(
+            "page".into(),
+            postui_core::model::Entry {
+                value: "2".into(),
+                enabled: true,
+            },
+        );
+        render_once(&mut app);
+        let r = app.hits.rect_of(&Hit::TableCheckbox(0)).unwrap();
+        app.handle_mouse(left_down(r.x, r.y));
+        assert!(!app.editor.params["page"].enabled);
+        assert_eq!(app.editor.table.selected, 0);
+        assert_eq!(app.focus, PaneId::Editor);
+    }
+
+    #[test]
+    fn double_click_table_row_begins_editing_the_key_cell() {
+        let mut app = App::new_for_test();
+        app.editor.params.insert(
+            "page".into(),
+            postui_core::model::Entry {
+                value: "2".into(),
+                enabled: true,
+            },
+        );
+        render_once(&mut app);
+        let r = app.hits.rect_of(&Hit::TableRow(0)).unwrap();
+        app.handle_mouse(left_down(r.x, r.y));
+        assert!(
+            app.editor.table.editing.is_none(),
+            "single click only selects"
+        );
+        app.handle_mouse(left_down(r.x, r.y));
+        let edit = app
+            .editor
+            .table
+            .editing
+            .as_ref()
+            .expect("double click begins editing");
+        assert_eq!(edit.input.text(), "page", "key cell seeded");
+    }
+
+    #[tokio::test]
+    async fn click_send_button_sends_then_click_again_cancels() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
+        app.editor.url = crate::components::line_input::LineInput::new("https://example.com");
+        render_once(&mut app);
+        let before = app.hits.rect_of(&Hit::SendButton).unwrap();
+
+        app.handle_mouse(left_down(before.x, before.y));
+        assert!(app.in_flight.is_some(), "click dispatches Send");
+
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        let after = app.hits.rect_of(&Hit::SendButton).unwrap();
+        assert_eq!(before, after, "Send/Cancel button occupies the same rect");
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            content.contains("Cancel"),
+            "button now reads Cancel: {content}"
+        );
+
+        app.handle_mouse(left_down(after.x, after.y));
+        assert!(matches!(app.response.state(), ResponseState::Cancelled));
     }
 }

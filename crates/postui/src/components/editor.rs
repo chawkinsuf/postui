@@ -14,7 +14,7 @@ use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 
 /// Which editor tab is active.
@@ -88,6 +88,13 @@ pub struct Editor {
     /// (including the very first frame before anything has drawn). Mouse
     /// events are hit-tested against this before being forwarded to edtui.
     pub last_body_area: Option<Rect>,
+    /// Mirrors `App::in_flight.is_some()`, synced by `App::update` on every
+    /// action alongside `open_slug`. Draw-only: swaps the URL row's button
+    /// from `[ Send ]` to `[ Cancel ]` at the same width, no other effect.
+    pub sending: bool,
+    /// The method-badge cell's screen area, recorded on every draw; consumed
+    /// by the click handling that opens the method dropdown (a later task).
+    pub last_method_area: Option<Rect>,
 }
 
 impl Default for Editor {
@@ -107,6 +114,8 @@ impl Default for Editor {
             sub_focus: SubFocus::Url,
             table: TableEditorState::default(),
             last_body_area: None,
+            sending: false,
+            last_method_area: None,
         }
     }
 }
@@ -367,23 +376,48 @@ impl Component for Editor {
             ])
             .split(inner);
 
-        self.draw_method_and_url(frame, rows[0], ctx.theme);
-        self.draw_tab_bar(frame, rows[1], ctx.theme);
-        self.draw_tab_content(frame, rows[2], ctx.theme, hits);
+        self.draw_method_and_url(frame, rows[0], ctx, hits);
+        self.draw_tab_bar(frame, rows[1], ctx, hits);
+        self.draw_tab_content(frame, rows[2], ctx, hits);
     }
 }
 
+/// `[ label ]` rendered at the same width whether it reads `Send` or
+/// `Cancel`, padded to the wider of the two so the button never jumps.
+fn send_button_label(sending: bool) -> String {
+    const WIDTH: usize = 6; // "Cancel".chars().count()
+    let label = if sending { "Cancel" } else { "Send" };
+    format!("{label:<WIDTH$}")
+}
+
 impl Editor {
-    fn draw_method_and_url(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    fn draw_method_and_url(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        ctx: &DrawCtx,
+        hits: &mut crate::hit::HitMap,
+    ) {
+        let theme = ctx.theme;
+        let send_label = send_button_label(self.sending);
+        let send_width = crate::hit::button_width(&send_label);
         let cols = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(8), Constraint::Min(0)])
+            .constraints([
+                Constraint::Length(8),
+                Constraint::Min(0),
+                Constraint::Length(0), // reserved for the Copy URL button (Task 6)
+                Constraint::Length(send_width),
+            ])
             .split(area);
+
         let badge = Paragraph::new(Line::styled(
             format!("{:^7}", self.method.as_str()),
             Style::default().fg(theme.method_color(self.method)).bold(),
         ));
         frame.render_widget(badge, cols[0]);
+        hits.register(cols[0], crate::hit::Hit::MethodSelector);
+        self.last_method_area = Some(cols[0]);
 
         let url_focused = self.sub_focus == SubFocus::Url;
         frame.render_widget(
@@ -393,35 +427,76 @@ impl Editor {
             ),
             cols[1],
         );
+
+        crate::hit::button(
+            frame,
+            hits,
+            cols[3],
+            &send_label,
+            crate::hit::Hit::SendButton,
+            ctx.hovered,
+            true,
+            theme,
+        );
     }
 
-    fn draw_tab_bar(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        let mut spans: Vec<Span> = Vec::new();
-        for tab in [EditorTab::Params, EditorTab::Headers, EditorTab::Body] {
-            let style = if tab == self.active_tab {
+    fn draw_tab_bar(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        ctx: &DrawCtx,
+        hits: &mut crate::hit::HitMap,
+    ) {
+        let theme = ctx.theme;
+        let tabs = [EditorTab::Params, EditorTab::Headers, EditorTab::Body];
+        let mut constraints: Vec<Constraint> = tabs
+            .iter()
+            .map(|t| Constraint::Length((t.label().chars().count() + 2) as u16))
+            .collect();
+        constraints.push(Constraint::Length(2)); // Body's validity glyph, e.g. "✓ "
+        constraints.push(Constraint::Length(if self.substitute_body { 5 } else { 0 })); // "vars "
+        constraints.push(Constraint::Min(0));
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints(constraints)
+            .split(area);
+
+        for (i, tab) in tabs.iter().enumerate() {
+            let hit = crate::hit::Hit::EditorTab(i);
+            let style = if ctx.hovered == Some(&hit) {
+                Style::default().bg(theme.accent).fg(theme.surface)
+            } else if *tab == self.active_tab {
                 Style::default().fg(theme.accent).bold()
             } else {
                 Style::default().fg(theme.text_muted)
             };
-            spans.push(Span::styled(format!(" {} ", tab.label()), style));
-            // The Body tab carries a live JSON validity badge, colored from
-            // the semantic tokens so it also reads without the glyph.
-            if tab == EditorTab::Body {
-                let (glyph, color) = if self.body_is_valid() {
-                    ('✓', theme.success)
-                } else {
-                    ('✗', theme.error)
-                };
-                spans.push(Span::styled(
-                    format!("{glyph} "),
-                    Style::default().fg(color),
-                ));
-                if self.substitute_body {
-                    spans.push(Span::styled("vars ", Style::default().fg(theme.accent)));
-                }
-            }
+            frame.render_widget(
+                Paragraph::new(Line::styled(format!(" {} ", tab.label()), style)),
+                cols[i],
+            );
+            hits.register(cols[i], hit);
         }
-        frame.render_widget(Paragraph::new(Line::from(spans)), area);
+
+        // The Body tab carries a live JSON validity badge, colored from the
+        // semantic tokens so it also reads without the glyph.
+        let (glyph, color) = if self.body_is_valid() {
+            ('✓', theme.success)
+        } else {
+            ('✗', theme.error)
+        };
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                format!("{glyph} "),
+                Style::default().fg(color),
+            )),
+            cols[3],
+        );
+        if self.substitute_body {
+            frame.render_widget(
+                Paragraph::new(Line::styled("vars ", Style::default().fg(theme.accent))),
+                cols[4],
+            );
+        }
     }
 
     /// Builds the muted status lines for enabled inherited (project-default)
@@ -456,24 +531,26 @@ impl Editor {
         &mut self,
         frame: &mut Frame,
         area: Rect,
-        theme: &Theme,
+        ctx: &DrawCtx,
         hits: &mut crate::hit::HitMap,
     ) {
+        let theme = ctx.theme;
         let focused = self.sub_focus == SubFocus::Content;
         self.last_body_area = None;
         match self.active_tab {
             EditorTab::Params => {
-                let ctx = DrawCtx {
+                let table_ctx = DrawCtx {
                     theme,
                     focused,
-                    hovered: None,
+                    hovered: ctx.hovered,
                 };
                 self.table.draw(
                     frame,
                     area,
                     &self.params,
-                    &ctx,
+                    &table_ctx,
                     "No params yet — press a to add",
+                    hits,
                 );
             }
             EditorTab::Headers => {
@@ -491,17 +568,18 @@ impl Editor {
                     frame.render_widget(Paragraph::new(inherited_lines), split[0]);
                     split[1]
                 };
-                let ctx = DrawCtx {
+                let table_ctx = DrawCtx {
                     theme,
                     focused,
-                    hovered: None,
+                    hovered: ctx.hovered,
                 };
                 self.table.draw(
                     frame,
                     table_area,
                     &self.headers,
-                    &ctx,
+                    &table_ctx,
                     "No headers yet — press a to add",
+                    hits,
                 );
             }
             EditorTab::Body => {

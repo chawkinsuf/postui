@@ -1,5 +1,6 @@
 use super::DrawCtx;
 use super::line_input::LineInput;
+use crate::hit::{Hit, HitMap};
 use crate::theme::Theme;
 use indexmap::IndexMap;
 use postui_core::model::Entry;
@@ -77,6 +78,26 @@ impl TableEditorState {
         self.editing = None;
     }
 
+    /// Begins editing the selected row's key cell, seeded with its current
+    /// key text. A no-op on an empty map. Shared by the keyboard `Enter`
+    /// path and the mouse double-click-a-row path.
+    pub fn begin_edit_selected(&mut self, map: &IndexMap<String, Entry>) {
+        if map.is_empty() {
+            return;
+        }
+        self.clamp_selected(map);
+        let key = map
+            .get_index(self.selected)
+            .map(|(k, _)| k.clone())
+            .unwrap();
+        self.editing = Some(CellEdit {
+            col: Col::Key,
+            input: LineInput::new(&key),
+            original_key: Some(key),
+            pending_key: None,
+        });
+    }
+
     fn clamp_selected(&mut self, map: &IndexMap<String, Entry>) {
         if map.is_empty() {
             self.selected = 0;
@@ -125,17 +146,7 @@ impl TableEditorState {
                 if map.is_empty() {
                     return TableOutcome::not_consumed();
                 }
-                self.clamp_selected(map);
-                let key = map
-                    .get_index(self.selected)
-                    .map(|(k, _)| k.clone())
-                    .unwrap();
-                self.editing = Some(CellEdit {
-                    col: Col::Key,
-                    input: LineInput::new(&key),
-                    original_key: Some(key),
-                    pending_key: None,
-                });
+                self.begin_edit_selected(map);
                 TableOutcome::consumed()
             }
             KeyCode::Char(' ') => {
@@ -322,6 +333,7 @@ impl TableEditorState {
         map: &IndexMap<String, Entry>,
         ctx: &DrawCtx,
         empty_label: &str,
+        hits: &mut HitMap,
     ) {
         let theme = ctx.theme;
         if map.is_empty() && self.editing.is_none() {
@@ -350,6 +362,23 @@ impl TableEditorState {
             lines.push(self.render_new_row(edit, theme));
         }
         frame.render_widget(Paragraph::new(lines), area);
+
+        // Rows are not scrolled today (index == map index), so each row's
+        // screen line is simply `area.y + i`. Registered after the widget
+        // draw so `render_row` above never needs to know about hit-testing;
+        // the checkbox cell is registered last (== on top) so it wins over
+        // the row's own full-line hit at that point per
+        // `HitMap::hit_at`'s last-registered-wins rule.
+        for (i, _) in map.iter().enumerate() {
+            let y = area.y.saturating_add(i as u16);
+            if y >= area.y + area.height {
+                break;
+            }
+            hits.register(Rect::new(area.x, y, area.width, 1), Hit::TableRow(i));
+            if area.width >= 3 {
+                hits.register(Rect::new(area.x + 2, y, 1, 1), Hit::TableCheckbox(i));
+            }
+        }
     }
 
     fn render_row(
@@ -616,6 +645,7 @@ mod tests {
 
         let empty_map: IndexMap<String, Entry> = IndexMap::new();
         let t = TableEditorState::default();
+        let mut hits = HitMap::default();
         terminal
             .draw(|f| {
                 t.draw(
@@ -624,6 +654,7 @@ mod tests {
                     &empty_map,
                     &ctx,
                     "No params yet — press a to add",
+                    &mut hits,
                 )
             })
             .unwrap();
@@ -638,11 +669,21 @@ mod tests {
                 enabled: true,
             },
         );
+        let mut hits = HitMap::default();
         terminal
-            .draw(|f| t.draw(f, f.area(), &map, &ctx, "unused"))
+            .draw(|f| t.draw(f, f.area(), &map, &ctx, "unused", &mut hits))
             .unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("page"), "key text: {content}");
         assert!(content.contains('2'), "value text: {content}");
+        assert_eq!(
+            hits.rect_of(&Hit::TableRow(0)),
+            Some(Rect::new(0, 0, 40, 1))
+        );
+        assert_eq!(
+            hits.rect_of(&Hit::TableCheckbox(0)),
+            Some(Rect::new(2, 0, 1, 1)),
+            "checkbox cell registered on top of the row"
+        );
     }
 }
