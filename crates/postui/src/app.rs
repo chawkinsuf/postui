@@ -90,7 +90,10 @@ enum StartupDisposition {
     InitDefault,
     /// Open as-is: already a project, or a registry-sourced root that no
     /// longer is (bare-dir open + warning toast, handled by the caller).
-    OpenAsIs,
+    /// `register` is set when the root came straight from the CLI and isn't
+    /// already known — the caller must add it to the registry so `postui
+    /// <dir>` on an existing project actually registers it (spec §1 CLI).
+    OpenAsIs { register: bool },
 }
 
 /// Picks the startup root and what to do about it, given the registry, an
@@ -99,35 +102,49 @@ enum StartupDisposition {
 /// check, so it's covered directly by the unit tests below rather than
 /// through `App::new` (which reads the real user config file).
 ///
-/// Precedence: `cli_root`, then the registry's last-used project, then the
-/// first known project that still exists on disk, then `default_dir`.
+/// Precedence: `cli_root`, then the registry's last-used project if it still
+/// exists (a `last` pointing at a deleted directory is skipped — the third
+/// return value carries that path so the caller can toast about it), then
+/// the first known project that still exists on disk, then `default_dir`.
 /// `None` means no candidate root exists at all.
 fn resolve_startup(
     registry: &crate::config::ProjectsRegistry,
     cli_root: Option<PathBuf>,
     default_dir: Option<PathBuf>,
-) -> Option<(PathBuf, StartupDisposition)> {
+) -> Option<(PathBuf, StartupDisposition, Option<PathBuf>)> {
     if let Some(root) = cli_root {
         let disposition = if postui_core::project::is_project(&root) {
-            StartupDisposition::OpenAsIs
+            StartupDisposition::OpenAsIs { register: true }
         } else {
             StartupDisposition::PromptCreate
         };
-        return Some((root, disposition));
+        return Some((root, disposition, None));
     }
-    if let Some(root) = registry.last.clone() {
-        return Some((root, StartupDisposition::OpenAsIs));
-    }
+    let stale_last = match &registry.last {
+        Some(root) if root.is_dir() => {
+            return Some((
+                root.clone(),
+                StartupDisposition::OpenAsIs { register: false },
+                None,
+            ));
+        }
+        Some(root) => Some(root.clone()),
+        None => None,
+    };
     if let Some(root) = registry.known.iter().find(|p| p.is_dir()).cloned() {
-        return Some((root, StartupDisposition::OpenAsIs));
+        return Some((
+            root,
+            StartupDisposition::OpenAsIs { register: false },
+            stale_last,
+        ));
     }
     if let Some(root) = default_dir {
         let disposition = if postui_core::project::is_project(&root) {
-            StartupDisposition::OpenAsIs
+            StartupDisposition::OpenAsIs { register: false }
         } else {
             StartupDisposition::InitDefault
         };
-        return Some((root, disposition));
+        return Some((root, disposition, stale_last));
     }
     None
 }
@@ -142,7 +159,7 @@ impl App {
             .map(crate::config::ProjectsRegistry::load_from)
             .unwrap_or_default();
 
-        let Some((root, disposition)) = resolve_startup(
+        let Some((root, disposition, stale_last)) = resolve_startup(
             &registry,
             cli_root,
             postui_core::storage::default_project_dir(),
@@ -160,6 +177,16 @@ impl App {
         let mut app = Self::with_root(tx, root);
         app.registry = registry;
         app.registry_path = registry_path;
+
+        if let Some(missing) = stale_last {
+            app.toasts.push(
+                format!(
+                    "last project {} no longer exists; skipped",
+                    missing.display()
+                ),
+                ToastKind::Warning,
+            );
+        }
 
         match disposition {
             StartupDisposition::InitDefault => {
@@ -184,7 +211,7 @@ impl App {
                     ],
                 });
             }
-            StartupDisposition::OpenAsIs => {
+            StartupDisposition::OpenAsIs { register } => {
                 if !postui_core::project::is_project(&app.project.root) {
                     app.toasts.push(
                         format!(
@@ -193,6 +220,11 @@ impl App {
                         ),
                         ToastKind::Warning,
                     );
+                } else if register {
+                    app.registry.register(app.project.root.clone());
+                    if let Some(path) = &app.registry_path {
+                        let _ = app.registry.save_to(path);
+                    }
                 }
             }
         }
@@ -698,17 +730,7 @@ impl App {
                             .push("only one project registered", ToastKind::Warning);
                     }
                     Some(target) => {
-                        let name = postui_core::project::load_meta(&target)
-                            .map(|meta| postui_core::project::display_name(&target, &meta))
-                            .unwrap_or_else(|_| {
-                                postui_core::project::display_name(
-                                    &target,
-                                    &postui_core::project::ProjectMeta::default(),
-                                )
-                            });
                         self.apply(Action::SwitchProject(target));
-                        self.toasts
-                            .push(format!("Switched to {name}"), ToastKind::Success);
                     }
                 }
                 true
@@ -727,6 +749,14 @@ impl App {
             Action::ForceSwitchProject(target) => {
                 self.project
                     .persist_local_state(self.editor.slug.as_deref());
+                let name = postui_core::project::load_meta(&target)
+                    .map(|meta| postui_core::project::display_name(&target, &meta))
+                    .unwrap_or_else(|_| {
+                        postui_core::project::display_name(
+                            &target,
+                            &postui_core::project::ProjectMeta::default(),
+                        )
+                    });
                 let (project, warnings) = ProjectContext::open(target.clone());
                 self.project = project;
                 for w in warnings {
@@ -754,6 +784,8 @@ impl App {
                 if let Some(path) = &self.registry_path {
                     let _ = self.registry.save_to(path);
                 }
+                self.toasts
+                    .push(format!("Switched to {name}"), ToastKind::Success);
                 true
             }
             Action::PromptOpenProjectPath => {
@@ -1199,32 +1231,49 @@ mod tests {
     fn resolve_startup_fresh_install_picks_default_dir_to_init_with_no_prompt() {
         let registry = crate::config::ProjectsRegistry::default();
         let default_dir = PathBuf::from("/nonexistent/postui-default-xyz");
-        let (root, disposition) =
+        let (root, disposition, stale_last) =
             resolve_startup(&registry, None, Some(default_dir.clone())).unwrap();
         assert_eq!(root, default_dir);
         assert_eq!(disposition, StartupDisposition::InitDefault);
+        assert_eq!(stale_last, None);
     }
 
     #[test]
     fn resolve_startup_cli_non_project_root_prompts_create() {
         let dir = tempfile::tempdir().unwrap();
         let registry = crate::config::ProjectsRegistry::default();
-        let (root, disposition) =
+        let (root, disposition, _) =
             resolve_startup(&registry, Some(dir.path().to_path_buf()), None).unwrap();
         assert_eq!(root, dir.path());
         assert_eq!(disposition, StartupDisposition::PromptCreate);
     }
 
     #[test]
+    fn resolve_startup_cli_existing_project_is_registered() {
+        let dir = tempfile::tempdir().unwrap();
+        postui_core::project::init_project(dir.path(), None).unwrap();
+        let registry = crate::config::ProjectsRegistry::default();
+        let (root, disposition, _) =
+            resolve_startup(&registry, Some(dir.path().to_path_buf()), None).unwrap();
+        assert_eq!(root, dir.path());
+        assert_eq!(disposition, StartupDisposition::OpenAsIs { register: true });
+    }
+
+    #[test]
     fn resolve_startup_registry_last_wins_over_known() {
+        let last_dir = tempfile::tempdir().unwrap();
         let registry = crate::config::ProjectsRegistry {
             known: vec![PathBuf::from("/a"), PathBuf::from("/b")],
-            last: Some(PathBuf::from("/c")),
+            last: Some(last_dir.path().to_path_buf()),
             ..Default::default()
         };
-        let (root, disposition) = resolve_startup(&registry, None, None).unwrap();
-        assert_eq!(root, PathBuf::from("/c"));
-        assert_eq!(disposition, StartupDisposition::OpenAsIs);
+        let (root, disposition, stale_last) = resolve_startup(&registry, None, None).unwrap();
+        assert_eq!(root, last_dir.path());
+        assert_eq!(
+            disposition,
+            StartupDisposition::OpenAsIs { register: false }
+        );
+        assert_eq!(stale_last, None);
     }
 
     #[test]
@@ -1235,10 +1284,10 @@ mod tests {
             last: Some(PathBuf::from("/elsewhere")),
             ..Default::default()
         };
-        let (root, disposition) =
+        let (root, disposition, _) =
             resolve_startup(&registry, Some(dir.path().to_path_buf()), None).unwrap();
         assert_eq!(root, dir.path());
-        assert_eq!(disposition, StartupDisposition::OpenAsIs);
+        assert_eq!(disposition, StartupDisposition::OpenAsIs { register: true });
     }
 
     #[test]
@@ -1248,9 +1297,45 @@ mod tests {
             known: vec![PathBuf::from("/nonexistent-a"), dir_a.path().to_path_buf()],
             ..Default::default()
         };
-        let (root, disposition) = resolve_startup(&registry, None, None).unwrap();
+        let (root, disposition, _) = resolve_startup(&registry, None, None).unwrap();
         assert_eq!(root, dir_a.path());
-        assert_eq!(disposition, StartupDisposition::OpenAsIs);
+        assert_eq!(
+            disposition,
+            StartupDisposition::OpenAsIs { register: false }
+        );
+    }
+
+    #[test]
+    fn resolve_startup_stale_last_is_skipped_in_favor_of_first_existing_known() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let missing = PathBuf::from("/nonexistent-last-xyz");
+        let registry = crate::config::ProjectsRegistry {
+            known: vec![PathBuf::from("/nonexistent-a"), dir_a.path().to_path_buf()],
+            last: Some(missing.clone()),
+            ..Default::default()
+        };
+        let (root, disposition, stale_last) = resolve_startup(&registry, None, None).unwrap();
+        assert_eq!(root, dir_a.path());
+        assert_eq!(
+            disposition,
+            StartupDisposition::OpenAsIs { register: false }
+        );
+        assert_eq!(stale_last, Some(missing));
+    }
+
+    #[test]
+    fn resolve_startup_stale_last_falls_through_to_default_when_no_known() {
+        let missing = PathBuf::from("/nonexistent-last-xyz");
+        let default_dir = PathBuf::from("/nonexistent/postui-default-xyz");
+        let registry = crate::config::ProjectsRegistry {
+            last: Some(missing.clone()),
+            ..Default::default()
+        };
+        let (root, disposition, stale_last) =
+            resolve_startup(&registry, None, Some(default_dir.clone())).unwrap();
+        assert_eq!(root, default_dir);
+        assert_eq!(disposition, StartupDisposition::InitDefault);
+        assert_eq!(stale_last, Some(missing));
     }
 
     #[test]
@@ -1939,6 +2024,18 @@ mod tests {
         (app, a, b)
     }
 
+    /// Renders the app and returns the terminal buffer's debug text, so
+    /// tests can assert on toast wording (`Toasts` exposes no message
+    /// accessor beyond `is_empty`).
+    fn rendered_text(app: &mut App) -> String {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+        format!("{:?}", terminal.backend().buffer())
+    }
+
     #[test]
     fn cycle_switches_to_next_project_and_lists_its_requests() {
         let (mut app, _a, b) = two_projects();
@@ -1951,6 +2048,37 @@ mod tests {
                 .any(|r| matches!(r, Row::Request { slug, .. } if slug == "pong"))
         );
         assert_eq!(app.project.display_name(), "beta");
+        assert!(
+            rendered_text(&mut app).contains("Switched to beta"),
+            "a clean cycle must confirm the switch with a toast"
+        );
+    }
+
+    #[test]
+    fn cycle_with_dirty_editor_shows_no_switch_toast_until_discard() {
+        let (mut app, _a, b) = two_projects();
+        postui_core::storage::save_request(&app.project.root, "r", &req("https://x/r")).unwrap();
+        app.update(Action::RefreshSidebar);
+        app.update(Action::ForceOpenRequest("r".into()));
+        app.focus = PaneId::Editor;
+        app.editor.sub_focus = SubFocus::Url;
+        app.handle_key(&Keymap::default_bindings(), plain('/'));
+        assert!(app.editor.is_dirty());
+
+        app.update(Action::CycleProject);
+        assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+        assert_ne!(app.project.root, b.path(), "not switched yet");
+        assert!(
+            !rendered_text(&mut app).contains("Switched to"),
+            "no switch toast before the dirty gate is resolved"
+        );
+
+        app.handle_key(&Keymap::default_bindings(), plain('d'));
+        assert_eq!(app.project.root, b.path());
+        assert!(
+            rendered_text(&mut app).contains("Switched to beta"),
+            "the switch toast appears once the discard actually switches"
+        );
     }
 
     #[test]
