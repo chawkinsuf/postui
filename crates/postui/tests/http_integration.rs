@@ -9,6 +9,7 @@ fn req_to(url: String) -> HttpRequest {
     HttpRequest {
         method: Method::Post,
         url,
+        substitute_body: false,
         params: Default::default(),
         headers: Default::default(),
         body: Some(Body::Json {
@@ -140,6 +141,7 @@ async fn connection_refused_yields_readable_error() {
     let (prepared, _) = prepare(&HttpRequest {
         method: Method::Get,
         url: "http://127.0.0.1:1/".into(),
+        substitute_body: false,
         params: Default::default(),
         headers: Default::default(),
         body: None,

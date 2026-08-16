@@ -93,6 +93,7 @@ mod tests {
         HttpRequest {
             method: Method::Get,
             url: url.into(),
+            substitute_body: false,
             params: IndexMap::new(),
             headers: IndexMap::new(),
             body: None,

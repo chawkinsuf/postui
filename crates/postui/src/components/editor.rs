@@ -64,6 +64,7 @@ pub struct Editor {
     pub saved: Option<HttpRequest>,
     pub method: Method,
     pub url: LineInput,
+    pub substitute_body: bool,
     pub params: IndexMap<String, Entry>,
     pub headers: IndexMap<String, Entry>,
     /// The request body buffer. edtui owns the text, cursor and undo stack;
@@ -87,6 +88,7 @@ impl Default for Editor {
             saved: None,
             method: Method::Get,
             url: LineInput::new(""),
+            substitute_body: false,
             params: IndexMap::new(),
             headers: IndexMap::new(),
             body: new_body_state(""),
@@ -105,6 +107,7 @@ impl Editor {
         self.slug = slug;
         self.method = req.method;
         self.url = LineInput::new(&req.url);
+        self.substitute_body = req.substitute_body;
         self.params = req.params.clone();
         self.headers = req.headers.clone();
         self.set_body_text(match &req.body {
@@ -119,6 +122,7 @@ impl Editor {
         HttpRequest {
             method: self.method,
             url: self.url.text().to_string(),
+            substitute_body: self.substitute_body,
             params: self.params.clone(),
             headers: self.headers.clone(),
             body: {

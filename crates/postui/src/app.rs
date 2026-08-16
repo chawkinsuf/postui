@@ -356,6 +356,7 @@ impl App {
                 self.create_or_save_as(&name, |_| postui_core::model::HttpRequest {
                     method: postui_core::model::Method::Get,
                     url: String::new(),
+                    substitute_body: false,
                     params: Default::default(),
                     headers: Default::default(),
                     body: None,

@@ -175,6 +175,11 @@ pub struct HttpRequest {
     #[serde(default)]
     pub method: Method,
     pub url: String,
+    /// Whether `{{var}}` tokens in the body are substituted at send time.
+    /// Opt-in per request; `false` is the default and is omitted from the
+    /// TOML so untouched requests don't churn in diffs.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub substitute_body: bool,
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
     pub params: IndexMap<String, Entry>,
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
@@ -196,6 +201,9 @@ impl HttpRequest {
         let mut doc = DocumentMut::new();
         doc["method"] = value(self.method.as_str());
         doc["url"] = value(&self.url);
+        if self.substitute_body {
+            doc["substitute_body"] = value(true);
+        }
         let kv_table = |map: &IndexMap<String, Entry>| {
             let mut t = Table::new();
             for (k, e) in map {
@@ -258,6 +266,7 @@ mod tests {
         HttpRequest {
             method: Method::Post,
             url: "https://api.example.com/users".into(),
+            substitute_body: false,
             params,
             headers,
             body: Some(Body::Json {
@@ -385,5 +394,20 @@ mod tests {
         }
         assert_eq!(m, Method::Get);
         assert_eq!(Method::Delete.as_str(), "DELETE");
+    }
+
+    #[test]
+    fn substitute_body_round_trips_and_is_omitted_when_false() {
+        let mut req = sample();
+        assert!(!req.substitute_body, "default off");
+        let out = req.to_toml_string();
+        assert!(!out.contains("substitute_body"), "false is omitted: {out}");
+
+        req.substitute_body = true;
+        let out = req.to_toml_string();
+        assert!(out.contains("substitute_body = true"), "{out}");
+        let back = HttpRequest::from_toml_str(&out).unwrap();
+        assert!(back.substitute_body);
+        assert_eq!(back, req);
     }
 }

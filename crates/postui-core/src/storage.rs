@@ -183,6 +183,7 @@ mod tests {
         HttpRequest {
             method: Method::Get,
             url: "https://x.test".into(),
+            substitute_body: false,
             params: Default::default(),
             headers: Default::default(),
             body: None,
