@@ -40,6 +40,7 @@ pub enum Modal {
         kind: PromptKind,
     },
     Palette(crate::components::palette::PaletteState),
+    Chooser(crate::components::chooser::ChooserState),
 }
 
 /// The outcome of a modal handling a key event: any actions the caller
@@ -130,6 +131,7 @@ impl ModalStack {
                 }
             },
             Modal::Palette(state) => state.handle_key(key),
+            Modal::Chooser(state) => state.handle_key(key),
         }
     }
 
@@ -219,6 +221,7 @@ impl ModalStack {
                 );
             }
             Modal::Palette(state) => state.draw(frame, screen, theme),
+            Modal::Chooser(state) => state.draw(frame, screen, theme),
         }
     }
 }

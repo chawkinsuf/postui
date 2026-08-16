@@ -1,3 +1,4 @@
+pub mod chooser;
 pub mod editor;
 pub mod footer;
 pub mod header_bar;
