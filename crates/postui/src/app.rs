@@ -7,6 +7,7 @@ use crate::components::toast::{ToastKind, Toasts};
 use crate::components::{Component, response::Response, sidebar::Sidebar};
 use crate::keys::{KeyCombo, Keymap};
 use crate::layout::PaneId;
+use crate::project_ctx::ProjectContext;
 use crate::theme::Theme;
 use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
 use std::path::PathBuf;
@@ -32,8 +33,15 @@ pub struct App {
     pub response: Response,
     pub toasts: Toasts,
     pub modals: ModalStack,
-    /// The project's root directory (`requests/**/*.toml` lives under it).
-    pub project_root: PathBuf,
+    /// The open project: root directory, metadata, variables, environments,
+    /// and the active environment's resolved values.
+    pub project: ProjectContext,
+    /// The global registry of known projects (config.toml's `[projects]`
+    /// table): cycle order, configured root, last-used project.
+    pub registry: crate::config::ProjectsRegistry,
+    /// Where to save `registry` back to. `None` in tests, so test runs never
+    /// touch the real global config file.
+    registry_path: Option<PathBuf>,
     /// The HTTP client used for every send. Built eagerly and cheaply
     /// (`reqwest::Client::builder().build()` needs no running Tokio
     /// reactor — verified in `http::tests::client_builds_without_a_tokio_runtime`
@@ -62,21 +70,70 @@ pub struct App {
 }
 
 impl App {
-    /// Resolves the default project directory and opens it. If it cannot be
-    /// determined at all (no home/config dir on this platform), the app
-    /// still starts, with an empty sidebar and a toast explaining why.
-    pub fn new(tx: UnboundedSender<Action>) -> Self {
-        match postui_core::storage::default_project_dir() {
-            Some(root) => Self::with_root(tx, root),
-            None => {
-                let mut app = Self::bare(tx, PathBuf::new());
-                app.toasts.push(
-                    "could not determine a project directory for this platform",
-                    ToastKind::Error,
-                );
-                app
+    /// Resolves the project to open, running startup migration and
+    /// prompting to initialize a non-project root, then opens it.
+    ///
+    /// Migration: if the platform's default project directory exists on
+    /// disk but has never been registered, it's initialized as a project
+    /// (named "default") and registered.
+    ///
+    /// Target root: `cli_root` (expanded), else the registry's last-used
+    /// project, else the first known project that still exists on disk,
+    /// else the platform default project directory.
+    pub fn new(tx: UnboundedSender<Action>, cli_root: Option<PathBuf>) -> Self {
+        let registry_path = crate::config::config_file_path();
+        let mut registry = registry_path
+            .as_deref()
+            .map(crate::config::ProjectsRegistry::load_from)
+            .unwrap_or_default();
+
+        if let Some(default_dir) = postui_core::storage::default_project_dir()
+            && default_dir.is_dir()
+            && !registry.known.contains(&default_dir)
+        {
+            let _ = postui_core::project::init_project(&default_dir, Some("default"));
+            registry.register(default_dir);
+            if let Some(path) = &registry_path {
+                let _ = registry.save_to(path);
             }
         }
+
+        let root = cli_root
+            .or_else(|| registry.last.clone())
+            .or_else(|| registry.known.iter().find(|p| p.is_dir()).cloned())
+            .or_else(postui_core::storage::default_project_dir);
+
+        let Some(root) = root else {
+            let mut app = Self::bare(tx, PathBuf::new());
+            app.registry = registry;
+            app.registry_path = registry_path;
+            app.toasts.push(
+                "could not determine a project directory for this platform",
+                ToastKind::Error,
+            );
+            return app;
+        };
+
+        let mut app = Self::with_root(tx, root);
+        app.registry = registry;
+        app.registry_path = registry_path;
+
+        if !postui_core::project::is_project(&app.project.root) {
+            let path = app.project.root.display().to_string();
+            app.modals.push(Modal::Confirm {
+                title: "Not a postui project".into(),
+                body: format!("{path} has no project.toml — create one here?"),
+                choices: vec![
+                    ('y', "Create project".into(), vec![Action::InitProjectHere]),
+                    // Task 9 introduces Action::SwitchProject and replaces
+                    // this empty tail: for now the modal just closes and the
+                    // bare directory stays open, which is harmless.
+                    ('n', "Open default project".into(), vec![]),
+                ],
+            });
+        }
+
+        app
     }
 
     /// Opens `root` as the project directory: ensures `root/requests/`
@@ -86,9 +143,9 @@ impl App {
     /// app).
     pub fn with_root(tx: UnboundedSender<Action>, root: PathBuf) -> Self {
         let mut app = Self::bare(tx, root);
-        match postui_core::storage::ensure_project(&app.project_root) {
+        match postui_core::storage::ensure_project(&app.project.root) {
             Ok(()) => {
-                let listing = postui_core::storage::list_requests(&app.project_root);
+                let listing = postui_core::storage::list_requests(&app.project.root);
                 app.sidebar.refresh(listing);
             }
             Err(e) => {
@@ -100,6 +157,11 @@ impl App {
     }
 
     fn bare(tx: UnboundedSender<Action>, root: PathBuf) -> Self {
+        let (project, warnings) = ProjectContext::open(root);
+        let mut toasts = Toasts::default();
+        for w in warnings {
+            toasts.push(w, ToastKind::Warning);
+        }
         Self {
             should_quit: false,
             focus: PaneId::Sidebar,
@@ -107,9 +169,11 @@ impl App {
             sidebar: Sidebar::default(),
             editor: Editor::default(),
             response: Response::default(),
-            toasts: Toasts::default(),
+            toasts,
             modals: ModalStack::default(),
-            project_root: root,
+            project,
+            registry: crate::config::ProjectsRegistry::default(),
+            registry_path: None,
             client: crate::http::client(),
             in_flight: None,
             send_generation: 0,
@@ -259,7 +323,7 @@ impl App {
                 }
             }
             Action::ForceOpenRequest(slug) => {
-                match postui_core::storage::load_request(&self.project_root, &slug) {
+                match postui_core::storage::load_request(&self.project.root, &slug) {
                     Ok(req) => self.editor.load(Some(slug), req),
                     Err(e) => {
                         self.toasts
@@ -272,13 +336,13 @@ impl App {
                 match self.editor.slug.clone() {
                     Some(slug) => {
                         let req = self.editor.current_request();
-                        match postui_core::storage::save_request(&self.project_root, &slug, &req) {
+                        match postui_core::storage::save_request(&self.project.root, &slug, &req) {
                             Ok(()) => {
                                 self.editor.mark_saved();
                                 self.toasts
                                     .push(format!("Saved {slug}"), ToastKind::Success);
                                 let listing =
-                                    postui_core::storage::list_requests(&self.project_root);
+                                    postui_core::storage::list_requests(&self.project.root);
                                 self.sidebar.refresh(listing);
                             }
                             Err(e) => {
@@ -317,7 +381,7 @@ impl App {
                 true
             }
             Action::RefreshSidebar => {
-                let listing = postui_core::storage::list_requests(&self.project_root);
+                let listing = postui_core::storage::list_requests(&self.project.root);
                 self.sidebar.refresh(listing);
                 true
             }
@@ -371,9 +435,9 @@ impl App {
                     );
                     return true;
                 }
-                match postui_core::storage::rename_request(&self.project_root, &from, &to) {
+                match postui_core::storage::rename_request(&self.project.root, &from, &to) {
                     Ok(()) => {
-                        let listing = postui_core::storage::list_requests(&self.project_root);
+                        let listing = postui_core::storage::list_requests(&self.project.root);
                         self.sidebar.refresh(listing);
                         if self.editor.slug.as_deref() == Some(from.as_str()) {
                             self.editor.slug = Some(to.clone());
@@ -388,9 +452,9 @@ impl App {
                 true
             }
             Action::DeleteRequest(slug) => {
-                match postui_core::storage::delete_request(&self.project_root, &slug) {
+                match postui_core::storage::delete_request(&self.project.root, &slug) {
                     Ok(()) => {
-                        let listing = postui_core::storage::list_requests(&self.project_root);
+                        let listing = postui_core::storage::list_requests(&self.project.root);
                         self.sidebar.refresh(listing);
                         if self.editor.slug.as_deref() == Some(slug.as_str()) {
                             self.editor = Editor::default();
@@ -508,6 +572,25 @@ impl App {
                 self.response.set_state(ResponseState::Failed(error));
                 true
             }
+            Action::InitProjectHere => {
+                match postui_core::project::init_project(&self.project.root, None) {
+                    Ok(()) => {
+                        self.registry.register(self.project.root.clone());
+                        if let Some(path) = &self.registry_path {
+                            let _ = self.registry.save_to(path);
+                        }
+                        let listing = postui_core::storage::list_requests(&self.project.root);
+                        self.sidebar.refresh(listing);
+                    }
+                    Err(e) => {
+                        self.toasts.push(
+                            format!("could not create project here: {e}"),
+                            ToastKind::Error,
+                        );
+                    }
+                }
+                true
+            }
         }
     }
 
@@ -528,7 +611,7 @@ impl App {
             );
             return;
         }
-        let existing = postui_core::storage::list_requests(&self.project_root);
+        let existing = postui_core::storage::list_requests(&self.project.root);
         if existing.iter().any(|l| l.slug == name) {
             self.toasts.push(
                 format!("request already exists: {name:?}"),
@@ -537,13 +620,13 @@ impl App {
             return;
         }
         let req = build(name);
-        match postui_core::storage::save_request(&self.project_root, name, &req) {
+        match postui_core::storage::save_request(&self.project.root, name, &req) {
             Ok(()) => {
                 self.editor.load(Some(name.to_string()), req);
                 self.editor.mark_saved();
                 self.toasts
                     .push(format!("Saved {name}"), ToastKind::Success);
-                let listing = postui_core::storage::list_requests(&self.project_root);
+                let listing = postui_core::storage::list_requests(&self.project.root);
                 self.sidebar.refresh(listing);
                 self.sidebar.select_slug(name);
             }
@@ -938,7 +1021,7 @@ mod tests {
         app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(app.modals.is_empty());
         assert_eq!(app.editor.slug.as_deref(), Some("api/ping"));
-        assert!(postui_core::storage::load_request(&app.project_root, "api/ping").is_ok());
+        assert!(postui_core::storage::load_request(&app.project.root, "api/ping").is_ok());
         assert!(
             app.sidebar
                 .rows
@@ -963,13 +1046,13 @@ mod tests {
             "modal closes even though the save is rejected"
         );
         assert!(!app.toasts.is_empty(), "an invalid name must toast");
-        assert!(postui_core::storage::list_requests(&app.project_root).is_empty());
+        assert!(postui_core::storage::list_requests(&app.project.root).is_empty());
     }
 
     #[test]
     fn rename_request_updates_disk_and_open_slug() {
         let mut app = App::new_for_test();
-        postui_core::storage::save_request(&app.project_root, "old", &req("https://x/old"))
+        postui_core::storage::save_request(&app.project.root, "old", &req("https://x/old"))
             .unwrap();
         app.update(Action::RefreshSidebar);
         app.update(Action::ForceOpenRequest("old".into()));
@@ -996,8 +1079,8 @@ mod tests {
         }
         app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(app.modals.is_empty());
-        assert!(postui_core::storage::load_request(&app.project_root, "old").is_err());
-        assert!(postui_core::storage::load_request(&app.project_root, "new").is_ok());
+        assert!(postui_core::storage::load_request(&app.project.root, "old").is_err());
+        assert!(postui_core::storage::load_request(&app.project.root, "new").is_ok());
         assert_eq!(app.editor.slug.as_deref(), Some("new"));
         assert_eq!(app.sidebar.open_slug.as_deref(), Some("new"));
     }
@@ -1005,7 +1088,7 @@ mod tests {
     #[test]
     fn delete_open_request_clears_editor_and_removes_file() {
         let mut app = App::new_for_test();
-        postui_core::storage::save_request(&app.project_root, "gone", &req("https://x/gone"))
+        postui_core::storage::save_request(&app.project.root, "gone", &req("https://x/gone"))
             .unwrap();
         app.update(Action::RefreshSidebar);
         app.update(Action::ForceOpenRequest("gone".into()));
@@ -1019,7 +1102,7 @@ mod tests {
             app.editor.slug.is_none(),
             "editor must reset once its open request is deleted"
         );
-        assert!(postui_core::storage::load_request(&app.project_root, "gone").is_err());
+        assert!(postui_core::storage::load_request(&app.project.root, "gone").is_err());
     }
 
     #[test]
@@ -1041,7 +1124,7 @@ mod tests {
         app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(app.modals.is_empty());
         assert_eq!(app.editor.slug.as_deref(), Some("fresh"));
-        let saved = postui_core::storage::load_request(&app.project_root, "fresh").unwrap();
+        let saved = postui_core::storage::load_request(&app.project.root, "fresh").unwrap();
         assert_eq!(saved.url, "https://x/new");
     }
 

@@ -84,4 +84,7 @@ pub enum Action {
         generation: u64,
         error: String,
     },
+    /// The opened root has no `project.toml`; user chose to create one here
+    /// (from the "Not a postui project" confirm modal).
+    InitProjectHere,
 }

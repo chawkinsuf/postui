@@ -20,7 +20,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         modals,
         ..
     } = app;
-    crate::components::header_bar::draw_header(frame, layout.header, theme);
+    crate::components::header_bar::draw_header(
+        frame,
+        layout.header,
+        theme,
+        &app.project.display_name(),
+        &app.project.env_label(),
+    );
     let ctx = |pane: PaneId| DrawCtx {
         theme,
         focused: focus == pane,
@@ -54,7 +60,7 @@ mod tests {
         assert!(content.contains("Request")); // editor title
         assert!(content.contains("Response")); // response title
         assert!(content.contains("postui")); // header bar app name
-        assert!(content.contains("No environment")); // header env selector placeholder
+        assert!(content.contains("no env")); // header env selector placeholder
         assert!(content.contains("quit")); // footer hint mentions quit key
         assert!(content.contains('╭')); // rounded chrome
         assert!(content.contains("No requests yet")); // sidebar empty state

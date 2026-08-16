@@ -40,7 +40,10 @@ fn enable_mouse_and_wrap_panic_hook() {
 
 async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Action>();
-    let mut app = App::new(tx);
+    let cli_root = std::env::args()
+        .nth(1)
+        .map(|s| postui::config::expand_tilde(&s));
+    let mut app = App::new(tx, cli_root);
     let mut events = EventStream::new();
     let mut tick = tokio::time::interval(Duration::from_millis(100));
     let keymap = Keymap::load();
