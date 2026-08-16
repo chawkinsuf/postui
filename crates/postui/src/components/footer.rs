@@ -1,18 +1,38 @@
+use crate::action::Action;
+use crate::hit::{self, Hit, HitMap};
 use crate::layout::PaneId;
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
-use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-/// Hints for the focused pane's own bindings, shown before the global part.
-fn contextual_hint(focus: PaneId) -> &'static str {
-    match focus {
-        PaneId::Sidebar => "enter open · n new · r rename · d delete",
-        PaneId::Editor => "ctrl+r send · ctrl+s save · alt+1/2/3 tabs",
-        PaneId::Response => "r raw · h headers · / search",
-    }
+/// The context-sensitive chips for the focused pane, plus the global chips
+/// always appended at the end. `None` actions render as plain (unregistered,
+/// muted) text — they describe a binding with no single dispatchable
+/// `Action` (e.g. multi-key hints).
+fn footer_chips(focus: PaneId) -> Vec<(String, Option<Action>)> {
+    let mut chips: Vec<(String, Option<Action>)> = match focus {
+        PaneId::Sidebar => vec![
+            ("enter open".into(), None),
+            ("n new".into(), Some(Action::PromptNewRequest)),
+            ("r rename".into(), Some(Action::PromptRenameRequest)),
+            ("d delete".into(), Some(Action::ConfirmDeleteRequest)),
+        ],
+        PaneId::Editor => vec![
+            ("ctrl+r send".into(), Some(Action::Send)),
+            ("ctrl+s save".into(), Some(Action::SaveRequest)),
+            ("alt+1/2/3 tabs".into(), None),
+        ],
+        PaneId::Response => vec![
+            ("r raw".into(), None),
+            ("h headers".into(), None),
+            ("/ search".into(), None),
+        ],
+    };
+    chips.push(("^P commands".into(), Some(Action::OpenPalette)));
+    chips.push(("q quit".into(), Some(Action::Quit)));
+    chips
 }
 
 pub fn draw_footer(
@@ -20,26 +40,47 @@ pub fn draw_footer(
     area: Rect,
     theme: &Theme,
     focus: PaneId,
-    _hits: &mut crate::hit::HitMap,
+    hits: &mut HitMap,
+    hovered: Option<&Hit>,
 ) {
-    let hint = |key: &'static str, desc: &'static str| {
-        vec![
-            Span::styled(format!(" {key} "), Style::default().fg(theme.accent)),
-            Span::styled(desc, Style::default().fg(theme.text_muted)),
-            Span::raw(" "),
-        ]
-    };
-    let mut spans = Vec::new();
-    spans.push(Span::styled(
-        format!(" {} ", contextual_hint(focus)),
-        Style::default().fg(theme.text_muted),
-    ));
-    spans.extend(hint("^P", "commands"));
-    spans.extend(hint("q", "quit"));
     frame.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::default().bg(theme.surface_raised)),
+        Paragraph::new("").style(Style::default().bg(theme.surface_raised)),
         area,
     );
+    let mut x = area.x;
+    for (label, action) in footer_chips(focus) {
+        let text = format!(" {label} ");
+        let width = text.chars().count() as u16;
+        if x + width > area.x + area.width {
+            break;
+        }
+        let chip_area = Rect {
+            x,
+            y: area.y,
+            width,
+            height: 1,
+        };
+        match action {
+            Some(action) => {
+                hit::chip(
+                    frame,
+                    hits,
+                    chip_area,
+                    &text,
+                    Hit::FooterChip(action),
+                    hovered,
+                    theme,
+                );
+            }
+            None => {
+                frame.render_widget(
+                    Paragraph::new(text).style(Style::default().fg(theme.text_muted)),
+                    chip_area,
+                );
+            }
+        }
+        x += width;
+    }
 }
 
 #[cfg(test)]
@@ -54,7 +95,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
-            .draw(|f| draw_footer(f, f.area(), &theme, focus, &mut hits))
+            .draw(|f| draw_footer(f, f.area(), &theme, focus, &mut hits, None))
             .unwrap();
         format!("{:?}", terminal.backend().buffer())
     }
@@ -78,5 +119,25 @@ mod tests {
         let content = render(PaneId::Response);
         assert!(content.contains("r raw"));
         assert!(content.contains("/ search"));
+    }
+
+    #[test]
+    fn action_chips_are_registered_as_hits() {
+        let theme = Theme::for_terminal();
+        let backend = TestBackend::new(120, 3);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| draw_footer(f, f.area(), &theme, PaneId::Sidebar, &mut hits, None))
+            .unwrap();
+        assert!(
+            hits.rect_of(&Hit::FooterChip(Action::PromptNewRequest))
+                .is_some()
+        );
+        assert!(
+            hits.rect_of(&Hit::FooterChip(Action::OpenPalette))
+                .is_some()
+        );
+        assert!(hits.rect_of(&Hit::FooterChip(Action::Quit)).is_some());
     }
 }

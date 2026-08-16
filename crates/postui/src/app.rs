@@ -1280,6 +1280,9 @@ impl App {
                 self.editor.handle_mouse(m);
                 self.update(Action::Render)
             }
+            Hit::HeaderProject => self.update(Action::OpenProjectChooser),
+            Hit::HeaderEnv => self.update(Action::OpenEnvChooser),
+            Hit::FooterChip(action) => self.update(action),
             _ => false,
         }
     }
@@ -1583,6 +1586,43 @@ mod tests {
             .unwrap();
         app.handle_mouse(left_down(r.x + 2, r.y + 2));
         assert_eq!(app.focus, PaneId::Response);
+    }
+
+    #[test]
+    fn header_buffer_shows_dropdown_glyph_for_project_and_env() {
+        let mut app = App::new_for_test();
+        render_once(&mut app);
+        assert!(app.hits.rect_of(&crate::hit::Hit::HeaderProject).is_some());
+        assert!(app.hits.rect_of(&crate::hit::Hit::HeaderEnv).is_some());
+    }
+
+    #[test]
+    fn click_header_env_opens_env_chooser() {
+        // `App::new_for_test()`'s project has no environments configured, so
+        // firing `OpenEnvChooser` toasts the "no environments" warning
+        // rather than opening a chooser — proof enough that the click
+        // dispatched the action.
+        let mut app = App::new_for_test();
+        render_once(&mut app);
+        let r = app.hits.rect_of(&crate::hit::Hit::HeaderEnv).unwrap();
+        assert!(app.toasts.is_empty());
+        app.handle_mouse(left_down(r.x, r.y));
+        assert!(
+            !app.toasts.is_empty(),
+            "clicking the env name should fire OpenEnvChooser"
+        );
+    }
+
+    #[test]
+    fn click_footer_palette_chip_opens_palette() {
+        let mut app = App::new_for_test();
+        render_once(&mut app);
+        let r = app
+            .hits
+            .rect_of(&crate::hit::Hit::FooterChip(Action::OpenPalette))
+            .unwrap();
+        app.handle_mouse(left_down(r.x, r.y));
+        assert!(matches!(app.modals.top(), Some(Modal::Palette(_))));
     }
 
     #[test]

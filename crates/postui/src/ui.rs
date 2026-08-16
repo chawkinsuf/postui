@@ -41,6 +41,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         &app.project.display_name(),
         &app.project.env_label(),
         &mut hits,
+        hovered,
     );
     let ctx = |pane: PaneId| DrawCtx {
         theme,
@@ -50,7 +51,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     sidebar.draw(frame, layout.sidebar, &ctx(PaneId::Sidebar), &mut hits);
     editor.draw(frame, layout.editor, &ctx(PaneId::Editor), &mut hits);
     response.draw(frame, layout.response, &ctx(PaneId::Response), &mut hits);
-    crate::components::footer::draw_footer(frame, layout.footer, theme, focus, &mut hits);
+    crate::components::footer::draw_footer(frame, layout.footer, theme, focus, &mut hits, hovered);
     toasts.draw(frame, frame.area(), theme);
     modals.draw(frame, frame.area(), theme, &mut hits);
     app.hits = hits;

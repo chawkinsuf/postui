@@ -172,7 +172,7 @@ async fn stage3_acceptance_flow() {
     app.update(Action::SwitchEnv(Some("qa".into())));
     let frame = render(&mut app);
     assert!(
-        frame.contains("alpha · qa"),
+        frame.contains("alpha \u{25be} \u{b7} qa \u{25be}"),
         "header bar shows project · env: {frame}"
     );
 
