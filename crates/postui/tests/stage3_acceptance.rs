@@ -69,6 +69,10 @@ fn write_alpha(root: &Path, server_uri: &str) {
 fn write_beta(root: &Path) {
     std::fs::write(root.join("project.toml"), "name = \"beta\"\n").unwrap();
     storage::save_request(root, "pong", &dummy_request("https://example.test/pong")).unwrap();
+    // A second request, not the one seeded as "open": switching to it while
+    // beta is active (see the flow below) is what makes the final
+    // persisted-state assertion discriminating rather than trivially true.
+    storage::save_request(root, "ping", &dummy_request("https://example.test/ping")).unwrap();
     project::save_local_state(
         root,
         &LocalState {
@@ -236,6 +240,13 @@ async fn stage3_acceptance_flow() {
     let frame = render(&mut app);
     assert!(frame.contains("pong"), "beta's request is listed: {frame}");
 
+    // Mutate beta's observable state while it's active — switching the open
+    // request away from the pre-seeded "pong" — so the on-disk assertion
+    // after cycling away actually exercises ForceSwitchProject's persist
+    // path, rather than trivially matching the pre-seeded value.
+    app.update(Action::ForceOpenRequest("ping".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("ping"));
+
     app.handle_key(&keymap, alt('o'));
     assert_eq!(app.project.root, alpha_dir.path().to_path_buf());
     assert_eq!(
@@ -280,7 +291,9 @@ async fn stage3_acceptance_flow() {
     let beta_state = project::load_local_state(beta_dir.path()).unwrap();
     assert_eq!(
         beta_state.open_request.as_deref(),
-        Some("pong"),
-        "beta's state was persisted when we switched away from it"
+        Some("ping"),
+        "beta's state reflects the switch to \"ping\" made while beta was \
+         active, not the \"pong\" it was pre-seeded with — proving \
+         ForceSwitchProject actually persisted on the way out"
     );
 }
