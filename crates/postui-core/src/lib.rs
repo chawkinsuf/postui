@@ -4,6 +4,7 @@ pub const APP_NAME: &str = "postui";
 pub mod json;
 pub mod model;
 pub mod prepare;
+pub mod project;
 pub mod storage;
 pub mod vars;
 
