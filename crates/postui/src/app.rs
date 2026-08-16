@@ -5,7 +5,7 @@ use crate::components::response::ResponseState;
 use crate::components::sidebar::Row;
 use crate::components::toast::{ToastKind, Toasts};
 use crate::components::{Component, response::Response, sidebar::Sidebar};
-use crate::hit::{Hit, HitMap};
+use crate::hit::{Hit, HitMap, ScrollbarSpec};
 use crate::keys::{KeyCombo, Keymap};
 use crate::layout::PaneId;
 use crate::project_ctx::ProjectContext;
@@ -25,10 +25,9 @@ pub struct InFlight {
     pub task: tokio::task::JoinHandle<()>,
 }
 
-/// An in-progress drag: which pane's scrollbar thumb (or similar) is being
-/// dragged, and the grab offset within it. Not yet acted on until a later
-/// task wires up drag handling — `App::handle_mouse` only clears it on
-/// `Up` for now.
+/// An in-progress scrollbar drag: which pane's thumb is held, and how far
+/// down the thumb the pointer grabbed it, so the thumb keeps its position
+/// under the cursor instead of jumping its top to the pointer.
 pub struct Drag {
     pub pane: PaneId,
     pub grab_offset: u16,
@@ -1362,10 +1361,16 @@ impl App {
         use ratatui::crossterm::event::{MouseButton, MouseEventKind};
 
         match m.kind {
-            MouseEventKind::Moved => {
+            // Terminals report pointer motion with a button held as `Drag`,
+            // not `Moved`, so a thumb drag arrives as either depending on
+            // whether the terminal tracks button state; both drive the drag.
+            MouseEventKind::Moved | MouseEventKind::Drag(MouseButton::Left) => {
                 if self.drag.is_some() {
-                    // Drag handling lands in a later task; until then a
-                    // drag in progress swallows motion without redrawing.
+                    return self.drag_to(m.row);
+                }
+                if m.kind != MouseEventKind::Moved {
+                    // Button-held motion with no drag of ours in progress
+                    // (e.g. a text selection sweep) is not a hover update.
                     return false;
                 }
                 let hit = self.hits.hit_at(m.column, m.row).cloned();
@@ -1424,6 +1429,61 @@ impl App {
                 false
             }
             _ => false,
+        }
+    }
+
+    /// The scroll state `pane` would draw a scrollbar from right now — the
+    /// same [`ScrollbarSpec`] its `draw` builds, so drag math and the drawn
+    /// thumb can never disagree. `None` when the pane has nothing scrollable
+    /// (or has not been drawn yet).
+    pub fn scrollbar_spec(&self, pane: PaneId) -> Option<ScrollbarSpec> {
+        match pane {
+            PaneId::Sidebar => self.sidebar.scrollbar_spec(),
+            PaneId::Editor => self.editor.scrollbar_spec(),
+            PaneId::Response => self.response.scrollbar_spec(),
+        }
+    }
+
+    /// Applies an in-progress thumb drag: turns the pointer's row into a
+    /// thumb top within the dragged pane's track, maps that back to a content
+    /// offset, and moves the pane there. Returns true when it moved.
+    fn drag_to(&mut self, row: u16) -> bool {
+        let Some(drag) = self.drag.as_ref() else {
+            return false;
+        };
+        let pane = drag.pane;
+        let Some(track) = self.hits.track_of(pane) else {
+            return false;
+        };
+        let Some(spec) = self.scrollbar_spec(pane) else {
+            return false;
+        };
+        let top = row
+            .saturating_sub(track.y)
+            .saturating_sub(drag.grab_offset)
+            .min(track.height);
+        let offset = crate::hit::offset_for_thumb_top(&spec, track.height, top);
+        if offset == spec.offset {
+            return false;
+        }
+        match pane {
+            PaneId::Sidebar => {
+                self.sidebar.scroll = offset;
+                // Dragging the viewport is an explicit gesture, exactly like
+                // the wheel: the selection must not drag it back.
+                self.sidebar.ensure_visible = false;
+                true
+            }
+            PaneId::Response => self.response.set_scroll(offset),
+            PaneId::Editor => {
+                // edtui owns the body's viewport and only exposes moving it
+                // by one wheel notch at a time (which also keeps its cursor
+                // inside the viewport); feed it the difference.
+                let delta =
+                    (offset as i64 - spec.offset as i64).clamp(i16::MIN as i64, i16::MAX as i64);
+                self.editor.handle_scroll(delta as i16);
+                self.editor.scrollbar_spec().map(|s| s.offset) != Some(spec.offset)
+            }
         }
     }
 
@@ -1548,6 +1608,20 @@ impl App {
                 self.update(Action::CopyToClipboard(CopyTarget::ResponseHeader(i)))
             }
             Hit::CopyUrlButton => self.update(Action::CopyToClipboard(CopyTarget::Url)),
+            Hit::ScrollbarThumb(pane) => {
+                let Some(thumb) = self.hits.rect_of(&Hit::ScrollbarThumb(pane)) else {
+                    return false;
+                };
+                self.drag = Some(Drag {
+                    pane,
+                    grab_offset: m.row.saturating_sub(thumb.y),
+                });
+                // Redraw so the thumb picks up its dragged styling.
+                self.update(Action::Render)
+            }
+            Hit::ScrollbarTrack(pane, delta) => {
+                self.update(Action::ScrollPane(pane, delta.clamp(-30, 30)))
+            }
             _ => false,
         }
     }
@@ -1839,6 +1913,104 @@ mod tests {
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+    }
+
+    fn left_up(x: u16, y: u16) -> ratatui::crossterm::event::MouseEvent {
+        ratatui::crossterm::event::MouseEvent {
+            kind: ratatui::crossterm::event::MouseEventKind::Up(
+                ratatui::crossterm::event::MouseButton::Left,
+            ),
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn dragging_the_sidebar_thumb_scrolls_and_release_ends_the_drag() {
+        use crate::hit::{Hit, offset_for_thumb_top};
+        let mut app = App::new_for_test();
+        let slugs: Vec<postui_core::storage::RequestListing> = (0..60)
+            .map(|i| postui_core::storage::RequestListing {
+                slug: format!("r{i:02}"),
+                broken: None,
+            })
+            .collect();
+        app.sidebar.refresh(slugs, &Default::default());
+        render_once(&mut app);
+
+        let thumb = app
+            .hits
+            .rect_of(&Hit::ScrollbarThumb(PaneId::Sidebar))
+            .expect("sidebar thumb");
+        let track = app.hits.track_of(PaneId::Sidebar).expect("sidebar track");
+        let spec = app
+            .scrollbar_spec(PaneId::Sidebar)
+            .expect("sidebar scrollbar spec");
+        assert_eq!(app.sidebar.scroll, 0);
+
+        assert!(app.handle_mouse(left_down(thumb.x, thumb.y)));
+        assert!(app.drag.is_some(), "pressing the thumb starts a drag");
+
+        assert!(app.handle_mouse(moved(thumb.x, thumb.y + 3)));
+        let after = app.sidebar.scroll;
+        assert_eq!(
+            after,
+            offset_for_thumb_top(&spec, track.height, 3),
+            "drag maps the thumb's new top back to a content offset"
+        );
+        assert!(after > 0);
+        assert!(
+            !app.sidebar.ensure_visible,
+            "a free-scroll drag must not snap back to the selection"
+        );
+
+        app.handle_mouse(left_up(thumb.x, thumb.y + 3));
+        assert!(app.drag.is_none());
+        app.handle_mouse(moved(thumb.x, thumb.y + 6));
+        assert_eq!(
+            app.sidebar.scroll, after,
+            "motion after release no longer scrolls"
+        );
+    }
+
+    #[test]
+    fn scrollbar_track_click_below_the_thumb_pages_the_response() {
+        use crate::hit::Hit;
+        let mut app = App::new_for_test();
+        let body = (0..200)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        app.response
+            .set_state(ResponseState::Ready(Box::new(crate::http::ResponseData {
+                status: 200,
+                headers: vec![],
+                size: body.len(),
+                body,
+                elapsed: std::time::Duration::from_millis(1),
+                content_type: Some("text/plain".into()),
+            })));
+        render_once(&mut app);
+
+        let track = app.hits.track_of(PaneId::Response).expect("response track");
+        let spec = app
+            .scrollbar_spec(PaneId::Response)
+            .expect("response scrollbar spec");
+        assert_eq!(app.response.view().unwrap().scroll, 0);
+
+        let below = track.y + track.height - 1;
+        assert_eq!(
+            app.hits.hit_at(track.x, below),
+            Some(&Hit::ScrollbarTrack(PaneId::Response, spec.viewport as i16)),
+            "the track under the thumb pages forward by a viewport"
+        );
+        assert!(app.handle_mouse(left_down(track.x, below)));
+        assert_eq!(
+            app.response.view().unwrap().scroll,
+            (spec.viewport as i16).min(30) as usize,
+            "a track click pages by a viewport (clamped)"
+        );
     }
 
     #[test]

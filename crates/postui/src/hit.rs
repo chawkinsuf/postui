@@ -52,14 +52,38 @@ pub enum Hit {
 }
 
 /// Rebuilt each frame during render; maps screen regions to typed [`Hit`]s.
+///
+/// It also carries each frame's scrollbar *track* rects. Those are not
+/// clickable regions of their own (the track's two page segments and the
+/// thumb are), but drag handling needs the whole column's geometry to turn a
+/// pointer row into a thumb top, and the track is only known at draw time.
+/// Parking it here rather than in a second per-frame structure keeps every
+/// component's `draw` signature (and `ui::draw`'s threading) unchanged, and
+/// means a single `clear()` resets all of a frame's artifacts at once.
 #[derive(Default)]
 pub struct HitMap {
     regions: Vec<(Rect, Hit)>,
+    tracks: Vec<(PaneId, Rect)>,
 }
 
 impl HitMap {
     pub fn clear(&mut self) {
         self.regions.clear();
+        self.tracks.clear();
+    }
+
+    /// Records the full scrollbar column drawn for `pane` this frame.
+    pub fn register_track(&mut self, pane: PaneId, rect: Rect) {
+        self.tracks.push((pane, rect));
+    }
+
+    /// The scrollbar track drawn for `pane` on the last frame, if any.
+    pub fn track_of(&self, pane: PaneId) -> Option<Rect> {
+        self.tracks
+            .iter()
+            .rev()
+            .find(|(p, _)| *p == pane)
+            .map(|(_, r)| *r)
     }
 
     pub fn register(&mut self, rect: Rect, hit: Hit) {
@@ -152,6 +176,146 @@ pub fn chip(
     hits.register(area, hit);
 }
 
+/// Everything a vertical scrollbar needs: where the viewport sits in the
+/// content (`offset`), how much content there is, and how much of it fits.
+/// A pane reserves a column for the bar exactly when `content > viewport`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScrollbarSpec {
+    pub pane: PaneId,
+    pub offset: usize,
+    pub content: usize,
+    pub viewport: usize,
+}
+
+impl ScrollbarSpec {
+    /// True when the content overflows and a bar is warranted.
+    pub fn overflows(&self) -> bool {
+        self.content > self.viewport && self.viewport > 0
+    }
+
+    /// The largest legal `offset`: scrolled to the very bottom.
+    pub fn max_offset(&self) -> usize {
+        self.content.saturating_sub(self.viewport)
+    }
+}
+
+/// Integer `a * b / c`, rounded to nearest (ties up). `c` must be non-zero.
+fn scale(a: usize, b: usize, c: usize) -> usize {
+    (a * b + c / 2) / c
+}
+
+/// `(thumb_top_row_within_track, thumb_height)` — the thumb is proportional
+/// to the visible fraction, at least one row tall, and reaches the bottom of
+/// the track exactly at [`ScrollbarSpec::max_offset`].
+pub fn thumb_geometry(spec: &ScrollbarSpec, track_h: u16) -> (u16, u16) {
+    if track_h == 0 {
+        return (0, 0);
+    }
+    let track = track_h as usize;
+    let height = scale(track, spec.viewport, spec.content.max(1)).clamp(1, track);
+    let max_top = track - height;
+    let max_offset = spec.max_offset();
+    let top = if max_top == 0 || max_offset == 0 {
+        0
+    } else {
+        scale(spec.offset.min(max_offset), max_top, max_offset)
+    };
+    (top as u16, height as u16)
+}
+
+/// Inverse of [`thumb_geometry`]'s top: the content offset that would draw
+/// the thumb at `thumb_top`. Clamped to the pane's legal offset range.
+pub fn offset_for_thumb_top(spec: &ScrollbarSpec, track_h: u16, thumb_top: u16) -> usize {
+    let (_, height) = thumb_geometry(spec, track_h);
+    let max_top = track_h.saturating_sub(height) as usize;
+    let max_offset = spec.max_offset();
+    if max_top == 0 {
+        return 0;
+    }
+    scale((thumb_top as usize).min(max_top), max_offset, max_top).min(max_offset)
+}
+
+/// Renders a 1-cell-wide vertical scrollbar into `column` when the content
+/// overflows: a dim `│` track under an accent `█` thumb (brightened to
+/// text-on-accent while hovered or dragged). Registers
+/// `ScrollbarTrack(pane, -viewport)` above the thumb and
+/// `ScrollbarTrack(pane, +viewport)` below it, then the thumb on top, and
+/// records the track rect for drag geometry. A no-op when the content fits.
+pub fn draw_scrollbar(
+    frame: &mut Frame,
+    hits: &mut HitMap,
+    column: Rect,
+    spec: &ScrollbarSpec,
+    hovered: Option<&Hit>,
+    dragging: bool,
+    theme: &Theme,
+) {
+    if !spec.overflows() || column.width == 0 || column.height == 0 {
+        return;
+    }
+    let track = Rect { width: 1, ..column };
+    let (top, height) = thumb_geometry(spec, track.height);
+
+    let track_style = Style::default().fg(theme.text_muted);
+    frame.render_widget(
+        Paragraph::new(
+            (0..track.height)
+                .map(|_| Line::styled("\u{2502}", track_style))
+                .collect::<Vec<_>>(),
+        ),
+        track,
+    );
+
+    let thumb_hit = Hit::ScrollbarThumb(spec.pane);
+    // A full block hides its own background, so the usual hover inversion
+    // (surface fg on accent bg) would paint the thumb in the *background*
+    // color and read as the thumb vanishing. The active thumb brightens to
+    // the foreground text color over accent instead.
+    let thumb_style = if dragging || hovered == Some(&thumb_hit) {
+        Style::default().bg(theme.accent).fg(theme.text)
+    } else {
+        Style::default().fg(theme.accent)
+    };
+    let thumb = Rect {
+        y: track.y + top,
+        height,
+        ..track
+    };
+    frame.render_widget(
+        Paragraph::new(
+            (0..height)
+                .map(|_| Line::styled("\u{2588}", thumb_style))
+                .collect::<Vec<_>>(),
+        ),
+        thumb,
+    );
+
+    // Page segments first so the thumb wins where they would overlap.
+    let page = spec.viewport.min(i16::MAX as usize) as i16;
+    if top > 0 {
+        hits.register(
+            Rect {
+                height: top,
+                ..track
+            },
+            Hit::ScrollbarTrack(spec.pane, -page),
+        );
+    }
+    let below_y = thumb.y + height;
+    if below_y < track.y + track.height {
+        hits.register(
+            Rect {
+                y: below_y,
+                height: track.y + track.height - below_y,
+                ..track
+            },
+            Hit::ScrollbarTrack(spec.pane, page),
+        );
+    }
+    hits.register(thumb, thumb_hit);
+    hits.register_track(spec.pane, track);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,6 +336,124 @@ mod tests {
             "pane_at sees through overlays"
         );
         assert_eq!(m.rect_of(&Hit::SidebarRow(0)), Some(Rect::new(2, 2, 3, 1)));
+    }
+
+    fn spec(offset: usize) -> ScrollbarSpec {
+        ScrollbarSpec {
+            pane: PaneId::Sidebar,
+            offset,
+            content: 100,
+            viewport: 10,
+        }
+    }
+
+    #[test]
+    fn thumb_geometry_is_proportional_and_round_trips() {
+        // 10% of the content is visible -> a 1-row thumb in a 10-row track.
+        assert_eq!(thumb_geometry(&spec(0), 10), (0, 1));
+        assert_eq!(
+            thumb_geometry(&spec(90), 10),
+            (9, 1),
+            "max offset parks the thumb on the last track row"
+        );
+        assert_eq!(
+            thumb_geometry(&spec(45), 10).0,
+            5,
+            "halfway through the content is halfway down the track"
+        );
+
+        // Thumb height tracks the visible fraction, and never vanishes.
+        let half = ScrollbarSpec {
+            pane: PaneId::Sidebar,
+            offset: 0,
+            content: 40,
+            viewport: 20,
+        };
+        assert_eq!(thumb_geometry(&half, 10).1, 5);
+        let tiny = ScrollbarSpec {
+            pane: PaneId::Sidebar,
+            offset: 0,
+            content: 100_000,
+            viewport: 10,
+        };
+        assert_eq!(thumb_geometry(&tiny, 10).1, 1, "min thumb height is 1");
+
+        // Every reachable thumb top maps to an offset that redraws it there.
+        for top in 0..=9u16 {
+            let offset = offset_for_thumb_top(&spec(0), 10, top);
+            assert_eq!(
+                thumb_geometry(&spec(offset), 10).0,
+                top,
+                "round trip for thumb top {top}"
+            );
+        }
+        assert_eq!(
+            offset_for_thumb_top(&spec(0), 10, 9),
+            90,
+            "the bottom of the track is the max offset"
+        );
+        assert_eq!(
+            offset_for_thumb_top(&spec(0), 10, 200),
+            90,
+            "a thumb top past the track clamps to the max offset"
+        );
+    }
+
+    #[test]
+    fn hovered_thumb_brightens_rather_than_inverting_away() {
+        let theme = Theme::for_terminal();
+        let area = Rect::new(0, 0, 1, 10);
+        let draw = |hovered: Option<&Hit>| {
+            let backend = TestBackend::new(1, 10);
+            let mut terminal = Terminal::new(backend).unwrap();
+            let mut hits = HitMap::default();
+            terminal
+                .draw(|f| draw_scrollbar(f, &mut hits, area, &spec(0), hovered, false, &theme))
+                .unwrap();
+            terminal.backend().buffer()[(0, 0)].clone()
+        };
+
+        let rest = draw(None);
+        assert_eq!(rest.symbol(), "\u{2588}");
+        assert_eq!(rest.fg, theme.accent);
+
+        // A full block hides its background, so the active thumb must change
+        // its *foreground* to stay visible.
+        let active = draw(Some(&Hit::ScrollbarThumb(PaneId::Sidebar)));
+        assert_eq!(active.bg, theme.accent);
+        assert_eq!(active.fg, theme.text);
+        assert_ne!(active.fg, theme.surface, "must not vanish into the pane");
+    }
+
+    #[test]
+    fn scrollbar_is_skipped_when_content_fits() {
+        let fits = ScrollbarSpec {
+            pane: PaneId::Sidebar,
+            offset: 0,
+            content: 4,
+            viewport: 10,
+        };
+        let theme = Theme::for_terminal();
+        let backend = TestBackend::new(1, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = HitMap::default();
+        terminal
+            .draw(|f| {
+                draw_scrollbar(
+                    f,
+                    &mut hits,
+                    Rect::new(0, 0, 1, 10),
+                    &fits,
+                    None,
+                    false,
+                    &theme,
+                )
+            })
+            .unwrap();
+        assert_eq!(hits.rect_of(&Hit::ScrollbarThumb(PaneId::Sidebar)), None);
+        assert_eq!(hits.track_of(PaneId::Sidebar), None);
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(!content.contains('\u{2588}'), "no thumb glyph when it fits");
     }
 
     #[test]

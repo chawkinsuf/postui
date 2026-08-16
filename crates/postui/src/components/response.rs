@@ -3,6 +3,8 @@ use super::line_input::LineInput;
 use super::{Component, DrawCtx, pane_block};
 use crate::action::{Action, CopyTarget};
 use crate::components::toast::ToastKind;
+use crate::hit::ScrollbarSpec;
+use crate::layout::PaneId;
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -282,6 +284,34 @@ impl Response {
         self.view.as_ref()
     }
 
+    /// The body view's scroll state, as of the last draw (the viewport height
+    /// is a render-time fact, so this is `None` before the first frame).
+    pub fn scrollbar_spec(&self) -> Option<ScrollbarSpec> {
+        let view = self.view.as_ref()?;
+        if view.height == 0 {
+            return None;
+        }
+        Some(ScrollbarSpec {
+            pane: PaneId::Response,
+            offset: view.scroll,
+            content: view.visible_len(),
+            viewport: view.height,
+        })
+    }
+
+    /// Jumps the body view to `offset` (scrollbar drag). Clamped the same way
+    /// `handle_scroll` clamps the wheel.
+    pub fn set_scroll(&mut self, offset: usize) -> bool {
+        let Some(view) = self.view.as_mut() else {
+            return false;
+        };
+        let max = view.visible_len().saturating_sub(view.height.max(1));
+        let next = offset.min(max);
+        let changed = next != view.scroll;
+        view.scroll = next;
+        changed
+    }
+
     /// Switches to `mode` (the tabs row's click target). A no-op with no
     /// ready response, and a no-op switching to `Pretty` when the body has
     /// no tree (not JSON, or oversize-blocked).
@@ -519,10 +549,26 @@ impl Component for Response {
         }
 
         view.height = rows[3].height as usize;
+        let mut body_area = rows[3];
+        let spec = ScrollbarSpec {
+            pane: PaneId::Response,
+            offset: view.scroll,
+            content: view.visible_len(),
+            viewport: view.height,
+        };
+        if spec.overflows() && body_area.width > 1 {
+            let column = Rect {
+                x: body_area.x + body_area.width - 1,
+                width: 1,
+                ..body_area
+            };
+            body_area.width -= 1;
+            crate::hit::draw_scrollbar(frame, hits, column, &spec, ctx.hovered, ctx.dragging, t);
+        }
         // `body_lines` already starts at `view.scroll`, so the paragraph
         // itself is drawn unscrolled.
-        let body = body_lines(view, t, ctx.focused, ctx.hovered, hits, rows[3]);
-        frame.render_widget(Paragraph::new(body), rows[3]);
+        let body = body_lines(view, t, ctx.focused, ctx.hovered, hits, body_area);
+        frame.render_widget(Paragraph::new(body), body_area);
 
         if footer {
             frame.render_widget(
@@ -926,6 +972,7 @@ mod tests {
             theme: &theme,
             focused: true,
             hovered: None,
+            dragging: false,
         };
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
         let mut hits = crate::hit::HitMap::default();

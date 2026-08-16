@@ -24,6 +24,9 @@ pub struct DrawCtx<'a> {
     pub theme: &'a Theme,
     pub focused: bool,
     pub hovered: Option<&'a crate::hit::Hit>,
+    /// True while this pane's scrollbar thumb is being dragged, so the thumb
+    /// keeps its active styling even when the pointer leaves the column.
+    pub dragging: bool,
 }
 
 pub trait Component {
@@ -64,6 +67,7 @@ mod tests {
             theme: &theme,
             focused: true,
             hovered: None,
+            dragging: false,
         };
         let backend = TestBackend::new(20, 5);
         let mut terminal = Terminal::new(backend).unwrap();

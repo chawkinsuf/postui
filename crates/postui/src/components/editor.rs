@@ -3,6 +3,8 @@ use super::table_editor::TableEditorState;
 use super::toast::ToastKind;
 use super::{Component, DrawCtx, pane_block};
 use crate::action::Action;
+use crate::hit::ScrollbarSpec;
+use crate::layout::PaneId;
 use crate::theme::Theme;
 use edtui::{
     EditorEventHandler, EditorMode, EditorState, EditorTheme, EditorView, LineNumbers, Lines,
@@ -204,6 +206,31 @@ impl Editor {
     fn body_is_valid(&self) -> bool {
         let text = self.body_text();
         text.is_empty() || postui_core::json::validate(&text).is_ok()
+    }
+
+    /// The body buffer's scroll state, as of the last draw. `None` unless the
+    /// Body tab is showing (the other tabs have nothing scrollable wired up).
+    ///
+    /// `offset` is edtui's own viewport offset (its public
+    /// `EditorState::viewport_offset`); `content` and `viewport` are counted
+    /// in *logical* lines against rendered rows, which line up exactly until
+    /// a line is long enough to wrap — the bar then reads slightly
+    /// pessimistically (it shows a little more content than a page holds)
+    /// rather than wrongly.
+    pub fn scrollbar_spec(&self) -> Option<ScrollbarSpec> {
+        if self.active_tab != EditorTab::Body {
+            return None;
+        }
+        let area = self.last_body_area?;
+        if area.height == 0 {
+            return None;
+        }
+        Some(ScrollbarSpec {
+            pane: PaneId::Editor,
+            offset: self.body.viewport_offset().1,
+            content: self.body.lines.len(),
+            viewport: area.height as usize,
+        })
     }
 
     /// Forwards a raw mouse event to the body editor when the Body tab is
@@ -560,6 +587,7 @@ impl Editor {
                     theme,
                     focused,
                     hovered: ctx.hovered,
+                    dragging: ctx.dragging,
                 };
                 self.table.draw(
                     frame,
@@ -589,6 +617,7 @@ impl Editor {
                     theme,
                     focused,
                     hovered: ctx.hovered,
+                    dragging: ctx.dragging,
                 };
                 self.table.draw(
                     frame,
@@ -600,6 +629,33 @@ impl Editor {
                 );
             }
             EditorTab::Body => {
+                let mut area = area;
+                // The bar takes the last column before edtui is told about
+                // the area, so its own screen_area (which mouse routing is
+                // resolved against) never overlaps the bar.
+                let spec = ScrollbarSpec {
+                    pane: PaneId::Editor,
+                    offset: self.body.viewport_offset().1,
+                    content: self.body.lines.len(),
+                    viewport: area.height as usize,
+                };
+                if spec.overflows() && area.width > 1 {
+                    let column = Rect {
+                        x: area.x + area.width - 1,
+                        width: 1,
+                        ..area
+                    };
+                    area.width -= 1;
+                    crate::hit::draw_scrollbar(
+                        frame,
+                        hits,
+                        column,
+                        &spec,
+                        ctx.hovered,
+                        ctx.dragging,
+                        theme,
+                    );
+                }
                 self.last_body_area = Some(area);
                 hits.register(area, crate::hit::Hit::BodyEditor);
                 let highlighter = json_highlighter(theme);
@@ -972,6 +1028,7 @@ mod tests {
                 theme: &theme,
                 focused: true,
                 hovered: None,
+                dragging: false,
             };
             let backend = TestBackend::new(60, 10);
             let mut terminal = Terminal::new(backend).unwrap();
@@ -998,6 +1055,7 @@ mod tests {
             theme: &theme,
             focused: true,
             hovered: None,
+            dragging: false,
         };
         let backend = TestBackend::new(60, 10);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -1028,6 +1086,7 @@ url = "https://api.example.com/users""#,
             theme: &theme,
             focused: true,
             hovered: None,
+            dragging: false,
         };
         let backend = TestBackend::new(60, 10);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -1092,6 +1151,7 @@ url = "https://api.example.com/users""#,
             theme: &theme,
             focused: true,
             hovered: None,
+            dragging: false,
         };
         let backend = TestBackend::new(70, 14);
         let mut terminal = Terminal::new(backend).unwrap();

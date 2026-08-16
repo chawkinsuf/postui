@@ -639,6 +639,7 @@ mod tests {
             theme: &theme,
             focused: true,
             hovered: None,
+            dragging: false,
         };
         let backend = TestBackend::new(40, 5);
         let mut terminal = Terminal::new(backend).unwrap();

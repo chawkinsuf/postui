@@ -23,6 +23,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     hits.register(layout.editor, Hit::Pane(PaneId::Editor));
     hits.register(layout.response, Hit::Pane(PaneId::Response));
     let hovered = app.hovered.as_ref();
+    let dragged_pane = app.drag.as_ref().map(|d| d.pane);
     // Destructured so each component can be borrowed mutably alongside the
     // shared theme reference its DrawCtx holds.
     let App {
@@ -47,6 +48,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         theme,
         focused: focus == pane,
         hovered,
+        dragging: dragged_pane == Some(pane),
     };
     sidebar.draw(frame, layout.sidebar, &ctx(PaneId::Sidebar), &mut hits);
     editor.draw(frame, layout.editor, &ctx(PaneId::Editor), &mut hits);

@@ -1,6 +1,7 @@
 use super::{Component, DrawCtx, pane_block};
 use crate::action::Action;
-use crate::hit::{self, Hit, HitMap};
+use crate::hit::{self, Hit, HitMap, ScrollbarSpec};
+use crate::layout::PaneId;
 use crate::theme::Theme;
 use postui_core::storage::RequestListing;
 use ratatui::Frame;
@@ -56,7 +57,9 @@ pub struct Sidebar {
     /// (`handle_scroll`) never sets this: it's free to move the viewport
     /// without dragging the selection along, and `draw` must not snap it
     /// back.
-    ensure_visible: bool,
+    pub ensure_visible: bool,
+    /// Height of the row list as of the last draw — the scrollbar's viewport.
+    last_list_height: usize,
     /// The slug currently loaded in the editor, kept in sync by
     /// `App::update` after every action.
     pub open_slug: Option<String>,
@@ -325,12 +328,13 @@ impl Component for Sidebar {
         // One spacer line below the button; the row list starts on the
         // third line and shrinks the usable height by 2 accordingly.
         let list_y = inner.y.saturating_add(2).min(inner.y + inner.height);
-        let list_area = Rect {
+        let mut list_area = Rect {
             x: inner.x,
             y: list_y,
             width: inner.width,
             height: inner.height.saturating_sub(2),
         };
+        self.last_list_height = list_area.height as usize;
 
         if self.rows.is_empty() {
             let empty = Paragraph::new(vec![Line::raw(""), Line::raw("No requests yet.")])
@@ -352,6 +356,29 @@ impl Component for Sidebar {
                 self.scroll = self.scroll.min(max_scroll);
             }
             self.ensure_visible = false;
+        }
+
+        // Drawn after the scroll offset has settled (so the thumb is never a
+        // frame behind) and before the rows, which give up the last column to
+        // it so no row text ever runs underneath the bar.
+        if let Some(spec) = self.scrollbar_spec().filter(ScrollbarSpec::overflows)
+            && list_area.width > 1
+        {
+            let column = Rect {
+                x: list_area.x + list_area.width - 1,
+                width: 1,
+                ..list_area
+            };
+            list_area.width -= 1;
+            hit::draw_scrollbar(
+                frame,
+                hits,
+                column,
+                &spec,
+                ctx.hovered,
+                ctx.dragging,
+                ctx.theme,
+            );
         }
 
         for (display_pos, (i, row)) in self
@@ -393,6 +420,20 @@ impl Component for Sidebar {
 }
 
 impl Sidebar {
+    /// The row list's scroll state, as of the last draw. `None` before the
+    /// first frame (the viewport height is a render-time fact).
+    pub fn scrollbar_spec(&self) -> Option<ScrollbarSpec> {
+        if self.last_list_height == 0 {
+            return None;
+        }
+        Some(ScrollbarSpec {
+            pane: PaneId::Sidebar,
+            offset: self.scroll,
+            content: self.rows.len(),
+            viewport: self.last_list_height,
+        })
+    }
+
     fn render_row(&self, idx: usize, row: &Row, ctx: &DrawCtx) -> Line<'static> {
         let theme: &Theme = ctx.theme;
         let is_selected = idx == self.selected;
@@ -568,6 +609,7 @@ mod tests {
             theme: &theme,
             focused: true,
             hovered: None,
+            dragging: false,
         };
         let backend = ratatui::backend::TestBackend::new(30, 10);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -602,7 +644,87 @@ mod tests {
             theme,
             focused: true,
             hovered,
+            dragging: false,
         }
+    }
+
+    /// Renders `s` into a 30x12 terminal and hands back the buffer dump plus
+    /// the frame's hits.
+    fn render_hits(s: &mut Sidebar) -> (String, HitMap) {
+        let theme = Theme::dark();
+        let ctx = draw_ctx(&theme, None);
+        let backend = ratatui::backend::TestBackend::new(30, 12);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut hits = HitMap::default();
+        terminal
+            .draw(|f| s.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+        (format!("{:?}", terminal.backend().buffer()), hits)
+    }
+
+    #[test]
+    fn overflowing_list_draws_a_scrollbar_and_registers_its_hits() {
+        let slugs: Vec<String> = (0..30).map(|i| format!("r{i:02}")).collect();
+        let refs: Vec<&str> = slugs.iter().map(String::as_str).collect();
+        let mut s = Sidebar::default();
+        s.refresh(listing(&refs), &expanded(&[]));
+
+        let (content, hits) = render_hits(&mut s);
+        assert!(content.contains('\u{2588}'), "thumb glyph is drawn");
+        let thumb = hits
+            .rect_of(&Hit::ScrollbarThumb(PaneId::Sidebar))
+            .expect("thumb hit");
+        assert_eq!(thumb.width, 1);
+        // 30 wide, minus a border and a padding column each side -> the bar
+        // owns the last column of the padded interior.
+        assert_eq!(thumb.x, 27);
+        let track = hits.track_of(PaneId::Sidebar).expect("track rect");
+        assert_eq!(track.x, thumb.x);
+        // Inner height 10, minus the button row and its spacer.
+        let viewport = 8i16;
+        assert!(
+            thumb.height < track.height,
+            "30 rows in an 8-row viewport is a short thumb"
+        );
+        assert!(
+            hits.rect_of(&Hit::ScrollbarTrack(PaneId::Sidebar, viewport))
+                .is_some(),
+            "page-down segment below the thumb"
+        );
+        assert!(
+            hits.rect_of(&Hit::ScrollbarTrack(PaneId::Sidebar, -viewport))
+                .is_none(),
+            "no page-up segment while the thumb is at the top"
+        );
+
+        // Scrolled into the middle: both page segments exist.
+        s.scroll = 10;
+        s.ensure_visible = false;
+        let (_, hits) = render_hits(&mut s);
+        assert!(
+            hits.rect_of(&Hit::ScrollbarTrack(PaneId::Sidebar, -viewport))
+                .is_some(),
+            "page-up segment above the thumb"
+        );
+        assert!(
+            hits.rect_of(&Hit::ScrollbarTrack(PaneId::Sidebar, viewport))
+                .is_some()
+        );
+        let thumb = hits.rect_of(&Hit::ScrollbarThumb(PaneId::Sidebar)).unwrap();
+        assert!(thumb.y > track.y, "thumb moved down with the scroll offset");
+    }
+
+    #[test]
+    fn short_list_registers_no_scrollbar() {
+        let mut s = Sidebar::default();
+        s.refresh(listing(&["a", "b", "c"]), &expanded(&[]));
+        let (content, hits) = render_hits(&mut s);
+        assert!(!content.contains('\u{2588}'));
+        assert_eq!(hits.rect_of(&Hit::ScrollbarThumb(PaneId::Sidebar)), None);
+        assert_eq!(hits.track_of(PaneId::Sidebar), None);
+        // The rows keep the full inner width when no bar is needed.
+        let row = hits.rect_of(&Hit::SidebarRow(0)).unwrap();
+        assert_eq!(row.width, 26);
     }
 
     #[test]
