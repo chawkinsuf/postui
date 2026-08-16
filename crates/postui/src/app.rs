@@ -1017,6 +1017,11 @@ impl App {
                 true
             }
             Action::CreateProject { name, path } => {
+                if path.trim().is_empty() {
+                    self.toasts
+                        .push("project path is empty — enter a path", ToastKind::Error);
+                    return true;
+                }
                 let path = crate::config::expand_tilde(&path);
                 if let Err(e) = postui_core::project::init_project(&path, Some(&name)) {
                     self.toasts.push(
@@ -1145,7 +1150,15 @@ impl App {
             Action::InsertVarText(text) => {
                 if self.focus == PaneId::Editor && self.editor.sub_focus == SubFocus::Url {
                     self.editor.url.insert_str(&text);
-                } else if let Some(edit) = self.editor.table.editing.as_mut() {
+                } else if self.focus == PaneId::Editor
+                    && matches!(
+                        self.editor.active_tab,
+                        EditorTab::Params | EditorTab::Headers
+                    )
+                    && self.editor.sub_focus == SubFocus::Content
+                    && self.editor.table.editing.is_some()
+                {
+                    let edit = self.editor.table.editing.as_mut().unwrap();
                     edit.input.insert_str(&text);
                 } else if self.focus == PaneId::Editor
                     && self.editor.active_tab == EditorTab::Body
@@ -3123,6 +3136,91 @@ mod tests {
         assert!(!app.modals.is_empty(), "empty name: modal stays");
         app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(app.modals.is_empty());
+    }
+
+    #[test]
+    fn new_project_tab_prefill_noop_when_slugify_is_empty() {
+        let mut app = App::new_for_test();
+        let root = tempfile::tempdir().unwrap();
+        app.registry.root = Some(root.path().to_path_buf());
+        let keymap = Keymap::default_bindings();
+        app.update(Action::PromptNewProject);
+        for c in "日本語".chars() {
+            app.handle_key(&keymap, plain(c));
+        }
+        let before = {
+            let Some(Modal::NewProject { path, .. }) = app.modals.top() else {
+                panic!()
+            };
+            path.text().to_string()
+        };
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        let Some(Modal::NewProject { path, .. }) = app.modals.top() else {
+            panic!()
+        };
+        assert_eq!(
+            path.text(),
+            before,
+            "empty slugify must not append to the path prefill"
+        );
+    }
+
+    #[test]
+    fn create_project_with_empty_path_toasts_and_creates_nothing() {
+        let mut app = App::new_for_test();
+        let before_root = app.project.root.clone();
+        let before_known = app.registry.known.clone();
+        app.update(Action::CreateProject {
+            name: "x".into(),
+            path: "".into(),
+        });
+        let text = rendered_text(&mut app);
+        assert!(
+            text.contains("project path is empty — enter a path"),
+            "error toast shown: {text}"
+        );
+        assert_eq!(app.project.root, before_root, "no project switch");
+        assert_eq!(app.registry.known, before_known, "no project registered");
+    }
+
+    #[test]
+    fn stale_table_edit_does_not_capture_insert_var_text_after_focus_moves() {
+        let mut app = App::new_for_test();
+        app.editor.params.insert(
+            "page".into(),
+            postui_core::model::Entry {
+                value: "2".into(),
+                enabled: true,
+            },
+        );
+        app.editor.active_tab = EditorTab::Params;
+        app.editor.sub_focus = SubFocus::Content;
+        app.editor
+            .table
+            .begin_edit_selected(&app.editor.params.clone());
+        let pending_before = app
+            .editor
+            .table
+            .editing
+            .as_ref()
+            .unwrap()
+            .input
+            .text()
+            .to_string();
+
+        app.update(Action::FocusPane(PaneId::Response));
+        app.update(Action::InsertVarText("x".into()));
+
+        let text = rendered_text(&mut app);
+        assert!(
+            text.contains("nowhere to insert"),
+            "toast shown when focus has moved off the table: {text}"
+        );
+        assert_eq!(
+            app.editor.table.editing.as_ref().unwrap().input.text(),
+            pending_before,
+            "stale pending edit input must be unchanged"
+        );
     }
 
     fn app_with_envs() -> (App, tempfile::TempDir) {

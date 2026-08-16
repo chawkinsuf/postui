@@ -13,10 +13,19 @@ use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let cli = postui::config::parse_cli(std::env::args().nth(1));
+    let cli_root = match cli {
+        postui::config::CliParse::Usage => {
+            println!("usage: postui [directory]");
+            return Ok(());
+        }
+        postui::config::CliParse::Root(root) => root,
+    };
+
     let mut terminal = ratatui::init(); // installs a panic hook that restores the terminal
     enable_mouse_and_wrap_panic_hook();
 
-    let result = run(&mut terminal).await;
+    let result = run(&mut terminal, cli_root).await;
     let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableFocusChange);
     ratatui::restore();
     result
@@ -37,11 +46,11 @@ fn enable_mouse_and_wrap_panic_hook() {
     }));
 }
 
-async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
+async fn run(
+    terminal: &mut ratatui::DefaultTerminal,
+    cli_root: Option<std::path::PathBuf>,
+) -> anyhow::Result<()> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Action>();
-    let cli_root = std::env::args()
-        .nth(1)
-        .map(|s| postui::config::expand_tilde(&s));
     let mut app = App::new(tx, cli_root);
     let mut events = EventStream::new();
     let mut tick = tokio::time::interval(Duration::from_millis(100));

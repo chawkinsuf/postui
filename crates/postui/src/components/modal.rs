@@ -208,8 +208,8 @@ impl ModalStack {
                 KeyCode::Tab | KeyCode::Down => {
                     if !*on_path && !*prefilled {
                         *prefilled = true;
-                        if path.text().ends_with('/') {
-                            let slug = slugify(name.text());
+                        let slug = slugify(name.text());
+                        if path.text().ends_with('/') && !slug.is_empty() {
                             let mut new_path = path.text().to_string();
                             new_path.push_str(&slug);
                             *path = LineInput::new(&new_path);

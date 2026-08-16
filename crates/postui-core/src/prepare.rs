@@ -14,6 +14,7 @@ pub struct PreparedRequest {
 #[derive(Debug, Clone, PartialEq)]
 pub enum PrepareWarning {
     ParamOverridesUrl { key: String },
+    DuplicateDefaultHeader { name: String },
 }
 
 impl fmt::Display for PrepareWarning {
@@ -25,6 +26,9 @@ impl fmt::Display for PrepareWarning {
                     "query param `{}` in [params] overrides the one in the URL",
                     key
                 )
+            }
+            PrepareWarning::DuplicateDefaultHeader { name } => {
+                write!(f, "duplicate default header '{}'", name)
             }
         }
     }
@@ -104,13 +108,29 @@ pub fn prepare(
 
     // Default headers merge UNDER the request's headers: an inherited
     // default is dropped when the request has any row (enabled or
-    // disabled) with a case-insensitively equal name.
-    let mut headers: Vec<(String, String)> = ctx
-        .default_headers
-        .iter()
-        .filter(|(k, e)| e.enabled && !req.headers.keys().any(|rk| rk.eq_ignore_ascii_case(k)))
-        .map(|(k, e)| (sub(k), sub(&e.value)))
-        .collect();
+    // disabled) whose name is case-insensitively equal to the default's
+    // name AFTER {{var}} substitution — a templated default header name
+    // (`X-{{t}}`) is suppressed by a request header matching the
+    // substituted result. Two defaults that resolve to the same
+    // lowercase name after substitution are deduped: the first wins and
+    // the rest are dropped with a warning.
+    let mut headers: Vec<(String, String)> = Vec::new();
+    let mut seen_default_names: BTreeSet<String> = BTreeSet::new();
+    for (k, e) in ctx.default_headers.iter() {
+        if !e.enabled {
+            continue;
+        }
+        let name = sub(k);
+        if req.headers.keys().any(|rk| rk.eq_ignore_ascii_case(&name)) {
+            continue;
+        }
+        let lower = name.to_ascii_lowercase();
+        if !seen_default_names.insert(lower.clone()) {
+            warnings.push(PrepareWarning::DuplicateDefaultHeader { name: lower });
+            continue;
+        }
+        headers.push((name, sub(&e.value)));
+    }
     headers.extend(
         req.headers
             .iter()
@@ -260,6 +280,54 @@ mod tests {
         assert!(
             p.headers
                 .contains(&("authorization".into(), "Bearer abc".into()))
+        );
+    }
+
+    #[test]
+    fn default_header_suppression_compares_names_after_substitution() {
+        let mut r = base("http://x.test");
+        r.headers.insert("x-api".into(), on("literal"));
+        let c = ctx(&[("t", "Api")], &[("X-{{t}}", "default-value", true)]);
+        let (p, _) = prepare(&r, &c).unwrap();
+        assert_eq!(
+            p.headers,
+            vec![("x-api".to_string(), "literal".to_string())],
+            "substituted default name X-Api matches request header x-api case-insensitively"
+        );
+    }
+
+    #[test]
+    fn default_header_suppression_after_substitution_honors_disabled_row() {
+        let mut r = base("http://x.test");
+        r.headers.insert("x-api".into(), off("ignored"));
+        let c = ctx(&[("t", "Api")], &[("X-{{t}}", "default-value", true)]);
+        let (p, _) = prepare(&r, &c).unwrap();
+        assert!(
+            p.headers.is_empty(),
+            "disabled request row still suppresses the substituted default entirely"
+        );
+    }
+
+    #[test]
+    fn duplicate_default_headers_after_substitution_keep_first_and_warn() {
+        let mut defaults = IndexMap::new();
+        defaults.insert("X-One".to_string(), on("first"));
+        defaults.insert("x-one".to_string(), on("second"));
+        let c = PrepareContext {
+            vars: IndexMap::new(),
+            default_headers: defaults,
+        };
+        let (p, warns) = prepare(&base("http://x.test"), &c).unwrap();
+        assert_eq!(
+            p.headers,
+            vec![("X-One".to_string(), "first".to_string())],
+            "first duplicate wins"
+        );
+        assert_eq!(
+            warns,
+            vec![PrepareWarning::DuplicateDefaultHeader {
+                name: "x-one".to_string()
+            }]
         );
     }
 

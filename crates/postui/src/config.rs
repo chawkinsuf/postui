@@ -204,6 +204,26 @@ pub fn expand_tilde(s: &str) -> PathBuf {
     }
 }
 
+/// Result of parsing the single optional CLI argument `postui` accepts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CliParse {
+    /// A project directory (or none), tilde-expanded.
+    Root(Option<PathBuf>),
+    /// A leading-dash argument (`--help`, `-x`, ...): print usage and exit.
+    Usage,
+}
+
+/// Parses `postui`'s single optional argument. Any value starting with `-`
+/// (e.g. `--help`, `-x`) is treated as a request for usage rather than a
+/// project directory, since no real path starts with a dash without `./`.
+pub fn parse_cli(arg: Option<String>) -> CliParse {
+    match arg {
+        Some(s) if s.starts_with('-') => CliParse::Usage,
+        Some(s) => CliParse::Root(Some(expand_tilde(&s))),
+        None => CliParse::Root(None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,6 +349,21 @@ mod tests {
         std::fs::write(&p, "not valid toml [[[").unwrap();
         let s = load_ui_settings(&p);
         assert_eq!(s, UiSettings::default());
+    }
+
+    #[test]
+    fn parse_cli_leading_dash_is_usage() {
+        assert_eq!(parse_cli(Some("--help".into())), CliParse::Usage);
+        assert_eq!(parse_cli(Some("-x".into())), CliParse::Usage);
+    }
+
+    #[test]
+    fn parse_cli_normal_path_and_none() {
+        assert_eq!(
+            parse_cli(Some("/abs/x".into())),
+            CliParse::Root(Some(PathBuf::from("/abs/x")))
+        );
+        assert_eq!(parse_cli(None), CliParse::Root(None));
     }
 
     #[test]
