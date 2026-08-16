@@ -69,41 +69,84 @@ pub struct App {
     _test_dir: Option<tempfile::TempDir>,
 }
 
+/// What to do with the chosen startup root once its source is known.
+///
+/// The confirm-to-create prompt is reserved for a CLI-supplied root: per the
+/// spec, `postui <dir>` opens `<dir>` and asks before creating a project
+/// there if it lacks `project.toml`. The app's *own* fallback pick (the
+/// platform default project directory, used only when nothing else applies)
+/// self-initializes silently instead — the user never typed that path, so
+/// asking them to confirm it would be asking about an implementation detail.
+/// A root that came from the registry (last-used / known) and no longer has
+/// a `project.toml` (deleted or moved outside postui) doesn't prompt either:
+/// it opens as a bare directory with a warning toast, since it *was* a
+/// project when registered and re-creating it silently could be surprising.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupDisposition {
+    /// A CLI-supplied root without `project.toml`: prompt before creating.
+    PromptCreate,
+    /// The platform default project dir, picked because nothing else was
+    /// configured, without `project.toml`: self-initialize silently.
+    InitDefault,
+    /// Open as-is: already a project, or a registry-sourced root that no
+    /// longer is (bare-dir open + warning toast, handled by the caller).
+    OpenAsIs,
+}
+
+/// Picks the startup root and what to do about it, given the registry, an
+/// optional CLI-supplied root, and the platform's default project
+/// directory. Only touches the filesystem via `is_project`'s single-file
+/// check, so it's covered directly by the unit tests below rather than
+/// through `App::new` (which reads the real user config file).
+///
+/// Precedence: `cli_root`, then the registry's last-used project, then the
+/// first known project that still exists on disk, then `default_dir`.
+/// `None` means no candidate root exists at all.
+fn resolve_startup(
+    registry: &crate::config::ProjectsRegistry,
+    cli_root: Option<PathBuf>,
+    default_dir: Option<PathBuf>,
+) -> Option<(PathBuf, StartupDisposition)> {
+    if let Some(root) = cli_root {
+        let disposition = if postui_core::project::is_project(&root) {
+            StartupDisposition::OpenAsIs
+        } else {
+            StartupDisposition::PromptCreate
+        };
+        return Some((root, disposition));
+    }
+    if let Some(root) = registry.last.clone() {
+        return Some((root, StartupDisposition::OpenAsIs));
+    }
+    if let Some(root) = registry.known.iter().find(|p| p.is_dir()).cloned() {
+        return Some((root, StartupDisposition::OpenAsIs));
+    }
+    if let Some(root) = default_dir {
+        let disposition = if postui_core::project::is_project(&root) {
+            StartupDisposition::OpenAsIs
+        } else {
+            StartupDisposition::InitDefault
+        };
+        return Some((root, disposition));
+    }
+    None
+}
+
 impl App {
-    /// Resolves the project to open, running startup migration and
-    /// prompting to initialize a non-project root, then opens it.
-    ///
-    /// Migration: if the platform's default project directory exists on
-    /// disk but has never been registered, it's initialized as a project
-    /// (named "default") and registered.
-    ///
-    /// Target root: `cli_root` (expanded), else the registry's last-used
-    /// project, else the first known project that still exists on disk,
-    /// else the platform default project directory.
+    /// Resolves the project to open (see [`resolve_startup`]) and opens it,
+    /// self-initializing or prompting to create as its disposition says.
     pub fn new(tx: UnboundedSender<Action>, cli_root: Option<PathBuf>) -> Self {
         let registry_path = crate::config::config_file_path();
-        let mut registry = registry_path
+        let registry = registry_path
             .as_deref()
             .map(crate::config::ProjectsRegistry::load_from)
             .unwrap_or_default();
 
-        if let Some(default_dir) = postui_core::storage::default_project_dir()
-            && default_dir.is_dir()
-            && !registry.known.contains(&default_dir)
-        {
-            let _ = postui_core::project::init_project(&default_dir, Some("default"));
-            registry.register(default_dir);
-            if let Some(path) = &registry_path {
-                let _ = registry.save_to(path);
-            }
-        }
-
-        let root = cli_root
-            .or_else(|| registry.last.clone())
-            .or_else(|| registry.known.iter().find(|p| p.is_dir()).cloned())
-            .or_else(postui_core::storage::default_project_dir);
-
-        let Some(root) = root else {
+        let Some((root, disposition)) = resolve_startup(
+            &registry,
+            cli_root,
+            postui_core::storage::default_project_dir(),
+        ) else {
             let mut app = Self::bare(tx, PathBuf::new());
             app.registry = registry;
             app.registry_path = registry_path;
@@ -118,19 +161,40 @@ impl App {
         app.registry = registry;
         app.registry_path = registry_path;
 
-        if !postui_core::project::is_project(&app.project.root) {
-            let path = app.project.root.display().to_string();
-            app.modals.push(Modal::Confirm {
-                title: "Not a postui project".into(),
-                body: format!("{path} has no project.toml — create one here?"),
-                choices: vec![
-                    ('y', "Create project".into(), vec![Action::InitProjectHere]),
-                    // Task 9 introduces Action::SwitchProject and replaces
-                    // this empty tail: for now the modal just closes and the
-                    // bare directory stays open, which is harmless.
-                    ('n', "Open default project".into(), vec![]),
-                ],
-            });
+        match disposition {
+            StartupDisposition::InitDefault => {
+                let _ = postui_core::project::init_project(&app.project.root, Some("default"));
+                app.registry.register(app.project.root.clone());
+                if let Some(path) = &app.registry_path {
+                    let _ = app.registry.save_to(path);
+                }
+            }
+            StartupDisposition::PromptCreate => {
+                let path = app.project.root.display().to_string();
+                app.modals.push(Modal::Confirm {
+                    title: "Not a postui project".into(),
+                    body: format!("{path} has no project.toml — create one here?"),
+                    choices: vec![
+                        ('y', "Create project".into(), vec![Action::InitProjectHere]),
+                        // Task 9 introduces Action::SwitchProject and
+                        // replaces this empty tail: for now the modal just
+                        // closes and the bare directory stays open, which
+                        // is harmless.
+                        ('n', "Open default project".into(), vec![]),
+                    ],
+                });
+            }
+            StartupDisposition::OpenAsIs => {
+                if !postui_core::project::is_project(&app.project.root) {
+                    app.toasts.push(
+                        format!(
+                            "{} has no project.toml; opened as a bare directory",
+                            app.project.root.display()
+                        ),
+                        ToastKind::Warning,
+                    );
+                }
+            }
         }
 
         app
@@ -741,6 +805,78 @@ impl App {
 mod tests {
     use super::*;
     use ratatui::crossterm::event::KeyCode;
+
+    #[test]
+    fn resolve_startup_fresh_install_picks_default_dir_to_init_with_no_prompt() {
+        let registry = crate::config::ProjectsRegistry::default();
+        let default_dir = PathBuf::from("/nonexistent/postui-default-xyz");
+        let (root, disposition) =
+            resolve_startup(&registry, None, Some(default_dir.clone())).unwrap();
+        assert_eq!(root, default_dir);
+        assert_eq!(disposition, StartupDisposition::InitDefault);
+    }
+
+    #[test]
+    fn resolve_startup_cli_non_project_root_prompts_create() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = crate::config::ProjectsRegistry::default();
+        let (root, disposition) =
+            resolve_startup(&registry, Some(dir.path().to_path_buf()), None).unwrap();
+        assert_eq!(root, dir.path());
+        assert_eq!(disposition, StartupDisposition::PromptCreate);
+    }
+
+    #[test]
+    fn resolve_startup_registry_last_wins_over_known() {
+        let registry = crate::config::ProjectsRegistry {
+            known: vec![PathBuf::from("/a"), PathBuf::from("/b")],
+            last: Some(PathBuf::from("/c")),
+            ..Default::default()
+        };
+        let (root, disposition) = resolve_startup(&registry, None, None).unwrap();
+        assert_eq!(root, PathBuf::from("/c"));
+        assert_eq!(disposition, StartupDisposition::OpenAsIs);
+    }
+
+    #[test]
+    fn resolve_startup_cli_beats_registry_last() {
+        let dir = tempfile::tempdir().unwrap();
+        postui_core::project::init_project(dir.path(), None).unwrap();
+        let registry = crate::config::ProjectsRegistry {
+            last: Some(PathBuf::from("/elsewhere")),
+            ..Default::default()
+        };
+        let (root, disposition) =
+            resolve_startup(&registry, Some(dir.path().to_path_buf()), None).unwrap();
+        assert_eq!(root, dir.path());
+        assert_eq!(disposition, StartupDisposition::OpenAsIs);
+    }
+
+    #[test]
+    fn resolve_startup_uses_first_existing_known_when_no_last() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let registry = crate::config::ProjectsRegistry {
+            known: vec![PathBuf::from("/nonexistent-a"), dir_a.path().to_path_buf()],
+            ..Default::default()
+        };
+        let (root, disposition) = resolve_startup(&registry, None, None).unwrap();
+        assert_eq!(root, dir_a.path());
+        assert_eq!(disposition, StartupDisposition::OpenAsIs);
+    }
+
+    #[test]
+    fn resolve_startup_returns_none_when_nothing_available() {
+        let registry = crate::config::ProjectsRegistry::default();
+        assert!(resolve_startup(&registry, None, None).is_none());
+    }
+
+    #[test]
+    fn init_project_here_creates_project_toml_at_current_root() {
+        let mut app = App::new_for_test();
+        assert!(!postui_core::project::is_project(&app.project.root));
+        app.update(Action::InitProjectHere);
+        assert!(postui_core::project::is_project(&app.project.root));
+    }
 
     #[test]
     fn quit_action_sets_should_quit() {
