@@ -1,14 +1,14 @@
-use super::line_input::LineInput;
 use super::DrawCtx;
+use super::line_input::LineInput;
 use crate::theme::Theme;
 use indexmap::IndexMap;
 use postui_core::model::Entry;
+use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 
 /// Which cell of the selected row is under edit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,7 +42,10 @@ pub struct TableOutcome {
 
 impl TableOutcome {
     fn consumed() -> Self {
-        Self { consumed: true, warning: None }
+        Self {
+            consumed: true,
+            warning: None,
+        }
     }
 
     fn not_consumed() -> Self {
@@ -50,7 +53,10 @@ impl TableOutcome {
     }
 
     fn warn(warning: String) -> Self {
-        Self { consumed: true, warning: Some(warning) }
+        Self {
+            consumed: true,
+            warning: Some(warning),
+        }
     }
 }
 
@@ -120,7 +126,10 @@ impl TableEditorState {
                     return TableOutcome::not_consumed();
                 }
                 self.clamp_selected(map);
-                let key = map.get_index(self.selected).map(|(k, _)| k.clone()).unwrap();
+                let key = map
+                    .get_index(self.selected)
+                    .map(|(k, _)| k.clone())
+                    .unwrap();
                 self.editing = Some(CellEdit {
                     col: Col::Key,
                     input: LineInput::new(&key),
@@ -198,7 +207,9 @@ impl TableEditorState {
     /// new, not-yet-inserted row).
     fn commit_key_and_move_to_value(&mut self, edit: &mut CellEdit, map: &IndexMap<String, Entry>) {
         let current_value = if edit.original_key.is_some() {
-            map.get_index(self.selected).map(|(_, e)| e.value.clone()).unwrap_or_default()
+            map.get_index(self.selected)
+                .map(|(_, e)| e.value.clone())
+                .unwrap_or_default()
         } else {
             String::new()
         };
@@ -224,7 +235,10 @@ impl TableEditorState {
         let existing = map.get_index(idx).map(|(_, e)| e.clone());
         let (final_key, final_value, enabled) = match edit.col {
             Col::Key => {
-                let value = existing.as_ref().map(|e| e.value.clone()).unwrap_or_default();
+                let value = existing
+                    .as_ref()
+                    .map(|e| e.value.clone())
+                    .unwrap_or_default();
                 let enabled = existing.as_ref().map(|e| e.enabled).unwrap_or(true);
                 (edit.input.text().to_string(), value, enabled)
             }
@@ -239,20 +253,37 @@ impl TableEditorState {
             && let Some(other_idx) = map.get_index_of(&final_key)
         {
             map.shift_remove_index(idx);
-            let adjusted = if other_idx > idx { other_idx - 1 } else { other_idx };
+            let adjusted = if other_idx > idx {
+                other_idx - 1
+            } else {
+                other_idx
+            };
             if let Some((_, e)) = map.get_index_mut(adjusted) {
                 e.value = final_value;
             }
             self.clamp_selected(map);
-            return Some(format!("duplicate key '{final_key}' replaced the existing value"));
+            return Some(format!(
+                "duplicate key '{final_key}' replaced the existing value"
+            ));
         }
         map.shift_remove_index(idx);
-        map.shift_insert(idx, final_key, Entry { value: final_value, enabled });
+        map.shift_insert(
+            idx,
+            final_key,
+            Entry {
+                value: final_value,
+                enabled,
+            },
+        );
         self.clamp_selected(map);
         None
     }
 
-    fn commit_new_row(&mut self, map: &mut IndexMap<String, Entry>, edit: &CellEdit) -> Option<String> {
+    fn commit_new_row(
+        &mut self,
+        map: &mut IndexMap<String, Entry>,
+        edit: &CellEdit,
+    ) -> Option<String> {
         let (final_key, final_value) = match edit.col {
             Col::Key => (edit.input.text().to_string(), String::new()),
             Col::Value => {
@@ -265,9 +296,17 @@ impl TableEditorState {
                 e.value = final_value;
             }
             self.clamp_selected(map);
-            return Some(format!("duplicate key '{final_key}' replaced the existing value"));
+            return Some(format!(
+                "duplicate key '{final_key}' replaced the existing value"
+            ));
         }
-        map.insert(final_key, Entry { value: final_value, enabled: true });
+        map.insert(
+            final_key,
+            Entry {
+                value: final_value,
+                enabled: true,
+            },
+        );
         self.selected = map.len() - 1;
         None
     }
@@ -286,7 +325,10 @@ impl TableEditorState {
     ) {
         let theme = ctx.theme;
         if map.is_empty() && self.editing.is_none() {
-            frame.render_widget(Paragraph::new(empty_label).style(Style::default().fg(theme.text_muted)), area);
+            frame.render_widget(
+                Paragraph::new(empty_label).style(Style::default().fg(theme.text_muted)),
+                area,
+            );
             return;
         }
 
@@ -295,7 +337,11 @@ impl TableEditorState {
         for (i, (k, e)) in map.iter().enumerate() {
             let is_selected = !map.is_empty() && i == selected;
             let editing_this = is_selected
-                && self.editing.as_ref().map(|ed| ed.original_key.is_some()).unwrap_or(false);
+                && self
+                    .editing
+                    .as_ref()
+                    .map(|ed| ed.original_key.is_some())
+                    .unwrap_or(false);
             lines.push(self.render_row(k, e, is_selected, editing_this, theme));
         }
         if let Some(edit) = &self.editing
@@ -315,7 +361,11 @@ impl TableEditorState {
         theme: &Theme,
     ) -> Line<'static> {
         let marker = if selected { "\u{203a} " } else { "  " };
-        let check = if entry.enabled { "\u{2713}" } else { "\u{2717}" };
+        let check = if entry.enabled {
+            "\u{2713}"
+        } else {
+            "\u{2717}"
+        };
         let base_style = if !entry.enabled {
             Style::default().fg(theme.text_muted)
         } else if selected {
@@ -325,16 +375,28 @@ impl TableEditorState {
         };
 
         let (key_line, value_line) = if editing_this {
-            let edit = self.editing.as_ref().expect("editing_this implies editing is Some");
+            let edit = self
+                .editing
+                .as_ref()
+                .expect("editing_this implies editing is Some");
             match edit.col {
-                Col::Key => (edit.input.draw_line(true, theme), Line::styled(entry.value.clone(), base_style)),
+                Col::Key => (
+                    edit.input.draw_line(true, theme),
+                    Line::styled(entry.value.clone(), base_style),
+                ),
                 Col::Value => (
-                    Line::styled(edit.pending_key.clone().unwrap_or_else(|| key.to_string()), base_style),
+                    Line::styled(
+                        edit.pending_key.clone().unwrap_or_else(|| key.to_string()),
+                        base_style,
+                    ),
                     edit.input.draw_line(true, theme),
                 ),
             }
         } else {
-            (Line::styled(key.to_string(), base_style), Line::styled(entry.value.clone(), base_style))
+            (
+                Line::styled(key.to_string(), base_style),
+                Line::styled(entry.value.clone(), base_style),
+            )
         };
 
         let mut spans = vec![Span::styled(format!("{marker}{check} "), base_style)];
@@ -347,7 +409,10 @@ impl TableEditorState {
     fn render_new_row(&self, edit: &CellEdit, theme: &Theme) -> Line<'static> {
         let base_style = Style::default().fg(theme.accent).bold();
         let (key_line, value_line) = match edit.col {
-            Col::Key => (edit.input.draw_line(true, theme), Line::styled(String::new(), base_style)),
+            Col::Key => (
+                edit.input.draw_line(true, theme),
+                Line::styled(String::new(), base_style),
+            ),
             Col::Value => (
                 Line::styled(edit.pending_key.clone().unwrap_or_default(), base_style),
                 edit.input.draw_line(true, theme),
@@ -364,9 +429,9 @@ impl TableEditorState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use ratatui::Terminal;
 
     fn key(c: KeyCode) -> KeyEvent {
         KeyEvent::new(c, KeyModifiers::NONE)
@@ -383,7 +448,13 @@ mod tests {
         t.handle_key(key(KeyCode::Tab), &mut map); // key -> value
         t.handle_key(key(KeyCode::Char('2')), &mut map);
         t.handle_key(key(KeyCode::Enter), &mut map);
-        assert_eq!(map["page"], Entry { value: "2".into(), enabled: true });
+        assert_eq!(
+            map["page"],
+            Entry {
+                value: "2".into(),
+                enabled: true
+            }
+        );
         assert!(t.editing.is_none());
     }
 
@@ -402,8 +473,20 @@ mod tests {
     #[test]
     fn duplicate_key_commit_replaces_and_warns() {
         let mut map = IndexMap::new();
-        map.insert("a".into(), Entry { value: "1".into(), enabled: true });
-        map.insert("b".into(), Entry { value: "2".into(), enabled: true });
+        map.insert(
+            "a".into(),
+            Entry {
+                value: "1".into(),
+                enabled: true,
+            },
+        );
+        map.insert(
+            "b".into(),
+            Entry {
+                value: "2".into(),
+                enabled: true,
+            },
+        );
         let mut t = TableEditorState::default();
         // add new row keyed "a" with value "9"
         t.handle_key(key(KeyCode::Char('a')), &mut map);
@@ -420,7 +503,13 @@ mod tests {
     #[test]
     fn space_toggles_d_deletes_esc_cancels() {
         let mut map = IndexMap::new();
-        map.insert("a".into(), Entry { value: "1".into(), enabled: true });
+        map.insert(
+            "a".into(),
+            Entry {
+                value: "1".into(),
+                enabled: true,
+            },
+        );
         let mut t = TableEditorState::default();
         t.handle_key(key(KeyCode::Char(' ')), &mut map);
         assert!(!map["a"].enabled);
@@ -435,13 +524,32 @@ mod tests {
     #[test]
     fn rename_existing_key_keeps_its_position() {
         let mut map = IndexMap::new();
-        map.insert("a".into(), Entry { value: "1".into(), enabled: true });
-        map.insert("b".into(), Entry { value: "2".into(), enabled: true });
-        let mut t = TableEditorState { selected: 0, ..TableEditorState::default() };
+        map.insert(
+            "a".into(),
+            Entry {
+                value: "1".into(),
+                enabled: true,
+            },
+        );
+        map.insert(
+            "b".into(),
+            Entry {
+                value: "2".into(),
+                enabled: true,
+            },
+        );
+        let mut t = TableEditorState {
+            selected: 0,
+            ..TableEditorState::default()
+        };
         t.handle_key(key(KeyCode::Enter), &mut map); // edit "a"'s key cell (seeded with "a")
         t.handle_key(key(KeyCode::Char('x')), &mut map);
         t.handle_key(key(KeyCode::Enter), &mut map); // commit rename to "ax"
-        assert_eq!(map.get_index(0).unwrap().0, "ax", "renamed key keeps original position");
+        assert_eq!(
+            map.get_index(0).unwrap().0,
+            "ax",
+            "renamed key keeps original position"
+        );
         assert_eq!(map.get_index(1).unwrap().0, "b");
     }
 
@@ -451,37 +559,87 @@ mod tests {
         // map). Removing "a" shifts every later index down by one, so the
         // duplicate-merge target's index must be adjusted accordingly.
         let mut map = IndexMap::new();
-        map.insert("a".into(), Entry { value: "1".into(), enabled: true });
-        map.insert("b".into(), Entry { value: "2".into(), enabled: true });
-        map.insert("c".into(), Entry { value: "3".into(), enabled: true });
-        let mut t = TableEditorState { selected: 0, ..TableEditorState::default() };
+        map.insert(
+            "a".into(),
+            Entry {
+                value: "1".into(),
+                enabled: true,
+            },
+        );
+        map.insert(
+            "b".into(),
+            Entry {
+                value: "2".into(),
+                enabled: true,
+            },
+        );
+        map.insert(
+            "c".into(),
+            Entry {
+                value: "3".into(),
+                enabled: true,
+            },
+        );
+        let mut t = TableEditorState {
+            selected: 0,
+            ..TableEditorState::default()
+        };
         t.handle_key(key(KeyCode::Enter), &mut map); // edit "a"'s key cell (seeded with "a")
         t.handle_key(key(KeyCode::Backspace), &mut map); // clear it
         t.handle_key(key(KeyCode::Char('c')), &mut map);
         let out = t.handle_key(key(KeyCode::Enter), &mut map); // commit rename a -> c
         assert!(out.warning.is_some());
         assert_eq!(map.len(), 2);
-        assert_eq!(map.get_index(0).unwrap().0, "b", "b shifts down to fill a's old slot");
-        assert_eq!(map.get_index(1).unwrap().0, "c", "c keeps its relative position after b");
+        assert_eq!(
+            map.get_index(0).unwrap().0,
+            "b",
+            "b shifts down to fill a's old slot"
+        );
+        assert_eq!(
+            map.get_index(1).unwrap().0,
+            "c",
+            "c keeps its relative position after b"
+        );
         assert_eq!(map["c"].value, "1", "c takes a's value");
     }
 
     #[test]
     fn draw_shows_empty_state_and_rows() {
         let theme = Theme::dark();
-        let ctx = DrawCtx { theme: &theme, focused: true };
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+        };
         let backend = TestBackend::new(40, 5);
         let mut terminal = Terminal::new(backend).unwrap();
 
         let empty_map: IndexMap<String, Entry> = IndexMap::new();
         let t = TableEditorState::default();
-        terminal.draw(|f| t.draw(f, f.area(), &empty_map, &ctx, "No params yet — press a to add")).unwrap();
+        terminal
+            .draw(|f| {
+                t.draw(
+                    f,
+                    f.area(),
+                    &empty_map,
+                    &ctx,
+                    "No params yet — press a to add",
+                )
+            })
+            .unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("No params yet"), "empty state: {content}");
 
         let mut map = IndexMap::new();
-        map.insert("page".into(), Entry { value: "2".into(), enabled: true });
-        terminal.draw(|f| t.draw(f, f.area(), &map, &ctx, "unused")).unwrap();
+        map.insert(
+            "page".into(),
+            Entry {
+                value: "2".into(),
+                enabled: true,
+            },
+        );
+        terminal
+            .draw(|f| t.draw(f, f.area(), &map, &ctx, "unused"))
+            .unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("page"), "key text: {content}");
         assert!(content.contains('2'), "value text: {content}");

@@ -136,7 +136,10 @@ fn edit_body_externally(
 ) -> anyhow::Result<()> {
     use std::io::Write;
 
-    let file = tempfile::Builder::new().prefix("postui-body-").suffix(".json").tempfile()?;
+    let file = tempfile::Builder::new()
+        .prefix("postui-body-")
+        .suffix(".json")
+        .tempfile()?;
     let path = file.path().to_path_buf();
     {
         let mut handle = file.as_file();
@@ -145,7 +148,11 @@ fn edit_body_externally(
     }
 
     let command = std::env::var("EDITOR").unwrap_or_default();
-    let command = if command.trim().is_empty() { "vi".to_string() } else { command };
+    let command = if command.trim().is_empty() {
+        "vi".to_string()
+    } else {
+        command
+    };
     // `$EDITOR` conventionally may carry flags (e.g. `code -w`).
     let mut parts = command.split_whitespace();
     let program = parts.next().unwrap_or("vi").to_string();
@@ -154,7 +161,10 @@ fn edit_body_externally(
     let _ = execute!(std::io::stdout(), DisableMouseCapture);
     ratatui::restore();
 
-    let status = std::process::Command::new(&program).args(&args).arg(&path).status();
+    let status = std::process::Command::new(&program)
+        .args(&args)
+        .arg(&path)
+        .status();
 
     *terminal = ratatui::init();
     enable_mouse_and_wrap_panic_hook();

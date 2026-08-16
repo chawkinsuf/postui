@@ -18,7 +18,11 @@ impl fmt::Display for PrepareWarning {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             PrepareWarning::ParamOverridesUrl { key } => {
-                write!(f, "query param `{}` in [params] overrides the one in the URL", key)
+                write!(
+                    f,
+                    "query param `{}` in [params] overrides the one in the URL",
+                    key
+                )
             }
         }
     }
@@ -36,8 +40,9 @@ pub fn prepare(req: &HttpRequest) -> (PreparedRequest, Vec<PrepareWarning>) {
         };
         // (key, value) pairs; URL pairs first, in order, before the
         // `[params]` table's entries are merged in below.
-        let mut pairs: Vec<(String, String)> =
-            form_urlencoded::parse(query.as_bytes()).into_owned().collect();
+        let mut pairs: Vec<(String, String)> = form_urlencoded::parse(query.as_bytes())
+            .into_owned()
+            .collect();
         for (k, e) in &enabled {
             let existing = pairs.iter().position(|(pk, _)| pk == *k);
             if let Some(i) = existing {
@@ -48,7 +53,9 @@ pub fn prepare(req: &HttpRequest) -> (PreparedRequest, Vec<PrepareWarning>) {
                 pairs.push(((*k).clone(), e.value.clone()));
             }
         }
-        let qs = form_urlencoded::Serializer::new(String::new()).extend_pairs(pairs).finish();
+        let qs = form_urlencoded::Serializer::new(String::new())
+            .extend_pairs(pairs)
+            .finish();
         format!("{base}?{qs}")
     };
     let mut headers: Vec<(String, String)> = req
@@ -58,10 +65,22 @@ pub fn prepare(req: &HttpRequest) -> (PreparedRequest, Vec<PrepareWarning>) {
         .map(|(k, e)| (k.clone(), e.value.clone()))
         .collect();
     let body = req.body.as_ref().map(|Body::Json { text }| text.clone());
-    if body.is_some() && !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("content-type")) {
+    if body.is_some()
+        && !headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+    {
         headers.push(("Content-Type".into(), "application/json".into()));
     }
-    (PreparedRequest { method: req.method, url, headers, body }, warnings)
+    (
+        PreparedRequest {
+            method: req.method,
+            url,
+            headers,
+            body,
+        },
+        warnings,
+    )
 }
 
 #[cfg(test)]
@@ -80,10 +99,16 @@ mod tests {
         }
     }
     fn on(v: &str) -> Entry {
-        Entry { value: v.into(), enabled: true }
+        Entry {
+            value: v.into(),
+            enabled: true,
+        }
     }
     fn off(v: &str) -> Entry {
-        Entry { value: v.into(), enabled: false }
+        Entry {
+            value: v.into(),
+            enabled: false,
+        }
     }
 
     #[test]
@@ -102,14 +127,20 @@ mod tests {
         r.params.insert("id".into(), on("2"));
         let (p, warns) = prepare(&r);
         assert_eq!(p.url, "https://x.test/p?id=2&keep=y");
-        assert_eq!(warns, vec![PrepareWarning::ParamOverridesUrl { key: "id".into() }]);
+        assert_eq!(
+            warns,
+            vec![PrepareWarning::ParamOverridesUrl { key: "id".into() }]
+        );
     }
 
     #[test]
     fn url_literal_duplicates_are_kept_verbatim() {
         let (p, warns) = prepare(&base("https://x.test/p?id=1&id=2"));
         assert_eq!(p.url, "https://x.test/p?id=1&id=2");
-        assert!(warns.is_empty(), "user-typed duplicates pass through untouched");
+        assert!(
+            warns.is_empty(),
+            "user-typed duplicates pass through untouched"
+        );
     }
 
     #[test]
@@ -130,7 +161,10 @@ mod tests {
         let (p, _) = prepare(&r);
         assert_eq!(
             p.headers,
-            vec![("A".into(), "1".into()), ("Content-Type".into(), "application/json".into())]
+            vec![
+                ("A".into(), "1".into()),
+                ("Content-Type".into(), "application/json".into())
+            ]
         );
         assert_eq!(p.body.as_deref(), Some("{}"));
     }
@@ -138,7 +172,8 @@ mod tests {
     #[test]
     fn explicit_content_type_wins_case_insensitively() {
         let mut r = base("https://x.test");
-        r.headers.insert("content-TYPE".into(), on("application/vnd.x+json"));
+        r.headers
+            .insert("content-TYPE".into(), on("application/vnd.x+json"));
         r.body = Some(Body::Json { text: "{}".into() });
         let (p, _) = prepare(&r);
         assert_eq!(p.headers.len(), 1);

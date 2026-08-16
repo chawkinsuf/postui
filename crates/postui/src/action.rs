@@ -49,7 +49,10 @@ pub enum Action {
     /// Open the rename prompt, prefilled with the selected sidebar slug.
     PromptRenameRequest,
     /// Rename the request at `from` to `to` on disk.
-    RenameRequest { from: String, to: String },
+    RenameRequest {
+        from: String,
+        to: String,
+    },
     /// Open the delete confirmation for the selected sidebar slug.
     ConfirmDeleteRequest,
     /// Delete the request at `slug` from disk.
@@ -71,8 +74,14 @@ pub enum Action {
     /// A background send task completed successfully. `generation` ties the
     /// result back to the send that produced it; stale generations (a newer
     /// send started before this one finished) are dropped.
-    ResponseArrived { generation: u64, data: Box<crate::http::ResponseData> },
+    ResponseArrived {
+        generation: u64,
+        data: Box<crate::http::ResponseData>,
+    },
     /// A background send task failed. Same staleness handling as
     /// `ResponseArrived`.
-    RequestFailed { generation: u64, error: String },
+    RequestFailed {
+        generation: u64,
+        error: String,
+    },
 }

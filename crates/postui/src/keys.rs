@@ -38,7 +38,11 @@ impl KeyCombo {
             "down" => KeyCode::Down,
             "left" => KeyCode::Left,
             "right" => KeyCode::Right,
-            k if k.len() >= 2 && k.len() <= 3 && k.starts_with('f') && k[1..].bytes().all(|b| b.is_ascii_digit()) => {
+            k if k.len() >= 2
+                && k.len() <= 3
+                && k.starts_with('f')
+                && k[1..].bytes().all(|b| b.is_ascii_digit()) =>
+            {
                 match k[1..].parse::<u8>() {
                     Ok(n) if (1..=12).contains(&n) => KeyCode::F(n),
                     _ => return None,
@@ -66,7 +70,10 @@ impl KeyCombo {
             KeyCode::Char(_) | KeyCode::BackTab => ev.modifiers.difference(KeyModifiers::SHIFT),
             _ => ev.modifiers,
         };
-        Self { code: ev.code, modifiers: mods }
+        Self {
+            code: ev.code,
+            modifiers: mods,
+        }
     }
 }
 
@@ -141,7 +148,9 @@ impl Keymap {
             ("ctrl+r", Action::Send),
             ("ctrl+enter", Action::Send),
         ];
-        let mut map = Self { bindings: HashMap::new() };
+        let mut map = Self {
+            bindings: HashMap::new(),
+        };
         for (s, a) in defaults {
             // Combos in this table are compile-time constants; parse cannot fail.
             if let Some(c) = KeyCombo::parse(s) {
@@ -172,9 +181,7 @@ impl Keymap {
                 .ok_or_else(|| anyhow::anyhow!("unknown action: {action_name}"))?;
             let combos = combo_strs
                 .iter()
-                .map(|s| {
-                    KeyCombo::parse(s).ok_or_else(|| anyhow::anyhow!("bad key combo: {s}"))
-                })
+                .map(|s| KeyCombo::parse(s).ok_or_else(|| anyhow::anyhow!("bad key combo: {s}")))
                 .collect::<anyhow::Result<Vec<_>>>()?;
             if action != Action::Quit && combos.contains(&ctrl_c) {
                 anyhow::bail!("ctrl+c is reserved for quit");
@@ -305,10 +312,15 @@ mod tests {
     fn ctrl_c_is_always_quit_and_cannot_be_taken() {
         let mut m = Keymap::default_bindings();
         m.apply_overrides(r#"quit = "ctrl+q""#).unwrap();
-        assert_eq!(m.lookup(&KeyCombo::parse("ctrl+c").unwrap()), Some(Action::Quit),
-            "ctrl+c survives a quit rebind");
-        assert!(m.apply_overrides(r#"open_palette = "ctrl+c""#).is_err(),
-            "ctrl+c cannot be bound to another action");
+        assert_eq!(
+            m.lookup(&KeyCombo::parse("ctrl+c").unwrap()),
+            Some(Action::Quit),
+            "ctrl+c survives a quit rebind"
+        );
+        assert!(
+            m.apply_overrides(r#"open_palette = "ctrl+c""#).is_err(),
+            "ctrl+c cannot be bound to another action"
+        );
     }
 
     #[test]
@@ -334,8 +346,16 @@ mod tests {
         let get = |s: &str| m.lookup(&KeyCombo::parse(s).unwrap());
         assert_eq!(get("q"), Some(Action::Quit), "default quit binding intact");
         assert_eq!(get("ctrl+c"), Some(Action::Quit), "ctrl+c still quit");
-        assert_eq!(get("ctrl+p"), Some(Action::OpenPalette), "default palette binding intact");
-        assert_eq!(get("ctrl+q"), None, "earlier valid rebind must not have been applied");
+        assert_eq!(
+            get("ctrl+p"),
+            Some(Action::OpenPalette),
+            "default palette binding intact"
+        );
+        assert_eq!(
+            get("ctrl+q"),
+            None,
+            "earlier valid rebind must not have been applied"
+        );
     }
 
     #[test]

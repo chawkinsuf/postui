@@ -8,7 +8,10 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum StorageError {
     #[error("{}: {source}", path.display())]
-    Io { path: PathBuf, source: std::io::Error },
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     #[error("failed to parse request: {0}")]
     Parse(String),
     #[error("invalid slug {0:?}")]
@@ -22,7 +25,10 @@ pub enum StorageError {
 /// Builds a closure that wraps an `io::Error` with the path it concerns,
 /// for use as `.map_err(io_err(&path))`.
 fn io_err(path: &Path) -> impl FnOnce(std::io::Error) -> StorageError + '_ {
-    move |source| StorageError::Io { path: path.to_path_buf(), source }
+    move |source| StorageError::Io {
+        path: path.to_path_buf(),
+        source,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,7 +102,9 @@ pub fn list_requests(root: &Path) -> Vec<RequestListing> {
     let _ = walk_toml_files(&base, &mut |path| {
         let rel = path.strip_prefix(&base).unwrap_or(&path);
         let slug = rel.with_extension("");
-        let slug = slug.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
+        let slug = slug
+            .to_string_lossy()
+            .replace(std::path::MAIN_SEPARATOR, "/");
         let broken = match std::fs::read_to_string(&path) {
             Ok(contents) => match HttpRequest::from_toml_str(&contents) {
                 Ok(_) => None,
@@ -129,8 +137,12 @@ pub fn save_request(root: &Path, slug: &str, req: &HttpRequest) -> Result<(), St
     std::fs::create_dir_all(parent).map_err(io_err(parent))?;
     let mut tmp = tempfile::NamedTempFile::new_in(parent).map_err(io_err(parent))?;
     use std::io::Write;
-    tmp.write_all(req.to_toml_string().as_bytes()).map_err(io_err(&path))?;
-    tmp.persist(&path).map_err(|e| StorageError::Io { path: path.clone(), source: e.error })?;
+    tmp.write_all(req.to_toml_string().as_bytes())
+        .map_err(io_err(&path))?;
+    tmp.persist(&path).map_err(|e| StorageError::Io {
+        path: path.clone(),
+        source: e.error,
+    })?;
     Ok(())
 }
 
@@ -185,7 +197,11 @@ mod tests {
         save_request(dir.path(), "get-user", &req()).unwrap();
         let listing = list_requests(dir.path());
         let slugs: Vec<&str> = listing.iter().map(|l| l.slug.as_str()).collect();
-        assert_eq!(slugs, ["auth/login", "get-user"], "sorted, subdir path as slug");
+        assert_eq!(
+            slugs,
+            ["auth/login", "get-user"],
+            "sorted, subdir path as slug"
+        );
         assert!(listing.iter().all(|l| l.broken.is_none()));
         assert_eq!(load_request(dir.path(), "auth/login").unwrap(), req());
     }
@@ -194,7 +210,11 @@ mod tests {
     fn broken_file_is_listed_with_error_and_load_reports_line() {
         let dir = tempfile::tempdir().unwrap();
         ensure_project(dir.path()).unwrap();
-        std::fs::write(dir.path().join("requests/bad.toml"), "url = \"x\"\nurl = \"dup\"\n").unwrap();
+        std::fs::write(
+            dir.path().join("requests/bad.toml"),
+            "url = \"x\"\nurl = \"dup\"\n",
+        )
+        .unwrap();
         let listing = list_requests(dir.path());
         assert_eq!(listing[0].slug, "bad");
         assert!(listing[0].broken.is_some());
@@ -229,7 +249,16 @@ mod tests {
 
     #[test]
     fn slug_validation_rejects_traversal_and_bad_chars() {
-        for bad in ["", "../etc", "a//b", "/abs", "trailing/", "Has Space", "UPPER", "dot.dot"] {
+        for bad in [
+            "",
+            "../etc",
+            "a//b",
+            "/abs",
+            "trailing/",
+            "Has Space",
+            "UPPER",
+            "dot.dot",
+        ] {
             assert!(validate_slug(bad).is_err(), "{bad:?} should be invalid");
         }
         for good in ["login", "auth/login", "a-b_c/d0"] {
@@ -251,7 +280,10 @@ mod tests {
         rename_request(dir.path(), "a", "sub/b").unwrap();
         assert!(load_request(dir.path(), "a").is_err());
         assert_eq!(load_request(dir.path(), "sub/b").unwrap(), req());
-        assert!(rename_request(dir.path(), "sub/b", "sub/b").is_err(), "rename onto itself");
+        assert!(
+            rename_request(dir.path(), "sub/b", "sub/b").is_err(),
+            "rename onto itself"
+        );
         delete_request(dir.path(), "sub/b").unwrap();
         assert!(list_requests(dir.path()).is_empty());
     }

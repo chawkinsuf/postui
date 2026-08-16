@@ -1,12 +1,12 @@
 use crate::action::Action;
 use crate::layout::PaneId;
 use crate::theme::Theme;
+use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Padding, Paragraph};
-use ratatui::Frame;
 
 #[derive(Clone)]
 pub struct Command {
@@ -16,20 +16,62 @@ pub struct Command {
 
 pub fn all_commands() -> Vec<Command> {
     vec![
-        Command { name: "Focus: request tree", action: Action::FocusPane(PaneId::Sidebar) },
-        Command { name: "Focus: editor", action: Action::FocusPane(PaneId::Editor) },
-        Command { name: "Focus: response", action: Action::FocusPane(PaneId::Response) },
-        Command { name: "Help: about postui", action: Action::ShowAbout },
-        Command { name: "Send request", action: Action::Send },
-        Command { name: "Request: new", action: Action::PromptNewRequest },
-        Command { name: "Request: save", action: Action::SaveRequest },
-        Command { name: "Request: rename", action: Action::PromptRenameRequest },
-        Command { name: "Request: delete", action: Action::ConfirmDeleteRequest },
-        Command { name: "Method: cycle", action: Action::CycleMethod },
-        Command { name: "Body: format JSON", action: Action::FormatBody },
-        Command { name: "Body: minify JSON", action: Action::MinifyBody },
-        Command { name: "Body: open in $EDITOR", action: Action::OpenBodyInEditor },
-        Command { name: "Quit", action: Action::Quit },
+        Command {
+            name: "Focus: request tree",
+            action: Action::FocusPane(PaneId::Sidebar),
+        },
+        Command {
+            name: "Focus: editor",
+            action: Action::FocusPane(PaneId::Editor),
+        },
+        Command {
+            name: "Focus: response",
+            action: Action::FocusPane(PaneId::Response),
+        },
+        Command {
+            name: "Help: about postui",
+            action: Action::ShowAbout,
+        },
+        Command {
+            name: "Send request",
+            action: Action::Send,
+        },
+        Command {
+            name: "Request: new",
+            action: Action::PromptNewRequest,
+        },
+        Command {
+            name: "Request: save",
+            action: Action::SaveRequest,
+        },
+        Command {
+            name: "Request: rename",
+            action: Action::PromptRenameRequest,
+        },
+        Command {
+            name: "Request: delete",
+            action: Action::ConfirmDeleteRequest,
+        },
+        Command {
+            name: "Method: cycle",
+            action: Action::CycleMethod,
+        },
+        Command {
+            name: "Body: format JSON",
+            action: Action::FormatBody,
+        },
+        Command {
+            name: "Body: minify JSON",
+            action: Action::MinifyBody,
+        },
+        Command {
+            name: "Body: open in $EDITOR",
+            action: Action::OpenBodyInEditor,
+        },
+        Command {
+            name: "Quit",
+            action: Action::Quit,
+        },
     ]
 }
 
@@ -54,7 +96,11 @@ impl Default for PaletteState {
 
 impl PaletteState {
     pub fn new() -> Self {
-        Self { input: String::new(), selected: 0, filtered: all_commands() }
+        Self {
+            input: String::new(),
+            selected: 0,
+            filtered: all_commands(),
+        }
     }
 
     pub fn input(&self) -> &str {
@@ -80,11 +126,17 @@ impl PaletteState {
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<super::modal::ModalResult> {
         match key.code {
             KeyCode::Esc => {
-                return Some(super::modal::ModalResult { actions: vec![], close: true })
+                return Some(super::modal::ModalResult {
+                    actions: vec![],
+                    close: true,
+                });
             }
             KeyCode::Enter => {
                 let chosen = self.filtered.get(self.selected)?.action.clone();
-                return Some(super::modal::ModalResult { actions: vec![chosen], close: true });
+                return Some(super::modal::ModalResult {
+                    actions: vec![chosen],
+                    close: true,
+                });
             }
             KeyCode::Up => self.selected = self.selected.saturating_sub(1),
             KeyCode::Down => {
@@ -107,7 +159,9 @@ impl PaletteState {
 
     pub fn draw(&self, frame: &mut Frame, screen: Rect, theme: &Theme) {
         let width = 50.min(screen.width);
-        let height = (self.filtered.len() as u16 + 4).clamp(5, 16).min(screen.height);
+        let height = (self.filtered.len() as u16 + 4)
+            .clamp(5, 16)
+            .min(screen.height);
         let area = super::modal::centered_rect(screen, width, height);
         let block = Block::default()
             .borders(Borders::ALL)

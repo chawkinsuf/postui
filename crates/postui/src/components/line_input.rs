@@ -17,7 +17,10 @@ pub struct LineInput {
 impl LineInput {
     pub fn new(text: &str) -> Self {
         let cursor = text.chars().count();
-        Self { text: text.to_string(), cursor }
+        Self {
+            text: text.to_string(),
+            cursor,
+        }
     }
 
     pub fn text(&self) -> &str {
@@ -35,7 +38,11 @@ impl LineInput {
     /// Byte offset of the char at `idx` (or the end-of-string offset when
     /// `idx == len_chars()`).
     fn byte_offset(&self, idx: usize) -> usize {
-        self.text.char_indices().nth(idx).map(|(b, _)| b).unwrap_or(self.text.len())
+        self.text
+            .char_indices()
+            .nth(idx)
+            .map(|(b, _)| b)
+            .unwrap_or(self.text.len())
     }
 
     /// Handles a key event, returning `true` if it was consumed (state may
@@ -224,7 +231,9 @@ mod tests {
 
     #[test]
     fn windowed_cursor_at_end_of_long_text_scrolls_so_the_slice_ends_at_the_cursor() {
-        let text: String = (0..200).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
+        let text: String = (0..200)
+            .map(|i| char::from(b'a' + (i % 26) as u8))
+            .collect();
         let input = LineInput::new(&text); // cursor defaults to end (200)
         let theme = Theme::dark();
         let line = input.draw_line_windowed(true, &theme, 20);
@@ -243,12 +252,17 @@ mod tests {
         let theme = Theme::dark();
         let line = input.draw_line_windowed(true, &theme, 10);
         let rendered = line_text(&line);
-        assert!(rendered.starts_with('h'), "must start from char 0: {rendered:?}");
+        assert!(
+            rendered.starts_with('h'),
+            "must start from char 0: {rendered:?}"
+        );
     }
 
     #[test]
     fn windowed_unfocused_long_text_renders_from_zero() {
-        let text: String = (0..200).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
+        let text: String = (0..200)
+            .map(|i| char::from(b'a' + (i % 26) as u8))
+            .collect();
         let input = LineInput::new(&text);
         let theme = Theme::dark();
         let line = input.draw_line_windowed(false, &theme, 20);

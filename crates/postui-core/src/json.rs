@@ -10,7 +10,11 @@ pub struct JsonError {
 
 impl fmt::Display for JsonError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "line {}, column {}: {}", self.line, self.column, self.message)
+        write!(
+            f,
+            "line {}, column {}: {}",
+            self.line, self.column, self.message
+        )
     }
 }
 
@@ -68,7 +72,10 @@ mod tests {
             out.contains("1e3") || out.contains("1e+3"),
             "arbitrary_precision: exponent format preserved (1e3 or 1e+3)"
         );
-        assert!(out.contains("1.50"), "arbitrary_precision: decimal precision preserved");
+        assert!(
+            out.contains("1.50"),
+            "arbitrary_precision: decimal precision preserved"
+        );
         assert!(out.contains("\n"), "actually pretty");
     }
 

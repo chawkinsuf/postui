@@ -1,7 +1,7 @@
 use super::line_input::LineInput;
 use super::table_editor::TableEditorState;
 use super::toast::ToastKind;
-use super::{pane_block, Component, DrawCtx};
+use super::{Component, DrawCtx, pane_block};
 use crate::action::Action;
 use crate::theme::Theme;
 use edtui::{
@@ -10,12 +10,12 @@ use edtui::{
 };
 use indexmap::IndexMap;
 use postui_core::model::{Body, Entry, HttpRequest, Method};
+use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 
 /// Which editor tab is active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -224,7 +224,8 @@ impl Component for Editor {
                 // unbound modified combo falls through to this component and
                 // reaches edtui's own emacs-style bindings (ctrl+a/e/k etc.)
                 // deliberately, so those keep working for body editing.
-                if ev.code == KeyCode::Esc || (ev.code == KeyCode::Up && self.body.cursor.row == 0) {
+                if ev.code == KeyCode::Esc || (ev.code == KeyCode::Up && self.body.cursor.row == 0)
+                {
                     self.sub_focus = SubFocus::Url;
                     return Some(Action::Render);
                 }
@@ -268,7 +269,10 @@ impl Editor {
 
         let url_focused = self.sub_focus == SubFocus::Url;
         frame.render_widget(
-            Paragraph::new(self.url.draw_line_windowed(url_focused, theme, cols[1].width)),
+            Paragraph::new(
+                self.url
+                    .draw_line_windowed(url_focused, theme, cols[1].width),
+            ),
             cols[1],
         );
     }
@@ -290,7 +294,10 @@ impl Editor {
                 } else {
                     ('✗', theme.error)
                 };
-                spans.push(Span::styled(format!("{glyph} "), Style::default().fg(color)));
+                spans.push(Span::styled(
+                    format!("{glyph} "),
+                    Style::default().fg(color),
+                ));
             }
         }
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -301,11 +308,23 @@ impl Editor {
         match self.active_tab {
             EditorTab::Params => {
                 let ctx = DrawCtx { theme, focused };
-                self.table.draw(frame, area, &self.params, &ctx, "No params yet — press a to add");
+                self.table.draw(
+                    frame,
+                    area,
+                    &self.params,
+                    &ctx,
+                    "No params yet — press a to add",
+                );
             }
             EditorTab::Headers => {
                 let ctx = DrawCtx { theme, focused };
-                self.table.draw(frame, area, &self.headers, &ctx, "No headers yet — press a to add");
+                self.table.draw(
+                    frame,
+                    area,
+                    &self.headers,
+                    &ctx,
+                    "No headers yet — press a to add",
+                );
             }
             EditorTab::Body => {
                 let highlighter = json_highlighter(theme);
@@ -341,7 +360,11 @@ impl Editor {
 /// `Arc`-shared process-wide statics, so only one theme and one syntax
 /// reference are cloned, and draws are event-driven rather than continuous.
 fn json_highlighter(theme: &Theme) -> Option<SyntaxHighlighter> {
-    let name = if theme.is_dark() { "base16-ocean-dark" } else { "base16-ocean-light" };
+    let name = if theme.is_dark() {
+        "base16-ocean-dark"
+    } else {
+        "base16-ocean-light"
+    };
     SyntaxHighlighter::new(name, "json").ok()
 }
 
@@ -350,9 +373,9 @@ mod tests {
     use super::*;
     use crate::app::App;
     use postui_core::model::{HttpRequest, Method};
+    use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use ratatui::Terminal;
 
     fn key(c: KeyCode) -> KeyEvent {
         KeyEvent::new(c, KeyModifiers::NONE)
@@ -361,7 +384,10 @@ mod tests {
     #[test]
     fn typing_into_url_marks_dirty_and_updates_request() {
         let mut e = Editor::default();
-        e.load(Some("a".into()), HttpRequest::from_toml_str(r#"url = "https://x""#).unwrap());
+        e.load(
+            Some("a".into()),
+            HttpRequest::from_toml_str(r#"url = "https://x""#).unwrap(),
+        );
         assert!(!e.is_dirty());
         assert_eq!(e.sub_focus, SubFocus::Url, "load must not change sub_focus");
         e.handle_key(key(KeyCode::Char('/')));
@@ -378,7 +404,10 @@ mod tests {
     #[test]
     fn mark_saved_clears_dirty_flag() {
         let mut e = Editor::default();
-        e.load(Some("a".into()), HttpRequest::from_toml_str(r#"url = "https://x""#).unwrap());
+        e.load(
+            Some("a".into()),
+            HttpRequest::from_toml_str(r#"url = "https://x""#).unwrap(),
+        );
         e.handle_key(key(KeyCode::Char('/')));
         assert!(e.is_dirty());
         e.mark_saved();
@@ -401,7 +430,11 @@ mod tests {
         let mut app = App::new_for_test();
         assert_eq!(app.editor.active_tab, EditorTab::Params);
         app.update(Action::EditorTabCycle(-1));
-        assert_eq!(app.editor.active_tab, EditorTab::Body, "backward wraps to last tab");
+        assert_eq!(
+            app.editor.active_tab,
+            EditorTab::Body,
+            "backward wraps to last tab"
+        );
     }
 
     #[test]
@@ -421,7 +454,11 @@ mod tests {
         // Task-10 behavior instead of leaving the user stuck with no way
         // back to the URL line.
         let mut e = Editor::default();
-        assert_eq!(e.sub_focus, SubFocus::Url, "default sub_focus starts on the URL line");
+        assert_eq!(
+            e.sub_focus,
+            SubFocus::Url,
+            "default sub_focus starts on the URL line"
+        );
         e.handle_key(key(KeyCode::Down));
         assert_eq!(e.sub_focus, SubFocus::Content);
         e.handle_key(key(KeyCode::Up));
@@ -432,7 +469,10 @@ mod tests {
     fn body_tab_up_returns_to_url() {
         // Body tab has no table editor to intercept Up at all; it keeps the
         // original Up-returns-to-url-line fallback unconditionally.
-        let mut e = Editor { active_tab: EditorTab::Body, ..Editor::default() };
+        let mut e = Editor {
+            active_tab: EditorTab::Body,
+            ..Editor::default()
+        };
         e.handle_key(key(KeyCode::Down));
         assert_eq!(e.sub_focus, SubFocus::Content);
         e.handle_key(key(KeyCode::Up));
@@ -444,8 +484,20 @@ mod tests {
         // A non-empty table still doesn't consume Up at row 0 (the top),
         // so Editor's fallback kicks in even though the table has rows.
         let mut e = Editor::default();
-        e.params.insert("a".into(), Entry { value: "1".into(), enabled: true });
-        e.params.insert("b".into(), Entry { value: "2".into(), enabled: true });
+        e.params.insert(
+            "a".into(),
+            Entry {
+                value: "1".into(),
+                enabled: true,
+            },
+        );
+        e.params.insert(
+            "b".into(),
+            Entry {
+                value: "2".into(),
+                enabled: true,
+            },
+        );
         e.sub_focus = SubFocus::Content;
         assert_eq!(e.table.selected, 0);
         let action = e.handle_key(key(KeyCode::Up));
@@ -458,20 +510,42 @@ mod tests {
         // Once selected has moved off row 0, Up navigates the table instead
         // of returning focus to the URL line.
         let mut e = Editor::default();
-        e.params.insert("a".into(), Entry { value: "1".into(), enabled: true });
-        e.params.insert("b".into(), Entry { value: "2".into(), enabled: true });
+        e.params.insert(
+            "a".into(),
+            Entry {
+                value: "1".into(),
+                enabled: true,
+            },
+        );
+        e.params.insert(
+            "b".into(),
+            Entry {
+                value: "2".into(),
+                enabled: true,
+            },
+        );
         e.sub_focus = SubFocus::Content;
         e.table.selected = 1;
         let action = e.handle_key(key(KeyCode::Up));
         assert_eq!(action, Some(Action::Render));
-        assert_eq!(e.sub_focus, SubFocus::Content, "table navigation must not move focus");
+        assert_eq!(
+            e.sub_focus,
+            SubFocus::Content,
+            "table navigation must not move focus"
+        );
         assert_eq!(e.table.selected, 0);
     }
 
     #[test]
     fn duplicate_key_commit_in_params_tab_shows_warning_toast() {
         let mut e = Editor::default();
-        e.params.insert("a".into(), Entry { value: "1".into(), enabled: true });
+        e.params.insert(
+            "a".into(),
+            Entry {
+                value: "1".into(),
+                enabled: true,
+            },
+        );
         e.sub_focus = SubFocus::Content;
         // Append a new row keyed "a", which duplicates the existing entry.
         e.handle_key(key(KeyCode::Char('a')));
@@ -505,7 +579,11 @@ mod tests {
             ..Editor::default()
         };
         e.handle_key(key(KeyCode::Char('{')));
-        assert_eq!(e.body_text(), "{", "emacs mode: chars insert without entering a vim insert mode");
+        assert_eq!(
+            e.body_text(),
+            "{",
+            "emacs mode: chars insert without entering a vim insert mode"
+        );
     }
 
     #[test]
@@ -530,7 +608,11 @@ mod tests {
         };
         e.set_body_text("one\ntwo");
         e.handle_key(key(KeyCode::Down)); // move to row 1 inside the body
-        assert_eq!(e.sub_focus, SubFocus::Content, "Up/Down navigate inside a multi-line body");
+        assert_eq!(
+            e.sub_focus,
+            SubFocus::Content,
+            "Up/Down navigate inside a multi-line body"
+        );
         e.handle_key(key(KeyCode::Up)); // back to row 0, still inside
         assert_eq!(e.sub_focus, SubFocus::Content);
         e.handle_key(key(KeyCode::Up)); // at row 0 → leave for the URL line
@@ -543,7 +625,12 @@ mod tests {
         e.set_body_text("{ \"in-progress\": ");
         let req = e.current_request();
         let back = HttpRequest::from_toml_str(&req.to_toml_string()).unwrap();
-        assert_eq!(back.body, Some(Body::Json { text: "{ \"in-progress\": ".into() }));
+        assert_eq!(
+            back.body,
+            Some(Body::Json {
+                text: "{ \"in-progress\": ".into()
+            })
+        );
     }
 
     #[test]
@@ -568,12 +655,20 @@ mod tests {
         let theme = Theme::dark();
         let backend = TestBackend::new(80, 10);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| app.toasts.draw(f, f.area(), &theme)).unwrap();
+        terminal
+            .draw(|f| app.toasts.draw(f, f.area(), &theme))
+            .unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
-        assert!(content.contains("line 2"), "toast must carry the error position: {content}");
+        assert!(
+            content.contains("line 2"),
+            "toast must carry the error position: {content}"
+        );
 
         let mut app = App::new_for_test();
-        assert!(app.update(Action::MinifyBody), "empty body is a no-op, not an error");
+        assert!(
+            app.update(Action::MinifyBody),
+            "empty body is a no-op, not an error"
+        );
         assert_eq!(app.editor.body_text(), "");
         assert!(app.toasts.is_empty(), "no toast for an empty body");
     }
@@ -592,10 +687,16 @@ mod tests {
     #[test]
     fn body_tab_label_shows_json_validity() {
         let render = |text: &str| {
-            let mut e = Editor { active_tab: EditorTab::Body, ..Editor::default() };
+            let mut e = Editor {
+                active_tab: EditorTab::Body,
+                ..Editor::default()
+            };
             e.set_body_text(text);
             let theme = Theme::dark();
-            let ctx = DrawCtx { theme: &theme, focused: true };
+            let ctx = DrawCtx {
+                theme: &theme,
+                focused: true,
+            };
             let backend = TestBackend::new(60, 10);
             let mut terminal = Terminal::new(backend).unwrap();
             terminal.draw(|f| e.draw(f, f.area(), &ctx)).unwrap();
@@ -608,15 +709,24 @@ mod tests {
 
     #[test]
     fn body_tab_renders_its_text() {
-        let mut e = Editor { active_tab: EditorTab::Body, ..Editor::default() };
+        let mut e = Editor {
+            active_tab: EditorTab::Body,
+            ..Editor::default()
+        };
         e.set_body_text("{\"marker\": 1}");
         let theme = Theme::dark();
-        let ctx = DrawCtx { theme: &theme, focused: true };
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+        };
         let backend = TestBackend::new(60, 10);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| e.draw(f, f.area(), &ctx)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
-        assert!(content.contains("marker"), "body text must render: {content}");
+        assert!(
+            content.contains("marker"),
+            "body text must render: {content}"
+        );
     }
 
     #[test]
@@ -631,13 +741,19 @@ url = "https://api.example.com/users""#,
             .unwrap(),
         );
         let theme = Theme::dark();
-        let ctx = DrawCtx { theme: &theme, focused: true };
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+        };
         let backend = TestBackend::new(60, 10);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| e.draw(f, f.area(), &ctx)).unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("POST"), "method badge: {content}");
-        assert!(content.contains("https://api.example.com/users"), "url text: {content}");
+        assert!(
+            content.contains("https://api.example.com/users"),
+            "url text: {content}"
+        );
         assert!(content.contains("Params"), "params tab label: {content}");
         assert!(content.contains("Headers"), "headers tab label: {content}");
         assert!(content.contains("Body"), "body tab label: {content}");

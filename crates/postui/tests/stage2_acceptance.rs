@@ -1,8 +1,8 @@
 use postui::action::Action;
 use postui::app::App;
 use postui::components::line_input::LineInput;
-use ratatui::backend::TestBackend;
 use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -48,7 +48,10 @@ async fn stage2_acceptance_flow() {
     app.update(result);
 
     let frame = render(&mut app);
-    assert!(frame.contains("ping"), "sidebar shows the request slug: {frame}");
+    assert!(
+        frame.contains("ping"),
+        "sidebar shows the request slug: {frame}"
+    );
     assert!(frame.contains("GET"), "method badge: {frame}");
     assert!(frame.contains("200"), "status pill: {frame}");
     assert!(

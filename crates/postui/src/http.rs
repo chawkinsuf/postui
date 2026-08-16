@@ -78,7 +78,14 @@ pub async fn send(client: &reqwest::Client, req: &PreparedRequest) -> Result<Res
     let size = bytes.len();
     let body = String::from_utf8_lossy(&bytes).into_owned();
 
-    Ok(ResponseData { status, headers, body, elapsed, size, content_type })
+    Ok(ResponseData {
+        status,
+        headers,
+        body,
+        elapsed,
+        size,
+        content_type,
+    })
 }
 
 /// Joins a reqwest error and its `source()` chain with ": ", so e.g. a

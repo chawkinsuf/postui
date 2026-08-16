@@ -142,7 +142,10 @@ mod tests {
     fn dark_theme_tokens_are_rgb() {
         let t = Theme::dark();
         for c in [t.surface, t.text, t.accent, t.border, t.border_focused] {
-            assert!(matches!(c, Color::Rgb(..)), "token must be truecolor: {c:?}");
+            assert!(
+                matches!(c, Color::Rgb(..)),
+                "token must be truecolor: {c:?}"
+            );
         }
     }
 
@@ -150,7 +153,10 @@ mod tests {
     fn variant_is_reported_and_survives_downgrade() {
         assert!(Theme::dark().is_dark());
         assert!(!Theme::light().is_dark());
-        assert!(Theme::dark().downgrade_to_256().is_dark(), "downgrade keeps the variant");
+        assert!(
+            Theme::dark().downgrade_to_256().is_dark(),
+            "downgrade keeps the variant"
+        );
     }
 
     #[test]
@@ -165,10 +171,21 @@ mod tests {
     fn downgrade_maps_every_token_to_indexed() {
         let t = Theme::dark().downgrade_to_256();
         for c in [
-            t.surface, t.surface_raised, t.text, t.text_muted, t.accent,
-            t.success, t.error, t.warning, t.border, t.border_focused,
+            t.surface,
+            t.surface_raised,
+            t.text,
+            t.text_muted,
+            t.accent,
+            t.success,
+            t.error,
+            t.warning,
+            t.border,
+            t.border_focused,
         ] {
-            assert!(matches!(c, Color::Indexed(_)), "expected indexed, got {c:?}");
+            assert!(
+                matches!(c, Color::Indexed(_)),
+                "expected indexed, got {c:?}"
+            );
         }
     }
 
@@ -187,8 +204,8 @@ mod tests {
 
     #[test]
     fn rgb_to_indexed_hits_cube_corners() {
-        assert_eq!(rgb_to_indexed(0, 0, 0), 16);      // cube black
+        assert_eq!(rgb_to_indexed(0, 0, 0), 16); // cube black
         assert_eq!(rgb_to_indexed(255, 255, 255), 231); // cube white
-        assert_eq!(rgb_to_indexed(255, 0, 0), 196);   // cube red corner
+        assert_eq!(rgb_to_indexed(255, 0, 0), 196); // cube red corner
     }
 }

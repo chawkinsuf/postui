@@ -1,4 +1,4 @@
-use ratatui::layout::{Constraint, Direction, Layout, Rect, Position};
+use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneId {
@@ -81,7 +81,10 @@ mod tests {
             p = p.next();
             seen.push(p);
         }
-        assert_eq!(seen, vec![PaneId::Sidebar, PaneId::Editor, PaneId::Response]);
+        assert_eq!(
+            seen,
+            vec![PaneId::Sidebar, PaneId::Editor, PaneId::Response]
+        );
         assert_eq!(p.next(), start);
         assert_eq!(start.prev(), PaneId::Response);
     }

@@ -1,15 +1,15 @@
 use super::json_tree::{JsonTree, TokenKind};
 use super::line_input::LineInput;
-use super::{pane_block, Component, DrawCtx};
+use super::{Component, DrawCtx, pane_block};
 use crate::action::Action;
 use crate::components::toast::ToastKind;
 use crate::theme::Theme;
+use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 use std::time::{Duration, Instant};
 
 /// Bodies larger than this are never parsed or pretty-printed — the raw view
@@ -28,7 +28,9 @@ pub const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦"
 pub enum ResponseState {
     #[default]
     Empty,
-    InFlight { started: Instant },
+    InFlight {
+        started: Instant,
+    },
     Ready(Box<crate::http::ResponseData>),
     Failed(String),
     Cancelled,
@@ -77,9 +79,22 @@ pub struct ReadyView {
 impl ReadyView {
     fn new(data: &crate::http::ResponseData) -> Self {
         let oversize = data.body.len() > MAX_PRETTY_BYTES;
-        let tree = if oversize { None } else { JsonTree::parse(&data.body) };
-        let mode = if tree.is_some() { ViewMode::Pretty } else { ViewMode::Raw };
-        let width = data.headers.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0);
+        let tree = if oversize {
+            None
+        } else {
+            JsonTree::parse(&data.body)
+        };
+        let mode = if tree.is_some() {
+            ViewMode::Pretty
+        } else {
+            ViewMode::Raw
+        };
+        let width = data
+            .headers
+            .iter()
+            .map(|(k, _)| k.chars().count())
+            .max()
+            .unwrap_or(0);
         Self {
             mode,
             body_mode: mode,
@@ -111,7 +126,11 @@ impl ReadyView {
     /// over, and the coordinate space its match positions live in.
     fn search_corpus(&self) -> Vec<String> {
         match self.mode {
-            ViewMode::Pretty => self.tree.as_ref().map(|t| t.full_text_lines()).unwrap_or_default(),
+            ViewMode::Pretty => self
+                .tree
+                .as_ref()
+                .map(|t| t.full_text_lines())
+                .unwrap_or_default(),
             ViewMode::Raw => self.raw_lines.clone(),
             ViewMode::Headers => self.header_lines.clone(),
         }
@@ -178,7 +197,9 @@ impl ReadyView {
     /// hide it.
     fn jump_to_match(&mut self) {
         let Some(search) = &self.search else { return };
-        let Some(&(line, _)) = search.matches.get(search.current) else { return };
+        let Some(&(line, _)) = search.matches.get(search.current) else {
+            return;
+        };
         match (self.mode, self.tree.as_mut()) {
             (ViewMode::Pretty, Some(tree)) => {
                 tree.expand_ancestors(line);
@@ -191,7 +212,9 @@ impl ReadyView {
     }
 
     fn step_match(&mut self, delta: i32) {
-        let Some(search) = self.search.as_mut() else { return };
+        let Some(search) = self.search.as_mut() else {
+            return;
+        };
         let len = search.matches.len();
         if len == 0 {
             return;
@@ -202,8 +225,13 @@ impl ReadyView {
 
     /// Char ranges of every match on `line`, plus the current one.
     fn match_ranges(&self, line: usize) -> LineMatches {
-        let none = LineMatches { ranges: Vec::new(), current: None };
-        let Some(search) = &self.search else { return none };
+        let none = LineMatches {
+            ranges: Vec::new(),
+            current: None,
+        };
+        let Some(search) = &self.search else {
+            return none;
+        };
         if search.active || search.query.is_empty() {
             return none;
         }
@@ -294,8 +322,11 @@ impl Response {
                 Some(Action::Render)
             }
             KeyCode::Char('h') => {
-                let next =
-                    if view.mode == ViewMode::Headers { view.body_mode } else { ViewMode::Headers };
+                let next = if view.mode == ViewMode::Headers {
+                    view.body_mode
+                } else {
+                    ViewMode::Headers
+                };
                 view.set_mode(next);
                 Some(Action::Render)
             }
@@ -318,7 +349,9 @@ impl Response {
                 Some(Action::Render)
             }
             KeyCode::Char(' ') | KeyCode::Enter => {
-                if view.mode == ViewMode::Pretty && let Some(tree) = view.tree.as_mut() {
+                if view.mode == ViewMode::Pretty
+                    && let Some(tree) = view.tree.as_mut()
+                {
                     tree.toggle(view.cursor);
                     view.clamp_cursor();
                     view.follow_cursor();
@@ -358,7 +391,9 @@ impl Component for Response {
             ResponseState::InFlight { .. } if ev.code == KeyCode::Esc => Some(Action::CancelSend),
             // Modified combos belong to the global keymap, not the pane.
             ResponseState::Ready(_)
-                if !ev.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                if !ev
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
                 self.ready_key(ev)
             }
@@ -367,7 +402,9 @@ impl Component for Response {
     }
 
     fn handle_scroll(&mut self, delta: i16) {
-        let Some(view) = self.view.as_mut() else { return };
+        let Some(view) = self.view.as_mut() else {
+            return;
+        };
         // Stop once the last line reaches the bottom of the viewport, rather
         // than letting the document scroll off the top entirely.
         let max = view.visible_len().saturating_sub(view.height.max(1)) as i32;
@@ -415,7 +452,9 @@ impl Component for Response {
                 return;
             }
         };
-        let Some(view) = self.view.as_mut() else { return };
+        let Some(view) = self.view.as_mut() else {
+            return;
+        };
 
         let hint = view.oversize;
         let footer = view.search.is_some();
@@ -444,7 +483,10 @@ impl Component for Response {
         frame.render_widget(Paragraph::new(body), rows[2]);
 
         if footer {
-            frame.render_widget(Paragraph::new(search_footer(view, t, rows[3].width)), rows[3]);
+            frame.render_widget(
+                Paragraph::new(search_footer(view, t, rows[3].width)),
+                rows[3],
+            );
         }
     }
 }
@@ -455,7 +497,10 @@ fn summary_line(data: &crate::http::ResponseData, t: &Theme) -> Line<'static> {
     let mut spans = vec![
         Span::styled(
             format!(" {} ", data.status),
-            Style::default().fg(t.surface).bg(status_color(data.status, t)).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(t.surface)
+                .bg(status_color(data.status, t))
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(format!("  {}", human_elapsed(data.elapsed)), muted),
         Span::styled(format!("  {}", human_size(data.size)), muted),
@@ -478,7 +523,11 @@ fn status_color(status: u16, t: &Theme) -> Color {
 
 fn human_elapsed(d: Duration) -> String {
     let ms = d.as_millis();
-    if ms < 1000 { format!("{ms} ms") } else { format!("{:.1} s", d.as_secs_f64()) }
+    if ms < 1000 {
+        format!("{ms} ms")
+    } else {
+        format!("{:.1} s", d.as_secs_f64())
+    }
 }
 
 fn human_size(bytes: usize) -> String {
@@ -511,7 +560,10 @@ fn body_lines(view: &ReadyView, t: &Theme, focused: bool) -> Vec<Line<'static>> 
         let hits = if highlightable {
             view.match_ranges(full)
         } else {
-            LineMatches { ranges: Vec::new(), current: None }
+            LineMatches {
+                ranges: Vec::new(),
+                current: None,
+            }
         };
         let mut line = highlighted(pieces, &hits);
         if focused && i == view.cursor {
@@ -529,7 +581,10 @@ fn body_lines(view: &ReadyView, t: &Theme, focused: bool) -> Vec<Line<'static>> 
                 let line = lines[i];
                 let mut pieces = vec![(" ".repeat(line.indent), text)];
                 for tok in line.render_tokens() {
-                    pieces.push((tok.text.clone(), Style::default().fg(token_color(tok.kind, t))));
+                    pieces.push((
+                        tok.text.clone(),
+                        Style::default().fg(token_color(tok.kind, t)),
+                    ));
                 }
                 // A collapsed line renders its summary, not its real text, so
                 // the match columns computed over the expanded text no longer
@@ -544,7 +599,10 @@ fn body_lines(view: &ReadyView, t: &Theme, focused: bool) -> Vec<Line<'static>> 
         }
         ViewMode::Headers => {
             if view.header_lines.is_empty() {
-                out.push(Line::styled("(no headers)", Style::default().fg(t.text_muted)));
+                out.push(Line::styled(
+                    "(no headers)",
+                    Style::default().fg(t.text_muted),
+                ));
                 return out;
             }
             for (i, line) in view.header_lines.iter().enumerate().take(end).skip(start) {
@@ -576,7 +634,10 @@ fn token_color(kind: TokenKind, t: &Theme) -> Color {
 fn highlighted(pieces: Vec<(String, Style)>, hits: &LineMatches) -> Line<'static> {
     if hits.ranges.is_empty() {
         return Line::from(
-            pieces.into_iter().map(|(s, st)| Span::styled(s, st)).collect::<Vec<_>>(),
+            pieces
+                .into_iter()
+                .map(|(s, st)| Span::styled(s, st))
+                .collect::<Vec<_>>(),
         );
     }
     let hit = |at: usize| -> (bool, bool) {
@@ -613,7 +674,9 @@ fn highlighted(pieces: Vec<(String, Style)>, hits: &LineMatches) -> Line<'static
 
 /// `/query   3/17` — or the live input while the search is being typed.
 fn search_footer(view: &ReadyView, t: &Theme, width: u16) -> Line<'static> {
-    let Some(search) = &view.search else { return Line::raw("") };
+    let Some(search) = &view.search else {
+        return Line::raw("");
+    };
     let accent = Style::default().fg(t.accent);
     let mut spans = vec![Span::styled("/", accent)];
     if search.active {
@@ -622,7 +685,10 @@ fn search_footer(view: &ReadyView, t: &Theme, width: u16) -> Line<'static> {
         spans.extend(search.input.draw_line_windowed(true, t, input_width).spans);
         return Line::from(spans);
     }
-    spans.push(Span::styled(search.query.clone(), Style::default().fg(t.text)));
+    spans.push(Span::styled(
+        search.query.clone(),
+        Style::default().fg(t.text),
+    ));
     let muted = Style::default().fg(t.text_muted);
     if search.matches.is_empty() {
         spans.push(Span::styled("  no matches", muted));
@@ -639,9 +705,9 @@ fn search_footer(view: &ReadyView, t: &Theme, width: u16) -> Line<'static> {
 mod tests {
     use super::*;
     use crate::theme::Theme;
+    use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::crossterm::event::KeyModifiers;
-    use ratatui::Terminal;
     use std::time::Duration;
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -674,7 +740,10 @@ mod tests {
 
     fn render_sized(resp: &mut Response, w: u16, h: u16) -> String {
         let theme = Theme::dark();
-        let ctx = DrawCtx { theme: &theme, focused: true };
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+        };
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
         terminal.draw(|f| resp.draw(f, f.area(), &ctx)).unwrap();
         format!("{:?}", terminal.backend().buffer())
@@ -721,9 +790,15 @@ mod tests {
         assert_eq!(r.handle_key(ch('r')), Some(Action::Render));
         let out = render(&mut r);
         assert!(out.contains("{\"a\": 1,"), "raw is verbatim: {out}");
-        assert!(out.contains("     \"b\": 2}"), "raw keeps original spacing: {out}");
+        assert!(
+            out.contains("     \"b\": 2}"),
+            "raw keeps original spacing: {out}"
+        );
         assert_eq!(r.handle_key(ch('r')), Some(Action::Render));
-        assert!(render(&mut r).contains("  \"a\": 1,"), "toggles back to pretty");
+        assert!(
+            render(&mut r).contains("  \"a\": 1,"),
+            "toggles back to pretty"
+        );
     }
 
     #[test]
@@ -755,7 +830,10 @@ mod tests {
         let out = render(&mut r);
         assert!(out.contains("content-type: application/json"), "{out}");
         assert_eq!(r.handle_key(ch('h')), Some(Action::Render));
-        assert!(render(&mut r).contains("\"a\""), "h again returns to the body view");
+        assert!(
+            render(&mut r).contains("\"a\""),
+            "h again returns to the body view"
+        );
     }
 
     #[test]
@@ -777,28 +855,48 @@ mod tests {
 
     #[test]
     fn scroll_clamps_and_is_independent_of_the_cursor() {
-        let body = format!("[{}]", (0..50).map(|i| i.to_string()).collect::<Vec<_>>().join(","));
+        let body = format!(
+            "[{}]",
+            (0..50).map(|i| i.to_string()).collect::<Vec<_>>().join(",")
+        );
         let mut r = ready(&body);
         render_sized(&mut r, 40, 10); // teaches the view its viewport height
         r.handle_scroll(-5);
         assert_eq!(r.view().unwrap().scroll, 0, "clamped at the top");
-        assert_eq!(r.view().unwrap().cursor, 0, "scrolling does not move the cursor");
+        assert_eq!(
+            r.view().unwrap().cursor,
+            0,
+            "scrolling does not move the cursor"
+        );
         r.handle_scroll(500);
         let v = r.view().unwrap();
-        assert!(v.scroll > 0 && v.scroll < 52, "clamped inside the document: {}", v.scroll);
+        assert!(
+            v.scroll > 0 && v.scroll < 52,
+            "clamped inside the document: {}",
+            v.scroll
+        );
         assert_eq!(v.cursor, 0);
     }
 
     #[test]
     fn scrolling_moves_the_rendered_window() {
-        let body = format!("[{}]", (0..50).map(|i| format!("\"e{i}\"")).collect::<Vec<_>>().join(","));
+        let body = format!(
+            "[{}]",
+            (0..50)
+                .map(|i| format!("\"e{i}\""))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
         let mut r = ready(&body);
         let top = render_sized(&mut r, 40, 10);
         assert!(top.contains("\"e0\""));
         assert!(!top.contains("\"e40\""), "the tail is off screen: {top}");
         r.handle_scroll(40);
         let down = render_sized(&mut r, 40, 10);
-        assert!(down.contains("\"e40\""), "scrolling reveals later lines: {down}");
+        assert!(
+            down.contains("\"e40\""),
+            "scrolling reveals later lines: {down}"
+        );
         assert!(!down.contains("\"e0\""), "and hides earlier ones: {down}");
     }
 
@@ -823,7 +921,10 @@ mod tests {
         }
         // While the input is active, other response keys are suspended.
         assert_eq!(r.view().unwrap().cursor, 0);
-        assert!(render(&mut r).contains("/zz"), "the query echoes in the footer");
+        assert!(
+            render(&mut r).contains("/zz"),
+            "the query echoes in the footer"
+        );
         r.handle_key(key(KeyCode::Enter));
         let out = render(&mut r);
         assert!(out.contains("1/2"), "match counter: {out}");
@@ -846,7 +947,10 @@ mod tests {
             assert_eq!(r.handle_key(ch(c)), Some(Action::Render));
         }
         assert_eq!(r.view().unwrap().cursor, 0, "navigation keys are suspended");
-        assert_eq!(r.view().unwrap().search.as_ref().unwrap().input.text(), "jjG");
+        assert_eq!(
+            r.view().unwrap().search.as_ref().unwrap().input.text(),
+            "jjG"
+        );
     }
 
     #[test]
@@ -861,7 +965,10 @@ mod tests {
         }
         r.handle_key(key(KeyCode::Enter));
         let out = render(&mut r);
-        assert!(out.contains("needle"), "jumping expands the ancestors: {out}");
+        assert!(
+            out.contains("needle"),
+            "jumping expands the ancestors: {out}"
+        );
         assert!(out.contains("1/1"));
     }
 
@@ -881,7 +988,11 @@ mod tests {
         r.handle_key(key(KeyCode::Enter));
         let out = render(&mut r);
         assert!(out.contains("no matches"), "{out}");
-        assert_eq!(r.handle_key(ch('n')), Some(Action::Render), "n with no matches is inert");
+        assert_eq!(
+            r.handle_key(ch('n')),
+            Some(Action::Render),
+            "n with no matches is inert"
+        );
     }
 
     #[test]
@@ -898,9 +1009,14 @@ mod tests {
     #[test]
     fn in_flight_shows_a_spinner_and_the_cancel_hint() {
         let mut r = Response::default();
-        r.set_state(ResponseState::InFlight { started: Instant::now() });
+        r.set_state(ResponseState::InFlight {
+            started: Instant::now(),
+        });
         let out = render(&mut r);
-        assert!(SPINNER.iter().any(|g| out.contains(*g)), "a spinner glyph: {out}");
+        assert!(
+            SPINNER.iter().any(|g| out.contains(*g)),
+            "a spinner glyph: {out}"
+        );
         assert!(out.contains("esc to cancel"), "{out}");
     }
 
@@ -918,9 +1034,15 @@ mod tests {
     #[test]
     fn keys_do_nothing_outside_the_ready_state() {
         let mut r = Response::default();
-        assert_eq!(r.handle_key(ch('j')), None, "an empty pane ignores navigation");
+        assert_eq!(
+            r.handle_key(ch('j')),
+            None,
+            "an empty pane ignores navigation"
+        );
         assert_eq!(r.handle_key(ch('/')), None);
-        r.set_state(ResponseState::InFlight { started: Instant::now() });
+        r.set_state(ResponseState::InFlight {
+            started: Instant::now(),
+        });
         assert_eq!(r.handle_key(key(KeyCode::Esc)), Some(Action::CancelSend));
         assert_eq!(r.handle_key(ch('j')), None);
     }
@@ -931,7 +1053,11 @@ mod tests {
         r.handle_key(ch('G'));
         assert_eq!(r.view().unwrap().cursor, 3, "last pretty line");
         r.handle_key(ch('r'));
-        assert_eq!(r.view().unwrap().cursor, 0, "switching views restarts at the top");
+        assert_eq!(
+            r.view().unwrap().cursor,
+            0,
+            "switching views restarts at the top"
+        );
         r.handle_key(ch('G'));
         assert_eq!(r.view().unwrap().cursor, 1, "last raw line");
         r.set_state(ResponseState::Ready(Box::new(data(r#"{"z": 1}"#))));
@@ -939,6 +1065,9 @@ mod tests {
         assert_eq!(v.cursor, 0);
         assert_eq!(v.scroll, 0);
         assert!(v.search.is_none());
-        assert!(render(&mut r).contains("\"z\""), "back to pretty for the new body");
+        assert!(
+            render(&mut r).contains("\"z\""),
+            "back to pretty for the new body"
+        );
     }
 }

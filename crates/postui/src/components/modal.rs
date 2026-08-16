@@ -1,12 +1,12 @@
 use super::line_input::LineInput;
 use crate::action::Action;
 use crate::theme::Theme;
+use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph, Wrap};
-use ratatui::Frame;
 
 /// What a `Modal::Prompt`'s confirmed text becomes: which `Action` it maps
 /// to, and (for rename) which slug is prefilled/being renamed.
@@ -18,16 +18,27 @@ pub enum PromptKind {
 }
 
 pub enum Modal {
-    Message { title: String, body: String },
+    Message {
+        title: String,
+        body: String,
+    },
     /// A choice prompt: each entry in `choices` is `(key, label, actions)` —
     /// pressing `key` (case-insensitive) dispatches `actions` and closes the
     /// modal; `Esc` closes with no actions.
-    Confirm { title: String, body: String, choices: Vec<(char, String, Vec<Action>)> },
+    Confirm {
+        title: String,
+        body: String,
+        choices: Vec<(char, String, Vec<Action>)>,
+    },
     /// A single-line text prompt (new request name, rename, save-as).
     /// `Enter` on non-empty text closes and dispatches the action matching
     /// `kind`; `Enter` on empty text is swallowed; `Esc` closes with no
     /// action.
-    Prompt { title: String, input: LineInput, kind: PromptKind },
+    Prompt {
+        title: String,
+        input: LineInput,
+        kind: PromptKind,
+    },
     Palette(crate::components::palette::PaletteState),
 }
 
@@ -66,24 +77,34 @@ impl ModalStack {
         let top = self.stack.last_mut()?;
         match top {
             Modal::Message { .. } => match key.code {
-                KeyCode::Esc | KeyCode::Enter => {
-                    Some(ModalResult { actions: vec![], close: true })
-                }
+                KeyCode::Esc | KeyCode::Enter => Some(ModalResult {
+                    actions: vec![],
+                    close: true,
+                }),
                 _ => None, // swallowed: modals capture all input
             },
             Modal::Confirm { choices, .. } => match key.code {
-                KeyCode::Esc => Some(ModalResult { actions: vec![], close: true }),
+                KeyCode::Esc => Some(ModalResult {
+                    actions: vec![],
+                    close: true,
+                }),
                 KeyCode::Char(c) => {
                     let c = c.to_ascii_lowercase();
                     choices
                         .iter()
                         .find(|(choice, _, _)| choice.to_ascii_lowercase() == c)
-                        .map(|(_, _, actions)| ModalResult { actions: actions.clone(), close: true })
+                        .map(|(_, _, actions)| ModalResult {
+                            actions: actions.clone(),
+                            close: true,
+                        })
                 }
                 _ => None, // swallowed: modals capture all input
             },
             Modal::Prompt { input, kind, .. } => match key.code {
-                KeyCode::Esc => Some(ModalResult { actions: vec![], close: true }),
+                KeyCode::Esc => Some(ModalResult {
+                    actions: vec![],
+                    close: true,
+                }),
                 KeyCode::Enter => {
                     let text = input.text().trim();
                     if text.is_empty() {
@@ -91,12 +112,16 @@ impl ModalStack {
                     } else {
                         let action = match kind {
                             PromptKind::NewRequest => Action::CreateRequest(text.to_string()),
-                            PromptKind::RenameRequest { from } => {
-                                Action::RenameRequest { from: from.clone(), to: text.to_string() }
-                            }
+                            PromptKind::RenameRequest { from } => Action::RenameRequest {
+                                from: from.clone(),
+                                to: text.to_string(),
+                            },
                             PromptKind::SaveAs => Action::SaveRequestAs(text.to_string()),
                         };
-                        Some(ModalResult { actions: vec![action], close: true })
+                        Some(ModalResult {
+                            actions: vec![action],
+                            close: true,
+                        })
                     }
                 }
                 _ => {
@@ -131,7 +156,11 @@ impl ModalStack {
                     area,
                 );
             }
-            Modal::Confirm { title, body, choices } => {
+            Modal::Confirm {
+                title,
+                body,
+                choices,
+            } => {
                 let area = centered_rect(screen, 60.min(screen.width), 9);
                 let block = Block::default()
                     .borders(Borders::ALL)
@@ -141,8 +170,10 @@ impl ModalStack {
                     .style(Style::default().bg(theme.surface_raised))
                     .title(format!(" {title} "))
                     .title_style(Style::default().fg(theme.accent));
-                let mut hint =
-                    choices.iter().map(|(c, label, _)| format!("[{c}] {label}")).collect::<Vec<_>>();
+                let mut hint = choices
+                    .iter()
+                    .map(|(c, label, _)| format!("[{c}] {label}"))
+                    .collect::<Vec<_>>();
                 hint.push("[esc] Cancel".to_string());
                 let text = format!("{body}\n\n{}", hint.join("   "));
                 frame.render_widget(Clear, area);
@@ -174,7 +205,11 @@ impl ModalStack {
                     input_area,
                 );
 
-                let hint_area = Rect { y: inner.y + 2, height: 1, ..inner };
+                let hint_area = Rect {
+                    y: inner.y + 2,
+                    height: 1,
+                    ..inner
+                };
                 frame.render_widget(
                     Paragraph::new(Line::from(Span::styled(
                         "[enter] confirm  [esc] cancel",
@@ -208,9 +243,9 @@ pub fn dim_backdrop(frame: &mut Frame, screen: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::crossterm::event::KeyModifiers;
-    use ratatui::Terminal;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -229,8 +264,14 @@ mod tests {
     #[test]
     fn esc_closes_top_modal_only() {
         let mut m = ModalStack::default();
-        m.push(Modal::Message { title: "A".into(), body: "a".into() });
-        m.push(Modal::Message { title: "B".into(), body: "b".into() });
+        m.push(Modal::Message {
+            title: "A".into(),
+            body: "a".into(),
+        });
+        m.push(Modal::Message {
+            title: "B".into(),
+            body: "b".into(),
+        });
         let res = m.handle_key(key(KeyCode::Esc)).unwrap();
         assert!(res.close);
         assert!(res.actions.is_empty());
@@ -241,15 +282,22 @@ mod tests {
     #[test]
     fn other_keys_are_swallowed_by_message_modal() {
         let mut m = ModalStack::default();
-        m.push(Modal::Message { title: "A".into(), body: "a".into() });
-        assert!(m.handle_key(key(KeyCode::Char('q'))).is_none(),
-            "keys must not leak through a modal to global bindings");
+        m.push(Modal::Message {
+            title: "A".into(),
+            body: "a".into(),
+        });
+        assert!(
+            m.handle_key(key(KeyCode::Char('q'))).is_none(),
+            "keys must not leak through a modal to global bindings"
+        );
     }
 
     #[test]
     fn palette_enter_returns_action_and_closes() {
         let mut m = ModalStack::default();
-        m.push(Modal::Palette(crate::components::palette::PaletteState::new()));
+        m.push(Modal::Palette(
+            crate::components::palette::PaletteState::new(),
+        ));
         for c in "quit".chars() {
             assert!(m.handle_key(key(KeyCode::Char(c))).is_none());
         }
@@ -263,7 +311,10 @@ mod tests {
     #[test]
     fn message_modal_closes_without_action() {
         let mut m = ModalStack::default();
-        m.push(Modal::Message { title: "t".into(), body: "b".into() });
+        m.push(Modal::Message {
+            title: "t".into(),
+            body: "b".into(),
+        });
         let res = m.handle_key(key(KeyCode::Esc)).unwrap();
         assert!(res.close && res.actions.is_empty());
     }
@@ -272,14 +323,20 @@ mod tests {
     fn top_returns_the_top_modal() {
         let mut m = ModalStack::default();
         assert!(m.top().is_none());
-        m.push(Modal::Message { title: "t".into(), body: "b".into() });
+        m.push(Modal::Message {
+            title: "t".into(),
+            body: "b".into(),
+        });
         assert!(matches!(m.top(), Some(Modal::Message { .. })));
     }
 
     #[test]
     fn draw_renders_title_and_body() {
         let mut m = ModalStack::default();
-        m.push(Modal::Message { title: "About".into(), body: "hello world".into() });
+        m.push(Modal::Message {
+            title: "About".into(),
+            body: "hello world".into(),
+        });
         let theme = Theme::dark();
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();

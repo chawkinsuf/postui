@@ -1,9 +1,9 @@
 use crate::theme::Theme;
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::Span;
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph};
-use ratatui::Frame;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToastKind {
@@ -65,7 +65,12 @@ impl Toasts {
             let padding_width: usize = 6;
             let clamped_width = display_width.saturating_add(padding_width);
             let width = (clamped_width as u16).min(screen.width);
-            let area = Rect::new(screen.right().saturating_sub(width.saturating_add(1)), y, width, 3);
+            let area = Rect::new(
+                screen.right().saturating_sub(width.saturating_add(1)),
+                y,
+                width,
+                3,
+            );
             if area.bottom() > screen.bottom() {
                 break;
             }
@@ -96,8 +101,8 @@ impl Toasts {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
 
     #[test]
     fn toast_expires_after_lifetime_ticks() {
@@ -119,9 +124,15 @@ mod tests {
         for _ in 0..TOAST_LIFETIME_TICKS - 1 {
             assert!(t.on_tick(), "still visible while counting down");
         }
-        assert!(t.on_tick(), "the expiring tick must still request a redraw to erase it");
+        assert!(
+            t.on_tick(),
+            "the expiring tick must still request a redraw to erase it"
+        );
         assert!(t.is_empty(), "the toast is gone after the expiring tick");
-        assert!(!t.on_tick(), "the tick after expiry is idle: no redraw needed");
+        assert!(
+            !t.on_tick(),
+            "the tick after expiry is idle: no redraw needed"
+        );
     }
 
     #[test]
@@ -168,6 +179,9 @@ mod tests {
         assert!(content.contains("已"), "CJK character should be rendered");
         // The box should be sized based on display width, not char count
         // Display width of "已复制 ✓" is 8 (3*2 + 1 + 2), plus 6 padding = 14 columns
-        assert!(content.contains('╭') || content.contains('┌'), "toast border should render");
+        assert!(
+            content.contains('╭') || content.contains('┌'),
+            "toast border should render"
+        );
     }
 }

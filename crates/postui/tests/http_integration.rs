@@ -11,7 +11,9 @@ fn req_to(url: String) -> HttpRequest {
         url,
         params: Default::default(),
         headers: Default::default(),
-        body: Some(Body::Json { text: "{\"a\":1}".into() }),
+        body: Some(Body::Json {
+            text: "{\"a\":1}".into(),
+        }),
     }
 }
 
@@ -42,10 +44,19 @@ async fn merged_query_params_reach_the_server() {
     let mut r = req_to(format!("{}/x?id=1", server.uri()));
     r.method = Method::Get;
     r.body = None;
-    r.params.insert("id".into(), Entry { value: "2".into(), enabled: true });
+    r.params.insert(
+        "id".into(),
+        Entry {
+            value: "2".into(),
+            enabled: true,
+        },
+    );
     let (prepared, warns) = prepare(&r);
     assert_eq!(warns.len(), 1);
-    assert_eq!(http::send(&http::client(), &prepared).await.unwrap().status, 200);
+    assert_eq!(
+        http::send(&http::client(), &prepared).await.unwrap().status,
+        200
+    );
 }
 
 #[tokio::test]
@@ -134,5 +145,8 @@ async fn connection_refused_yields_readable_error() {
         body: None,
     });
     let err = http::send(&http::client(), &prepared).await.unwrap_err();
-    assert!(!err.is_empty() && !err.contains("Error {"), "human string, not Debug dump: {err}");
+    assert!(
+        !err.is_empty() && !err.contains("Error {"),
+        "human string, not Debug dump: {err}"
+    );
 }

@@ -97,14 +97,20 @@ impl<'de> Deserialize<'de> for Entry {
             where
                 E: de::Error,
             {
-                Ok(Entry { value: v.to_string(), enabled: true })
+                Ok(Entry {
+                    value: v.to_string(),
+                    enabled: true,
+                })
             }
 
             fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
             where
                 E: de::Error,
             {
-                Ok(Entry { value: v, enabled: true })
+                Ok(Entry {
+                    value: v,
+                    enabled: true,
+                })
             }
 
             fn visit_seq<A>(self, _seq: A) -> Result<Self::Value, A::Error>
@@ -142,7 +148,10 @@ impl<'de> Deserialize<'de> for Entry {
                     }
                 }
                 let value = value.ok_or_else(|| de::Error::missing_field("value"))?;
-                Ok(Entry { value, enabled: enabled.unwrap_or(true) })
+                Ok(Entry {
+                    value,
+                    enabled: enabled.unwrap_or(true),
+                })
             }
         }
 
@@ -224,19 +233,36 @@ mod tests {
 
     fn sample() -> HttpRequest {
         let mut params = IndexMap::new();
-        params.insert("page".into(), Entry { value: "2".into(), enabled: true });
-        params.insert("verbose".into(), Entry { value: "1".into(), enabled: false });
+        params.insert(
+            "page".into(),
+            Entry {
+                value: "2".into(),
+                enabled: true,
+            },
+        );
+        params.insert(
+            "verbose".into(),
+            Entry {
+                value: "1".into(),
+                enabled: false,
+            },
+        );
         let mut headers = IndexMap::new();
         headers.insert(
             "Authorization".into(),
-            Entry { value: "Bearer abc123".into(), enabled: true },
+            Entry {
+                value: "Bearer abc123".into(),
+                enabled: true,
+            },
         );
         HttpRequest {
             method: Method::Post,
             url: "https://api.example.com/users".into(),
             params,
             headers,
-            body: Some(Body::Json { text: "{ \"broken\": ".into() }), // invalid JSON must round-trip
+            body: Some(Body::Json {
+                text: "{ \"broken\": ".into(),
+            }), // invalid JSON must round-trip
         }
     }
 
@@ -253,9 +279,18 @@ mod tests {
     #[test]
     fn enabled_entries_serialize_as_plain_strings_disabled_as_inline_tables() {
         let out = sample().to_toml_string();
-        assert!(out.contains(r#"page = "2""#), "enabled entry is a plain string:\n{out}");
-        assert!(out.contains("verbose = {"), "disabled entry is an inline table:\n{out}");
-        assert!(!out.contains("[params.verbose]"), "no sub-table sections (they break ordering):\n{out}");
+        assert!(
+            out.contains(r#"page = "2""#),
+            "enabled entry is a plain string:\n{out}"
+        );
+        assert!(
+            out.contains("verbose = {"),
+            "disabled entry is an inline table:\n{out}"
+        );
+        assert!(
+            !out.contains("[params.verbose]"),
+            "no sub-table sections (they break ordering):\n{out}"
+        );
     }
 
     #[test]
@@ -271,9 +306,27 @@ mod tests {
     "#,
         )
         .unwrap();
-        assert_eq!(req.headers["A"], Entry { value: "1".into(), enabled: true });
-        assert_eq!(req.headers["B"], Entry { value: "2".into(), enabled: false });
-        assert_eq!(req.headers["C"], Entry { value: "3".into(), enabled: true });
+        assert_eq!(
+            req.headers["A"],
+            Entry {
+                value: "1".into(),
+                enabled: true
+            }
+        );
+        assert_eq!(
+            req.headers["B"],
+            Entry {
+                value: "2".into(),
+                enabled: false
+            }
+        );
+        assert_eq!(
+            req.headers["C"],
+            Entry {
+                value: "3".into(),
+                enabled: true
+            }
+        );
     }
 
     #[test]
@@ -299,7 +352,10 @@ mod tests {
         id = ["1", "2"]"#,
         );
         let msg = arr.unwrap_err().to_string();
-        assert!(msg.contains("reserved"), "array rejection names the reservation: {msg}");
+        assert!(
+            msg.contains("reserved"),
+            "array rejection names the reservation: {msg}"
+        );
         assert!(
             HttpRequest::from_toml_str(
                 r#"url = "u"

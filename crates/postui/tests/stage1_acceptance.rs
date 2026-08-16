@@ -2,8 +2,8 @@ use postui::action::Action;
 use postui::app::App;
 use postui::components::toast::ToastKind;
 use postui::layout::PaneId;
-use ratatui::backend::TestBackend;
 use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 
 fn render(app: &mut App) -> String {
     let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
@@ -26,7 +26,10 @@ fn stage1_acceptance_flow() {
     assert_eq!(app.focus, PaneId::Response);
 
     // 3. Toast renders and expires.
-    app.update(Action::ShowToast("Welcome to postui".into(), ToastKind::Info));
+    app.update(Action::ShowToast(
+        "Welcome to postui".into(),
+        ToastKind::Info,
+    ));
     assert!(render(&mut app).contains("Welcome to postui"));
     for _ in 0..40 {
         app.update(Action::Tick);

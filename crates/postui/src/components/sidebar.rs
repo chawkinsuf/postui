@@ -1,20 +1,23 @@
-use super::{pane_block, Component, DrawCtx};
+use super::{Component, DrawCtx, pane_block};
 use crate::action::Action;
 use crate::theme::Theme;
 use postui_core::storage::RequestListing;
+use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 
 /// One line of the sidebar listing: either a directory heading (not
 /// selectable) or a request (selectable, possibly broken).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Row {
     Dir(String),
-    Request { slug: String, broken: Option<String> },
+    Request {
+        slug: String,
+        broken: Option<String>,
+    },
 }
 
 #[derive(Default)]
@@ -48,22 +51,34 @@ impl Sidebar {
 
         let mut rows = Vec::new();
         for l in top {
-            rows.push(Row::Request { slug: l.slug, broken: l.broken });
+            rows.push(Row::Request {
+                slug: l.slug,
+                broken: l.broken,
+            });
         }
         let mut current_dir: Option<String> = None;
         for l in nested {
-            let dir = l.slug.rsplit_once('/').map(|(d, _)| d.to_string()).unwrap_or_default();
+            let dir = l
+                .slug
+                .rsplit_once('/')
+                .map(|(d, _)| d.to_string())
+                .unwrap_or_default();
             if current_dir.as_deref() != Some(dir.as_str()) {
                 rows.push(Row::Dir(dir.clone()));
                 current_dir = Some(dir);
             }
-            rows.push(Row::Request { slug: l.slug, broken: l.broken });
+            rows.push(Row::Request {
+                slug: l.slug,
+                broken: l.broken,
+            });
         }
         self.rows = rows;
 
         self.selected = prev_selected_slug
             .and_then(|slug| {
-                self.rows.iter().position(|r| matches!(r, Row::Request { slug: s, .. } if *s == slug))
+                self.rows
+                    .iter()
+                    .position(|r| matches!(r, Row::Request { slug: s, .. } if *s == slug))
             })
             .or_else(|| self.first_request_index())
             .unwrap_or(0);
@@ -73,15 +88,19 @@ impl Sidebar {
     /// Selects the request row for `slug`, if one exists. A no-op (leaves
     /// the current selection untouched) when `slug` isn't in `rows`.
     pub fn select_slug(&mut self, slug: &str) {
-        if let Some(i) =
-            self.rows.iter().position(|r| matches!(r, Row::Request { slug: s, .. } if s == slug))
+        if let Some(i) = self
+            .rows
+            .iter()
+            .position(|r| matches!(r, Row::Request { slug: s, .. } if s == slug))
         {
             self.selected = i;
         }
     }
 
     fn first_request_index(&self) -> Option<usize> {
-        self.rows.iter().position(|r| matches!(r, Row::Request { .. }))
+        self.rows
+            .iter()
+            .position(|r| matches!(r, Row::Request { .. }))
     }
 
     fn request_indices(&self) -> Vec<usize> {
@@ -131,16 +150,17 @@ impl Component for Sidebar {
             }
             KeyCode::Enter => match self.selected_row()? {
                 Row::Request { slug, broken: None } => Some(Action::OpenRequest(slug.clone())),
-                Row::Request { slug, broken: Some(_) } => Some(Action::ShowRequestError(slug.clone())),
+                Row::Request {
+                    slug,
+                    broken: Some(_),
+                } => Some(Action::ShowRequestError(slug.clone())),
                 Row::Dir(_) => None,
             },
             KeyCode::Char('n') => Some(Action::PromptNewRequest),
-            KeyCode::Char('r') => {
-                matches!(self.selected_row()?, Row::Request { .. }).then_some(Action::PromptRenameRequest)
-            }
-            KeyCode::Char('d') => {
-                matches!(self.selected_row()?, Row::Request { .. }).then_some(Action::ConfirmDeleteRequest)
-            }
+            KeyCode::Char('r') => matches!(self.selected_row()?, Row::Request { .. })
+                .then_some(Action::PromptRenameRequest),
+            KeyCode::Char('d') => matches!(self.selected_row()?, Row::Request { .. })
+                .then_some(Action::ConfirmDeleteRequest),
             _ => None,
         }
     }
@@ -159,12 +179,9 @@ impl Component for Sidebar {
         frame.render_widget(block, area);
 
         if self.rows.is_empty() {
-            let empty = Paragraph::new(vec![
-                Line::raw(""),
-                Line::raw("No requests yet."),
-            ])
-            .style(Style::default().fg(ctx.theme.text_muted))
-            .centered();
+            let empty = Paragraph::new(vec![Line::raw(""), Line::raw("No requests yet.")])
+                .style(Style::default().fg(ctx.theme.text_muted))
+                .centered();
             frame.render_widget(empty, inner);
             return;
         }
@@ -248,7 +265,13 @@ mod tests {
     }
 
     fn listing(slugs: &[&str]) -> Vec<RequestListing> {
-        slugs.iter().map(|s| RequestListing { slug: s.to_string(), broken: None }).collect()
+        slugs
+            .iter()
+            .map(|s| RequestListing {
+                slug: s.to_string(),
+                broken: None,
+            })
+            .collect()
     }
 
     #[test]
@@ -258,9 +281,15 @@ mod tests {
         assert_eq!(
             s.rows,
             vec![
-                Row::Request { slug: "ping".into(), broken: None },
+                Row::Request {
+                    slug: "ping".into(),
+                    broken: None
+                },
                 Row::Dir("auth".into()),
-                Row::Request { slug: "auth/login".into(), broken: None },
+                Row::Request {
+                    slug: "auth/login".into(),
+                    broken: None
+                },
             ]
         );
         assert_eq!(s.selected, 0);
@@ -272,26 +301,50 @@ mod tests {
         s.refresh(listing(&["auth/login", "ping"]));
         assert_eq!(s.selected_slug().as_deref(), Some("ping"));
         s.handle_key(key(KeyCode::Char('j')));
-        assert_eq!(s.selected_slug().as_deref(), Some("auth/login"), "Dir row skipped");
+        assert_eq!(
+            s.selected_slug().as_deref(),
+            Some("auth/login"),
+            "Dir row skipped"
+        );
         s.handle_key(key(KeyCode::Char('j')));
-        assert_eq!(s.selected_slug().as_deref(), Some("auth/login"), "clamped at the end");
+        assert_eq!(
+            s.selected_slug().as_deref(),
+            Some("auth/login"),
+            "clamped at the end"
+        );
         s.handle_key(key(KeyCode::Char('k')));
         assert_eq!(s.selected_slug().as_deref(), Some("ping"));
         s.handle_key(key(KeyCode::Char('k')));
-        assert_eq!(s.selected_slug().as_deref(), Some("ping"), "clamped at the start");
+        assert_eq!(
+            s.selected_slug().as_deref(),
+            Some("ping"),
+            "clamped at the start"
+        );
     }
 
     #[test]
     fn enter_on_healthy_and_broken_rows() {
         let mut s = Sidebar {
             rows: vec![
-                Row::Request { slug: "ok".into(), broken: None },
-                Row::Request { slug: "bad".into(), broken: Some("boom".into()) },
+                Row::Request {
+                    slug: "ok".into(),
+                    broken: None,
+                },
+                Row::Request {
+                    slug: "bad".into(),
+                    broken: Some("boom".into()),
+                },
             ],
             ..Sidebar::default()
         };
-        assert_eq!(s.handle_key(key(KeyCode::Enter)), Some(Action::OpenRequest("ok".into())));
+        assert_eq!(
+            s.handle_key(key(KeyCode::Enter)),
+            Some(Action::OpenRequest("ok".into()))
+        );
         s.selected = 1;
-        assert_eq!(s.handle_key(key(KeyCode::Enter)), Some(Action::ShowRequestError("bad".into())));
+        assert_eq!(
+            s.handle_key(key(KeyCode::Enter)),
+            Some(Action::ShowRequestError("bad".into()))
+        );
     }
 }

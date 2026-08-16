@@ -1,10 +1,10 @@
 use crate::layout::PaneId;
 use crate::theme::Theme;
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 
 /// Hints for the focused pane's own bindings, shown before the global part.
 fn contextual_hint(focus: PaneId) -> &'static str {
@@ -39,8 +39,8 @@ pub fn draw_footer(frame: &mut Frame, area: Rect, theme: &Theme, focus: PaneId) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
 
     fn render(focus: PaneId) -> String {
         let theme = Theme::for_terminal();

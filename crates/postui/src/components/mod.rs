@@ -1,22 +1,22 @@
-pub mod sidebar;
 pub mod editor;
+pub mod footer;
+pub mod header_bar;
 pub mod json_tree;
 pub mod line_input;
-pub mod response;
-pub mod header_bar;
-pub mod footer;
-pub mod toast;
 pub mod modal;
 pub mod palette;
+pub mod response;
+pub mod sidebar;
 pub mod table_editor;
+pub mod toast;
 
 use crate::action::Action;
 use crate::theme::Theme;
+use ratatui::Frame;
 use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::{Block, BorderType, Borders, Padding};
-use ratatui::Frame;
 
 pub struct DrawCtx<'a> {
     pub theme: &'a Theme,
@@ -51,13 +51,16 @@ pub fn pane_block<'a>(title: &'a str, ctx: &DrawCtx) -> Block<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
 
     #[test]
     fn pane_block_renders_rounded_border_and_title() {
         let theme = Theme::dark();
-        let ctx = DrawCtx { theme: &theme, focused: true };
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+        };
         let backend = TestBackend::new(20, 5);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
