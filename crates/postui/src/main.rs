@@ -3,11 +3,11 @@ use postui::action::Action;
 use postui::app::App;
 use postui::components::toast::ToastKind;
 use postui::keys::Keymap;
-use postui::layout::{compute_layout, hit_test};
+use postui::layout::compute_layout;
 use postui::ui;
 use ratatui::crossterm::event::{
     DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture, Event,
-    EventStream, KeyEventKind, MouseButton, MouseEventKind,
+    EventStream, KeyEventKind,
 };
 use ratatui::crossterm::execute;
 use ratatui::layout::Rect;
@@ -83,20 +83,7 @@ async fn run(terminal: &mut ratatui::DefaultTerminal) -> anyhow::Result<()> {
                                 let size = terminal.size()?;
                                 let layout =
                                     compute_layout(Rect::new(0, 0, size.width, size.height));
-                                match m.kind {
-                                    MouseEventKind::Down(MouseButton::Left) => {
-                                        if let Some(pane) = hit_test(&layout, m.column, m.row) {
-                                            redraw |= app.update(Action::FocusPane(pane));
-                                        }
-                                    }
-                                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-                                        if let Some(pane) = hit_test(&layout, m.column, m.row) {
-                                            let d = if m.kind == MouseEventKind::ScrollUp { -3 } else { 3 };
-                                            redraw |= app.update(Action::ScrollPane(pane, d));
-                                        }
-                                    }
-                                    _ => {}
-                                }
+                                redraw |= app.handle_mouse(m, &layout);
                             }
                             Event::Resize(..) => {
                                 redraw = true;

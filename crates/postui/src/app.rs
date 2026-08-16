@@ -1126,6 +1126,63 @@ impl App {
             PaneId::Response => self.response.handle_key(ev),
         }
     }
+
+    /// Routes a raw terminal mouse event. A left-down or wheel event that
+    /// lands inside the editor pane first gets a shot at the body editor
+    /// itself (edtui owns click-to-place and its own scroll there); a click
+    /// also focuses the pane first (mirroring a click anywhere else), but a
+    /// wheel event does not — scrolling must never steal focus. Anything the
+    /// body editor doesn't consume — a click/scroll on the Params/Headers
+    /// tabs, or outside the recorded body area — falls back to the existing
+    /// pane-level focus/scroll behavior.
+    pub fn handle_mouse(
+        &mut self,
+        m: ratatui::crossterm::event::MouseEvent,
+        layout: &crate::layout::AppLayout,
+    ) -> bool {
+        use crate::layout::hit_test;
+        use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+        use ratatui::layout::Position;
+
+        let in_editor = layout.editor.contains(Position {
+            x: m.column,
+            y: m.row,
+        });
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Left) if in_editor => {
+                self.update(Action::FocusPane(PaneId::Editor));
+                if self.editor.handle_mouse(m) {
+                    return self.update(Action::Render);
+                }
+            }
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                if in_editor && self.editor.handle_mouse(m) =>
+            {
+                return self.update(Action::Render);
+            }
+            _ => {}
+        }
+
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(pane) = hit_test(layout, m.column, m.row) {
+                    return self.update(Action::FocusPane(pane));
+                }
+            }
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                if let Some(pane) = hit_test(layout, m.column, m.row) {
+                    let d = if m.kind == MouseEventKind::ScrollUp {
+                        -3
+                    } else {
+                        3
+                    };
+                    return self.update(Action::ScrollPane(pane, d));
+                }
+            }
+            _ => {}
+        }
+        false
+    }
 }
 
 #[cfg(test)]
@@ -1321,6 +1378,35 @@ mod tests {
         let before = app.focus;
         assert!(app.update(Action::ScrollPane(PaneId::Response, 3)));
         assert_eq!(app.focus, before, "scrolling must not steal focus");
+    }
+
+    #[test]
+    fn click_in_body_area_places_cursor_and_focuses_content() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use ratatui::layout::Rect;
+
+        let mut app = App::new_for_test();
+        app.editor.active_tab = EditorTab::Body;
+        app.editor.set_body_text("hello\nworld");
+        // render once so the view records its area
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        let area = app.editor.last_body_area.expect("body area recorded");
+        let m = ratatui::crossterm::event::MouseEvent {
+            kind: ratatui::crossterm::event::MouseEventKind::Down(
+                ratatui::crossterm::event::MouseButton::Left,
+            ),
+            column: area.x + 4,
+            row: area.y + 1,
+            modifiers: KeyModifiers::NONE,
+        };
+        let layout = crate::layout::compute_layout(Rect::new(0, 0, 120, 40));
+        app.handle_mouse(m, &layout);
+        assert_eq!(app.editor.sub_focus, SubFocus::Content);
+        assert_eq!(app.focus, PaneId::Editor);
+        assert_eq!(app.editor.body.cursor.row, 1, "clicked the second line");
     }
 
     fn req(url: &str) -> postui_core::model::HttpRequest {

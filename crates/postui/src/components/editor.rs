@@ -83,6 +83,11 @@ pub struct Editor {
     /// Shared cursor/edit state for the key/value table, reused by both the
     /// Params and Headers tabs (never holds the entry data itself).
     pub table: TableEditorState,
+    /// The screen area the body editor was rendered into on the last frame,
+    /// recorded by `draw_tab_content`'s Body arm; `None` on any other tab
+    /// (including the very first frame before anything has drawn). Mouse
+    /// events are hit-tested against this before being forwarded to edtui.
+    pub last_body_area: Option<Rect>,
 }
 
 impl Default for Editor {
@@ -101,6 +106,7 @@ impl Default for Editor {
             active_tab: EditorTab::Params,
             sub_focus: SubFocus::Url,
             table: TableEditorState::default(),
+            last_body_area: None,
         }
     }
 }
@@ -190,6 +196,35 @@ impl Editor {
         let text = self.body_text();
         text.is_empty() || postui_core::json::validate(&text).is_ok()
     }
+
+    /// Forwards a raw mouse event to the body editor when the Body tab is
+    /// active and the event landed inside the area it was last drawn into.
+    /// Returns `true` when the event was consumed (edtui itself does its own
+    /// narrower bounds check against the area it recorded at render time,
+    /// which excludes the line-number gutter — this outer check only rules
+    /// out events elsewhere in the app).
+    pub fn handle_mouse(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
+        use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+        use ratatui::layout::Position;
+
+        if self.active_tab != EditorTab::Body {
+            return false;
+        }
+        let Some(area) = self.last_body_area else {
+            return false;
+        };
+        if !area.contains(Position {
+            x: m.column,
+            y: m.row,
+        }) {
+            return false;
+        }
+        if m.kind == MouseEventKind::Down(MouseButton::Left) {
+            self.sub_focus = SubFocus::Content;
+        }
+        self.body_handler.on_mouse_event(m, &mut self.body);
+        true
+    }
 }
 
 /// edtui's emacs keybindings are all registered against `EditorMode::Insert`,
@@ -270,6 +305,34 @@ impl Component for Editor {
                 self.body_handler.on_key_event(ev, &mut self.body);
                 Some(Action::Render)
             }
+        }
+    }
+
+    /// Wheel-over-an-unfocused-pane path (`Action::ScrollPane`). Only the
+    /// Body tab has anything under edtui's control to scroll; synthesizes
+    /// `|delta|` scroll events at the recorded area's origin and forwards
+    /// them through `handle_mouse` so both paths share edtui's own bounds
+    /// check. Other tabs are a no-op here (params/headers scrolling isn't
+    /// wired up).
+    fn handle_scroll(&mut self, delta: i16) {
+        if self.active_tab != EditorTab::Body {
+            return;
+        }
+        let Some(area) = self.last_body_area else {
+            return;
+        };
+        let kind = if delta < 0 {
+            ratatui::crossterm::event::MouseEventKind::ScrollUp
+        } else {
+            ratatui::crossterm::event::MouseEventKind::ScrollDown
+        };
+        for _ in 0..delta.unsigned_abs() {
+            self.handle_mouse(ratatui::crossterm::event::MouseEvent {
+                kind,
+                column: area.x,
+                row: area.y,
+                modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+            });
         }
     }
 
@@ -374,6 +437,7 @@ impl Editor {
 
     fn draw_tab_content(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let focused = self.sub_focus == SubFocus::Content;
+        self.last_body_area = None;
         match self.active_tab {
             EditorTab::Params => {
                 let ctx = DrawCtx { theme, focused };
@@ -410,6 +474,7 @@ impl Editor {
                 );
             }
             EditorTab::Body => {
+                self.last_body_area = Some(area);
                 let highlighter = json_highlighter(theme);
                 let mut edtui_theme = EditorTheme::default()
                     .base(Style::default().bg(theme.surface).fg(theme.text))
