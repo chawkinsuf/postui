@@ -1,7 +1,7 @@
 use super::json_tree::{JsonTree, TokenKind};
 use super::line_input::LineInput;
 use super::{Component, DrawCtx, pane_block};
-use crate::action::Action;
+use crate::action::{Action, CopyTarget};
 use crate::components::toast::ToastKind;
 use crate::theme::Theme;
 use ratatui::Frame;
@@ -352,6 +352,9 @@ impl Response {
                 }
                 Some(Action::Render)
             }
+            KeyCode::Char('c') if view.mode == ViewMode::Headers => Some(Action::CopyToClipboard(
+                CopyTarget::ResponseHeader(view.cursor),
+            )),
             KeyCode::Char('h') => {
                 let next = if view.mode == ViewMode::Headers {
                     view.body_mode
@@ -518,7 +521,7 @@ impl Component for Response {
         view.height = rows[3].height as usize;
         // `body_lines` already starts at `view.scroll`, so the paragraph
         // itself is drawn unscrolled.
-        let body = body_lines(view, t, ctx.focused, hits, rows[3]);
+        let body = body_lines(view, t, ctx.focused, ctx.hovered, hits, rows[3]);
         frame.render_widget(Paragraph::new(body), rows[3]);
 
         if footer {
@@ -532,7 +535,7 @@ impl Component for Response {
 
 /// The view-mode tabs (`Tree`/`Raw`/`Headers`) under the summary line. `Tree`
 /// is only offered when the body parsed as JSON. The right side of the row
-/// is left empty — a later task adds Copy/Save buttons there.
+/// holds the Copy body / Save to file buttons, right-aligned.
 fn draw_tabs_row(
     frame: &mut Frame,
     hits: &mut crate::hit::HitMap,
@@ -552,7 +555,7 @@ fn draw_tabs_row(
         .iter()
         .map(|(label, _)| Constraint::Length((label.chars().count() + 2) as u16))
         .collect();
-    constraints.push(Constraint::Min(0)); // reserved for the copy/save buttons
+    constraints.push(Constraint::Min(0)); // Copy body / Save to file buttons
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints(constraints)
@@ -575,6 +578,49 @@ fn draw_tabs_row(
             t,
         );
     }
+
+    draw_copy_save_buttons(frame, hits, cols[tabs.len()], ctx);
+}
+
+/// `[ Copy body ]  [ Save to file ]`, right-aligned in `area` (the tabs
+/// row's reserved `Min(0)` column). Overflows leftward into the tabs when
+/// `area` is too narrow rather than off the right edge of the pane.
+fn draw_copy_save_buttons(
+    frame: &mut Frame,
+    hits: &mut crate::hit::HitMap,
+    area: Rect,
+    ctx: &DrawCtx,
+) {
+    const COPY_LABEL: &str = "Copy body";
+    const SAVE_LABEL: &str = "Save to file";
+    let copy_w = crate::hit::button_width(COPY_LABEL);
+    let save_w = crate::hit::button_width(SAVE_LABEL);
+    let total = copy_w + 1 + save_w;
+    let start = area.right().saturating_sub(total).max(area.x);
+    let copy_area = Rect::new(start, area.y, copy_w, 1);
+    let save_x = start + copy_w + 1;
+    let save_area = Rect::new(save_x, area.y, save_w, 1);
+
+    crate::hit::button(
+        frame,
+        hits,
+        copy_area,
+        COPY_LABEL,
+        crate::hit::Hit::CopyBodyButton,
+        ctx.hovered,
+        true,
+        ctx.theme,
+    );
+    crate::hit::button(
+        frame,
+        hits,
+        save_area,
+        SAVE_LABEL,
+        crate::hit::Hit::SaveBodyButton,
+        ctx.hovered,
+        true,
+        ctx.theme,
+    );
 }
 
 /// `[ 200 ]  342 ms  1.4 KB  application/json`
@@ -638,12 +684,14 @@ fn human_size(bytes: usize) -> String {
 ///
 /// In `Pretty` mode, also registers a `JsonRow` hit over each rendered row
 /// (click selects) and a `JsonArrow` hit over its first two columns when the
-/// row opens a container (click toggles). `Raw`/`Headers` register nothing
-/// per-row — the Headers copy icons are a later task.
+/// row opens a container (click toggles). In `Headers` mode, registers a
+/// `HeaderCopy` hit over the trailing ` ⧉` glyph appended to each row.
+/// `Raw` registers nothing per-row.
 fn body_lines(
     view: &ReadyView,
     t: &Theme,
     focused: bool,
+    hovered: Option<&crate::hit::Hit>,
     hits: &mut crate::hit::HitMap,
     area: Rect,
 ) -> Vec<Line<'static>> {
@@ -719,11 +767,33 @@ fn body_lines(
             }
             for (i, line) in view.header_lines.iter().enumerate().take(end).skip(start) {
                 let (name, value) = line.split_once(':').unwrap_or((line.as_str(), ""));
+                let name_piece = format!("{name}:");
+                let value_piece = value.to_string();
+                let text_len = name_piece.chars().count() + value_piece.chars().count();
+                let glyph_hovered = hovered == Some(&crate::hit::Hit::HeaderCopy(i));
+                let glyph_style = if glyph_hovered {
+                    Style::default().bg(t.accent).fg(t.surface)
+                } else {
+                    Style::default().fg(t.accent)
+                };
                 let pieces = vec![
-                    (format!("{name}:"), Style::default().fg(t.accent)),
-                    (value.to_string(), text),
+                    (name_piece, Style::default().fg(t.accent)),
+                    (value_piece, text),
+                    (" ⧉".to_string(), glyph_style),
                 ];
                 push(i, i, pieces, true);
+
+                let y = area.y.saturating_add((i - start) as u16);
+                if y < area.y.saturating_add(area.height) {
+                    let glyph_x = area.x.saturating_add(text_len as u16);
+                    let glyph_w = area.width.saturating_sub(text_len as u16).min(2);
+                    if glyph_w > 0 {
+                        hits.register(
+                            Rect::new(glyph_x, y, glyph_w, 1),
+                            crate::hit::Hit::HeaderCopy(i),
+                        );
+                    }
+                }
             }
         }
     }

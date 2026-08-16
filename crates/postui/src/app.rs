@@ -1,4 +1,4 @@
-use crate::action::Action;
+use crate::action::{Action, CopyTarget};
 use crate::components::editor::{Editor, EditorTab, SubFocus};
 use crate::components::modal::{Modal, ModalStack, PromptKind};
 use crate::components::response::ResponseState;
@@ -52,6 +52,12 @@ pub struct App {
     /// Where to save `registry` back to. `None` in tests, so test runs never
     /// touch the real global config file.
     registry_path: Option<PathBuf>,
+    /// The tiered clipboard (external command / OS clipboard / OSC 52),
+    /// configured from `ui_settings`.
+    pub clipboard: crate::clipboard::Clipboard,
+    /// Mouse-first-GUI UI settings (clipboard command, OSC 52 threshold),
+    /// loaded from the same `config.toml` the registry uses.
+    pub ui_settings: crate::config::UiSettings,
     /// The HTTP client used for every send. Built eagerly and cheaply
     /// (`reqwest::Client::builder().build()` needs no running Tokio
     /// reactor — verified in `http::tests::client_builds_without_a_tokio_runtime`
@@ -180,6 +186,10 @@ impl App {
             .as_deref()
             .map(crate::config::ProjectsRegistry::load_from)
             .unwrap_or_default();
+        let ui_settings = registry_path
+            .as_deref()
+            .map(crate::config::load_ui_settings)
+            .unwrap_or_default();
 
         let Some((root, disposition, stale_last)) = resolve_startup(
             &registry,
@@ -189,6 +199,8 @@ impl App {
             let mut app = Self::bare(tx, PathBuf::new());
             app.registry = registry;
             app.registry_path = registry_path;
+            app.clipboard = crate::clipboard::Clipboard::new(&ui_settings);
+            app.ui_settings = ui_settings;
             app.toasts.push(
                 "could not determine a project directory for this platform",
                 ToastKind::Error,
@@ -199,6 +211,8 @@ impl App {
         let mut app = Self::with_root(tx, root);
         app.registry = registry;
         app.registry_path = registry_path;
+        app.clipboard = crate::clipboard::Clipboard::new(&ui_settings);
+        app.ui_settings = ui_settings;
 
         if let Some(missing) = stale_last {
             app.toasts.push(
@@ -291,6 +305,8 @@ impl App {
             project,
             registry: crate::config::ProjectsRegistry::default(),
             registry_path: None,
+            clipboard: crate::clipboard::Clipboard::new(&crate::config::UiSettings::default()),
+            ui_settings: crate::config::UiSettings::default(),
             client: crate::http::client(),
             in_flight: None,
             send_generation: 0,
@@ -317,6 +333,13 @@ impl App {
         app._test_rx = Some(rx);
         app._test_dir = Some(dir);
         app
+    }
+
+    /// Swaps in a test-configured clipboard (e.g. `Clipboard::new_for_test`)
+    /// so copy tests can exercise the cmd/OSC-52 tiers deterministically.
+    #[cfg(test)]
+    pub fn set_clipboard_for_test(&mut self, c: crate::clipboard::Clipboard) {
+        self.clipboard = c;
     }
 }
 
@@ -394,6 +417,82 @@ impl App {
             }
             Action::JsonRowClicked { row, toggle } => {
                 self.response.click_row(row, toggle);
+                true
+            }
+            Action::CopyToClipboard(target) => {
+                let Some((text, success_msg)) = self.resolve_copy(&target) else {
+                    self.toasts
+                        .push("nothing to copy — send a request first", ToastKind::Warning);
+                    return true;
+                };
+                match self.clipboard.copy(&text) {
+                    crate::clipboard::CopyResult::Copied { .. } => {
+                        self.toasts.push(success_msg, ToastKind::Success);
+                    }
+                    crate::clipboard::CopyResult::OscTooLarge => {
+                        self.toasts.push(
+                            "Too large for the terminal clipboard — use Save body to file, or set clipboard_cmd in config",
+                            ToastKind::Warning,
+                        );
+                    }
+                    crate::clipboard::CopyResult::Failed(_) => {
+                        self.toasts.push(
+                            "Clipboard unavailable — try Shift+drag to select",
+                            ToastKind::Error,
+                        );
+                    }
+                }
+                true
+            }
+            Action::PromptSaveBody => {
+                let ResponseState::Ready(data) = self.response.state() else {
+                    self.toasts
+                        .push("nothing to copy — send a request first", ToastKind::Warning);
+                    return true;
+                };
+                let slug = self
+                    .editor
+                    .slug
+                    .clone()
+                    .unwrap_or_else(|| "response".to_string())
+                    .replace('/', "-");
+                let ext = if data
+                    .content_type
+                    .as_deref()
+                    .is_some_and(|c| c.contains("json"))
+                {
+                    "json"
+                } else {
+                    "txt"
+                };
+                let prefill = format!("~/Downloads/{slug}-response.{ext}");
+                self.modals.push(Modal::Prompt {
+                    title: "Save response body".into(),
+                    input: crate::components::line_input::LineInput::new(&prefill),
+                    kind: PromptKind::SaveBodyAs,
+                });
+                true
+            }
+            Action::SaveBodyToFile(path) => {
+                let ResponseState::Ready(data) = self.response.state() else {
+                    return true;
+                };
+                let expanded = crate::config::expand_tilde(&path);
+                let result = (|| -> std::io::Result<()> {
+                    if let Some(parent) = expanded.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&expanded, &data.body)
+                })();
+                match result {
+                    Ok(()) => self.toasts.push(
+                        format!("Saved body to {}", expanded.display()),
+                        ToastKind::Success,
+                    ),
+                    Err(e) => self
+                        .toasts
+                        .push(format!("could not save body: {e}"), ToastKind::Error),
+                }
                 true
             }
             Action::EditorTabSelect(i) => {
@@ -1148,6 +1247,28 @@ impl App {
         }
     }
 
+    /// Resolves `target` to the text to copy and the success toast to show
+    /// on a successful copy. `None` when `target` needs a ready response
+    /// and there isn't one (or the header index is out of range).
+    fn resolve_copy(&self, target: &CopyTarget) -> Option<(String, String)> {
+        match target {
+            CopyTarget::ResponseBody => match self.response.state() {
+                ResponseState::Ready(d) => {
+                    Some((d.body.clone(), "Copied response body".to_string()))
+                }
+                _ => None,
+            },
+            CopyTarget::ResponseHeader(i) => match self.response.state() {
+                ResponseState::Ready(d) => d
+                    .headers
+                    .get(*i)
+                    .map(|(name, value)| (value.clone(), format!("Copied {name}"))),
+                _ => None,
+            },
+            CopyTarget::Url => Some((self.editor.url.text().to_string(), "Copied URL".to_string())),
+        }
+    }
+
     /// Whether any in-flight HTTP request is still ticking (e.g. animating
     /// a spinner) and therefore needs a redraw.
     fn in_flight_ticking(&self) -> bool {
@@ -1421,6 +1542,12 @@ impl App {
                     toggle: true,
                 })
             }
+            Hit::CopyBodyButton => self.update(Action::CopyToClipboard(CopyTarget::ResponseBody)),
+            Hit::SaveBodyButton => self.update(Action::PromptSaveBody),
+            Hit::HeaderCopy(i) => {
+                self.update(Action::CopyToClipboard(CopyTarget::ResponseHeader(i)))
+            }
+            Hit::CopyUrlButton => self.update(Action::CopyToClipboard(CopyTarget::Url)),
             _ => false,
         }
     }
@@ -2972,5 +3099,129 @@ mod tests {
 
         app.handle_mouse(left_down(after.x, after.y));
         assert!(matches!(app.response.state(), ResponseState::Cancelled));
+    }
+
+    #[test]
+    fn copy_body_writes_via_clipboard_cmd_and_toasts_copied() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out.txt");
+        let cmd = format!("cat > {}", out.to_string_lossy());
+        let mut app = App::new_for_test();
+        app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
+            Some(cmd),
+            65536,
+            false,
+        ));
+        ready_response(&mut app, r#"{"a": 1}"#);
+
+        app.update(Action::CopyToClipboard(CopyTarget::ResponseBody));
+
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), r#"{"a": 1}"#);
+        assert!(
+            rendered_text(&mut app).contains("Copied response body"),
+            "toast confirms the copy"
+        );
+    }
+
+    #[test]
+    fn copy_body_over_osc52_threshold_toasts_too_large() {
+        let mut app = App::new_for_test();
+        app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(None, 8, false));
+        ready_response(&mut app, "12345678"); // 8 bytes, at the threshold
+
+        app.update(Action::CopyToClipboard(CopyTarget::ResponseBody));
+
+        assert!(
+            rendered_text(&mut app).contains("Too large for the terminal clipboard"),
+            "toast explains the size limit"
+        );
+    }
+
+    #[test]
+    fn prompt_save_body_prefills_json_extension_and_enter_writes_the_file() {
+        let mut app = App::new_for_test();
+        app.editor.slug = Some("pingpong".into());
+        ready_response(&mut app, r#"{"a": 1}"#);
+
+        app.update(Action::PromptSaveBody);
+
+        let Some(Modal::Prompt {
+            kind: PromptKind::SaveBodyAs,
+            input,
+            ..
+        }) = app.modals.top()
+        else {
+            panic!("expected a SaveBodyAs prompt");
+        };
+        assert!(
+            input.text().ends_with("-response.json"),
+            "prefill: {}",
+            input.text()
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("body.json");
+        app.update(Action::SaveBodyToFile(out.to_string_lossy().to_string()));
+
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), r#"{"a": 1}"#);
+        assert!(rendered_text(&mut app).contains("Saved body to"));
+    }
+
+    #[test]
+    fn header_copy_click_and_key_parity_both_copy_the_header() {
+        let mut app = App::new_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out.txt");
+        let cmd = format!("cat > {}", out.to_string_lossy());
+        app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
+            Some(cmd),
+            65536,
+            false,
+        ));
+        ready_response(&mut app, r#"{"a": 1}"#);
+        app.update(Action::ResponseViewMode(
+            crate::components::response::ViewMode::Headers,
+        ));
+        render_once(&mut app);
+
+        let r = app.hits.rect_of(&Hit::HeaderCopy(0)).unwrap();
+        app.handle_mouse(left_down(r.x, r.y));
+
+        assert_eq!(
+            std::fs::read_to_string(&out).unwrap(),
+            "application/json",
+            "clicking HeaderCopy(0) copies the first header's value"
+        );
+        assert!(rendered_text(&mut app).contains("Copied content-type"));
+
+        // `c` key parity in Headers view produces the same action.
+        let action = app
+            .response
+            .handle_key(ratatui::crossterm::event::KeyEvent::new(
+                KeyCode::Char('c'),
+                KeyModifiers::NONE,
+            ));
+        assert_eq!(
+            action,
+            Some(Action::CopyToClipboard(CopyTarget::ResponseHeader(0)))
+        );
+    }
+
+    #[test]
+    fn copy_body_with_no_response_toasts_nothing_to_copy_and_leaves_clipboard_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out.txt");
+        let cmd = format!("cat > {}", out.to_string_lossy());
+        let mut app = App::new_for_test();
+        app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
+            Some(cmd),
+            65536,
+            false,
+        ));
+
+        app.update(Action::CopyToClipboard(CopyTarget::ResponseBody));
+
+        assert!(!out.exists(), "clipboard must not be touched");
+        assert!(rendered_text(&mut app).contains("nothing to copy — send a request first"));
     }
 }

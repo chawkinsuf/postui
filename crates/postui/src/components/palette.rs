@@ -1,4 +1,4 @@
-use crate::action::Action;
+use crate::action::{Action, CopyTarget};
 use crate::layout::PaneId;
 use crate::theme::Theme;
 use ratatui::Frame;
@@ -103,6 +103,18 @@ pub fn all_commands() -> Vec<Command> {
         Command {
             name: "Variables: insert…",
             action: Action::OpenVarPicker { completing: false },
+        },
+        Command {
+            name: "Response: copy body",
+            action: Action::CopyToClipboard(CopyTarget::ResponseBody),
+        },
+        Command {
+            name: "Request: copy URL",
+            action: Action::CopyToClipboard(CopyTarget::Url),
+        },
+        Command {
+            name: "Response: save body to file…",
+            action: Action::PromptSaveBody,
         },
         Command {
             name: "Quit",

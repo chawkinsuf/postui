@@ -1,6 +1,15 @@
 use crate::components::toast::ToastKind;
 use crate::layout::PaneId;
 
+/// What [`Action::CopyToClipboard`] copies: the ready response body, one of
+/// its headers by index, or the editor's URL as written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CopyTarget {
+    ResponseBody,
+    ResponseHeader(usize),
+    Url,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     Quit,
@@ -172,4 +181,15 @@ pub enum Action {
         row: usize,
         toggle: bool,
     },
+    /// Copy `target`'s text to the clipboard through `App::clipboard`'s
+    /// tiered copy. Toasts "nothing to copy — send a request first" when
+    /// there's no ready response and `target` needs one.
+    CopyToClipboard(CopyTarget),
+    /// Open the "save response body to file" prompt, prefilled with a
+    /// `~/Downloads/{slug}-response.{ext}` path. Toasts the same
+    /// "nothing to copy" warning with no ready response.
+    PromptSaveBody,
+    /// Write the ready response body to `path` (from the save-body prompt),
+    /// expanding `~` and creating parent directories as needed.
+    SaveBodyToFile(String),
 }

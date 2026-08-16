@@ -406,7 +406,8 @@ impl Editor {
             .constraints([
                 Constraint::Length(8),
                 Constraint::Min(0),
-                Constraint::Length(0), // reserved for the Copy URL button (Task 6)
+                Constraint::Length(2), // Copy URL button
+                Constraint::Length(1), // gap before Send
                 Constraint::Length(send_width),
             ])
             .split(area);
@@ -428,10 +429,24 @@ impl Editor {
             cols[1],
         );
 
+        // Abbreviated `[ Copy URL ]` — just the glyph, to keep the URL row
+        // uncluttered. Hover inversion plus footer/palette naming carries
+        // the meaning.
+        crate::hit::chip(
+            frame,
+            hits,
+            cols[2],
+            " ⧉",
+            crate::hit::Hit::CopyUrlButton,
+            ctx.hovered,
+            None,
+            theme,
+        );
+
         crate::hit::button(
             frame,
             hits,
-            cols[3],
+            cols[4],
             &send_label,
             crate::hit::Hit::SendButton,
             ctx.hovered,
