@@ -468,7 +468,7 @@ const SEND_SEGMENT_WIDTH: u16 = 24;
 /// `Editor::draw`'s vertical split.
 pub const ADDRESS_BAR_HEIGHT: u16 = 5;
 /// Height of the tab bar row — the second row of that split.
-pub const TAB_BAR_HEIGHT: u16 = 1;
+pub const TAB_BAR_HEIGHT: u16 = 2;
 /// The Editor pane's total on-screen height when its params/headers table is
 /// collapsed: just the two fixed content rows above (address bar, tab bar),
 /// with nothing left for a table. Panes no longer draw a border, so this is
@@ -726,66 +726,40 @@ impl Editor {
     ) {
         let theme = ctx.theme;
         let tabs = [EditorTab::Params, EditorTab::Headers, EditorTab::Body];
-        let mut constraints: Vec<Constraint> = tabs
+        let tab_strip: Vec<(String, bool)> = tabs
             .iter()
-            .map(|t| Constraint::Length((t.label().chars().count() + 2) as u16))
+            .map(|t| (t.label().to_string(), false))
             .collect();
-        constraints.push(Constraint::Length(2)); // Body's validity glyph, e.g. "✓ "
-        constraints.push(Constraint::Length(if self.substitute_body { 5 } else { 0 })); // "vars "
-        constraints.push(Constraint::Min(0));
-        let cols = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints(constraints)
-            .split(area);
+        let active = self.active_tab.index();
+        let hovered = tabs
+            .iter()
+            .enumerate()
+            .find(|(i, _)| ctx.hovered == Some(&crate::hit::Hit::EditorTab(*i)))
+            .map(|(i, _)| i);
 
-        {
-            // Unfilled chips (no `fill` unless hovered): the tab labels sit
-            // directly on the row's own `theme.page` background, same
-            // convention as the collapse toggle/count chip further right on
-            // this row.
+        let strip_area = Rect {
+            height: 2,
+            ..area
+        };
+        let rects = {
             let buf = frame.buffer_mut();
-            for (i, tab) in tabs.iter().enumerate() {
-                let hit = crate::hit::Hit::EditorTab(i);
-                let hovered = ctx.hovered == Some(&hit);
-                let label = format!(" {} ", tab.label());
-                if hovered {
-                    crate::paint::fill(buf, cols[i], theme.accent);
-                    crate::paint::text(
-                        buf,
-                        cols[i].x,
-                        cols[i].y,
-                        &label,
-                        theme.on_accent,
-                        theme.accent,
-                        true,
-                    );
-                } else if *tab == self.active_tab {
-                    crate::paint::text(
-                        buf,
-                        cols[i].x,
-                        cols[i].y,
-                        &label,
-                        theme.accent,
-                        theme.page,
-                        true,
-                    );
-                } else {
-                    crate::paint::text(
-                        buf,
-                        cols[i].x,
-                        cols[i].y,
-                        &label,
-                        theme.text_muted,
-                        theme.page,
-                        false,
-                    );
-                }
-                hits.register(cols[i], hit);
+            crate::paint::TabStrip {
+                tabs: &tab_strip,
+                active,
+                hovered,
             }
+            .paint(buf, strip_area, theme.page, theme)
+        };
+        for (i, rect) in rects.iter().enumerate() {
+            hits.register(*rect, crate::hit::Hit::EditorTab(i));
         }
 
         // The Body tab carries a live JSON validity badge, colored from the
-        // semantic tokens so it also reads without the glyph.
+        // semantic tokens so it also reads without the glyph, plus (when
+        // active) the "vars" indicator — both sit right after the tab
+        // labels, on the labels row.
+        let last_rect = rects[tabs.len() - 1];
+        let mut x = last_rect.x + last_rect.width + 1;
         let (glyph, color) = if self.body_is_valid() {
             ('✓', theme.success)
         } else {
@@ -796,12 +770,13 @@ impl Editor {
                 format!("{glyph} "),
                 Style::default().fg(color),
             )),
-            cols[3],
+            Rect::new(x, area.y, 2, 1),
         );
+        x += 2;
         if self.substitute_body {
             frame.render_widget(
                 Paragraph::new(Line::styled("vars ", Style::default().fg(theme.accent))),
-                cols[4],
+                Rect::new(x, area.y, 5, 1),
             );
         }
 

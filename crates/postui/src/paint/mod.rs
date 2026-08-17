@@ -15,7 +15,7 @@ pub mod rows;
 
 pub use button::{BUTTON_HEIGHT, Button, ButtonKind, button_min_width};
 pub use chip::{Chip, TabStrip};
-pub use field::{FIELD_HEIGHT, TextField, focus_ring, select_line};
+pub use field::{FIELD_HEIGHT, TextField, focus_ring};
 pub use panel::{dim_backdrop, floating_panel};
 pub use rows::{PillRow, RowHighlight};
 

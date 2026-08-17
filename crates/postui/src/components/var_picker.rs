@@ -192,7 +192,7 @@ impl VarPickerState {
 
         let list_area = Rect {
             x: area.x + 1,
-            y: field_area.y + FIELD_HEIGHT + 1,
+            y: field_area.y + FIELD_HEIGHT + 2,
             width: area.width.saturating_sub(2),
             height: area.height.saturating_sub(CHROME),
         };
@@ -431,6 +431,39 @@ mod tests {
                 value: None,
             })
             .collect()
+    }
+
+    #[test]
+    fn focus_ring_bottom_left_corner_survives_the_list_draw() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut p = VarPickerState::new(entries(&["base", "token", "env"]), false);
+        let theme = Theme::dark();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None))
+            .unwrap();
+        let area = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
+        let title_y = area.y + 1;
+        let field_area = Rect {
+            x: area.x + 1,
+            y: title_y + 2,
+            width: area.width.saturating_sub(2),
+            height: FIELD_HEIGHT,
+        };
+        let corner_x = field_area.x.saturating_sub(1);
+        let corner_y = field_area.y + FIELD_HEIGHT;
+        let buffer = terminal.backend().buffer();
+        let corner = buffer[(corner_x, corner_y)].clone();
+        assert_eq!(
+            corner.symbol(),
+            "└",
+            "row 0's top pad must not overwrite the focus ring's bottom-left corner"
+        );
+        assert_eq!(corner.fg, theme.focus_ring);
     }
 
     #[test]

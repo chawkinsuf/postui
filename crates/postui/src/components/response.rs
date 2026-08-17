@@ -584,9 +584,9 @@ const HEADER_STRIP_HEIGHT: u16 = 3;
 
 /// Paints the 3-row header strip on `theme.panel`: the status chip and,
 /// right-aligned on the same row, the Copy body / Save to file buttons, on
-/// row 0; the timing + size chips (control-filled, muted) plus content type
-/// on the left and the response tabs right-aligned on row 1; the tabs'
-/// accent underline on row 2.
+/// row 0; the timing + size chips (plain muted text — they are not
+/// clickable) plus content type on the left and the response tabs
+/// right-aligned on row 1; the tabs' accent underline on row 2.
 fn draw_header_strip(
     frame: &mut Frame,
     hits: &mut crate::hit::HitMap,
@@ -613,14 +613,14 @@ fn draw_header_strip(
 
     let buf = frame.buffer_mut();
 
-    // Row 1 (left): timing + size chips (control-filled muted), then
-    // content type.
+    // Row 1 (left): timing + size, plain muted text (not clickable, so no
+    // control fill — chip fill means clickability), then content type.
     let row1_y = area.y + 1;
     let mut x = area.x;
     for label in [human_elapsed(data.elapsed), human_size(data.size)] {
         let s = format!(" {label} ");
         let w = s.chars().count() as u16;
-        crate::paint::text(buf, x, row1_y, &s, t.text_muted, t.control, false);
+        crate::paint::text(buf, x, row1_y, &s, t.text_muted, t.panel, false);
         x += w + 1;
     }
     if let Some(ct) = &data.content_type {
@@ -644,10 +644,15 @@ fn draw_header_strip(
     let tabs_width = tabstrip_width(&tabs);
     let tabs_x = area.right().saturating_sub(tabs_width).max(area.x);
     let active = modes.iter().position(|m| *m == view.mode).unwrap_or(0);
+    let hovered = match ctx.hovered {
+        Some(crate::hit::Hit::ResponseTab(m)) => modes.iter().position(|mode| mode == m),
+        _ => None,
+    };
     let tabstrip_area = Rect::new(tabs_x, row1_y, tabs_width, 2);
     let rects = crate::paint::TabStrip {
         tabs: &tabs,
         active,
+        hovered,
     }
     .paint(buf, tabstrip_area, t.panel, t);
     for (rect, mode) in rects.into_iter().zip(modes) {
@@ -1072,6 +1077,49 @@ mod tests {
             "chip bg is the status color tinted onto the strip's panel surface"
         );
         assert!(cell.modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn timing_and_size_chips_are_plain_muted_text_not_control_filled() {
+        // Ruling: chip fill means clickability. The timing/size figures on
+        // row 1 aren't clickable, so they must not carry the `control` pill
+        // fill — just muted text on the strip's `panel` surface.
+        let theme = Theme::dark();
+        let mut r = ready(r#"{"a": 1}"#);
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: None,
+            dragging: false,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| r.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        // Row 1, just past the pane's 1-col left padding, lands inside the
+        // elapsed chip's leading space.
+        let cell = buf.cell((1, 1)).expect("elapsed chip cell");
+        assert_eq!(
+            cell.bg, theme.panel,
+            "timing chip must not be control-filled: {cell:?}"
+        );
+        // Find the "ms" text and confirm it's muted, not on control fill.
+        let mut found = false;
+        for x in 0..60u16 {
+            let cell = buf.cell((x, 1)).unwrap();
+            if cell.symbol() == "m" {
+                assert_eq!(cell.fg, theme.text_muted, "elapsed text should be muted");
+                assert_eq!(
+                    cell.bg, theme.panel,
+                    "elapsed text bg should be plain panel, not control"
+                );
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "expected to find the elapsed chip's 'ms' text");
     }
 
     #[test]

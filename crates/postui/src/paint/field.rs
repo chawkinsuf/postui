@@ -128,33 +128,11 @@ pub fn focus_ring(buf: &mut Buffer, inner: Rect, surround_bg: Color, theme: &The
     }
 }
 
-/// Builds the content line for a select-style text field: `label` left
-/// aligned, padded, with a right-aligned `▾` glyph in `theme.text_muted`
-/// marking it as a dropdown. `width` is the printable width the line will
-/// be drawn into (i.e. the field's content width, after the 2-column left
-/// padding [`TextField::paint`] applies).
-pub fn select_line(label: &str, width: u16, theme: &Theme) -> Line<'static> {
-    let label = label.to_string();
-    let label_width = label.chars().count() as u16;
-    let used = label_width.saturating_add(1); // +1 for the arrow glyph
-    let pad = width.saturating_sub(used);
-
-    let mut left = label;
-    for _ in 0..pad {
-        left.push(' ');
-    }
-
-    Line::from(vec![
-        Span::raw(left),
-        Span::styled("▾", Style::default().fg(theme.text_muted)),
-    ])
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::theme::Theme;
-    use ratatui::{Terminal, backend::TestBackend, style::Modifier};
+    use ratatui::{Terminal, backend::TestBackend};
 
     fn buf_cell(term: &Terminal<TestBackend>, x: u16, y: u16) -> &ratatui::buffer::Cell {
         term.backend().buffer().cell((x, y)).unwrap()
@@ -228,21 +206,5 @@ mod tests {
         .unwrap();
         assert_eq!(buf_cell(&term, 0, 0).symbol(), " ");
         assert_eq!(buf_cell(&term, 2, 1).fg, theme.text_disabled);
-    }
-
-    #[test]
-    fn select_line_right_aligns_arrow_in_muted_text() {
-        let theme = Theme::dark();
-        let line = select_line("GET", 10, &theme);
-        let mut term = Terminal::new(TestBackend::new(10, 1)).unwrap();
-        term.draw(|f| {
-            f.buffer_mut().set_line(0, 0, &line, 10);
-        })
-        .unwrap();
-        assert_eq!(buf_cell(&term, 0, 0).symbol(), "G");
-        let arrow = buf_cell(&term, 9, 0);
-        assert_eq!(arrow.symbol(), "▾");
-        assert_eq!(arrow.fg, theme.text_muted);
-        assert!(!arrow.modifier.contains(Modifier::BOLD));
     }
 }

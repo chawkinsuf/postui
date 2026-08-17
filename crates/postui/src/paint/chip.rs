@@ -31,6 +31,11 @@ impl Chip<'_> {
 pub struct TabStrip<'a> {
     pub tabs: &'a [(String, bool)],
     pub active: usize,
+    /// The index of the tab currently under the mouse, if any. The hovered
+    /// tab's label extent gets a `theme.control` fill behind it; text colors
+    /// are unaffected by hover (active stays accent+bold, inactive stays
+    /// `text_muted`) — hover is a background cue only.
+    pub hovered: Option<usize>,
 }
 
 impl TabStrip<'_> {
@@ -55,8 +60,13 @@ impl TabStrip<'_> {
             } else {
                 theme.text_muted
             };
+            let label_bg = if self.hovered == Some(i) {
+                theme.control
+            } else {
+                on
+            };
 
-            text(buf, x, labels_y, &s, fg, on, active);
+            text(buf, x, labels_y, &s, fg, label_bg, active);
             let rect = Rect::new(x, labels_y, width, 1);
 
             if active {
@@ -117,6 +127,7 @@ mod tests {
                     ("Headers".to_string(), false),
                 ],
                 active: 0,
+                hovered: None,
             }
             .paint(f.buffer_mut(), Rect::new(0, 0, 40, 2), theme.panel, &theme);
         })
@@ -136,11 +147,46 @@ mod tests {
             rects = TabStrip {
                 tabs: &[("Body".to_string(), true)],
                 active: 0,
+                hovered: None,
             }
             .paint(f.buffer_mut(), Rect::new(0, 0, 40, 2), theme.panel, &theme);
         })
         .unwrap();
         assert_eq!(rects[0].width, "Body ✓".chars().count() as u16);
         assert_eq!(buf_cell(&term, 5, 0).symbol(), "✓");
+    }
+
+    #[test]
+    fn tabstrip_hover_fills_control_behind_the_label_only_on_the_hovered_tab() {
+        let theme = Theme::dark();
+        let mut term = Terminal::new(TestBackend::new(40, 2)).unwrap();
+        let mut rects = Vec::new();
+        term.draw(|f| {
+            rects = TabStrip {
+                tabs: &[
+                    ("Params".to_string(), false),
+                    ("Headers".to_string(), false),
+                ],
+                active: 0,
+                hovered: Some(1),
+            }
+            .paint(f.buffer_mut(), Rect::new(0, 0, 40, 2), theme.panel, &theme);
+        })
+        .unwrap();
+        let hovered_cell = buf_cell(&term, rects[1].x, 0);
+        assert_eq!(
+            hovered_cell.bg, theme.control,
+            "the hovered inactive tab's label cell bg must be theme.control"
+        );
+        assert_eq!(
+            hovered_cell.fg, theme.text_muted,
+            "hover must not change an inactive tab's text color"
+        );
+        let non_hovered_cell = buf_cell(&term, rects[0].x, 0);
+        assert_eq!(
+            non_hovered_cell.bg, theme.panel,
+            "the non-hovered tab's label cell bg must stay the passed-in `on` surface"
+        );
+        assert_eq!(non_hovered_cell.fg, theme.accent);
     }
 }
