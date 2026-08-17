@@ -490,6 +490,7 @@ impl Component for Response {
         let data = match &self.state {
             ResponseState::Ready(data) => data,
             other => {
+                crate::paint::fill(frame.buffer_mut(), inner, t.page);
                 let muted = Style::default().fg(t.text_muted);
                 let lines = match other {
                     ResponseState::Empty => vec![
@@ -503,7 +504,7 @@ impl Component for Response {
                             Line::raw(""),
                             Line::styled(
                                 format!("{} sending… {}", SPINNER[frame_i], human_elapsed(e)),
-                                Style::default().fg(t.accent),
+                                muted,
                             ),
                             Line::styled("esc to cancel", muted),
                         ]
@@ -531,25 +532,25 @@ impl Component for Response {
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1),                          // summary
-                Constraint::Length(1),                          // view tabs
-                Constraint::Length(if hint { 1 } else { 0 }),   // guard hint
-                Constraint::Min(0),                             // body
+                Constraint::Length(HEADER_STRIP_HEIGHT), // status chip / chips+tabs / underline
+                Constraint::Length(if hint { 1 } else { 0 }), // guard hint
+                Constraint::Min(0),                      // body
                 Constraint::Length(if footer { 1 } else { 0 }), // search footer
             ])
             .split(inner);
 
-        frame.render_widget(Paragraph::new(summary_line(data, t)), rows[0]);
-        draw_tabs_row(frame, hits, rows[1], view, ctx);
+        draw_header_strip(frame, hits, rows[0], data, view, ctx);
         if hint {
+            crate::paint::fill(frame.buffer_mut(), rows[1], t.page);
             frame.render_widget(
                 Paragraph::new(Line::styled(OVERSIZE_HINT, Style::default().fg(t.warning))),
-                rows[2],
+                rows[1],
             );
         }
 
-        view.height = rows[3].height as usize;
-        let mut body_area = rows[3];
+        view.height = rows[2].height as usize;
+        let mut body_area = rows[2];
+        crate::paint::fill(frame.buffer_mut(), body_area, t.page);
         let spec = ScrollbarSpec {
             pane: PaneId::Response,
             offset: view.scroll,
@@ -571,66 +572,106 @@ impl Component for Response {
         frame.render_widget(Paragraph::new(body), body_area);
 
         if footer {
+            crate::paint::fill(frame.buffer_mut(), rows[3], t.page);
             frame.render_widget(
-                Paragraph::new(search_footer(view, t, rows[4].width)),
-                rows[4],
+                Paragraph::new(search_footer(view, t, rows[3].width)),
+                rows[3],
             );
         }
     }
 }
 
-/// The view-mode tabs (`Tree`/`Raw`/`Headers`) under the summary line. `Tree`
-/// is only offered when the body parsed as JSON. The right side of the row
-/// holds the Copy body / Save to file buttons, right-aligned.
-fn draw_tabs_row(
+/// Total on-screen height (in rows) of [`draw_header_strip`]'s painted
+/// surface: status chip / chips + right-aligned tabs / tabs underline.
+const HEADER_STRIP_HEIGHT: u16 = 3;
+
+/// Paints the 3-row header strip on `theme.panel`: the status chip and,
+/// right-aligned on the same row, the Copy body / Save to file buttons, on
+/// row 0; the timing + size chips (control-filled, muted) plus content type
+/// on the left and the response tabs right-aligned on row 1; the tabs'
+/// accent underline on row 2.
+fn draw_header_strip(
     frame: &mut Frame,
     hits: &mut crate::hit::HitMap,
     area: Rect,
+    data: &crate::http::ResponseData,
     view: &ReadyView,
     ctx: &DrawCtx,
 ) {
     let t = ctx.theme;
-    let mut tabs: Vec<(&str, ViewMode)> = Vec::new();
+    let buf = frame.buffer_mut();
+    crate::paint::fill(buf, area, t.panel);
+
+    // Row 0 (left): the status chip, e.g. " 200 ".
+    crate::paint::Chip {
+        label: &data.status.to_string(),
+        color: t.status_color(data.status),
+    }
+    .paint(buf, area.x, area.y, t.panel, t);
+
+    // Row 0 (right): Copy body / Save to file, right-aligned — the row's
+    // only other content is the short status chip, so there's no risk of
+    // the buttons colliding with it at any pane width worth supporting.
+    draw_copy_save_buttons(frame, hits, area, ctx);
+
+    let buf = frame.buffer_mut();
+
+    // Row 1 (left): timing + size chips (control-filled muted), then
+    // content type.
+    let row1_y = area.y + 1;
+    let mut x = area.x;
+    for label in [human_elapsed(data.elapsed), human_size(data.size)] {
+        let s = format!(" {label} ");
+        let w = s.chars().count() as u16;
+        crate::paint::text(buf, x, row1_y, &s, t.text_muted, t.control, false);
+        x += w + 1;
+    }
+    if let Some(ct) = &data.content_type {
+        let s = format!(" {ct}");
+        crate::paint::text(buf, x, row1_y, &s, t.text_muted, t.panel, false);
+    }
+
+    // Row 1 (right) + row 2 (its underline): the response tabs,
+    // right-aligned.
+    let mut tabs: Vec<(String, bool)> = Vec::new();
+    let mut modes: Vec<ViewMode> = Vec::new();
     if view.tree.is_some() {
-        tabs.push(("Tree", ViewMode::Pretty));
+        tabs.push(("Tree".to_string(), false));
+        modes.push(ViewMode::Pretty);
     }
-    tabs.push(("Raw", ViewMode::Raw));
-    tabs.push(("Headers", ViewMode::Headers));
+    tabs.push(("Raw".to_string(), false));
+    modes.push(ViewMode::Raw);
+    tabs.push(("Headers".to_string(), false));
+    modes.push(ViewMode::Headers);
 
-    let mut constraints: Vec<Constraint> = tabs
-        .iter()
-        .map(|(label, _)| Constraint::Length((label.chars().count() + 2) as u16))
-        .collect();
-    constraints.push(Constraint::Min(0)); // Copy body / Save to file buttons
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(constraints)
-        .split(area);
-
-    for (i, (label, mode)) in tabs.iter().enumerate() {
-        let base = if view.mode == *mode {
-            Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(t.text_muted)
-        };
-        crate::hit::chip(
-            frame,
-            hits,
-            cols[i],
-            &format!(" {label} "),
-            crate::hit::Hit::ResponseTab(*mode),
-            ctx.hovered,
-            Some(base),
-            t,
-        );
+    let tabs_width = tabstrip_width(&tabs);
+    let tabs_x = area.right().saturating_sub(tabs_width).max(area.x);
+    let active = modes.iter().position(|m| *m == view.mode).unwrap_or(0);
+    let tabstrip_area = Rect::new(tabs_x, row1_y, tabs_width, 2);
+    let rects = crate::paint::TabStrip {
+        tabs: &tabs,
+        active,
     }
-
-    draw_copy_save_buttons(frame, hits, cols[tabs.len()], ctx);
+    .paint(buf, tabstrip_area, t.panel, t);
+    for (rect, mode) in rects.into_iter().zip(modes) {
+        hits.register(rect, crate::hit::Hit::ResponseTab(mode));
+    }
 }
 
-/// `[ Copy body ]  [ Save to file ]`, right-aligned in `area` (the tabs
-/// row's reserved `Min(0)` column). Overflows leftward into the tabs when
-/// `area` is too narrow rather than off the right edge of the pane.
+/// The horizontal span [`crate::paint::TabStrip::paint`] occupies for
+/// `tabs`, mirroring its own label-width + 2-column-gap layout so callers
+/// can right-align the strip without painting it first.
+fn tabstrip_width(tabs: &[(String, bool)]) -> u16 {
+    let widths: Vec<u16> = tabs
+        .iter()
+        .map(|(label, badge)| (label.chars().count() + if *badge { 2 } else { 0 }) as u16)
+        .collect();
+    let sum: u16 = widths.iter().sum();
+    sum + 2 * widths.len().saturating_sub(1) as u16
+}
+
+/// `[ Copy body ]  [ Save to file ]`, right-aligned in `area`. Overflows
+/// leftward when `area` is too narrow rather than off its right edge.
 fn draw_copy_save_buttons(
     frame: &mut Frame,
     hits: &mut crate::hit::HitMap,
@@ -667,36 +708,6 @@ fn draw_copy_save_buttons(
         true,
         ctx.theme,
     );
-}
-
-/// `[ 200 ]  342 ms  1.4 KB  application/json`
-fn summary_line(data: &crate::http::ResponseData, t: &Theme) -> Line<'static> {
-    let muted = Style::default().fg(t.text_muted);
-    let mut spans = vec![
-        Span::styled(
-            format!(" {} ", data.status),
-            Style::default()
-                .fg(t.surface)
-                .bg(status_color(data.status, t))
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(format!("  {}", human_elapsed(data.elapsed)), muted),
-        Span::styled(format!("  {}", human_size(data.size)), muted),
-    ];
-    if let Some(ct) = &data.content_type {
-        spans.push(Span::styled(format!("  {ct}"), muted));
-    }
-    Line::from(spans)
-}
-
-fn status_color(status: u16, t: &Theme) -> Color {
-    match status {
-        200..=299 => t.success,
-        300..=399 => t.accent,
-        400..=499 => t.warning,
-        500..=599 => t.error,
-        _ => t.text_muted,
-    }
 }
 
 fn human_elapsed(d: Duration) -> String {
@@ -1006,13 +1017,101 @@ mod tests {
     }
 
     #[test]
-    fn status_class_colors_the_pill() {
-        let t = Theme::dark();
-        assert_eq!(status_color(204, &t), t.success);
-        assert_eq!(status_color(301, &t), t.accent);
-        assert_eq!(status_color(404, &t), t.warning);
-        assert_eq!(status_color(503, &t), t.error);
-        assert_eq!(status_color(101, &t), t.text_muted);
+    fn status_chip_bg_is_tinted_with_the_semantic_status_color() {
+        let theme = Theme::dark();
+        let mut r = ready(r#"{"a": 1}"#);
+        let out = render(&mut r);
+        assert!(out.contains("200"), "status chip label: {out}");
+
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: None,
+            dragging: false,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| r.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        // The status chip is the first thing painted, at the header strip's
+        // top-left corner (just inside the pane border + padding).
+        let cell = buf.cell((3, 1)).expect("status digit cell");
+        assert_eq!(cell.symbol(), "2", "expected the '2' of '200': {cell:?}");
+        assert_eq!(
+            cell.bg,
+            theme.tint(theme.status_color(200), theme.panel),
+            "chip bg is the status color tinted onto the strip's panel surface"
+        );
+        assert!(cell.modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn header_strip_is_three_rows_on_panel() {
+        let theme = Theme::dark();
+        let mut r = ready(r#"{"a": 1}"#);
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: None,
+            dragging: false,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| r.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        // Rows 1..4 (inside the border) are the strip. Column 15 is blank
+        // on row 0 (past the status chip, short of the right-aligned Copy
+        // /Save buttons); column 37 is blank on rows 1-2 (past the chips
+        // and content type, short of the right-aligned tabs). Both should
+        // still read as panel fill.
+        for (y, x) in [(1u16, 15u16), (2, 37), (3, 37)] {
+            let cell = buf.cell((x, y)).unwrap();
+            assert_eq!(
+                cell.bg, theme.panel,
+                "row {y} col {x} should be panel-filled outside the chips/tabs: {cell:?}"
+            );
+        }
+        // Row 5 (the second body row — row 4 is the cursor row, which
+        // paints its own highlight bg) is not part of the strip: it's on
+        // the `page` surface instead.
+        let body_row = buf.cell((2, 5)).unwrap();
+        assert_eq!(
+            body_row.bg, theme.page,
+            "body area starts right below the 3-row strip: {body_row:?}"
+        );
+    }
+
+    #[test]
+    fn response_tabs_register_hits_below_the_strip() {
+        let mut r = ready(r#"{"a": 1}"#);
+        let theme = Theme::dark();
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: None,
+            dragging: false,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| r.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+        let rect = hits
+            .rect_of(&crate::hit::Hit::ResponseTab(ViewMode::Headers))
+            .expect("Headers tab hit registered");
+        assert_eq!(rect.y, 2, "tabs live on the strip's middle row");
+        assert!(
+            hits.rect_of(&crate::hit::Hit::ResponseTab(ViewMode::Raw))
+                .is_some()
+        );
+        assert!(
+            hits.rect_of(&crate::hit::Hit::ResponseTab(ViewMode::Pretty))
+                .is_some()
+        );
     }
 
     #[test]
