@@ -87,8 +87,9 @@ state tints.** No brackets, no `< >`, no line-borders-as-widget-edges.
   chip, low-intensity fill of the semantic color behind full-intensity
   text of the same color.
 - **List rows** (sidebar tree, palette/chooser results) — full-width
-  fills: hover = `control_hover` across the row; selection =
-  accent-tinted fill with a 1-col accent bar on the left edge; never
+  fills: hover = `control` across the row; selection = `control_hover`
+  (a NEUTRAL raised fill — the accent appears only in the 1-col accent
+  bar on the left edge and bold text, never as a row tint); never
   inverted text. Rows sit on a 2-line pitch, and highlight fills
   extend half a row into the adjacent spacing lines via half-blocks
   (`▄` above, `▀` below — glyph color carries one pill, cell
@@ -96,8 +97,8 @@ state tints.** No brackets, no `< >`, no line-borders-as-widget-edges.
   text centered. Two adjacent highlighted rows share a spacing line
   cleanly: `▀` with fg = upper pill fill, bg = lower pill fill. This
   is the standard treatment for any highlighted 1-line row whose
-  neighbors are spacing lines; dense tables (params/headers) stay on
-  a 1-line pitch and do not use it.
+  neighbors are spacing lines, in lists and tables alike (tables
+  apply it per cell — see Request pane).
 - **Panels** — surfaces separated by shade, not lines: sidebar on
   `panel`, editors on `page`, a 1-col painted gutter between panes
   instead of `│`. Panel titles are muted uppercase labels sitting on
@@ -118,16 +119,16 @@ state tints.** No brackets, no `< >`, no line-borders-as-widget-edges.
 - **Request pane** — the fused address bar (signature, below), then
   the tab strip, then params/headers as a painted table. The table is
   ONE contiguous element, not per-row fields: muted uppercase header
-  row on `panel`, then 1-row zebra-striped body rows (`control`
-  alternating with a `control`/`panel` midpoint) with a subtle `▏`
-  column divider and a `▁` bottom edge closing the block. Editing
-  happens in place without changing row height: the focused cell gets
-  a `control_hover` fill, a `▎` accent bar at its left edge, and the
-  cursor; the row's `✕` delete affordance shows at the right. The
-  focus ring is NOT used inside tables — it is reserved for
-  standalone fields (URL, modal inputs, palette search). The last
-  table row is a ghost `+ Add param` row in muted text (hover lifts
-  it), replacing a separate button.
+  row on `panel`, then a single `control` body surface with data rows
+  on a 2-line pitch (no zebra — the spacing is the row separator), a
+  full-height `▏` column divider, and an edge line closing the block.
+  Editing/hover highlights a CELL as a padded pill: `control_hover`
+  fill extending half a row up/down via half-blocks, a `▎` accent bar
+  at the cell's left edge, and the cursor; the row's `✕` delete
+  affordance shows at the right. The focus ring is NOT used inside
+  tables — it is reserved for standalone fields (URL, modal inputs,
+  palette search). The last table row is a ghost `+ Add param` row in
+  muted text (hover lifts it), replacing a separate button.
 - **Response pane** — header strip of chips (status colored by class,
   time, size), response tabs, body on `page`. Empty state stays an
   invitation, centered muted text.
