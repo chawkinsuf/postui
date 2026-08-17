@@ -107,6 +107,7 @@ fn named_actions() -> Vec<(&'static str, Action)> {
         ("env_choose", Action::OpenEnvChooser),
         ("env_cycle", Action::CycleEnv),
         ("pick_variable", Action::OpenVarPicker { completing: false }),
+        ("toggle_table_collapse", Action::ToggleTableCollapse),
     ]
 }
 
@@ -161,6 +162,7 @@ impl Keymap {
             ("alt+e", Action::OpenEnvChooser),
             ("alt+c", Action::CycleEnv),
             ("ctrl+v", Action::OpenVarPicker { completing: false }),
+            ("alt+p", Action::ToggleTableCollapse),
         ];
         let mut map = Self {
             bindings: HashMap::new(),

@@ -27,6 +27,9 @@ pub enum Action {
     EditorTabCycle(i8),
     CycleMethod,
     FocusUrl,
+    /// Toggles `App::table_collapsed` (params/headers table body vs. tab
+    /// strip only). Session-only — never persisted.
+    ToggleTableCollapse,
     /// Open the method-selector dropdown, anchored below the method badge.
     OpenMethodDropdown,
     /// Set the editor's method directly (the dropdown's row action).

@@ -27,6 +27,12 @@ pub enum Hit {
     EditorTab(usize),
     TableRow(usize),
     TableCheckbox(usize),
+    /// The `✕` delete affordance on the active (expanded) row.
+    TableDelete(usize),
+    /// The ghost `+ Add …` row at the bottom of the table.
+    TableAdd,
+    /// The `⌄ hide` / `› show` toggle at the tab strip's right edge.
+    TableCollapse,
     /// Raw mouse event forwarded to edtui (click-to-place, wheel).
     BodyEditor,
     ResponseTab(crate::components::response::ViewMode),

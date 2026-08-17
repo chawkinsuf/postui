@@ -1,5 +1,5 @@
 use super::line_input::LineInput;
-use super::table_editor::TableEditorState;
+use super::table_editor::{TableEditorState, table_height};
 use super::toast::ToastKind;
 use super::{Component, DrawCtx, pane_block};
 use crate::action::Action;
@@ -104,6 +104,11 @@ pub struct Editor {
     /// request is in flight. Wrapping is harmless -- only taken mod the
     /// spinner's frame count / a small pulse period.
     pub spinner_frame: u32,
+    /// Mirrors `App::table_collapsed`, synced by `App::update` on every
+    /// action alongside `sending`. Draw-only: when set, the active tab's
+    /// params/headers table body (header/rows/ghost/edge) is skipped and the
+    /// tab strip's `⌄ hide`/`› show` toggle flips to `› show`.
+    pub table_collapsed: bool,
 }
 
 impl Default for Editor {
@@ -126,6 +131,7 @@ impl Default for Editor {
             sending: false,
             last_method_area: None,
             spinner_frame: 0,
+            table_collapsed: false,
         }
     }
 }
@@ -410,12 +416,39 @@ impl Component for Editor {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
+        // Params/Headers get exactly the height their compact table needs
+        // (so unused rows read as empty pane rather than a stretched table);
+        // Body still fills whatever is left. Collapsed, the table body is
+        // skipped entirely (`Length(0)`) — the freed rows stay inside this
+        // pane's own content row (there is no route today for them to grow
+        // the Response pane below, whose split is a fixed percentage
+        // computed once in `layout::compute_layout`, outside this
+        // component).
+        let content_constraint = match self.active_tab {
+            EditorTab::Body => Constraint::Min(0),
+            EditorTab::Params | EditorTab::Headers if self.table_collapsed => Constraint::Length(0),
+            EditorTab::Params | EditorTab::Headers => {
+                let (rows, active) = self.table_geometry(ctx.hovered);
+                let inherited = if self.active_tab == EditorTab::Headers {
+                    self.inherited_header_lines(ctx.theme).len() as u16
+                } else {
+                    0
+                };
+                // Capped to what's left after the fixed address bar (5) and
+                // tab bar (1) rows, never the other way around: those two
+                // must never be squeezed to make room for a table that
+                // wants more height than the pane has.
+                let available = inner.height.saturating_sub(6);
+                Constraint::Length((inherited + table_height(rows, active)).min(available))
+            }
+        };
+
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(5), // fused address bar + its ring margins
                 Constraint::Length(1), // tab bar
-                Constraint::Min(0),    // active tab content
+                content_constraint,    // active tab content
             ])
             .split(inner);
 
@@ -647,6 +680,28 @@ impl Editor {
         }
     }
 
+    /// `(total row-lines, active-row presence)` for the active tab's table
+    /// (Params/Headers only), fed to [`table_height`] both by `draw`'s
+    /// layout pass and `draw_tab_content`'s actual paint.
+    fn table_geometry(&self, hovered: Option<&crate::hit::Hit>) -> (usize, Option<usize>) {
+        let map_len = match self.active_tab {
+            EditorTab::Params => self.params.len(),
+            EditorTab::Headers => self.headers.len(),
+            EditorTab::Body => 0,
+        };
+        let new_row_pending = self
+            .table
+            .editing
+            .as_ref()
+            .is_some_and(|e| e.original_key.is_none());
+        let rows = map_len + usize::from(new_row_pending);
+        let active = self
+            .table
+            .active_index(map_len, hovered)
+            .or(new_row_pending.then_some(map_len));
+        (rows, active)
+    }
+
     fn draw_tab_bar(
         &self,
         frame: &mut Frame,
@@ -706,6 +761,54 @@ impl Editor {
                 cols[4],
             );
         }
+
+        // --- collapse toggle + active tab's count chip (right-aligned) ---
+        // Drawn on top of the same row's plain (unfilled) background, which
+        // is why `on` here is `theme.page` — the app's own background,
+        // never explicitly painted over this row.
+        let buf = frame.buffer_mut();
+        let toggle_label = if self.table_collapsed {
+            "\u{203a} show"
+        } else {
+            "\u{2304} hide"
+        };
+        let toggle_hovered = ctx.hovered == Some(&crate::hit::Hit::TableCollapse);
+        let toggle_w = toggle_label.chars().count() as u16;
+        let toggle_x = area.x + area.width.saturating_sub(toggle_w);
+        let toggle_fg = if toggle_hovered {
+            theme.text
+        } else {
+            theme.text_muted
+        };
+        crate::paint::text(
+            buf,
+            toggle_x,
+            area.y,
+            toggle_label,
+            toggle_fg,
+            theme.page,
+            false,
+        );
+        hits.register(
+            Rect::new(toggle_x, area.y, toggle_w, 1),
+            crate::hit::Hit::TableCollapse,
+        );
+
+        if matches!(self.active_tab, EditorTab::Params | EditorTab::Headers) {
+            let count = match self.active_tab {
+                EditorTab::Params => self.params.len(),
+                EditorTab::Headers => self.headers.len(),
+                EditorTab::Body => unreachable!(),
+            };
+            let chip_label = count.to_string();
+            let chip_w = chip_label.chars().count() as u16 + 2; // " N "
+            let chip_x = toggle_x.saturating_sub(1).saturating_sub(chip_w);
+            crate::paint::Chip {
+                label: &chip_label,
+                color: theme.accent,
+            }
+            .paint(buf, chip_x, area.y, theme.page, theme);
+        }
     }
 
     /// Builds the muted status lines for enabled inherited (project-default)
@@ -748,22 +851,22 @@ impl Editor {
         self.last_body_area = None;
         match self.active_tab {
             EditorTab::Params => {
+                if self.table_collapsed {
+                    return;
+                }
                 let table_ctx = DrawCtx {
                     theme,
                     focused,
                     hovered: ctx.hovered,
                     dragging: ctx.dragging,
                 };
-                self.table.draw(
-                    frame,
-                    area,
-                    &self.params,
-                    &table_ctx,
-                    "No params yet — press a to add",
-                    hits,
-                );
+                self.table
+                    .draw(frame, area, &self.params, &table_ctx, "+ Add param", hits);
             }
             EditorTab::Headers => {
+                if self.table_collapsed {
+                    return;
+                }
                 let inherited_lines = self.inherited_header_lines(theme);
                 let table_area = if inherited_lines.is_empty() {
                     area
@@ -789,7 +892,7 @@ impl Editor {
                     table_area,
                     &self.headers,
                     &table_ctx,
-                    "No headers yet — press a to add",
+                    "+ Add header",
                     hits,
                 );
             }

@@ -1,15 +1,14 @@
 use super::DrawCtx;
 use super::line_input::LineInput;
 use crate::hit::{Hit, HitMap};
+use crate::paint::{PillRow, RowHighlight, fill, text};
 use crate::theme::Theme;
 use indexmap::IndexMap;
 use postui_core::model::Entry;
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::Style;
-use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
 
 /// Which cell of the selected row is under edit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +60,39 @@ impl TableOutcome {
     }
 }
 
+/// Column x-offsets (relative to the drawn area's own left edge, i.e.
+/// *before* the active row's 1-column accent-bar indent is applied).
+struct Columns {
+    check_x: u16,
+    name_x: u16,
+    divider_x: u16,
+    value_x: u16,
+}
+
+fn columns(x0: u16, width: u16) -> Columns {
+    let check_w = 2u16.min(width);
+    let remaining = width.saturating_sub(check_w);
+    let name_w = (remaining / 3)
+        .max(4)
+        .min(remaining.saturating_sub(2).max(4));
+    Columns {
+        check_x: x0,
+        name_x: x0 + check_w,
+        divider_x: x0 + check_w + name_w,
+        value_x: x0 + check_w + name_w + 1,
+    }
+}
+
+/// `1 (header) + rows + (2 if a row is expanded) + 1 (ghost add row) + 1
+/// (closing edge)`. `rows` is the total number of data-row *lines* about to
+/// be drawn (`map.len()`, plus one more while a brand-new not-yet-inserted
+/// row is being typed). `active` is `Some(_)` whenever exactly one of those
+/// rows is drawn expanded (hovered or being edited) — its value is unused by
+/// the height math, only its presence.
+pub fn table_height(rows: usize, active: Option<usize>) -> u16 {
+    1 + rows as u16 + active.map_or(0, |_| 2) + 1 + 1
+}
+
 /// Shared cursor/edit state for a key/value table (Params or Headers tab).
 /// One instance is reused across both tabs; the caller passes in whichever
 /// `IndexMap` is currently active.
@@ -98,6 +130,26 @@ impl TableEditorState {
         });
     }
 
+    /// Starts a brand-new (not-yet-inserted) row, exactly like pressing `a`.
+    /// Shared by the `a` key path and a click on the ghost "+ Add" row.
+    pub fn begin_add(&mut self, map: &IndexMap<String, Entry>) {
+        self.selected = map.len();
+        self.editing = Some(CellEdit {
+            col: Col::Key,
+            input: LineInput::new(""),
+            original_key: None,
+            pending_key: None,
+        });
+    }
+
+    /// Deletes row `i`, exactly like selecting it and pressing `d`. Shared by
+    /// the keyboard path and a click on the row's `✕` affordance.
+    pub fn delete_row(&mut self, map: &mut IndexMap<String, Entry>, i: usize) {
+        self.selected = i;
+        self.editing = None;
+        self.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE), map);
+    }
+
     fn clamp_selected(&mut self, map: &IndexMap<String, Entry>) {
         if map.is_empty() {
             self.selected = 0;
@@ -133,13 +185,7 @@ impl TableEditorState {
                 TableOutcome::consumed()
             }
             KeyCode::Char('a') => {
-                self.selected = map.len();
-                self.editing = Some(CellEdit {
-                    col: Col::Key,
-                    input: LineInput::new(""),
-                    original_key: None,
-                    pending_key: None,
-                });
+                self.begin_add(map);
                 TableOutcome::consumed()
             }
             KeyCode::Enter => {
@@ -322,142 +368,304 @@ impl TableEditorState {
         None
     }
 
-    /// Draws the table: columns `[✓/✗] key  value`, selected row
-    /// accent-highlighted with a `›` marker, disabled rows muted, the
-    /// editing cell showing the `LineInput` cursor, and an empty-state
-    /// message when `map` has no rows and no append is in progress.
+    /// The row (existing, by map index) currently drawn expanded: the row
+    /// being edited, or — when nothing is being edited — the row under the
+    /// pointer. `None` when nothing is expanded.
+    pub fn active_index(&self, map_len: usize, hovered: Option<&Hit>) -> Option<usize> {
+        if let Some(edit) = &self.editing {
+            return if edit.original_key.is_some() {
+                Some(self.selected.min(map_len.saturating_sub(1)))
+            } else {
+                None // the new-row line is handled separately, always expanded
+            };
+        }
+        match hovered {
+            Some(Hit::TableRow(i)) if *i < map_len => Some(*i),
+            _ => None,
+        }
+    }
+
+    /// Draws the table as one contiguous painted control: a muted-uppercase
+    /// `NAME`/`VALUE` header row on `panel`, a `control` body of compact
+    /// 1-line rows (the active row — being edited, or hovered — expands to
+    /// 3 with a full-row pill and a `✕` delete affordance), a ghost
+    /// `+ Add …` row, and a closing `▔` edge.
     pub fn draw(
         &self,
         frame: &mut Frame,
         area: Rect,
         map: &IndexMap<String, Entry>,
         ctx: &DrawCtx,
-        empty_label: &str,
+        add_label: &str,
         hits: &mut HitMap,
     ) {
         let theme = ctx.theme;
-        if map.is_empty() && self.editing.is_none() {
-            frame.render_widget(
-                Paragraph::new(empty_label).style(Style::default().fg(theme.text_muted)),
-                area,
+        let map_len = map.len();
+        let active = self.active_index(map_len, ctx.hovered);
+        let new_row_pending = self
+            .editing
+            .as_ref()
+            .is_some_and(|e| e.original_key.is_none());
+        let buf = frame.buffer_mut();
+        let bottom = area.bottom();
+        let mut y = area.y;
+
+        // --- header ------------------------------------------------------
+        if y < bottom {
+            let cols = columns(area.x, area.width);
+            fill(buf, Rect::new(area.x, y, area.width, 1), theme.panel);
+            text(
+                buf,
+                cols.name_x,
+                y,
+                "NAME",
+                theme.text_muted,
+                theme.panel,
+                true,
             );
-            return;
+            text(
+                buf,
+                cols.value_x,
+                y,
+                "VALUE",
+                theme.text_muted,
+                theme.panel,
+                true,
+            );
+            if cols.divider_x < area.right() {
+                text(
+                    buf,
+                    cols.divider_x,
+                    y,
+                    "\u{258F}",
+                    theme.edge_dark,
+                    theme.panel,
+                    false,
+                );
+            }
+            y += 1;
         }
 
-        let selected = self.selected.min(map.len().saturating_sub(1));
-        let mut lines: Vec<Line<'static>> = Vec::new();
+        // --- data rows -----------------------------------------------------
         for (i, (k, e)) in map.iter().enumerate() {
-            let is_selected = !map.is_empty() && i == selected;
-            let editing_this = is_selected
-                && self
-                    .editing
-                    .as_ref()
-                    .map(|ed| ed.original_key.is_some())
-                    .unwrap_or(false);
-            lines.push(self.render_row(k, e, is_selected, editing_this, theme));
-        }
-        if let Some(edit) = &self.editing
-            && edit.original_key.is_none()
-        {
-            lines.push(self.render_new_row(edit, theme));
-        }
-        frame.render_widget(Paragraph::new(lines), area);
-
-        // Rows are not scrolled today (index == map index), so each row's
-        // screen line is simply `area.y + i`. Registered after the widget
-        // draw so `render_row` above never needs to know about hit-testing;
-        // the checkbox cell is registered last (== on top) so it wins over
-        // the row's own full-line hit at that point per
-        // `HitMap::hit_at`'s last-registered-wins rule.
-        for (i, _) in map.iter().enumerate() {
-            let y = area.y.saturating_add(i as u16);
-            if y >= area.y + area.height {
+            if y >= bottom {
                 break;
             }
-            hits.register(Rect::new(area.x, y, area.width, 1), Hit::TableRow(i));
-            if area.width >= 3 {
-                hits.register(Rect::new(area.x + 2, y, 1, 1), Hit::TableCheckbox(i));
+            if active == Some(i) {
+                y = self.draw_active_row(buf, hits, area, y, bottom, i, k, e, true, theme);
+            } else {
+                self.draw_plain_row(buf, hits, area, y, i, k, e, theme);
+                y += 1;
             }
+        }
+
+        // --- brand-new row, always drawn expanded --------------------------
+        if new_row_pending && y < bottom {
+            let edit = self.editing.as_ref().expect("new_row_pending checked Some");
+            let key = edit.pending_key.as_deref().unwrap_or("");
+            let entry = Entry {
+                value: String::new(),
+                enabled: true,
+            };
+            y = self.draw_active_row(
+                buf, hits, area, y, bottom, map_len, key, &entry,
+                false, // brand-new row: no delete affordance yet
+                theme,
+            );
+        }
+
+        // --- ghost "+ Add" row -----------------------------------------
+        if y < bottom {
+            let ghost_hovered = ctx.hovered == Some(&Hit::TableAdd);
+            let bg = if ghost_hovered {
+                theme.control_hover
+            } else {
+                theme.control
+            };
+            let fg = if ghost_hovered {
+                theme.text
+            } else {
+                theme.text_muted
+            };
+            fill(buf, Rect::new(area.x, y, area.width, 1), bg);
+            text(buf, area.x + 1, y, add_label, fg, bg, false);
+            hits.register(Rect::new(area.x, y, area.width, 1), Hit::TableAdd);
+            y += 1;
+        }
+
+        // --- closing edge --------------------------------------------------
+        if y < bottom {
+            crate::paint::bevel_top(
+                buf,
+                Rect::new(area.x, y, area.width, 1),
+                theme.edge_dark,
+                theme.surface,
+            );
         }
     }
 
-    fn render_row(
+    /// Draws row `i` at its compact 1-line height. Returns nothing; the
+    /// caller advances `y` itself by 1.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_plain_row(
         &self,
+        buf: &mut ratatui::buffer::Buffer,
+        hits: &mut HitMap,
+        area: Rect,
+        y: u16,
+        i: usize,
         key: &str,
         entry: &Entry,
-        selected: bool,
-        editing_this: bool,
         theme: &Theme,
-    ) -> Line<'static> {
-        let marker = if selected { "\u{203a} " } else { "  " };
+    ) {
+        let cols = columns(area.x, area.width);
+        let bg = theme.control;
+        fill(buf, Rect::new(area.x, y, area.width, 1), bg);
+        let fg = if entry.enabled {
+            theme.text
+        } else {
+            theme.text_muted
+        };
         let check = if entry.enabled {
             "\u{2713}"
         } else {
             "\u{2717}"
         };
-        let base_style = if !entry.enabled {
-            Style::default().fg(theme.text_muted)
-        } else if selected {
-            Style::default().fg(theme.accent).bold()
-        } else {
-            Style::default().fg(theme.text)
-        };
-
-        let (key_line, value_line) = if editing_this {
-            let edit = self
-                .editing
-                .as_ref()
-                .expect("editing_this implies editing is Some");
-            match edit.col {
-                Col::Key => (
-                    edit.input.draw_line(true, theme),
-                    Line::styled(entry.value.clone(), base_style),
-                ),
-                Col::Value => (
-                    Line::styled(
-                        edit.pending_key.clone().unwrap_or_else(|| key.to_string()),
-                        base_style,
-                    ),
-                    edit.input.draw_line(true, theme),
-                ),
-            }
-        } else {
-            (
-                Line::styled(key.to_string(), base_style),
-                Line::styled(entry.value.clone(), base_style),
-            )
-        };
-
-        let mut spans = vec![Span::styled(format!("{marker}{check} "), base_style)];
-        spans.extend(key_line.spans);
-        spans.push(Span::raw("  "));
-        spans.extend(value_line.spans);
-        Line::from(spans)
+        text(buf, cols.check_x, y, check, fg, bg, false);
+        text(buf, cols.name_x, y, key, fg, bg, false);
+        text(buf, cols.value_x, y, &entry.value, fg, bg, false);
+        if cols.divider_x < area.right() {
+            text(
+                buf,
+                cols.divider_x,
+                y,
+                "\u{258F}",
+                theme.edge_dark,
+                bg,
+                false,
+            );
+        }
+        hits.register(Rect::new(area.x, y, area.width, 1), Hit::TableRow(i));
+        if area.width >= 3 {
+            hits.register(Rect::new(cols.check_x, y, 1, 1), Hit::TableCheckbox(i));
+        }
     }
 
-    fn render_new_row(&self, edit: &CellEdit, theme: &Theme) -> Line<'static> {
-        let base_style = Style::default().fg(theme.accent).bold();
-        let (key_line, value_line) = match edit.col {
-            Col::Key => (
-                edit.input.draw_line(true, theme),
-                Line::styled(String::new(), base_style),
-            ),
-            Col::Value => (
-                Line::styled(edit.pending_key.clone().unwrap_or_default(), base_style),
-                edit.input.draw_line(true, theme),
-            ),
+    /// Draws row `i` expanded to 3 lines (pad/text/pad) with the full-row
+    /// pill treatment. `show_delete` gates the `✕` affordance (a brand-new,
+    /// not-yet-inserted row has nothing to delete yet). Returns the next `y`.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_active_row(
+        &self,
+        buf: &mut ratatui::buffer::Buffer,
+        hits: &mut HitMap,
+        area: Rect,
+        y: u16,
+        bottom: u16,
+        i: usize,
+        key: &str,
+        entry: &Entry,
+        show_delete: bool,
+        theme: &Theme,
+    ) -> u16 {
+        let text_row = y + 1;
+        PillRow {
+            highlight: RowHighlight::Selected,
+        }
+        .paint(
+            buf,
+            text_row,
+            area.x,
+            area.width,
+            area,
+            theme.control,
+            theme,
+        );
+
+        // The accent bar occupies column `area.x`; cell content is indented
+        // one column past it.
+        let content_x = area.x + 1;
+        let content_w = area.width.saturating_sub(1);
+        let cols = columns(content_x, content_w);
+        let bg = theme.control_hover;
+        let fg = if entry.enabled {
+            theme.text
+        } else {
+            theme.text_muted
         };
-        let mut spans = vec![Span::styled("\u{203a} \u{2713} ".to_string(), base_style)];
-        spans.extend(key_line.spans);
-        spans.push(Span::raw("  "));
-        spans.extend(value_line.spans);
-        Line::from(spans)
+
+        let editing_col = self
+            .editing
+            .as_ref()
+            .filter(|e| {
+                e.original_key.as_deref() == Some(key)
+                    || (e.original_key.is_none() && self.selected == i)
+            })
+            .map(|e| e.col);
+
+        let check = if entry.enabled {
+            "\u{2713}"
+        } else {
+            "\u{2717}"
+        };
+        text(buf, cols.check_x, text_row, check, fg, bg, false);
+
+        match editing_col {
+            Some(Col::Key) => {
+                let edit = self.editing.as_ref().expect("editing_col implies editing");
+                let mut line = edit.input.draw_line(true, theme);
+                line.style = Style::default().bg(bg).patch(line.style);
+                buf.set_line(
+                    cols.name_x,
+                    text_row,
+                    &line,
+                    cols.divider_x.saturating_sub(cols.name_x),
+                );
+                text(buf, cols.value_x, text_row, &entry.value, fg, bg, false);
+            }
+            Some(Col::Value) => {
+                text(buf, cols.name_x, text_row, key, fg, bg, false);
+                let edit = self.editing.as_ref().expect("editing_col implies editing");
+                let mut line = edit.input.draw_line(true, theme);
+                line.style = Style::default().bg(bg).patch(line.style);
+                let value_w = area.x + area.width - cols.value_x;
+                buf.set_line(cols.value_x, text_row, &line, value_w);
+            }
+            None => {
+                text(buf, cols.name_x, text_row, key, fg, bg, false);
+                text(buf, cols.value_x, text_row, &entry.value, fg, bg, false);
+            }
+        }
+
+        hits.register(Rect::new(area.x, y, area.width, 3), Hit::TableRow(i));
+        if content_w >= 3 {
+            hits.register(
+                Rect::new(cols.check_x, text_row, 1, 1),
+                Hit::TableCheckbox(i),
+            );
+        }
+        if show_delete && area.width >= 2 {
+            let del_x = area.x + area.width - 1;
+            text(
+                buf,
+                del_x,
+                text_row,
+                "\u{2715}",
+                theme.text_muted,
+                bg,
+                false,
+            );
+            hits.register(Rect::new(del_x, text_row, 1, 1), Hit::TableDelete(i));
+        }
+
+        (y + 3).min(bottom)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::Theme;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -632,16 +840,19 @@ mod tests {
         assert_eq!(map["c"].value, "1", "c takes a's value");
     }
 
-    #[test]
-    fn draw_shows_empty_state_and_rows() {
-        let theme = Theme::dark();
-        let ctx = DrawCtx {
-            theme: &theme,
+    fn ctx<'a>(theme: &'a Theme, hovered: Option<&'a Hit>) -> DrawCtx<'a> {
+        DrawCtx {
+            theme,
             focused: true,
-            hovered: None,
+            hovered,
             dragging: false,
-        };
-        let backend = TestBackend::new(40, 5);
+        }
+    }
+
+    #[test]
+    fn draw_shows_header_ghost_row_and_data_rows() {
+        let theme = Theme::dark();
+        let backend = TestBackend::new(40, 8);
         let mut terminal = Terminal::new(backend).unwrap();
 
         let empty_map: IndexMap<String, Entry> = IndexMap::new();
@@ -653,14 +864,16 @@ mod tests {
                     f,
                     f.area(),
                     &empty_map,
-                    &ctx,
-                    "No params yet — press a to add",
+                    &ctx(&theme, None),
+                    "+ Add param",
                     &mut hits,
                 )
             })
             .unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
-        assert!(content.contains("No params yet"), "empty state: {content}");
+        assert!(content.contains("NAME"), "header: {content}");
+        assert!(content.contains("VALUE"), "header: {content}");
+        assert!(content.contains("+ Add param"), "ghost row: {content}");
 
         let mut map = IndexMap::new();
         map.insert(
@@ -672,19 +885,98 @@ mod tests {
         );
         let mut hits = HitMap::default();
         terminal
-            .draw(|f| t.draw(f, f.area(), &map, &ctx, "unused", &mut hits))
+            .draw(|f| {
+                t.draw(
+                    f,
+                    f.area(),
+                    &map,
+                    &ctx(&theme, None),
+                    "+ Add param",
+                    &mut hits,
+                )
+            })
             .unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("page"), "key text: {content}");
         assert!(content.contains('2'), "value text: {content}");
+        // header is row 0, so the data row is row 1 (compact, 1 line high).
         assert_eq!(
             hits.rect_of(&Hit::TableRow(0)),
-            Some(Rect::new(0, 0, 40, 1))
+            Some(Rect::new(0, 1, 40, 1))
         );
-        assert_eq!(
-            hits.rect_of(&Hit::TableCheckbox(0)),
-            Some(Rect::new(2, 0, 1, 1)),
-            "checkbox cell registered on top of the row"
+        assert!(hits.rect_of(&Hit::TableCheckbox(0)).is_some());
+    }
+
+    #[test]
+    fn active_row_expands_to_three_lines() {
+        let theme = Theme::dark();
+        let backend = TestBackend::new(40, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut map = IndexMap::new();
+        map.insert(
+            "a".into(),
+            Entry {
+                value: "1".into(),
+                enabled: true,
+            },
         );
+        map.insert(
+            "b".into(),
+            Entry {
+                value: "2".into(),
+                enabled: true,
+            },
+        );
+        map.insert(
+            "c".into(),
+            Entry {
+                value: "3".into(),
+                enabled: true,
+            },
+        );
+        let mut t = TableEditorState {
+            selected: 1,
+            ..TableEditorState::default()
+        };
+        t.begin_edit_selected(&map); // editing row 1 ("b")
+        let mut hits = HitMap::default();
+        terminal
+            .draw(|f| {
+                t.draw(
+                    f,
+                    f.area(),
+                    &map,
+                    &ctx(&theme, None),
+                    "+ Add param",
+                    &mut hits,
+                )
+            })
+            .unwrap();
+
+        // row 0 ("a") is above the header at y=0, so it's at y=1, compact.
+        // row 1 ("b") is the active row: expands to 3 lines starting y=2.
+        let row1 = hits.rect_of(&Hit::TableRow(1)).unwrap();
+        assert_eq!(row1, Rect::new(0, 2, 40, 3), "active row spans 3 lines");
+        // row 2 ("c") follows immediately after, compact again, at y=5.
+        let row2 = hits.rect_of(&Hit::TableRow(2)).unwrap();
+        assert_eq!(row2.height, 1, "inactive rows stay compact");
+        assert_eq!(row2.y, 5);
+
+        let buf = terminal.backend().buffer();
+        let text_row = row1.y + 1;
+        // full-row control_hover fill on the active row's text line
+        assert_eq!(buf.cell((5, text_row)).unwrap().bg, theme.control_hover);
+        // the pad row above shows the "▄" cap
+        assert_eq!(buf.cell((5, row1.y)).unwrap().symbol(), "\u{2584}");
+        // the pad row below shows the "▀" cap
+        assert_eq!(buf.cell((5, row1.y + 2)).unwrap().symbol(), "\u{2580}");
+    }
+
+    #[test]
+    fn table_height_accounts_for_header_ghost_edge_and_expansion() {
+        assert_eq!(table_height(0, None), 3); // header + 0 rows + ghost + edge
+        assert_eq!(table_height(3, None), 6);
+        assert_eq!(table_height(3, Some(1)), 8); // + 2 for the expanded row
     }
 }

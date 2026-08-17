@@ -90,6 +90,10 @@ pub struct App {
     pub hovered: Option<Hit>,
     /// An in-progress drag (e.g. a scrollbar thumb), if any.
     pub drag: Option<Drag>,
+    /// Whether the active tab's params/headers table body is collapsed
+    /// (tab strip + its count chip stay visible; only the table itself is
+    /// hidden). Session-only — never persisted.
+    pub table_collapsed: bool,
     /// The most recent left-click's hit and when it landed, used to detect
     /// a double-click (same hit, within 400ms).
     last_click: Option<(Hit, std::time::Instant)>,
@@ -340,6 +344,7 @@ impl App {
             hits: HitMap::default(),
             hovered: None,
             drag: None,
+            table_collapsed: false,
             last_click: None,
             _test_rx: None,
             _test_dir: None,
@@ -384,6 +389,7 @@ impl App {
         self.sidebar.open_dirty = self.editor.is_dirty();
         self.editor.inherited_headers = self.project.meta.default_headers.clone();
         self.editor.sending = self.in_flight.is_some();
+        self.editor.table_collapsed = self.table_collapsed;
         changed
     }
 
@@ -575,6 +581,10 @@ impl App {
             Action::FocusUrl => {
                 self.focus = PaneId::Editor;
                 self.editor.sub_focus = SubFocus::Url;
+                true
+            }
+            Action::ToggleTableCollapse => {
+                self.table_collapsed = !self.table_collapsed;
                 true
             }
             Action::FormatBody => self.transform_body(postui_core::json::format),
@@ -1639,6 +1649,29 @@ impl App {
                 }
                 self.update(Action::Render)
             }
+            Hit::TableDelete(i) => {
+                self.update(Action::FocusPane(PaneId::Editor));
+                self.editor.sub_focus = SubFocus::Content;
+                let map = match self.editor.active_tab {
+                    EditorTab::Params => &mut self.editor.params,
+                    EditorTab::Headers => &mut self.editor.headers,
+                    EditorTab::Body => unreachable!("TableDelete only fires on Params/Headers"),
+                };
+                self.editor.table.delete_row(map, i);
+                self.update(Action::Render)
+            }
+            Hit::TableAdd => {
+                self.update(Action::FocusPane(PaneId::Editor));
+                self.editor.sub_focus = SubFocus::Content;
+                let map = match self.editor.active_tab {
+                    EditorTab::Params => &self.editor.params,
+                    EditorTab::Headers => &self.editor.headers,
+                    EditorTab::Body => unreachable!("TableAdd only fires on Params/Headers"),
+                };
+                self.editor.table.begin_add(map);
+                self.update(Action::Render)
+            }
+            Hit::TableCollapse => self.update(Action::ToggleTableCollapse),
             Hit::MethodSelector => {
                 self.update(Action::FocusPane(PaneId::Editor));
                 self.update(Action::OpenMethodDropdown)
@@ -1951,6 +1984,9 @@ mod tests {
     }
     fn plain(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+    fn alt(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT)
     }
 
     #[test]
@@ -3616,13 +3652,16 @@ mod tests {
         );
         render_once(&mut app);
         let r = app.hits.rect_of(&Hit::TableRow(0)).unwrap();
-        app.handle_mouse(left_down(r.x, r.y));
+        // Clicks past the leading checkbox cell so the row hit (not the
+        // checkbox registered on top of it) wins.
+        let click_x = r.x + r.width - 1;
+        app.handle_mouse(left_down(click_x, r.y));
         assert!(
             app.editor.table.editing.is_none(),
             "single click only selects"
         );
         assert_eq!(app.editor.table.selected, 0, "single click selects the row");
-        app.handle_mouse(left_down(r.x, r.y));
+        app.handle_mouse(left_down(click_x, r.y));
         let edit = app
             .editor
             .table
@@ -3630,6 +3669,63 @@ mod tests {
             .as_ref()
             .expect("double click begins editing");
         assert_eq!(edit.input.text(), "page", "key cell seeded");
+    }
+
+    fn three_params(app: &mut App) {
+        for (k, v) in [("a", "1"), ("b", "2"), ("c", "3")] {
+            app.editor.params.insert(
+                k.into(),
+                postui_core::model::Entry {
+                    value: v.into(),
+                    enabled: true,
+                },
+            );
+        }
+    }
+
+    #[test]
+    fn collapse_hides_body_and_keeps_count_chip() {
+        let mut app = App::new_for_test();
+        three_params(&mut app);
+        app.table_collapsed = true;
+        app.editor.table_collapsed = true;
+
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+
+        let buf = terminal.backend().buffer();
+        let content = format!("{buf:?}");
+        assert!(
+            !content.contains("NAME"),
+            "table header must not be drawn while collapsed: {content}"
+        );
+
+        // The tab strip's count chip is still painted somewhere: a "3" cell
+        // tinted toward the accent color.
+        let tint = app.theme.tint(app.theme.accent, app.theme.page);
+        let found = buf
+            .content()
+            .iter()
+            .any(|cell| cell.symbol() == "3" && cell.bg == tint);
+        assert!(found, "count chip for 3 params must stay visible");
+    }
+
+    #[test]
+    fn collapse_toggle_click_and_key() {
+        let mut app = App::new_for_test();
+        three_params(&mut app);
+        render_once(&mut app);
+        assert!(!app.table_collapsed);
+
+        let r = app.hits.rect_of(&Hit::TableCollapse).unwrap();
+        app.handle_mouse(left_down(r.x, r.y));
+        assert!(app.table_collapsed, "click toggles collapse on");
+
+        app.handle_key(&Keymap::default_bindings(), alt('p'));
+        assert!(!app.table_collapsed, "alt+p toggles it back off");
     }
 
     #[test]

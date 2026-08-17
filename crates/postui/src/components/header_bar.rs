@@ -177,7 +177,10 @@ mod tests {
         let (term, hits) = render(&theme, "alpha", "qa", Some(&Hit::HeaderProject));
         let project_rect = hits.rect_of(&Hit::HeaderProject).unwrap();
         let env_rect = hits.rect_of(&Hit::HeaderEnv).unwrap();
-        assert_eq!(cell(&term, project_rect.x, project_rect.y).bg, theme.control_hover);
+        assert_eq!(
+            cell(&term, project_rect.x, project_rect.y).bg,
+            theme.control_hover
+        );
         assert_eq!(cell(&term, env_rect.x, env_rect.y).bg, theme.control);
     }
 
