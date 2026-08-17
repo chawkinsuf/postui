@@ -1791,7 +1791,6 @@ impl App {
             Hit::HeaderCopy(i) => {
                 self.update(Action::CopyToClipboard(CopyTarget::ResponseHeader(i)))
             }
-            Hit::CopyUrlButton => self.update(Action::CopyToClipboard(CopyTarget::Url)),
             Hit::ScrollbarThumb(pane) => {
                 let Some(thumb) = self.hits.rect_of(&Hit::ScrollbarThumb(pane)) else {
                     return false;

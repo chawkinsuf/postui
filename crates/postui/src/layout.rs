@@ -25,6 +25,11 @@ impl PaneId {
 pub struct AppLayout {
     pub header: Rect,
     pub sidebar: Rect,
+    /// The 1-col painted gutter between the sidebar and the main panes,
+    /// filled with `theme.page` by `ui::draw` — the surviving separator
+    /// between them now that panes no longer paint a `│` border of their
+    /// own.
+    pub gutter: Rect,
     pub editor: Rect,
     pub response: Rect,
     pub footer: Rect,
@@ -40,14 +45,18 @@ pub fn compute_layout(area: Rect, editor_collapsed_to_chrome: bool) -> AppLayout
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // header (painted app bar)
-            Constraint::Min(0),    // body
-            Constraint::Length(1), // footer hints
+            Constraint::Length(crate::components::header_bar::HEADER_HEIGHT),
+            Constraint::Min(0), // body
+            Constraint::Length(crate::components::footer::FOOTER_HEIGHT),
         ])
         .split(area);
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(28), Constraint::Percentage(72)])
+        .constraints([
+            Constraint::Percentage(28),
+            Constraint::Length(1), // painted gutter separating sidebar from main
+            Constraint::Percentage(72),
+        ])
         .split(rows[1]);
     let right_constraints = if editor_collapsed_to_chrome {
         [
@@ -60,10 +69,11 @@ pub fn compute_layout(area: Rect, editor_collapsed_to_chrome: bool) -> AppLayout
     let right = Layout::default()
         .direction(Direction::Vertical)
         .constraints(right_constraints)
-        .split(cols[1]);
+        .split(cols[2]);
     AppLayout {
         header: rows[0],
         sidebar: cols[0],
+        gutter: cols[1],
         editor: right[0],
         response: right[1],
         footer: rows[2],
@@ -96,18 +106,20 @@ mod tests {
         let area = Rect::new(0, 0, 120, 40);
         let l = compute_layout(area, false);
         assert_eq!(l.header.height, 3);
-        assert_eq!(l.footer.height, 1);
+        assert_eq!(l.footer.height, 3);
         assert_eq!(l.header.y, 0);
-        assert_eq!(l.footer.y, 39);
-        // sidebar left of editor/response; editor above response
-        assert!(l.sidebar.x < l.editor.x);
+        assert_eq!(l.footer.y, 37);
+        // sidebar, then the 1-col gutter, then editor/response; editor above response
+        assert!(l.sidebar.x < l.gutter.x);
+        assert!(l.gutter.x < l.editor.x);
+        assert_eq!(l.gutter.width, 1);
         assert_eq!(l.editor.x, l.response.x);
         assert!(l.editor.y < l.response.y);
         // body fills between header and footer
         assert_eq!(l.sidebar.y, 3);
-        assert_eq!(l.sidebar.height, 36);
-        assert_eq!(l.editor.height + l.response.height, 36);
-        assert_eq!(l.sidebar.width + l.editor.width, 120);
+        assert_eq!(l.sidebar.height, 34);
+        assert_eq!(l.editor.height + l.response.height, 34);
+        assert_eq!(l.sidebar.width + l.gutter.width + l.editor.width, 120);
     }
 
     #[test]

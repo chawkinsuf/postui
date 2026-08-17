@@ -15,9 +15,11 @@ fn render(app: &mut App) -> String {
 fn stage1_acceptance_flow() {
     let mut app = App::new_for_test();
 
-    // 1. Initial frame: all chrome present, sidebar focused.
+    // 1. Initial frame: all chrome present, sidebar focused. Panes carry no
+    // border/title of their own — the response pane's empty-state hint
+    // identifies it instead.
     let frame = render(&mut app);
-    assert!(frame.contains("REQUESTS") && frame.contains("Response"));
+    assert!(frame.contains("REQUESTS") && frame.contains("response will appear here"));
 
     // 2. Focus cycling reaches every pane.
     app.update(Action::FocusNext);

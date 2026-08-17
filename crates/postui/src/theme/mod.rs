@@ -97,11 +97,6 @@ pub struct Theme {
     pub success: Color,
     pub warning: Color,
     pub error: Color,
-    // legacy aliases kept until Task 12 removes them:
-    pub surface: Color,
-    pub surface_raised: Color,
-    pub border: Color,
-    pub border_focused: Color,
 }
 
 impl Theme {
@@ -166,10 +161,6 @@ impl Theme {
             success: to_color(seeds.success),
             warning: to_color(seeds.warning),
             error: to_color(seeds.error),
-            surface: to_color(page),
-            surface_raised: to_color(panel),
-            border: to_color(edge_light),
-            border_focused: to_color(accent),
         }
     }
 
@@ -278,10 +269,6 @@ impl Theme {
             success: f(self.success),
             warning: f(self.warning),
             error: f(self.error),
-            surface: f(self.surface),
-            surface_raised: f(self.surface_raised),
-            border: f(self.border),
-            border_focused: f(self.border_focused),
         }
     }
 }
@@ -512,7 +499,7 @@ mod tests {
     #[test]
     fn dark_theme_tokens_are_rgb() {
         let t = Theme::dark();
-        for c in [t.surface, t.text, t.accent, t.border, t.border_focused] {
+        for c in [t.page, t.text, t.accent, t.edge_light, t.focus_ring] {
             assert!(
                 matches!(c, Color::Rgb(..)),
                 "token must be truecolor: {c:?}"
@@ -531,27 +518,27 @@ mod tests {
     }
 
     #[test]
-    fn focused_border_differs_from_unfocused() {
+    fn focus_ring_differs_from_the_unfocused_edge() {
         let t = Theme::dark();
-        assert_ne!(t.border, t.border_focused);
+        assert_ne!(t.edge_light, t.focus_ring);
         let t = Theme::light();
-        assert_ne!(t.border, t.border_focused);
+        assert_ne!(t.edge_light, t.focus_ring);
     }
 
     #[test]
     fn downgrade_maps_every_token_to_indexed() {
         let t = Theme::dark().downgrade_to_256();
         for c in [
-            t.surface,
-            t.surface_raised,
+            t.page,
+            t.panel,
             t.text,
             t.text_muted,
             t.accent,
             t.success,
             t.error,
             t.warning,
-            t.border,
-            t.border_focused,
+            t.edge_light,
+            t.focus_ring,
         ] {
             assert!(
                 matches!(c, Color::Indexed(_)),

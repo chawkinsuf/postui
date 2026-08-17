@@ -28,6 +28,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     hits.register(layout.sidebar, Hit::Pane(PaneId::Sidebar));
     hits.register(layout.editor, Hit::Pane(PaneId::Editor));
     hits.register(layout.response, Hit::Pane(PaneId::Response));
+    // The painted gutter separating the sidebar from the main panes — the
+    // surviving separator now that panes no longer draw a `│` border of
+    // their own.
+    crate::paint::fill(frame.buffer_mut(), layout.gutter, app.theme.page);
     let hovered = app.hovered.as_ref();
     let dragged_pane = app.drag.as_ref().map(|d| d.pane);
     // Destructured so each component can be borrowed mutably alongside the
@@ -83,17 +87,54 @@ mod tests {
         let mut app = App::new_for_test();
         let content = render(&mut app);
         assert!(content.contains("REQUESTS")); // sidebar title
-        assert!(content.contains("Request")); // editor title
-        assert!(content.contains("Response")); // response title
         assert!(content.contains("postui")); // header bar app name
         assert!(content.contains("no env")); // header env selector placeholder
         assert!(content.contains("quit")); // footer hint mentions quit key
-        assert!(content.contains('╭')); // rounded chrome
         assert!(content.contains("No requests yet")); // sidebar empty state
         assert!(content.contains("response will appear here")); // response empty state
         assert!(content.contains("GET")); // editor method badge (default method)
         assert!(content.contains("Params")); // editor tab bar
         assert!(content.contains("Headers")); // editor tab bar
         assert!(content.contains("Body")); // editor tab bar
+    }
+
+    /// Panes carry no border or title of their own anymore: no `│` pane
+    /// separator, no rounded-corner glyphs anywhere, and the 1-col gutter
+    /// between the sidebar and the main panes is a flat `theme.page` fill.
+    #[test]
+    fn no_pane_borders_and_the_gutter_is_a_flat_page_fill() {
+        let mut app = App::new_for_test();
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let layout =
+            crate::layout::compute_layout(ratatui::layout::Rect::new(0, 0, 120, 40), false);
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+
+        for glyph in ['╭', '╮', '╰', '╯'] {
+            for y in 0..buf.area.height {
+                for x in 0..buf.area.width {
+                    assert_ne!(
+                        buf[(x, y)].symbol(),
+                        glyph.to_string(),
+                        "no pane border corner at ({x},{y})"
+                    );
+                }
+            }
+        }
+
+        assert_eq!(layout.gutter.width, 1);
+        for y in layout.gutter.y..layout.gutter.y + layout.gutter.height {
+            let cell = buf[(layout.gutter.x, y)].clone();
+            assert_eq!(
+                cell.symbol(),
+                " ",
+                "no `│` glyph at the gutter column: {cell:?}"
+            );
+            assert_eq!(
+                cell.bg, app.theme.page,
+                "gutter cell is a flat page fill: {cell:?}"
+            );
+        }
     }
 }

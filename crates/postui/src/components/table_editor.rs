@@ -499,7 +499,7 @@ impl TableEditorState {
                 buf,
                 Rect::new(area.x, y, area.width, 1),
                 theme.edge_dark,
-                theme.surface,
+                theme.page,
             );
         }
     }

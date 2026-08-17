@@ -13,19 +13,12 @@ pub mod toast;
 pub mod var_picker;
 
 use crate::action::Action;
+use crate::paint::fill;
 use crate::theme::Theme;
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
-use ratatui::widgets::{Block, BorderType, Borders, Padding};
-
-/// Rows a [`pane_block`] border always costs (1 top + 1 bottom), regardless
-/// of border style. Used wherever a caller needs a pane's total on-screen
-/// height from its *inner* content height (or vice versa) without drawing it
-/// first — e.g. `layout::compute_layout` sizing the Editor pane down to its
-/// chrome when its table is collapsed.
-pub const PANE_BORDER_HEIGHT: u16 = 2;
 
 pub struct DrawCtx<'a> {
     pub theme: &'a Theme,
@@ -44,21 +37,20 @@ pub trait Component {
     fn draw(&mut self, frame: &mut Frame, area: Rect, ctx: &DrawCtx, hits: &mut crate::hit::HitMap);
 }
 
-/// Standard pane chrome: rounded borders, interior padding, focus styling.
-pub fn pane_block<'a>(title: &'a str, ctx: &DrawCtx) -> Block<'a> {
-    let t = ctx.theme;
-    let (border_color, title_color) = if ctx.focused {
-        (t.border_focused, t.accent)
-    } else {
-        (t.border, t.text_muted)
-    };
-    Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(border_color))
-        .padding(Padding::horizontal(1))
-        .title(format!(" {title} "))
-        .title_style(Style::default().fg(title_color))
+/// Paints a pane's shared, borderless surface: a flat `theme.page` fill
+/// across the whole pane rect, returning the 1-column-each-side horizontally
+/// inset rect its content draws into. Panes carry no border or title of
+/// their own — the address bar (Editor) and response strip (Response)
+/// identify which pane is which, and a painted [`crate::paint::fill`] gutter
+/// column (drawn by `ui::draw`) separates the sidebar from the main panes
+/// instead of a `│` glyph.
+pub fn pane_surface(buf: &mut Buffer, area: Rect, theme: &Theme) -> Rect {
+    fill(buf, area, theme.page);
+    Rect {
+        x: area.x + 1,
+        width: area.width.saturating_sub(2),
+        ..area
+    }
 }
 
 #[cfg(test)]
@@ -68,24 +60,30 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     #[test]
-    fn pane_block_renders_rounded_border_and_title() {
+    fn pane_surface_fills_page_and_insets_one_column_each_side() {
         let theme = Theme::dark();
-        let ctx = DrawCtx {
-            theme: &theme,
-            focused: true,
-            hovered: None,
-            dragging: false,
-        };
         let backend = TestBackend::new(20, 5);
         let mut terminal = Terminal::new(backend).unwrap();
+        let mut inner = Rect::default();
         terminal
             .draw(|f| {
-                let b = pane_block("Requests", &ctx);
-                f.render_widget(b, f.area());
+                let area = f.area();
+                inner = pane_surface(f.buffer_mut(), area, &theme);
             })
             .unwrap();
-        let content = format!("{:?}", terminal.backend().buffer());
-        assert!(content.contains('╭'), "rounded corner expected");
-        assert!(content.contains("Requests"));
+        assert_eq!(inner, Rect::new(1, 0, 18, 5));
+        let buf = terminal.backend().buffer();
+        for y in 0..5u16 {
+            for x in 0..20u16 {
+                assert_eq!(buf[(x, y)].bg, theme.page);
+            }
+        }
+        let content = format!("{buf:?}");
+        for glyph in ['╭', '╮', '╰', '╯', '│'] {
+            assert!(
+                !content.contains(glyph),
+                "no pane border glyph {glyph:?} expected: {content}"
+            );
+        }
     }
 }

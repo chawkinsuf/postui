@@ -1,9 +1,8 @@
+use crate::paint::{fill, text};
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
 use ratatui::text::Span;
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToastKind {
@@ -14,6 +13,10 @@ pub enum ToastKind {
 }
 
 const TOAST_LIFETIME_TICKS: u32 = 30; // 3 s at the 100 ms tick
+
+/// Total on-screen height (in rows) of one painted toast: a filled `panel`
+/// rect with its message vertically centered on the middle row.
+const TOAST_HEIGHT: u16 = 3;
 
 struct Toast {
     message: String,
@@ -56,20 +59,25 @@ impl Toasts {
         self.entries.is_empty()
     }
 
+    /// Paints every visible toast as a floating filled `theme.panel` rect
+    /// with a 1-col `█` left bar in its semantic color (accent/success/
+    /// error/warning by kind) and `theme.text` message text, stacked
+    /// top-right the same as before — but with no `Block`/border chrome of
+    /// its own.
     pub fn draw(&self, frame: &mut Frame, screen: Rect, theme: &Theme) {
         let mut y = screen.y + 1;
         for toast in &self.entries {
             // Use display-width instead of char count to handle double-width chars (emoji, CJK)
             let display_width = Span::raw(toast.message.as_str()).width();
             // Clamp to usize before arithmetic to prevent overflow on very long messages
-            let padding_width: usize = 6;
+            let padding_width: usize = 6; // 1 bar col + 1 gap col + 4 right margin
             let clamped_width = display_width.saturating_add(padding_width);
             let width = (clamped_width as u16).min(screen.width);
             let area = Rect::new(
                 screen.right().saturating_sub(width.saturating_add(1)),
                 y,
                 width,
-                3,
+                TOAST_HEIGHT,
             );
             if area.bottom() > screen.bottom() {
                 break;
@@ -80,20 +88,27 @@ impl Toasts {
                 ToastKind::Error => theme.error,
                 ToastKind::Warning => theme.warning,
             };
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(color))
-                .padding(Padding::horizontal(1))
-                .style(Style::default().bg(theme.surface_raised));
-            frame.render_widget(Clear, area);
-            frame.render_widget(
-                Paragraph::new(toast.message.as_str())
-                    .style(Style::default().fg(theme.text))
-                    .block(block),
-                area,
+
+            let buf = frame.buffer_mut();
+            fill(buf, area, theme.panel);
+            for row in area.top()..area.bottom() {
+                if let Some(cell) = buf.cell_mut((area.x, row)) {
+                    cell.set_symbol("\u{2588}");
+                    cell.set_fg(color);
+                    cell.set_bg(theme.panel);
+                }
+            }
+            let text_y = area.y + area.height / 2;
+            text(
+                buf,
+                area.x + 2,
+                text_y,
+                &toast.message,
+                theme.text,
+                theme.panel,
+                false,
             );
-            y += 3;
+            y += TOAST_HEIGHT;
         }
     }
 }
@@ -156,7 +171,7 @@ mod tests {
     #[test]
     fn draw_renders_message_top_right() {
         let mut t = Toasts::default();
-        t.push("Copied ✓", ToastKind::Success);
+        t.push("Copied \u{2713}", ToastKind::Success);
         let theme = Theme::dark();
         let backend = TestBackend::new(60, 20);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -177,11 +192,43 @@ mod tests {
         let content = format!("{:?}", terminal.backend().buffer());
         // Verify that the toast was rendered with the double-width message
         assert!(content.contains("已"), "CJK character should be rendered");
-        // The box should be sized based on display width, not char count
-        // Display width of "已复制 ✓" is 8 (3*2 + 1 + 2), plus 6 padding = 14 columns
-        assert!(
-            content.contains('╭') || content.contains('┌'),
-            "toast border should render"
-        );
+    }
+
+    /// Panel fill + a `█` left bar in the semantic color, no `Block`/border
+    /// chrome (no rounded-corner glyphs).
+    #[test]
+    fn draw_paints_panel_fill_and_a_colored_left_bar() {
+        let mut t = Toasts::default();
+        t.push("oops", ToastKind::Error);
+        let theme = Theme::dark();
+        let backend = TestBackend::new(60, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| t.draw(f, f.area(), &theme)).unwrap();
+        let buf = terminal.backend().buffer();
+
+        // The bar column is the toast area's left edge; find it by scanning
+        // for the "o" of "oops" and walking back to the bar just left of the
+        // 2-col text gutter.
+        let mut found_bar = false;
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                let cell = buf[(x, y)].clone();
+                if cell.symbol() == "\u{2588}" {
+                    assert_eq!(cell.fg, theme.error, "left bar is in the error color");
+                    assert_eq!(cell.bg, theme.panel);
+                    found_bar = true;
+                }
+            }
+        }
+        assert!(found_bar, "expected a `█` left bar cell somewhere");
+
+        let content = format!("{buf:?}");
+        for glyph in ['\u{256d}', '\u{256e}', '\u{2570}', '\u{256f}'] {
+            assert!(
+                !content.contains(glyph),
+                "no rounded border glyph {glyph:?} expected: {content}"
+            );
+        }
+        assert!(content.contains("oops"));
     }
 }

@@ -1,6 +1,6 @@
 use super::json_tree::{JsonTree, TokenKind};
 use super::line_input::LineInput;
-use super::{Component, DrawCtx, pane_block};
+use super::{Component, DrawCtx, pane_surface};
 use crate::action::{Action, CopyTarget};
 use crate::components::toast::ToastKind;
 use crate::hit::ScrollbarSpec;
@@ -482,15 +482,12 @@ impl Component for Response {
         ctx: &DrawCtx,
         hits: &mut crate::hit::HitMap,
     ) {
-        let block = pane_block("Response", ctx);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
+        let inner = pane_surface(frame.buffer_mut(), area, ctx.theme);
         let t = ctx.theme;
 
         let data = match &self.state {
             ResponseState::Ready(data) => data,
             other => {
-                crate::paint::fill(frame.buffer_mut(), inner, t.page);
                 let muted = Style::default().fg(t.text_muted);
                 let lines = match other {
                     ResponseState::Empty => vec![
@@ -670,8 +667,9 @@ fn tabstrip_width(tabs: &[(String, bool)]) -> u16 {
     sum + 2 * widths.len().saturating_sub(1) as u16
 }
 
-/// `[ Copy body ]  [ Save to file ]`, right-aligned in `area`. Overflows
-/// leftward when `area` is too narrow rather than off its right edge.
+/// `Copy body`/`Save to file` plain painted actions, right-aligned in
+/// `area` on the header strip's `theme.panel` fill. Overflows leftward when
+/// `area` is too narrow rather than off its right edge.
 fn draw_copy_save_buttons(
     frame: &mut Frame,
     hits: &mut crate::hit::HitMap,
@@ -680,34 +678,62 @@ fn draw_copy_save_buttons(
 ) {
     const COPY_LABEL: &str = "Copy body";
     const SAVE_LABEL: &str = "Save to file";
-    let copy_w = crate::hit::button_width(COPY_LABEL);
-    let save_w = crate::hit::button_width(SAVE_LABEL);
+    let copy_text = format!(" {COPY_LABEL} ");
+    let save_text = format!(" {SAVE_LABEL} ");
+    let copy_w = copy_text.chars().count() as u16;
+    let save_w = save_text.chars().count() as u16;
     let total = copy_w + 1 + save_w;
     let start = area.right().saturating_sub(total).max(area.x);
     let copy_area = Rect::new(start, area.y, copy_w, 1);
     let save_x = start + copy_w + 1;
     let save_area = Rect::new(save_x, area.y, save_w, 1);
 
-    crate::hit::button(
-        frame,
-        hits,
+    let buf = frame.buffer_mut();
+    draw_pane_action(
+        buf,
         copy_area,
-        COPY_LABEL,
+        &copy_text,
         crate::hit::Hit::CopyBodyButton,
         ctx.hovered,
-        true,
         ctx.theme,
     );
-    crate::hit::button(
-        frame,
-        hits,
+    draw_pane_action(
+        buf,
         save_area,
-        SAVE_LABEL,
+        &save_text,
         crate::hit::Hit::SaveBodyButton,
         ctx.hovered,
-        true,
         ctx.theme,
     );
+    hits.register(copy_area, crate::hit::Hit::CopyBodyButton);
+    hits.register(save_area, crate::hit::Hit::SaveBodyButton);
+}
+
+/// A plain (unbracketed) clickable text action on the header strip's
+/// `theme.panel` surface: accent fg at rest; inverted (accent fill,
+/// `on_accent` fg, bold) while `hovered == Some(&hit)`.
+fn draw_pane_action(
+    buf: &mut ratatui::buffer::Buffer,
+    area: Rect,
+    label: &str,
+    hit: crate::hit::Hit,
+    hovered: Option<&crate::hit::Hit>,
+    theme: &Theme,
+) {
+    if hovered == Some(&hit) {
+        crate::paint::fill(buf, area, theme.accent);
+        crate::paint::text(
+            buf,
+            area.x,
+            area.y,
+            label,
+            theme.on_accent,
+            theme.accent,
+            true,
+        );
+    } else {
+        crate::paint::text(buf, area.x, area.y, label, theme.accent, theme.panel, false);
+    }
 }
 
 fn human_elapsed(d: Duration) -> String {
@@ -753,7 +779,7 @@ fn body_lines(
     area: Rect,
 ) -> Vec<Line<'static>> {
     let text = Style::default().fg(t.text);
-    let cursor_bg = Style::default().bg(t.surface_raised);
+    let cursor_bg = Style::default().bg(t.panel);
     let mut out = Vec::new();
     let start = view.scroll;
     let end = start.saturating_add(view.height.max(1));
@@ -829,7 +855,7 @@ fn body_lines(
                 let text_len = name_piece.chars().count() + value_piece.chars().count();
                 let glyph_hovered = hovered == Some(&crate::hit::Hit::HeaderCopy(i));
                 let glyph_style = if glyph_hovered {
-                    Style::default().bg(t.accent).fg(t.surface)
+                    Style::default().bg(t.accent).fg(t.on_accent)
                 } else {
                     Style::default().fg(t.accent)
                 };
@@ -1036,8 +1062,9 @@ mod tests {
             .unwrap();
         let buf = terminal.backend().buffer();
         // The status chip is the first thing painted, at the header strip's
-        // top-left corner (just inside the pane border + padding).
-        let cell = buf.cell((3, 1)).expect("status digit cell");
+        // top-left corner (just inside the pane's 1-col padding; panes carry
+        // no border of their own).
+        let cell = buf.cell((2, 0)).expect("status digit cell");
         assert_eq!(cell.symbol(), "2", "expected the '2' of '200': {cell:?}");
         assert_eq!(
             cell.bg,
@@ -1063,22 +1090,22 @@ mod tests {
             .draw(|f| r.draw(f, f.area(), &ctx, &mut hits))
             .unwrap();
         let buf = terminal.backend().buffer();
-        // Rows 1..4 (inside the border) are the strip. Column 15 is blank
-        // on row 0 (past the status chip, short of the right-aligned Copy
-        // /Save buttons); column 37 is blank on rows 1-2 (past the chips
-        // and content type, short of the right-aligned tabs). Both should
-        // still read as panel fill.
-        for (y, x) in [(1u16, 15u16), (2, 37), (3, 37)] {
+        // Rows 0..3 (panes carry no border of their own) are the strip.
+        // Column 15 is blank on row 0 (past the status chip, short of the
+        // right-aligned Copy/Save buttons); column 37 is blank on rows 1-2
+        // (past the chips and content type, short of the right-aligned
+        // tabs). Both should still read as panel fill.
+        for (y, x) in [(0u16, 15u16), (1, 37), (2, 37)] {
             let cell = buf.cell((x, y)).unwrap();
             assert_eq!(
                 cell.bg, theme.panel,
                 "row {y} col {x} should be panel-filled outside the chips/tabs: {cell:?}"
             );
         }
-        // Row 5 (the second body row — row 4 is the cursor row, which
+        // Row 4 (the second body row — row 3 is the cursor row, which
         // paints its own highlight bg) is not part of the strip: it's on
         // the `page` surface instead.
-        let body_row = buf.cell((2, 5)).unwrap();
+        let body_row = buf.cell((2, 4)).unwrap();
         assert_eq!(
             body_row.bg, theme.page,
             "body area starts right below the 3-row strip: {body_row:?}"
@@ -1103,7 +1130,7 @@ mod tests {
         let rect = hits
             .rect_of(&crate::hit::Hit::ResponseTab(ViewMode::Headers))
             .expect("Headers tab hit registered");
-        assert_eq!(rect.y, 2, "tabs live on the strip's middle row");
+        assert_eq!(rect.y, 1, "tabs live on the strip's middle row");
         assert!(
             hits.rect_of(&crate::hit::Hit::ResponseTab(ViewMode::Raw))
                 .is_some()

@@ -21,7 +21,6 @@ pub enum Hit {
     SidebarFolderArrow(usize),
     /// Renders as Cancel while a request is in flight.
     SendButton,
-    CopyUrlButton,
     MethodSelector,
     /// 0 = Params, 1 = Headers, 2 = Body.
     EditorTab(usize),
@@ -135,65 +134,6 @@ impl HitMap {
             .find(|(_, h)| h == hit)
             .map(|(rect, _)| *rect)
     }
-}
-
-/// `[ label ]` rendered width, for layout math.
-pub fn button_width(label: &str) -> u16 {
-    // "[ " + label + " ]"
-    (label.chars().count() + 4) as u16
-}
-
-/// Draws a bracketed button `[ label ]` and registers it (only when enabled).
-/// Styling: accent fg at rest; inverted (accent bg, surface fg) when
-/// `hovered == Some(&hit)`; text_muted and unregistered when disabled.
-#[allow(clippy::too_many_arguments)]
-pub fn button(
-    frame: &mut Frame,
-    hits: &mut HitMap,
-    area: Rect,
-    label: &str,
-    hit: Hit,
-    hovered: Option<&Hit>,
-    enabled: bool,
-    theme: &Theme,
-) {
-    let text = format!("[ {label} ]");
-    let style = if !enabled {
-        Style::default().fg(theme.text_muted)
-    } else if hovered == Some(&hit) {
-        Style::default().bg(theme.accent).fg(theme.surface)
-    } else {
-        Style::default().fg(theme.accent)
-    };
-    frame.render_widget(Paragraph::new(Line::styled(text, style)), area);
-    if enabled {
-        hits.register(area, hit);
-    }
-}
-
-/// Same styling contract for a plain (unbracketed) clickable chip/label.
-/// `base` overrides the rest (non-hovered) style — e.g. an active tab's
-/// accent+bold — so hover inversion still lives in exactly one place while
-/// callers vary the quiet state. `None` falls back to the plain accent
-/// foreground `button`/the original `chip` contract used.
-#[allow(clippy::too_many_arguments)]
-pub fn chip(
-    frame: &mut Frame,
-    hits: &mut HitMap,
-    area: Rect,
-    label: &str,
-    hit: Hit,
-    hovered: Option<&Hit>,
-    base: Option<Style>,
-    theme: &Theme,
-) {
-    let style = if hovered == Some(&hit) {
-        Style::default().bg(theme.accent).fg(theme.surface)
-    } else {
-        base.unwrap_or_else(|| Style::default().fg(theme.accent))
-    };
-    frame.render_widget(Paragraph::new(Line::styled(label.to_string(), style)), area);
-    hits.register(area, hit);
 }
 
 /// Everything a vertical scrollbar needs: where the viewport sits in the
@@ -442,7 +382,7 @@ mod tests {
         let active = draw(Some(&Hit::ScrollbarThumb(PaneId::Sidebar)));
         assert_eq!(active.bg, theme.accent);
         assert_eq!(active.fg, theme.text);
-        assert_ne!(active.fg, theme.surface, "must not vanish into the pane");
+        assert_ne!(active.fg, theme.page, "must not vanish into the pane");
     }
 
     #[test]
@@ -474,76 +414,5 @@ mod tests {
         assert_eq!(hits.track_of(PaneId::Sidebar), None);
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(!content.contains('\u{2588}'), "no thumb glyph when it fits");
-    }
-
-    #[test]
-    fn button_renders_and_registers_only_when_enabled() {
-        let theme = Theme::for_terminal();
-        let area = Rect::new(0, 0, 20, 1);
-
-        // Enabled, not hovered: text present, registered.
-        let backend = TestBackend::new(20, 1);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut hits = HitMap::default();
-        terminal
-            .draw(|f| {
-                button(
-                    f,
-                    &mut hits,
-                    area,
-                    "Send",
-                    Hit::SendButton,
-                    None,
-                    true,
-                    &theme,
-                )
-            })
-            .unwrap();
-        let content = format!("{:?}", terminal.backend().buffer());
-        assert!(content.contains("[ Send ]"));
-        assert_eq!(hits.rect_of(&Hit::SendButton), Some(area));
-
-        // Disabled: not registered, muted styling.
-        let backend = TestBackend::new(20, 1);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut hits = HitMap::default();
-        terminal
-            .draw(|f| {
-                button(
-                    f,
-                    &mut hits,
-                    area,
-                    "Send",
-                    Hit::SendButton,
-                    None,
-                    false,
-                    &theme,
-                )
-            })
-            .unwrap();
-        assert_eq!(hits.rect_of(&Hit::SendButton), None);
-        let cell = terminal.backend().buffer()[(1, 0)].clone();
-        assert_eq!(cell.fg, theme.text_muted);
-
-        // Hovered: bg == theme.accent on a cell inside the button.
-        let backend = TestBackend::new(20, 1);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut hits = HitMap::default();
-        terminal
-            .draw(|f| {
-                button(
-                    f,
-                    &mut hits,
-                    area,
-                    "Send",
-                    Hit::SendButton,
-                    Some(&Hit::SendButton),
-                    true,
-                    &theme,
-                )
-            })
-            .unwrap();
-        let cell = terminal.backend().buffer()[(1, 0)].clone();
-        assert_eq!(cell.bg, theme.accent);
     }
 }

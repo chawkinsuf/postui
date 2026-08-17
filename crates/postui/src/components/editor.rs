@@ -1,7 +1,7 @@
 use super::line_input::LineInput;
 use super::table_editor::{TableEditorState, table_height};
 use super::toast::ToastKind;
-use super::{Component, DrawCtx, pane_block};
+use super::{Component, DrawCtx, pane_surface};
 use crate::action::Action;
 use crate::hit::ScrollbarSpec;
 use crate::layout::PaneId;
@@ -412,9 +412,7 @@ impl Component for Editor {
         ctx: &DrawCtx,
         hits: &mut crate::hit::HitMap,
     ) {
-        let block = pane_block("Request", ctx);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
+        let inner = pane_surface(frame.buffer_mut(), area, ctx.theme);
 
         // Params/Headers get exactly the height their compact table needs
         // (so unused rows read as empty pane rather than a stretched table);
@@ -472,11 +470,13 @@ pub const ADDRESS_BAR_HEIGHT: u16 = 5;
 /// Height of the tab bar row — the second row of that split.
 pub const TAB_BAR_HEIGHT: u16 = 1;
 /// The Editor pane's total on-screen height when its params/headers table is
-/// collapsed: just its `pane_block` border plus the two fixed content rows
-/// above, with nothing left for a table. `layout::compute_layout` sizes the
-/// Editor pane down to exactly this so the Response pane can reclaim every
-/// row the table would otherwise have used.
-pub const CHROME_HEIGHT: u16 = super::PANE_BORDER_HEIGHT + ADDRESS_BAR_HEIGHT + TAB_BAR_HEIGHT;
+/// collapsed: just the two fixed content rows above (address bar, tab bar),
+/// with nothing left for a table. Panes no longer draw a border, so this is
+/// exactly their combined height — no border-row inset to add.
+/// `layout::compute_layout` sizes the Editor pane down to exactly this so
+/// the Response pane can reclaim every row the table would otherwise have
+/// used.
+pub const CHROME_HEIGHT: u16 = ADDRESS_BAR_HEIGHT + TAB_BAR_HEIGHT;
 
 /// Cycled through (one glyph per `Action::Tick`) at the start of the Send
 /// cap's label while a request is in flight.
@@ -531,7 +531,7 @@ impl Editor {
         let buf = frame.buffer_mut();
 
         if url_focused {
-            crate::paint::focus_ring(buf, bar, theme.surface, theme);
+            crate::paint::focus_ring(buf, bar, theme.page, theme);
         }
 
         // --- method segment --------------------------------------------
@@ -738,22 +738,50 @@ impl Editor {
             .constraints(constraints)
             .split(area);
 
-        for (i, tab) in tabs.iter().enumerate() {
-            let base = if *tab == self.active_tab {
-                Style::default().fg(theme.accent).bold()
-            } else {
-                Style::default().fg(theme.text_muted)
-            };
-            crate::hit::chip(
-                frame,
-                hits,
-                cols[i],
-                &format!(" {} ", tab.label()),
-                crate::hit::Hit::EditorTab(i),
-                ctx.hovered,
-                Some(base),
-                theme,
-            );
+        {
+            // Unfilled chips (no `fill` unless hovered): the tab labels sit
+            // directly on the row's own `theme.page` background, same
+            // convention as the collapse toggle/count chip further right on
+            // this row.
+            let buf = frame.buffer_mut();
+            for (i, tab) in tabs.iter().enumerate() {
+                let hit = crate::hit::Hit::EditorTab(i);
+                let hovered = ctx.hovered == Some(&hit);
+                let label = format!(" {} ", tab.label());
+                if hovered {
+                    crate::paint::fill(buf, cols[i], theme.accent);
+                    crate::paint::text(
+                        buf,
+                        cols[i].x,
+                        cols[i].y,
+                        &label,
+                        theme.on_accent,
+                        theme.accent,
+                        true,
+                    );
+                } else if *tab == self.active_tab {
+                    crate::paint::text(
+                        buf,
+                        cols[i].x,
+                        cols[i].y,
+                        &label,
+                        theme.accent,
+                        theme.page,
+                        true,
+                    );
+                } else {
+                    crate::paint::text(
+                        buf,
+                        cols[i].x,
+                        cols[i].y,
+                        &label,
+                        theme.text_muted,
+                        theme.page,
+                        false,
+                    );
+                }
+                hits.register(cols[i], hit);
+            }
         }
 
         // The Body tab carries a live JSON validity badge, colored from the
@@ -943,9 +971,9 @@ impl Editor {
                 hits.register(area, crate::hit::Hit::BodyEditor);
                 let highlighter = json_highlighter(theme);
                 let mut edtui_theme = EditorTheme::default()
-                    .base(Style::default().bg(theme.surface).fg(theme.text))
+                    .base(Style::default().bg(theme.page).fg(theme.text))
                     .cursor_style(Style::default().add_modifier(Modifier::REVERSED))
-                    .line_numbers_style(Style::default().bg(theme.surface).fg(theme.text_muted))
+                    .line_numbers_style(Style::default().bg(theme.page).fg(theme.text_muted))
                     .hide_status_line();
                 // A cursor block on an unfocused pane reads as "you are typing
                 // here", so only the focused editor shows one.
