@@ -89,7 +89,15 @@ state tints.** No brackets, no `< >`, no line-borders-as-widget-edges.
 - **List rows** (sidebar tree, palette/chooser results) — full-width
   fills: hover = `control_hover` across the row; selection =
   accent-tinted fill with a 1-col accent bar on the left edge; never
-  inverted text.
+  inverted text. Rows sit on a 2-line pitch, and highlight fills
+  extend half a row into the adjacent spacing lines via half-blocks
+  (`▄` above, `▀` below — glyph color carries one pill, cell
+  background the other), producing a vertically padded pill with the
+  text centered. Two adjacent highlighted rows share a spacing line
+  cleanly: `▀` with fg = upper pill fill, bg = lower pill fill. This
+  is the standard treatment for any highlighted 1-line row whose
+  neighbors are spacing lines; dense tables (params/headers) stay on
+  a 1-line pitch and do not use it.
 - **Panels** — surfaces separated by shade, not lines: sidebar on
   `panel`, editors on `page`, a 1-col painted gutter between panes
   instead of `│`. Panel titles are muted uppercase labels sitting on
