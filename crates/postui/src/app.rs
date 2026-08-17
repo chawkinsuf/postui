@@ -191,10 +191,11 @@ impl App {
             .as_deref()
             .map(crate::config::ProjectsRegistry::load_from)
             .unwrap_or_default();
-        let ui_settings = registry_path
+        let (ui_settings, ui_warnings) = registry_path
             .as_deref()
             .map(crate::config::load_ui_settings)
             .unwrap_or_default();
+        let theme = Theme::from_environment(ui_settings.theme, &mut crate::theme::OscQuery);
         let usage_path = crate::config::ui_file_path();
         let usage = usage_path
             .as_deref()
@@ -211,8 +212,12 @@ impl App {
             app.registry_path = registry_path;
             app.clipboard = crate::clipboard::Clipboard::new(&ui_settings);
             app.ui_settings = ui_settings;
+            app.theme = theme;
             app.usage = usage;
             app.usage_path = usage_path;
+            for w in ui_warnings {
+                app.toasts.push(w, ToastKind::Warning);
+            }
             app.toasts.push(
                 "could not determine a project directory for this platform",
                 ToastKind::Error,
@@ -225,8 +230,12 @@ impl App {
         app.registry_path = registry_path;
         app.clipboard = crate::clipboard::Clipboard::new(&ui_settings);
         app.ui_settings = ui_settings;
+        app.theme = theme;
         app.usage = usage;
         app.usage_path = usage_path;
+        for w in ui_warnings {
+            app.toasts.push(w, ToastKind::Warning);
+        }
 
         if let Some(missing) = stale_last {
             app.toasts.push(

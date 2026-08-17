@@ -1,5 +1,36 @@
 use ratatui::style::Color;
 
+pub mod osc;
+
+pub use osc::{OscQuery, QueriedColors, TerminalPalette};
+
+/// Which palette source to use, parsed from the `theme` config key.
+/// `Terminal` (the default) queries the real terminal's colors via OSC and
+/// generates a palette from them, falling back to [`Seeds::dark`] if the
+/// terminal doesn't answer; `Dark`/`Light` always use the built-in seeds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ThemeChoice {
+    #[default]
+    Terminal,
+    Dark,
+    Light,
+}
+
+impl ThemeChoice {
+    /// Parses the `theme` config value. Any value other than `"dark"` or
+    /// `"light"` (including unrecognized strings) is treated as `Terminal`
+    /// — the config-loading layer is responsible for warning about a
+    /// genuinely unknown value, not this parser.
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "dark" => Self::Dark,
+            "light" => Self::Light,
+            "terminal" => Self::Terminal,
+            _ => Self::Terminal,
+        }
+    }
+}
+
 /// The small set of hand-picked colors a palette is generated from. Everything
 /// else in [`Theme`] is derived from these six seeds by [`Theme::generate`].
 pub struct Seeds {
@@ -154,6 +185,41 @@ impl Theme {
         Self::dark()
     }
 
+    /// Builds the theme per the configured [`ThemeChoice`]. `Dark`/`Light`
+    /// always use the built-in seeds; `Terminal` queries the real terminal
+    /// via `term` and generates a palette from whatever it answers,
+    /// falling back to [`Seeds::dark`] when the terminal reports no
+    /// background color (either it stayed silent, or every reply arrived
+    /// unparseable).
+    pub fn from_environment(choice: ThemeChoice, term: &mut dyn TerminalPalette) -> Self {
+        match choice {
+            ThemeChoice::Dark => Self::dark(),
+            ThemeChoice::Light => Self::light(),
+            ThemeChoice::Terminal => {
+                let answer = term.query();
+                let seeds = match answer.bg {
+                    Some(bg) => {
+                        let builtin = Seeds::dark();
+                        Seeds {
+                            bg,
+                            fg: answer.fg.unwrap_or_else(|| derive_fg_from_bg(bg)),
+                            accent: answer.ansi[4].or(answer.ansi[12]).unwrap_or(builtin.accent),
+                            success: answer.ansi[2]
+                                .or(answer.ansi[10])
+                                .unwrap_or(builtin.success),
+                            warning: answer.ansi[3]
+                                .or(answer.ansi[11])
+                                .unwrap_or(builtin.warning),
+                            error: answer.ansi[1].or(answer.ansi[9]).unwrap_or(builtin.error),
+                        }
+                    }
+                    None => Seeds::dark(),
+                };
+                Self::generate(&seeds)
+            }
+        }
+    }
+
     /// Whether this palette is the dark variant.
     pub fn is_dark(&self) -> bool {
         self.dark
@@ -221,6 +287,18 @@ impl Theme {
             border: f(self.border),
             border_focused: f(self.border_focused),
         }
+    }
+}
+
+/// Picks a legible foreground for a queried background that the terminal
+/// didn't also give us an `OSC 10` answer for: light text on a dark
+/// background, dark text on a light one, using the same built-in seeds
+/// `Theme::generate`'s contrast clamp would converge on anyway.
+fn derive_fg_from_bg(bg: (u8, u8, u8)) -> (u8, u8, u8) {
+    if oklab_l(bg) < 0.5 {
+        Seeds::dark().fg
+    } else {
+        Seeds::light().fg
     }
 }
 
@@ -461,6 +539,93 @@ mod tests {
         assert_eq!(t.status_color(301), t.accent);
         assert_eq!(t.status_color(404), t.error);
         assert_eq!(t.status_color(500), t.error);
+    }
+
+    struct FakePalette(QueriedColors);
+    impl TerminalPalette for FakePalette {
+        fn query(&mut self) -> QueriedColors {
+            self.0
+        }
+    }
+
+    #[test]
+    fn from_environment_seeds_from_terminal_answer() {
+        let mut ansi = [None; 16];
+        ansi[4] = Some((1, 120, 212));
+        let mut f = FakePalette(QueriedColors {
+            bg: Some((16, 16, 20)),
+            fg: Some((226, 226, 230)),
+            ansi,
+        });
+        let t = Theme::from_environment(ThemeChoice::Terminal, &mut f);
+        assert_eq!(t.page, Color::Rgb(16, 16, 20));
+        assert_eq!(t.accent, Color::Rgb(1, 120, 212));
+    }
+
+    #[test]
+    fn from_environment_falls_back_to_dark_when_silent() {
+        let mut f = FakePalette(QueriedColors::default());
+        let t = Theme::from_environment(ThemeChoice::Terminal, &mut f);
+        assert_eq!(t.page, Theme::dark().page);
+    }
+
+    #[test]
+    fn from_environment_uses_fallback_accent_when_ansi_slots_missing() {
+        let mut f = FakePalette(QueriedColors {
+            bg: Some((10, 10, 12)),
+            fg: None,
+            ansi: [None; 16],
+        });
+        let t = Theme::from_environment(ThemeChoice::Terminal, &mut f);
+        assert_eq!(t.page, Color::Rgb(10, 10, 12));
+        assert_eq!(
+            t.accent,
+            Theme::dark().accent,
+            "no ansi[4]/[12]: built-in accent seed"
+        );
+    }
+
+    #[test]
+    fn from_environment_prefers_bright_ansi_slot_when_normal_missing() {
+        let mut ansi = [None; 16];
+        ansi[12] = Some((5, 5, 200)); // bright blue only
+        let mut f = FakePalette(QueriedColors {
+            bg: Some((10, 10, 12)),
+            fg: None,
+            ansi,
+        });
+        let t = Theme::from_environment(ThemeChoice::Terminal, &mut f);
+        assert_eq!(t.accent, Color::Rgb(5, 5, 200));
+    }
+
+    #[test]
+    fn from_environment_dark_and_light_choices_ignore_the_terminal() {
+        let mut f = FakePalette(QueriedColors {
+            bg: Some((250, 250, 250)),
+            fg: None,
+            ansi: [None; 16],
+        });
+        assert_eq!(
+            Theme::from_environment(ThemeChoice::Dark, &mut f).page,
+            Theme::dark().page
+        );
+        assert_eq!(
+            Theme::from_environment(ThemeChoice::Light, &mut f).page,
+            Theme::light().page
+        );
+    }
+
+    #[test]
+    fn theme_choice_default_is_terminal() {
+        assert_eq!(ThemeChoice::default(), ThemeChoice::Terminal);
+    }
+
+    #[test]
+    fn theme_choice_parse_known_and_unknown_values() {
+        assert_eq!(ThemeChoice::parse("dark"), ThemeChoice::Dark);
+        assert_eq!(ThemeChoice::parse("light"), ThemeChoice::Light);
+        assert_eq!(ThemeChoice::parse("terminal"), ThemeChoice::Terminal);
+        assert_eq!(ThemeChoice::parse("sepia"), ThemeChoice::Terminal);
     }
 
     #[test]
