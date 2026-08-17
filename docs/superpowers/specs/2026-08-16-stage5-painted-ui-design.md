@@ -95,10 +95,10 @@ state tints.** No brackets, no `< >`, no line-borders-as-widget-edges.
   (`▄` above, `▀` below — glyph color carries one pill, cell
   background the other), producing a vertically padded pill with the
   text centered. Two adjacent highlighted rows share a spacing line
-  cleanly: `▀` with fg = upper pill fill, bg = lower pill fill. This
-  is the standard treatment for any highlighted 1-line row whose
-  neighbors are spacing lines, in lists and tables alike (tables
-  apply it per cell — see Request pane).
+  cleanly: `▀` with fg = upper pill fill, bg = lower pill fill. In the
+  params/headers table, rows are compact 1-liners and only the ACTIVE
+  row expands into this pill (see Request pane); highlighted rows
+  whose neighbors carry text simply keep the 1-line fill.
 - **Panels** — surfaces separated by shade, not lines: sidebar on
   `panel`, editors on `page`, a 1-col painted gutter between panes
   instead of `│`. Panel titles are muted uppercase labels sitting on
@@ -118,17 +118,27 @@ state tints.** No brackets, no `< >`, no line-borders-as-widget-edges.
   (method chip + name). Disclosure `›`/`⌄` in muted.
 - **Request pane** — the fused address bar (signature, below), then
   the tab strip, then params/headers as a painted table. The table is
-  ONE contiguous element, not per-row fields: muted uppercase header
-  row on `panel`, then a single `control` body surface with data rows
-  on a 2-line pitch (no zebra — the spacing is the row separator), a
-  full-height `▏` column divider, and an edge line closing the block.
-  Editing/hover highlights a CELL as a padded pill: `control_hover`
-  fill extending half a row up/down via half-blocks, a `▎` accent bar
-  at the cell's left edge, and the cursor; the row's `✕` delete
-  affordance shows at the right. The focus ring is NOT used inside
+  ONE contiguous element, not per-row fields: a section header row on
+  `panel` (see collapse, below) with muted uppercase NAME/VALUE
+  column labels, then a single `control` body surface with COMPACT
+  1-line rows, a full-height `▏` column divider, and an edge line
+  closing the block. The ACTIVE row (editing or hovered) expands to
+  the padded pill: `control_hover` fill across the full row extending
+  half a row up/down via half-blocks, the 1-col accent bar at the
+  row's left edge, the cursor in the active cell, and the `✕` delete
+  affordance at the right; leaving the row collapses it back to one
+  line. Dense at rest, comfortable at the point of work; the
+  expansion itself signals focus. The focus ring is NOT used inside
   tables — it is reserved for standalone fields (URL, modal inputs,
   palette search). The last table row is a ghost `+ Add param` row in
   muted text (hover lifts it), replacing a separate button.
+  **Section collapse:** the collapse control lives on the TAB STRIP
+  (the section header of this area): the active tab carries a count
+  chip (e.g. `3` in accent-tinted fill), and a muted `⌄ hide` / `›
+  show` toggle sits at the strip's right edge; clicking it (or a key
+  binding) hides or restores the table body, reclaiming the space for
+  the response pane. Collapsed, the tab counts keep the contents
+  legible.
 - **Response pane** — header strip of chips (status colored by class,
   time, size), response tabs, body on `page`. Empty state stays an
   invitation, centered muted text.
