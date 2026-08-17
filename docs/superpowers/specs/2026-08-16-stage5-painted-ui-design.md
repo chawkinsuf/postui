@@ -75,7 +75,8 @@ state tints.** No brackets, no `< >`, no line-borders-as-widget-edges.
 - **TextField** — 3 rows minimum: `control`-shade surface, 1-col inner
   padding, placeholder in `text_muted`. Focus = accent ring drawn in
   the surrounding panel's cells. Multi-line editors (body, response)
-  are the same surface, taller.
+  are the same surface, taller. Applies to standalone fields only;
+  table cells edit in place (see Request pane).
 - **Select** (method, project, env) — TextField surface with
   right-aligned `▼`; the open state is the existing chooser restyled
   as a floating panel.
@@ -107,9 +108,18 @@ state tints.** No brackets, no `< >`, no line-borders-as-widget-edges.
   label; primary **+ New request** button; tree as full-width rows
   (method chip + name). Disclosure `›`/`⌄` in muted.
 - **Request pane** — the fused address bar (signature, below), then
-  the tab strip, then params/headers as a painted table: muted
-  uppercase header row on `panel`, cells as inline single-row fields
-  that grow a focus ring when editing, `+ Add` as a secondary button.
+  the tab strip, then params/headers as a painted table. The table is
+  ONE contiguous element, not per-row fields: muted uppercase header
+  row on `panel`, then 1-row zebra-striped body rows (`control`
+  alternating with a `control`/`panel` midpoint) with a subtle `▏`
+  column divider and a `▁` bottom edge closing the block. Editing
+  happens in place without changing row height: the focused cell gets
+  a `control_hover` fill, a `▎` accent bar at its left edge, and the
+  cursor; the row's `✕` delete affordance shows at the right. The
+  focus ring is NOT used inside tables — it is reserved for
+  standalone fields (URL, modal inputs, palette search). The last
+  table row is a ghost `+ Add param` row in muted text (hover lifts
+  it), replacing a separate button.
 - **Response pane** — header strip of chips (status colored by class,
   time, size), response tabs, body on `page`. Empty state stays an
   invitation, centered muted text.
