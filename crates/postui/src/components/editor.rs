@@ -92,9 +92,9 @@ pub struct Editor {
     pub last_body_area: Option<Rect>,
     /// Mirrors `App::in_flight.is_some()`, synced by `App::update` on every
     /// action alongside `open_slug`. Draw-only: swaps the address bar's Send
-    /// cap to its spinner + "Sending" face and unregisters its `Hit`, no
-    /// other effect (cancelling a send is a keyboard-only affordance —
-    /// `Action::CancelSend`, bound to Esc).
+    /// cap to its spinner + "Sending" face (or "Cancel" on hover); its
+    /// `Hit` stays registered while sending -- clicking it still cancels,
+    /// routed by `App`'s `Hit::SendButton` handler checking `in_flight`.
     pub sending: bool,
     /// The method-badge cell's screen area, recorded on every draw; consumed
     /// by the click handling that opens the method dropdown (a later task).
@@ -557,9 +557,16 @@ impl Editor {
         buf.set_line(url_area.x, mid_y(url_area), &url_line, url_area.width);
 
         // --- Send cap ------------------------------------------------------
-        let enabled = !self.sending && !self.url.text().trim().is_empty();
+        // In flight is a distinct state from disabled: the mouse-first
+        // principle outranks visual tidiness here, so a send in progress
+        // keeps `Hit::SendButton` registered (clicking it cancels, routed by
+        // `App`'s existing `Hit::SendButton` handler checking `in_flight`).
+        // Only a genuinely inert control -- not sending, and nothing to send
+        // -- unregisters its hit.
+        let url_empty = self.url.text().trim().is_empty();
+        let disabled = !self.sending && url_empty;
         let send_hovered = ctx.hovered == Some(&crate::hit::Hit::SendButton);
-        let (label, send_fill, label_fg, draw_bevel) = if self.sending {
+        let (label, send_fill, label_fg, draw_bevel, bold) = if self.sending {
             let glyph = SPINNER_GLYPHS[(self.spinner_frame as usize) % SPINNER_GLYPHS.len()];
             let pulse_dark = (self.spinner_frame / 3) % 2 == 1;
             let face = if pulse_dark {
@@ -567,12 +574,21 @@ impl Editor {
             } else {
                 theme.accent
             };
-            (format!("{glyph} Sending"), face, theme.on_accent, true)
-        } else if !enabled {
+            // Hovering a send in flight swaps the label to "Cancel" so the
+            // click-to-cancel affordance is discoverable, without touching
+            // the pulse/spinner face logic.
+            let label = if send_hovered {
+                "Cancel".to_string()
+            } else {
+                format!("{glyph} Sending")
+            };
+            (label, face, theme.on_accent, true, true)
+        } else if disabled {
             (
                 "Send".to_string(),
                 theme.control,
                 theme.text_disabled,
+                false,
                 false,
             )
         } else if send_hovered {
@@ -581,9 +597,16 @@ impl Editor {
                 theme.accent_edge_light,
                 theme.on_accent,
                 true,
+                true,
             )
         } else {
-            ("Send".to_string(), theme.accent, theme.on_accent, true)
+            (
+                "Send".to_string(),
+                theme.accent,
+                theme.on_accent,
+                true,
+                true,
+            )
         };
         fill(buf, send_area, send_fill);
         if draw_bevel {
@@ -617,9 +640,9 @@ impl Editor {
             &label,
             label_fg,
             send_fill,
-            true,
+            bold,
         );
-        if enabled {
+        if !disabled {
             hits.register(send_area, crate::hit::Hit::SendButton);
         }
     }
@@ -1330,8 +1353,12 @@ url = "https://api.example.com/users""#,
         assert!(bold_found, "Send label must be bold");
     }
 
+    /// In flight is a distinct state from disabled (mouse-first ruling):
+    /// the Send hit must stay registered while sending so a click can still
+    /// cancel it (`App`'s `Hit::SendButton` handler routes to
+    /// `Action::CancelSend` when `in_flight.is_some()`).
     #[test]
-    fn sending_shows_spinner_glyph_and_unregisters_send_hit() {
+    fn sending_shows_spinner_glyph_and_keeps_send_hit_registered() {
         let mut e = Editor::default();
         e.load(
             Some("a".into()),
@@ -1340,8 +1367,8 @@ url = "https://api.example.com/users""#,
         e.sending = true;
         let (terminal, hits) = draw_for_bar_test(&mut e);
         assert!(
-            hits.rect_of(&crate::hit::Hit::SendButton).is_none(),
-            "Send hit must be unregistered while sending"
+            hits.rect_of(&crate::hit::Hit::SendButton).is_some(),
+            "Send hit must stay registered while sending, so a click can cancel"
         );
         let content = format!("{:?}", terminal.backend().buffer());
         let spinner_glyphs = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -1355,15 +1382,62 @@ url = "https://api.example.com/users""#,
         );
     }
 
+    /// Hovering the Send cap while a request is in flight swaps its label to
+    /// "Cancel" so the click-to-cancel affordance is discoverable, without
+    /// disturbing the pulse/spinner face logic.
+    #[test]
+    fn hovering_send_while_sending_shows_cancel_label() {
+        let mut e = Editor::default();
+        e.load(
+            Some("a".into()),
+            HttpRequest::from_toml_str(r#"url = "https://x""#).unwrap(),
+        );
+        e.sending = true;
+        let theme = Theme::dark();
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: Some(&crate::hit::Hit::SendButton),
+            dragging: false,
+        };
+        let backend = TestBackend::new(60, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            content.contains("Cancel"),
+            "hovering a send in flight must read Cancel: {content}"
+        );
+        assert!(
+            hits.rect_of(&crate::hit::Hit::SendButton).is_some(),
+            "hit stays registered while hovered+sending"
+        );
+    }
+
     #[test]
     fn send_cap_disabled_when_url_empty() {
         let mut e = Editor::default();
         // Fresh scratch editor: url is empty by default.
-        let (_, hits) = draw_for_bar_test(&mut e);
+        let theme = Theme::dark();
+        let (terminal, hits) = draw_for_bar_test(&mut e);
         assert!(
             hits.rect_of(&crate::hit::Hit::SendButton).is_none(),
             "Send hit must be unregistered when the URL is empty"
         );
+        let buf = terminal.backend().buffer();
+        // Find the "S" of "Send" and assert it is not bold when disabled.
+        let found_non_bold = (0..60).any(|x| {
+            (0..10).any(|y| {
+                let cell = buf.cell((x, y)).unwrap();
+                cell.symbol() == "S"
+                    && cell.fg == theme.text_disabled
+                    && !cell.modifier.contains(Modifier::BOLD)
+            })
+        });
+        assert!(found_non_bold, "disabled Send label must not be bold");
     }
 
     #[test]

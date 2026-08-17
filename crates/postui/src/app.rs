@@ -3823,14 +3823,14 @@ mod tests {
         assert_eq!(c.selected(), 20, "wheel must not move the selection");
     }
 
-    /// Stage-5 update: the painted Send cap now shows a spinner + "Sending"
-    /// while in flight and unregisters its `Hit` for that duration (the
-    /// fused-bar spec's disabled/sending convention), so there is no longer
-    /// a second click that cancels. Keyboard cancel (`Action::CancelSend`,
-    /// wired to Esc — see `esc_on_in_flight_response_pane_requests_cancel`)
-    /// is still the way to cancel a send in progress.
+    /// Mouse-first ruling (post-stage-5-review): in flight is a distinct
+    /// state from disabled. The painted Send cap keeps `Hit::SendButton`
+    /// registered while sending -- it shows a spinner + "Sending" (or
+    /// "Cancel" on hover) instead of the old `[ Cancel ]` bracket text, but
+    /// a second click on the same rect still cancels, routed by `App`'s
+    /// `Hit::SendButton` handler checking `in_flight.is_some()`.
     #[tokio::test]
-    async fn click_send_button_sends_then_shows_spinner_and_unregisters_the_hit() {
+    async fn click_send_button_sends_then_click_again_cancels() {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
@@ -3847,9 +3847,10 @@ mod tests {
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
-        assert!(
-            app.hits.rect_of(&Hit::SendButton).is_none(),
-            "Send hit must be unregistered while sending"
+        let after = app.hits.rect_of(&Hit::SendButton).unwrap();
+        assert_eq!(
+            before, after,
+            "Send cap occupies the same rect while sending"
         );
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(
@@ -3857,7 +3858,7 @@ mod tests {
             "cap now reads Sending: {content}"
         );
 
-        app.update(Action::CancelSend);
+        app.handle_mouse(left_down(after.x, after.y));
         assert!(matches!(app.response.state(), ResponseState::Cancelled));
     }
 
