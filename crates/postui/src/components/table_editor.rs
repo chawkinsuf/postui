@@ -6,7 +6,7 @@ use crate::theme::Theme;
 use indexmap::IndexMap;
 use postui_core::model::Entry;
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 
@@ -38,13 +38,17 @@ pub struct CellEdit {
 pub struct TableOutcome {
     pub consumed: bool,
     pub warning: Option<String>,
+    /// `Some(i)` when the user asked to delete row `i` (`d`/`Delete`): the
+    /// table never removes the row itself — the caller routes this through
+    /// a confirmation modal first.
+    pub request_delete: Option<usize>,
 }
 
 impl TableOutcome {
     fn consumed() -> Self {
         Self {
             consumed: true,
-            warning: None,
+            ..Self::default()
         }
     }
 
@@ -56,6 +60,7 @@ impl TableOutcome {
         Self {
             consumed: true,
             warning: Some(warning),
+            ..Self::default()
         }
     }
 }
@@ -98,7 +103,10 @@ pub fn table_height(rows: usize, active: Option<usize>) -> u16 {
 /// `IndexMap` is currently active.
 #[derive(Debug, Default)]
 pub struct TableEditorState {
-    pub selected: usize,
+    /// The selected row (always the one drawn expanded). `None` means no
+    /// row is selected — every row draws compact and the row-level keys
+    /// (Enter/Space/d) are inert until Down/j or a click selects one.
+    pub selected: Option<usize>,
     pub editing: Option<CellEdit>,
 }
 
@@ -106,7 +114,7 @@ impl TableEditorState {
     /// Resets cursor/edit state; used when switching tabs so a selection
     /// index from one map can't be stale (and panic) against the other.
     pub fn reset(&mut self) {
-        self.selected = 0;
+        self.selected = None;
         self.editing = None;
     }
 
@@ -118,10 +126,8 @@ impl TableEditorState {
             return;
         }
         self.clamp_selected(map);
-        let key = map
-            .get_index(self.selected)
-            .map(|(k, _)| k.clone())
-            .unwrap();
+        let Some(sel) = self.selected else { return };
+        let key = map.get_index(sel).map(|(k, _)| k.clone()).unwrap();
         self.editing = Some(CellEdit {
             col: Col::Key,
             input: LineInput::new(&key),
@@ -133,7 +139,7 @@ impl TableEditorState {
     /// Starts a brand-new (not-yet-inserted) row, exactly like pressing `a`.
     /// Shared by the `a` key path and a click on the ghost "+ Add" row.
     pub fn begin_add(&mut self, map: &IndexMap<String, Entry>) {
-        self.selected = map.len();
+        self.selected = Some(map.len());
         self.editing = Some(CellEdit {
             col: Col::Key,
             input: LineInput::new(""),
@@ -142,20 +148,25 @@ impl TableEditorState {
         });
     }
 
-    /// Deletes row `i`, exactly like selecting it and pressing `d`. Shared by
-    /// the keyboard path and a click on the row's `✕` affordance.
+    /// Deletes row `i` outright. Only ever called after the user confirmed
+    /// the delete (both the `d` key and the `✕` click route through a
+    /// confirmation modal first).
     pub fn delete_row(&mut self, map: &mut IndexMap<String, Entry>, i: usize) {
-        self.selected = i;
+        if i >= map.len() {
+            return;
+        }
+        self.selected = Some(i);
         self.editing = None;
-        self.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE), map);
+        map.shift_remove_index(i);
+        self.clamp_selected(map);
     }
 
     fn clamp_selected(&mut self, map: &IndexMap<String, Entry>) {
-        if map.is_empty() {
-            self.selected = 0;
-        } else if self.selected >= map.len() {
-            self.selected = map.len() - 1;
-        }
+        self.selected = match self.selected {
+            Some(_) if map.is_empty() => None,
+            Some(s) => Some(s.min(map.len() - 1)),
+            None => None,
+        };
     }
 
     pub fn handle_key(&mut self, ev: KeyEvent, map: &mut IndexMap<String, Entry>) -> TableOutcome {
@@ -171,48 +182,66 @@ impl TableEditorState {
                 if map.is_empty() {
                     return TableOutcome::not_consumed();
                 }
-                self.selected = (self.selected + 1).min(map.len() - 1);
+                self.selected = Some(match self.selected {
+                    None => 0, // nothing selected: Down selects the first row
+                    Some(s) => (s + 1).min(map.len() - 1),
+                });
                 TableOutcome::consumed()
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                // Row 0 (and an empty table) leaves Up unconsumed so the
-                // caller (Editor) can fall back to moving focus to the URL
-                // line instead of leaving the user stuck with no way back.
-                if map.is_empty() || self.selected == 0 {
-                    return TableOutcome::not_consumed();
+                // Row 0, no selection, and an empty table leave Up
+                // unconsumed so the caller (Editor) can fall back to moving
+                // focus to the URL line instead of leaving the user stuck
+                // with no way back.
+                match self.selected {
+                    Some(s) if s > 0 && !map.is_empty() => {
+                        self.selected = Some(s - 1);
+                        TableOutcome::consumed()
+                    }
+                    _ => TableOutcome::not_consumed(),
                 }
-                self.selected -= 1;
-                TableOutcome::consumed()
+            }
+            KeyCode::Esc => {
+                // Esc deselects (collapsing the expanded row); with nothing
+                // selected it stays unconsumed for the caller.
+                if self.selected.is_some() {
+                    self.selected = None;
+                    TableOutcome::consumed()
+                } else {
+                    TableOutcome::not_consumed()
+                }
             }
             KeyCode::Char('a') => {
                 self.begin_add(map);
                 TableOutcome::consumed()
             }
             KeyCode::Enter => {
-                if map.is_empty() {
+                if map.is_empty() || self.selected.is_none() {
                     return TableOutcome::not_consumed();
                 }
                 self.begin_edit_selected(map);
                 TableOutcome::consumed()
             }
             KeyCode::Char(' ') => {
-                if map.is_empty() {
+                if map.is_empty() || self.selected.is_none() {
                     return TableOutcome::not_consumed();
                 }
                 self.clamp_selected(map);
-                if let Some((_, e)) = map.get_index_mut(self.selected) {
+                if let Some((_, e)) = self.selected.and_then(|s| map.get_index_mut(s)) {
                     e.enabled = !e.enabled;
                 }
                 TableOutcome::consumed()
             }
             KeyCode::Char('d') | KeyCode::Delete => {
-                if map.is_empty() {
+                if map.is_empty() || self.selected.is_none() {
                     return TableOutcome::not_consumed();
                 }
                 self.clamp_selected(map);
-                map.shift_remove_index(self.selected);
-                self.clamp_selected(map);
-                TableOutcome::consumed()
+                TableOutcome {
+                    consumed: true,
+                    warning: None,
+                    request_delete: self.selected,
+                }
             }
             _ => TableOutcome::not_consumed(),
         }
@@ -264,7 +293,8 @@ impl TableEditorState {
     /// new, not-yet-inserted row).
     fn commit_key_and_move_to_value(&mut self, edit: &mut CellEdit, map: &IndexMap<String, Entry>) {
         let current_value = if edit.original_key.is_some() {
-            map.get_index(self.selected)
+            self.selected
+                .and_then(|s| map.get_index(s))
                 .map(|(_, e)| e.value.clone())
                 .unwrap_or_default()
         } else {
@@ -288,7 +318,7 @@ impl TableEditorState {
         edit: &CellEdit,
         orig: String,
     ) -> Option<String> {
-        let idx = self.selected;
+        let idx = self.selected.unwrap_or(0);
         let existing = map.get_index(idx).map(|(_, e)| e.clone());
         let (final_key, final_value, enabled) = match edit.col {
             Col::Key => {
@@ -364,25 +394,25 @@ impl TableEditorState {
                 enabled: true,
             },
         );
-        self.selected = map.len() - 1;
+        self.selected = Some(map.len() - 1);
         None
     }
 
     /// The row (existing, by map index) currently drawn expanded: the row
-    /// being edited, or — when nothing is being edited — the row under the
-    /// pointer. `None` when nothing is expanded.
-    pub fn active_index(&self, map_len: usize, hovered: Option<&Hit>) -> Option<usize> {
-        if let Some(edit) = &self.editing {
-            return if edit.original_key.is_some() {
-                Some(self.selected.min(map_len.saturating_sub(1)))
-            } else {
-                None // the new-row line is handled separately, always expanded
-            };
+    /// being edited, or — when nothing is being edited — the selected row.
+    /// Hover never expands a row (it only tints its background), so what's
+    /// selected is always the one visibly expanded row. `None` when nothing
+    /// is expanded (empty map, or a brand-new row being typed).
+    pub fn active_index(&self, map_len: usize) -> Option<usize> {
+        if let Some(edit) = &self.editing
+            && edit.original_key.is_none()
+        {
+            return None; // the new-row line is handled separately, always expanded
         }
-        match hovered {
-            Some(Hit::TableRow(i)) if *i < map_len => Some(*i),
-            _ => None,
+        if map_len == 0 {
+            return None;
         }
+        self.selected.map(|s| s.min(map_len - 1))
     }
 
     /// Draws the table as one contiguous painted control: a muted-uppercase
@@ -401,7 +431,7 @@ impl TableEditorState {
     ) {
         let theme = ctx.theme;
         let map_len = map.len();
-        let active = self.active_index(map_len, ctx.hovered);
+        let active = self.active_index(map_len);
         let new_row_pending = self
             .editing
             .as_ref()
@@ -454,7 +484,8 @@ impl TableEditorState {
             if active == Some(i) {
                 y = self.draw_active_row(buf, hits, area, y, bottom, i, k, e, true, theme);
             } else {
-                self.draw_plain_row(buf, hits, area, y, i, k, e, theme);
+                let hovered = ctx.hovered == Some(&Hit::TableRow(i));
+                self.draw_plain_row(buf, hits, area, y, i, k, e, hovered, theme);
                 y += 1;
             }
         }
@@ -516,10 +547,15 @@ impl TableEditorState {
         i: usize,
         key: &str,
         entry: &Entry,
+        hovered: bool,
         theme: &Theme,
     ) {
         let cols = columns(area.x, area.width);
-        let bg = theme.control;
+        let bg = if hovered {
+            theme.control_hover
+        } else {
+            theme.control
+        };
         fill(buf, Rect::new(area.x, y, area.width, 1), bg);
         let fg = if entry.enabled {
             theme.text
@@ -599,7 +635,7 @@ impl TableEditorState {
             .as_ref()
             .filter(|e| {
                 e.original_key.as_deref() == Some(key)
-                    || (e.original_key.is_none() && self.selected == i)
+                    || (e.original_key.is_none() && self.selected == Some(i))
             })
             .map(|e| e.col);
 
@@ -738,7 +774,7 @@ mod tests {
     }
 
     #[test]
-    fn space_toggles_d_deletes_esc_cancels() {
+    fn space_toggles_d_requests_delete_esc_cancels() {
         let mut map = IndexMap::new();
         map.insert(
             "a".into(),
@@ -747,14 +783,23 @@ mod tests {
                 enabled: true,
             },
         );
-        let mut t = TableEditorState::default();
+        let mut t = TableEditorState {
+            selected: Some(0),
+            ..TableEditorState::default()
+        };
         t.handle_key(key(KeyCode::Char(' ')), &mut map);
         assert!(!map["a"].enabled);
         t.handle_key(key(KeyCode::Enter), &mut map); // start editing
         t.handle_key(key(KeyCode::Char('x')), &mut map);
         t.handle_key(key(KeyCode::Esc), &mut map); // cancel
         assert_eq!(map["a"].value, "1", "esc discards the edit");
-        t.handle_key(key(KeyCode::Char('d')), &mut map);
+        // 'd' never deletes directly: it asks the caller to confirm first.
+        let out = t.handle_key(key(KeyCode::Char('d')), &mut map);
+        assert!(out.consumed);
+        assert_eq!(out.request_delete, Some(0));
+        assert_eq!(map.len(), 1, "the row survives until the confirm");
+        // The confirmed path deletes for real.
+        t.delete_row(&mut map, 0);
         assert!(map.is_empty());
     }
 
@@ -776,7 +821,7 @@ mod tests {
             },
         );
         let mut t = TableEditorState {
-            selected: 0,
+            selected: Some(0),
             ..TableEditorState::default()
         };
         t.handle_key(key(KeyCode::Enter), &mut map); // edit "a"'s key cell (seeded with "a")
@@ -818,7 +863,7 @@ mod tests {
             },
         );
         let mut t = TableEditorState {
-            selected: 0,
+            selected: Some(0),
             ..TableEditorState::default()
         };
         t.handle_key(key(KeyCode::Enter), &mut map); // edit "a"'s key cell (seeded with "a")
@@ -856,7 +901,10 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
 
         let empty_map: IndexMap<String, Entry> = IndexMap::new();
-        let t = TableEditorState::default();
+        let t = TableEditorState {
+            selected: Some(0),
+            ..TableEditorState::default()
+        };
         let mut hits = HitMap::default();
         terminal
             .draw(|f| {
@@ -899,10 +947,11 @@ mod tests {
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("page"), "key text: {content}");
         assert!(content.contains('2'), "value text: {content}");
-        // header is row 0, so the data row is row 1 (compact, 1 line high).
+        // header is row 0, so the data row is row 1; it's the selected row,
+        // so it is drawn expanded (3 lines).
         assert_eq!(
             hits.rect_of(&Hit::TableRow(0)),
-            Some(Rect::new(0, 1, 40, 1))
+            Some(Rect::new(0, 1, 40, 3))
         );
         assert!(hits.rect_of(&Hit::TableCheckbox(0)).is_some());
     }
@@ -936,7 +985,7 @@ mod tests {
             },
         );
         let mut t = TableEditorState {
-            selected: 1,
+            selected: Some(1),
             ..TableEditorState::default()
         };
         t.begin_edit_selected(&map); // editing row 1 ("b")
@@ -971,6 +1020,120 @@ mod tests {
         assert_eq!(buf.cell((5, row1.y)).unwrap().symbol(), "\u{2584}");
         // the pad row below shows the "▀" cap
         assert_eq!(buf.cell((5, row1.y + 2)).unwrap().symbol(), "\u{2580}");
+    }
+
+    #[test]
+    fn hovered_row_stays_compact_with_a_hover_highlight_only() {
+        let theme = Theme::dark();
+        let backend = TestBackend::new(40, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let mut map = IndexMap::new();
+        for (k, v) in [("a", "1"), ("b", "2"), ("c", "3")] {
+            map.insert(
+                k.to_string(),
+                Entry {
+                    value: v.into(),
+                    enabled: true,
+                },
+            );
+        }
+        let t = TableEditorState {
+            selected: Some(0),
+            ..TableEditorState::default()
+        };
+        let hovered = Hit::TableRow(2);
+        let mut hits = HitMap::default();
+        terminal
+            .draw(|f| {
+                t.draw(
+                    f,
+                    f.area(),
+                    &map,
+                    &ctx(&theme, Some(&hovered)),
+                    "+ Add param",
+                    &mut hits,
+                )
+            })
+            .unwrap();
+
+        // The hovered row (2) stays compact — hover is a background cue only.
+        let row2 = hits.rect_of(&Hit::TableRow(2)).unwrap();
+        assert_eq!(row2.height, 1, "hovered row must not expand");
+        let buf = terminal.backend().buffer();
+        assert_eq!(
+            buf.cell((5, row2.y)).unwrap().bg,
+            theme.control_hover,
+            "hovered row gets the hover background"
+        );
+        // The selected row (0) is the expanded one.
+        let row0 = hits.rect_of(&Hit::TableRow(0)).unwrap();
+        assert_eq!(row0.height, 3, "selected row is drawn expanded");
+        assert!(
+            hits.rect_of(&Hit::TableDelete(0)).is_some(),
+            "the selected row carries the ✕ delete affordance"
+        );
+    }
+
+    #[test]
+    fn no_selection_draws_every_row_compact_with_no_delete_affordance() {
+        let theme = Theme::dark();
+        let backend = TestBackend::new(40, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut map = IndexMap::new();
+        map.insert(
+            "page".into(),
+            Entry {
+                value: "2".into(),
+                enabled: true,
+            },
+        );
+        let t = TableEditorState::default(); // no selection
+        let mut hits = HitMap::default();
+        terminal
+            .draw(|f| {
+                t.draw(
+                    f,
+                    f.area(),
+                    &map,
+                    &ctx(&theme, None),
+                    "+ Add param",
+                    &mut hits,
+                )
+            })
+            .unwrap();
+        let row = hits.rect_of(&Hit::TableRow(0)).unwrap();
+        assert_eq!(row.height, 1, "no selection: rows stay compact");
+        assert!(
+            hits.rect_of(&Hit::TableDelete(0)).is_none(),
+            "no delete affordance without a selection"
+        );
+    }
+
+    #[test]
+    fn down_selects_first_row_and_esc_deselects() {
+        let mut map = IndexMap::new();
+        map.insert(
+            "a".into(),
+            Entry {
+                value: "1".into(),
+                enabled: true,
+            },
+        );
+        let mut t = TableEditorState::default();
+        assert_eq!(t.selected, None);
+        // Space/Enter/d are inert with nothing selected.
+        assert!(!t.handle_key(key(KeyCode::Char(' ')), &mut map).consumed);
+        assert!(!t.handle_key(key(KeyCode::Char('d')), &mut map).consumed);
+        assert!(map["a"].enabled);
+
+        let out = t.handle_key(key(KeyCode::Down), &mut map);
+        assert!(out.consumed);
+        assert_eq!(t.selected, Some(0), "Down selects the first row");
+
+        let out = t.handle_key(key(KeyCode::Esc), &mut map);
+        assert!(out.consumed);
+        assert_eq!(t.selected, None, "Esc deselects");
     }
 
     #[test]

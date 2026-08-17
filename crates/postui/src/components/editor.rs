@@ -99,6 +99,11 @@ pub struct Editor {
     /// The method-badge cell's screen area, recorded on every draw; consumed
     /// by the click handling that opens the method dropdown (a later task).
     pub last_method_area: Option<Rect>,
+
+    /// The 1-row screen area the URL text was last drawn into (after its
+    /// left padding); consumed by the click handler that focuses the URL
+    /// line and places the caret at the clicked column.
+    pub last_url_text_area: Option<Rect>,
     /// Bumped on every `Action::Tick`, regardless of `sending`; drives the
     /// Send cap's spinner glyph and accent/accent_edge_dark pulse while a
     /// request is in flight. Wrapping is harmless -- only taken mod the
@@ -130,6 +135,7 @@ impl Default for Editor {
             last_body_area: None,
             sending: false,
             last_method_area: None,
+            last_url_text_area: None,
             spinner_frame: 0,
             table_collapsed: false,
         }
@@ -324,6 +330,9 @@ impl Component for Editor {
                     };
                     let outcome = self.table.handle_key(ev, map);
                     if outcome.consumed {
+                        if let Some(i) = outcome.request_delete {
+                            return Some(Action::ConfirmDeleteTableRow(i));
+                        }
                         if ev.code == KeyCode::Char('{')
                             && self
                                 .table
@@ -427,7 +436,7 @@ impl Component for Editor {
             EditorTab::Body => Constraint::Min(0),
             EditorTab::Params | EditorTab::Headers if self.table_collapsed => Constraint::Length(0),
             EditorTab::Params | EditorTab::Headers => {
-                let (rows, active) = self.table_geometry(ctx.hovered);
+                let (rows, active) = self.table_geometry();
                 let inherited = if self.active_tab == EditorTab::Headers {
                     self.inherited_header_lines(ctx.theme).len() as u16
                 } else {
@@ -467,6 +476,10 @@ const SEND_SEGMENT_WIDTH: u16 = 24;
 /// Height of the fused address bar + its ring margins — the first row of
 /// `Editor::draw`'s vertical split.
 pub const ADDRESS_BAR_HEIGHT: u16 = 5;
+
+/// Columns of padding between the method segment and the URL text, so the
+/// text isn't flush against the method button.
+const URL_PAD: u16 = 2;
 /// Height of the tab bar row — the second row of that split.
 pub const TAB_BAR_HEIGHT: u16 = 2;
 /// The Editor pane's total on-screen height when its params/headers table is
@@ -483,11 +496,13 @@ pub const CHROME_HEIGHT: u16 = ADDRESS_BAR_HEIGHT + TAB_BAR_HEIGHT;
 const SPINNER_GLYPHS: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 impl Editor {
-    /// Paints the fused method/URL/Send address bar: one 3-row control with
-    /// no gap columns between its segments, plus the 1-row/1-column margin
-    /// around it that gives [`focus_ring`](crate::paint::focus_ring) cells
-    /// to paint into when the URL has focus. `area` is that whole envelope
-    /// (5 rows tall, the pane's full inner width).
+    /// Paints the fused method/URL/Send address bar: one 3-cell-row control
+    /// (a shaded half-block cap row, the text row, a shaded half-block cap
+    /// row — reading as 2 text lines) with no gap columns between its
+    /// segments, plus the 1-row/1-column margin around it that gives
+    /// [`focus_ring`](crate::paint::focus_ring) cells to paint into when
+    /// the URL has focus. `area` is that whole envelope (5 rows tall, the
+    /// pane's full inner width).
     fn draw_address_bar(
         &mut self,
         frame: &mut Frame,
@@ -495,7 +510,7 @@ impl Editor {
         ctx: &DrawCtx,
         hits: &mut crate::hit::HitMap,
     ) {
-        use crate::paint::{bevel_bottom, bevel_top, face_edges, fill, text};
+        use crate::paint::{face_edges, fill, half_cap_bottom, half_cap_top, text};
 
         let theme = ctx.theme;
         let url_focused = self.sub_focus == SubFocus::Url;
@@ -526,7 +541,11 @@ impl Editor {
         let method_area = cols[0];
         let url_area = cols[1];
         let send_area = cols[2];
-        let mid_y = |r: Rect| r.y + 1;
+        // Shaded cap rows above and below the centered text row.
+        let text_y = bar.y + 1;
+        let cap_top_row = |r: Rect| Rect::new(r.x, r.y, r.width, 1);
+        let text_row = |r: Rect| Rect::new(r.x, r.y + 1, r.width, 1);
+        let cap_bottom_row = |r: Rect| Rect::new(r.x, r.y + r.height - 1, r.width, 1);
 
         let buf = frame.buffer_mut();
 
@@ -539,31 +558,16 @@ impl Editor {
         let (m_light, m_dark) = face_edges(method_face, theme);
         let method_hovered = ctx.hovered == Some(&crate::hit::Hit::MethodSelector);
         let method_fill = if method_hovered { m_light } else { method_face };
-        fill(buf, method_area, method_fill);
-        bevel_top(
-            buf,
-            Rect::new(method_area.x, method_area.y, method_area.width, 1),
-            m_light,
-            method_fill,
-        );
-        bevel_bottom(
-            buf,
-            Rect::new(
-                method_area.x,
-                method_area.y + method_area.height - 1,
-                method_area.width,
-                1,
-            ),
-            m_dark,
-            method_fill,
-        );
+        half_cap_top(buf, cap_top_row(method_area), m_light, theme.page);
+        fill(buf, text_row(method_area), method_fill);
+        half_cap_bottom(buf, cap_bottom_row(method_area), m_dark, theme.page);
         let method_label = format!("{} ▾", self.method.as_str());
         let label_w = method_label.chars().count() as u16;
         let start_x = method_area.x + method_area.width.saturating_sub(label_w) / 2;
         text(
             buf,
             start_x,
-            mid_y(method_area),
+            text_y,
             &method_label,
             theme.on_accent,
             method_fill,
@@ -571,7 +575,7 @@ impl Editor {
         );
         hits.register(method_area, crate::hit::Hit::MethodSelector);
         // The dropdown opens just below `anchor.y` (see `modal::draw_popup`),
-        // so the anchor is the bar's bottom row -- not the whole 3-row hit
+        // so the anchor is the bar's bottom (cap) row -- not the whole hit
         // target -- or the popup would overlap the badge itself.
         self.last_method_area = Some(Rect {
             y: method_area.y + method_area.height - 1,
@@ -580,29 +584,27 @@ impl Editor {
         });
 
         // --- URL segment -------------------------------------------------
-        fill(buf, url_area, theme.control);
-        bevel_top(
-            buf,
-            Rect::new(url_area.x, url_area.y, url_area.width, 1),
-            theme.edge_light,
-            theme.control,
-        );
-        bevel_bottom(
-            buf,
-            Rect::new(
-                url_area.x,
-                url_area.y + url_area.height - 1,
-                url_area.width,
-                1,
-            ),
-            theme.edge_dark,
-            theme.control,
-        );
+        half_cap_top(buf, cap_top_row(url_area), theme.edge_light, theme.page);
+        fill(buf, text_row(url_area), theme.control);
+        half_cap_bottom(buf, cap_bottom_row(url_area), theme.edge_dark, theme.page);
+        // The text is inset URL_PAD columns from the method segment so it
+        // isn't flush against the badge.
+        let url_text_area = Rect {
+            x: url_area.x + URL_PAD.min(url_area.width),
+            width: url_area.width.saturating_sub(URL_PAD),
+            ..url_area
+        };
         let mut url_line = self
             .url
-            .draw_line_windowed(url_focused, theme, url_area.width);
+            .draw_line_windowed(url_focused, theme, url_text_area.width);
         url_line.style = Style::default().bg(theme.control).patch(url_line.style);
-        buf.set_line(url_area.x, mid_y(url_area), &url_line, url_area.width);
+        buf.set_line(url_text_area.x, text_y, &url_line, url_text_area.width);
+        hits.register(url_area, crate::hit::Hit::UrlBar);
+        self.last_url_text_area = Some(Rect {
+            y: text_y,
+            height: 1,
+            ..url_text_area
+        });
 
         // --- Send cap ------------------------------------------------------
         // In flight is a distinct state from disabled: the mouse-first
@@ -614,7 +616,7 @@ impl Editor {
         let url_empty = self.url.text().trim().is_empty();
         let disabled = !self.sending && url_empty;
         let send_hovered = ctx.hovered == Some(&crate::hit::Hit::SendButton);
-        let (label, send_fill, label_fg, draw_bevel, bold) = if self.sending {
+        let (label, send_fill, label_fg, bold) = if self.sending {
             let glyph = SPINNER_GLYPHS[(self.spinner_frame as usize) % SPINNER_GLYPHS.len()];
             let pulse_dark = (self.spinner_frame / 3) % 2 == 1;
             let face = if pulse_dark {
@@ -630,13 +632,12 @@ impl Editor {
             } else {
                 format!("{glyph} Sending")
             };
-            (label, face, theme.on_accent, true, true)
+            (label, face, theme.on_accent, true)
         } else if disabled {
             (
                 "Send".to_string(),
                 theme.control,
                 theme.text_disabled,
-                false,
                 false,
             )
         } else if send_hovered {
@@ -645,7 +646,6 @@ impl Editor {
                 theme.accent_edge_light,
                 theme.on_accent,
                 true,
-                true,
             )
         } else {
             (
@@ -653,38 +653,25 @@ impl Editor {
                 theme.accent,
                 theme.on_accent,
                 true,
-                true,
             )
         };
-        fill(buf, send_area, send_fill);
-        if draw_bevel {
-            // Edges stay pinned to the base accent (not the currently
-            // painted fill), same as `Button`'s hover/pressed convention:
-            // only the face swaps, the bevel colors stay put.
-            bevel_top(
-                buf,
-                Rect::new(send_area.x, send_area.y, send_area.width, 1),
-                theme.accent_edge_light,
-                send_fill,
-            );
-            bevel_bottom(
-                buf,
-                Rect::new(
-                    send_area.x,
-                    send_area.y + send_area.height - 1,
-                    send_area.width,
-                    1,
-                ),
-                theme.accent_edge_dark,
-                send_fill,
-            );
-        }
+        // Caps stay pinned to the accent light/dark pair (matching
+        // `Button`'s convention: only the face swaps on hover/pulse), except
+        // disabled, which goes flat in the control fill.
+        let (s_light, s_dark) = if disabled {
+            (theme.control, theme.control)
+        } else {
+            (theme.accent_edge_light, theme.accent_edge_dark)
+        };
+        half_cap_top(buf, cap_top_row(send_area), s_light, theme.page);
+        fill(buf, text_row(send_area), send_fill);
+        half_cap_bottom(buf, cap_bottom_row(send_area), s_dark, theme.page);
         let send_label_w = label.chars().count() as u16;
         let send_start_x = send_area.x + send_area.width.saturating_sub(send_label_w) / 2;
         text(
             buf,
             send_start_x,
-            mid_y(send_area),
+            text_y,
             &label,
             label_fg,
             send_fill,
@@ -698,7 +685,7 @@ impl Editor {
     /// `(total row-lines, active-row presence)` for the active tab's table
     /// (Params/Headers only), fed to [`table_height`] both by `draw`'s
     /// layout pass and `draw_tab_content`'s actual paint.
-    fn table_geometry(&self, hovered: Option<&crate::hit::Hit>) -> (usize, Option<usize>) {
+    fn table_geometry(&self) -> (usize, Option<usize>) {
         let map_len = match self.active_tab {
             EditorTab::Params => self.params.len(),
             EditorTab::Headers => self.headers.len(),
@@ -712,7 +699,7 @@ impl Editor {
         let rows = map_len + usize::from(new_row_pending);
         let active = self
             .table
-            .active_index(map_len, hovered)
+            .active_index(map_len)
             .or(new_row_pending.then_some(map_len));
         (rows, active)
     }
@@ -726,9 +713,32 @@ impl Editor {
     ) {
         let theme = ctx.theme;
         let tabs = [EditorTab::Params, EditorTab::Headers, EditorTab::Body];
-        let tab_strip: Vec<(String, bool)> = tabs
+        // Params/Headers carry their entry count inside the tab label; Body
+        // carries the live JSON-validity badge, colored from the semantic
+        // tokens so it also reads without the glyph.
+        let tab_strip: Vec<(String, Option<(char, ratatui::style::Color)>)> = tabs
             .iter()
-            .map(|t| (t.label().to_string(), false))
+            .map(|t| {
+                let count = match t {
+                    EditorTab::Params => self.params.len(),
+                    EditorTab::Headers => self.headers.len(),
+                    EditorTab::Body => 0,
+                };
+                let label = if count > 0 {
+                    format!("{} · {count}", t.label())
+                } else {
+                    t.label().to_string()
+                };
+                let badge = match t {
+                    EditorTab::Body => Some(if self.body_is_valid() {
+                        ('✓', theme.success)
+                    } else {
+                        ('✗', theme.error)
+                    }),
+                    _ => None,
+                };
+                (label, badge)
+            })
             .collect();
         let active = self.active_tab.index();
         let hovered = tabs
@@ -754,33 +764,18 @@ impl Editor {
             hits.register(*rect, crate::hit::Hit::EditorTab(i));
         }
 
-        // The Body tab carries a live JSON validity badge, colored from the
-        // semantic tokens so it also reads without the glyph, plus (when
-        // active) the "vars" indicator — both sit right after the tab
-        // labels, on the labels row.
-        let last_rect = rects[tabs.len() - 1];
-        let mut x = last_rect.x + last_rect.width + 1;
-        let (glyph, color) = if self.body_is_valid() {
-            ('✓', theme.success)
-        } else {
-            ('✗', theme.error)
-        };
-        frame.render_widget(
-            Paragraph::new(Line::styled(
-                format!("{glyph} "),
-                Style::default().fg(color),
-            )),
-            Rect::new(x, area.y, 2, 1),
-        );
-        x += 2;
+        // The "vars" indicator sits right after the tab blocks, on the
+        // labels row.
         if self.substitute_body {
+            let last_rect = rects[tabs.len() - 1];
+            let x = last_rect.x + last_rect.width + 2;
             frame.render_widget(
                 Paragraph::new(Line::styled("vars ", Style::default().fg(theme.accent))),
                 Rect::new(x, area.y, 5, 1),
             );
         }
 
-        // --- collapse toggle + active tab's count chip (right-aligned) ---
+        // --- collapse toggle (right-aligned) ---
         // Drawn on top of the same row's plain (unfilled) background, which
         // is why `on` here is `theme.page` — the app's own background,
         // never explicitly painted over this row.
@@ -811,22 +806,6 @@ impl Editor {
             Rect::new(toggle_x, area.y, toggle_w, 1),
             crate::hit::Hit::TableCollapse,
         );
-
-        if matches!(self.active_tab, EditorTab::Params | EditorTab::Headers) {
-            let count = match self.active_tab {
-                EditorTab::Params => self.params.len(),
-                EditorTab::Headers => self.headers.len(),
-                EditorTab::Body => unreachable!(),
-            };
-            let chip_label = count.to_string();
-            let chip_w = chip_label.chars().count() as u16 + 2; // " N "
-            let chip_x = toggle_x.saturating_sub(1).saturating_sub(chip_w);
-            crate::paint::Chip {
-                label: &chip_label,
-                color: theme.accent,
-            }
-            .paint(buf, chip_x, area.y, theme.page, theme);
-        }
     }
 
     /// Builds the muted status lines for enabled inherited (project-default)
@@ -1116,7 +1095,7 @@ mod tests {
             },
         );
         e.sub_focus = SubFocus::Content;
-        assert_eq!(e.table.selected, 0);
+        e.table.selected = Some(0);
         let action = e.handle_key(key(KeyCode::Up));
         assert_eq!(action, Some(Action::Render));
         assert_eq!(e.sub_focus, SubFocus::Url);
@@ -1142,7 +1121,7 @@ mod tests {
             },
         );
         e.sub_focus = SubFocus::Content;
-        e.table.selected = 1;
+        e.table.selected = Some(1);
         let action = e.handle_key(key(KeyCode::Up));
         assert_eq!(action, Some(Action::Render));
         assert_eq!(
@@ -1150,7 +1129,7 @@ mod tests {
             SubFocus::Content,
             "table navigation must not move focus"
         );
-        assert_eq!(e.table.selected, 0);
+        assert_eq!(e.table.selected, Some(0));
     }
 
     #[test]
@@ -1330,6 +1309,59 @@ mod tests {
     }
 
     #[test]
+    fn param_and_header_counts_render_inside_their_tabs_not_at_the_far_right() {
+        let mut e = Editor::default();
+        e.load(
+            Some("a".into()),
+            HttpRequest::from_toml_str(
+                r#"url = "https://x"
+[params]
+page = "2"
+q = "cats"
+
+[headers]
+x-a = "1"
+"#,
+            )
+            .unwrap(),
+        );
+        let theme = Theme::dark();
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: None,
+            dragging: false,
+        };
+        let backend = TestBackend::new(80, 14);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            content.contains("Params · 2"),
+            "param count lives inside its tab: {content}"
+        );
+        assert!(
+            content.contains("Headers · 1"),
+            "header count lives inside its tab: {content}"
+        );
+
+        // No standalone count chip left of the collapse toggle any more:
+        // the cell two columns left of the `⌄ hide` toggle (where the chip
+        // used to end) must be plain page background.
+        let toggle = hits.rect_of(&crate::hit::Hit::TableCollapse).unwrap();
+        let buf = terminal.backend().buffer();
+        let cell = buf.cell((toggle.x - 2, toggle.y)).unwrap();
+        assert_eq!(
+            cell.bg,
+            theme.page,
+            "no count chip at the strip's right edge: {cell:?}"
+        );
+    }
+
+    #[test]
     fn body_tab_renders_its_text() {
         let mut e = Editor {
             active_tab: EditorTab::Body,
@@ -1415,7 +1447,7 @@ url = "https://api.example.com/users""#,
     }
 
     #[test]
-    fn fused_bar_occupies_three_rows_with_method_face_and_shared_text_row() {
+    fn fused_bar_centers_text_between_shaded_half_caps() {
         let mut e = Editor::default();
         e.load(
             Some("a".into()),
@@ -1427,26 +1459,47 @@ url = "https://api.example.com/users""#,
         assert_eq!(method_area.height, 3, "method segment occupies 3 rows");
 
         let buf = terminal.backend().buffer();
-        let mid_y = method_area.y + 1;
-        // A cell inside the method segment's fill (not the bevel rows).
-        let cell = buf.cell((method_area.x, mid_y)).unwrap();
+        let text_y = method_area.y + 1;
+        let method_face = theme.method_color(postui_core::model::Method::Get);
+        let cell = buf.cell((method_area.x, text_y)).unwrap();
         assert_eq!(
-            cell.bg,
-            theme.method_color(postui_core::model::Method::Get),
+            cell.bg, method_face,
             "method cell bg must be the GET method color"
         );
+        // Shaded caps above and below: light "▄" on top, dark "▀" below,
+        // so the bar reads as 2 text lines with a raised bevel.
+        let (m_light, m_dark) = crate::paint::face_edges(method_face, &theme);
+        let top_cap = buf.cell((method_area.x, method_area.y)).unwrap();
+        assert_eq!(top_cap.symbol(), "▄", "method top cap: {top_cap:?}");
+        assert_eq!(top_cap.fg, m_light);
+        let bottom_cap = buf.cell((method_area.x, text_y + 1)).unwrap();
+        assert_eq!(bottom_cap.symbol(), "▀", "method bottom cap: {bottom_cap:?}");
+        assert_eq!(bottom_cap.fg, m_dark);
+        let url_cap = buf
+            .cell((method_area.x + method_area.width + 2, text_y + 1))
+            .unwrap();
+        assert_eq!(url_cap.symbol(), "▀", "url cap row: {url_cap:?}");
+        assert_eq!(url_cap.fg, theme.edge_dark);
 
-        // The URL text is drawn on the same row (`mid_y`) as the method
-        // label -- the bar is one fused control, not stacked rows.
+        // The URL text is drawn on the same row as the method label -- the
+        // bar is one fused control, not stacked rows.
         let content = format!("{buf:?}");
         assert!(content.contains("https://x/y"), "url text: {content}");
         let url_row: String = (0..60)
-            .filter_map(|x| buf.cell((x, mid_y)).map(|c| c.symbol()))
+            .filter_map(|x| buf.cell((x, text_y)).map(|c| c.symbol()))
             .collect();
         assert!(
             url_row.contains("https://x/y"),
             "url text must share the method label's row: {url_row}"
         );
+        // The URL text is inset from the method segment, not flush against it.
+        let gap: String = (0..2)
+            .filter_map(|dx| {
+                buf.cell((method_area.x + method_area.width + dx, text_y))
+                    .map(|c| c.symbol())
+            })
+            .collect();
+        assert_eq!(gap, "  ", "2 columns of left padding before the URL text");
     }
 
     #[test]

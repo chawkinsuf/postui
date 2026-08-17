@@ -66,6 +66,31 @@ pub fn bevel_bottom(buf: &mut Buffer, row: Rect, fg: Color, bg: Color) {
     }
 }
 
+/// Paints a run of `"▀"` (upper half block) across `row`: the bottom cap of
+/// a 1.5-line control, showing the control's `fg` fill in the row's upper
+/// half over the surrounding surface `bg`.
+pub fn half_cap_bottom(buf: &mut Buffer, row: Rect, fg: Color, bg: Color) {
+    for x in row.left()..row.right() {
+        if let Some(cell) = buf.cell_mut((x, row.top())) {
+            cell.set_symbol("▀");
+            cell.set_fg(fg);
+            cell.set_bg(bg);
+        }
+    }
+}
+
+/// Paints a run of `"▄"` (lower half block) across `row`: the top cap of a
+/// pressed (pushed-down) 1.5-line control.
+pub fn half_cap_top(buf: &mut Buffer, row: Rect, fg: Color, bg: Color) {
+    for x in row.left()..row.right() {
+        if let Some(cell) = buf.cell_mut((x, row.top())) {
+            cell.set_symbol("▄");
+            cell.set_fg(fg);
+            cell.set_bg(bg);
+        }
+    }
+}
+
 /// Paints `s` starting at `(x, y)` with the given fg/bg, optionally bold.
 pub fn text(buf: &mut Buffer, x: u16, y: u16, s: &str, fg: Color, bg: Color, bold: bool) {
     use ratatui::style::{Modifier, Style};

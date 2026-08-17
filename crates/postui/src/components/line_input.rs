@@ -31,6 +31,12 @@ impl LineInput {
         self.cursor
     }
 
+    /// Moves the cursor to char index `idx`, clamped to the text's char
+    /// count. Used by mouse click-to-place.
+    pub fn set_cursor(&mut self, idx: usize) {
+        self.cursor = idx.min(self.len_chars());
+    }
+
     fn len_chars(&self) -> usize {
         self.text.chars().count()
     }
@@ -247,6 +253,15 @@ mod tests {
         assert!(j.ends_with_at_cursor("{{"));
         j.handle_key(code(KeyCode::Left));
         assert!(!j.ends_with_at_cursor("{{"), "cursor moved off the braces");
+    }
+
+    #[test]
+    fn set_cursor_clamps_to_char_length() {
+        let mut input = LineInput::new("héllo");
+        input.set_cursor(2);
+        assert_eq!(input.cursor(), 2);
+        input.set_cursor(99);
+        assert_eq!(input.cursor(), 5, "clamped to char count, not byte count");
     }
 
     #[test]

@@ -22,6 +22,9 @@ pub enum Hit {
     /// Renders as Cancel while a request is in flight.
     SendButton,
     MethodSelector,
+    /// The address bar's URL segment: click focuses the URL line and places
+    /// the caret at the clicked column.
+    UrlBar,
     /// 0 = Params, 1 = Headers, 2 = Body.
     EditorTab(usize),
     TableRow(usize),

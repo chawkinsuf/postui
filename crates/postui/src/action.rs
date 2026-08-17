@@ -30,6 +30,12 @@ pub enum Action {
     /// Toggles `App::table_collapsed` (params/headers table body vs. tab
     /// strip only). Session-only — never persisted.
     ToggleTableCollapse,
+    /// Open the delete confirmation for row `i` of the active params/headers
+    /// table (from the `d`/`Delete` key or the row's `✕` affordance).
+    ConfirmDeleteTableRow(usize),
+    /// Actually delete row `i` from the active params/headers table (the
+    /// confirm modal's "Delete" choice).
+    DeleteTableRow(usize),
     /// Open the method-selector dropdown, anchored below the method badge.
     OpenMethodDropdown,
     /// Set the editor's method directly (the dropdown's row action).

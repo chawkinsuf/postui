@@ -630,15 +630,15 @@ fn draw_header_strip(
 
     // Row 1 (right) + row 2 (its underline): the response tabs,
     // right-aligned.
-    let mut tabs: Vec<(String, bool)> = Vec::new();
+    let mut tabs: Vec<(String, Option<(char, ratatui::style::Color)>)> = Vec::new();
     let mut modes: Vec<ViewMode> = Vec::new();
     if view.tree.is_some() {
-        tabs.push(("Tree".to_string(), false));
+        tabs.push(("Tree".to_string(), None));
         modes.push(ViewMode::Pretty);
     }
-    tabs.push(("Raw".to_string(), false));
+    tabs.push(("Raw".to_string(), None));
     modes.push(ViewMode::Raw);
-    tabs.push(("Headers".to_string(), false));
+    tabs.push(("Headers".to_string(), None));
     modes.push(ViewMode::Headers);
 
     let tabs_width = tabstrip_width(&tabs);
@@ -661,15 +661,15 @@ fn draw_header_strip(
 }
 
 /// The horizontal span [`crate::paint::TabStrip::paint`] occupies for
-/// `tabs`, mirroring its own label-width + 2-column-gap layout so callers
-/// can right-align the strip without painting it first.
-fn tabstrip_width(tabs: &[(String, bool)]) -> u16 {
+/// `tabs`, mirroring its own padded-block-width + 1-column-gap layout so
+/// callers can right-align the strip without painting it first.
+fn tabstrip_width(tabs: &[(String, Option<(char, ratatui::style::Color)>)]) -> u16 {
     let widths: Vec<u16> = tabs
         .iter()
-        .map(|(label, badge)| (label.chars().count() + if *badge { 2 } else { 0 }) as u16)
+        .map(|(label, badge)| label.chars().count() as u16 + 2 + badge.map_or(0, |_| 2))
         .collect();
     let sum: u16 = widths.iter().sum();
-    sum + 2 * widths.len().saturating_sub(1) as u16
+    sum + widths.len().saturating_sub(1) as u16
 }
 
 /// `Copy body`/`Save to file` plain painted actions, right-aligned in
@@ -1140,10 +1140,10 @@ mod tests {
         let buf = terminal.backend().buffer();
         // Rows 0..3 (panes carry no border of their own) are the strip.
         // Column 15 is blank on row 0 (past the status chip, short of the
-        // right-aligned Copy/Save buttons); column 37 is blank on rows 1-2
+        // right-aligned Copy/Save buttons); column 36 is blank on rows 1-2
         // (past the chips and content type, short of the right-aligned
-        // tabs). Both should still read as panel fill.
-        for (y, x) in [(0u16, 15u16), (1, 37), (2, 37)] {
+        // block tabs starting at 37). Both should still read as panel fill.
+        for (y, x) in [(0u16, 15u16), (1, 36), (2, 36)] {
             let cell = buf.cell((x, y)).unwrap();
             assert_eq!(
                 cell.bg, theme.panel,

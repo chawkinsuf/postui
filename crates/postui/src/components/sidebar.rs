@@ -350,7 +350,7 @@ impl Component for Sidebar {
                 kind: ButtonKind::Primary,
                 state,
             }
-            .paint(buf, button_area, theme);
+            .paint(buf, button_area, theme.panel, theme);
             hits.register(button_area, Hit::SidebarNewRequest);
         }
 
@@ -906,9 +906,9 @@ mod tests {
         assert_eq!(button_rect.height, 3, "the paint-layer button is 3 rows");
         let buf = terminal.backend().buffer();
         assert_eq!(
-            buf[(button_rect.x, button_rect.y)].symbol(),
-            "\u{2594}",
-            "button's top row is the light bevel"
+            buf[(button_rect.x, button_rect.y + 2)].symbol(),
+            "\u{2580}",
+            "button's bottom row is its half-block cap"
         );
 
         // rows[0] = "top", rows[1] = folder "api" (expanded), rows[2] = "api/ping"

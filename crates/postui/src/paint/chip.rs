@@ -3,7 +3,7 @@
 
 use ratatui::{buffer::Buffer, layout::Rect, style::Color};
 
-use crate::paint::text;
+use crate::paint::{fill, half_cap_bottom, text};
 use crate::theme::Theme;
 
 /// A single-row tinted pill: `" label "` with a bg tinted toward the chip's
@@ -25,62 +25,65 @@ impl Chip<'_> {
     }
 }
 
-/// A horizontal strip of tabs: labels row plus an accent underline row
-/// under the active tab only. Each tuple is `(label, has_badge)` — a badge
-/// renders a trailing `" ✓"` on that tab's label.
+/// A horizontal strip of GUI-style tabs: each tab is a padded filled block
+/// (`" label "`) with a half-block cap row below, like a segmented control.
+/// The active tab is accent-filled; inactive tabs sit on `theme.control`
+/// and lift to `theme.control_hover` under the mouse. Each tuple is
+/// `(label, badge)` — a badge renders a trailing colored glyph (e.g. the
+/// Body tab's JSON-validity `✓`/`✗`) inside the tab's block.
 pub struct TabStrip<'a> {
-    pub tabs: &'a [(String, bool)],
+    pub tabs: &'a [(String, Option<(char, Color)>)],
     pub active: usize,
-    /// The index of the tab currently under the mouse, if any. The hovered
-    /// tab's label extent gets a `theme.control` fill behind it; text colors
-    /// are unaffected by hover (active stays accent+bold, inactive stays
-    /// `text_muted`) — hover is a background cue only.
+    /// The index of the tab currently under the mouse, if any.
     pub hovered: Option<usize>,
 }
 
 impl TabStrip<'_> {
     /// Paints the strip into the top 2 rows of `area` on top of surface
-    /// `on`. Returns the x-extent [`Rect`] of each tab's label on the
-    /// labels row, for hit registration by later tasks.
+    /// `on`. Returns each tab's full 2-row block [`Rect`], for hit
+    /// registration by the caller.
     pub fn paint(&self, buf: &mut Buffer, area: Rect, on: Color, theme: &Theme) -> Vec<Rect> {
         let labels_y = area.y;
-        let underline_y = area.y + 1;
+        let cap_y = area.y + 1;
         let mut x = area.x;
         let mut rects = Vec::with_capacity(self.tabs.len());
 
-        for (i, (label, has_badge)) in self.tabs.iter().enumerate() {
-            let mut s = label.clone();
-            if *has_badge {
-                s.push_str(" ✓");
-            }
-            let width = s.chars().count() as u16;
+        for (i, (label, badge)) in self.tabs.iter().enumerate() {
+            let label_w = label.chars().count() as u16;
+            let width = label_w + 2 + badge.map_or(0, |_| 2);
             let active = i == self.active;
-            let fg = if active {
+            let face = if active {
                 theme.accent
+            } else if self.hovered == Some(i) {
+                theme.control_hover
+            } else {
+                theme.control
+            };
+            let fg = if active {
+                theme.on_accent
+            } else if self.hovered == Some(i) {
+                theme.text
             } else {
                 theme.text_muted
             };
-            let label_bg = if self.hovered == Some(i) {
-                theme.control
-            } else {
-                on
-            };
 
-            text(buf, x, labels_y, &s, fg, label_bg, active);
-            let rect = Rect::new(x, labels_y, width, 1);
-
-            if active {
-                for ux in rect.x..(rect.x + rect.width) {
-                    if let Some(cell) = buf.cell_mut((ux, underline_y)) {
-                        cell.set_symbol("▁");
-                        cell.set_fg(theme.accent);
-                        cell.set_bg(on);
-                    }
-                }
+            fill(buf, Rect::new(x, labels_y, width, 1), face);
+            text(buf, x + 1, labels_y, label, fg, face, active);
+            if let Some((glyph, color)) = badge {
+                text(
+                    buf,
+                    x + 1 + label_w,
+                    labels_y,
+                    &format!(" {glyph}"),
+                    *color,
+                    face,
+                    true,
+                );
             }
+            half_cap_bottom(buf, Rect::new(x, cap_y, width, 1), face, on);
 
-            rects.push(rect);
-            x += width + 2; // 2-column gap between tabs
+            rects.push(Rect::new(x, labels_y, width, 2));
+            x += width + 1; // 1-column gap between tabs
         }
 
         rects
@@ -116,57 +119,69 @@ mod tests {
     }
 
     #[test]
-    fn tabstrip_underlines_active_tab_only() {
+    fn tabstrip_paints_block_tabs_with_accent_active_fill_and_half_cap() {
         let theme = Theme::dark();
         let mut term = Terminal::new(TestBackend::new(40, 2)).unwrap();
         let mut rects = Vec::new();
         term.draw(|f| {
             rects = TabStrip {
-                tabs: &[
-                    ("Params".to_string(), false),
-                    ("Headers".to_string(), false),
-                ],
+                tabs: &[("Params".to_string(), None), ("Headers".to_string(), None)],
                 active: 0,
                 hovered: None,
             }
             .paint(f.buffer_mut(), Rect::new(0, 0, 40, 2), theme.panel, &theme);
         })
         .unwrap();
-        // row 1 under "Params" is "▁" in accent; under "Headers" it is blank
-        assert_eq!(buf_cell(&term, 1, 1).symbol(), "▁");
-        assert_eq!(buf_cell(&term, 1, 1).fg, theme.accent);
-        assert_eq!(buf_cell(&term, rects[1].x + 1, 1).symbol(), " ");
+        // Each tab is a padded filled block " label ", 2 rows tall.
+        assert_eq!(rects[0].width, " Params ".chars().count() as u16);
+        assert_eq!(rects[0].height, 2, "tab hit covers both rows");
+        // Active tab: accent fill, on_accent bold label, accent half-cap.
+        let active_cell = buf_cell(&term, rects[0].x, 0);
+        assert_eq!(active_cell.bg, theme.accent);
+        let label_cell = buf_cell(&term, rects[0].x + 1, 0);
+        assert_eq!(label_cell.symbol(), "P");
+        assert_eq!(label_cell.fg, theme.on_accent);
+        assert!(label_cell.modifier.contains(Modifier::BOLD));
+        let cap = buf_cell(&term, rects[0].x, 1);
+        assert_eq!(cap.symbol(), "▀");
+        assert_eq!(cap.fg, theme.accent);
+        assert_eq!(cap.bg, theme.panel);
+        // Inactive tab: control fill, muted label, control half-cap.
+        let inactive_cell = buf_cell(&term, rects[1].x, 0);
+        assert_eq!(inactive_cell.bg, theme.control);
+        assert_eq!(buf_cell(&term, rects[1].x + 1, 0).fg, theme.text_muted);
+        assert_eq!(buf_cell(&term, rects[1].x, 1).fg, theme.control);
     }
 
     #[test]
-    fn tabstrip_badge_appends_checkmark() {
+    fn tabstrip_badge_appends_colored_glyph_inside_the_tab() {
         let theme = Theme::dark();
         let mut term = Terminal::new(TestBackend::new(40, 2)).unwrap();
         let mut rects = Vec::new();
         term.draw(|f| {
             rects = TabStrip {
-                tabs: &[("Body".to_string(), true)],
+                tabs: &[("Body".to_string(), Some(('✓', theme.success)))],
                 active: 0,
                 hovered: None,
             }
             .paint(f.buffer_mut(), Rect::new(0, 0, 40, 2), theme.panel, &theme);
         })
         .unwrap();
-        assert_eq!(rects[0].width, "Body ✓".chars().count() as u16);
-        assert_eq!(buf_cell(&term, 5, 0).symbol(), "✓");
+        assert_eq!(rects[0].width, " Body ✓ ".chars().count() as u16);
+        let glyph = buf_cell(&term, rects[0].x + 6, 0);
+        assert_eq!(glyph.symbol(), "✓");
+        assert_eq!(glyph.fg, theme.success, "badge keeps its own color");
+        assert_eq!(glyph.bg, theme.accent, "badge sits inside the tab's fill");
     }
 
     #[test]
-    fn tabstrip_hover_fills_control_behind_the_label_only_on_the_hovered_tab() {
+    fn tabstrip_hover_lifts_only_the_hovered_inactive_tab() {
         let theme = Theme::dark();
         let mut term = Terminal::new(TestBackend::new(40, 2)).unwrap();
         let mut rects = Vec::new();
         term.draw(|f| {
             rects = TabStrip {
-                tabs: &[
-                    ("Params".to_string(), false),
-                    ("Headers".to_string(), false),
-                ],
+                tabs: &[("Params".to_string(), None), ("Headers".to_string(), None)],
                 active: 0,
                 hovered: Some(1),
             }
@@ -175,18 +190,13 @@ mod tests {
         .unwrap();
         let hovered_cell = buf_cell(&term, rects[1].x, 0);
         assert_eq!(
-            hovered_cell.bg, theme.control,
-            "the hovered inactive tab's label cell bg must be theme.control"
-        );
-        assert_eq!(
-            hovered_cell.fg, theme.text_muted,
-            "hover must not change an inactive tab's text color"
+            hovered_cell.bg, theme.control_hover,
+            "the hovered inactive tab's fill lifts to control_hover"
         );
         let non_hovered_cell = buf_cell(&term, rects[0].x, 0);
         assert_eq!(
-            non_hovered_cell.bg, theme.panel,
-            "the non-hovered tab's label cell bg must stay the passed-in `on` surface"
+            non_hovered_cell.bg, theme.accent,
+            "the active tab keeps its accent fill"
         );
-        assert_eq!(non_hovered_cell.fg, theme.accent);
     }
 }

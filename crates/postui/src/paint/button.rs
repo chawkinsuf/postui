@@ -1,10 +1,10 @@
-//! A painted, mouse-clickable button: a 3-row filled rect with light/dark
-//! bevel edges on the top/bottom rows and a centered label on the middle
-//! row.
+//! A painted, mouse-clickable button: a centered label row between two
+//! shaded half-block cap rows (light above, dark below), reading as 2 text
+//! lines tall on the surface behind it.
 
 use ratatui::{buffer::Buffer, layout::Rect, style::Color};
 
-use crate::paint::{ControlState, bevel_bottom, bevel_top, fill, text};
+use crate::paint::{ControlState, fill, half_cap_bottom, half_cap_top, text};
 use crate::theme::Theme;
 
 /// Which visual family a button belongs to: `Primary` is the accent-filled
@@ -23,8 +23,9 @@ pub struct Button<'a> {
     pub state: ControlState,
 }
 
-/// Buttons are always exactly this many rows tall: a bevel row on top, the
-/// label row, a bevel row on the bottom.
+/// Buttons are always exactly this many rows tall: a half-block cap row
+/// above, the label row, a half-block cap row below. The caps fill only
+/// half their cell, so the button reads as 2 text lines.
 pub const BUTTON_HEIGHT: u16 = 3;
 
 /// The minimum width a button needs to show `label` without truncation: the
@@ -33,48 +34,39 @@ pub fn button_min_width(label: &str) -> u16 {
     label.chars().count() as u16 + 4
 }
 
-/// The face/edge colors a button paints with for a given kind + state.
+/// The colors a button paints with for a given kind + state.
 struct Face {
     fill: Color,
-    /// `None` when no bevel should be drawn (Disabled).
-    edges: Option<(Color, Color)>,
     label_fg: Color,
+    /// `(top, bottom)` cap colors: a light/dark pair straddling the fill
+    /// for the raised bevel look (swapped when Pressed), or the focus ring
+    /// color on both when Focused, or the flat fill when Disabled.
+    caps: (Color, Color),
 }
 
 impl Button<'_> {
     /// Paints this button into `area`, which must be exactly
-    /// [`BUTTON_HEIGHT`] rows tall. The label is centered on the middle row.
-    pub fn paint(&self, buf: &mut Buffer, area: Rect, theme: &Theme) {
+    /// [`BUTTON_HEIGHT`] rows tall, on top of surface color `on`. The label
+    /// is centered on the middle row; the cap rows above/below carry the
+    /// light/dark shading.
+    pub fn paint(&self, buf: &mut Buffer, area: Rect, on: Color, theme: &Theme) {
         let face = self.face(theme);
 
-        fill(buf, area, face.fill);
-
         let top = Rect::new(area.x, area.y, area.width, 1);
+        let mid = Rect::new(area.x, area.y + 1, area.width, 1);
         let bottom = Rect::new(area.x, area.y + area.height - 1, area.width, 1);
 
-        if let Some((light, dark)) = face.edges {
-            match self.state {
-                ControlState::Pressed => {
-                    // Pressed: bevel inverts — the "sunken" glyphs swap rows
-                    // (▁ on top, ▔ on bottom) along with their edge colors
-                    // (dark on top, light on bottom).
-                    bevel_bottom(buf, top, dark, face.fill);
-                    bevel_top(buf, bottom, light, face.fill);
-                }
-                _ => {
-                    bevel_top(buf, top, light, face.fill);
-                    bevel_bottom(buf, bottom, dark, face.fill);
-                }
-            }
-        }
+        let (cap_top, cap_bottom) = face.caps;
+        half_cap_top(buf, top, cap_top, on);
+        fill(buf, mid, face.fill);
+        half_cap_bottom(buf, bottom, cap_bottom, on);
 
-        let mid_y = area.y + 1;
         let width = self.label.chars().count() as u16;
         let start_x = area.x + area.width.saturating_sub(width) / 2;
         text(
             buf,
             start_x,
-            mid_y,
+            mid.y,
             self.label,
             face.label_fg,
             face.fill,
@@ -83,61 +75,37 @@ impl Button<'_> {
     }
 
     fn face(&self, theme: &Theme) -> Face {
-        match self.kind {
-            ButtonKind::Primary => match self.state {
-                ControlState::Normal => Face {
-                    fill: theme.accent,
-                    edges: Some((theme.accent_edge_light, theme.accent_edge_dark)),
-                    label_fg: theme.on_accent,
-                },
-                ControlState::Hover => Face {
-                    fill: theme.accent_edge_light,
-                    edges: Some((theme.accent_edge_light, theme.accent_edge_dark)),
-                    label_fg: theme.on_accent,
-                },
-                ControlState::Pressed => Face {
-                    fill: theme.accent_edge_dark,
-                    edges: Some((theme.accent_edge_light, theme.accent_edge_dark)),
-                    label_fg: theme.on_accent,
-                },
-                ControlState::Focused => Face {
-                    fill: theme.accent,
-                    edges: Some((theme.focus_ring, theme.focus_ring)),
-                    label_fg: theme.on_accent,
-                },
-                ControlState::Disabled => Face {
-                    fill: theme.control,
-                    edges: None,
-                    label_fg: theme.text_disabled,
-                },
-            },
-            ButtonKind::Secondary => match self.state {
-                ControlState::Normal => Face {
-                    fill: theme.control,
-                    edges: Some((theme.edge_light, theme.edge_dark)),
-                    label_fg: theme.text,
-                },
-                ControlState::Hover => Face {
-                    fill: theme.control_hover,
-                    edges: Some((theme.edge_light, theme.edge_dark)),
-                    label_fg: theme.text,
-                },
-                ControlState::Pressed => Face {
-                    fill: theme.control_pressed,
-                    edges: Some((theme.edge_light, theme.edge_dark)),
-                    label_fg: theme.text,
-                },
-                ControlState::Focused => Face {
-                    fill: theme.control,
-                    edges: Some((theme.focus_ring, theme.focus_ring)),
-                    label_fg: theme.text,
-                },
-                ControlState::Disabled => Face {
-                    fill: theme.control,
-                    edges: None,
-                    label_fg: theme.text_disabled,
-                },
-            },
+        let fill = match (self.kind, self.state) {
+            (ButtonKind::Primary, ControlState::Normal | ControlState::Focused) => theme.accent,
+            (ButtonKind::Primary, ControlState::Hover) => theme.accent_edge_light,
+            (ButtonKind::Primary, ControlState::Pressed) => theme.accent_edge_dark,
+            (_, ControlState::Disabled) => theme.control,
+            (ButtonKind::Secondary, ControlState::Normal | ControlState::Focused) => theme.control,
+            (ButtonKind::Secondary, ControlState::Hover) => theme.control_hover,
+            (ButtonKind::Secondary, ControlState::Pressed) => theme.control_pressed,
+        };
+        let label_fg = match (self.kind, self.state) {
+            (_, ControlState::Disabled) => theme.text_disabled,
+            (ButtonKind::Primary, _) => theme.on_accent,
+            (ButtonKind::Secondary, _) => theme.text,
+        };
+        // Cap shading stays pinned to the kind's base light/dark pair, same
+        // as the old bevel convention: only the face swaps on hover/press.
+        let (light, dark) = match self.kind {
+            ButtonKind::Primary => (theme.accent_edge_light, theme.accent_edge_dark),
+            ButtonKind::Secondary => (theme.edge_light, theme.edge_dark),
+        };
+        let caps = match self.state {
+            ControlState::Focused => (theme.focus_ring, theme.focus_ring),
+            ControlState::Disabled => (fill, fill),
+            // Pressed: sunken — dark on top, light on the bottom.
+            ControlState::Pressed => (dark, light),
+            _ => (light, dark),
+        };
+        Face {
+            fill,
+            label_fg,
+            caps,
         }
     }
 }
@@ -153,7 +121,7 @@ mod tests {
     }
 
     #[test]
-    fn primary_button_paints_fill_bevel_and_centered_bold_label() {
+    fn primary_button_centers_label_between_shaded_half_caps() {
         let theme = Theme::dark();
         let mut term = Terminal::new(TestBackend::new(20, 5)).unwrap();
         term.draw(|f| {
@@ -163,20 +131,29 @@ mod tests {
                 kind: ButtonKind::Primary,
                 state: ControlState::Normal,
             }
-            .paint(f.buffer_mut(), area, &theme);
+            .paint(f.buffer_mut(), area, theme.page, &theme);
         })
         .unwrap();
-        assert_eq!(buf_cell(&term, 0, 1).symbol(), "▔");
-        assert_eq!(buf_cell(&term, 0, 3).symbol(), "▁");
+        // Top cap: lower-half block in the lightened fill over the surface.
+        let top = buf_cell(&term, 8, 1);
+        assert_eq!(top.symbol(), "▄");
+        assert_eq!(top.fg, theme.accent_edge_light);
+        assert_eq!(top.bg, theme.page);
+        // Label centered on the middle row, bold on the accent fill.
         let mid = buf_cell(&term, 8, 2); // "Send" centered in 20 cols starts at 8
         assert_eq!(mid.symbol(), "S");
         assert_eq!(mid.bg, theme.accent);
         assert_eq!(mid.fg, theme.on_accent);
         assert!(mid.modifier.contains(ratatui::style::Modifier::BOLD));
+        // Bottom cap: upper-half block in the darkened fill.
+        let bottom = buf_cell(&term, 8, 3);
+        assert_eq!(bottom.symbol(), "▀");
+        assert_eq!(bottom.fg, theme.accent_edge_dark);
+        assert_eq!(bottom.bg, theme.page);
     }
 
     #[test]
-    fn pressed_button_inverts_bevel() {
+    fn pressed_button_swaps_cap_shading() {
         let theme = Theme::dark();
         let mut term = Terminal::new(TestBackend::new(20, 3)).unwrap();
         term.draw(|f| {
@@ -185,15 +162,34 @@ mod tests {
                 kind: ButtonKind::Primary,
                 state: ControlState::Pressed,
             }
-            .paint(f.buffer_mut(), Rect::new(0, 0, 20, 3), &theme);
+            .paint(f.buffer_mut(), Rect::new(0, 0, 20, 3), theme.page, &theme);
         })
         .unwrap();
-        assert_eq!(buf_cell(&term, 0, 0).symbol(), "▁");
-        assert_eq!(buf_cell(&term, 0, 2).symbol(), "▔");
+        // Sunken: dark cap on top, light cap on the bottom.
+        assert_eq!(buf_cell(&term, 8, 0).fg, theme.accent_edge_dark);
+        assert_eq!(buf_cell(&term, 8, 1).symbol(), "S");
+        assert_eq!(buf_cell(&term, 8, 2).fg, theme.accent_edge_light);
     }
 
     #[test]
-    fn disabled_button_has_muted_label_and_no_bevel() {
+    fn focused_button_paints_caps_in_focus_ring_color() {
+        let theme = Theme::dark();
+        let mut term = Terminal::new(TestBackend::new(20, 3)).unwrap();
+        term.draw(|f| {
+            Button {
+                label: "Send",
+                kind: ButtonKind::Primary,
+                state: ControlState::Focused,
+            }
+            .paint(f.buffer_mut(), Rect::new(0, 0, 20, 3), theme.page, &theme);
+        })
+        .unwrap();
+        assert_eq!(buf_cell(&term, 8, 0).fg, theme.focus_ring);
+        assert_eq!(buf_cell(&term, 8, 2).fg, theme.focus_ring);
+    }
+
+    #[test]
+    fn disabled_button_has_muted_label_and_flat_caps() {
         let theme = Theme::dark();
         let mut term = Terminal::new(TestBackend::new(20, 3)).unwrap();
         term.draw(|f| {
@@ -202,10 +198,12 @@ mod tests {
                 kind: ButtonKind::Secondary,
                 state: ControlState::Disabled,
             }
-            .paint(f.buffer_mut(), Rect::new(0, 0, 20, 3), &theme);
+            .paint(f.buffer_mut(), Rect::new(0, 0, 20, 3), theme.page, &theme);
         })
         .unwrap();
-        assert_eq!(buf_cell(&term, 0, 0).symbol(), " ");
         assert_eq!(buf_cell(&term, 8, 1).fg, theme.text_disabled);
+        // Flat: both caps in the plain control fill, no light/dark pair.
+        assert_eq!(buf_cell(&term, 8, 0).fg, theme.control);
+        assert_eq!(buf_cell(&term, 8, 2).fg, theme.control);
     }
 }

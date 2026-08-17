@@ -357,7 +357,7 @@ impl ModalStack {
                     kind: ButtonKind::Primary,
                     state: btn_state,
                 }
-                .paint(frame.buffer_mut(), btn_area, theme);
+                .paint(frame.buffer_mut(), btn_area, theme.panel, theme);
                 hits.register(btn_area, crate::hit::Hit::ModalConfirm);
             }
             Modal::Confirm {
@@ -419,7 +419,7 @@ impl ModalStack {
                         kind: ButtonKind::Secondary,
                         state: choice_state,
                     }
-                    .paint(frame.buffer_mut(), btn_area, theme);
+                    .paint(frame.buffer_mut(), btn_area, theme.panel, theme);
                     hits.register(btn_area, crate::hit::Hit::ConfirmChoice(*c));
                     x += w + 2;
                 }
@@ -739,7 +739,7 @@ fn draw_cancel_confirm_row(
         } else {
             ControlState::Normal
         };
-        Button { label, kind, state }.paint(frame.buffer_mut(), btn_area, theme);
+        Button { label, kind, state }.paint(frame.buffer_mut(), btn_area, theme.panel, theme);
         hits.register(btn_area, hit);
         x += w + 2;
     }
@@ -933,9 +933,9 @@ mod tests {
 
         let cancel = hits.rect_of(&crate::hit::Hit::ConfirmChoice('n')).unwrap();
         assert_eq!(
-            buffer[(cancel.x, cancel.y)].symbol(),
-            "\u{2594}",
-            "the Cancel button's top row must be its raised bevel"
+            buffer[(cancel.x, cancel.y + 2)].symbol(),
+            "\u{2580}",
+            "the Cancel button's bottom row must be its half-block cap"
         );
         assert_eq!(
             buffer[(cancel.x + 1, cancel.y + 1)].bg,
@@ -945,9 +945,9 @@ mod tests {
 
         let confirm = hits.rect_of(&crate::hit::Hit::ConfirmChoice('y')).unwrap();
         assert_eq!(
-            buffer[(confirm.x, confirm.y)].symbol(),
-            "\u{2594}",
-            "the confirm button's top row must be its raised bevel"
+            buffer[(confirm.x, confirm.y + 2)].symbol(),
+            "\u{2580}",
+            "the confirm button's bottom row must be its half-block cap"
         );
     }
 

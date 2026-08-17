@@ -689,6 +689,33 @@ impl App {
                 }
                 true
             }
+            Action::ConfirmDeleteTableRow(i) => {
+                let (map, noun) = match self.editor.active_tab {
+                    EditorTab::Params => (&self.editor.params, "param"),
+                    EditorTab::Headers => (&self.editor.headers, "header"),
+                    EditorTab::Body => return true,
+                };
+                if let Some((key, _)) = map.get_index(i) {
+                    self.modals.push(Modal::Confirm {
+                        title: format!("Delete {noun}"),
+                        body: format!("Delete {noun} \"{key}\"?"),
+                        choices: vec![
+                            ('y', "Delete".into(), vec![Action::DeleteTableRow(i)]),
+                            ('n', "Keep".into(), vec![]),
+                        ],
+                    });
+                }
+                true
+            }
+            Action::DeleteTableRow(i) => {
+                let map = match self.editor.active_tab {
+                    EditorTab::Params => &mut self.editor.params,
+                    EditorTab::Headers => &mut self.editor.headers,
+                    EditorTab::Body => return true,
+                };
+                self.editor.table.delete_row(map, i);
+                true
+            }
             Action::ConfirmDeleteRequest => {
                 if let Some(slug) = self.sidebar.selected_slug() {
                     self.modals.push(Modal::Confirm {
@@ -1572,6 +1599,32 @@ impl App {
     /// changes. Only `Pane` and `BodyEditor` are wired up so far; later
     /// tasks extend this match as more hit kinds gain behavior.
     fn on_hit(&mut self, hit: Hit, clicks: u8, m: ratatui::crossterm::event::MouseEvent) -> bool {
+        // A click anywhere that isn't the params/headers table itself (and
+        // isn't inside a modal — e.g. this row's own delete confirm) clears
+        // the table selection, so clicking around the app deselects.
+        // Suppressed mid-edit: an in-progress cell edit owns the selection.
+        let keeps_table_selection = matches!(
+            hit,
+            Hit::TableRow(_)
+                | Hit::TableCheckbox(_)
+                | Hit::TableDelete(_)
+                | Hit::TableAdd
+                | Hit::TableCollapse
+                | Hit::ModalCancel
+                | Hit::ModalConfirm
+                | Hit::ConfirmChoice(_)
+                | Hit::ModalBody
+                | Hit::ModalOutside
+                | Hit::DropdownRow(_)
+                | Hit::ChooserRow(_)
+                | Hit::PaletteRow(_)
+                | Hit::VarPickerRow(_)
+                | Hit::ScrollbarThumb(_)
+                | Hit::ScrollbarTrack(..)
+        );
+        if !keeps_table_selection && self.editor.table.editing.is_none() {
+            self.editor.table.selected = None;
+        }
         match hit {
             Hit::Pane(p) => self.update(Action::FocusPane(p)),
             Hit::BodyEditor => {
@@ -1624,7 +1677,7 @@ impl App {
             Hit::TableCheckbox(i) => {
                 self.update(Action::FocusPane(PaneId::Editor));
                 self.editor.sub_focus = SubFocus::Content;
-                self.editor.table.selected = i;
+                self.editor.table.selected = Some(i);
                 let map = match self.editor.active_tab {
                     EditorTab::Params => &mut self.editor.params,
                     EditorTab::Headers => &mut self.editor.headers,
@@ -1638,27 +1691,28 @@ impl App {
             Hit::TableRow(i) => {
                 self.update(Action::FocusPane(PaneId::Editor));
                 self.editor.sub_focus = SubFocus::Content;
-                self.editor.table.selected = i;
                 if clicks == 2 {
+                    self.editor.table.selected = Some(i);
                     let map = match self.editor.active_tab {
                         EditorTab::Params => &mut self.editor.params,
                         EditorTab::Headers => &mut self.editor.headers,
                         EditorTab::Body => unreachable!("TableRow only fires on Params/Headers"),
                     };
                     self.editor.table.begin_edit_selected(map);
+                } else if self.editor.table.editing.is_none()
+                    && self.editor.table.selected == Some(i)
+                {
+                    // Clicking the already-selected row again deselects it.
+                    self.editor.table.selected = None;
+                } else {
+                    self.editor.table.selected = Some(i);
                 }
                 self.update(Action::Render)
             }
             Hit::TableDelete(i) => {
                 self.update(Action::FocusPane(PaneId::Editor));
                 self.editor.sub_focus = SubFocus::Content;
-                let map = match self.editor.active_tab {
-                    EditorTab::Params => &mut self.editor.params,
-                    EditorTab::Headers => &mut self.editor.headers,
-                    EditorTab::Body => unreachable!("TableDelete only fires on Params/Headers"),
-                };
-                self.editor.table.delete_row(map, i);
-                self.update(Action::Render)
+                self.update(Action::ConfirmDeleteTableRow(i))
             }
             Hit::TableAdd => {
                 self.update(Action::FocusPane(PaneId::Editor));
@@ -1672,6 +1726,25 @@ impl App {
                 self.update(Action::Render)
             }
             Hit::TableCollapse => self.update(Action::ToggleTableCollapse),
+            Hit::UrlBar => {
+                self.update(Action::FocusPane(PaneId::Editor));
+                let was_focused = self.editor.sub_focus == SubFocus::Url;
+                self.editor.sub_focus = SubFocus::Url;
+                if let Some(area) = self.editor.last_url_text_area {
+                    // Map the clicked column back to a char index: the drawn
+                    // window starts at 0 unfocused, or scrolls to keep the
+                    // caret visible when already focused (mirroring
+                    // `LineInput::draw_line_windowed`).
+                    let start = if was_focused {
+                        (self.editor.url.cursor() + 1).saturating_sub(area.width.max(1) as usize)
+                    } else {
+                        0
+                    };
+                    let col = m.column.saturating_sub(area.x) as usize;
+                    self.editor.url.set_cursor(start + col);
+                }
+                self.update(Action::Render)
+            }
             Hit::MethodSelector => {
                 self.update(Action::FocusPane(PaneId::Editor));
                 self.update(Action::OpenMethodDropdown)
@@ -2113,6 +2186,164 @@ mod tests {
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+    }
+
+    #[test]
+    fn deleting_a_table_row_by_key_requires_confirmation() {
+        let mut app = App::new_for_test();
+        app.editor.params.insert(
+            "page".into(),
+            postui_core::model::Entry {
+                value: "2".into(),
+                enabled: true,
+            },
+        );
+        app.focus = PaneId::Editor;
+        app.editor.sub_focus = SubFocus::Content;
+        app.editor.table.selected = Some(0);
+        let keymap = Keymap::default_bindings();
+
+        app.handle_key(&keymap, plain('d'));
+        match app.modals.top() {
+            Some(Modal::Confirm { body, .. }) => {
+                assert!(body.contains("page"), "confirm names the key: {body}")
+            }
+            _ => panic!("expected a Confirm modal"),
+        }
+        assert_eq!(app.editor.params.len(), 1, "row survives until confirmed");
+
+        app.handle_key(&keymap, plain('y'));
+        assert!(app.editor.params.is_empty(), "confirming deletes the row");
+        assert!(app.modals.top().is_none(), "modal closed after the choice");
+    }
+
+    #[test]
+    fn declining_the_table_row_delete_keeps_the_row() {
+        let mut app = App::new_for_test();
+        app.editor.params.insert(
+            "page".into(),
+            postui_core::model::Entry {
+                value: "2".into(),
+                enabled: true,
+            },
+        );
+        app.focus = PaneId::Editor;
+        app.editor.sub_focus = SubFocus::Content;
+        app.editor.table.selected = Some(0);
+        let keymap = Keymap::default_bindings();
+        app.handle_key(&keymap, plain('d'));
+        app.handle_key(&keymap, plain('n'));
+        assert_eq!(app.editor.params.len(), 1, "declining keeps the row");
+        assert!(app.modals.top().is_none());
+    }
+
+    #[test]
+    fn clicking_the_row_delete_affordance_opens_the_confirm_modal() {
+        let mut app = App::new_for_test();
+        app.editor.params.insert(
+            "page".into(),
+            postui_core::model::Entry {
+                value: "2".into(),
+                enabled: true,
+            },
+        );
+        app.editor.table.selected = Some(0);
+        render_once(&mut app);
+        let del = app
+            .hits
+            .rect_of(&Hit::TableDelete(0))
+            .expect("delete affordance on the selected row");
+        assert!(app.handle_mouse(left_down(del.x, del.y)));
+        assert!(
+            matches!(app.modals.top(), Some(Modal::Confirm { .. })),
+            "clicking ✕ must confirm, not delete outright"
+        );
+        assert_eq!(app.editor.params.len(), 1);
+    }
+
+    #[test]
+    fn clicking_the_selected_row_again_deselects_it() {
+        let mut app = App::new_for_test();
+        app.editor.params.insert(
+            "page".into(),
+            postui_core::model::Entry {
+                value: "2".into(),
+                enabled: true,
+            },
+        );
+        render_once(&mut app);
+        let row = app.hits.rect_of(&Hit::TableRow(0)).unwrap();
+        assert!(app.handle_mouse(left_down(row.x + 4, row.y)));
+        assert_eq!(app.editor.table.selected, Some(0), "first click selects");
+
+        render_once(&mut app);
+        let row = app.hits.rect_of(&Hit::TableRow(0)).unwrap();
+        // Well past double-click time, so this registers as a fresh click.
+        std::thread::sleep(std::time::Duration::from_millis(450));
+        assert!(app.handle_mouse(left_down(row.x + 4, row.y)));
+        assert_eq!(
+            app.editor.table.selected, None,
+            "clicking the selected row again deselects it"
+        );
+    }
+
+    #[test]
+    fn clicking_elsewhere_in_the_app_clears_the_table_selection() {
+        let mut app = App::new_for_test();
+        app.editor.params.insert(
+            "page".into(),
+            postui_core::model::Entry {
+                value: "2".into(),
+                enabled: true,
+            },
+        );
+        app.editor.table.selected = Some(0);
+        render_once(&mut app);
+        // Click into the sidebar pane background.
+        let sidebar = app.hits.rect_of(&Hit::Pane(PaneId::Sidebar)).unwrap();
+        app.handle_mouse(left_down(sidebar.x + 1, sidebar.y + sidebar.height - 2));
+        assert_eq!(
+            app.editor.table.selected, None,
+            "clicking another pane clears the selection"
+        );
+
+        // Same for the URL bar.
+        app.editor.table.selected = Some(0);
+        render_once(&mut app);
+        let url = app.editor.last_url_text_area.unwrap();
+        app.handle_mouse(left_down(url.x + 1, url.y));
+        assert_eq!(app.editor.table.selected, None);
+    }
+
+    #[test]
+    fn clicking_the_url_bar_focuses_the_url_line_and_places_the_caret() {
+        let mut app = App::new_for_test();
+        app.editor.url = crate::components::line_input::LineInput::new("https://x/y");
+        app.editor.sub_focus = SubFocus::Content;
+        app.focus = PaneId::Sidebar;
+        render_once(&mut app);
+
+        let text_area = app.editor.last_url_text_area.expect("url text area");
+        // Click 4 columns into the text: caret lands on char index 4.
+        assert!(app.handle_mouse(left_down(text_area.x + 4, text_area.y)));
+        assert_eq!(app.focus, PaneId::Editor, "click focuses the editor pane");
+        assert_eq!(app.editor.sub_focus, SubFocus::Url);
+        assert_eq!(app.editor.url.cursor(), 4);
+
+        // A click past the end of the text clamps the caret to the end.
+        render_once(&mut app);
+        let text_area = app.editor.last_url_text_area.unwrap();
+        assert!(app.handle_mouse(left_down(text_area.x + text_area.width - 1, text_area.y)));
+        assert_eq!(app.editor.url.cursor(), "https://x/y".chars().count());
+
+        // The padding columns just left of the text still land in the URL
+        // bar hit (not the method selector) and focus the line.
+        app.editor.sub_focus = SubFocus::Content;
+        render_once(&mut app);
+        let text_area = app.editor.last_url_text_area.unwrap();
+        assert!(app.handle_mouse(left_down(text_area.x - 1, text_area.y)));
+        assert_eq!(app.editor.sub_focus, SubFocus::Url);
+        assert_eq!(app.editor.url.cursor(), 0, "clicks left of the text go to char 0");
     }
 
     /// Button-held motion, the event kind real terminals send for a drag
@@ -3415,6 +3646,7 @@ mod tests {
         );
         app.editor.active_tab = EditorTab::Params;
         app.editor.sub_focus = SubFocus::Content;
+        app.editor.table.selected = Some(0);
         app.editor
             .table
             .begin_edit_selected(&app.editor.params.clone());
@@ -3656,7 +3888,7 @@ mod tests {
         let r = app.hits.rect_of(&Hit::TableCheckbox(0)).unwrap();
         app.handle_mouse(left_down(r.x, r.y));
         assert!(!app.editor.params["page"].enabled);
-        assert_eq!(app.editor.table.selected, 0);
+        assert_eq!(app.editor.table.selected, Some(0));
         assert_eq!(app.focus, PaneId::Editor);
     }
 
@@ -3680,7 +3912,11 @@ mod tests {
             app.editor.table.editing.is_none(),
             "single click only selects"
         );
-        assert_eq!(app.editor.table.selected, 0, "single click selects the row");
+        assert_eq!(
+            app.editor.table.selected,
+            Some(0),
+            "single click selects the row"
+        );
         app.handle_mouse(left_down(click_x, r.y));
         let edit = app
             .editor
@@ -3704,7 +3940,7 @@ mod tests {
     }
 
     #[test]
-    fn collapse_hides_body_and_keeps_count_chip() {
+    fn collapse_hides_body_and_keeps_tab_count_visible() {
         let mut app = App::new_for_test();
         three_params(&mut app);
         app.table_collapsed = true;
@@ -3723,14 +3959,12 @@ mod tests {
             "table header must not be drawn while collapsed: {content}"
         );
 
-        // The tab strip's count chip is still painted somewhere: a "3" cell
-        // tinted toward the accent color.
-        let tint = app.theme.tint(app.theme.accent, app.theme.page);
-        let found = buf
-            .content()
-            .iter()
-            .any(|cell| cell.symbol() == "3" && cell.bg == tint);
-        assert!(found, "count chip for 3 params must stay visible");
+        // The param count still shows while collapsed — inside the Params
+        // tab's own label.
+        assert!(
+            content.contains("Params · 3"),
+            "param count must stay visible in the tab label: {content}"
+        );
     }
 
     #[test]
