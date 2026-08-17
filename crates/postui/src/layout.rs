@@ -1,3 +1,4 @@
+use crate::components::editor;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,7 +30,13 @@ pub struct AppLayout {
     pub footer: Rect,
 }
 
-pub fn compute_layout(area: Rect) -> AppLayout {
+/// `editor_collapsed_to_chrome` is `true` exactly when the Editor pane has
+/// nothing but chrome to show — its params/headers table is collapsed and
+/// one of those two tabs is active (the Body tab always keeps the normal
+/// split, table or no table). In that case the Editor pane shrinks to
+/// [`editor::CHROME_HEIGHT`] and the Response pane takes every row that
+/// frees up; otherwise the two keep today's fixed 50/50 split.
+pub fn compute_layout(area: Rect, editor_collapsed_to_chrome: bool) -> AppLayout {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -42,9 +49,17 @@ pub fn compute_layout(area: Rect) -> AppLayout {
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(28), Constraint::Percentage(72)])
         .split(rows[1]);
+    let right_constraints = if editor_collapsed_to_chrome {
+        [
+            Constraint::Length(editor::CHROME_HEIGHT),
+            Constraint::Min(0),
+        ]
+    } else {
+        [Constraint::Percentage(50), Constraint::Percentage(50)]
+    };
     let right = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .constraints(right_constraints)
         .split(cols[1]);
     AppLayout {
         header: rows[0],
@@ -79,7 +94,7 @@ mod tests {
     #[test]
     fn layout_partitions_area() {
         let area = Rect::new(0, 0, 120, 40);
-        let l = compute_layout(area);
+        let l = compute_layout(area, false);
         assert_eq!(l.header.height, 3);
         assert_eq!(l.footer.height, 1);
         assert_eq!(l.header.y, 0);
@@ -93,5 +108,26 @@ mod tests {
         assert_eq!(l.sidebar.height, 36);
         assert_eq!(l.editor.height + l.response.height, 36);
         assert_eq!(l.sidebar.width + l.editor.width, 120);
+    }
+
+    #[test]
+    fn collapsed_editor_shrinks_to_chrome_and_response_takes_the_rest() {
+        let area = Rect::new(0, 0, 120, 40);
+        let expanded = compute_layout(area, false);
+        let collapsed = compute_layout(area, true);
+        assert_eq!(
+            collapsed.editor.height,
+            editor::CHROME_HEIGHT,
+            "editor pane shrinks to exactly its chrome"
+        );
+        assert_eq!(
+            collapsed.editor.height + collapsed.response.height,
+            expanded.editor.height + expanded.response.height,
+            "the two panes still exactly fill the same vertical span"
+        );
+        assert!(
+            collapsed.response.height > expanded.response.height,
+            "response pane reclaims every row the table gave up"
+        );
     }
 }

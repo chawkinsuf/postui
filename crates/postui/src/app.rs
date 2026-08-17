@@ -3729,6 +3729,48 @@ mod tests {
     }
 
     #[test]
+    fn collapse_on_a_table_tab_shrinks_editor_to_chrome_and_grows_response() {
+        let mut app = App::new_for_test();
+        three_params(&mut app);
+        render_once(&mut app);
+        let expanded_response = app.hits.rect_of(&Hit::Pane(PaneId::Response)).unwrap();
+
+        app.table_collapsed = true;
+        render_once(&mut app);
+        let editor = app.hits.rect_of(&Hit::Pane(PaneId::Editor)).unwrap();
+        let response = app.hits.rect_of(&Hit::Pane(PaneId::Response)).unwrap();
+        assert_eq!(
+            editor.height,
+            crate::components::editor::CHROME_HEIGHT,
+            "editor pane shrinks to exactly its chrome"
+        );
+        assert!(
+            response.height > expanded_response.height,
+            "response pane reclaims the freed rows"
+        );
+    }
+
+    #[test]
+    fn collapse_on_the_body_tab_leaves_the_split_unchanged() {
+        let mut app = App::new_for_test();
+        three_params(&mut app);
+        app.editor.active_tab = EditorTab::Body;
+        render_once(&mut app);
+        let expanded_editor = app.hits.rect_of(&Hit::Pane(PaneId::Editor)).unwrap();
+        let expanded_response = app.hits.rect_of(&Hit::Pane(PaneId::Response)).unwrap();
+
+        app.table_collapsed = true;
+        render_once(&mut app);
+        let editor = app.hits.rect_of(&Hit::Pane(PaneId::Editor)).unwrap();
+        let response = app.hits.rect_of(&Hit::Pane(PaneId::Response)).unwrap();
+        assert_eq!(
+            editor, expanded_editor,
+            "Body tab active: split unchanged by collapse"
+        );
+        assert_eq!(response, expanded_response);
+    }
+
+    #[test]
     fn open_method_dropdown_has_all_seven_methods_selected_at_current() {
         let mut app = App::new_for_test();
         app.editor.method = postui_core::model::Method::Put;

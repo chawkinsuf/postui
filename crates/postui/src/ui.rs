@@ -15,7 +15,13 @@ use ratatui::Frame;
 /// button, a row) is topmost at that point per [`HitMap::hit_at`]'s
 /// last-registered-wins rule.
 pub fn draw(frame: &mut Frame, app: &mut App) {
-    let layout = compute_layout(frame.area());
+    let editor_collapsed_to_chrome = app.table_collapsed
+        && matches!(
+            app.editor.active_tab,
+            crate::components::editor::EditorTab::Params
+                | crate::components::editor::EditorTab::Headers
+        );
+    let layout = compute_layout(frame.area(), editor_collapsed_to_chrome);
     let focus = app.focus;
     let mut hits = std::mem::take(&mut app.hits);
     hits.clear();

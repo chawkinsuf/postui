@@ -419,11 +419,12 @@ impl Component for Editor {
         // Params/Headers get exactly the height their compact table needs
         // (so unused rows read as empty pane rather than a stretched table);
         // Body still fills whatever is left. Collapsed, the table body is
-        // skipped entirely (`Length(0)`) — the freed rows stay inside this
-        // pane's own content row (there is no route today for them to grow
-        // the Response pane below, whose split is a fixed percentage
-        // computed once in `layout::compute_layout`, outside this
-        // component).
+        // skipped entirely (`Length(0)`) — this pane's own rect is already
+        // shrunk to `CHROME_HEIGHT` by `layout::compute_layout` in that case
+        // (it reads `App::table_collapsed` + the active tab the same way
+        // this draw does), so `Length(0)` here just means "nothing left to
+        // give it" rather than leaving dead space; the rows it would have
+        // used are already the Response pane's.
         let content_constraint = match self.active_tab {
             EditorTab::Body => Constraint::Min(0),
             EditorTab::Params | EditorTab::Headers if self.table_collapsed => Constraint::Length(0),
@@ -434,11 +435,13 @@ impl Component for Editor {
                 } else {
                     0
                 };
-                // Capped to what's left after the fixed address bar (5) and
-                // tab bar (1) rows, never the other way around: those two
-                // must never be squeezed to make room for a table that
-                // wants more height than the pane has.
-                let available = inner.height.saturating_sub(6);
+                // Capped to what's left after the fixed address bar and tab
+                // bar rows, never the other way around: those two must never
+                // be squeezed to make room for a table that wants more
+                // height than the pane has.
+                let available = inner
+                    .height
+                    .saturating_sub(ADDRESS_BAR_HEIGHT + TAB_BAR_HEIGHT);
                 Constraint::Length((inherited + table_height(rows, active)).min(available))
             }
         };
@@ -446,9 +449,9 @@ impl Component for Editor {
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(5), // fused address bar + its ring margins
-                Constraint::Length(1), // tab bar
-                content_constraint,    // active tab content
+                Constraint::Length(ADDRESS_BAR_HEIGHT), // fused address bar + its ring margins
+                Constraint::Length(TAB_BAR_HEIGHT),     // tab bar
+                content_constraint,                     // active tab content
             ])
             .split(inner);
 
@@ -462,6 +465,18 @@ impl Component for Editor {
 const METHOD_SEGMENT_WIDTH: u16 = 10;
 /// Fixed width, in cells, of the address bar's Send cap.
 const SEND_SEGMENT_WIDTH: u16 = 24;
+
+/// Height of the fused address bar + its ring margins — the first row of
+/// `Editor::draw`'s vertical split.
+pub const ADDRESS_BAR_HEIGHT: u16 = 5;
+/// Height of the tab bar row — the second row of that split.
+pub const TAB_BAR_HEIGHT: u16 = 1;
+/// The Editor pane's total on-screen height when its params/headers table is
+/// collapsed: just its `pane_block` border plus the two fixed content rows
+/// above, with nothing left for a table. `layout::compute_layout` sizes the
+/// Editor pane down to exactly this so the Response pane can reclaim every
+/// row the table would otherwise have used.
+pub const CHROME_HEIGHT: u16 = super::PANE_BORDER_HEIGHT + ADDRESS_BAR_HEIGHT + TAB_BAR_HEIGHT;
 
 /// Cycled through (one glyph per `Action::Tick`) at the start of the Send
 /// cap's label while a request is in flight.

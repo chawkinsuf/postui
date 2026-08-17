@@ -20,6 +20,13 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::{Block, BorderType, Borders, Padding};
 
+/// Rows a [`pane_block`] border always costs (1 top + 1 bottom), regardless
+/// of border style. Used wherever a caller needs a pane's total on-screen
+/// height from its *inner* content height (or vice versa) without drawing it
+/// first — e.g. `layout::compute_layout` sizing the Editor pane down to its
+/// chrome when its table is collapsed.
+pub const PANE_BORDER_HEIGHT: u16 = 2;
+
 pub struct DrawCtx<'a> {
     pub theme: &'a Theme,
     pub focused: bool,
