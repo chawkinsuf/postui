@@ -174,7 +174,7 @@ async fn drain_until_settled(
     app: &mut postui::app::App,
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<Action>,
 ) {
-    let generation = app.send_generation;
+    let generation = app.session.send_generation;
     loop {
         let action = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
@@ -230,10 +230,10 @@ async fn send_substitutes_vars_and_applies_default_headers() {
     app.editor.set_body_text(r#"{"id": "{{uid}}"}"#);
     app.editor.substitute_body = true;
     app.update(Action::ForceSend);
-    assert!(app.in_flight.is_some());
+    assert!(app.session.in_flight.is_some());
 
     drain_until_settled(&mut app, &mut rx).await;
-    match app.response.state() {
+    match app.session.response.state() {
         postui::components::response::ResponseState::Ready(data) => {
             assert_eq!(data.status, 200);
         }
@@ -275,10 +275,10 @@ async fn disabled_request_header_row_suppresses_a_default_header() {
         },
     );
     app.update(Action::ForceSend);
-    assert!(app.in_flight.is_some());
+    assert!(app.session.in_flight.is_some());
 
     drain_until_settled(&mut app, &mut rx).await;
-    match app.response.state() {
+    match app.session.response.state() {
         postui::components::response::ResponseState::Ready(data) => {
             assert_eq!(
                 data.status, 200,

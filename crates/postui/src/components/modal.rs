@@ -608,10 +608,19 @@ fn draw_dropdown(
         .map(|(label, _)| label.chars().count() as u16)
         .max()
         .unwrap_or(0);
-    let width = (max_label + 6).min(screen.width);
-    let height = (state.items.len() as u16 + 2).min(screen.height);
+    // The popup floats over undimmed live content, so it needs real
+    // breathing room: 2 columns of panel each side of the rows and a blank
+    // margin row above and below, on top of the 1-cell panel edge —
+    // without it, glyphs on the page underneath sit flush against the
+    // rows and read as part of the menu.
+    let width = (max_label + 10).min(screen.width);
+    let height = (state.items.len() as u16 + 4).min(screen.height);
 
-    let mut x = state.anchor.x;
+    // Open 2 columns left of the anchor: the horizontal padding then hangs
+    // over the anchor's own column, so content hugging it on the page (the
+    // params table's checkmark column, under the method badge) ends up
+    // covered by the panel instead of flush against the menu rows.
+    let mut x = state.anchor.x.saturating_sub(2);
     if x + width > screen.x + screen.width {
         x = (screen.x + screen.width).saturating_sub(width);
     }
@@ -635,10 +644,10 @@ fn draw_dropdown(
     paint::floating_panel(frame.buffer_mut(), area, screen, theme);
 
     let inner = Rect {
-        x: area.x + 1,
-        y: area.y + 1,
-        width: area.width.saturating_sub(2),
-        height: area.height.saturating_sub(2),
+        x: area.x + 2,
+        y: area.y + 2,
+        width: area.width.saturating_sub(4),
+        height: area.height.saturating_sub(4),
     };
 
     for (i, (label, _)) in state.items.iter().enumerate() {
@@ -1073,6 +1082,51 @@ mod tests {
             row0.y < anchor.y,
             "flipped-up popup rows must sit above the anchor row, got y={}",
             row0.y
+        );
+    }
+
+    #[test]
+    fn dropdown_pads_its_rows_away_from_the_panel_edge() {
+        // The popup floats over live content with no backdrop dim; without
+        // real padding the page's own glyphs (e.g. the params table's
+        // checkmarks) sit flush against the rows and read as part of the
+        // menu.
+        let screen = Rect::new(0, 0, 80, 24);
+        let state = DropdownState {
+            anchor: Rect::new(10, 5, 8, 1),
+            items: dropdown_items(),
+            selected: 0,
+            current: Some(0),
+        };
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| draw_dropdown(f, screen, &Theme::dark(), &mut hits, None, &state))
+            .unwrap();
+        let body = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
+        let row0 = hits.rect_of(&crate::hit::Hit::DropdownRow(0)).unwrap();
+        let last = hits
+            .rect_of(&crate::hit::Hit::DropdownRow(dropdown_items().len() - 1))
+            .unwrap();
+        assert!(
+            row0.y >= body.y + 2,
+            "a blank margin row separates the first row from the top edge"
+        );
+        assert!(
+            last.y + last.height + 2 <= body.y + body.height,
+            "and from the bottom edge"
+        );
+        assert!(
+            row0.x >= body.x + 2 && row0.x + row0.width + 2 <= body.x + body.width,
+            "rows keep two columns of panel on both sides"
+        );
+        assert_eq!(
+            body.x,
+            state.anchor.x - 2,
+            "the panel reaches left of its anchor so page content hugging \
+             the anchor's column (the params table's checkmarks) is covered \
+             rather than left flush against the menu"
         );
     }
 

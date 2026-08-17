@@ -178,16 +178,16 @@ async fn stage4_mouse_only_acceptance_flow() {
 
     // --- step 6: click SendButton; pump until the response arrives ------
     click(&mut app, Hit::SendButton);
-    let generation = app.send_generation;
-    assert!(app.in_flight.is_some(), "click dispatches Send");
+    let generation = app.session.send_generation;
+    assert!(app.session.in_flight.is_some(), "click dispatches Send");
     drain_until(&mut rx, &mut app, generation).await;
     let frame = render(&mut app);
     assert!(frame.contains("200"), "status 200 rendered: {frame}");
 
     // --- step 7: Headers tab; copy a header via the file-backed clipboard
     click(&mut app, Hit::ResponseTab(ViewMode::Headers));
-    assert_eq!(app.response.view().unwrap().mode, ViewMode::Headers);
-    let headers = match app.response.state() {
+    assert_eq!(app.session.response.view().unwrap().mode, ViewMode::Headers);
+    let headers = match app.session.response.state() {
         postui::components::response::ResponseState::Ready(data) => data.headers.clone(),
         _ => panic!("expected a Ready response"),
     };
@@ -206,11 +206,11 @@ async fn stage4_mouse_only_acceptance_flow() {
 
     // --- step 8: Pretty tab; click a JsonArrow to collapse a node --------
     click(&mut app, Hit::ResponseTab(ViewMode::Pretty));
-    assert_eq!(app.response.view().unwrap().mode, ViewMode::Pretty);
-    let before = app.response.view().unwrap().visible_len();
+    assert_eq!(app.session.response.view().unwrap().mode, ViewMode::Pretty);
+    let before = app.session.response.view().unwrap().visible_len();
     click(&mut app, Hit::JsonArrow(1)); // the "a": {...} container row
     assert!(
-        app.response.view().unwrap().visible_len() < before,
+        app.session.response.view().unwrap().visible_len() < before,
         "clicking the arrow collapsed the container"
     );
 

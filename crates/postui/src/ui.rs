@@ -40,11 +40,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         theme,
         sidebar,
         editor,
-        response,
+        session,
         toasts,
         modals,
         ..
     } = app;
+    let response = &mut session.response;
     crate::components::header_bar::draw_header(
         frame,
         layout.header,

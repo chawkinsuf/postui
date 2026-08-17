@@ -36,6 +36,9 @@ pub struct TabStrip<'a> {
     pub active: usize,
     /// The index of the tab currently under the mouse, if any.
     pub hovered: Option<usize>,
+    /// Whether the strip itself holds keyboard focus (arrow keys switch
+    /// tabs). Recolors the active tab's cap in the focus-ring color.
+    pub focused: bool,
 }
 
 impl TabStrip<'_> {
@@ -80,7 +83,15 @@ impl TabStrip<'_> {
                     true,
                 );
             }
-            half_cap_bottom(buf, Rect::new(x, cap_y, width, 1), face, on);
+            // Keyboard focus shows on the active tab's cap: the strip's
+            // one always-painted accent row, so the recolor can't be
+            // mistaken for a hover lift.
+            let cap_color = if active && self.focused {
+                theme.focus_ring
+            } else {
+                face
+            };
+            half_cap_bottom(buf, Rect::new(x, cap_y, width, 1), cap_color, on);
 
             rects.push(Rect::new(x, labels_y, width, 2));
             x += width + 1; // 1-column gap between tabs
@@ -128,6 +139,7 @@ mod tests {
                 tabs: &[("Params".to_string(), None), ("Headers".to_string(), None)],
                 active: 0,
                 hovered: None,
+                focused: false,
             }
             .paint(f.buffer_mut(), Rect::new(0, 0, 40, 2), theme.panel, &theme);
         })
@@ -154,6 +166,34 @@ mod tests {
     }
 
     #[test]
+    fn focused_tabstrip_marks_the_active_tab_with_the_focus_ring_color() {
+        let theme = Theme::dark();
+        let mut term = Terminal::new(TestBackend::new(40, 2)).unwrap();
+        let mut rects = Vec::new();
+        term.draw(|f| {
+            rects = TabStrip {
+                tabs: &[("Params".to_string(), None), ("Headers".to_string(), None)],
+                active: 0,
+                hovered: None,
+                focused: true,
+            }
+            .paint(f.buffer_mut(), Rect::new(0, 0, 40, 2), theme.panel, &theme);
+        })
+        .unwrap();
+        let cap = buf_cell(&term, rects[0].x, 1);
+        assert_eq!(
+            cap.fg, theme.focus_ring,
+            "keyboard focus recolors the active tab's cap so the strip \
+             visibly holds the arrow keys"
+        );
+        assert_eq!(
+            buf_cell(&term, rects[1].x, 1).fg,
+            theme.control,
+            "inactive tabs keep their normal cap"
+        );
+    }
+
+    #[test]
     fn tabstrip_badge_appends_colored_glyph_inside_the_tab() {
         let theme = Theme::dark();
         let mut term = Terminal::new(TestBackend::new(40, 2)).unwrap();
@@ -163,6 +203,7 @@ mod tests {
                 tabs: &[("Body".to_string(), Some(('✓', theme.success)))],
                 active: 0,
                 hovered: None,
+                focused: false,
             }
             .paint(f.buffer_mut(), Rect::new(0, 0, 40, 2), theme.panel, &theme);
         })
@@ -184,6 +225,7 @@ mod tests {
                 tabs: &[("Params".to_string(), None), ("Headers".to_string(), None)],
                 active: 0,
                 hovered: Some(1),
+                focused: false,
             }
             .paint(f.buffer_mut(), Rect::new(0, 0, 40, 2), theme.panel, &theme);
         })

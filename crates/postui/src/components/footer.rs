@@ -27,7 +27,9 @@ fn footer_chips(focus: PaneId) -> Vec<(&'static str, &'static str, Option<Action
         PaneId::Editor => vec![
             ("ctrl+r", "send", Some(Action::Send)),
             ("ctrl+s", "save", Some(Action::SaveRequest)),
-            ("alt+1/2/3", "tabs", None),
+            // Arrows are the primary route (method ← URL ↓ tabs ↓ content);
+            // alt+1/2/3 still work where the terminal passes them through.
+            ("↑↓←→", "navigate", None),
         ],
         PaneId::Response => vec![
             ("r", "raw", None),

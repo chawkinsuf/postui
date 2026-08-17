@@ -4,7 +4,7 @@ use crate::components::modal::{Modal, ModalResult, ModalStack, PromptKind};
 use crate::components::response::ResponseState;
 use crate::components::sidebar::Row;
 use crate::components::toast::{ToastKind, Toasts};
-use crate::components::{Component, response::Response, sidebar::Sidebar};
+use crate::components::{Component, sidebar::Sidebar};
 use crate::hit::{Hit, HitMap, ScrollbarSpec};
 use crate::keys::{KeyCombo, Keymap};
 use crate::layout::PaneId;
@@ -14,16 +14,6 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
 use std::time::Instant;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-
-/// Bookkeeping for a request currently in flight: when it started (for a
-/// future spinner), which generation it belongs to (so a stale result can
-/// be told apart from the current one), and the task itself (so it can be
-/// aborted on cancel or on a newer send superseding it).
-pub struct InFlight {
-    pub started: Instant,
-    pub generation: u64,
-    pub task: tokio::task::JoinHandle<()>,
-}
 
 /// An in-progress scrollbar drag: which pane's thumb is held, and how far
 /// down the thumb the pointer grabbed it, so the thumb keeps its position
@@ -39,7 +29,9 @@ pub struct App {
     pub theme: Theme,
     pub sidebar: Sidebar,
     pub editor: Editor,
-    pub response: Response,
+    /// The request session: the open request's on-screen response, the
+    /// per-request response cache, and the in-flight send.
+    pub session: crate::session::Session,
     pub toasts: Toasts,
     pub modals: ModalStack,
     /// The open project: root directory, metadata, variables, environments,
@@ -69,11 +61,6 @@ pub struct App {
     /// — so `App` stays constructible in the many plain `#[test]`s that
     /// never touch the network).
     pub client: reqwest::Client,
-    /// The currently in-flight send, if any.
-    pub in_flight: Option<InFlight>,
-    /// Bumped on every `ForceSend`; tags each spawned send so a result that
-    /// arrives after a newer send has started can be told apart and dropped.
-    pub send_generation: u64,
     /// Sender for background tasks (e.g. in-flight requests) to push
     /// `Action`s back into the main loop without blocking on it.
     pub tx: UnboundedSender<Action>,
@@ -305,6 +292,15 @@ impl App {
         match postui_core::storage::ensure_project(&app.project.root) {
             Ok(()) => {
                 app.refresh_sidebar();
+                // Restore the request that was open when this project was
+                // last used — the same restore a project *switch* already
+                // performs. Without it the sidebar draws a selection whose
+                // data never made it into the editor.
+                if let Some(slug) = app.project.local_open_request()
+                    && postui_core::storage::load_request(&app.project.root, &slug).is_ok()
+                {
+                    app.update(Action::ForceOpenRequest(slug));
+                }
             }
             Err(e) => {
                 app.toasts
@@ -326,7 +322,7 @@ impl App {
             theme: Theme::for_terminal(),
             sidebar: Sidebar::default(),
             editor: Editor::default(),
-            response: Response::default(),
+            session: crate::session::Session::default(),
             toasts,
             modals: ModalStack::default(),
             project,
@@ -337,8 +333,6 @@ impl App {
             usage: crate::usage::UsageStore::default(),
             usage_path: None,
             client: crate::http::client(),
-            in_flight: None,
-            send_generation: 0,
             tx,
             pending_terminal_action: None,
             hits: HitMap::default(),
@@ -388,9 +382,19 @@ impl App {
         self.sidebar.open_slug = self.editor.slug.clone();
         self.sidebar.open_dirty = self.editor.is_dirty();
         self.editor.inherited_headers = self.project.meta.default_headers.clone();
-        self.editor.sending = self.in_flight.is_some();
+        // The response pane always shows the open request's response;
+        // whenever an action changed which request is open (any route),
+        // swap in that request's cached response — or an empty one.
+        let swapped = self.session.sync_open(&self.editor.slug);
+        // The send button shows "sending" only when the in-flight send
+        // belongs to the request being looked at.
+        self.editor.sending = self
+            .session
+            .in_flight
+            .as_ref()
+            .is_some_and(|f| f.slug == self.editor.slug);
         self.editor.table_collapsed = self.table_collapsed;
-        changed
+        changed || swapped
     }
 
     fn apply(&mut self, action: Action) -> bool {
@@ -428,7 +432,7 @@ impl App {
                 match pane {
                     PaneId::Sidebar => self.sidebar.handle_scroll(delta),
                     PaneId::Editor => self.editor.handle_scroll(delta),
-                    PaneId::Response => self.response.handle_scroll(delta),
+                    PaneId::Response => self.session.response.handle_scroll(delta),
                 }
                 true
             }
@@ -455,11 +459,11 @@ impl App {
                 true
             }
             Action::ResponseViewMode(mode) => {
-                self.response.set_view_mode(mode);
+                self.session.response.set_view_mode(mode);
                 true
             }
             Action::JsonRowClicked { row, toggle } => {
-                self.response.click_row(row, toggle);
+                self.session.response.click_row(row, toggle);
                 true
             }
             Action::CopyToClipboard(target) => {
@@ -488,7 +492,7 @@ impl App {
                 true
             }
             Action::PromptSaveBody => {
-                let ResponseState::Ready(data) = self.response.state() else {
+                let ResponseState::Ready(data) = self.session.response.state() else {
                     self.toasts
                         .push("nothing to copy — send a request first", ToastKind::Warning);
                     return true;
@@ -517,7 +521,7 @@ impl App {
                 true
             }
             Action::SaveBodyToFile(path) => {
-                let ResponseState::Ready(data) = self.response.state() else {
+                let ResponseState::Ready(data) = self.session.response.state() else {
                     return true;
                 };
                 let expanded = crate::config::expand_tilde(&path);
@@ -610,7 +614,15 @@ impl App {
             Action::ForceOpenRequest(slug) => {
                 match postui_core::storage::load_request(&self.project.root, &slug) {
                     Ok(req) => {
-                        self.editor.load(Some(slug), req);
+                        self.editor.load(Some(slug.clone()), req);
+                        // Every open route (click, Enter, palette, restore)
+                        // drags the sidebar selection along so it can't
+                        // diverge from the open request. Queue ancestor
+                        // folders open, rebuild so the row exists, then
+                        // select it now that it's visible.
+                        self.sidebar.select_slug(&slug);
+                        self.refresh_sidebar();
+                        self.sidebar.select_slug(&slug);
                         self.apply(Action::PersistLocalState);
                     }
                     Err(e) => {
@@ -828,14 +840,7 @@ impl App {
                 for w in &warnings {
                     self.toasts.push(w.to_string(), ToastKind::Warning);
                 }
-                if let Some(prev) = self.in_flight.take() {
-                    prev.task.abort();
-                }
-                self.send_generation += 1;
-                let generation = self.send_generation;
-                self.response.set_state(ResponseState::InFlight {
-                    started: Instant::now(),
-                });
+                let generation = self.session.begin_send();
                 let tx = self.tx.clone();
                 let client = self.client.clone();
                 let task = tokio::spawn(async move {
@@ -851,44 +856,17 @@ impl App {
                         }
                     }
                 });
-                self.in_flight = Some(InFlight {
+                self.session.in_flight = Some(crate::session::InFlight {
                     started: Instant::now(),
                     generation,
+                    slug: self.editor.slug.clone(),
                     task,
                 });
                 true
             }
-            Action::CancelSend => match self.in_flight.take() {
-                Some(inflight) => {
-                    inflight.task.abort();
-                    // Bump the generation too, not just abort the task: the
-                    // task may have already raced past the abort point and
-                    // queued a ResponseArrived/RequestFailed for the old
-                    // generation. Without this, that stale result would
-                    // still pass the `generation == self.send_generation`
-                    // staleness check and silently overwrite Cancelled.
-                    self.send_generation += 1;
-                    self.response.set_state(ResponseState::Cancelled);
-                    true
-                }
-                None => false,
-            },
-            Action::ResponseArrived { generation, data } => {
-                if generation != self.send_generation {
-                    return false; // stale: a newer send has already superseded it
-                }
-                self.in_flight = None;
-                self.response.set_state(ResponseState::Ready(data));
-                true
-            }
-            Action::RequestFailed { generation, error } => {
-                if generation != self.send_generation {
-                    return false; // stale, see above
-                }
-                self.in_flight = None;
-                self.response.set_state(ResponseState::Failed(error));
-                true
-            }
+            Action::CancelSend => self.session.cancel(),
+            Action::ResponseArrived { generation, data } => self.session.arrived(generation, data),
+            Action::RequestFailed { generation, error } => self.session.failed(generation, error),
             Action::InitProjectHere => {
                 match postui_core::project::init_project(&self.project.root, None) {
                     Ok(()) => {
@@ -984,6 +962,10 @@ impl App {
             Action::ForceSwitchProject(target) => {
                 self.project
                     .persist_local_state(self.editor.slug.as_deref());
+                // Slugs are project-relative: a cached response carried
+                // across the switch could resurface under an unrelated
+                // request with the same slug.
+                self.session.reset();
                 let name = postui_core::project::load_meta(&target)
                     .map(|meta| postui_core::project::display_name(&target, &meta))
                     .unwrap_or_else(|_| {
@@ -1346,13 +1328,13 @@ impl App {
     /// and there isn't one (or the header index is out of range).
     fn resolve_copy(&self, target: &CopyTarget) -> Option<(String, String)> {
         match target {
-            CopyTarget::ResponseBody => match self.response.state() {
+            CopyTarget::ResponseBody => match self.session.response.state() {
                 ResponseState::Ready(d) => {
                     Some((d.body.clone(), "Copied response body".to_string()))
                 }
                 _ => None,
             },
-            CopyTarget::ResponseHeader(i) => match self.response.state() {
+            CopyTarget::ResponseHeader(i) => match self.session.response.state() {
                 ResponseState::Ready(d) => d
                     .headers
                     .get(*i)
@@ -1366,7 +1348,7 @@ impl App {
     /// Whether any in-flight HTTP request is still ticking (e.g. animating
     /// a spinner) and therefore needs a redraw.
     fn in_flight_ticking(&self) -> bool {
-        self.in_flight.is_some()
+        self.session.in_flight.is_some()
     }
 
     /// Central key router. Order (each step tested):
@@ -1427,7 +1409,7 @@ impl App {
         match self.focus {
             PaneId::Sidebar => self.sidebar.handle_key(ev),
             PaneId::Editor => self.editor.handle_key(ev),
-            PaneId::Response => self.response.handle_key(ev),
+            PaneId::Response => self.session.response.handle_key(ev),
         }
     }
 
@@ -1529,7 +1511,7 @@ impl App {
         match pane {
             PaneId::Sidebar => self.sidebar.scrollbar_spec(),
             PaneId::Editor => self.editor.scrollbar_spec(),
-            PaneId::Response => self.response.scrollbar_spec(),
+            PaneId::Response => self.session.response.scrollbar_spec(),
         }
     }
 
@@ -1563,7 +1545,7 @@ impl App {
                 self.sidebar.ensure_visible = false;
                 true
             }
-            PaneId::Response => self.response.set_scroll(offset),
+            PaneId::Response => self.session.response.set_scroll(offset),
             PaneId::Editor => {
                 // edtui owns the body's viewport and only exposes moving it
                 // by one wheel notch at a time (which also keeps its cursor
@@ -1650,12 +1632,12 @@ impl App {
             Hit::SidebarNewRequest => self.update(Action::PromptNewRequest),
             Hit::SidebarFolderArrow(i) => {
                 self.update(Action::FocusPane(PaneId::Sidebar));
-                self.sidebar.selected = i;
+                self.sidebar.selected = Some(i);
                 self.update(Action::ToggleSelectedFolder)
             }
             Hit::SidebarRow(i) => {
                 self.update(Action::FocusPane(PaneId::Sidebar));
-                self.sidebar.selected = i;
+                self.sidebar.selected = Some(i);
                 match self.sidebar.rows.get(i).cloned() {
                     Some(Row::Request {
                         slug, broken: None, ..
@@ -1680,7 +1662,7 @@ impl App {
                 self.update(Action::EditorTabSelect(i))
             }
             Hit::SendButton => {
-                if self.in_flight.is_some() {
+                if self.session.in_flight.is_some() {
                     self.update(Action::CancelSend)
                 } else {
                     self.update(Action::Send)
@@ -2496,7 +2478,7 @@ mod tests {
             .map(|i| format!("line {i}"))
             .collect::<Vec<_>>()
             .join("\n");
-        app.response
+        app.session.response
             .set_state(ResponseState::Ready(Box::new(crate::http::ResponseData {
                 status: 200,
                 headers: vec![],
@@ -2511,7 +2493,7 @@ mod tests {
         let spec = app
             .scrollbar_spec(PaneId::Response)
             .expect("response scrollbar spec");
-        assert_eq!(app.response.view().unwrap().scroll, 0);
+        assert_eq!(app.session.response.view().unwrap().scroll, 0);
 
         let below = track.y + track.height - 1;
         assert_eq!(
@@ -2521,7 +2503,7 @@ mod tests {
         );
         assert!(app.handle_mouse(left_down(track.x, below)));
         assert_eq!(
-            app.response.view().unwrap().scroll,
+            app.session.response.view().unwrap().scroll,
             (spec.viewport as i16).min(30) as usize,
             "a track click pages by a viewport (clamped)"
         );
@@ -2681,14 +2663,126 @@ mod tests {
             ]
         );
 
-        // "ping" (index 0) -> "auth" folder (index 1): expand it, then
-        // "auth/login" (index 2) becomes visible and Enter opens it.
+        // Nothing selected at startup: the first j lands on "ping" (index
+        // 0), the second reaches the "auth" folder (index 1); Enter expands
+        // it, then "auth/login" (index 2) becomes visible and Enter opens it.
         let keymap = Keymap::default_bindings();
+        app.handle_key(&keymap, plain('j'));
         app.handle_key(&keymap, plain('j'));
         app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         app.handle_key(&keymap, plain('j'));
         app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(app.editor.slug.as_deref(), Some("auth/login"));
+    }
+
+    #[test]
+    fn startup_restores_persisted_open_request() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let dir = tempfile::tempdir().unwrap();
+        postui_core::storage::ensure_project(dir.path()).unwrap();
+        postui_core::storage::save_request(dir.path(), "ping", &req("https://x/ping")).unwrap();
+        postui_core::project::save_local_state(
+            dir.path(),
+            &postui_core::project::LocalState {
+                environment: None,
+                open_request: Some("ping".into()),
+                expanded: vec![],
+            },
+        )
+        .unwrap();
+
+        let app = App::with_root(tx, dir.path().to_path_buf());
+        assert_eq!(
+            app.editor.slug.as_deref(),
+            Some("ping"),
+            "the persisted open request loads into the editor at startup, \
+             same as it does on a project switch"
+        );
+        assert_eq!(app.sidebar.selected_slug().as_deref(), Some("ping"));
+    }
+
+    #[test]
+    fn startup_restores_open_request_inside_a_collapsed_folder() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let dir = tempfile::tempdir().unwrap();
+        postui_core::storage::ensure_project(dir.path()).unwrap();
+        postui_core::storage::save_request(dir.path(), "auth/login", &req("https://x/l")).unwrap();
+        postui_core::project::save_local_state(
+            dir.path(),
+            &postui_core::project::LocalState {
+                environment: None,
+                open_request: Some("auth/login".into()),
+                expanded: vec![],
+            },
+        )
+        .unwrap();
+
+        let app = App::with_root(tx, dir.path().to_path_buf());
+        assert_eq!(app.editor.slug.as_deref(), Some("auth/login"));
+        assert_eq!(
+            app.sidebar.selected_slug().as_deref(),
+            Some("auth/login"),
+            "restoring expands the request's ancestor folders so the \
+             selected row is actually visible"
+        );
+    }
+
+    #[test]
+    fn startup_without_persisted_open_request_selects_nothing() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let dir = tempfile::tempdir().unwrap();
+        postui_core::storage::ensure_project(dir.path()).unwrap();
+        postui_core::storage::save_request(dir.path(), "ping", &req("https://x/ping")).unwrap();
+
+        let app = App::with_root(tx, dir.path().to_path_buf());
+        assert_eq!(app.editor.slug, None);
+        assert_eq!(
+            app.sidebar.selected, None,
+            "no row wears the selected fill when nothing is open — a \
+             highlighted row with an empty editor misstates what's loaded"
+        );
+    }
+
+    #[test]
+    fn force_open_request_selects_its_sidebar_row() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let dir = tempfile::tempdir().unwrap();
+        postui_core::storage::ensure_project(dir.path()).unwrap();
+        postui_core::storage::save_request(dir.path(), "auth/login", &req("https://x/l")).unwrap();
+        postui_core::storage::save_request(dir.path(), "ping", &req("https://x/ping")).unwrap();
+        let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+        // Opened by an out-of-band route (palette, dirty-gate confirm, …)
+        // rather than a sidebar click: the sidebar must follow, expanding
+        // ancestors as needed, so selection and open request can't diverge.
+        app.update(Action::ForceOpenRequest("auth/login".into()));
+        assert_eq!(app.sidebar.selected_slug().as_deref(), Some("auth/login"));
+    }
+
+    #[test]
+    fn opening_another_request_swaps_the_response_panel() {
+        use crate::components::response::ResponseState;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let dir = tempfile::tempdir().unwrap();
+        postui_core::storage::ensure_project(dir.path()).unwrap();
+        postui_core::storage::save_request(dir.path(), "a", &req("https://x/a")).unwrap();
+        postui_core::storage::save_request(dir.path(), "b", &req("https://x/b")).unwrap();
+        let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+        app.update(Action::ForceOpenRequest("a".into()));
+        app.session.response.set_state(ResponseState::Failed("a's result".into()));
+
+        app.update(Action::ForceOpenRequest("b".into()));
+        assert!(
+            matches!(app.session.response.state(), ResponseState::Empty),
+            "b never sent anything; showing a's response would mislabel it"
+        );
+
+        app.update(Action::ForceOpenRequest("a".into()));
+        assert!(
+            matches!(app.session.response.state(), ResponseState::Failed(e) if e == "a's result"),
+            "a's response comes back from the cache"
+        );
     }
 
     #[test]
@@ -2793,7 +2887,7 @@ mod tests {
         let r = app.hits.rect_of(&crate::hit::Hit::SidebarRow(1)).unwrap();
 
         app.handle_mouse(left_down(r.x, r.y));
-        assert_eq!(app.sidebar.selected, 1, "single click selects the folder");
+        assert_eq!(app.sidebar.selected, Some(1), "single click selects the folder");
         assert_eq!(
             app.sidebar.rows.len(),
             before,
@@ -2945,6 +3039,8 @@ mod tests {
         };
         assert!(broken.is_some());
 
+        // Nothing starts selected; the first Down puts the cursor on row 0.
+        app.handle_key(&Keymap::default_bindings(), plain('j'));
         app.handle_key(
             &Keymap::default_bindings(),
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
@@ -3160,20 +3256,20 @@ mod tests {
         app.editor.set_body_text("{oops");
         app.update(Action::Send);
         assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
-        assert!(app.in_flight.is_none());
+        assert!(app.session.in_flight.is_none());
     }
 
     #[tokio::test]
     async fn stale_generation_results_are_ignored() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
-        app.send_generation = 5;
+        app.session.send_generation = 5;
         app.update(Action::RequestFailed {
             generation: 4,
             error: "old".into(),
         });
         assert!(
-            matches!(app.response.state(), ResponseState::Empty),
+            matches!(app.session.response.state(), ResponseState::Empty),
             "stale result dropped"
         );
     }
@@ -3183,7 +3279,7 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
         app.update(Action::Send);
-        assert!(app.in_flight.is_none());
+        assert!(app.session.in_flight.is_none());
         assert!(
             !app.toasts.is_empty(),
             "empty URL must toast rather than send"
@@ -3196,7 +3292,7 @@ mod tests {
         let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
         app.update(Action::ForceSend);
         assert!(
-            app.in_flight.is_none(),
+            app.session.in_flight.is_none(),
             "no task should be spawned for an empty URL"
         );
         assert!(
@@ -3204,7 +3300,7 @@ mod tests {
             "empty URL must toast even via ForceSend directly"
         );
         assert_eq!(
-            app.send_generation, 0,
+            app.session.send_generation, 0,
             "generation must not advance without a send"
         );
     }
@@ -3215,12 +3311,12 @@ mod tests {
         let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
         app.editor.url = crate::components::line_input::LineInput::new("http://127.0.0.1:9"); // unroutable, never actually hit
         app.update(Action::ForceSend);
-        assert!(app.in_flight.is_some());
+        assert!(app.session.in_flight.is_some());
         assert!(matches!(
-            app.response.state(),
+            app.session.response.state(),
             ResponseState::InFlight { .. }
         ));
-        assert_eq!(app.send_generation, 1);
+        assert_eq!(app.session.send_generation, 1);
     }
 
     #[tokio::test]
@@ -3229,10 +3325,10 @@ mod tests {
         let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
         app.editor.url = crate::components::line_input::LineInput::new("http://127.0.0.1:9");
         app.update(Action::ForceSend);
-        assert!(app.in_flight.is_some());
+        assert!(app.session.in_flight.is_some());
         app.update(Action::CancelSend);
-        assert!(app.in_flight.is_none());
-        assert!(matches!(app.response.state(), ResponseState::Cancelled));
+        assert!(app.session.in_flight.is_none());
+        assert!(matches!(app.session.response.state(), ResponseState::Cancelled));
         // no-op when nothing is in flight
         assert!(!app.update(Action::CancelSend));
     }
@@ -3243,9 +3339,9 @@ mod tests {
         let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
         app.editor.url = crate::components::line_input::LineInput::new("http://127.0.0.1:9");
         app.update(Action::ForceSend);
-        let generation = app.send_generation;
+        let generation = app.session.send_generation;
         app.update(Action::CancelSend);
-        assert!(matches!(app.response.state(), ResponseState::Cancelled));
+        assert!(matches!(app.session.response.state(), ResponseState::Cancelled));
 
         // Simulate the in-flight task's result landing after cancellation,
         // still tagged with the generation it was spawned under.
@@ -3262,7 +3358,7 @@ mod tests {
             data: Box::new(data),
         });
         assert!(
-            matches!(app.response.state(), ResponseState::Cancelled),
+            matches!(app.session.response.state(), ResponseState::Cancelled),
             "a result racing the cancel must not overwrite it"
         );
     }
@@ -3271,7 +3367,7 @@ mod tests {
     async fn response_arrived_with_current_generation_clears_in_flight() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
-        app.send_generation = 1;
+        app.session.send_generation = 1;
         let data = crate::http::ResponseData {
             status: 200,
             headers: vec![],
@@ -3284,17 +3380,18 @@ mod tests {
             generation: 1,
             data: Box::new(data.clone()),
         });
-        assert!(app.in_flight.is_none());
-        assert!(matches!(app.response.state(), ResponseState::Ready(d) if **d == data));
+        assert!(app.session.in_flight.is_none());
+        assert!(matches!(app.session.response.state(), ResponseState::Ready(d) if **d == data));
     }
 
     #[test]
     fn esc_on_in_flight_response_pane_requests_cancel() {
         let mut app = App::new_for_test();
-        app.response.set_state(ResponseState::InFlight {
+        app.session.response.set_state(ResponseState::InFlight {
             started: std::time::Instant::now(),
         });
         let action = app
+            .session
             .response
             .handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(action, Some(Action::CancelSend));
@@ -3303,7 +3400,7 @@ mod tests {
     #[test]
     fn plain_keys_reach_the_focused_response_pane() {
         let mut app = App::new_for_test();
-        app.response
+        app.session.response
             .set_state(ResponseState::Ready(Box::new(crate::http::ResponseData {
                 status: 200,
                 headers: vec![],
@@ -3316,7 +3413,7 @@ mod tests {
         let keymap = Keymap::default_bindings();
         app.handle_key(&keymap, plain('j'));
         assert_eq!(
-            app.response.view().unwrap().cursor,
+            app.session.response.view().unwrap().cursor,
             1,
             "j moved the response cursor"
         );
@@ -3328,7 +3425,7 @@ mod tests {
             "a key the pane consumed must not fall through"
         );
         assert_eq!(
-            app.response
+            app.session.response
                 .view()
                 .unwrap()
                 .search
@@ -3344,6 +3441,7 @@ mod tests {
     fn esc_on_idle_response_pane_does_nothing() {
         let mut app = App::new_for_test();
         let action = app
+            .session
             .response
             .handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(action, None);
@@ -3746,7 +3844,7 @@ mod tests {
         let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
         app.editor.url = crate::components::line_input::LineInput::new("http://x/{{gone}}");
         app.update(Action::ForceSend);
-        assert!(app.in_flight.is_none());
+        assert!(app.session.in_flight.is_none());
         assert!(!app.toasts.is_empty());
     }
 
@@ -3828,7 +3926,7 @@ mod tests {
     }
 
     fn ready_response(app: &mut App, body: &str) {
-        app.response
+        app.session.response
             .set_state(ResponseState::Ready(Box::new(crate::http::ResponseData {
                 status: 200,
                 headers: vec![("content-type".into(), "application/json".into())],
@@ -3850,7 +3948,7 @@ mod tests {
             .rect_of(&Hit::ResponseTab(ViewMode::Headers))
             .unwrap();
         app.handle_mouse(left_down(r.x, r.y));
-        assert_eq!(app.response.view().unwrap().mode, ViewMode::Headers);
+        assert_eq!(app.session.response.view().unwrap().mode, ViewMode::Headers);
         assert_eq!(app.focus, PaneId::Response);
     }
 
@@ -3859,11 +3957,11 @@ mod tests {
         let mut app = App::new_for_test();
         ready_response(&mut app, r#"{"a": {"b": 1, "c": 2}}"#);
         render_once(&mut app);
-        let before = app.response.view().unwrap().visible_len();
+        let before = app.session.response.view().unwrap().visible_len();
         let r = app.hits.rect_of(&Hit::JsonArrow(1)).unwrap();
         app.handle_mouse(left_down(r.x, r.y));
         assert!(
-            app.response.view().unwrap().visible_len() < before,
+            app.session.response.view().unwrap().visible_len() < before,
             "clicking the arrow collapsed the container"
         );
     }
@@ -3873,11 +3971,11 @@ mod tests {
         let mut app = App::new_for_test();
         ready_response(&mut app, r#"{"a": 1, "b": 2}"#);
         render_once(&mut app);
-        let before = app.response.view().unwrap().visible_len();
+        let before = app.session.response.view().unwrap().visible_len();
         let r = app.hits.rect_of(&Hit::JsonRow(2)).unwrap();
         app.handle_mouse(left_down(r.x, r.y));
-        assert_eq!(app.response.view().unwrap().cursor, 2);
-        assert_eq!(app.response.view().unwrap().visible_len(), before);
+        assert_eq!(app.session.response.view().unwrap().cursor, 2);
+        assert_eq!(app.session.response.view().unwrap().visible_len(), before);
     }
 
     #[test]
@@ -4170,7 +4268,7 @@ mod tests {
         postui_core::storage::ensure_project(dir.path()).unwrap();
         postui_core::storage::save_request(dir.path(), "ping", &req("https://x/ping")).unwrap();
         let mut app = App::with_root(tx, dir.path().to_path_buf());
-        app.sidebar.selected = 0;
+        app.sidebar.selected = Some(0);
         app.update(Action::ConfirmDeleteRequest);
         assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
 
@@ -4351,7 +4449,7 @@ mod tests {
         let before = app.hits.rect_of(&Hit::SendButton).unwrap();
 
         app.handle_mouse(left_down(before.x, before.y));
-        assert!(app.in_flight.is_some(), "click dispatches Send");
+        assert!(app.session.in_flight.is_some(), "click dispatches Send");
         assert!(app.editor.sending, "editor.sending mirrors in_flight");
 
         let backend = TestBackend::new(120, 40);
@@ -4369,7 +4467,7 @@ mod tests {
         );
 
         app.handle_mouse(left_down(after.x, after.y));
-        assert!(matches!(app.response.state(), ResponseState::Cancelled));
+        assert!(matches!(app.session.response.state(), ResponseState::Cancelled));
     }
 
     #[test]
@@ -4412,6 +4510,9 @@ mod tests {
     fn prompt_save_body_prefills_json_extension_and_enter_writes_the_file() {
         let mut app = App::new_for_test();
         app.editor.slug = Some("pingpong".into());
+        // Sync the session to the slug before seeding the response, or the
+        // next update would stash it in the scratch request's cache slot.
+        app.update(Action::Render);
         ready_response(&mut app, r#"{"a": 1}"#);
 
         app.update(Action::PromptSaveBody);
@@ -4467,6 +4568,7 @@ mod tests {
 
         // `c` key parity in Headers view produces the same action.
         let action = app
+            .session
             .response
             .handle_key(ratatui::crossterm::event::KeyEvent::new(
                 KeyCode::Char('c'),

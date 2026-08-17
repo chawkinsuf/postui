@@ -48,11 +48,20 @@ impl KeyCombo {
                     _ => return None,
                 }
             }
-            k => {
-                let mut chars = k.chars();
+            _ => {
+                // Single printable char: use it as written (`key_part`,
+                // not the lowercased `key`), since terminals deliver a
+                // shifted letter as its uppercase char. An explicit
+                // `shift+` therefore uppercases the char and is folded
+                // into it — `alt+shift+m` and `alt+M` are the same combo.
+                let mut chars = key_part[0].chars();
                 match (chars.next(), chars.next()) {
                     (Some(c), None) => {
-                        // SHIFT on a printable char is implicit in the char itself.
+                        let c = if modifiers.contains(KeyModifiers::SHIFT) {
+                            c.to_ascii_uppercase()
+                        } else {
+                            c
+                        };
                         modifiers -= KeyModifiers::SHIFT;
                         KeyCode::Char(c)
                     }
@@ -94,6 +103,7 @@ fn named_actions() -> Vec<(&'static str, Action)> {
         ("editor_tab_next", Action::EditorTabCycle(1)),
         ("editor_tab_prev", Action::EditorTabCycle(-1)),
         ("cycle_method", Action::CycleMethod),
+        ("method_choose", Action::OpenMethodDropdown),
         ("focus_url", Action::FocusUrl),
         ("format_body", Action::FormatBody),
         ("minify_body", Action::MinifyBody),
@@ -148,6 +158,7 @@ impl Keymap {
             ("alt+right", Action::EditorTabCycle(1)),
             ("alt+left", Action::EditorTabCycle(-1)),
             ("alt+m", Action::CycleMethod),
+            ("alt+shift+m", Action::OpenMethodDropdown),
             ("alt+u", Action::FocusUrl),
             ("alt+f", Action::FormatBody),
             ("alt+g", Action::MinifyBody),
@@ -279,6 +290,7 @@ mod tests {
         assert_eq!(get("alt+right"), Some(Action::EditorTabCycle(1)));
         assert_eq!(get("alt+left"), Some(Action::EditorTabCycle(-1)));
         assert_eq!(get("alt+m"), Some(Action::CycleMethod));
+        assert_eq!(get("alt+shift+m"), Some(Action::OpenMethodDropdown));
         assert_eq!(get("alt+u"), Some(Action::FocusUrl));
         assert_eq!(get("alt+f"), Some(Action::FormatBody));
         assert_eq!(get("alt+g"), Some(Action::MinifyBody));
@@ -332,6 +344,16 @@ mod tests {
         m.apply_overrides(r#"open_palette = "ctrl+k""#).unwrap();
         assert_eq!(get(&m, "ctrl+k"), Some(Action::OpenPalette));
         assert_eq!(get(&m, "ctrl+p"), None);
+    }
+
+    #[test]
+    fn method_choose_is_rebindable() {
+        let mut m = Keymap::default_bindings();
+        m.apply_overrides(r#"method_choose = "ctrl+g""#).unwrap();
+        assert_eq!(
+            m.lookup(&KeyCombo::parse("ctrl+g").unwrap()),
+            Some(Action::OpenMethodDropdown)
+        );
     }
 
     #[test]

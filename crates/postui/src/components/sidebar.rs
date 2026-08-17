@@ -48,8 +48,11 @@ enum RowId {
 #[derive(Default)]
 pub struct Sidebar {
     pub rows: Vec<Row>,
-    /// Index into `rows`; meaningless (and never read) while `rows` is empty.
-    pub selected: usize,
+    /// Index of the cursor/selected row, or `None` when no row is selected
+    /// (a fresh sidebar with nothing open yet, or the previously selected
+    /// row disappeared in a rebuild). The selected fill is honest: it only
+    /// ever sits on a row the user actually put it on.
+    pub selected: Option<usize>,
     /// Index of the first row drawn; `draw` keeps `selected` inside the
     /// visible window whenever `ensure_visible` is set, by adjusting this.
     pub scroll: usize,
@@ -81,8 +84,9 @@ impl Sidebar {
     /// level's requests come first (sorted by slug), then its subfolders
     /// (sorted by name); a folder's children are emitted only when
     /// `expanded` contains its path. Preserves the current selection by row
-    /// identity (folder path or request slug) across the rebuild, else
-    /// clamps to the first row.
+    /// identity (folder path or request slug) across the rebuild; a
+    /// selection whose row vanished clears rather than sliding onto an
+    /// arbitrary neighbor.
     pub fn refresh(&mut self, listing: Vec<RequestListing>, expanded: &BTreeSet<String>) {
         let prev = self.selected_identity();
 
@@ -94,9 +98,8 @@ impl Sidebar {
         Self::build_rows(&sorted, "", 0, expanded, &mut rows);
         self.rows = rows;
 
-        self.selected = prev
-            .and_then(|id| self.rows.iter().position(|r| Self::row_matches(r, &id)))
-            .unwrap_or(0);
+        self.selected =
+            prev.and_then(|id| self.rows.iter().position(|r| Self::row_matches(r, &id)));
         self.ensure_visible = true;
     }
 
@@ -148,7 +151,7 @@ impl Sidebar {
     }
 
     fn selected_identity(&self) -> Option<RowId> {
-        match self.rows.get(self.selected)? {
+        match self.rows.get(self.selected?)? {
             Row::Folder { path, .. } => Some(RowId::Folder(path.clone())),
             Row::Request { slug, .. } => Some(RowId::Request(slug.clone())),
         }
@@ -184,22 +187,22 @@ impl Sidebar {
             .iter()
             .position(|r| matches!(r, Row::Request { slug: s, .. } if s == slug))
         {
-            self.selected = i;
+            self.selected = Some(i);
             self.ensure_visible = true;
         }
     }
 
-    /// The slug of the currently selected request row, or `None` if the
-    /// sidebar is empty or the selection is on a `Folder` row.
+    /// The slug of the currently selected request row, or `None` if nothing
+    /// is selected or the selection is on a `Folder` row.
     pub fn selected_slug(&self) -> Option<String> {
-        match self.rows.get(self.selected) {
+        match self.rows.get(self.selected?) {
             Some(Row::Request { slug, .. }) => Some(slug.clone()),
             _ => None,
         }
     }
 
     fn selected_row(&self) -> Option<&Row> {
-        self.rows.get(self.selected)
+        self.rows.get(self.selected?)
     }
 
     /// Reports the currently selected folder's path and the state it should
@@ -215,13 +218,17 @@ impl Sidebar {
     }
 
     /// Moves `selected` by `delta` rows over the full tree (folders
-    /// included), clamped to the first/last row.
+    /// included), clamped to the first/last row. With nothing selected the
+    /// first press lands on the top row rather than being a dead key.
     fn move_selection(&mut self, delta: i32) {
         if self.rows.is_empty() {
             return;
         }
-        let new = (self.selected as i32 + delta).clamp(0, self.rows.len() as i32 - 1) as usize;
-        self.selected = new;
+        let new = match self.selected {
+            Some(cur) => (cur as i32 + delta).clamp(0, self.rows.len() as i32 - 1) as usize,
+            None => 0,
+        };
+        self.selected = Some(new);
         self.ensure_visible = true;
     }
 
@@ -248,7 +255,7 @@ impl Sidebar {
             .iter()
             .position(|r| matches!(r, Row::Folder { path, .. } if *path == parent))
         {
-            self.selected = i;
+            self.selected = Some(i);
             self.ensure_visible = true;
         }
     }
@@ -377,11 +384,13 @@ impl Component for Sidebar {
 
         let visible_height = Self::visible_rows(list_area.height);
         if self.ensure_visible {
-            if visible_height > 0 {
-                if self.selected < self.scroll {
-                    self.scroll = self.selected;
-                } else if self.selected >= self.scroll + visible_height {
-                    self.scroll = self.selected + 1 - visible_height;
+            if visible_height > 0
+                && let Some(selected) = self.selected
+            {
+                if selected < self.scroll {
+                    self.scroll = selected;
+                } else if selected >= self.scroll + visible_height {
+                    self.scroll = selected + 1 - visible_height;
                 }
                 let max_scroll = self.rows.len().saturating_sub(visible_height);
                 self.scroll = self.scroll.min(max_scroll);
@@ -425,7 +434,7 @@ impl Component for Sidebar {
             if text_row >= area.y + area.height {
                 break;
             }
-            let is_selected = i == self.selected;
+            let is_selected = Some(i) == self.selected;
             let is_hovered = ctx.hovered == Some(&Hit::SidebarRow(i));
             let highlight = if is_selected {
                 RowHighlight::Selected
@@ -440,15 +449,17 @@ impl Component for Sidebar {
                 RowHighlight::Selected => theme.control_hover,
             };
 
-            PillRow { highlight }.paint(
-                buf,
-                text_row,
-                list_area.x,
-                list_area.width,
-                area,
-                theme.panel,
-                theme,
-            );
+            // Column 0 is the selection/focus lane: only the selected
+            // pill's accent marker may paint there. A hover pill starting
+            // at column 0 leaks its fill (and its pad caps' composition
+            // with a neighboring selected pill) under the pane focus bar,
+            // showing as half-covered fill chips beside it.
+            let (pill_x, pill_w) = if highlight == RowHighlight::Selected {
+                (list_area.x, list_area.width)
+            } else {
+                (list_area.x + 1, list_area.width.saturating_sub(1))
+            };
+            PillRow { highlight }.paint(buf, text_row, pill_x, pill_w, area, theme.panel, theme);
 
             self.paint_row(buf, row, text_row, list_area, row_fill, is_selected, theme);
 
@@ -728,8 +739,12 @@ mod tests {
     fn enter_and_arrows_toggle_folders_and_navigate_all_rows() {
         let mut s = Sidebar::default();
         s.refresh(listing(&["api/ping", "top"]), &expanded(&[]));
+        s.handle_key(key(KeyCode::Char('j'))); // first press lands on row 0 ("top")
         s.handle_key(key(KeyCode::Char('j'))); // now on the "api" folder row
-        assert!(matches!(s.rows[s.selected], Row::Folder { .. }));
+        assert!(matches!(
+            s.rows[s.selected.expect("a selected row")],
+            Row::Folder { .. }
+        ));
         assert_eq!(s.selected_slug(), None, "folder rows have no slug");
         // Enter on a folder emits ToggleSelectedFolder
         assert_eq!(
@@ -954,9 +969,11 @@ mod tests {
         let row1 = hits.rect_of(&Hit::SidebarRow(1)).unwrap();
         // The hit rect's top row is the row's upper half-pad; the text row
         // (where the fill's own bg lives, not composed with a neighbor) is
-        // one line below it.
+        // one line below it. Sampled at the pill's right end: column 0 is
+        // the selection/focus lane hover pills leave untouched, and the
+        // columns after it hold the method chip's own fill.
         let text_row = row1.y + 1;
-        let cell = terminal.backend().buffer()[(row1.x, text_row)].clone();
+        let cell = terminal.backend().buffer()[(row1.x + row1.width - 1, text_row)].clone();
         assert_eq!(
             cell.bg, theme.control,
             "hovered row uses the control fill, not inverted fg/bg"
@@ -970,8 +987,8 @@ mod tests {
     #[test]
     fn selected_row_gets_control_hover_fill_and_accent_bar() {
         let mut s = Sidebar::default();
-        // selected defaults to row 0 after refresh.
         s.refresh(listing(&["top", "next"]), &expanded(&[]));
+        s.selected = Some(0);
         let theme = Theme::dark();
         let ctx = draw_ctx(&theme, None);
         let backend = ratatui::backend::TestBackend::new(30, 12);

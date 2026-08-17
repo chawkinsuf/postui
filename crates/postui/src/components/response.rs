@@ -653,6 +653,9 @@ fn draw_header_strip(
         tabs: &tabs,
         active,
         hovered,
+        // Response tabs are switched by plain keys (r/h), not by focusing
+        // the strip, so it never claims keyboard focus of its own.
+        focused: false,
     }
     .paint(buf, tabstrip_area, t.panel, t);
     for (rect, mode) in rects.into_iter().zip(modes) {
@@ -773,7 +776,7 @@ fn human_size(bytes: usize) -> String {
 /// In `Pretty` mode, also registers a `JsonRow` hit over each rendered row
 /// (click selects) and a `JsonArrow` hit over its first two columns when the
 /// row opens a container (click toggles). In `Headers` mode, registers a
-/// `HeaderCopy` hit over the trailing ` ⧉` glyph appended to each row.
+/// `HeaderCopy` hit over the trailing ` ⧉ ` pill appended to each row.
 /// `Raw` registers nothing per-row.
 fn body_lines(
     view: &ReadyView,
@@ -864,17 +867,20 @@ fn body_lines(
                 } else {
                     Style::default().fg(t.accent)
                 };
+                // The glyph sits centered in an odd-width pill so its hover
+                // highlight surrounds it symmetrically instead of leaving a
+                // blank highlighted cell on one side.
                 let pieces = vec![
                     (name_piece, Style::default().fg(t.accent)),
                     (value_piece, text),
-                    (" ⧉".to_string(), glyph_style),
+                    (" ⧉ ".to_string(), glyph_style),
                 ];
                 push(i, i, pieces, true);
 
                 let y = area.y.saturating_add((i - start) as u16);
                 if y < area.y.saturating_add(area.height) {
                     let glyph_x = area.x.saturating_add(text_len as u16);
-                    let glyph_w = area.width.saturating_sub(text_len as u16).min(2);
+                    let glyph_w = area.width.saturating_sub(text_len as u16).min(3);
                     if glyph_w > 0 {
                         hits.register(
                             Rect::new(glyph_x, y, glyph_w, 1),
@@ -1157,6 +1163,47 @@ mod tests {
         assert_eq!(
             body_row.bg, theme.page,
             "body area starts right below the 3-row strip: {body_row:?}"
+        );
+    }
+
+    /// The hover highlight behind a header row's copy glyph must hold the
+    /// glyph in its center — an even-width pill leaves the glyph shoved to
+    /// one edge with a blank highlighted cell beside it.
+    #[test]
+    fn header_copy_glyph_is_centered_in_its_hover_pill() {
+        let theme = Theme::dark();
+        let mut r = ready("{}");
+        r.set_view_mode(ViewMode::Headers);
+        let hovered = crate::hit::Hit::HeaderCopy(0);
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: Some(&hovered),
+            dragging: false,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| r.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+
+        // Locate the header row by its text, then collect the hover pill:
+        // the contiguous run of accent-background cells on that row.
+        let row_y = (0..buf.area.height)
+            .find(|&y| {
+                let line: String = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+                line.contains("content-type:")
+            })
+            .expect("headers view shows the content-type row");
+        let pill: Vec<String> = (0..buf.area.width)
+            .filter(|&x| buf[(x, row_y)].bg == theme.accent)
+            .map(|x| buf[(x, row_y)].symbol().to_string())
+            .collect();
+        assert_eq!(
+            pill,
+            vec![" ", "⧉", " "],
+            "the hovered pill is odd-width with the glyph in its center"
         );
     }
 

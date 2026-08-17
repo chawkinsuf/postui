@@ -266,7 +266,7 @@ fn selected_request_marker_survives_the_sidebar_focus_bar() {
         broken: None,
         method: Some(Method::Get),
     });
-    app.sidebar.selected = 0;
+    app.sidebar.selected = Some(0);
     assert_eq!(app.focus, PaneId::Sidebar);
     let term = render(&mut app);
     let layout = postui::layout::compute_layout(term.backend().buffer().area, false);
@@ -290,4 +290,43 @@ fn selected_request_marker_survives_the_sidebar_focus_bar() {
         markers, 1,
         "exactly the selected row's text line shows the full-block marker"
     );
+}
+
+/// Hovering a sidebar row must not disturb the bar column: the hover
+/// pill's fill (and its pad caps composing with a neighboring selected
+/// pill) previously leaked into column 0, leaving half-covered fill chips
+/// beside the bar. Every bar cell keeps the pane's own surface behind it;
+/// only the selection marker cell differs.
+#[test]
+fn hovering_a_row_leaves_the_sidebar_focus_bar_clean() {
+    use postui::components::sidebar::Row;
+    use postui_core::model::Method;
+
+    let mut app = App::new_for_test();
+    for slug in ["go", "test"] {
+        app.sidebar.rows.push(Row::Request {
+            slug: slug.into(),
+            depth: 0,
+            broken: None,
+            method: Some(Method::Get),
+        });
+    }
+    app.sidebar.selected = Some(0);
+    app.hovered = Some(Hit::SidebarRow(1));
+    assert_eq!(app.focus, PaneId::Sidebar);
+    let term = render(&mut app);
+    let layout = postui::layout::compute_layout(term.backend().buffer().area, false);
+    let r = layout.sidebar;
+    let buf = term.backend().buffer();
+    for y in r.y..r.y + r.height {
+        let cell = &buf[(r.x, y)];
+        if cell.symbol() == "█" {
+            continue; // the selection marker fills its whole cell
+        }
+        assert_eq!(cell.symbol(), "▌", "bar glyph at row {y}");
+        assert_eq!(
+            cell.bg, app.theme.panel,
+            "bar cell at row {y} sits on the pane surface — no hover fill may leak into the bar column"
+        );
+    }
 }

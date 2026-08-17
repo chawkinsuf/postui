@@ -159,7 +159,7 @@ async fn stage3_acceptance_flow() {
     // --- send with no environment active: unresolved, nothing sent ---
     app.update(Action::Send);
     assert!(
-        app.in_flight.is_none(),
+        app.session.in_flight.is_none(),
         "unresolved variables must not send anything"
     );
     let frame = render(&mut app);
@@ -177,8 +177,8 @@ async fn stage3_acceptance_flow() {
     );
 
     app.update(Action::Send);
-    let generation = app.send_generation;
-    assert!(app.in_flight.is_some(), "qa resolves: request goes out");
+    let generation = app.session.send_generation;
+    assert!(app.session.in_flight.is_some(), "qa resolves: request goes out");
     drain_until(&mut rx, &mut app, generation).await;
     let frame = render(&mut app);
     assert!(frame.contains("200"), "qa response is Ready: {frame}");
@@ -188,7 +188,7 @@ async fn stage3_acceptance_flow() {
     app.handle_key(&keymap, alt('c'));
     assert_eq!(app.project.active_env.as_deref(), Some("prod"));
     app.update(Action::Send);
-    let generation = app.send_generation;
+    let generation = app.session.send_generation;
     drain_until(&mut rx, &mut app, generation).await;
     let frame = render(&mut app);
     assert!(frame.contains("200"), "prod response is Ready: {frame}");
