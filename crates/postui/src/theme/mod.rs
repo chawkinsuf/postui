@@ -424,6 +424,65 @@ pub fn rgb_to_indexed(r: u8, g: u8, b: u8) -> u8 {
     }
 }
 
+/// Inverse of [`rgb_to_indexed`]'s cube/gray math: maps an xterm-256 index
+/// back to its nominal srgb value. Indices 16..=231 are the 6x6x6 color
+/// cube; 232..=255 are the grayscale ramp; 0..=15 are the basic ANSI
+/// colors, approximated with their conventional terminal values since
+/// `rgb_to_indexed` never emits them itself.
+pub fn indexed_to_rgb(idx: u8) -> (u8, u8, u8) {
+    const STEPS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+    const ANSI16: [(u8, u8, u8); 16] = [
+        (0, 0, 0),
+        (128, 0, 0),
+        (0, 128, 0),
+        (128, 128, 0),
+        (0, 0, 128),
+        (128, 0, 128),
+        (0, 128, 128),
+        (192, 192, 192),
+        (128, 128, 128),
+        (255, 0, 0),
+        (0, 255, 0),
+        (255, 255, 0),
+        (0, 0, 255),
+        (255, 0, 255),
+        (0, 255, 255),
+        (255, 255, 255),
+    ];
+    if idx >= 232 {
+        let level = idx - 232;
+        let v = 8 + 10 * level;
+        (v, v, v)
+    } else if idx >= 16 {
+        let i = idx - 16;
+        let ri = i / 36;
+        let gi = (i % 36) / 6;
+        let bi = i % 6;
+        (STEPS[ri as usize], STEPS[gi as usize], STEPS[bi as usize])
+    } else {
+        ANSI16[idx as usize]
+    }
+}
+
+/// Blends a color 55% of the way toward black, for dimmed backdrops and
+/// panel shadows. `Rgb` blends directly; `Indexed` round-trips through the
+/// nominal xterm-256 rgb; other variants (e.g. `Reset`, named ANSI colors)
+/// pass through unchanged since they carry no rgb value to blend.
+pub fn dim55(c: Color) -> Color {
+    match c {
+        Color::Rgb(r, g, b) => {
+            let (r, g, b) = blend((r, g, b), (0, 0, 0), 0.55);
+            Color::Rgb(r, g, b)
+        }
+        Color::Indexed(i) => {
+            let rgb = indexed_to_rgb(i);
+            let (r, g, b) = blend(rgb, (0, 0, 0), 0.55);
+            Color::Indexed(rgb_to_indexed(r, g, b))
+        }
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -622,6 +681,23 @@ mod tests {
         assert_eq!(ThemeChoice::parse("light"), ThemeChoice::Light);
         assert_eq!(ThemeChoice::parse("terminal"), ThemeChoice::Terminal);
         assert_eq!(ThemeChoice::parse("sepia"), ThemeChoice::Terminal);
+    }
+
+    #[test]
+    fn indexed_to_rgb_inverts_rgb_to_indexed_at_cube_corners() {
+        assert_eq!(indexed_to_rgb(16), (0, 0, 0));
+        assert_eq!(indexed_to_rgb(231), (255, 255, 255));
+        assert_eq!(indexed_to_rgb(196), (255, 0, 0));
+    }
+
+    #[test]
+    fn dim55_blends_rgb_and_indexed_toward_black() {
+        assert_eq!(dim55(Color::Rgb(200, 100, 50)), Color::Rgb(90, 45, 23));
+        match dim55(Color::Indexed(196)) {
+            Color::Indexed(i) => assert_ne!(i, 196),
+            other => panic!("expected indexed, got {other:?}"),
+        }
+        assert_eq!(dim55(Color::Reset), Color::Reset);
     }
 
     #[test]
