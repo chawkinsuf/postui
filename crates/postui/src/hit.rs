@@ -53,6 +53,16 @@ pub enum Hit {
     VarPickerRow(usize),
     /// A clickable `[y] Label` chip in a Confirm modal.
     ConfirmChoice(char),
+    /// The top modal's painted Cancel button (Message has none; Prompt and
+    /// NewProject each have one). Click parity with `Esc`: the app-side
+    /// handler synthesizes an `Esc` key event into `ModalStack::handle_key`
+    /// so it goes through the exact same per-variant logic Esc already
+    /// does, whichever modal is on top.
+    ModalCancel,
+    /// The top modal's painted primary confirm button (Message's "OK",
+    /// Prompt's and NewProject's "Confirm"). Click parity with `Enter`:
+    /// same synthesize-the-key-event approach as `ModalCancel`.
+    ModalConfirm,
     /// Full-screen region under an open modal; click closes (same as Esc).
     ModalOutside,
     /// A modal's own box (borders/body), registered over `ModalOutside` so

@@ -347,12 +347,18 @@ impl ModalStack {
                     width: btn_w,
                     height: BUTTON_HEIGHT,
                 };
+                let btn_state = if hovered == Some(&crate::hit::Hit::ModalConfirm) {
+                    ControlState::Hover
+                } else {
+                    ControlState::Normal
+                };
                 Button {
                     label: btn_label,
                     kind: ButtonKind::Primary,
-                    state: ControlState::Normal,
+                    state: btn_state,
                 }
                 .paint(frame.buffer_mut(), btn_area, theme);
+                hits.register(btn_area, crate::hit::Hit::ModalConfirm);
             }
             Modal::Confirm {
                 title,
@@ -403,10 +409,15 @@ impl ModalStack {
                         width: w,
                         height: BUTTON_HEIGHT,
                     };
+                    let choice_state = if hovered == Some(&crate::hit::Hit::ConfirmChoice(*c)) {
+                        ControlState::Hover
+                    } else {
+                        ControlState::Normal
+                    };
                     Button {
                         label,
                         kind: ButtonKind::Secondary,
-                        state: ControlState::Normal,
+                        state: choice_state,
                     }
                     .paint(frame.buffer_mut(), btn_area, theme);
                     hits.register(btn_area, crate::hit::Hit::ConfirmChoice(*c));
@@ -469,28 +480,7 @@ impl ModalStack {
                 );
 
                 let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
-                let labels = ["Cancel", "Confirm"];
-                let row_w = button_row_width(&labels);
-                let mut x = area.x + area.width.saturating_sub(2 + row_w);
-                for (label, kind) in labels
-                    .iter()
-                    .zip([ButtonKind::Secondary, ButtonKind::Primary])
-                {
-                    let w = paint::button_min_width(label);
-                    let btn_area = Rect {
-                        x,
-                        y: buttons_y,
-                        width: w,
-                        height: BUTTON_HEIGHT,
-                    };
-                    Button {
-                        label,
-                        kind,
-                        state: ControlState::Normal,
-                    }
-                    .paint(frame.buffer_mut(), btn_area, theme);
-                    x += w + 2;
-                }
+                draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered);
             }
             Modal::Palette(state) => state.draw(frame, screen, theme, hits, hovered),
             Modal::Chooser(state) => state.draw(frame, screen, theme, hits, hovered),
@@ -589,28 +579,7 @@ impl ModalStack {
                 );
 
                 let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
-                let labels = ["Cancel", "Confirm"];
-                let row_w = button_row_width(&labels);
-                let mut x = area.x + area.width.saturating_sub(2 + row_w);
-                for (label, kind) in labels
-                    .iter()
-                    .zip([ButtonKind::Secondary, ButtonKind::Primary])
-                {
-                    let w = paint::button_min_width(label);
-                    let btn_area = Rect {
-                        x,
-                        y: buttons_y,
-                        width: w,
-                        height: BUTTON_HEIGHT,
-                    };
-                    Button {
-                        label,
-                        kind,
-                        state: ControlState::Normal,
-                    }
-                    .paint(frame.buffer_mut(), btn_area, theme);
-                    x += w + 2;
-                }
+                draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered);
             }
             Modal::Dropdown(state) => draw_dropdown(frame, screen, theme, hits, hovered, state),
         }
@@ -726,6 +695,54 @@ fn button_row_width(labels: &[impl AsRef<str>]) -> u16 {
         .sum();
     let gaps = labels.len().saturating_sub(1) as u16 * 2;
     widths + gaps
+}
+
+/// Paints the right-aligned Secondary "Cancel" + Primary "Confirm" button
+/// row shared by `Prompt` and `NewProject`, at `buttons_y` inside `area`.
+/// Registers `Hit::ModalCancel`/`Hit::ModalConfirm` on the two button rects
+/// — the app-side click handler dispatches both by synthesizing the same
+/// `Esc`/`Enter` key event `ModalStack::handle_key` already handles for
+/// whichever modal is on top, so this is pure painting: no new behavior.
+fn draw_cancel_confirm_row(
+    frame: &mut Frame,
+    hits: &mut crate::hit::HitMap,
+    theme: &Theme,
+    area: Rect,
+    buttons_y: u16,
+    hovered: Option<&crate::hit::Hit>,
+) {
+    let buttons = [
+        (
+            "Cancel",
+            ButtonKind::Secondary,
+            crate::hit::Hit::ModalCancel,
+        ),
+        (
+            "Confirm",
+            ButtonKind::Primary,
+            crate::hit::Hit::ModalConfirm,
+        ),
+    ];
+    let labels: Vec<&str> = buttons.iter().map(|(l, ..)| *l).collect();
+    let row_w = button_row_width(&labels);
+    let mut x = area.x + area.width.saturating_sub(2 + row_w);
+    for (label, kind, hit) in buttons {
+        let w = paint::button_min_width(label);
+        let btn_area = Rect {
+            x,
+            y: buttons_y,
+            width: w,
+            height: BUTTON_HEIGHT,
+        };
+        let state = if hovered == Some(&hit) {
+            ControlState::Hover
+        } else {
+            ControlState::Normal
+        };
+        Button { label, kind, state }.paint(frame.buffer_mut(), btn_area, theme);
+        hits.register(btn_area, hit);
+        x += w + 2;
+    }
 }
 
 /// Lowercases `s`, maps spaces to `-`, and keeps only `[a-z0-9_-]`

@@ -421,4 +421,94 @@ mod tests {
         assert!(content.contains("http://x"));
         assert!(content.contains("unset"));
     }
+
+    fn entries(names: &[&str]) -> Vec<VarEntry> {
+        names
+            .iter()
+            .map(|n| VarEntry {
+                name: n.to_string(),
+                description: None,
+                value: None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn selected_row_is_a_control_hover_pill_with_an_accent_bar() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut p = VarPickerState::new(entries(&["base", "token", "env"]), false);
+        let theme = Theme::dark();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None))
+            .unwrap();
+        let row0 = hits.rect_of(&crate::hit::Hit::VarPickerRow(0)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let bar = buffer[(row0.x, row0.y)].clone();
+        assert_eq!(
+            bar.symbol(),
+            "\u{2588}",
+            "the selected (row 0) row must carry the full-block accent bar in its first column"
+        );
+        assert_eq!(bar.fg, theme.accent);
+        let right_edge = buffer[(row0.x + row0.width - 1, row0.y)].clone();
+        assert_eq!(
+            right_edge.bg, theme.control_hover,
+            "the selected row's pill fill must span the full row width"
+        );
+    }
+
+    #[test]
+    fn hovered_row_is_a_control_pill() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut p = VarPickerState::new(entries(&["base", "token", "env"]), false);
+        let theme = Theme::dark();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| {
+                p.draw(
+                    f,
+                    f.area(),
+                    &theme,
+                    &mut hits,
+                    Some(&crate::hit::Hit::VarPickerRow(1)),
+                )
+            })
+            .unwrap();
+        let row1 = hits.rect_of(&crate::hit::Hit::VarPickerRow(1)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let right_edge = buffer[(row1.x + row1.width - 1, row1.y)].clone();
+        assert_eq!(
+            right_edge.bg, theme.control,
+            "the hovered (non-selected) row's pill fill must span the full row width"
+        );
+    }
+
+    #[test]
+    fn rows_sit_on_the_sidebar_s_two_line_pitch() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut p = VarPickerState::new(entries(&["base", "token", "env"]), false);
+        let theme = Theme::dark();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None))
+            .unwrap();
+        let row0 = hits.rect_of(&crate::hit::Hit::VarPickerRow(0)).unwrap();
+        let row1 = hits.rect_of(&crate::hit::Hit::VarPickerRow(1)).unwrap();
+        let row2 = hits.rect_of(&crate::hit::Hit::VarPickerRow(2)).unwrap();
+        assert_eq!(row1.y - row0.y, 2, "rows sit on a 2-row pitch");
+        assert_eq!(row2.y - row1.y, 2, "rows sit on a 2-row pitch");
+    }
 }

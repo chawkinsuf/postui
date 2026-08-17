@@ -10,7 +10,7 @@ use crate::keys::{KeyCombo, Keymap};
 use crate::layout::PaneId;
 use crate::project_ctx::ProjectContext;
 use crate::theme::Theme;
-use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
 use std::time::Instant;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -1692,6 +1692,27 @@ impl App {
             // so win first. Inert: neither closes the modal nor dispatches
             // anything.
             Hit::ModalBody => false,
+            // The painted Cancel/Confirm buttons deliver exactly what
+            // Esc/Enter already dispatch for whichever modal is on top: a
+            // synthesized key event routed through the same
+            // `ModalStack::handle_key` match, rather than duplicating its
+            // per-variant logic here. Message's only button ("OK") also
+            // maps to `ModalConfirm` — Enter and Esc already produce the
+            // same close-with-no-actions result for `Modal::Message`.
+            Hit::ModalCancel => {
+                let synth = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+                let Some(res) = self.modals.handle_key(synth) else {
+                    return false;
+                };
+                self.apply_modal_result(res)
+            }
+            Hit::ModalConfirm => {
+                let synth = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+                let Some(res) = self.modals.handle_key(synth) else {
+                    return false;
+                };
+                self.apply_modal_result(res)
+            }
             Hit::PaletteRow(i) => {
                 let Some(Modal::Palette(state)) = self.modals.top_mut() else {
                     return false;
@@ -3912,6 +3933,108 @@ mod tests {
             !postui_core::storage::request_exists(dir.path(), "ping"),
             "clicking the [y] chip must delete the request"
         );
+    }
+
+    #[test]
+    fn click_message_ok_button_closes_it_same_as_enter() {
+        let mut app = App::new_for_test();
+        app.update(Action::ShowAbout);
+        assert!(matches!(app.modals.top(), Some(Modal::Message { .. })));
+
+        render_once(&mut app);
+        let ok = app.hits.rect_of(&Hit::ModalConfirm).unwrap();
+        assert!(app.handle_mouse(left_down(ok.x, ok.y)));
+        assert!(
+            app.modals.is_empty(),
+            "clicking OK must close the modal, exactly like Enter/Esc"
+        );
+    }
+
+    #[test]
+    fn click_prompt_cancel_button_closes_without_creating_a_request() {
+        let mut app = App::new_for_test();
+        let keymap = Keymap::default_bindings();
+        app.update(Action::PromptNewRequest);
+        for c in "api/ping".chars() {
+            app.handle_key(&keymap, plain(c));
+        }
+        render_once(&mut app);
+        let cancel = app.hits.rect_of(&Hit::ModalCancel).unwrap();
+        assert!(app.handle_mouse(left_down(cancel.x, cancel.y)));
+        assert!(
+            app.modals.is_empty(),
+            "clicking Cancel must close the modal, exactly like Esc"
+        );
+        assert!(
+            postui_core::storage::list_requests(&app.project.root)
+                .0
+                .is_empty(),
+            "Cancel must not create anything, matching Esc's no-op"
+        );
+    }
+
+    #[test]
+    fn click_prompt_confirm_button_creates_the_request_like_enter() {
+        let mut app = App::new_for_test();
+        let keymap = Keymap::default_bindings();
+        app.update(Action::PromptNewRequest);
+        for c in "api/ping".chars() {
+            app.handle_key(&keymap, plain(c));
+        }
+        render_once(&mut app);
+        let confirm = app.hits.rect_of(&Hit::ModalConfirm).unwrap();
+        assert!(app.handle_mouse(left_down(confirm.x, confirm.y)));
+        assert!(app.modals.is_empty());
+        assert!(
+            postui_core::storage::load_request(&app.project.root, "api/ping").is_ok(),
+            "clicking Confirm must create the request, exactly like Enter"
+        );
+    }
+
+    #[test]
+    fn click_new_project_cancel_button_closes_without_creating() {
+        let mut app = App::new_for_test();
+        let root = tempfile::tempdir().unwrap();
+        app.registry.root = Some(root.path().to_path_buf());
+        let keymap = Keymap::default_bindings();
+        app.update(Action::PromptNewProject);
+        for c in "My Svc".chars() {
+            app.handle_key(&keymap, plain(c));
+        }
+        render_once(&mut app);
+        let cancel = app.hits.rect_of(&Hit::ModalCancel).unwrap();
+        assert!(app.handle_mouse(left_down(cancel.x, cancel.y)));
+        assert!(
+            app.modals.is_empty(),
+            "clicking Cancel must close the modal, exactly like Esc"
+        );
+        assert!(
+            !postui_core::project::is_project(&root.path().join("my-svc")),
+            "Cancel must not create anything, matching Esc's no-op"
+        );
+    }
+
+    #[test]
+    fn click_new_project_confirm_button_creates_the_project_like_enter() {
+        let mut app = App::new_for_test();
+        let root = tempfile::tempdir().unwrap();
+        app.registry.root = Some(root.path().to_path_buf());
+        let keymap = Keymap::default_bindings();
+        app.update(Action::PromptNewProject);
+        for c in "My Svc".chars() {
+            app.handle_key(&keymap, plain(c));
+        }
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        render_once(&mut app);
+        let confirm = app.hits.rect_of(&Hit::ModalConfirm).unwrap();
+        assert!(app.handle_mouse(left_down(confirm.x, confirm.y)));
+        let expected = root.path().join("my-svc");
+        assert!(app.modals.is_empty());
+        assert!(
+            postui_core::project::is_project(&expected),
+            "clicking Confirm must create the project, exactly like Enter"
+        );
+        assert_eq!(app.project.root, expected);
     }
 
     #[test]
