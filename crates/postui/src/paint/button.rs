@@ -89,12 +89,10 @@ impl Button<'_> {
             (ButtonKind::Primary, _) => theme.on_accent,
             (ButtonKind::Secondary, _) => theme.text,
         };
-        // Cap shading stays pinned to the kind's base light/dark pair, same
-        // as the old bevel convention: only the face swaps on hover/press.
-        let (light, dark) = match self.kind {
-            ButtonKind::Primary => (theme.accent_edge_light, theme.accent_edge_dark),
-            ButtonKind::Secondary => (theme.edge_light, theme.edge_dark),
-        };
+        // Cap shading follows the currently shown fill (light/dark edges of
+        // whatever face is painted), so the whole control visibly reacts to
+        // hover and press — not just the label row.
+        let (light, dark) = crate::paint::face_edges(fill, theme);
         let caps = match self.state {
             ControlState::Focused => (theme.focus_ring, theme.focus_ring),
             ControlState::Disabled => (fill, fill),
@@ -165,10 +163,33 @@ mod tests {
             .paint(f.buffer_mut(), Rect::new(0, 0, 20, 3), theme.page, &theme);
         })
         .unwrap();
-        // Sunken: dark cap on top, light cap on the bottom.
-        assert_eq!(buf_cell(&term, 8, 0).fg, theme.accent_edge_dark);
+        // Sunken: the pressed fill's dark edge on top, its light edge on
+        // the bottom.
+        let (p_light, p_dark) = crate::paint::face_edges(theme.accent_edge_dark, &theme);
+        assert_eq!(buf_cell(&term, 8, 0).fg, p_dark);
         assert_eq!(buf_cell(&term, 8, 1).symbol(), "S");
-        assert_eq!(buf_cell(&term, 8, 2).fg, theme.accent_edge_light);
+        assert_eq!(buf_cell(&term, 8, 2).fg, p_light);
+    }
+
+    #[test]
+    fn hovered_button_lifts_caps_along_with_the_face() {
+        let theme = Theme::dark();
+        let mut term = Terminal::new(TestBackend::new(20, 3)).unwrap();
+        term.draw(|f| {
+            Button {
+                label: "Send",
+                kind: ButtonKind::Primary,
+                state: ControlState::Hover,
+            }
+            .paint(f.buffer_mut(), Rect::new(0, 0, 20, 3), theme.page, &theme);
+        })
+        .unwrap();
+        // The whole control reacts to hover: the caps are the light/dark
+        // edges of the *hovered* fill, not the base accent's pinned pair.
+        let (h_light, h_dark) = crate::paint::face_edges(theme.accent_edge_light, &theme);
+        assert_eq!(buf_cell(&term, 8, 1).bg, theme.accent_edge_light);
+        assert_eq!(buf_cell(&term, 8, 0).fg, h_light);
+        assert_eq!(buf_cell(&term, 8, 2).fg, h_dark);
     }
 
     #[test]

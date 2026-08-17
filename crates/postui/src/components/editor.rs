@@ -555,9 +555,15 @@ impl Editor {
 
         // --- method segment --------------------------------------------
         let method_face = theme.method_color(self.method);
-        let (m_light, m_dark) = face_edges(method_face, theme);
         let method_hovered = ctx.hovered == Some(&crate::hit::Hit::MethodSelector);
-        let method_fill = if method_hovered { m_light } else { method_face };
+        let method_fill = if method_hovered {
+            face_edges(method_face, theme).0
+        } else {
+            method_face
+        };
+        // Caps follow the currently shown fill so the whole segment lifts
+        // on hover, matching `Button`'s convention.
+        let (m_light, m_dark) = face_edges(method_fill, theme);
         half_cap_top(buf, cap_top_row(method_area), m_light, theme.page);
         fill(buf, text_row(method_area), method_fill);
         half_cap_bottom(buf, cap_bottom_row(method_area), m_dark, theme.page);
@@ -655,13 +661,13 @@ impl Editor {
                 true,
             )
         };
-        // Caps stay pinned to the accent light/dark pair (matching
-        // `Button`'s convention: only the face swaps on hover/pulse), except
+        // Caps follow the currently shown fill (matching `Button`'s
+        // convention: the whole control reacts to hover/pulse), except
         // disabled, which goes flat in the control fill.
         let (s_light, s_dark) = if disabled {
             (theme.control, theme.control)
         } else {
-            (theme.accent_edge_light, theme.accent_edge_dark)
+            face_edges(send_fill, theme)
         };
         half_cap_top(buf, cap_top_row(send_area), s_light, theme.page);
         fill(buf, text_row(send_area), send_fill);
