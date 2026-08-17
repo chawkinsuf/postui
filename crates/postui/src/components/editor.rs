@@ -53,12 +53,15 @@ impl EditorTab {
     }
 }
 
-/// Which sub-region of the editor pane has keyboard focus: the URL line, or
-/// the active tab's content (params table / headers table / body editor).
+/// Which sub-region of the editor pane has keyboard focus: the URL line,
+/// the active tab's content (params table / headers table / body editor),
+/// or nothing — the blurred state Enter/Esc/click-away leave behind, in
+/// which no editor input captures keys until one is re-entered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubFocus {
     Url,
     Content,
+    None,
 }
 
 pub struct Editor {
@@ -315,6 +318,12 @@ impl Component for Editor {
                     self.sub_focus = SubFocus::Content;
                     return Some(Action::Render);
                 }
+                // Enter commits and Esc abandons; both blur the input, so a
+                // caret on screen always means keys land in the URL line.
+                if matches!(ev.code, KeyCode::Enter | KeyCode::Esc) {
+                    self.sub_focus = SubFocus::None;
+                    return Some(Action::Render);
+                }
                 None
             }
             // On the Params/Headers tabs the table editor gets first crack at
@@ -355,22 +364,42 @@ impl Component for Editor {
                         self.sub_focus = SubFocus::Url;
                         return Some(Action::Render);
                     }
+                    // An Esc the table didn't consume (nothing selected, no
+                    // edit in progress) blurs the pane's inputs entirely.
+                    if ev.code == KeyCode::Esc {
+                        self.sub_focus = SubFocus::None;
+                        return Some(Action::Render);
+                    }
                     return None;
                 }
-                // Esc always leaves the buffer; Up only does so from the top
-                // row, so it can still navigate a multi-line body. CTRL/ALT
+                // Esc blurs the buffer (Enter must stay a newline in a
+                // multi-line editor); Up leaves for the URL line only from
+                // the top row, so it can still navigate the body. CTRL/ALT
                 // combos the keymap binds to an app action are shadowed here
                 // (the router hands those to the global keymap first); any
                 // unbound modified combo falls through to this component and
                 // reaches edtui's own emacs-style bindings (ctrl+a/e/k etc.)
                 // deliberately, so those keep working for body editing.
-                if ev.code == KeyCode::Esc || (ev.code == KeyCode::Up && self.body.cursor.row == 0)
-                {
+                if ev.code == KeyCode::Esc {
+                    self.sub_focus = SubFocus::None;
+                    return Some(Action::Render);
+                }
+                if ev.code == KeyCode::Up && self.body.cursor.row == 0 {
                     self.sub_focus = SubFocus::Url;
                     return Some(Action::Render);
                 }
                 self.body_handler.on_key_event(ev, &mut self.body);
                 Some(Action::Render)
+            }
+            // Blurred: no input captures keys. Down re-enters at the URL
+            // line, mirroring the Url -> Down -> Content chain, so keyboard
+            // users aren't stranded (alt+u and clicking work too).
+            SubFocus::None => {
+                if ev.code == KeyCode::Down {
+                    self.sub_focus = SubFocus::Url;
+                    return Some(Action::Render);
+                }
+                None
             }
         }
     }
@@ -513,7 +542,10 @@ impl Editor {
         use crate::paint::{face_edges, fill, half_cap_bottom, half_cap_top, text};
 
         let theme = ctx.theme;
-        let url_focused = self.sub_focus == SubFocus::Url;
+        // Focus styling must track where keys actually go: the URL only
+        // counts as focused while its pane is, or the ring/caret would keep
+        // painting after Tab moves the keyboard elsewhere.
+        let url_focused = ctx.focused && self.sub_focus == SubFocus::Url;
 
         let margins = Layout::default()
             .direction(Direction::Vertical)
@@ -654,12 +686,7 @@ impl Editor {
                 true,
             )
         } else {
-            (
-                "Send".to_string(),
-                theme.accent,
-                theme.on_accent,
-                true,
-            )
+            ("Send".to_string(), theme.accent, theme.on_accent, true)
         };
         // Caps follow the currently shown fill (matching `Button`'s
         // convention: the whole control reacts to hover/pulse), except
@@ -674,15 +701,7 @@ impl Editor {
         half_cap_bottom(buf, cap_bottom_row(send_area), s_dark, theme.page);
         let send_label_w = label.chars().count() as u16;
         let send_start_x = send_area.x + send_area.width.saturating_sub(send_label_w) / 2;
-        text(
-            buf,
-            send_start_x,
-            text_y,
-            &label,
-            label_fg,
-            send_fill,
-            bold,
-        );
+        text(buf, send_start_x, text_y, &label, label_fg, send_fill, bold);
         if !disabled {
             hits.register(send_area, crate::hit::Hit::SendButton);
         }
@@ -753,10 +772,7 @@ impl Editor {
             .find(|(i, _)| ctx.hovered == Some(&crate::hit::Hit::EditorTab(*i)))
             .map(|(i, _)| i);
 
-        let strip_area = Rect {
-            height: 2,
-            ..area
-        };
+        let strip_area = Rect { height: 2, ..area };
         let rects = {
             let buf = frame.buffer_mut();
             crate::paint::TabStrip {
@@ -850,7 +866,7 @@ impl Editor {
         hits: &mut crate::hit::HitMap,
     ) {
         let theme = ctx.theme;
-        let focused = self.sub_focus == SubFocus::Content;
+        let focused = ctx.focused && self.sub_focus == SubFocus::Content;
         self.last_body_area = None;
         match self.active_tab {
             EditorTab::Params => {
@@ -1189,7 +1205,7 @@ mod tests {
     }
 
     #[test]
-    fn esc_in_body_returns_focus_to_url_without_editing() {
+    fn esc_in_body_blurs_the_editor_without_editing() {
         let mut e = Editor {
             active_tab: EditorTab::Body,
             sub_focus: SubFocus::Content,
@@ -1197,7 +1213,7 @@ mod tests {
         };
         e.set_body_text("{}");
         assert_eq!(e.handle_key(key(KeyCode::Esc)), Some(Action::Render));
-        assert_eq!(e.sub_focus, SubFocus::Url);
+        assert_eq!(e.sub_focus, SubFocus::None);
         assert_eq!(e.body_text(), "{}");
     }
 
@@ -1361,8 +1377,7 @@ x-a = "1"
         let buf = terminal.backend().buffer();
         let cell = buf.cell((toggle.x - 2, toggle.y)).unwrap();
         assert_eq!(
-            cell.bg,
-            theme.page,
+            cell.bg, theme.page,
             "no count chip at the strip's right edge: {cell:?}"
         );
     }
@@ -1479,7 +1494,11 @@ url = "https://api.example.com/users""#,
         assert_eq!(top_cap.symbol(), "▄", "method top cap: {top_cap:?}");
         assert_eq!(top_cap.fg, m_light);
         let bottom_cap = buf.cell((method_area.x, text_y + 1)).unwrap();
-        assert_eq!(bottom_cap.symbol(), "▀", "method bottom cap: {bottom_cap:?}");
+        assert_eq!(
+            bottom_cap.symbol(),
+            "▀",
+            "method bottom cap: {bottom_cap:?}"
+        );
         assert_eq!(bottom_cap.fg, m_dark);
         let url_cap = buf
             .cell((method_area.x + method_area.width + 2, text_y + 1))

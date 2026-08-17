@@ -63,10 +63,42 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     sidebar.draw(frame, layout.sidebar, &ctx(PaneId::Sidebar), &mut hits);
     editor.draw(frame, layout.editor, &ctx(PaneId::Editor), &mut hits);
     response.draw(frame, layout.response, &ctx(PaneId::Response), &mut hits);
+    let focused_rect = match focus {
+        PaneId::Sidebar => layout.sidebar,
+        PaneId::Editor => layout.editor,
+        PaneId::Response => layout.response,
+    };
+    focus_bar(frame.buffer_mut(), focused_rect, theme);
     crate::components::footer::draw_footer(frame, layout.footer, theme, focus, &mut hits, hovered);
     toasts.draw(frame, frame.area(), theme);
     modals.draw(frame, frame.area(), theme, &mut hits, hovered);
     app.hits = hits;
+}
+
+/// Marks the focused pane with a half-block accent bar down its left
+/// padding column, so Tab's current target is always visible at a glance.
+/// Painted after the pane's own draw, and glyph/fg only — each cell keeps
+/// the background under it (the sidebar's row highlights run to column 0).
+/// The sidebar's selected-row marker (`PillRow`'s accent pill) lives in
+/// this same column and is the stronger mark, so the bar keeps the pill's
+/// full-block `█` text row. Only that row: the pill's `▄`/`▀` cap glyphs
+/// are half-height and cannot coexist with a vertical bar in one cell —
+/// letting them through reads as a gap in the bar, so they are flattened
+/// into it and the marker shows as a single full-block cell.
+fn focus_bar(
+    buf: &mut ratatui::buffer::Buffer,
+    pane: ratatui::layout::Rect,
+    theme: &crate::theme::Theme,
+) {
+    for y in pane.y..pane.y + pane.height {
+        if let Some(cell) = buf.cell_mut((pane.x, y)) {
+            if cell.symbol() == "█" && cell.fg == theme.accent {
+                continue;
+            }
+            cell.set_symbol("▌");
+            cell.set_fg(theme.focus_ring);
+        }
+    }
 }
 
 #[cfg(test)]

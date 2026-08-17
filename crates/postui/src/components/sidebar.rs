@@ -334,10 +334,14 @@ impl Component for Sidebar {
         let button_top = (area.y + 1).min(area.y + area.height);
         let button_height = BUTTON_HEIGHT.min(area.y + area.height - button_top);
         if button_height == BUTTON_HEIGHT {
+            // Inset one column each side, like the other panes' content:
+            // the left padding column belongs to the pane focus bar, and an
+            // accent-filled button drawn into it would swallow the bar
+            // (accent-on-accent) and read as bleeding flush into the edge.
             let button_area = Rect {
-                x: area.x,
+                x: area.x + 1,
                 y: button_top,
-                width: area.width,
+                width: area.width.saturating_sub(2),
                 height: button_height,
             };
             let state = if ctx.hovered == Some(&Hit::SidebarNewRequest) {

@@ -1625,6 +1625,18 @@ impl App {
         if !keeps_table_selection && self.editor.table.editing.is_none() {
             self.editor.table.selected = None;
         }
+        // Likewise, clicking away deselects whichever editor input is
+        // active (URL line / table / body). Hits that themselves place the
+        // sub-focus (UrlBar, BodyEditor, the table hits) re-set it right
+        // after; modal and scrollbar hits are excluded above so an open
+        // popup or a scroll never blurs the input under it. Suppressed
+        // mid-edit for the same reason as the selection: an in-progress
+        // cell edit owns the focus.
+        let keeps_editor_input =
+            keeps_table_selection || matches!(hit, Hit::UrlBar | Hit::BodyEditor);
+        if !keeps_editor_input && self.editor.table.editing.is_none() {
+            self.editor.sub_focus = SubFocus::None;
+        }
         match hit {
             Hit::Pane(p) => self.update(Action::FocusPane(p)),
             Hit::BodyEditor => {
@@ -2343,7 +2355,11 @@ mod tests {
         let text_area = app.editor.last_url_text_area.unwrap();
         assert!(app.handle_mouse(left_down(text_area.x - 1, text_area.y)));
         assert_eq!(app.editor.sub_focus, SubFocus::Url);
-        assert_eq!(app.editor.url.cursor(), 0, "clicks left of the text go to char 0");
+        assert_eq!(
+            app.editor.url.cursor(),
+            0,
+            "clicks left of the text go to char 0"
+        );
     }
 
     /// Button-held motion, the event kind real terminals send for a drag
