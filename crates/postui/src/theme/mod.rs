@@ -204,13 +204,9 @@ impl Theme {
                             bg,
                             fg: answer.fg.unwrap_or_else(|| derive_fg_from_bg(bg)),
                             accent: answer.ansi[4].or(answer.ansi[12]).unwrap_or(builtin.accent),
-                            success: answer.ansi[2]
-                                .or(answer.ansi[10])
-                                .unwrap_or(builtin.success),
-                            warning: answer.ansi[3]
-                                .or(answer.ansi[11])
-                                .unwrap_or(builtin.warning),
-                            error: answer.ansi[1].or(answer.ansi[9]).unwrap_or(builtin.error),
+                            success: answer.ansi[2].unwrap_or(builtin.success),
+                            warning: answer.ansi[3].unwrap_or(builtin.warning),
+                            error: answer.ansi[1].unwrap_or(builtin.error),
                         }
                     }
                     None => Seeds::dark(),

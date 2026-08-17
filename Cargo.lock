@@ -1865,6 +1865,7 @@ dependencies = [
  "postui-core",
  "ratatui",
  "reqwest",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",

@@ -7,6 +7,8 @@
 //! deadline) lives in [`OscQuery`]; the pure, TTY-free byte parsing lives in
 //! [`parse_osc_response`] so it can be unit tested without a terminal.
 
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
+use rustix::fd::AsFd;
 use std::io::{Read, Write};
 use std::time::{Duration, Instant};
 
@@ -60,54 +62,70 @@ fn query_via_stdio() -> std::io::Result<QueriedColors> {
     stdout.write_all(query.as_bytes())?;
     stdout.flush()?;
 
-    let buf = read_until_da1_or_deadline()?;
+    let mut stdin = std::io::stdin();
+    let deadline = Instant::now() + QUERY_DEADLINE;
+    let buf = read_until_da1_or_deadline(&mut stdin, deadline);
     Ok(parse_osc_response(&buf))
 }
 
-/// Reads raw bytes from stdin until a DA1 reply (`\x1b[?...c`) is seen or
-/// `QUERY_DEADLINE` elapses, whichever comes first. Raw mode must already
-/// be active (enforced by the caller), or these bytes would echo to the
-/// screen instead of coming back through stdin.
-fn read_until_da1_or_deadline() -> std::io::Result<Vec<u8>> {
-    let mut stdin = std::io::stdin();
-    let deadline = Instant::now() + QUERY_DEADLINE;
+/// Reads raw bytes from `source` until a DA1 reply (`\x1b[?...c`) is seen or
+/// `deadline` elapses, whichever comes first. Raw mode must already be
+/// active at the real call site (enforced by the caller in `main.rs`), or
+/// these bytes would echo to the screen instead of coming back through
+/// stdin.
+///
+/// Generic over the byte source (rather than hardcoding `std::io::Stdin`)
+/// so it can be driven end-to-end in tests against a real OS pipe, with no
+/// TTY involved — a plain `#[test]` can write canned reply bytes into the
+/// write end and assert this function (and the `poll`/`read` syscalls it
+/// actually issues) recovers them.
+///
+/// Deliberately uses raw `poll(2)`/`read(2)` via `rustix` rather than
+/// `ratatui::crossterm::event::poll`/`read`: on unix, crossterm's `poll`
+/// itself performs a `read(2)` on the fd into its own internal event
+/// parser (to decide whether a full event is available), which would
+/// silently consume the OSC/DA1 reply bytes before this function ever saw
+/// them. Calling this before `EventStream::new()` exists (as `App::new`
+/// does) also means crossterm's internal reader hasn't been constructed
+/// yet, so there is no possibility of two readers racing over the same fd.
+fn read_until_da1_or_deadline<S: Read + AsFd>(source: &mut S, deadline: Instant) -> Vec<u8> {
     let mut buf = Vec::new();
     let mut byte = [0u8; 1];
 
-    while Instant::now() < deadline {
-        match poll_read(&mut stdin, &mut byte) {
-            Some(true) => {
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            break;
+        }
+        // Poll in short slices (capped at the remaining deadline) rather
+        // than one long wait, so a deadline shorter than the slice still
+        // gets honored promptly.
+        let wait = (deadline - now).min(Duration::from_millis(5));
+        let Ok(timeout) = Timespec::try_from(wait) else {
+            break;
+        };
+
+        let ready = {
+            let mut fds = [PollFd::new(source, PollFlags::IN)];
+            matches!(poll(&mut fds, Some(&timeout)), Ok(n) if n > 0)
+                && fds[0].revents().contains(PollFlags::IN)
+        };
+        if !ready {
+            continue; // nothing ready yet; keep polling until the deadline
+        }
+
+        match source.read(&mut byte) {
+            Ok(0) => break, // EOF
+            Ok(_) => {
                 buf.push(byte[0]);
                 if ends_with_da1(&buf) {
                     break;
                 }
             }
-            Some(false) => break, // EOF
-            None => continue,     // nothing ready yet; keep polling until the deadline
+            Err(_) => break,
         }
     }
-    Ok(buf)
-}
-
-/// Non-blocking-ish single byte read: `Some(true)` if a byte was read,
-/// `Some(false)` on EOF, `None` if nothing is available right now. Uses
-/// `crossterm`'s event poll on stdin's readiness rather than raw termios
-/// flags, keeping this file free of platform-specific code.
-fn poll_read(stdin: &mut std::io::Stdin, byte: &mut [u8; 1]) -> Option<bool> {
-    use ratatui::crossterm::event::poll;
-    // We use crossterm's `poll` purely to learn whether stdin has bytes
-    // ready, without letting it parse those bytes as key/mouse events (its
-    // `read()` would swallow the escape bytes we need intact). The actual
-    // read is a plain `std::io::Read` byte-at-a-time pull.
-    if matches!(poll(Duration::from_millis(5)), Ok(true)) {
-        match stdin.read(byte) {
-            Ok(0) => Some(false),
-            Ok(_) => Some(true),
-            Err(_) => Some(false),
-        }
-    } else {
-        None
-    }
+    buf
 }
 
 fn ends_with_da1(buf: &[u8]) -> bool {
@@ -146,8 +164,11 @@ pub fn parse_osc_response(buf: &[u8]) -> QueriedColors {
         let Some(rest) = reply.strip_prefix(']') else {
             continue;
         };
-        let rest = rest.trim_end_matches(['\x07', '\x1b']); // BEL or ST terminator
-        let rest = rest.trim_end_matches('\\'); // ST is "\x1b\\"; the ESC was the split delimiter
+        // Terminated by BEL ("\x07") or ST ("\x1b\\"); either way the ESC
+        // that starts the terminator was already consumed as our split
+        // delimiter above, so only a trailing BEL (never a trailing `\`)
+        // can still be attached to `rest` here.
+        let rest = rest.trim_end_matches('\x07');
 
         if let Some(rgb_str) = rest.strip_prefix("10;rgb:") {
             out.fg = parse_rgb(rgb_str);
@@ -232,5 +253,75 @@ mod tests {
     fn st_terminated_reply_parses_same_as_bel() {
         let q = parse_osc_response(b"\x1b]11;rgb:1e1e/2a2a/3939\x1b\\");
         assert_eq!(q.bg, Some((0x1e, 0x2a, 0x39)));
+    }
+
+    #[test]
+    fn out_of_range_osc4_slot_is_ignored() {
+        let q = parse_osc_response(b"\x1b]4;99;rgb:ffff/ffff/ffff\x07");
+        assert!(q.ansi.iter().all(Option::is_none));
+    }
+
+    // --- read-loop tests: exercise `read_until_da1_or_deadline` end-to-end
+    // against a real OS pipe (real `poll(2)`/`read(2)` syscalls), so the
+    // layer that previously silently lost every reply to crossterm's
+    // internal reader is actually covered, not just `parse_osc_response`.
+
+    #[test]
+    fn read_loop_recovers_a_reply_written_to_the_pipe() {
+        let (mut reader, mut writer) = std::io::pipe().unwrap();
+        let reply = b"\x1b]11;rgb:1e1e/2a2a/3939\x07\x1b[?6c";
+        writer.write_all(reply).unwrap();
+        // The DA1 fence is already in `reply`, so the loop should break on
+        // its own well before this deadline — this just bounds the test.
+        let deadline = Instant::now() + Duration::from_secs(2);
+
+        let buf = read_until_da1_or_deadline(&mut reader, deadline);
+
+        assert_eq!(buf, reply);
+        let q = parse_osc_response(&buf);
+        assert_eq!(q.bg, Some((0x1e, 0x2a, 0x39)));
+    }
+
+    #[test]
+    fn read_loop_recovers_a_reply_written_after_a_delay() {
+        // Confirms the loop actually waits/polls for readiness rather than
+        // only succeeding when bytes are already buffered before the first
+        // poll — a delayed writer exercises the same `poll` return-to-loop
+        // path a slow real terminal would.
+        let (mut reader, mut writer) = std::io::pipe().unwrap();
+        let reply = b"\x1b]4;4;rgb:0101/7878/d4d4\x07\x1b[?6c".to_vec();
+        let reply_for_thread = reply.clone();
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            writer.write_all(&reply_for_thread).unwrap();
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+
+        let buf = read_until_da1_or_deadline(&mut reader, deadline);
+        handle.join().unwrap();
+
+        assert_eq!(buf, reply);
+        let q = parse_osc_response(&buf);
+        assert_eq!(q.ansi[4], Some((0x01, 0x78, 0xd4)));
+    }
+
+    #[test]
+    fn read_loop_returns_whatever_arrived_when_the_deadline_expires_first() {
+        // A silent source (nothing written before the deadline) must not
+        // hang — the loop returns (empty, here) once `deadline` passes.
+        let (mut reader, _writer) = std::io::pipe().unwrap();
+        let deadline = Instant::now() + Duration::from_millis(50);
+
+        let started = Instant::now();
+        let buf = read_until_da1_or_deadline(&mut reader, deadline);
+        let elapsed = started.elapsed();
+
+        assert!(buf.is_empty());
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "deadline should be honored promptly, took {elapsed:?}"
+        );
+        let q = parse_osc_response(&buf);
+        assert!(q.bg.is_none() && q.fg.is_none() && q.ansi.iter().all(Option::is_none));
     }
 }
