@@ -33,7 +33,7 @@ pub fn compute_layout(area: Rect) -> AppLayout {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // header
+            Constraint::Length(3), // header (painted app bar)
             Constraint::Min(0),    // body
             Constraint::Length(1), // footer hints
         ])
@@ -80,7 +80,7 @@ mod tests {
     fn layout_partitions_area() {
         let area = Rect::new(0, 0, 120, 40);
         let l = compute_layout(area);
-        assert_eq!(l.header.height, 1);
+        assert_eq!(l.header.height, 3);
         assert_eq!(l.footer.height, 1);
         assert_eq!(l.header.y, 0);
         assert_eq!(l.footer.y, 39);
@@ -89,9 +89,9 @@ mod tests {
         assert_eq!(l.editor.x, l.response.x);
         assert!(l.editor.y < l.response.y);
         // body fills between header and footer
-        assert_eq!(l.sidebar.y, 1);
-        assert_eq!(l.sidebar.height, 38);
-        assert_eq!(l.editor.height + l.response.height, 38);
+        assert_eq!(l.sidebar.y, 3);
+        assert_eq!(l.sidebar.height, 36);
+        assert_eq!(l.editor.height + l.response.height, 36);
         assert_eq!(l.sidebar.width + l.editor.width, 120);
     }
 }
