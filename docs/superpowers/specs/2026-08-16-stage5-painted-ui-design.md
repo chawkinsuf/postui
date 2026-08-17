@@ -156,7 +156,10 @@ crossed with Postman. The method segment is filled with the method's
 color at full strength (the only full-saturation color outside Send);
 the URL field is the widest segment; Send is the accent-filled right
 cap. While a request is in flight, Send pulses subtly and its label
-becomes spinner + "Sending". Everything else on screen stays quiet so
+becomes spinner + "Sending"; it STAYS clickable, and clicking it
+cancels the in-flight request (mouse-first: cancel must never be
+keyboard-only). In-flight is a distinct state from disabled — only
+disabled controls unregister from hit-testing. Everything else on screen stays quiet so
 this is the one memorable object.
 
 ## Interaction states
