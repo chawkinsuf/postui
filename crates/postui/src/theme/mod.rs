@@ -691,6 +691,39 @@ mod tests {
     }
 
     #[test]
+    fn indexed_to_rgb_inverts_rgb_to_indexed_on_the_gray_ramp() {
+        // Explicit boundary/mid-range/top checks on the 232..=255 gray ramp
+        // (232 = darkest step, 255 = lightest), in addition to the full-range
+        // loop below.
+        assert_eq!(rgb_to_indexed(8, 8, 8), 232);
+        assert_eq!(indexed_to_rgb(232), (8, 8, 8));
+        assert_eq!(rgb_to_indexed(128, 128, 128), 244);
+        assert_eq!(indexed_to_rgb(244), (128, 128, 128));
+        assert_eq!(rgb_to_indexed(238, 238, 238), 255);
+        assert_eq!(indexed_to_rgb(255), (238, 238, 238));
+    }
+
+    #[test]
+    fn rgb_to_indexed_round_trips_through_indexed_to_rgb_for_every_emitted_index() {
+        // `rgb_to_indexed` only ever emits 16..=255 (cube + gray ramp; never
+        // the basic 0..=15 ANSI slots), so that's the full contract
+        // `indexed_to_rgb` must invert. Verified once by hand that this
+        // holds for the entire range before committing to a single-loop
+        // assertion rather than a handful of spot checks.
+        for i in 16u16..=255 {
+            let i = i as u8;
+            let (r, g, b) = indexed_to_rgb(i);
+            assert_eq!(
+                rgb_to_indexed(r, g, b),
+                i,
+                "index {i} -> rgb {:?} -> index {}, expected round trip",
+                (r, g, b),
+                rgb_to_indexed(r, g, b)
+            );
+        }
+    }
+
+    #[test]
     fn dim55_blends_rgb_and_indexed_toward_black() {
         assert_eq!(dim55(Color::Rgb(200, 100, 50)), Color::Rgb(90, 45, 23));
         match dim55(Color::Indexed(196)) {
