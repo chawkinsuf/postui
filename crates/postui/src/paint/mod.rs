@@ -5,6 +5,8 @@
 
 use ratatui::{buffer::Buffer, layout::Rect, style::Color};
 
+use crate::theme::Theme;
+
 pub mod button;
 pub mod chip;
 pub mod field;
@@ -72,4 +74,36 @@ pub fn text(buf: &mut Buffer, x: u16, y: u16, s: &str, fg: Color, bg: Color, bol
         style = style.add_modifier(Modifier::BOLD);
     }
     buf.set_string(x, y, s, style);
+}
+
+/// The (light, dark) bevel edge colors for a control whose face is an
+/// arbitrary colored fill (e.g. a method badge painted in `method_color`),
+/// rather than one of the theme's own `control`/`accent` surfaces (which
+/// already carry precomputed edge tokens). Edges are `face` lifted `±0.12`
+/// in Oklab lightness, straddling the face's own lightness the same way
+/// `accent_edge_light`/`accent_edge_dark` straddle `accent`.
+pub fn face_edges(face: Color, _theme: &Theme) -> (Color, Color) {
+    (
+        crate::theme::lift_color(face, 0.12),
+        crate::theme::lift_color(face, -0.12),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::{oklab_l, rgb_of};
+
+    #[test]
+    fn face_edges_straddle_the_faces_lightness() {
+        let theme = Theme::dark();
+        let face = theme.method_color(postui_core::model::Method::Post); // accent (mid lightness)
+        let (light, dark) = face_edges(face, &theme);
+        let l = |c: Color| oklab_l(rgb_of(c));
+        assert!(
+            l(light) > l(face),
+            "light edge must be lighter than the face"
+        );
+        assert!(l(dark) < l(face), "dark edge must be darker than the face");
+    }
 }

@@ -398,7 +398,10 @@ impl App {
                 self.should_quit = true;
                 true
             }
-            Action::Tick => self.toasts.on_tick() || self.in_flight_ticking(),
+            Action::Tick => {
+                self.editor.on_tick();
+                self.toasts.on_tick() || self.in_flight_ticking()
+            }
             // No state change; forces a redraw. Background tasks use this
             // to wake the main loop when they've mutated state directly
             // (rather than through an `Action`) and just need a repaint.
@@ -3820,8 +3823,14 @@ mod tests {
         assert_eq!(c.selected(), 20, "wheel must not move the selection");
     }
 
+    /// Stage-5 update: the painted Send cap now shows a spinner + "Sending"
+    /// while in flight and unregisters its `Hit` for that duration (the
+    /// fused-bar spec's disabled/sending convention), so there is no longer
+    /// a second click that cancels. Keyboard cancel (`Action::CancelSend`,
+    /// wired to Esc — see `esc_on_in_flight_response_pane_requests_cancel`)
+    /// is still the way to cancel a send in progress.
     #[tokio::test]
-    async fn click_send_button_sends_then_click_again_cancels() {
+    async fn click_send_button_sends_then_shows_spinner_and_unregisters_the_hit() {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
@@ -3833,19 +3842,22 @@ mod tests {
 
         app.handle_mouse(left_down(before.x, before.y));
         assert!(app.in_flight.is_some(), "click dispatches Send");
+        assert!(app.editor.sending, "editor.sending mirrors in_flight");
 
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
-        let after = app.hits.rect_of(&Hit::SendButton).unwrap();
-        assert_eq!(before, after, "Send/Cancel button occupies the same rect");
+        assert!(
+            app.hits.rect_of(&Hit::SendButton).is_none(),
+            "Send hit must be unregistered while sending"
+        );
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(
-            content.contains("Cancel"),
-            "button now reads Cancel: {content}"
+            content.contains("Sending"),
+            "cap now reads Sending: {content}"
         );
 
-        app.handle_mouse(left_down(after.x, after.y));
+        app.update(Action::CancelSend);
         assert!(matches!(app.response.state(), ResponseState::Cancelled));
     }
 

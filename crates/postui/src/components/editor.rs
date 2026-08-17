@@ -91,12 +91,19 @@ pub struct Editor {
     /// events are hit-tested against this before being forwarded to edtui.
     pub last_body_area: Option<Rect>,
     /// Mirrors `App::in_flight.is_some()`, synced by `App::update` on every
-    /// action alongside `open_slug`. Draw-only: swaps the URL row's button
-    /// from `[ Send ]` to `[ Cancel ]` at the same width, no other effect.
+    /// action alongside `open_slug`. Draw-only: swaps the address bar's Send
+    /// cap to its spinner + "Sending" face and unregisters its `Hit`, no
+    /// other effect (cancelling a send is a keyboard-only affordance —
+    /// `Action::CancelSend`, bound to Esc).
     pub sending: bool,
     /// The method-badge cell's screen area, recorded on every draw; consumed
     /// by the click handling that opens the method dropdown (a later task).
     pub last_method_area: Option<Rect>,
+    /// Bumped on every `Action::Tick`, regardless of `sending`; drives the
+    /// Send cap's spinner glyph and accent/accent_edge_dark pulse while a
+    /// request is in flight. Wrapping is harmless -- only taken mod the
+    /// spinner's frame count / a small pulse period.
+    pub spinner_frame: u32,
 }
 
 impl Default for Editor {
@@ -118,6 +125,7 @@ impl Default for Editor {
             last_body_area: None,
             sending: false,
             last_method_area: None,
+            spinner_frame: 0,
         }
     }
 }
@@ -231,6 +239,14 @@ impl Editor {
             content: self.body.lines.len(),
             viewport: area.height as usize,
         })
+    }
+
+    /// Advances the Send cap's spinner/pulse frame counter. Called on every
+    /// `Action::Tick` unconditionally (cheap wrapping add) so the counter is
+    /// already warm the instant a send starts, rather than waiting for the
+    /// first tick after `sending` flips.
+    pub fn on_tick(&mut self) {
+        self.spinner_frame = self.spinner_frame.wrapping_add(1);
     }
 
     /// Forwards a raw mouse event to the body editor when the Body tab is
@@ -397,89 +413,215 @@ impl Component for Editor {
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1), // method badge + URL
+                Constraint::Length(5), // fused address bar + its ring margins
                 Constraint::Length(1), // tab bar
                 Constraint::Min(0),    // active tab content
             ])
             .split(inner);
 
-        self.draw_method_and_url(frame, rows[0], ctx, hits);
+        self.draw_address_bar(frame, rows[0], ctx, hits);
         self.draw_tab_bar(frame, rows[1], ctx, hits);
         self.draw_tab_content(frame, rows[2], ctx, hits);
     }
 }
 
-/// `[ label ]` rendered at the same width whether it reads `Send` or
-/// `Cancel`, padded to the wider of the two so the button never jumps.
-fn send_button_label(sending: bool) -> String {
-    const WIDTH: usize = 6; // "Cancel".chars().count()
-    let label = if sending { "Cancel" } else { "Send" };
-    format!("{label:<WIDTH$}")
-}
+/// Fixed width, in cells, of the address bar's method segment.
+const METHOD_SEGMENT_WIDTH: u16 = 10;
+/// Fixed width, in cells, of the address bar's Send cap.
+const SEND_SEGMENT_WIDTH: u16 = 24;
+
+/// Cycled through (one glyph per `Action::Tick`) at the start of the Send
+/// cap's label while a request is in flight.
+const SPINNER_GLYPHS: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 impl Editor {
-    fn draw_method_and_url(
+    /// Paints the fused method/URL/Send address bar: one 3-row control with
+    /// no gap columns between its segments, plus the 1-row/1-column margin
+    /// around it that gives [`focus_ring`](crate::paint::focus_ring) cells
+    /// to paint into when the URL has focus. `area` is that whole envelope
+    /// (5 rows tall, the pane's full inner width).
+    fn draw_address_bar(
         &mut self,
         frame: &mut Frame,
         area: Rect,
         ctx: &DrawCtx,
         hits: &mut crate::hit::HitMap,
     ) {
+        use crate::paint::{bevel_bottom, bevel_top, face_edges, fill, text};
+
         let theme = ctx.theme;
-        let send_label = send_button_label(self.sending);
-        let send_width = crate::hit::button_width(&send_label);
+        let url_focused = self.sub_focus == SubFocus::Url;
+
+        let margins = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1), // ring margin above
+                Constraint::Length(3), // the bar itself
+                Constraint::Length(1), // ring margin below
+            ])
+            .split(area);
+        let bar_outer = margins[1];
+        let bar = Rect {
+            x: bar_outer.x + 1,
+            width: bar_outer.width.saturating_sub(2),
+            ..bar_outer
+        };
+
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
-                Constraint::Length(8),
+                Constraint::Length(METHOD_SEGMENT_WIDTH),
                 Constraint::Min(0),
-                Constraint::Length(2), // Copy URL button
-                Constraint::Length(1), // gap before Send
-                Constraint::Length(send_width),
+                Constraint::Length(SEND_SEGMENT_WIDTH),
             ])
-            .split(area);
+            .split(bar);
+        let method_area = cols[0];
+        let url_area = cols[1];
+        let send_area = cols[2];
+        let mid_y = |r: Rect| r.y + 1;
 
-        let badge = Paragraph::new(Line::styled(
-            format!("{:^7}", self.method.as_str()),
-            Style::default().fg(theme.method_color(self.method)).bold(),
-        ));
-        frame.render_widget(badge, cols[0]);
-        hits.register(cols[0], crate::hit::Hit::MethodSelector);
-        self.last_method_area = Some(cols[0]);
+        let buf = frame.buffer_mut();
 
-        let url_focused = self.sub_focus == SubFocus::Url;
-        frame.render_widget(
-            Paragraph::new(
-                self.url
-                    .draw_line_windowed(url_focused, theme, cols[1].width),
+        if url_focused {
+            crate::paint::focus_ring(buf, bar, theme.surface, theme);
+        }
+
+        // --- method segment --------------------------------------------
+        let method_face = theme.method_color(self.method);
+        let (m_light, m_dark) = face_edges(method_face, theme);
+        let method_hovered = ctx.hovered == Some(&crate::hit::Hit::MethodSelector);
+        let method_fill = if method_hovered { m_light } else { method_face };
+        fill(buf, method_area, method_fill);
+        bevel_top(
+            buf,
+            Rect::new(method_area.x, method_area.y, method_area.width, 1),
+            m_light,
+            method_fill,
+        );
+        bevel_bottom(
+            buf,
+            Rect::new(
+                method_area.x,
+                method_area.y + method_area.height - 1,
+                method_area.width,
+                1,
             ),
-            cols[1],
+            m_dark,
+            method_fill,
         );
-
-        // Abbreviated `[ Copy URL ]` — just the glyph, to keep the URL row
-        // uncluttered. Hover inversion plus footer/palette naming carries
-        // the meaning.
-        crate::hit::chip(
-            frame,
-            hits,
-            cols[2],
-            " ⧉",
-            crate::hit::Hit::CopyUrlButton,
-            ctx.hovered,
-            None,
-            theme,
-        );
-
-        crate::hit::button(
-            frame,
-            hits,
-            cols[4],
-            &send_label,
-            crate::hit::Hit::SendButton,
-            ctx.hovered,
+        let method_label = format!("{} ▾", self.method.as_str());
+        let label_w = method_label.chars().count() as u16;
+        let start_x = method_area.x + method_area.width.saturating_sub(label_w) / 2;
+        text(
+            buf,
+            start_x,
+            mid_y(method_area),
+            &method_label,
+            theme.on_accent,
+            method_fill,
             true,
-            theme,
         );
+        hits.register(method_area, crate::hit::Hit::MethodSelector);
+        // The dropdown opens just below `anchor.y` (see `modal::draw_popup`),
+        // so the anchor is the bar's bottom row -- not the whole 3-row hit
+        // target -- or the popup would overlap the badge itself.
+        self.last_method_area = Some(Rect {
+            y: method_area.y + method_area.height - 1,
+            height: 1,
+            ..method_area
+        });
+
+        // --- URL segment -------------------------------------------------
+        fill(buf, url_area, theme.control);
+        bevel_top(
+            buf,
+            Rect::new(url_area.x, url_area.y, url_area.width, 1),
+            theme.edge_light,
+            theme.control,
+        );
+        bevel_bottom(
+            buf,
+            Rect::new(
+                url_area.x,
+                url_area.y + url_area.height - 1,
+                url_area.width,
+                1,
+            ),
+            theme.edge_dark,
+            theme.control,
+        );
+        let mut url_line = self
+            .url
+            .draw_line_windowed(url_focused, theme, url_area.width);
+        url_line.style = Style::default().bg(theme.control).patch(url_line.style);
+        buf.set_line(url_area.x, mid_y(url_area), &url_line, url_area.width);
+
+        // --- Send cap ------------------------------------------------------
+        let enabled = !self.sending && !self.url.text().trim().is_empty();
+        let send_hovered = ctx.hovered == Some(&crate::hit::Hit::SendButton);
+        let (label, send_fill, label_fg, draw_bevel) = if self.sending {
+            let glyph = SPINNER_GLYPHS[(self.spinner_frame as usize) % SPINNER_GLYPHS.len()];
+            let pulse_dark = (self.spinner_frame / 3) % 2 == 1;
+            let face = if pulse_dark {
+                theme.accent_edge_dark
+            } else {
+                theme.accent
+            };
+            (format!("{glyph} Sending"), face, theme.on_accent, true)
+        } else if !enabled {
+            (
+                "Send".to_string(),
+                theme.control,
+                theme.text_disabled,
+                false,
+            )
+        } else if send_hovered {
+            (
+                "Send".to_string(),
+                theme.accent_edge_light,
+                theme.on_accent,
+                true,
+            )
+        } else {
+            ("Send".to_string(), theme.accent, theme.on_accent, true)
+        };
+        fill(buf, send_area, send_fill);
+        if draw_bevel {
+            // Edges stay pinned to the base accent (not the currently
+            // painted fill), same as `Button`'s hover/pressed convention:
+            // only the face swaps, the bevel colors stay put.
+            bevel_top(
+                buf,
+                Rect::new(send_area.x, send_area.y, send_area.width, 1),
+                theme.accent_edge_light,
+                send_fill,
+            );
+            bevel_bottom(
+                buf,
+                Rect::new(
+                    send_area.x,
+                    send_area.y + send_area.height - 1,
+                    send_area.width,
+                    1,
+                ),
+                theme.accent_edge_dark,
+                send_fill,
+            );
+        }
+        let send_label_w = label.chars().count() as u16;
+        let send_start_x = send_area.x + send_area.width.saturating_sub(send_label_w) / 2;
+        text(
+            buf,
+            send_start_x,
+            mid_y(send_area),
+            &label,
+            label_fg,
+            send_fill,
+            true,
+        );
+        if enabled {
+            hits.register(send_area, crate::hit::Hit::SendButton);
+        }
     }
 
     fn draw_tab_bar(
@@ -1088,7 +1230,10 @@ url = "https://api.example.com/users""#,
             hovered: None,
             dragging: false,
         };
-        let backend = TestBackend::new(60, 10);
+        // Wide enough that the fused bar's URL segment (bar width minus the
+        // fixed 10-wide method segment and 24-wide Send cap) still fits the
+        // whole URL without windowed scrolling truncating it.
+        let backend = TestBackend::new(90, 10);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
@@ -1103,6 +1248,143 @@ url = "https://api.example.com/users""#,
         assert!(content.contains("Params"), "params tab label: {content}");
         assert!(content.contains("Headers"), "headers tab label: {content}");
         assert!(content.contains("Body"), "body tab label: {content}");
+    }
+
+    /// Renders the editor into a fresh 60x10 buffer and returns the bar's
+    /// outer rect (`Hit::MethodSelector`'s rect) plus the terminal for
+    /// per-cell assertions.
+    fn draw_for_bar_test(e: &mut Editor) -> (Terminal<TestBackend>, crate::hit::HitMap) {
+        let theme = Theme::dark();
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: None,
+            dragging: false,
+        };
+        let backend = TestBackend::new(60, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+        (terminal, hits)
+    }
+
+    #[test]
+    fn fused_bar_occupies_three_rows_with_method_face_and_shared_text_row() {
+        let mut e = Editor::default();
+        e.load(
+            Some("a".into()),
+            HttpRequest::from_toml_str(r#"url = "https://x/y""#).unwrap(),
+        );
+        let theme = Theme::dark();
+        let (terminal, hits) = draw_for_bar_test(&mut e);
+        let method_area = hits.rect_of(&crate::hit::Hit::MethodSelector).unwrap();
+        assert_eq!(method_area.height, 3, "method segment occupies 3 rows");
+
+        let buf = terminal.backend().buffer();
+        let mid_y = method_area.y + 1;
+        // A cell inside the method segment's fill (not the bevel rows).
+        let cell = buf.cell((method_area.x, mid_y)).unwrap();
+        assert_eq!(
+            cell.bg,
+            theme.method_color(postui_core::model::Method::Get),
+            "method cell bg must be the GET method color"
+        );
+
+        // The URL text is drawn on the same row (`mid_y`) as the method
+        // label -- the bar is one fused control, not stacked rows.
+        let content = format!("{buf:?}");
+        assert!(content.contains("https://x/y"), "url text: {content}");
+        let url_row: String = (0..60)
+            .filter_map(|x| buf.cell((x, mid_y)).map(|c| c.symbol()))
+            .collect();
+        assert!(
+            url_row.contains("https://x/y"),
+            "url text must share the method label's row: {url_row}"
+        );
+    }
+
+    #[test]
+    fn send_cap_is_bold_on_accent_when_enabled() {
+        let mut e = Editor::default();
+        e.load(
+            Some("a".into()),
+            HttpRequest::from_toml_str(r#"url = "https://x""#).unwrap(),
+        );
+        let theme = Theme::dark();
+        let (terminal, hits) = draw_for_bar_test(&mut e);
+        let send_area = hits.rect_of(&crate::hit::Hit::SendButton).unwrap();
+        let buf = terminal.backend().buffer();
+        let mid_y = send_area.y + 1;
+        // Find the "Send" label's cell by scanning the send cap's row.
+        let found = (send_area.x..send_area.x + send_area.width).any(|x| {
+            let cell = buf.cell((x, mid_y)).unwrap();
+            cell.symbol() == "S" && cell.fg == theme.on_accent && cell.bg == theme.accent
+        });
+        assert!(found, "Send label must be bold on_accent over accent");
+        let bold_found = (send_area.x..send_area.x + send_area.width).any(|x| {
+            let cell = buf.cell((x, mid_y)).unwrap();
+            cell.symbol() == "S" && cell.modifier.contains(Modifier::BOLD)
+        });
+        assert!(bold_found, "Send label must be bold");
+    }
+
+    #[test]
+    fn sending_shows_spinner_glyph_and_unregisters_send_hit() {
+        let mut e = Editor::default();
+        e.load(
+            Some("a".into()),
+            HttpRequest::from_toml_str(r#"url = "https://x""#).unwrap(),
+        );
+        e.sending = true;
+        let (terminal, hits) = draw_for_bar_test(&mut e);
+        assert!(
+            hits.rect_of(&crate::hit::Hit::SendButton).is_none(),
+            "Send hit must be unregistered while sending"
+        );
+        let content = format!("{:?}", terminal.backend().buffer());
+        let spinner_glyphs = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+        assert!(
+            spinner_glyphs.iter().any(|g| content.contains(*g)),
+            "sending must show a spinner glyph: {content}"
+        );
+        assert!(
+            content.contains("Sending"),
+            "sending label must read Sending: {content}"
+        );
+    }
+
+    #[test]
+    fn send_cap_disabled_when_url_empty() {
+        let mut e = Editor::default();
+        // Fresh scratch editor: url is empty by default.
+        let (_, hits) = draw_for_bar_test(&mut e);
+        assert!(
+            hits.rect_of(&crate::hit::Hit::SendButton).is_none(),
+            "Send hit must be unregistered when the URL is empty"
+        );
+    }
+
+    #[test]
+    fn focused_url_draws_ring_around_the_whole_bar() {
+        let mut e = Editor::default();
+        e.load(
+            Some("a".into()),
+            HttpRequest::from_toml_str(r#"url = "https://x""#).unwrap(),
+        );
+        e.sub_focus = SubFocus::Url;
+        let theme = Theme::dark();
+        let (terminal, hits) = draw_for_bar_test(&mut e);
+        let method_area = hits.rect_of(&crate::hit::Hit::MethodSelector).unwrap();
+        let buf = terminal.backend().buffer();
+        // The method segment is the bar's leftmost segment, so the bar's
+        // own top-left corner is exactly one cell up and left of it.
+        let ring_x = method_area.x.saturating_sub(1);
+        let ring_y = method_area.y.saturating_sub(1);
+        let corner = buf.cell((ring_x, ring_y)).unwrap();
+        assert_eq!(corner.symbol(), "┌", "ring top-left corner: {corner:?}");
+        assert_eq!(corner.fg, theme.focus_ring);
     }
 
     #[test]

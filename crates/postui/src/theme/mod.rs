@@ -483,6 +483,28 @@ pub fn dim55(c: Color) -> Color {
     }
 }
 
+/// Lifts a color's Oklab lightness by `delta_l`, keeping hue/chroma fixed,
+/// same as the private `lift` helper the generator ladder uses but exposed
+/// (`pub(crate)`) for callers outside this module — namely the paint layer's
+/// `face_edges`, which derives a colored control's bevel edges from its face
+/// color. `Rgb` lifts directly; `Indexed` round-trips through the nominal
+/// xterm-256 rgb; other variants pass through unchanged since they carry no
+/// rgb value to lift.
+pub(crate) fn lift_color(c: Color, delta_l: f32) -> Color {
+    match c {
+        Color::Rgb(r, g, b) => {
+            let (r, g, b) = lift((r, g, b), delta_l);
+            Color::Rgb(r, g, b)
+        }
+        Color::Indexed(i) => {
+            let rgb = indexed_to_rgb(i);
+            let (r, g, b) = lift(rgb, delta_l);
+            Color::Indexed(rgb_to_indexed(r, g, b))
+        }
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
