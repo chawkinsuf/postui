@@ -7,6 +7,7 @@ pub mod hit;
 pub mod http;
 pub mod keys;
 pub mod layout;
+pub mod paint;
 pub mod project_ctx;
 pub mod theme;
 pub mod ui;
