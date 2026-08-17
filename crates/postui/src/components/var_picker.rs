@@ -1,12 +1,13 @@
+use super::chooser::clip;
 use super::palette::fuzzy_match;
 use crate::action::Action;
+use crate::paint::{self, ControlState, FIELD_HEIGHT, PillRow, RowHighlight, TextField};
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Padding, Paragraph};
 
 /// One declared variable, as offered by the picker: its name, optional
 /// description (from `variables.toml`), and resolved value (from
@@ -154,37 +155,48 @@ impl VarPickerState {
         hovered: Option<&crate::hit::Hit>,
     ) {
         let width = 60.min(screen.width);
-        let height = (self.filtered.len() as u16 + 4)
-            .clamp(5, 16)
-            .min(screen.height);
+        const CHROME: u16 = 10;
+        let content_rows = (self.filtered.len() as u16).clamp(1, 10) * 2;
+        let height = (CHROME + content_rows).clamp(13, 26).min(screen.height);
         let area = super::modal::centered_rect(screen, width, height);
         hits.register(area, crate::hit::Hit::ModalBody);
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme.border_focused))
-            .padding(Padding::horizontal(1))
-            .style(Style::default().bg(theme.surface_raised))
-            .title(" Variables ")
-            .title_style(Style::default().fg(theme.accent));
-        frame.render_widget(Clear, area);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
+        paint::floating_panel(frame.buffer_mut(), area, screen, theme);
 
-        let prompt = Line::from(vec![
-            Span::styled("> ", Style::default().fg(theme.accent)),
-            Span::styled(self.input.as_str(), Style::default().fg(theme.text)),
+        let title_y = area.y + 1;
+        paint::text(
+            frame.buffer_mut(),
+            area.x + 2,
+            title_y,
+            "Variables",
+            theme.text,
+            theme.panel,
+            true,
+        );
+
+        let field_area = Rect {
+            x: area.x + 1,
+            y: title_y + 2,
+            width: area.width.saturating_sub(2),
+            height: FIELD_HEIGHT,
+        };
+        let content = Line::from(vec![
+            Span::raw(self.input.clone()),
             Span::styled("▏", Style::default().fg(theme.accent)),
         ]);
-        let prompt_area = Rect { height: 1, ..inner };
-        frame.render_widget(Paragraph::new(prompt), prompt_area);
+        TextField {
+            content,
+            state: ControlState::Focused,
+        }
+        .paint(frame.buffer_mut(), field_area, theme);
+        paint::focus_ring(frame.buffer_mut(), field_area, theme.panel, theme);
 
         let list_area = Rect {
-            y: inner.y + 2,
-            height: inner.height.saturating_sub(2),
-            ..inner
+            x: area.x + 1,
+            y: field_area.y + FIELD_HEIGHT + 1,
+            width: area.width.saturating_sub(2),
+            height: area.height.saturating_sub(CHROME),
         };
-        let list_h = list_area.height as usize;
+        let list_h = (list_area.height / 2) as usize;
         if self.ensure_visible {
             if list_h > 0 {
                 if self.selected < self.scroll {
@@ -198,51 +210,114 @@ impl VarPickerState {
             self.ensure_visible = false;
         }
 
-        let items: Vec<ListItem> = self
+        for (i, &idx) in self
             .filtered
             .iter()
             .enumerate()
             .skip(self.scroll)
             .take(list_h.max(1))
-            .map(|(i, &idx)| {
-                let entry = &self.entries[idx];
-                let mut style = if i == self.selected {
-                    Style::default().fg(theme.accent).bold()
-                } else {
-                    Style::default().fg(theme.text)
-                };
-                if hovered == Some(&crate::hit::Hit::VarPickerRow(i)) {
-                    style = style.bg(theme.surface_raised);
+        {
+            let entry = &self.entries[idx];
+            let text_row = list_area.y + ((i - self.scroll) as u16) * 2;
+            let selected = i == self.selected;
+            let row_hovered = hovered == Some(&crate::hit::Hit::VarPickerRow(i));
+            let highlight = if selected {
+                RowHighlight::Selected
+            } else if row_hovered {
+                RowHighlight::Hover
+            } else {
+                RowHighlight::None
+            };
+            let row_fill = match highlight {
+                RowHighlight::None => theme.panel,
+                RowHighlight::Hover => theme.control,
+                RowHighlight::Selected => theme.control_hover,
+            };
+            PillRow { highlight }.paint(
+                frame.buffer_mut(),
+                text_row,
+                list_area.x,
+                list_area.width,
+                area,
+                theme.panel,
+                theme,
+            );
+
+            let right = list_area.x + list_area.width;
+            let mut x = list_area.x + 1;
+            let name_w = (entry.name.chars().count() as u16).min(right.saturating_sub(x));
+            paint::text(
+                frame.buffer_mut(),
+                x,
+                text_row,
+                &entry.name,
+                theme.text,
+                row_fill,
+                selected,
+            );
+            x += name_w;
+            if let Some(desc) = &entry.description {
+                let desc = format!(" {desc}");
+                let w = right.saturating_sub(x);
+                let clipped = clip(&desc, w);
+                paint::text(
+                    frame.buffer_mut(),
+                    x,
+                    text_row,
+                    clipped,
+                    theme.text_muted,
+                    row_fill,
+                    false,
+                );
+                x += clipped.chars().count() as u16;
+            }
+            match &entry.value {
+                Some(v) => {
+                    let s = format!(" = {v}");
+                    let w = right.saturating_sub(x);
+                    paint::text(
+                        frame.buffer_mut(),
+                        x,
+                        text_row,
+                        clip(&s, w),
+                        theme.text_muted,
+                        row_fill,
+                        false,
+                    );
                 }
-                let marker = if i == self.selected { "› " } else { "  " };
-                let mut spans = vec![
-                    Span::styled(marker, style),
-                    Span::styled(entry.name.clone(), style),
-                ];
-                if let Some(desc) = &entry.description {
-                    spans.push(Span::styled(
-                        format!(" {desc}"),
-                        Style::default().fg(theme.text_muted),
-                    ));
+                None => {
+                    let w = right.saturating_sub(x);
+                    paint::text(
+                        frame.buffer_mut(),
+                        x,
+                        text_row,
+                        clip(" unset", w),
+                        theme.warning,
+                        row_fill,
+                        false,
+                    );
                 }
-                match &entry.value {
-                    Some(v) => spans.push(Span::styled(
-                        format!(" = {v}"),
-                        Style::default().fg(theme.text_muted),
-                    )),
-                    None => spans.push(Span::styled(" unset", Style::default().fg(theme.warning))),
-                }
-                let row_area = Rect {
-                    x: list_area.x,
-                    y: list_area.y + (i - self.scroll) as u16,
-                    width: list_area.width,
-                    height: 1,
-                };
-                hits.register(row_area, crate::hit::Hit::VarPickerRow(i));
-                ListItem::new(Line::from(spans).style(style))
-            })
-            .collect();
-        frame.render_widget(List::new(items), list_area);
+            }
+
+            let row_rect = Rect {
+                x: list_area.x,
+                y: text_row,
+                width: list_area.width,
+                height: 1,
+            };
+            hits.register(row_rect, crate::hit::Hit::VarPickerRow(i));
+        }
+
+        let footer_y = area.y + area.height.saturating_sub(2);
+        paint::text(
+            frame.buffer_mut(),
+            area.x + 2,
+            footer_y,
+            "enter insert  esc cancel",
+            theme.text_muted,
+            theme.panel,
+            false,
+        );
     }
 }
 

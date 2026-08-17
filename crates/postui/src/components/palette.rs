@@ -1,12 +1,13 @@
+use super::chooser::clip;
 use crate::action::{Action, CopyTarget};
 use crate::layout::PaneId;
+use crate::paint::{self, ControlState, FIELD_HEIGHT, PillRow, RowHighlight, TextField};
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Padding, Paragraph};
 
 #[derive(Clone)]
 pub struct Command {
@@ -294,37 +295,48 @@ impl PaletteState {
         hovered: Option<&crate::hit::Hit>,
     ) {
         let width = 50.min(screen.width);
-        let height = (self.filtered.len() as u16 + 4)
-            .clamp(5, 16)
-            .min(screen.height);
+        const CHROME: u16 = 10;
+        let content_rows = (self.filtered.len() as u16).clamp(1, 10) * 2;
+        let height = (CHROME + content_rows).clamp(13, 26).min(screen.height);
         let area = super::modal::centered_rect(screen, width, height);
         hits.register(area, crate::hit::Hit::ModalBody);
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme.border_focused))
-            .padding(Padding::horizontal(1))
-            .style(Style::default().bg(theme.surface_raised))
-            .title(" Commands ")
-            .title_style(Style::default().fg(theme.accent));
-        frame.render_widget(Clear, area);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
+        paint::floating_panel(frame.buffer_mut(), area, screen, theme);
 
-        let prompt = Line::from(vec![
-            Span::styled("> ", Style::default().fg(theme.accent)),
-            Span::styled(self.input.as_str(), Style::default().fg(theme.text)),
+        let title_y = area.y + 1;
+        paint::text(
+            frame.buffer_mut(),
+            area.x + 2,
+            title_y,
+            "Commands",
+            theme.text,
+            theme.panel,
+            true,
+        );
+
+        let field_area = Rect {
+            x: area.x + 1,
+            y: title_y + 2,
+            width: area.width.saturating_sub(2),
+            height: FIELD_HEIGHT,
+        };
+        let content = Line::from(vec![
+            Span::raw(self.input.clone()),
             Span::styled("▏", Style::default().fg(theme.accent)),
         ]);
-        let prompt_area = Rect { height: 1, ..inner };
-        frame.render_widget(Paragraph::new(prompt), prompt_area);
+        TextField {
+            content,
+            state: ControlState::Focused,
+        }
+        .paint(frame.buffer_mut(), field_area, theme);
+        paint::focus_ring(frame.buffer_mut(), field_area, theme.panel, theme);
 
         let list_area = Rect {
-            y: inner.y + 2,
-            height: inner.height.saturating_sub(2),
-            ..inner
+            x: area.x + 1,
+            y: field_area.y + FIELD_HEIGHT + 1,
+            width: area.width.saturating_sub(2),
+            height: area.height.saturating_sub(CHROME),
         };
-        let list_h = list_area.height as usize;
+        let list_h = (list_area.height / 2) as usize;
         if self.ensure_visible {
             if list_h > 0 {
                 if self.selected < self.scroll {
@@ -338,39 +350,73 @@ impl PaletteState {
             self.ensure_visible = false;
         }
 
-        let items: Vec<ListItem> = self
+        // NOTE: the spec calls for a right-aligned muted keybinding column
+        // on each row, matching a bound key to the command. `Command` (and
+        // `Keymap`) currently expose no reverse action->combo lookup, so
+        // there is no data to paint there yet; see the task report.
+        for (i, c) in self
             .filtered
             .iter()
             .enumerate()
             .skip(self.scroll)
             .take(list_h.max(1))
-            .map(|(i, c)| {
-                let mut style = if i == self.selected {
-                    Style::default().fg(theme.accent).bold()
-                } else {
-                    Style::default().fg(theme.text)
-                };
-                if hovered == Some(&crate::hit::Hit::PaletteRow(i)) {
-                    style = style.bg(theme.surface_raised);
-                }
-                let marker = if i == self.selected { "› " } else { "  " };
-                let row_area = Rect {
-                    x: list_area.x,
-                    y: list_area.y + (i - self.scroll) as u16,
-                    width: list_area.width,
-                    height: 1,
-                };
-                hits.register(row_area, crate::hit::Hit::PaletteRow(i));
-                ListItem::new(
-                    Line::from(vec![
-                        Span::styled(marker, style),
-                        Span::styled(c.name, style),
-                    ])
-                    .style(style),
-                )
-            })
-            .collect();
-        frame.render_widget(List::new(items), list_area);
+        {
+            let text_row = list_area.y + ((i - self.scroll) as u16) * 2;
+            let selected = i == self.selected;
+            let row_hovered = hovered == Some(&crate::hit::Hit::PaletteRow(i));
+            let highlight = if selected {
+                RowHighlight::Selected
+            } else if row_hovered {
+                RowHighlight::Hover
+            } else {
+                RowHighlight::None
+            };
+            let row_fill = match highlight {
+                RowHighlight::None => theme.panel,
+                RowHighlight::Hover => theme.control,
+                RowHighlight::Selected => theme.control_hover,
+            };
+            PillRow { highlight }.paint(
+                frame.buffer_mut(),
+                text_row,
+                list_area.x,
+                list_area.width,
+                area,
+                theme.panel,
+                theme,
+            );
+
+            let right = list_area.x + list_area.width;
+            let x = list_area.x + 1;
+            paint::text(
+                frame.buffer_mut(),
+                x,
+                text_row,
+                clip(c.name, right.saturating_sub(x)),
+                theme.text,
+                row_fill,
+                selected,
+            );
+
+            let row_rect = Rect {
+                x: list_area.x,
+                y: text_row,
+                width: list_area.width,
+                height: 1,
+            };
+            hits.register(row_rect, crate::hit::Hit::PaletteRow(i));
+        }
+
+        let footer_y = area.y + area.height.saturating_sub(2);
+        paint::text(
+            frame.buffer_mut(),
+            area.x + 2,
+            footer_y,
+            "enter run  esc cancel",
+            theme.text_muted,
+            theme.panel,
+            false,
+        );
     }
 }
 
@@ -503,25 +549,26 @@ mod tests {
         let mut hits = crate::hit::HitMap::default();
         terminal
             .draw(|f| {
+                // Row 1 (not the default-selected row 0) so this exercises
+                // the plain Hover fill rather than Selected.
                 p.draw(
                     f,
                     f.area(),
                     &theme,
                     &mut hits,
-                    Some(&crate::hit::Hit::PaletteRow(0)),
+                    Some(&crate::hit::Hit::PaletteRow(1)),
                 )
             })
             .unwrap();
-        let row0 = hits.rect_of(&crate::hit::Hit::PaletteRow(0)).unwrap();
+        let row1 = hits.rect_of(&crate::hit::Hit::PaletteRow(1)).unwrap();
         let buffer = terminal.backend().buffer();
-        // The label ("Focus: request tree") is well short of the row's
-        // right edge, so a cell out there only picks up the hover
-        // background if it comes from the whole `Line`'s style rather than
-        // just the marker/label spans.
-        let right_edge = (row0.x + row0.width - 1, row0.y);
+        // The label ("Focus: editor") is well short of the row's right
+        // edge, so a cell out there only picks up the pill's background if
+        // the fill spans the whole row, not just the label glyphs.
+        let right_edge = (row1.x + row1.width - 1, row1.y);
         assert_eq!(
-            buffer[right_edge].bg, theme.surface_raised,
-            "hover background must fill the full row width, not just the label glyphs"
+            buffer[right_edge].bg, theme.control,
+            "the pill fill must span the full row width, not just the label glyphs"
         );
     }
 }

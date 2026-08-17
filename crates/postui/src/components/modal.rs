@@ -1,12 +1,14 @@
 use super::line_input::LineInput;
 use crate::action::Action;
+use crate::paint::{
+    self, BUTTON_HEIGHT, Button, ButtonKind, ControlState, FIELD_HEIGHT, TextField,
+};
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph, Wrap};
+use ratatui::style::Style;
+use ratatui::widgets::{Paragraph, Wrap};
 
 /// What a `Modal::Prompt`'s confirmed text becomes: which `Action` it maps
 /// to, and (for rename) which slug is prefilled/being renamed.
@@ -300,7 +302,7 @@ impl ModalStack {
         // anchored popup (e.g. the method selector), not a screen-owning
         // modal, so dimming everything behind it would be jarring.
         if !matches!(top, Modal::Dropdown(_)) {
-            dim_backdrop(frame, screen);
+            paint::dim_backdrop(frame.buffer_mut(), screen);
         }
         // Registered before the modal's own hits so any click landing
         // outside them (topmost-wins in `HitMap`) closes the modal, same as
@@ -308,132 +310,187 @@ impl ModalStack {
         hits.register(screen, crate::hit::Hit::ModalOutside);
         match top {
             Modal::Message { title, body } => {
-                let area = centered_rect(screen, 60.min(screen.width), 9);
+                let area = centered_rect(screen, 60.min(screen.width), 13.min(screen.height));
                 hits.register(area, crate::hit::Hit::ModalBody);
-                let block = Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(theme.border_focused))
-                    .padding(Padding::uniform(1))
-                    .style(Style::default().bg(theme.surface_raised))
-                    .title(format!(" {title} "))
-                    .title_style(Style::default().fg(theme.accent));
-                frame.render_widget(Clear, area);
+                paint::floating_panel(frame.buffer_mut(), area, screen, theme);
+
+                let title_y = area.y + 1;
+                paint::text(
+                    frame.buffer_mut(),
+                    area.x + 2,
+                    title_y,
+                    title,
+                    theme.text,
+                    theme.panel,
+                    true,
+                );
+
+                let btn_label = "OK";
+                let btn_w = button_row_width(&[btn_label]);
+                let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
+                let body_area = Rect {
+                    x: area.x + 2,
+                    y: title_y + 2,
+                    width: area.width.saturating_sub(4),
+                    height: buttons_y.saturating_sub(title_y + 2).saturating_sub(1),
+                };
                 frame.render_widget(
                     Paragraph::new(body.as_str())
-                        .style(Style::default().fg(theme.text))
-                        .wrap(Wrap { trim: false })
-                        .block(block),
-                    area,
+                        .style(Style::default().fg(theme.text).bg(theme.panel))
+                        .wrap(Wrap { trim: false }),
+                    body_area,
                 );
+
+                let btn_area = Rect {
+                    x: area.x + area.width.saturating_sub(2 + btn_w),
+                    y: buttons_y,
+                    width: btn_w,
+                    height: BUTTON_HEIGHT,
+                };
+                Button {
+                    label: btn_label,
+                    kind: ButtonKind::Primary,
+                    state: ControlState::Normal,
+                }
+                .paint(frame.buffer_mut(), btn_area, theme);
             }
             Modal::Confirm {
                 title,
                 body,
                 choices,
             } => {
-                let area = centered_rect(screen, 60.min(screen.width), 9);
+                let area = centered_rect(screen, 60.min(screen.width), 13.min(screen.height));
                 hits.register(area, crate::hit::Hit::ModalBody);
-                let block = Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(theme.border_focused))
-                    .padding(Padding::uniform(1))
-                    .style(Style::default().bg(theme.surface_raised))
-                    .title(format!(" {title} "))
-                    .title_style(Style::default().fg(theme.accent));
-                frame.render_widget(Clear, area);
-                let inner = block.inner(area);
-                frame.render_widget(block, area);
+                paint::floating_panel(frame.buffer_mut(), area, screen, theme);
 
+                let title_y = area.y + 1;
+                paint::text(
+                    frame.buffer_mut(),
+                    area.x + 2,
+                    title_y,
+                    title,
+                    theme.text,
+                    theme.panel,
+                    true,
+                );
+
+                let labels: Vec<&str> = choices.iter().map(|(_, l, _)| l.as_str()).collect();
+                let btn_row_w = button_row_width(&labels);
+                let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
                 let body_area = Rect {
-                    height: inner.height.saturating_sub(2),
-                    ..inner
+                    x: area.x + 2,
+                    y: title_y + 2,
+                    width: area.width.saturating_sub(4),
+                    height: buttons_y.saturating_sub(title_y + 2).saturating_sub(1),
                 };
                 frame.render_widget(
                     Paragraph::new(body.as_str())
-                        .style(Style::default().fg(theme.text))
+                        .style(Style::default().fg(theme.text).bg(theme.panel))
                         .wrap(Wrap { trim: false }),
                     body_area,
                 );
 
-                // Each `[c] Label` choice is its own clickable chip
-                // (`Hit::ConfirmChoice(c)`); `[esc] Cancel` stays plain text
-                // since Esc already closes the modal from anywhere.
-                let hint_area = Rect {
-                    y: inner.y + inner.height.saturating_sub(1),
-                    height: 1,
-                    ..inner
-                };
-                let mut x = hint_area.x;
+                // Each choice is its own clickable painted button
+                // (`Hit::ConfirmChoice(c)`); `Esc` still closes the modal
+                // (matching whichever choice text says "Cancel", if any) and
+                // is documented in the muted helper line below the buttons.
+                let mut x = area.x + area.width.saturating_sub(2 + btn_row_w);
                 for (c, label, _) in choices.iter() {
-                    let text = format!("[{c}] {label}");
-                    let w = (text.chars().count() as u16).min(hint_area.right().saturating_sub(x));
-                    let chip_area = Rect {
+                    let w = paint::button_min_width(label);
+                    let btn_area = Rect {
                         x,
-                        y: hint_area.y,
+                        y: buttons_y,
                         width: w,
-                        height: 1,
+                        height: BUTTON_HEIGHT,
                     };
-                    crate::hit::chip(
-                        frame,
-                        hits,
-                        chip_area,
-                        &text,
-                        crate::hit::Hit::ConfirmChoice(*c),
-                        hovered,
-                        None,
-                        theme,
-                    );
-                    x = (x + w + 3).min(hint_area.right());
+                    Button {
+                        label,
+                        kind: ButtonKind::Secondary,
+                        state: ControlState::Normal,
+                    }
+                    .paint(frame.buffer_mut(), btn_area, theme);
+                    hits.register(btn_area, crate::hit::Hit::ConfirmChoice(*c));
+                    x += w + 2;
                 }
-                let esc_area = Rect {
-                    x,
-                    y: hint_area.y,
-                    width: hint_area.right().saturating_sub(x),
-                    height: 1,
-                };
-                frame.render_widget(
-                    Paragraph::new(Span::styled(
-                        "[esc] Cancel",
-                        Style::default().fg(theme.text_muted),
-                    )),
-                    esc_area,
+
+                let hint_y = buttons_y.saturating_sub(1);
+                paint::text(
+                    frame.buffer_mut(),
+                    area.x + 2,
+                    hint_y,
+                    "esc cancel",
+                    theme.text_muted,
+                    theme.panel,
+                    false,
                 );
             }
             Modal::Prompt { title, input, .. } => {
-                let area = centered_rect(screen, 60.min(screen.width), 6);
+                let area = centered_rect(screen, 60.min(screen.width), 14.min(screen.height));
                 hits.register(area, crate::hit::Hit::ModalBody);
-                let block = Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(theme.border_focused))
-                    .padding(Padding::uniform(1))
-                    .style(Style::default().bg(theme.surface_raised))
-                    .title(format!(" {title} "))
-                    .title_style(Style::default().fg(theme.accent));
-                frame.render_widget(Clear, area);
-                let inner = block.inner(area);
-                frame.render_widget(block, area);
+                paint::floating_panel(frame.buffer_mut(), area, screen, theme);
 
-                let input_area = Rect { height: 1, ..inner };
-                frame.render_widget(
-                    Paragraph::new(input.draw_line_windowed(true, theme, input_area.width)),
-                    input_area,
+                let title_y = area.y + 1;
+                paint::text(
+                    frame.buffer_mut(),
+                    area.x + 2,
+                    title_y,
+                    title,
+                    theme.text,
+                    theme.panel,
+                    true,
                 );
 
-                let hint_area = Rect {
-                    y: inner.y + 2,
-                    height: 1,
-                    ..inner
+                let field_area = Rect {
+                    x: area.x + 2,
+                    y: title_y + 2,
+                    width: area.width.saturating_sub(4),
+                    height: FIELD_HEIGHT,
                 };
-                frame.render_widget(
-                    Paragraph::new(Line::from(Span::styled(
-                        "[enter] confirm  [esc] cancel",
-                        Style::default().fg(theme.text_muted),
-                    ))),
-                    hint_area,
+                TextField {
+                    content: input.draw_line_windowed(
+                        true,
+                        theme,
+                        field_area.width.saturating_sub(2),
+                    ),
+                    state: ControlState::Focused,
+                }
+                .paint(frame.buffer_mut(), field_area, theme);
+                paint::focus_ring(frame.buffer_mut(), field_area, theme.panel, theme);
+
+                let hint_y = field_area.y + FIELD_HEIGHT + 1;
+                paint::text(
+                    frame.buffer_mut(),
+                    area.x + 2,
+                    hint_y,
+                    "enter confirm  esc cancel",
+                    theme.text_muted,
+                    theme.panel,
+                    false,
                 );
+
+                let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
+                let labels = ["Cancel", "Confirm"];
+                let row_w = button_row_width(&labels);
+                let mut x = area.x + area.width.saturating_sub(2 + row_w);
+                for (label, kind) in labels
+                    .iter()
+                    .zip([ButtonKind::Secondary, ButtonKind::Primary])
+                {
+                    let w = paint::button_min_width(label);
+                    let btn_area = Rect {
+                        x,
+                        y: buttons_y,
+                        width: w,
+                        height: BUTTON_HEIGHT,
+                    };
+                    Button {
+                        label,
+                        kind,
+                        state: ControlState::Normal,
+                    }
+                    .paint(frame.buffer_mut(), btn_area, theme);
+                    x += w + 2;
+                }
             }
             Modal::Palette(state) => state.draw(frame, screen, theme, hits, hovered),
             Modal::Chooser(state) => state.draw(frame, screen, theme, hits, hovered),
@@ -444,66 +501,116 @@ impl ModalStack {
                 on_path,
                 ..
             } => {
-                let area = centered_rect(screen, 60.min(screen.width), 8);
+                let area = centered_rect(screen, 60.min(screen.width), 19.min(screen.height));
                 hits.register(area, crate::hit::Hit::ModalBody);
-                let block = Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(theme.border_focused))
-                    .padding(Padding::uniform(1))
-                    .style(Style::default().bg(theme.surface_raised))
-                    .title(" New project ")
-                    .title_style(Style::default().fg(theme.accent));
-                frame.render_widget(Clear, area);
-                let inner = block.inner(area);
-                frame.render_widget(block, area);
+                paint::floating_panel(frame.buffer_mut(), area, screen, theme);
 
-                let name_label_area = Rect { height: 1, ..inner };
-                frame.render_widget(
-                    Paragraph::new(Span::styled("Name:", Style::default().fg(theme.text_muted))),
-                    name_label_area,
+                let title_y = area.y + 1;
+                paint::text(
+                    frame.buffer_mut(),
+                    area.x + 2,
+                    title_y,
+                    "New project",
+                    theme.text,
+                    theme.panel,
+                    true,
+                );
+
+                let field_x = area.x + 2;
+                let field_w = area.width.saturating_sub(4);
+
+                let name_label_y = title_y + 2;
+                paint::text(
+                    frame.buffer_mut(),
+                    field_x,
+                    name_label_y,
+                    "Name:",
+                    theme.text_muted,
+                    theme.panel,
+                    false,
                 );
                 let name_area = Rect {
-                    y: inner.y + 1,
-                    height: 1,
-                    ..inner
+                    x: field_x,
+                    y: name_label_y + 1,
+                    width: field_w,
+                    height: FIELD_HEIGHT,
                 };
-                frame.render_widget(
-                    Paragraph::new(name.draw_line_windowed(!*on_path, theme, name_area.width)),
-                    name_area,
-                );
+                TextField {
+                    content: name.draw_line_windowed(!*on_path, theme, field_w.saturating_sub(2)),
+                    state: if *on_path {
+                        ControlState::Normal
+                    } else {
+                        ControlState::Focused
+                    },
+                }
+                .paint(frame.buffer_mut(), name_area, theme);
+                if !*on_path {
+                    paint::focus_ring(frame.buffer_mut(), name_area, theme.panel, theme);
+                }
 
-                let path_label_area = Rect {
-                    y: inner.y + 2,
-                    height: 1,
-                    ..inner
-                };
-                frame.render_widget(
-                    Paragraph::new(Span::styled("Path:", Style::default().fg(theme.text_muted))),
-                    path_label_area,
+                let path_label_y = name_area.y + FIELD_HEIGHT + 1;
+                paint::text(
+                    frame.buffer_mut(),
+                    field_x,
+                    path_label_y,
+                    "Path:",
+                    theme.text_muted,
+                    theme.panel,
+                    false,
                 );
                 let path_area = Rect {
-                    y: inner.y + 3,
-                    height: 1,
-                    ..inner
+                    x: field_x,
+                    y: path_label_y + 1,
+                    width: field_w,
+                    height: FIELD_HEIGHT,
                 };
-                frame.render_widget(
-                    Paragraph::new(path.draw_line_windowed(*on_path, theme, path_area.width)),
-                    path_area,
+                TextField {
+                    content: path.draw_line_windowed(*on_path, theme, field_w.saturating_sub(2)),
+                    state: if *on_path {
+                        ControlState::Focused
+                    } else {
+                        ControlState::Normal
+                    },
+                }
+                .paint(frame.buffer_mut(), path_area, theme);
+                if *on_path {
+                    paint::focus_ring(frame.buffer_mut(), path_area, theme.panel, theme);
+                }
+
+                let hint_y = path_area.y + FIELD_HEIGHT + 1;
+                paint::text(
+                    frame.buffer_mut(),
+                    field_x,
+                    hint_y,
+                    "tab switch  enter create  esc cancel",
+                    theme.text_muted,
+                    theme.panel,
+                    false,
                 );
 
-                let hint_area = Rect {
-                    y: inner.y + 4,
-                    height: 1,
-                    ..inner
-                };
-                frame.render_widget(
-                    Paragraph::new(Line::from(Span::styled(
-                        "[tab] switch  [enter] create  [esc] cancel",
-                        Style::default().fg(theme.text_muted),
-                    ))),
-                    hint_area,
-                );
+                let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
+                let labels = ["Cancel", "Confirm"];
+                let row_w = button_row_width(&labels);
+                let mut x = area.x + area.width.saturating_sub(2 + row_w);
+                for (label, kind) in labels
+                    .iter()
+                    .zip([ButtonKind::Secondary, ButtonKind::Primary])
+                {
+                    let w = paint::button_min_width(label);
+                    let btn_area = Rect {
+                        x,
+                        y: buttons_y,
+                        width: w,
+                        height: BUTTON_HEIGHT,
+                    };
+                    Button {
+                        label,
+                        kind,
+                        state: ControlState::Normal,
+                    }
+                    .paint(frame.buffer_mut(), btn_area, theme);
+                    x += w + 2;
+                }
             }
             Modal::Dropdown(state) => draw_dropdown(frame, screen, theme, hits, hovered, state),
         }
@@ -514,9 +621,10 @@ impl ModalStack {
 /// `anchor.y - height` when it would cross the screen bottom, clamped
 /// horizontally (and vertically) to stay on screen. Registers
 /// `Hit::ModalOutside` over the whole screen first (so any other click
-/// closes the popup), then `Hit::DropdownRow(i)` per row. `hovered` gets
-/// the row-hover treatment other lists use (`bg(theme.surface_raised)`
-/// against the popup's plain `theme.surface` base — see sidebar rows).
+/// closes the popup), then `Hit::DropdownRow(i)` per row. Rows sit on a
+/// 1-line pitch (not the 2-line pill pitch the centered overlays use) —
+/// anchored dropdowns are compact menus, and long lists (many methods,
+/// many projects) need every row they can get.
 fn draw_dropdown(
     frame: &mut Frame,
     screen: Rect,
@@ -531,7 +639,7 @@ fn draw_dropdown(
         .map(|(label, _)| label.chars().count() as u16)
         .max()
         .unwrap_or(0);
-    let width = (max_label + 4).min(screen.width);
+    let width = (max_label + 6).min(screen.width);
     let height = (state.items.len() as u16 + 2).min(screen.height);
 
     let mut x = state.anchor.x;
@@ -555,14 +663,14 @@ fn draw_dropdown(
         height,
     };
     hits.register(area, crate::hit::Hit::ModalBody);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.border_focused))
-        .style(Style::default().bg(theme.surface));
-    frame.render_widget(Clear, area);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    paint::floating_panel(frame.buffer_mut(), area, screen, theme);
+
+    let inner = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
 
     for (i, (label, _)) in state.items.iter().enumerate() {
         if i as u16 >= inner.height {
@@ -574,29 +682,50 @@ fn draw_dropdown(
             width: inner.width,
             height: 1,
         };
+        let selected = i == state.selected;
+        let row_hovered = hovered == Some(&crate::hit::Hit::DropdownRow(i));
+        let row_fill = if selected {
+            theme.control_hover
+        } else if row_hovered {
+            theme.control
+        } else {
+            theme.panel
+        };
+        paint::fill(frame.buffer_mut(), row_area, row_fill);
+
         // `current` (the value already in effect) gets the checkmark;
         // `selected` (the keyboard cursor) gets its own bold/accent
         // highlight — the two can differ once arrow keys move the cursor
         // away from the current value.
         let marker = if state.current == Some(i) {
-            "✓ "
+            "\u{2713} "
         } else {
             "  "
         };
-        let mut style = if i == state.selected {
-            Style::default().fg(theme.accent).bold()
-        } else {
-            Style::default().fg(theme.text)
-        };
-        if hovered == Some(&crate::hit::Hit::DropdownRow(i)) {
-            style = style.bg(theme.surface_raised);
-        }
-        frame.render_widget(
-            Paragraph::new(Line::styled(format!("{marker}{label}"), style)),
-            row_area,
+        let fg = if selected { theme.accent } else { theme.text };
+        paint::text(
+            frame.buffer_mut(),
+            row_area.x,
+            row_area.y,
+            &format!("{marker}{label}"),
+            fg,
+            row_fill,
+            selected,
         );
         hits.register(row_area, crate::hit::Hit::DropdownRow(i));
     }
+}
+
+/// The total width a right-aligned row of buttons needs: each button's
+/// [`paint::button_min_width`], plus a 2-column gap between adjacent
+/// buttons.
+fn button_row_width(labels: &[impl AsRef<str>]) -> u16 {
+    let widths: u16 = labels
+        .iter()
+        .map(|l| paint::button_min_width(l.as_ref()))
+        .sum();
+    let gaps = labels.len().saturating_sub(1) as u16 * 2;
+    widths + gaps
 }
 
 /// Lowercases `s`, maps spaces to `-`, and keeps only `[a-z0-9_-]`
@@ -618,12 +747,6 @@ pub fn centered_rect(screen: Rect, width: u16, height: u16) -> Rect {
         w,
         h,
     )
-}
-
-pub fn dim_backdrop(frame: &mut Frame, screen: Rect) {
-    frame
-        .buffer_mut()
-        .set_style(screen, Style::default().add_modifier(Modifier::DIM));
 }
 
 #[cfg(test)]
@@ -733,6 +856,110 @@ mod tests {
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("About"));
         assert!(content.contains("hello world"));
+    }
+
+    #[test]
+    fn draw_dims_the_backdrop_and_paints_the_panel_surface() {
+        let mut m = ModalStack::default();
+        m.push(Modal::Message {
+            title: "About".into(),
+            body: "hello world".into(),
+        });
+        let theme = Theme::dark();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| {
+                // Paint the whole screen `theme.page` first, as `ui::draw`
+                // does before overlays run, so the backdrop dim has
+                // something non-default to blend toward black.
+                let area = f.area();
+                crate::paint::fill(f.buffer_mut(), area, theme.page);
+                m.draw(f, area, &theme, &mut hits, None)
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        // A corner cell is guaranteed to sit outside the centered panel.
+        assert_ne!(
+            buffer[(0, 0)].bg,
+            theme.page,
+            "a backdrop cell outside the panel must be dimmed"
+        );
+        let panel = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
+        let center = (panel.x + panel.width / 2, panel.y + panel.height / 2);
+        assert_eq!(
+            buffer[center].bg, theme.panel,
+            "the panel's own fill must be theme.panel"
+        );
+    }
+
+    #[test]
+    fn confirm_modal_paints_bevel_buttons_with_secondary_and_primary_faces() {
+        let mut m = ModalStack::default();
+        m.push(Modal::Confirm {
+            title: "Delete request?".into(),
+            body: "This cannot be undone.".into(),
+            choices: vec![
+                ('n', "Cancel".into(), vec![]),
+                ('y', "Delete".into(), vec![Action::Quit]),
+            ],
+        });
+        let theme = Theme::dark();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| m.draw(f, f.area(), &theme, &mut hits, None))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+
+        let cancel = hits.rect_of(&crate::hit::Hit::ConfirmChoice('n')).unwrap();
+        assert_eq!(
+            buffer[(cancel.x, cancel.y)].symbol(),
+            "\u{2594}",
+            "the Cancel button's top row must be its raised bevel"
+        );
+        assert_eq!(
+            buffer[(cancel.x + 1, cancel.y + 1)].bg,
+            theme.control,
+            "Cancel is painted with the Secondary (control) face"
+        );
+
+        let confirm = hits.rect_of(&crate::hit::Hit::ConfirmChoice('y')).unwrap();
+        assert_eq!(
+            buffer[(confirm.x, confirm.y)].symbol(),
+            "\u{2594}",
+            "the confirm button's top row must be its raised bevel"
+        );
+    }
+
+    #[test]
+    fn palette_row_matches_the_selected_pill_and_accent_bar() {
+        let mut m = ModalStack::default();
+        m.push(Modal::Palette(
+            crate::components::palette::PaletteState::new(&crate::usage::UsageStore::default(), 0),
+        ));
+        let theme = Theme::dark();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| m.draw(f, f.area(), &theme, &mut hits, None))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let row0 = hits.rect_of(&crate::hit::Hit::PaletteRow(0)).unwrap();
+        assert_eq!(
+            buffer[(row0.x, row0.y)].bg,
+            theme.control_hover,
+            "the selected row's pill fill must be theme.control_hover"
+        );
+        assert_eq!(
+            buffer[(row0.x, row0.y)].symbol(),
+            "\u{2588}",
+            "the selected row must carry the full-block accent bar in its first column"
+        );
+        assert_eq!(buffer[(row0.x, row0.y)].fg, theme.accent);
     }
 
     #[test]
@@ -863,15 +1090,19 @@ mod tests {
         let buffer = terminal.backend().buffer();
         assert_eq!(
             buffer[(row1.x, row1.y)].bg,
-            theme.surface_raised,
-            "hovered row gets the raised hover background"
+            theme.control,
+            "hovered row gets the control hover fill"
         );
-        assert_ne!(
+        assert_eq!(
             buffer[(row0.x, row0.y)].bg,
-            theme.surface_raised,
-            "non-hovered rows keep the popup's plain background"
+            theme.control_hover,
+            "the selected row (index 0) keeps its own selected fill"
         );
-        assert_ne!(buffer[(row2.x, row2.y)].bg, theme.surface_raised);
+        assert_eq!(
+            buffer[(row2.x, row2.y)].bg,
+            theme.panel,
+            "non-hovered, non-selected rows keep the popup's plain panel background"
+        );
     }
 
     #[test]

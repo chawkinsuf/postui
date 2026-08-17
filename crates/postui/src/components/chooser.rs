@@ -1,12 +1,12 @@
 use super::palette::fuzzy_match;
 use crate::action::Action;
+use crate::paint::{self, ControlState, FIELD_HEIGHT, PillRow, RowHighlight, TextField};
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Padding, Paragraph};
 
 /// One selectable entry in a `ChooserState`: a label, an optional detail
 /// string shown dimmed after the label, and the actions dispatched on
@@ -158,37 +158,50 @@ impl ChooserState {
         hovered: Option<&crate::hit::Hit>,
     ) {
         let width = 60.min(screen.width);
-        let height = (self.filtered.len() as u16 + 4)
-            .clamp(5, 16)
-            .min(screen.height);
+        // Chrome (everything but the list): 1 pad + 1 title + 1 ring-margin
+        // gap + 3-row field + 1 ring-margin gap + 1 gap + 1 footer + 1 pad.
+        const CHROME: u16 = 10;
+        let content_rows = (self.filtered.len() as u16).clamp(1, 10) * 2;
+        let height = (CHROME + content_rows).clamp(13, 26).min(screen.height);
         let area = super::modal::centered_rect(screen, width, height);
         hits.register(area, crate::hit::Hit::ModalBody);
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme.border_focused))
-            .padding(Padding::horizontal(1))
-            .style(Style::default().bg(theme.surface_raised))
-            .title(format!(" {} ", self.title))
-            .title_style(Style::default().fg(theme.accent));
-        frame.render_widget(Clear, area);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
+        paint::floating_panel(frame.buffer_mut(), area, screen, theme);
 
-        let prompt = Line::from(vec![
-            Span::styled("> ", Style::default().fg(theme.accent)),
-            Span::styled(self.input.as_str(), Style::default().fg(theme.text)),
+        let title_y = area.y + 1;
+        paint::text(
+            frame.buffer_mut(),
+            area.x + 2,
+            title_y,
+            &self.title,
+            theme.text,
+            theme.panel,
+            true,
+        );
+
+        let field_area = Rect {
+            x: area.x + 1,
+            y: title_y + 2,
+            width: area.width.saturating_sub(2),
+            height: FIELD_HEIGHT,
+        };
+        let content = Line::from(vec![
+            Span::raw(self.input.clone()),
             Span::styled("▏", Style::default().fg(theme.accent)),
         ]);
-        let prompt_area = Rect { height: 1, ..inner };
-        frame.render_widget(Paragraph::new(prompt), prompt_area);
+        TextField {
+            content,
+            state: ControlState::Focused,
+        }
+        .paint(frame.buffer_mut(), field_area, theme);
+        paint::focus_ring(frame.buffer_mut(), field_area, theme.panel, theme);
 
         let list_area = Rect {
-            y: inner.y + 2,
-            height: inner.height.saturating_sub(2),
-            ..inner
+            x: area.x + 1,
+            y: field_area.y + FIELD_HEIGHT + 1,
+            width: area.width.saturating_sub(2),
+            height: area.height.saturating_sub(CHROME),
         };
-        let list_h = list_area.height as usize;
+        let list_h = (list_area.height / 2) as usize;
         if self.ensure_visible {
             if list_h > 0 {
                 if self.selected < self.scroll {
@@ -202,44 +215,95 @@ impl ChooserState {
             self.ensure_visible = false;
         }
 
-        let items: Vec<ListItem> = self
+        for (i, &idx) in self
             .filtered
             .iter()
             .enumerate()
             .skip(self.scroll)
             .take(list_h.max(1))
-            .map(|(i, &idx)| {
-                let item = &self.items[idx];
-                let mut style = if i == self.selected {
-                    Style::default().fg(theme.accent).bold()
-                } else {
-                    Style::default().fg(theme.text)
-                };
-                if hovered == Some(&crate::hit::Hit::ChooserRow(i)) {
-                    style = style.bg(theme.surface_raised);
-                }
-                let marker = if i == self.selected { "› " } else { "  " };
-                let mut spans = vec![
-                    Span::styled(marker, style),
-                    Span::styled(item.label.as_str(), style),
-                ];
-                if let Some(detail) = &item.detail {
-                    spans.push(Span::styled(
-                        format!(" {detail}"),
-                        Style::default().fg(theme.text_muted),
-                    ));
-                }
-                let row_area = Rect {
-                    x: list_area.x,
-                    y: list_area.y + (i - self.scroll) as u16,
-                    width: list_area.width,
-                    height: 1,
-                };
-                hits.register(row_area, crate::hit::Hit::ChooserRow(i));
-                ListItem::new(Line::from(spans).style(style))
-            })
-            .collect();
-        frame.render_widget(List::new(items), list_area);
+        {
+            let item = &self.items[idx];
+            let text_row = list_area.y + ((i - self.scroll) as u16) * 2;
+            let selected = i == self.selected;
+            let row_hovered = hovered == Some(&crate::hit::Hit::ChooserRow(i));
+            let highlight = if selected {
+                RowHighlight::Selected
+            } else if row_hovered {
+                RowHighlight::Hover
+            } else {
+                RowHighlight::None
+            };
+            let row_fill = match highlight {
+                RowHighlight::None => theme.panel,
+                RowHighlight::Hover => theme.control,
+                RowHighlight::Selected => theme.control_hover,
+            };
+            PillRow { highlight }.paint(
+                frame.buffer_mut(),
+                text_row,
+                list_area.x,
+                list_area.width,
+                area,
+                theme.panel,
+                theme,
+            );
+
+            let text_x = list_area.x + 1;
+            let mut x = text_x;
+            let right = list_area.x + list_area.width;
+            let label = item.label.as_str();
+            let label_w = (label.chars().count() as u16).min(right.saturating_sub(x));
+            paint::text(
+                frame.buffer_mut(),
+                x,
+                text_row,
+                label,
+                theme.text,
+                row_fill,
+                selected,
+            );
+            x += label_w;
+            if let Some(detail) = &item.detail {
+                let detail = format!(" {detail}");
+                let w = right.saturating_sub(x);
+                paint::text(
+                    frame.buffer_mut(),
+                    x,
+                    text_row,
+                    clip(&detail, w),
+                    theme.text_muted,
+                    row_fill,
+                    false,
+                );
+            }
+
+            let row_rect = Rect {
+                x: list_area.x,
+                y: text_row,
+                width: list_area.width,
+                height: 1,
+            };
+            hits.register(row_rect, crate::hit::Hit::ChooserRow(i));
+        }
+
+        let footer_y = area.y + area.height.saturating_sub(2);
+        paint::text(
+            frame.buffer_mut(),
+            area.x + 2,
+            footer_y,
+            "enter select  esc cancel",
+            theme.text_muted,
+            theme.panel,
+            false,
+        );
+    }
+}
+
+/// Clips `s` to at most `width` columns on a char boundary.
+pub(super) fn clip(s: &str, width: u16) -> &str {
+    match s.char_indices().nth(width as usize) {
+        Some((byte, _)) => &s[..byte],
+        None => s,
     }
 }
 
