@@ -1,14 +1,19 @@
-use super::{Component, DrawCtx, pane_block};
+use super::{Component, DrawCtx};
 use crate::action::Action;
 use crate::hit::{self, Hit, HitMap, ScrollbarSpec};
 use crate::layout::PaneId;
+use crate::paint::{
+    BUTTON_HEIGHT, Button, ButtonKind, Chip, ControlState, PillRow, RowHighlight, fill, text,
+};
 use crate::theme::Theme;
+use postui_core::model::Method;
 use postui_core::storage::RequestListing;
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
-use ratatui::style::Style;
-use ratatui::text::{Line, Span};
+use ratatui::style::{Color, Style};
+use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use std::collections::BTreeSet;
 
@@ -27,6 +32,9 @@ pub enum Row {
         slug: String,
         depth: usize,
         broken: Option<String>,
+        /// `None` exactly when `broken` is `Some` — a request whose file
+        /// failed to parse has no method to show a chip for.
+        method: Option<Method>,
     },
 }
 
@@ -119,6 +127,7 @@ impl Sidebar {
                     slug: e.slug.clone(),
                     depth,
                     broken: e.broken.clone(),
+                    method: e.method,
                 });
             }
         }
@@ -303,48 +312,66 @@ impl Component for Sidebar {
     }
 
     fn draw(&mut self, frame: &mut Frame, area: Rect, ctx: &DrawCtx, hits: &mut HitMap) {
-        let block = pane_block("Requests", ctx);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
+        let theme = ctx.theme;
+        let buf = frame.buffer_mut();
+        fill(buf, area, theme.panel);
 
-        let button_height = inner.height.min(1);
-        let button_area = Rect {
-            x: inner.x,
-            y: inner.y,
-            width: inner.width,
-            height: button_height,
-        };
-        hit::button(
-            frame,
-            hits,
-            button_area,
-            "+ New request",
-            Hit::SidebarNewRequest,
-            ctx.hovered,
+        if area.height == 0 || area.width == 0 {
+            self.last_list_height = 0;
+            return;
+        }
+
+        text(
+            buf,
+            area.x + 1,
+            area.y,
+            "REQUESTS",
+            theme.text_muted,
+            theme.panel,
             true,
-            ctx.theme,
         );
 
-        // One spacer line below the button; the row list starts on the
-        // third line and shrinks the usable height by 2 accordingly.
-        let list_y = inner.y.saturating_add(2).min(inner.y + inner.height);
+        let button_top = (area.y + 1).min(area.y + area.height);
+        let button_height = BUTTON_HEIGHT.min(area.y + area.height - button_top);
+        if button_height == BUTTON_HEIGHT {
+            let button_area = Rect {
+                x: area.x,
+                y: button_top,
+                width: area.width,
+                height: button_height,
+            };
+            let state = if ctx.hovered == Some(&Hit::SidebarNewRequest) {
+                ControlState::Hover
+            } else {
+                ControlState::Normal
+            };
+            Button {
+                label: "+ New request",
+                kind: ButtonKind::Primary,
+                state,
+            }
+            .paint(buf, button_area, theme);
+            hits.register(button_area, Hit::SidebarNewRequest);
+        }
+
+        // One blank spacer line below the button; the row list starts after it.
+        let list_top = (button_top + button_height + 1).min(area.y + area.height);
         let mut list_area = Rect {
-            x: inner.x,
-            y: list_y,
-            width: inner.width,
-            height: inner.height.saturating_sub(2),
+            x: area.x,
+            y: list_top,
+            width: area.width,
+            height: (area.y + area.height) - list_top,
         };
         self.last_list_height = list_area.height as usize;
 
         if self.rows.is_empty() {
             let empty = Paragraph::new(vec![Line::raw(""), Line::raw("No requests yet.")])
-                .style(Style::default().fg(ctx.theme.text_muted))
-                .centered();
-            frame.render_widget(empty, list_area);
+                .style(Style::default().fg(theme.text_muted).bg(theme.panel));
+            frame.render_widget(empty.centered(), list_area);
             return;
         }
 
-        let visible_height = list_area.height as usize;
+        let visible_height = Self::visible_rows(list_area.height);
         if self.ensure_visible {
             if visible_height > 0 {
                 if self.selected < self.scroll {
@@ -381,6 +408,7 @@ impl Component for Sidebar {
             );
         }
 
+        let buf = frame.buffer_mut();
         for (display_pos, (i, row)) in self
             .rows
             .iter()
@@ -389,26 +417,56 @@ impl Component for Sidebar {
             .take(visible_height.max(1))
             .enumerate()
         {
+            let text_row = list_area.y + (display_pos as u16) * 2;
+            if text_row >= area.y + area.height {
+                break;
+            }
+            let is_selected = i == self.selected;
+            let is_hovered = ctx.hovered == Some(&Hit::SidebarRow(i));
+            let highlight = if is_selected {
+                RowHighlight::Selected
+            } else if is_hovered {
+                RowHighlight::Hover
+            } else {
+                RowHighlight::None
+            };
+            let row_fill = match highlight {
+                RowHighlight::None => theme.panel,
+                RowHighlight::Hover => theme.control,
+                RowHighlight::Selected => theme.control_hover,
+            };
+
+            PillRow { highlight }.paint(
+                buf,
+                text_row,
+                list_area.x,
+                list_area.width,
+                area,
+                theme.panel,
+                theme,
+            );
+
+            self.paint_row(buf, row, text_row, list_area, row_fill, is_selected, theme);
+
+            // The hit rect covers the text row and its two half-pad rows
+            // (clipped to the pane), so a click anywhere in the padding
+            // between rows still selects this one.
+            let hit_top = text_row.saturating_sub(1).max(area.y);
+            let hit_bottom = (text_row + 2).min(area.y + area.height);
             let row_rect = Rect {
                 x: list_area.x,
-                y: list_area.y + display_pos as u16,
+                y: hit_top,
                 width: list_area.width,
-                height: 1,
+                height: hit_bottom.saturating_sub(hit_top),
             };
-            let line = self.render_row(i, row, ctx);
-            let mut para = Paragraph::new(line);
-            if ctx.hovered == Some(&Hit::SidebarRow(i)) {
-                para = para.style(Style::default().bg(ctx.theme.surface_raised));
-            }
-            frame.render_widget(para, row_rect);
             hits.register(row_rect, Hit::SidebarRow(i));
 
             if let Row::Folder { depth, .. } = row {
-                let arrow_x = row_rect.x + 2 + (*depth as u16) * 2;
-                if arrow_x < row_rect.x + row_rect.width {
+                let arrow_x = list_area.x + 1 + (*depth as u16) * 2;
+                if arrow_x < list_area.x + list_area.width {
                     let arrow_rect = Rect {
                         x: arrow_x,
-                        y: row_rect.y,
+                        y: text_row,
                         width: 1,
                         height: 1,
                     };
@@ -420,8 +478,20 @@ impl Component for Sidebar {
 }
 
 impl Sidebar {
+    /// Number of full 2-line rows that fit in a list area `list_height`
+    /// lines tall: a trailing odd line still fits one more row's text line
+    /// (its bottom pad just gets clipped), so this rounds up.
+    fn visible_rows(list_height: u16) -> usize {
+        (list_height as usize).div_ceil(2)
+    }
+
     /// The row list's scroll state, as of the last draw. `None` before the
-    /// first frame (the viewport height is a render-time fact).
+    /// first frame (the viewport height is a render-time fact). Content and
+    /// viewport are both counted in logical rows (not lines): the 2-line
+    /// pitch scales every row's footprint by the same factor, so the
+    /// thumb's proportions come out identical whether measured in rows or
+    /// lines — counting rows keeps `offset` in the same unit as `scroll`,
+    /// which callers (e.g. thumb-drag handling) assign directly.
     pub fn scrollbar_spec(&self) -> Option<ScrollbarSpec> {
         if self.last_list_height == 0 {
             return None;
@@ -430,23 +500,41 @@ impl Sidebar {
             pane: PaneId::Sidebar,
             offset: self.scroll,
             content: self.rows.len(),
-            viewport: self.last_list_height,
+            viewport: Self::visible_rows(self.last_list_height as u16),
         })
     }
 
-    fn render_row(&self, idx: usize, row: &Row, ctx: &DrawCtx) -> Line<'static> {
-        let theme: &Theme = ctx.theme;
-        let is_selected = idx == self.selected;
-        let marker_style = if is_selected {
-            if ctx.focused {
-                Style::default().fg(theme.accent).bold()
-            } else {
-                Style::default().fg(theme.text_muted)
-            }
-        } else {
-            Style::default().fg(theme.text_muted)
-        };
-        let marker = if is_selected { "\u{203a} " } else { "  " };
+    /// Clips `s` to at most `max` chars (char-count width, matching the
+    /// paint layer's char-count convention elsewhere).
+    fn clip(s: &str, max: u16) -> &str {
+        if max == 0 {
+            return "";
+        }
+        match s.char_indices().nth(max as usize) {
+            Some((idx, _)) => &s[..idx],
+            None => s,
+        }
+    }
+
+    /// Paints one row's text-row content (chip/disclosure + name) at
+    /// `text_row`, on top of the fill `PillRow` already painted there.
+    /// `row_fill` is that fill (the surface the chip/text sit on).
+    #[allow(clippy::too_many_arguments)]
+    fn paint_row(
+        &self,
+        buf: &mut Buffer,
+        row: &Row,
+        text_row: u16,
+        list_area: Rect,
+        row_fill: Color,
+        selected: bool,
+        theme: &Theme,
+    ) {
+        let right = list_area.x + list_area.width;
+        // Column 0 is reserved for the selection's accent bar (painted by
+        // PillRow), whether or not this row is selected, so content never
+        // shifts when selection changes.
+        let text_x = list_area.x + 1;
 
         match row {
             Row::Folder {
@@ -455,45 +543,92 @@ impl Sidebar {
                 expanded,
                 ..
             } => {
-                let text_style = if is_selected && ctx.focused {
-                    Style::default().fg(theme.accent).bold()
-                } else {
-                    Style::default().fg(theme.text_muted)
-                };
-                let glyph = if *expanded { "\u{25be}" } else { "\u{25b8}" };
-                let indent = "  ".repeat(*depth);
-                Line::from(vec![
-                    Span::styled(marker, marker_style),
-                    Span::raw(indent),
-                    Span::styled(format!("{glyph} {name}/"), text_style),
-                ])
+                let x = text_x + (*depth as u16) * 2;
+                if x >= right {
+                    return;
+                }
+                let glyph = if *expanded { "\u{2304}" } else { "\u{203a}" };
+                text(buf, x, text_row, glyph, theme.text_muted, row_fill, false);
+                let name_x = x + 2;
+                if name_x < right {
+                    let label = format!("{name}/");
+                    text(
+                        buf,
+                        name_x,
+                        text_row,
+                        Self::clip(&label, right - name_x),
+                        theme.text_muted,
+                        row_fill,
+                        false,
+                    );
+                }
             }
             Row::Request {
                 slug,
                 depth,
                 broken,
+                method,
             } => {
-                let text_style = if is_selected && ctx.focused {
-                    Style::default().fg(theme.accent).bold()
-                } else {
-                    Style::default().fg(theme.text)
-                };
+                let x = text_x + (*depth as u16) * 2;
+                if x >= right {
+                    return;
+                }
                 let basename = slug.rsplit('/').next().unwrap_or(slug.as_str());
-                let indent = "  ".repeat(*depth);
 
-                let mut spans = vec![Span::styled(marker, marker_style)];
-                if !indent.is_empty() {
-                    spans.push(Span::raw(indent));
+                let content_x = match (method, broken) {
+                    (Some(m), None) => {
+                        let width = Chip {
+                            label: m.as_str(),
+                            color: theme.method_color(*m),
+                        }
+                        .paint(buf, x, text_row, row_fill, theme);
+                        x + width + 1
+                    }
+                    // Broken (unparseable) files have no method to chip: an
+                    // error glyph stands in its place instead.
+                    _ => {
+                        text(buf, x, text_row, "\u{2717}", theme.error, row_fill, false);
+                        x + 2
+                    }
+                };
+                if content_x >= right {
+                    return;
                 }
-                if broken.is_some() {
-                    spans.push(Span::styled("\u{2717} ", Style::default().fg(theme.error)));
-                } else if self.open_slug.as_deref() == Some(slug.as_str()) && self.open_dirty {
-                    spans.push(Span::styled("\u{25cf} ", Style::default().fg(theme.accent)));
+
+                let dirty = broken.is_none()
+                    && self.open_slug.as_deref() == Some(slug.as_str())
+                    && self.open_dirty;
+                let name_x = if dirty {
+                    text(
+                        buf,
+                        content_x,
+                        text_row,
+                        "\u{25cf} ",
+                        theme.accent,
+                        row_fill,
+                        false,
+                    );
+                    content_x + 2
                 } else {
-                    spans.push(Span::raw("  "));
+                    content_x
+                };
+                if name_x >= right {
+                    return;
                 }
-                spans.push(Span::styled(basename.to_string(), text_style));
-                Line::from(spans)
+                let name_fg = if broken.is_some() {
+                    theme.error
+                } else {
+                    theme.text
+                };
+                text(
+                    buf,
+                    name_x,
+                    text_row,
+                    Self::clip(basename, right - name_x),
+                    name_fg,
+                    row_fill,
+                    selected,
+                );
             }
         }
     }
@@ -516,6 +651,7 @@ mod tests {
             .map(|s| RequestListing {
                 slug: s.to_string(),
                 broken: None,
+                method: Some(Method::Get),
             })
             .collect()
     }
@@ -538,7 +674,8 @@ mod tests {
                 Row::Request {
                     slug: "top".into(),
                     depth: 0,
-                    broken: None
+                    broken: None,
+                    method: Some(Method::Get),
                 },
                 Row::Folder {
                     path: "api".into(),
@@ -558,7 +695,8 @@ mod tests {
                 Row::Request {
                     slug: "top".into(),
                     depth: 0,
-                    broken: None
+                    broken: None,
+                    method: Some(Method::Get),
                 },
                 Row::Folder {
                     path: "api".into(),
@@ -569,7 +707,8 @@ mod tests {
                 Row::Request {
                     slug: "api/ping".into(),
                     depth: 1,
-                    broken: None
+                    broken: None,
+                    method: Some(Method::Get),
                 },
                 Row::Folder {
                     path: "api/users".into(),
@@ -675,13 +814,14 @@ mod tests {
             .rect_of(&Hit::ScrollbarThumb(PaneId::Sidebar))
             .expect("thumb hit");
         assert_eq!(thumb.width, 1);
-        // 30 wide, minus a border and a padding column each side -> the bar
-        // owns the last column of the padded interior.
-        assert_eq!(thumb.x, 27);
+        // 30 wide, no border/padding now -> the bar owns the pane's last
+        // column outright.
+        assert_eq!(thumb.x, 29);
         let track = hits.track_of(PaneId::Sidebar).expect("track rect");
         assert_eq!(track.x, thumb.x);
-        // Inner height 10, minus the button row and its spacer.
-        let viewport = 8i16;
+        // 12-row pane: label(1) + button(3) + spacer(1) = 5 rows overhead,
+        // leaving 7 lines for the list -> 4 full 2-line rows fit.
+        let viewport = 4i16;
         assert!(
             thumb.height < track.height,
             "30 rows in an 8-row viewport is a short thumb"
@@ -718,13 +858,12 @@ mod tests {
     fn short_list_registers_no_scrollbar() {
         let mut s = Sidebar::default();
         s.refresh(listing(&["a", "b", "c"]), &expanded(&[]));
-        let (content, hits) = render_hits(&mut s);
-        assert!(!content.contains('\u{2588}'));
+        let (_content, hits) = render_hits(&mut s);
         assert_eq!(hits.rect_of(&Hit::ScrollbarThumb(PaneId::Sidebar)), None);
         assert_eq!(hits.track_of(PaneId::Sidebar), None);
-        // The rows keep the full inner width when no bar is needed.
+        // The rows keep the full pane width when no bar is needed.
         let row = hits.rect_of(&Hit::SidebarRow(0)).unwrap();
-        assert_eq!(row.width, 26);
+        assert_eq!(row.width, 30);
     }
 
     #[test]
@@ -740,24 +879,46 @@ mod tests {
             .draw(|f| s.draw(f, f.area(), &ctx, &mut hits))
             .unwrap();
 
-        let content = format!("{:?}", terminal.backend().buffer());
-        assert!(content.contains("+ New request"));
-
         let button_rect = hits.rect_of(&Hit::SidebarNewRequest).expect("button hit");
-        // Button is the first drawn line, at the top of the inner pane area.
+        let label_row: String = (button_rect.x..button_rect.x + button_rect.width)
+            .map(|x| {
+                terminal.backend().buffer()[(x, button_rect.y + 1)]
+                    .symbol()
+                    .to_string()
+            })
+            .collect();
+        assert!(label_row.contains("+ New request"));
+        // No `[`/`]` anywhere in the whole pane: scan every cell's symbol
+        // directly (not a `Debug`-formatted dump, whose own `Vec` brackets
+        // would give a false positive).
+        let buf = terminal.backend().buffer();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                let sym = buf[(x, y)].symbol();
+                assert_ne!(sym, "[", "no bracket glyph at ({x},{y})");
+                assert_ne!(sym, "]", "no bracket glyph at ({x},{y})");
+            }
+        }
         assert_eq!(
             button_rect.y, 1,
-            "button sits on the first line inside the block"
+            "button sits below the REQUESTS label at the top of the pane"
+        );
+        assert_eq!(button_rect.height, 3, "the paint-layer button is 3 rows");
+        let buf = terminal.backend().buffer();
+        assert_eq!(
+            buf[(button_rect.x, button_rect.y)].symbol(),
+            "\u{2594}",
+            "button's top row is the light bevel"
         );
 
         // rows[0] = "top", rows[1] = folder "api" (expanded), rows[2] = "api/ping"
+        // list starts at y = label(1) + button(3) + spacer(1) = 5.
         let row0 = hits.rect_of(&Hit::SidebarRow(0)).expect("row 0 hit");
-        assert!(
-            row0.y > button_rect.y + 1,
-            "rows start after the button and a spacer line"
-        );
-        assert!(hits.rect_of(&Hit::SidebarRow(1)).is_some());
-        assert!(hits.rect_of(&Hit::SidebarRow(2)).is_some());
+        assert_eq!(row0.y, 4, "row 0's hit rect includes its top half-pad");
+        let row1 = hits.rect_of(&Hit::SidebarRow(1)).expect("row 1 hit");
+        let row2 = hits.rect_of(&Hit::SidebarRow(2)).expect("row 2 hit");
+        assert_eq!(row1.y - row0.y, 2, "rows sit on a 2-line pitch");
+        assert_eq!(row2.y - row1.y, 2);
 
         // Folder row 1 also registers its arrow glyph cell, which must win
         // over the row hit at that exact point (registered after it).
@@ -775,9 +936,40 @@ mod tests {
     #[test]
     fn hovered_row_gets_background_not_inverted_text() {
         let mut s = Sidebar::default();
-        s.refresh(listing(&["top"]), &expanded(&[]));
+        // Two rows so the hovered one (row 1) differs from the
+        // default-selected one (row 0) — selection otherwise wins the fill.
+        s.refresh(listing(&["top", "next"]), &expanded(&[]));
         let theme = Theme::dark();
-        let ctx = draw_ctx(&theme, Some(&Hit::SidebarRow(0)));
+        let ctx = draw_ctx(&theme, Some(&Hit::SidebarRow(1)));
+        let backend = ratatui::backend::TestBackend::new(30, 12);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut hits = HitMap::default();
+        terminal
+            .draw(|f| s.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+        let row1 = hits.rect_of(&Hit::SidebarRow(1)).unwrap();
+        // The hit rect's top row is the row's upper half-pad; the text row
+        // (where the fill's own bg lives, not composed with a neighbor) is
+        // one line below it.
+        let text_row = row1.y + 1;
+        let cell = terminal.backend().buffer()[(row1.x, text_row)].clone();
+        assert_eq!(
+            cell.bg, theme.control,
+            "hovered row uses the control fill, not inverted fg/bg"
+        );
+        assert_ne!(
+            cell.fg, theme.panel,
+            "text isn't painted by inverting fg/bg"
+        );
+    }
+
+    #[test]
+    fn selected_row_gets_control_hover_fill_and_accent_bar() {
+        let mut s = Sidebar::default();
+        // selected defaults to row 0 after refresh.
+        s.refresh(listing(&["top", "next"]), &expanded(&[]));
+        let theme = Theme::dark();
+        let ctx = draw_ctx(&theme, None);
         let backend = ratatui::backend::TestBackend::new(30, 12);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let mut hits = HitMap::default();
@@ -785,10 +977,77 @@ mod tests {
             .draw(|f| s.draw(f, f.area(), &ctx, &mut hits))
             .unwrap();
         let row0 = hits.rect_of(&Hit::SidebarRow(0)).unwrap();
-        let cell = terminal.backend().buffer()[(row0.x, row0.y)].clone();
+        let text_row = row0.y + 1;
+        let buf = terminal.backend().buffer();
+        let bar_cell = buf[(row0.x, text_row)].clone();
+        // Far right of the row, past the chip/name text, where only the
+        // pill's plain fill (not glyph content) is painted.
+        let fill_cell = buf[(row0.x + row0.width - 2, text_row)].clone();
+        assert_eq!(bar_cell.symbol(), "\u{2588}", "accent bar at column 0");
+        assert_eq!(bar_cell.fg, theme.accent);
         assert_eq!(
-            cell.bg, theme.surface_raised,
-            "hovered row uses a raised background, not inverted fg/bg"
+            fill_cell.bg, theme.control_hover,
+            "selected row fills with control_hover"
+        );
+    }
+
+    #[test]
+    fn request_row_paints_a_tinted_method_chip() {
+        let mut s = Sidebar::default();
+        // Two rows: row 0 stays default-selected (control_hover fill), row
+        // 1 is plain (theme.panel fill) — check the chip's tint there so it
+        // reflects the surface it actually sits on.
+        s.refresh(
+            vec![
+                RequestListing {
+                    slug: "ping".into(),
+                    broken: None,
+                    method: Some(Method::Get),
+                },
+                RequestListing {
+                    slug: "pong".into(),
+                    broken: None,
+                    method: Some(Method::Get),
+                },
+            ],
+            &expanded(&[]),
+        );
+        let (_, hits) = render_hits(&mut s);
+        let row1 = hits.rect_of(&Hit::SidebarRow(1)).unwrap();
+        let text_row = row1.y + 1;
+        let theme = Theme::dark();
+        let ctx = draw_ctx(&theme, None);
+        let backend = ratatui::backend::TestBackend::new(30, 12);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut hits2 = HitMap::default();
+        terminal
+            .draw(|f| s.draw(f, f.area(), &ctx, &mut hits2))
+            .unwrap();
+        // Chip starts one column after the reserved accent-bar column.
+        let chip_cell = terminal.backend().buffer()[(row1.x + 2, text_row)].clone();
+        assert_eq!(chip_cell.symbol(), "G", "GET chip label");
+        assert_eq!(
+            chip_cell.bg,
+            theme.tint(theme.method_color(Method::Get), theme.panel),
+            "chip bg is tinted toward the method color"
+        );
+    }
+
+    #[test]
+    fn broken_request_row_has_no_chip() {
+        let mut s = Sidebar::default();
+        s.refresh(
+            vec![RequestListing {
+                slug: "bad".into(),
+                broken: Some("parse error".into()),
+                method: None,
+            }],
+            &expanded(&[]),
+        );
+        let (content, _) = render_hits(&mut s);
+        assert!(
+            content.contains('\u{2717}'),
+            "broken rows keep the error glyph in place of a chip"
         );
     }
 }

@@ -2089,6 +2089,7 @@ mod tests {
             .map(|i| postui_core::storage::RequestListing {
                 slug: format!("r{i:02}"),
                 broken: None,
+                method: Some(postui_core::model::Method::Get),
             })
             .collect();
         app.sidebar.refresh(slugs, &Default::default());
@@ -2140,6 +2141,7 @@ mod tests {
             .map(|i| postui_core::storage::RequestListing {
                 slug: format!("r{i:02}"),
                 broken: None,
+                method: Some(postui_core::model::Method::Get),
             })
             .collect();
         app.sidebar.refresh(slugs, &Default::default());
@@ -2361,7 +2363,8 @@ mod tests {
                 Row::Request {
                     slug: "ping".into(),
                     depth: 0,
-                    broken: None
+                    broken: None,
+                    method: Some(postui_core::model::Method::Get),
                 },
                 Row::Folder {
                     path: "auth".into(),
@@ -2450,7 +2453,8 @@ mod tests {
             Row::Request {
                 slug: "top".into(),
                 depth: 0,
-                broken: None
+                broken: None,
+                method: Some(postui_core::model::Method::Get),
             }
         );
         let r = app.hits.rect_of(&crate::hit::Hit::SidebarRow(0)).unwrap();
@@ -2600,7 +2604,8 @@ mod tests {
             Row::Request {
                 slug: "api/ping".into(),
                 depth: 1,
-                broken: None
+                broken: None,
+                method: Some(postui_core::model::Method::Get),
             },
             "folder pre-expanded so api/ping is the third row"
         );

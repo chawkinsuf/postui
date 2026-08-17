@@ -17,7 +17,7 @@ fn stage1_acceptance_flow() {
 
     // 1. Initial frame: all chrome present, sidebar focused.
     let frame = render(&mut app);
-    assert!(frame.contains("Requests") && frame.contains("Response"));
+    assert!(frame.contains("REQUESTS") && frame.contains("Response"));
 
     // 2. Focus cycling reaches every pane.
     app.update(Action::FocusNext);

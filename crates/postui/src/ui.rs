@@ -76,7 +76,7 @@ mod tests {
     fn full_frame_shows_all_panes_and_chrome() {
         let mut app = App::new_for_test();
         let content = render(&mut app);
-        assert!(content.contains("Requests")); // sidebar title
+        assert!(content.contains("REQUESTS")); // sidebar title
         assert!(content.contains("Request")); // editor title
         assert!(content.contains("Response")); // response title
         assert!(content.contains("postui")); // header bar app name

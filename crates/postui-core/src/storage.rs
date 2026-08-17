@@ -1,7 +1,7 @@
 //! File-based storage for HTTP requests: project layout, atomic saves, and
 //! slug-addressed CRUD over `root/requests/**/*.toml`.
 
-use crate::model::HttpRequest;
+use crate::model::{HttpRequest, Method};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -35,6 +35,10 @@ fn io_err(path: &Path) -> impl FnOnce(std::io::Error) -> StorageError + '_ {
 pub struct RequestListing {
     pub slug: String,
     pub broken: Option<String>,
+    /// The request's HTTP method, parsed for free alongside `broken`
+    /// detection. `None` exactly when `broken` is `Some` — a file that
+    /// failed to parse has no method to show.
+    pub method: Option<Method>,
 }
 
 /// The default project directory: `<config dir>/<APP_NAME>/default`.
@@ -108,14 +112,18 @@ pub fn list_requests(root: &Path) -> (Vec<RequestListing>, Option<String>) {
         let slug = slug
             .to_string_lossy()
             .replace(std::path::MAIN_SEPARATOR, "/");
-        let broken = match std::fs::read_to_string(&path) {
+        let (method, broken) = match std::fs::read_to_string(&path) {
             Ok(contents) => match HttpRequest::from_toml_str(&contents) {
-                Ok(_) => None,
-                Err(e) => Some(e.to_string()),
+                Ok(req) => (Some(req.method), None),
+                Err(e) => (None, Some(e.to_string())),
             },
-            Err(e) => Some(e.to_string()),
+            Err(e) => (None, Some(e.to_string())),
         };
-        out.push(RequestListing { slug, broken });
+        out.push(RequestListing {
+            slug,
+            broken,
+            method,
+        });
     })
     .err()
     .map(|e| e.to_string());
@@ -223,6 +231,10 @@ mod tests {
             "sorted, subdir path as slug"
         );
         assert!(listing.iter().all(|l| l.broken.is_none()));
+        assert!(
+            listing.iter().all(|l| l.method == Some(Method::Get)),
+            "method parsed alongside broken detection for valid files"
+        );
         assert_eq!(load_request(dir.path(), "auth/login").unwrap(), req());
     }
 
@@ -239,6 +251,10 @@ mod tests {
         assert!(walk_err.is_none());
         assert_eq!(listing[0].slug, "bad");
         assert!(listing[0].broken.is_some());
+        assert_eq!(
+            listing[0].method, None,
+            "a broken file has no parsed method"
+        );
         let err = load_request(dir.path(), "bad").unwrap_err().to_string();
         assert!(
             err.contains('2') || err.to_lowercase().contains("duplicate"),
