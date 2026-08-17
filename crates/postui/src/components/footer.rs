@@ -97,25 +97,33 @@ pub fn draw_footer(
             width,
             height: 1,
         };
-        let chip_hit = action.map(Hit::FooterChip);
-        let chip_fill = if chip_hit.is_some() && hovered == chip_hit.as_ref() {
-            theme.control_hover
-        } else {
-            theme.control
+        // The chip fill IS the clickability signal: a binding with no
+        // dispatchable `Action` renders as plain text directly on the
+        // panel (no fill, no hover response), never a `control`-filled
+        // chip that would visually promise a click it can't honor.
+        let chip_bg = match &action {
+            Some(a) if hovered == Some(&Hit::FooterChip(a.clone())) => {
+                fill(buf, chip_area, theme.control_hover);
+                theme.control_hover
+            }
+            Some(_) => {
+                fill(buf, chip_area, theme.control);
+                theme.control
+            }
+            None => theme.panel,
         };
-        fill(buf, chip_area, chip_fill);
-        text(buf, x, mid_y, &key_text, theme.accent, chip_fill, true);
+        text(buf, x, mid_y, &key_text, theme.accent, chip_bg, true);
         text(
             buf,
             x + key_text.chars().count() as u16,
             mid_y,
             &label_text,
             theme.text_muted,
-            chip_fill,
+            chip_bg,
             false,
         );
-        if let Some(hit) = chip_hit {
-            hits.register(chip_area, hit);
+        if let Some(action) = action {
+            hits.register(chip_area, Hit::FooterChip(action));
         }
         x += width + 2;
     }
@@ -224,6 +232,44 @@ mod tests {
         assert!(!label_cell.modifier.contains(ratatui::style::Modifier::BOLD));
     }
 
+    /// Controller ruling: the chip fill IS the clickability signal.
+    /// Non-clickable (`None`-action) entries must render as plain text
+    /// directly on the panel — no fill, no hover — while clickable entries
+    /// keep their `control` chip fill.
+    #[test]
+    fn only_clickable_entries_get_the_control_chip_fill() {
+        let theme = Theme::for_terminal();
+        let backend = TestBackend::new(120, FOOTER_HEIGHT);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| draw_footer(f, f.area(), &theme, PaneId::Sidebar, &mut hits, None))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+
+        // "enter open" (Sidebar's first binding) has no dispatchable
+        // Action: plain text on the panel, not a chip.
+        assert!(hits.rect_of(&Hit::FooterChip(Action::Quit)).is_some()); // sanity: hits exist at all
+        let plain_x = 1u16; // area.x + 1, the loop's starting column
+        let plain_cell = buf.cell((plain_x + 1, 1)).unwrap();
+        assert_eq!(plain_cell.symbol(), "e", "first letter of \"enter\"");
+        assert_eq!(
+            plain_cell.bg, theme.panel,
+            "non-clickable entry is unfilled"
+        );
+        assert_eq!(plain_cell.fg, theme.accent);
+
+        // "n new" (PromptNewRequest) IS clickable: control-filled chip.
+        let rect = hits
+            .rect_of(&Hit::FooterChip(Action::PromptNewRequest))
+            .expect("new-request chip hit registered");
+        let chip_cell = buf.cell((rect.x + 1, rect.y)).unwrap();
+        assert_eq!(
+            chip_cell.bg, theme.control,
+            "clickable entry keeps its chip fill"
+        );
+    }
+
     #[test]
     fn quit_hint_is_right_aligned_muted_text_on_panel() {
         let theme = Theme::for_terminal();
@@ -246,5 +292,39 @@ mod tests {
         assert_eq!(cell.symbol(), "q");
         assert_eq!(cell.fg, theme.text_muted);
         assert_eq!(cell.bg, theme.panel);
+    }
+
+    /// Regression test for the controller sweep's Paint Gap C report: a
+    /// tmux capture showed the bottom screen row (the footer's 3rd row)
+    /// unpainted. Checked both directly against `draw_footer` and through
+    /// the real `ui::draw` path, where the footer sits at the very bottom
+    /// of the terminal.
+    #[test]
+    fn panel_fill_reaches_the_footer_s_bottom_row() {
+        let theme = Theme::for_terminal();
+        let backend = TestBackend::new(120, FOOTER_HEIGHT);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| draw_footer(f, f.area(), &theme, PaneId::Sidebar, &mut hits, None))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let bottom = buf.cell((3, FOOTER_HEIGHT - 1)).unwrap();
+        assert_eq!(
+            bottom.bg, theme.panel,
+            "the footer's own bottom row must be panel-filled: {bottom:?}"
+        );
+
+        // Same assertion through the app's actual draw path, where the
+        // footer is the terminal's very last row.
+        let mut app = crate::app::App::new_for_test();
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+        let bottom = buf.cell((3, 39)).unwrap();
+        assert_eq!(
+            bottom.bg, app.theme.panel,
+            "the terminal's bottom-most row (the footer's 3rd row) must be panel-filled: {bottom:?}"
+        );
     }
 }

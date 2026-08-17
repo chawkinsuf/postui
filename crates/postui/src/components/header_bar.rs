@@ -196,4 +196,38 @@ mod tests {
             }
         }
     }
+
+    /// Regression test for the controller sweep's Paint Gap A report (a
+    /// tmux capture showing the panel fill stopping around column 34, past
+    /// the env chip). Checked both directly against `draw_header` at a wide
+    /// (200-col) width and through the real `ui::draw` path the app itself
+    /// uses, since `draw_header`'s own `fill(buf, area, theme.panel)` call
+    /// paints `area` in full before anything else is drawn.
+    #[test]
+    fn panel_fill_reaches_the_full_area_width_past_the_chips() {
+        let theme = Theme::dark();
+        let backend = TestBackend::new(200, HEADER_HEIGHT);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = HitMap::default();
+        terminal
+            .draw(|f: &mut Frame| draw_header(f, f.area(), &theme, "alpha", "qa", &mut hits, None))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let far_right = buf.cell((198, 1)).unwrap();
+        assert_eq!(
+            far_right.bg, theme.panel,
+            "the panel fill must reach the far-right column: {far_right:?}"
+        );
+
+        // Same assertion through the app's actual draw path.
+        let mut app = crate::app::App::new_for_test();
+        let mut terminal = Terminal::new(TestBackend::new(200, 40)).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+        let far_right = buf.cell((197, 1)).unwrap();
+        assert_eq!(
+            far_right.bg, app.theme.panel,
+            "app bar panel fill must reach the far-right column in the live draw path: {far_right:?}"
+        );
+    }
 }

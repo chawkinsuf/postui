@@ -1701,4 +1701,37 @@ url = "https://api.example.com/users""#,
             app.editor.body.cursor.row
         );
     }
+
+    /// Regression test for the controller sweep's Paint Gap B report: with
+    /// an empty params table (the default scratch editor), the fixed-height
+    /// address bar + tab bar + tiny table content rows don't sum to the
+    /// pane's full height, and the leftover space below them must still
+    /// read as `theme.page` — painted once, up front, by `pane_surface`
+    /// filling the whole pane rect before the layout split — not the
+    /// terminal's default background.
+    #[test]
+    fn empty_params_table_still_paints_page_below_its_short_content() {
+        let mut app = App::new_for_test();
+        assert_eq!(app.editor.active_tab, EditorTab::Params);
+        assert!(
+            app.editor.params.is_empty(),
+            "fresh scratch editor: no rows"
+        );
+
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+
+        let layout =
+            crate::layout::compute_layout(ratatui::layout::Rect::new(0, 0, 120, 40), false);
+        let buf = terminal.backend().buffer();
+        // Deep into the pane's lower region, well past the address bar, tab
+        // bar, and the empty table's few header/ghost/edge rows.
+        let probe_y = layout.editor.y + layout.editor.height - 1;
+        let cell = buf.cell((layout.editor.x + 2, probe_y)).unwrap();
+        assert_eq!(
+            cell.bg, app.theme.page,
+            "editor pane's lower region must be page-filled, not left at the terminal default: {cell:?}"
+        );
+    }
 }
