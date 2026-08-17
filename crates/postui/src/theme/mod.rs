@@ -1,56 +1,153 @@
 use ratatui::style::Color;
 
+/// The small set of hand-picked colors a palette is generated from. Everything
+/// else in [`Theme`] is derived from these six seeds by [`Theme::generate`].
+pub struct Seeds {
+    pub bg: (u8, u8, u8),
+    pub fg: (u8, u8, u8),
+    pub accent: (u8, u8, u8),
+    pub success: (u8, u8, u8),
+    pub warning: (u8, u8, u8),
+    pub error: (u8, u8, u8),
+}
+
+impl Seeds {
+    /// Starting palette (Tokyo-Night-adjacent); visual direction iterates on
+    /// these values during stage-1 polish with the frontend-design skill.
+    pub fn dark() -> Self {
+        Self {
+            bg: (0x13, 0x17, 0x20),
+            fg: (0xd8, 0xde, 0xe9),
+            accent: (0x7a, 0xa2, 0xf7),
+            success: (0x9e, 0xce, 0x6a),
+            warning: (0xe0, 0xaf, 0x68),
+            error: (0xf7, 0x76, 0x8e),
+        }
+    }
+
+    pub fn light() -> Self {
+        Self {
+            bg: (0xf7, 0xf8, 0xfa),
+            fg: (0x24, 0x29, 0x2f),
+            accent: (0x1d, 0x63, 0xed),
+            success: (0x16, 0xa3, 0x4a),
+            warning: (0xd9, 0x77, 0x06),
+            error: (0xdc, 0x26, 0x26),
+        }
+    }
+}
+
 pub struct Theme {
     /// Whether this is a dark-background palette. Consumers that must pick
     /// between a dark and a light variant of an external asset (e.g. the
     /// bundled syntect themes used for JSON syntax highlighting) key off
     /// this rather than guessing from a color token.
     dark: bool,
-    pub surface: Color,
-    pub surface_raised: Color,
+    // surface ladder
+    pub page: Color,
+    pub panel: Color,
+    pub control: Color,
+    pub control_hover: Color,
+    pub control_pressed: Color,
+    // bevel pair (relative to `control`; paint layer derives per-surface variants)
+    pub edge_light: Color,
+    pub edge_dark: Color,
+    // accent family
+    pub accent: Color,
+    pub accent_edge_light: Color,
+    pub accent_edge_dark: Color,
+    pub on_accent: Color,
+    pub focus_ring: Color,
+    // text
     pub text: Color,
     pub text_muted: Color,
-    pub accent: Color,
+    pub text_disabled: Color,
+    // semantics (kept from stage 4)
     pub success: Color,
-    pub error: Color,
     pub warning: Color,
+    pub error: Color,
+    // legacy aliases kept until Task 12 removes them:
+    pub surface: Color,
+    pub surface_raised: Color,
     pub border: Color,
     pub border_focused: Color,
 }
 
 impl Theme {
-    /// Starting palette (Tokyo-Night-adjacent); visual direction iterates on
-    /// these values during stage-1 polish with the frontend-design skill.
-    pub fn dark() -> Self {
+    /// Builds a full token set from a small seed palette: a surface ladder
+    /// (page/panel/control/hover/pressed) plus bevel, accent, and text
+    /// families, all derived by lifting seed lightness in Oklab space.
+    pub fn generate(seeds: &Seeds) -> Self {
+        let bg = seeds.bg;
+        let fg = seeds.fg;
+        let dark = oklab_l(bg) < 0.5;
+        let step = if dark { 1.0 } else { -1.0 };
+
+        let page = bg;
+        let panel = lift(bg, step * 0.03);
+        let control = lift(bg, step * 0.06);
+        let control_hover = lift(bg, step * 0.10);
+        let control_pressed = lift(bg, step * -0.02);
+        let edge_light = lift(control, 0.08);
+        let edge_dark = lift(control, -0.08);
+
+        let accent = seeds.accent;
+        let accent_edge_light = lift(accent, 0.12);
+        let accent_edge_dark = lift(accent, -0.12);
+        let on_accent = if oklab_l(accent) < 0.6 {
+            (0xff, 0xff, 0xff)
+        } else {
+            (0x11, 0x11, 0x11)
+        };
+        let focus_ring = accent;
+
+        let mut text = fg;
+        let text_muted = blend(fg, bg, 0.55);
+        let text_disabled = blend(fg, bg, 0.35);
+
+        // Contrast clamp: push text away from bg until |ΔL| >= 0.4.
+        let page_l = oklab_l(page);
+        if (oklab_l(text) - page_l).abs() < 0.4 {
+            let direction = if oklab_l(text) >= page_l { 1.0 } else { -1.0 };
+            let target_l = (page_l + direction * 0.4).clamp(0.0, 1.0);
+            text = lift(text, target_l - oklab_l(text));
+        }
+
+        let to_color = |c: (u8, u8, u8)| Color::Rgb(c.0, c.1, c.2);
+
         Self {
-            dark: true,
-            surface: Color::Rgb(0x13, 0x17, 0x20),
-            surface_raised: Color::Rgb(0x1a, 0x1f, 0x2b),
-            text: Color::Rgb(0xd8, 0xde, 0xe9),
-            text_muted: Color::Rgb(0x7b, 0x84, 0x96),
-            accent: Color::Rgb(0x7a, 0xa2, 0xf7),
-            success: Color::Rgb(0x9e, 0xce, 0x6a),
-            error: Color::Rgb(0xf7, 0x76, 0x8e),
-            warning: Color::Rgb(0xe0, 0xaf, 0x68),
-            border: Color::Rgb(0x2a, 0x2f, 0x3a),
-            border_focused: Color::Rgb(0x7a, 0xa2, 0xf7),
+            dark,
+            page: to_color(page),
+            panel: to_color(panel),
+            control: to_color(control),
+            control_hover: to_color(control_hover),
+            control_pressed: to_color(control_pressed),
+            edge_light: to_color(edge_light),
+            edge_dark: to_color(edge_dark),
+            accent: to_color(accent),
+            accent_edge_light: to_color(accent_edge_light),
+            accent_edge_dark: to_color(accent_edge_dark),
+            on_accent: to_color(on_accent),
+            focus_ring: to_color(focus_ring),
+            text: to_color(text),
+            text_muted: to_color(text_muted),
+            text_disabled: to_color(text_disabled),
+            success: to_color(seeds.success),
+            warning: to_color(seeds.warning),
+            error: to_color(seeds.error),
+            surface: to_color(page),
+            surface_raised: to_color(panel),
+            border: to_color(edge_light),
+            border_focused: to_color(accent),
         }
     }
 
+    pub fn dark() -> Self {
+        Self::generate(&Seeds::dark())
+    }
+
     pub fn light() -> Self {
-        Self {
-            dark: false,
-            surface: Color::Rgb(0xf7, 0xf8, 0xfa),
-            surface_raised: Color::Rgb(0xff, 0xff, 0xff),
-            text: Color::Rgb(0x24, 0x29, 0x2f),
-            text_muted: Color::Rgb(0x6e, 0x77, 0x81),
-            accent: Color::Rgb(0x1d, 0x63, 0xed),
-            success: Color::Rgb(0x16, 0xa3, 0x4a),
-            error: Color::Rgb(0xdc, 0x26, 0x26),
-            warning: Color::Rgb(0xd9, 0x77, 0x06),
-            border: Color::Rgb(0xd0, 0xd7, 0xde),
-            border_focused: Color::Rgb(0x1d, 0x63, 0xed),
-        }
+        Self::generate(&Seeds::light())
     }
 
     pub fn for_terminal() -> Self {
@@ -75,6 +172,25 @@ impl Theme {
         }
     }
 
+    /// Maps an HTTP status code to a semantic token: 2xx success, 3xx
+    /// accent (redirects are informational, not alarming), else error.
+    pub fn status_color(&self, status: u16) -> Color {
+        match status {
+            200..=299 => self.success,
+            300..=399 => self.accent,
+            _ => self.error,
+        }
+    }
+
+    /// Blends `c` toward `surface` at 22% opacity, for chip/badge fills that
+    /// need to sit on top of an arbitrary surface color without a hard edge.
+    pub fn tint(&self, c: Color, surface: Color) -> Color {
+        let a = rgb_of(c);
+        let b = rgb_of(surface);
+        let t = blend(a, b, 0.22);
+        Color::Rgb(t.0, t.1, t.2)
+    }
+
     pub fn downgrade_to_256(&self) -> Self {
         let f = |c: Color| match c {
             Color::Rgb(r, g, b) => Color::Indexed(rgb_to_indexed(r, g, b)),
@@ -82,18 +198,118 @@ impl Theme {
         };
         Self {
             dark: self.dark,
-            surface: f(self.surface),
-            surface_raised: f(self.surface_raised),
+            page: f(self.page),
+            panel: f(self.panel),
+            control: f(self.control),
+            control_hover: f(self.control_hover),
+            control_pressed: f(self.control_pressed),
+            edge_light: f(self.edge_light),
+            edge_dark: f(self.edge_dark),
+            accent: f(self.accent),
+            accent_edge_light: f(self.accent_edge_light),
+            accent_edge_dark: f(self.accent_edge_dark),
+            on_accent: f(self.on_accent),
+            focus_ring: f(self.focus_ring),
             text: f(self.text),
             text_muted: f(self.text_muted),
-            accent: f(self.accent),
+            text_disabled: f(self.text_disabled),
             success: f(self.success),
-            error: f(self.error),
             warning: f(self.warning),
+            error: f(self.error),
+            surface: f(self.surface),
+            surface_raised: f(self.surface_raised),
             border: f(self.border),
             border_focused: f(self.border_focused),
         }
     }
+}
+
+/// Extracts the `(r, g, b)` components from a truecolor [`Color`]. Non-RGB
+/// variants (already-indexed colors) fall back to black, since callers only
+/// ever feed this the truecolor tokens produced by [`Theme::generate`].
+pub(crate) fn rgb_of(c: Color) -> (u8, u8, u8) {
+    match c {
+        Color::Rgb(r, g, b) => (r, g, b),
+        _ => (0, 0, 0),
+    }
+}
+
+fn srgb_to_linear(v: u8) -> f32 {
+    let v = v as f32 / 255.0;
+    if v <= 0.04045 {
+        v / 12.92
+    } else {
+        ((v + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn linear_to_srgb(v: f32) -> u8 {
+    let v = v.clamp(0.0, 1.0);
+    let s = if v <= 0.0031308 {
+        v * 12.92
+    } else {
+        1.055 * v.powf(1.0 / 2.4) - 0.055
+    };
+    (s.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+/// Converts srgb (0..=255) to Oklab `(L, a, b)`. Standard Oklab: linearize,
+/// project into the LMS cone space, cube-root, then mix into Lab axes.
+fn oklab((r, g, b): (u8, u8, u8)) -> (f32, f32, f32) {
+    let r = srgb_to_linear(r);
+    let g = srgb_to_linear(g);
+    let b = srgb_to_linear(b);
+
+    let l = 0.412_221_46 * r + 0.536_332_55 * g + 0.051_445_995 * b;
+    let m = 0.211_903_5 * r + 0.680_699_5 * g + 0.107_396_96 * b;
+    let s = 0.088_302_46 * r + 0.281_718_85 * g + 0.629_978_7 * b;
+
+    let l_ = l.cbrt();
+    let m_ = m.cbrt();
+    let s_ = s.cbrt();
+
+    (
+        0.210_454_26 * l_ + 0.793_617_8 * m_ - 0.004_072_047 * s_,
+        1.977_998_5 * l_ - 2.428_592_2 * m_ + 0.450_593_7 * s_,
+        0.025_904_037 * l_ + 0.782_771_77 * m_ - 0.808_675_77 * s_,
+    )
+}
+
+/// Converts Oklab `(L, a, b)` back to srgb (0..=255).
+fn oklab_to_rgb((l, a, b): (f32, f32, f32)) -> (u8, u8, u8) {
+    let l_ = l + 0.396_337_78 * a + 0.215_803_76 * b;
+    let m_ = l - 0.105_561_346 * a - 0.063_854_17 * b;
+    let s_ = l - 0.089_484_18 * a - 1.291_485_5 * b;
+
+    let l_ = l_.powi(3);
+    let m_ = m_.powi(3);
+    let s_ = s_.powi(3);
+
+    let r = 4.076_741_7 * l_ - 3.307_711_6 * m_ + 0.230_969_94 * s_;
+    let g = -1.268_438 * l_ + 2.609_757_4 * m_ - 0.341_319_38 * s_;
+    let b = -0.0041960863 * l_ - 0.703_418_6 * m_ + 1.707_614_7 * s_;
+
+    (linear_to_srgb(r), linear_to_srgb(g), linear_to_srgb(b))
+}
+
+/// Oklab lightness of an srgb color; used by the generator ladder math and
+/// exercised directly by tests as a contrast-check helper.
+pub(crate) fn oklab_l(rgb: (u8, u8, u8)) -> f32 {
+    oklab(rgb).0
+}
+
+/// Lifts an srgb color's Oklab lightness by `delta_l`, keeping hue/chroma
+/// fixed. Negative deltas darken, positive deltas lighten.
+fn lift(rgb: (u8, u8, u8), delta_l: f32) -> (u8, u8, u8) {
+    let (l, a, b) = oklab(rgb);
+    oklab_to_rgb((l + delta_l, a, b))
+}
+
+/// Linearly interpolates between two srgb colors at `t` (0 = a, 1 = b) in
+/// srgb space, which is sufficient for the muted/disabled text tints.
+fn blend(a: (u8, u8, u8), b: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
+    let mix = |x: u8, y: u8| -> u8 { (x as f32 + (y as f32 - x as f32) * t).round() as u8 };
+    (mix(a.0, b.0), mix(a.1, b.1), mix(a.2, b.2))
 }
 
 /// Nearest xterm-256 color: compares the best 6x6x6 cube match against the
@@ -207,5 +423,64 @@ mod tests {
         assert_eq!(rgb_to_indexed(0, 0, 0), 16); // cube black
         assert_eq!(rgb_to_indexed(255, 255, 255), 231); // cube white
         assert_eq!(rgb_to_indexed(255, 0, 0), 196); // cube red corner
+    }
+
+    #[test]
+    fn generator_ladder_is_monotonic_dark() {
+        let t = Theme::dark();
+        let l = |c: Color| oklab_l(rgb_of(c));
+        assert!(l(t.page) < l(t.panel));
+        assert!(l(t.panel) < l(t.control));
+        assert!(l(t.control) < l(t.control_hover));
+        assert!(l(t.control_pressed) < l(t.control));
+    }
+
+    #[test]
+    fn generator_ladder_inverts_for_light_seeds() {
+        let t = Theme::light();
+        let l = |c: Color| oklab_l(rgb_of(c));
+        assert!(l(t.page) > l(t.panel));
+        assert!(l(t.panel) > l(t.control));
+    }
+
+    #[test]
+    fn text_contrast_is_clamped() {
+        // pathological seeds: fg nearly equal to bg
+        let s = Seeds {
+            fg: (30, 30, 34),
+            ..Seeds::dark()
+        };
+        let t = Theme::generate(&s);
+        assert!((oklab_l(rgb_of(t.text)) - oklab_l(rgb_of(t.page))).abs() >= 0.4);
+    }
+
+    #[test]
+    fn status_color_classes() {
+        let t = Theme::dark();
+        assert_eq!(t.status_color(200), t.success);
+        assert_eq!(t.status_color(301), t.accent);
+        assert_eq!(t.status_color(404), t.error);
+        assert_eq!(t.status_color(500), t.error);
+    }
+
+    #[test]
+    fn downgrade_maps_every_new_token_to_indexed() {
+        let t = Theme::dark().downgrade_to_256();
+        for c in [
+            t.page,
+            t.panel,
+            t.control,
+            t.control_hover,
+            t.control_pressed,
+            t.edge_light,
+            t.edge_dark,
+            t.accent_edge_light,
+            t.accent_edge_dark,
+            t.on_accent,
+            t.focus_ring,
+            t.text_disabled,
+        ] {
+            assert!(matches!(c, Color::Indexed(_)));
+        }
     }
 }
