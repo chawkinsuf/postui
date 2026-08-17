@@ -303,7 +303,8 @@ mod tests {
     fn reset_forgets_cached_responses() {
         let mut s = Session::default();
         open(&mut s, "a");
-        s.response.set_state(ResponseState::Ready(data("old project")));
+        s.response
+            .set_state(ResponseState::Ready(data("old project")));
         open(&mut s, "b");
 
         s.reset();

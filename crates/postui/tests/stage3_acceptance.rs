@@ -178,7 +178,10 @@ async fn stage3_acceptance_flow() {
 
     app.update(Action::Send);
     let generation = app.session.send_generation;
-    assert!(app.session.in_flight.is_some(), "qa resolves: request goes out");
+    assert!(
+        app.session.in_flight.is_some(),
+        "qa resolves: request goes out"
+    );
     drain_until(&mut rx, &mut app, generation).await;
     let frame = render(&mut app);
     assert!(frame.contains("200"), "qa response is Ready: {frame}");
