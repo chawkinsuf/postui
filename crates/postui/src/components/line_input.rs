@@ -144,6 +144,34 @@ impl LineInput {
         Line::from(spans)
     }
 
+    /// Like [`Self::draw_line`], but every character renders as `●` — used
+    /// for a secret cell's in-place edit (Variable Manager, spec §5), so
+    /// the typed value never appears in plaintext on screen.
+    pub fn draw_line_masked(&self, focused: bool, theme: &Theme) -> Line<'static> {
+        let base = Style::default().fg(theme.text);
+        let masked: String = self.text.chars().map(|_| '\u{25cf}').collect();
+        if !focused {
+            return Line::styled(masked, base);
+        }
+        let chars: Vec<char> = masked.chars().collect();
+        let mut spans = Vec::new();
+        if self.cursor > 0 {
+            let before: String = chars[..self.cursor].iter().collect();
+            spans.push(Span::styled(before, base));
+        }
+        let cursor_style = base.add_modifier(Modifier::REVERSED);
+        if self.cursor < chars.len() {
+            spans.push(Span::styled(chars[self.cursor].to_string(), cursor_style));
+            if self.cursor + 1 < chars.len() {
+                let after: String = chars[self.cursor + 1..].iter().collect();
+                spans.push(Span::styled(after, base));
+            }
+        } else {
+            spans.push(Span::styled(" ", cursor_style));
+        }
+        Line::from(spans)
+    }
+
     /// Like [`Self::draw_line`], but windowed to `width` columns: when
     /// focused, the window scrolls so the cursor always stays visible
     /// (in `[0, width)`), which matters once the text is longer than the
@@ -152,9 +180,36 @@ impl LineInput {
     /// Unfocused text is never scrolled; it always renders from char 0
     /// (matching `draw_line`, just clipped to `width`).
     pub fn draw_line_windowed(&self, focused: bool, theme: &Theme, width: u16) -> Line<'static> {
+        self.render_windowed(focused, theme, width, false)
+    }
+
+    /// [`Self::draw_line_windowed`] and [`Self::draw_line_masked`] combined
+    /// — a secret cell's in-place edit (Variable Manager, spec §5) narrower
+    /// than the typed value: masked so the value never appears in
+    /// plaintext, and windowed so the caret stays visible while typing.
+    pub fn draw_line_windowed_masked(
+        &self,
+        focused: bool,
+        theme: &Theme,
+        width: u16,
+    ) -> Line<'static> {
+        self.render_windowed(focused, theme, width, true)
+    }
+
+    fn render_windowed(
+        &self,
+        focused: bool,
+        theme: &Theme,
+        width: u16,
+        mask: bool,
+    ) -> Line<'static> {
         let base = Style::default().fg(theme.text);
         let width = width.max(1) as usize;
-        let chars: Vec<char> = self.text.chars().collect();
+        let chars: Vec<char> = if mask {
+            self.text.chars().map(|_| '\u{25cf}').collect()
+        } else {
+            self.text.chars().collect()
+        };
         if !focused {
             let visible: String = chars.iter().take(width).collect();
             return Line::styled(visible, base);
@@ -300,6 +355,31 @@ mod tests {
         assert!(
             rendered.starts_with('h'),
             "must start from char 0: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn masked_line_never_renders_the_underlying_text() {
+        let input = LineInput::new("sk-live-secret");
+        let theme = Theme::dark();
+        let focused = line_text(&input.draw_line_masked(true, &theme));
+        let unfocused = line_text(&input.draw_line_masked(false, &theme));
+        assert!(!focused.contains("secret"), "{focused}");
+        assert!(!unfocused.contains("secret"), "{unfocused}");
+        assert_eq!(unfocused.chars().count(), "sk-live-secret".chars().count());
+        assert!(unfocused.chars().all(|c| c == '\u{25cf}'));
+    }
+
+    #[test]
+    fn windowed_masked_never_renders_the_underlying_text_and_keeps_the_caret_visible() {
+        let text: String = (0..40).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
+        let input = LineInput::new(&text); // cursor defaults to end (40)
+        let theme = Theme::dark();
+        let rendered = line_text(&input.draw_line_windowed_masked(true, &theme, 10));
+        assert_eq!(rendered.chars().count(), 10);
+        assert!(
+            rendered.chars().all(|c| c == '\u{25cf}' || c == ' '),
+            "must be all masked dots (plus the trailing caret cell): {rendered:?}"
         );
     }
 

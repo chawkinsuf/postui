@@ -81,6 +81,15 @@ impl App {
                 {
                     return self.update(Action::Render);
                 }
+                if self.screen == Screen::VarManager {
+                    let d = if m.kind == MouseEventKind::ScrollUp {
+                        -3
+                    } else {
+                        3
+                    };
+                    self.varmanager.handle_scroll(d);
+                    return self.update(Action::Render);
+                }
                 if let Some(pane) = self.hits.pane_at(m.column, m.row) {
                     let d = if m.kind == MouseEventKind::ScrollUp {
                         -3
@@ -446,9 +455,27 @@ impl App {
             Hit::ScrollbarTrack(pane, delta) => {
                 self.update(Action::ScrollPane(pane, delta.clamp(-30, 30)))
             }
-            // Grid navigation/selection and cell editing are Task 11; this
-            // task only renders and registers the hits.
-            Hit::VarRow(_) | Hit::VarCell { .. } => false,
+            Hit::VarRow(i) => {
+                self.varmanager.click_row(i);
+                self.update(Action::Render)
+            }
+            Hit::VarCell { row, col } => {
+                let open_request = self
+                    .editor
+                    .slug
+                    .is_some()
+                    .then(|| self.editor.current_request());
+                match self.varmanager.click_cell(
+                    row,
+                    col,
+                    clicks == 2,
+                    &self.project,
+                    open_request.as_ref(),
+                ) {
+                    Some(action) => self.update(action),
+                    None => self.update(Action::Render),
+                }
+            }
         }
     }
 }

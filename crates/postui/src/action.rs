@@ -1,4 +1,5 @@
 use crate::components::toast::ToastKind;
+use crate::components::varmanager::VarEditOp;
 use crate::layout::PaneId;
 
 /// What [`Action::CopyToClipboard`] copies: the ready response body, one of
@@ -209,4 +210,9 @@ pub enum Action {
     /// Leave the current non-`Main` screen and return to `Screen::Main`,
     /// restoring the focus that was active when the screen was opened.
     CloseScreen,
+    /// A committed Variable Manager cell edit or ✓ selection (spec §5).
+    /// `App::update` writes it through to whichever file owns it; a write
+    /// failure toasts and leaves `VarManager::editing` open with the typed
+    /// text rather than clearing it.
+    VarEdit(VarEditOp),
 }

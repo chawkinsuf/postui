@@ -197,13 +197,6 @@ impl ProjectContext {
         self.resolved = varmodel::resolve_env(&self.model, &self.env_data, selections, secrets);
     }
 
-    /// The active env's `name → selected option key` map (or the
-    /// no-env slot's, keyed by the empty string), creating it if absent.
-    pub fn selections_mut(&mut self) -> &mut IndexMap<String, String> {
-        let key = self.env_key();
-        self.selections.entry(key).or_default()
-    }
-
     /// `env`'s `name → selected option key` map (read-only, for any
     /// environment — not just the active one). Empty when nothing is
     /// recorded for `env`. Used by the Variable Manager grid to show each
@@ -218,24 +211,56 @@ impl ProjectContext {
     /// Records `name`'s selection as `key` for the active env, persists
     /// local state, and re-resolves.
     pub fn set_selection(&mut self, name: &str, key: &str) {
-        self.selections_mut()
+        let env = self.env_key();
+        self.set_selection_for(&env, name, key);
+    }
+
+    /// [`Self::set_selection`], for any environment (not just the active
+    /// one) — the Variable Manager grid shows every environment's column
+    /// side by side and lets the ✓ action target whichever column the
+    /// cursor is on. Re-resolves only when `env` is the active one (the
+    /// only environment `resolved` reflects); a non-active env's column
+    /// recomputes fresh from `self.selections` on its next draw either way.
+    pub fn set_selection_for(&mut self, env: &str, name: &str, key: &str) {
+        self.selections
+            .entry(env.to_string())
+            .or_default()
             .insert(name.to_string(), key.to_string());
         self.persist_local_state_keep_open_request();
-        self.refresh_resolved();
+        if self.active_env.as_deref() == Some(env) {
+            self.refresh_resolved();
+        }
     }
 
     /// Records `name`'s secret value for the active env, writes
-    /// `.local/secrets.toml`, and re-resolves.
-    pub fn set_secret(&mut self, name: &str, value: String) {
-        let key = self.env_key();
-        self.secrets
-            .entry(key)
+    /// `.local/secrets.toml`, and re-resolves. `Err(msg)` — safe to toast,
+    /// never the secret value itself — leaves everything (including the
+    /// on-disk file and in-memory `secrets`) unchanged, matching
+    /// `edit_variables`/`edit_env`'s build-then-commit failure contract
+    /// (spec §5: a failed write must never persist a partial edit).
+    pub fn set_secret(&mut self, name: &str, value: String) -> Result<(), String> {
+        let env = self.env_key();
+        self.set_secret_for(&env, name, value)
+    }
+
+    /// [`Self::set_secret`], for any environment (not just the active
+    /// one) — the Variable Manager grid shows every environment's secret
+    /// column side by side, so an edit in a non-active column must still
+    /// land in that column's own env slot.
+    pub fn set_secret_for(&mut self, env: &str, name: &str, value: String) -> Result<(), String> {
+        let mut secrets = self.secrets.clone();
+        secrets
+            .entry(env.to_string())
             .or_default()
             .insert(name.to_string(), value);
         if self.can_persist() {
-            let _ = postui_core::project::save_secrets(&self.root, &self.secrets);
+            postui_core::project::save_secrets(&self.root, &secrets).map_err(|e| e.to_string())?;
         }
-        self.refresh_resolved();
+        self.secrets = secrets;
+        if self.active_env.as_deref() == Some(env) {
+            self.refresh_resolved();
+        }
+        Ok(())
     }
 
     /// Builds the `PrepareContext` for sending: fully resolved variables
@@ -616,7 +641,7 @@ mod tests {
         ctx.set_env(Some("qa".into()));
         assert!(!ctx.resolved.values.contains_key("api_key"));
 
-        ctx.set_secret("api_key", "sk-live".into());
+        ctx.set_secret("api_key", "sk-live".into()).unwrap();
         assert_eq!(ctx.resolved.values["api_key"], "sk-live");
 
         let secrets = postui_core::project::load_secrets(dir.path()).unwrap();

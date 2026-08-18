@@ -2930,3 +2930,381 @@ fn ctrl_p_still_opens_the_palette_on_top_of_the_manager_screen() {
         "opening the palette must not leave the screen"
     );
 }
+
+// --- Task 11: Manager navigation + in-place value editing (spec §5) -------
+
+fn var_project(dir: &std::path::Path) {
+    postui_core::project::init_project(dir, Some("demo")).unwrap();
+    std::fs::write(
+        dir.join("variables.toml"),
+        r#"
+[base_url]
+description = "API root"
+default = "http://localhost:8080"
+
+[user]
+description = "acting user"
+[user.options.alice]
+value = "1001"
+[user.options.bob]
+value = "2002"
+
+[api_key]
+description = "service key"
+secret = true
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("environments/dev.toml"), "").unwrap();
+    std::fs::write(
+        dir.join("environments/qa.toml"),
+        "base_url = \"https://qa.example.com\"\n",
+    )
+    .unwrap();
+    postui_core::project::save_local_state(
+        dir,
+        &postui_core::project::LocalState {
+            environment: Some("qa".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+}
+
+#[test]
+fn var_edit_set_env_value_writes_the_env_file_and_re_resolves() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    let redrew = app.update(Action::VarEdit(VarEditOp::SetEnvValue {
+        env: "qa".into(),
+        name: "base_url".into(),
+        value: "https://qa2.example.com".into(),
+    }));
+    assert!(redrew);
+    assert!(app.toasts.is_empty(), "a successful write must not toast");
+
+    let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(on_disk.contains("https://qa2.example.com"), "{on_disk}");
+    assert_eq!(
+        app.project.resolved.values["base_url"],
+        "https://qa2.example.com"
+    );
+}
+
+#[test]
+fn var_edit_set_env_value_on_a_non_active_env_does_not_disturb_the_active_resolution() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    assert_eq!(app.project.env_label(), "qa");
+
+    app.update(Action::VarEdit(VarEditOp::SetEnvValue {
+        env: "dev".into(),
+        name: "base_url".into(),
+        value: "http://dev.local".into(),
+    }));
+
+    let on_disk = std::fs::read_to_string(dir.path().join("environments/dev.toml")).unwrap();
+    assert!(on_disk.contains("http://dev.local"), "{on_disk}");
+    assert_eq!(
+        app.project.resolved.values["base_url"], "https://qa.example.com",
+        "qa is still active; its own resolution must be untouched"
+    );
+}
+
+#[test]
+fn var_edit_set_default_writes_variables_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    app.update(Action::VarEdit(VarEditOp::SetDefault {
+        name: "base_url".into(),
+        value: "http://localhost:9090".into(),
+    }));
+
+    let on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    assert!(on_disk.contains("http://localhost:9090"), "{on_disk}");
+    assert_eq!(
+        app.project.model.vars["base_url"].default.as_deref(),
+        Some("http://localhost:9090")
+    );
+}
+
+#[test]
+fn var_edit_set_secret_value_lands_only_in_secrets_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    app.update(Action::VarEdit(VarEditOp::SetSecretValue {
+        env: "qa".into(),
+        name: "api_key".into(),
+        value: "sk-live-abc123".into(),
+    }));
+
+    let secrets = postui_core::project::load_secrets(dir.path()).unwrap();
+    assert_eq!(secrets["qa"]["api_key"], "sk-live-abc123");
+    assert_eq!(app.project.resolved.values["api_key"], "sk-live-abc123");
+
+    let vars_on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    assert!(!vars_on_disk.contains("sk-live-abc123"));
+    let env_on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(!env_on_disk.contains("sk-live-abc123"));
+}
+
+#[test]
+fn var_edit_set_option_value_lands_in_the_env_file_when_that_env_already_overrides_it() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    std::fs::write(
+        dir.path().join("environments/qa.toml"),
+        "base_url = \"https://qa.example.com\"\n\n[options.user.alice]\nvalue = \"9001\"\n",
+    )
+    .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    app.update(Action::VarEdit(VarEditOp::SetOptionValue {
+        env: "qa".into(),
+        owner: "user".into(),
+        key: "alice".into(),
+        member: None,
+        value: "9999".into(),
+    }));
+
+    let env_on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(env_on_disk.contains("9999"), "{env_on_disk}");
+    let vars_on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    assert!(
+        vars_on_disk.contains("1001"),
+        "the shared declared value must be untouched: {vars_on_disk}"
+    );
+}
+
+#[test]
+fn var_edit_set_option_value_lands_in_variables_toml_when_the_cell_shows_the_shared_value() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    // qa has no [options.user.alice] override in this fixture: the cell
+    // shown is the shared/declared value, so the edit must land there.
+    app.update(Action::VarEdit(VarEditOp::SetOptionValue {
+        env: "qa".into(),
+        owner: "user".into(),
+        key: "alice".into(),
+        member: None,
+        value: "8888".into(),
+    }));
+
+    let vars_on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    assert!(vars_on_disk.contains("8888"), "{vars_on_disk}");
+    let env_on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(
+        !env_on_disk.contains("8888"),
+        "must not write an env override: {env_on_disk}"
+    );
+}
+
+#[test]
+fn var_edit_set_request_var_mutates_the_open_editor_and_marks_it_dirty_without_writing() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let mut req = postui_core::model::HttpRequest::from_toml_str(
+        "url = \"https://x/ping\"\n[variables]\ntrace_id = \"abc-123\"\n",
+    )
+    .unwrap();
+    req.url = "https://x/ping".into();
+    postui_core::storage::save_request(dir.path(), "ping", &req).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("ping".into()));
+    assert!(!app.editor.is_dirty());
+
+    app.update(Action::VarEdit(VarEditOp::SetRequestVar {
+        name: "trace_id".into(),
+        value: "trace-xyz".into(),
+    }));
+
+    assert_eq!(app.editor.variables["trace_id"].value, "trace-xyz");
+    assert!(
+        app.editor.is_dirty(),
+        "the existing dirty/save path owns persistence"
+    );
+    let on_disk = std::fs::read_to_string(dir.path().join("requests/ping.toml")).unwrap();
+    assert!(
+        on_disk.contains("abc-123"),
+        "no immediate write — still the saved value on disk: {on_disk}"
+    );
+}
+
+#[test]
+fn var_edit_select_records_the_choice_for_the_targeted_env_even_when_not_active() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    assert_eq!(app.project.env_label(), "qa");
+
+    app.update(Action::VarEdit(VarEditOp::Select {
+        env: "dev".into(),
+        name: "user".into(),
+        key: "bob".into(),
+    }));
+
+    assert_eq!(app.project.selections_for("dev")["user"], "bob");
+    assert!(
+        !app.project.resolved.values.contains_key("user"),
+        "qa (active) has no selection of its own; must be unaffected"
+    );
+
+    let state = postui_core::project::load_local_state(dir.path()).unwrap();
+    assert_eq!(state.selections["dev"]["user"], "bob");
+}
+
+#[test]
+fn var_edit_a_failed_write_toasts_and_leaves_the_cell_in_edit() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.varmanager.editing = Some(crate::components::varmanager::CellEdit {
+        row: 3,
+        col: 1,
+        input: crate::components::line_input::LineInput::new("attempted-value"),
+        masked: false,
+    });
+
+    use std::os::unix::fs::PermissionsExt;
+    let env_dir = dir.path().join("environments");
+    let original_mode = std::fs::metadata(&env_dir).unwrap().permissions().mode();
+    std::fs::set_permissions(&env_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        app.update(Action::VarEdit(VarEditOp::SetEnvValue {
+            env: "qa".into(),
+            name: "base_url".into(),
+            value: "https://blocked.example.com".into(),
+        }));
+    }));
+
+    // Always restore write permission before any assertion/panic unwinding,
+    // so a failing assertion doesn't leave a read-only dir behind for the
+    // TempDir's own Drop cleanup to choke on.
+    std::fs::set_permissions(&env_dir, std::fs::Permissions::from_mode(original_mode)).unwrap();
+    result.unwrap();
+
+    assert!(
+        !app.toasts.is_empty(),
+        "a failed write must toast, not silently drop the edit"
+    );
+    assert!(
+        app.varmanager.editing.is_some(),
+        "the cell must stay in edit so the typed text survives a retry"
+    );
+    assert_eq!(
+        app.varmanager.editing.as_ref().unwrap().input.text(),
+        "attempted-value"
+    );
+    let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(!on_disk.contains("blocked"), "{on_disk}");
+}
+
+#[test]
+fn keyboard_driven_flow_navigate_edit_commit_via_the_grid() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let keymap = Keymap::default_bindings();
+
+    app.handle_key(&keymap, alt('v'));
+    assert_eq!(app.screen, crate::app::Screen::VarManager);
+    rendered_text(&mut app); // a draw populates `varmanager.rows`
+
+    // Land the cursor on `base_url`'s row (skipping the "Project" header),
+    // then move right onto its `dev` column.
+    let base_url_row = app
+        .varmanager
+        .rows
+        .iter()
+        .position(|r| {
+            matches!(r, crate::components::varmanager::RowKind::Var { name } if name == "base_url")
+        })
+        .unwrap();
+    app.varmanager.cursor = (base_url_row, 1); // dev is the first env column
+
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.varmanager.editing.is_some());
+    for c in "http://dev.local".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(app.varmanager.editing.is_none(), "the write succeeded");
+    let on_disk = std::fs::read_to_string(dir.path().join("environments/dev.toml")).unwrap();
+    assert!(on_disk.contains("http://dev.local"), "{on_disk}");
+}
+
+/// Same failure contract as `var_edit_a_failed_write_toasts_and_leaves_the_cell_in_edit`,
+/// but driven through the real keyboard path (navigate → Enter → type →
+/// Enter) rather than dispatching `Action::VarEdit` directly, so the whole
+/// `VarManager::handle_key`/`commit_edit`/`App::apply_var_edit` chain is
+/// exercised end to end against a genuinely read-only directory.
+#[test]
+fn keyboard_driven_failed_write_leaves_editing_open_and_toasts() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let keymap = Keymap::default_bindings();
+
+    app.handle_key(&keymap, alt('v'));
+    rendered_text(&mut app);
+    let base_url_row = app
+        .varmanager
+        .rows
+        .iter()
+        .position(|r| {
+            matches!(r, crate::components::varmanager::RowKind::Var { name } if name == "base_url")
+        })
+        .unwrap();
+    app.varmanager.cursor = (base_url_row, 1);
+
+    use std::os::unix::fs::PermissionsExt;
+    let env_dir = dir.path().join("environments");
+    let original_mode = std::fs::metadata(&env_dir).unwrap().permissions().mode();
+    std::fs::set_permissions(&env_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(&keymap, plain('X'));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    std::fs::set_permissions(&env_dir, std::fs::Permissions::from_mode(original_mode)).unwrap();
+
+    assert!(
+        !app.toasts.is_empty(),
+        "expected a toast from the failed write"
+    );
+    assert!(
+        app.varmanager.editing.is_some(),
+        "expected editing to stay open after a failed write"
+    );
+    assert!(
+        app.varmanager
+            .editing
+            .as_ref()
+            .unwrap()
+            .input
+            .text()
+            .ends_with('X')
+    );
+}

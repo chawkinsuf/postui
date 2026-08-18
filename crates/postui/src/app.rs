@@ -4,7 +4,7 @@ use crate::components::modal::{Modal, ModalResult, ModalStack, PromptKind};
 use crate::components::response::ResponseState;
 use crate::components::sidebar::Row;
 use crate::components::toast::{ToastKind, Toasts};
-use crate::components::varmanager::VarManager;
+use crate::components::varmanager::{self, VarEditOp, VarManager};
 use crate::components::{Component, sidebar::Sidebar};
 use crate::hit::{Hit, HitMap, ScrollbarSpec};
 use crate::keys::{KeyCombo, Keymap};
@@ -1247,6 +1247,96 @@ impl App {
                 self.focus = self.prior_focus;
                 true
             }
+            Action::VarEdit(op) => {
+                match self.apply_var_edit(&op) {
+                    Ok(()) => self.varmanager.editing = None,
+                    Err(msg) => self.toasts.push(msg, ToastKind::Error),
+                }
+                true
+            }
+        }
+    }
+
+    /// Applies one committed Variable Manager op (spec §5), writing
+    /// through to whichever file owns it. `Err(msg)` is always safe to
+    /// toast (never a secret value) and, per the caller
+    /// (`Action::VarEdit`), leaves `varmanager.editing` untouched so the
+    /// typed text survives a retry.
+    fn apply_var_edit(&mut self, op: &VarEditOp) -> Result<(), String> {
+        match op {
+            VarEditOp::SetEnvValue { env, name, value } => self.project.edit_env(env, |doc| {
+                postui_core::varedit::set_env_value(doc, name, Some(value))
+            }),
+            VarEditOp::SetDefault { name, value } => self.project.edit_variables(|doc| {
+                postui_core::varedit::upsert_var(doc, name, None, Some(value))
+            }),
+            VarEditOp::SetDescription { owner, value } => {
+                if self.project.model.vars.contains_key(owner) {
+                    self.project.edit_variables(|doc| {
+                        postui_core::varedit::upsert_var(doc, owner, Some(value), None)
+                    })
+                } else if let Some(members) = self
+                    .project
+                    .model
+                    .groups
+                    .get(owner)
+                    .map(|g| g.members.clone())
+                {
+                    self.project.edit_variables(|doc| {
+                        postui_core::varedit::upsert_group(doc, owner, Some(value), &members)
+                    })
+                } else {
+                    Err(format!("\"{owner}\" is not a declared variable or group"))
+                }
+            }
+            VarEditOp::SetSecretValue { env, name, value } => {
+                self.project.set_secret_for(env, name, value.clone())
+            }
+            VarEditOp::SetOptionValue {
+                env,
+                owner,
+                key,
+                member,
+                value,
+            } => {
+                let field = member.clone().unwrap_or_else(|| "value".to_string());
+                let mut fields = indexmap::IndexMap::new();
+                fields.insert(field, value.clone());
+                if varmanager::option_value_is_env_override(
+                    &self.project,
+                    env,
+                    owner,
+                    key,
+                    member.as_deref(),
+                ) {
+                    self.project.edit_env(env, |doc| {
+                        postui_core::varedit::upsert_env_option(doc, owner, key, &fields)
+                    })
+                } else {
+                    self.project.edit_variables(|doc| {
+                        postui_core::varedit::upsert_shared_option(doc, owner, key, None, &fields)
+                    })
+                }
+            }
+            VarEditOp::SetRequestVar { name, value } => {
+                match self.editor.variables.get_mut(name) {
+                    Some(entry) => entry.value = value.clone(),
+                    None => {
+                        self.editor.variables.insert(
+                            name.clone(),
+                            postui_core::model::Entry {
+                                value: value.clone(),
+                                enabled: true,
+                            },
+                        );
+                    }
+                }
+                Ok(())
+            }
+            VarEditOp::Select { env, name, key } => {
+                self.project.set_selection_for(env, name, key);
+                Ok(())
+            }
         }
     }
 
@@ -1444,7 +1534,15 @@ impl App {
             {
                 return self.update(a);
             }
-            if let Some(a) = self.varmanager.handle_key(ev) {
+            let open_request = self
+                .editor
+                .slug
+                .is_some()
+                .then(|| self.editor.current_request());
+            if let Some(a) = self
+                .varmanager
+                .handle_key(ev, &self.project, open_request.as_ref())
+            {
                 return self.update(a);
             }
             return true; // swallowed: no fallback to the global keymap
