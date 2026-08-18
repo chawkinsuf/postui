@@ -502,7 +502,7 @@ impl TableEditorState {
                 break;
             }
             if active == Some(i) {
-                y = self.draw_active_row(buf, hits, area, y, bottom, i, k, e, true, theme);
+                y = self.draw_active_row(buf, hits, area, y, bottom, i, k, e, true, ctx);
             } else {
                 let hovered = ctx.hovered == Some(&Hit::TableRow(i));
                 self.draw_plain_row(buf, hits, area, y, i, k, e, hovered, theme);
@@ -521,7 +521,7 @@ impl TableEditorState {
             y = self.draw_active_row(
                 buf, hits, area, y, bottom, map_len, key, &entry,
                 false, // brand-new row: no delete affordance yet
-                theme,
+                ctx,
             );
         }
 
@@ -529,8 +529,11 @@ impl TableEditorState {
         if y < bottom {
             let ghost_hovered = ctx.hovered == Some(&Hit::TableAdd);
             // The keyboard cursor can rest here too (one past the data
-            // rows); it shows with the same lift as hover, held.
-            let ghost_selected = self.selected == Some(map_len) && !new_row_pending;
+            // rows); it shows with the same lift as hover, held. It's a
+            // pure cursor, so it only paints while the pane actually has
+            // the keyboard — an unfocused lift would say keys land here.
+            let ghost_selected =
+                ctx.focused && self.selected == Some(map_len) && !new_row_pending;
             let bg = if ghost_hovered || ghost_selected {
                 theme.control_hover
             } else {
@@ -613,6 +616,11 @@ impl TableEditorState {
     /// Draws row `i` expanded to 3 lines (pad/text/pad) with the full-row
     /// pill treatment. `show_delete` gates the `✕` affordance (a brand-new,
     /// not-yet-inserted row has nothing to delete yet). Returns the next `y`.
+    ///
+    /// The expansion itself persists when the pane loses focus (it feeds
+    /// `table_geometry`, so collapsing would shift the layout every focus
+    /// change, and its affordances stay mouse-usable) — but the cursor
+    /// styling demotes: no accent bar, resting fill instead of the lift.
     #[allow(clippy::too_many_arguments)]
     fn draw_active_row(
         &self,
@@ -625,11 +633,16 @@ impl TableEditorState {
         key: &str,
         entry: &Entry,
         show_delete: bool,
-        theme: &Theme,
+        ctx: &DrawCtx,
     ) -> u16 {
+        let theme = ctx.theme;
         let text_row = y + 1;
         PillRow {
-            highlight: RowHighlight::Selected,
+            highlight: if ctx.focused {
+                RowHighlight::Selected
+            } else {
+                RowHighlight::Hover
+            },
         }
         .paint(
             buf,
@@ -646,7 +659,11 @@ impl TableEditorState {
         let content_x = area.x + 1;
         let content_w = area.width.saturating_sub(1);
         let cols = columns(content_x, content_w);
-        let bg = theme.control_hover;
+        let bg = if ctx.focused {
+            theme.control_hover
+        } else {
+            theme.control
+        };
         let fg = if entry.enabled {
             theme.text
         } else {
@@ -1004,6 +1021,62 @@ mod tests {
             hovered,
             dragging: false,
         }
+    }
+
+    /// Mirror of the response pane's cursor-visibility rule: cursor
+    /// styling paints only while the pane actually has the keyboard.
+    #[test]
+    fn unfocused_pane_demotes_cursor_highlights() {
+        let theme = Theme::dark();
+        let mut map = IndexMap::new();
+        map.insert(
+            "page".into(),
+            Entry {
+                value: "2".into(),
+                enabled: true,
+            },
+        );
+        let unfocused = DrawCtx {
+            theme: &theme,
+            focused: false,
+            hovered: None,
+            dragging: false,
+        };
+
+        // Selected data row: expansion persists (it feeds table_geometry),
+        // but the cursor styling demotes — no accent bar, resting fill.
+        let t = TableEditorState {
+            selected: Some(0),
+            ..TableEditorState::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(40, 8)).unwrap();
+        let mut hits = HitMap::default();
+        terminal
+            .draw(|f| t.draw(f, f.area(), &map, &unfocused, "+ Add param", &mut hits))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let row = hits.rect_of(&Hit::TableRow(0)).unwrap();
+        assert_eq!(row.height, 3, "expanded row survives losing pane focus");
+        let bar = buf.cell((row.x, row.y + 1)).unwrap();
+        assert_ne!(bar.fg, theme.accent, "no accent cursor bar unfocused");
+        let cell = buf.cell((row.x + 2, row.y + 1)).unwrap();
+        assert_eq!(cell.bg, theme.control, "resting fill, not the lift");
+
+        // Ghost "+ Add" cursor: a pure cursor, so it vanishes entirely.
+        let t = TableEditorState {
+            selected: Some(map.len()),
+            ..TableEditorState::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(40, 8)).unwrap();
+        let mut hits = HitMap::default();
+        terminal
+            .draw(|f| t.draw(f, f.area(), &map, &unfocused, "+ Add param", &mut hits))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let ghost = hits.rect_of(&Hit::TableAdd).unwrap();
+        let cell = buf.cell((ghost.x + 1, ghost.y)).unwrap();
+        assert_eq!(cell.bg, theme.control, "ghost cursor lift hidden");
+        assert_eq!(cell.fg, theme.text_muted, "ghost label stays muted");
     }
 
     #[test]

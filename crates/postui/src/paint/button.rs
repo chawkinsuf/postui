@@ -75,13 +75,19 @@ impl Button<'_> {
     }
 
     fn face(&self, theme: &Theme) -> Face {
+        // Focused lifts like Hover: the app's focus language is a control's
+        // own surface brightening, never a ring or a recolored edge.
         let fill = match (self.kind, self.state) {
-            (ButtonKind::Primary, ControlState::Normal | ControlState::Focused) => theme.accent,
-            (ButtonKind::Primary, ControlState::Hover) => theme.accent_edge_light,
+            (ButtonKind::Primary, ControlState::Normal) => theme.accent,
+            (ButtonKind::Primary, ControlState::Hover | ControlState::Focused) => {
+                theme.accent_edge_light
+            }
             (ButtonKind::Primary, ControlState::Pressed) => theme.accent_edge_dark,
             (_, ControlState::Disabled) => theme.control,
-            (ButtonKind::Secondary, ControlState::Normal | ControlState::Focused) => theme.control,
-            (ButtonKind::Secondary, ControlState::Hover) => theme.control_hover,
+            (ButtonKind::Secondary, ControlState::Normal) => theme.control,
+            (ButtonKind::Secondary, ControlState::Hover | ControlState::Focused) => {
+                theme.control_hover
+            }
             (ButtonKind::Secondary, ControlState::Pressed) => theme.control_pressed,
         };
         let label_fg = match (self.kind, self.state) {
@@ -94,7 +100,6 @@ impl Button<'_> {
         // hover and press — not just the label row.
         let (light, dark) = crate::paint::face_edges(fill, theme);
         let caps = match self.state {
-            ControlState::Focused => (theme.focus_ring, theme.focus_ring),
             ControlState::Disabled => (fill, fill),
             // Pressed: sunken — dark on top, light on the bottom.
             ControlState::Pressed => (dark, light),
@@ -193,7 +198,7 @@ mod tests {
     }
 
     #[test]
-    fn focused_button_paints_caps_in_focus_ring_color() {
+    fn focused_button_lifts_like_hover() {
         let theme = Theme::dark();
         let mut term = Terminal::new(TestBackend::new(20, 3)).unwrap();
         term.draw(|f| {
@@ -205,8 +210,12 @@ mod tests {
             .paint(f.buffer_mut(), Rect::new(0, 0, 20, 3), theme.page, &theme);
         })
         .unwrap();
-        assert_eq!(buf_cell(&term, 8, 0).fg, theme.focus_ring);
-        assert_eq!(buf_cell(&term, 8, 2).fg, theme.focus_ring);
+        // Focus is the same surface lift hover uses — fill up one step,
+        // caps following the shown fill; no special edge recolor.
+        assert_eq!(buf_cell(&term, 8, 1).bg, theme.accent_edge_light);
+        let (light, dark) = crate::paint::face_edges(theme.accent_edge_light, &theme);
+        assert_eq!(buf_cell(&term, 8, 0).fg, light);
+        assert_eq!(buf_cell(&term, 8, 2).fg, dark);
     }
 
     #[test]
