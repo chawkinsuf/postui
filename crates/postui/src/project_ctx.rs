@@ -204,6 +204,17 @@ impl ProjectContext {
         self.selections.entry(key).or_default()
     }
 
+    /// `env`'s `name → selected option key` map (read-only, for any
+    /// environment — not just the active one). Empty when nothing is
+    /// recorded for `env`. Used by the Variable Manager grid to show each
+    /// environment column's own selections side by side.
+    pub fn selections_for(&self, env: &str) -> &IndexMap<String, String> {
+        static EMPTY: std::sync::OnceLock<IndexMap<String, String>> = std::sync::OnceLock::new();
+        self.selections
+            .get(env)
+            .unwrap_or_else(|| EMPTY.get_or_init(IndexMap::new))
+    }
+
     /// Records `name`'s selection as `key` for the active env, persists
     /// local state, and re-resolves.
     pub fn set_selection(&mut self, name: &str, key: &str) {

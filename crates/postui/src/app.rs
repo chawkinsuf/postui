@@ -345,7 +345,7 @@ impl App {
             theme: Theme::for_terminal(),
             sidebar: Sidebar::default(),
             editor: Editor::default(),
-            varmanager: VarManager,
+            varmanager: VarManager::default(),
             session: crate::session::Session::default(),
             toasts,
             modals: ModalStack::default(),

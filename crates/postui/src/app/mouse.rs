@@ -446,6 +446,9 @@ impl App {
             Hit::ScrollbarTrack(pane, delta) => {
                 self.update(Action::ScrollPane(pane, delta.clamp(-30, 30)))
             }
+            // Grid navigation/selection and cell editing are Task 11; this
+            // task only renders and registers the hits.
+            Hit::VarRow(_) | Hit::VarCell { .. } => false,
         }
     }
 }

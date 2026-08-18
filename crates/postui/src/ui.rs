@@ -82,12 +82,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             focus_bar(frame.buffer_mut(), focused_rect, theme);
         }
         Screen::VarManager => {
+            let open_request = app
+                .editor
+                .slug
+                .is_some()
+                .then(|| app.editor.current_request());
             app.varmanager.draw(
                 frame,
                 layout.body,
                 &app.theme,
-                &project_name,
-                &env_label,
+                &app.project,
+                open_request.as_ref(),
                 &mut hits,
             );
         }

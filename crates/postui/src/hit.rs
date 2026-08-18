@@ -53,6 +53,16 @@ pub enum Hit {
     ChooserRow(usize),
     PaletteRow(usize),
     VarPickerRow(usize),
+    /// A visible row of the Variable Manager grid (spec §5), background
+    /// click target. Index into `VarManager::rows`.
+    VarRow(usize),
+    /// One visible cell of the Variable Manager grid: `row` indexes
+    /// `VarManager::rows`; `col` 0 is the shared name/desc block, `col`
+    /// 1.. are environment columns (relative to `env_scroll`).
+    VarCell {
+        row: usize,
+        col: usize,
+    },
     /// A clickable `[y] Label` chip in a Confirm modal.
     ConfirmChoice(char),
     /// The top modal's painted Cancel button (Message has none; Prompt and
