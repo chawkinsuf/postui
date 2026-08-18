@@ -59,6 +59,13 @@ impl Toasts {
         self.entries.is_empty()
     }
 
+    /// Every currently-visible toast's message text, oldest first — for
+    /// tests that need to assert on wording, not just presence.
+    #[cfg(test)]
+    pub fn messages(&self) -> Vec<&str> {
+        self.entries.iter().map(|t| t.message.as_str()).collect()
+    }
+
     /// Paints every visible toast as a floating filled `theme.panel` rect
     /// with a 1-col `█` left bar in its semantic color (accent/success/
     /// error/warning by kind) and `theme.text` message text, stacked

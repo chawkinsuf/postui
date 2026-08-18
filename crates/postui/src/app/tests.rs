@@ -3857,6 +3857,109 @@ fn var_struct_delete_var_removes_the_declaration_and_clamps_the_cursor() {
     );
 }
 
+/// Finding 1: `VarStructOp::Delete` used to only edit `variables.toml`,
+/// stranding any environment's `[options.<name>]` table for the deleted
+/// name. This drives the cascade for a var whose ACTIVE env has an
+/// options table for it (the confusing-parse-toast case) and a NON-active
+/// env too (the silently-stranded-file case).
+#[test]
+fn var_struct_delete_cascades_into_every_environments_options_table() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    std::fs::write(
+        dir.path().join("variables.toml"),
+        std::fs::read_to_string(dir.path().join("variables.toml")).unwrap()
+            + "\n[region]\ndescription = \"deploy region\"\n",
+    )
+    .unwrap();
+    // qa is the active env (see var_project); env-only enumerated list for
+    // "region", plus the same shape in the non-active "dev" env.
+    std::fs::write(
+        dir.path().join("environments/qa.toml"),
+        "base_url = \"https://qa.example.com\"\n[options.region.east]\nvalue = \"us-east-1\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("environments/dev.toml"),
+        "[options.region.west]\nvalue = \"us-west-1\"\n",
+    )
+    .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    assert_eq!(
+        app.project.resolved.meta["region"],
+        postui_core::varmodel::VarMeta::NeedsSelection
+    );
+
+    app.update(Action::VarStruct(VarStructOp::Delete {
+        name: "region".into(),
+    }));
+
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    assert!(!app.project.model.vars.contains_key("region"));
+    let qa_on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(
+        !qa_on_disk.contains("region"),
+        "active env must be stripped: {qa_on_disk}"
+    );
+    let dev_on_disk = std::fs::read_to_string(dir.path().join("environments/dev.toml")).unwrap();
+    assert!(
+        !dev_on_disk.contains("region"),
+        "non-active env must be stripped too: {dev_on_disk}"
+    );
+    // The project must still load clean after switching to the
+    // previously-stranded env.
+    let warns = app.project.set_env(Some("dev".into()));
+    assert!(warns.is_empty(), "{warns:?}");
+}
+
+/// Finding 1, the group half: deleting a group must also strip every
+/// environment's `[options.<group>]` table.
+#[test]
+fn var_struct_delete_group_cascades_into_every_environments_options_table() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    app_new_group(dir.path(), "creds", &["user_id", "customer_id"]);
+    std::fs::write(
+        dir.path().join("environments/qa.toml"),
+        "base_url = \"https://qa.example.com\"\n[options.creds.alice]\nuser_id = \"1001\"\ncustomer_id = \"c-1\"\n",
+    )
+    .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    app.update(Action::VarStruct(VarStructOp::Delete {
+        name: "creds".into(),
+    }));
+
+    assert!(app.toasts.is_empty());
+    assert!(!app.project.model.groups.contains_key("creds"));
+    let qa_on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(!qa_on_disk.contains("creds"), "{qa_on_disk}");
+}
+
+/// Declares a variable-less group directly in `variables.toml` — a thin
+/// helper so the delete-cascade test above doesn't need a full
+/// `VarStructOp::NewGroup` round trip through a running `App`.
+fn app_new_group(dir: &std::path::Path, name: &str, members: &[&str]) {
+    let existing = std::fs::read_to_string(dir.join("variables.toml")).unwrap();
+    let member_decls: String = members
+        .iter()
+        .map(|m| format!("\n[{m}]\n"))
+        .collect::<Vec<_>>()
+        .join("");
+    let members_list = members
+        .iter()
+        .map(|m| format!("\"{m}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    std::fs::write(
+        dir.join("variables.toml"),
+        format!("{existing}{member_decls}\n[groups.{name}]\nmembers = [{members_list}]\n"),
+    )
+    .unwrap();
+}
+
 #[test]
 fn var_struct_set_members_replaces_the_group_list() {
     let dir = tempfile::tempdir().unwrap();
@@ -3960,6 +4063,98 @@ fn var_struct_demote_writes_the_resolved_value_into_the_request_and_strips_the_p
     assert!(!env_on_disk.contains("qa.example.com"), "{env_on_disk}");
 }
 
+/// Finding 2: `apply_demote` used to leave the compensating request entry
+/// only in the dirty editor buffer — demote, then quit without a manual
+/// save, lost the value everywhere. The request file on disk must carry
+/// it immediately, as part of the op itself.
+#[test]
+fn var_struct_demote_writes_the_request_file_to_disk_immediately() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    postui_core::storage::save_request(dir.path(), "ping", &req("https://x/ping")).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("ping".into()));
+
+    app.update(Action::VarStruct(VarStructOp::Demote {
+        name: "base_url".into(),
+    }));
+
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    assert!(
+        !app.editor.is_dirty(),
+        "the demote op must save, not just dirty, the editor"
+    );
+    let on_disk = postui_core::storage::load_request(dir.path(), "ping").unwrap();
+    assert_eq!(
+        on_disk.variables["base_url"].value, "https://qa.example.com",
+        "the request file on disk must already carry the demoted value"
+    );
+}
+
+/// Finding 2: `apply_promote`'s request-entry removal used to only exist
+/// in the dirty editor buffer. The request file on disk must lose the
+/// promoted entry immediately.
+#[test]
+fn var_struct_promote_removes_the_entry_from_the_request_file_on_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    request_with_var(dir.path(), "ping", "trace_id", "abc-123");
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("ping".into()));
+
+    app.update(Action::VarStruct(VarStructOp::Promote {
+        name: "trace_id".into(),
+        target: postui_core::varedit::PromoteTarget::Default,
+    }));
+
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    assert!(!app.editor.is_dirty());
+    let on_disk = postui_core::storage::load_request(dir.path(), "ping").unwrap();
+    assert!(
+        !on_disk.variables.contains_key("trace_id"),
+        "the on-disk request file must no longer carry the promoted entry"
+    );
+}
+
+/// Finding 2: the `Request` destination of extract-to-variable used to
+/// only dirty-save the field it replaced, leaving the new `[variables]`
+/// entry (and the field edit itself) unsaved to disk.
+#[test]
+fn extract_to_request_saves_the_request_file_to_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    postui_core::storage::save_request(dir.path(), "ping", &req("https://x/ping/abc-123")).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("ping".into()));
+    app.editor.url = crate::components::line_input::LineInput::new("https://x/ping/abc-123");
+    app.focus = crate::layout::PaneId::Editor;
+    app.editor.sub_focus = crate::components::editor::SubFocus::Url;
+
+    app.update(Action::ConfirmExtractVariable {
+        name: "trace_id".into(),
+        destination: crate::action::ExtractDestination::Request,
+    });
+
+    assert!(
+        app.toasts
+            .messages()
+            .iter()
+            .all(|m| !m.contains("could not")),
+        "{:?}",
+        app.toasts.messages()
+    );
+    assert!(!app.editor.is_dirty());
+    let on_disk = postui_core::storage::load_request(dir.path(), "ping").unwrap();
+    assert_eq!(
+        on_disk.variables["trace_id"].value,
+        "https://x/ping/abc-123"
+    );
+    assert_eq!(on_disk.url, "{{trace_id}}");
+}
+
 /// Review finding: `apply_demote` used to insert the demoted entry into
 /// `editor.variables` BEFORE the fallible `delete_var` write, so a
 /// `delete_var` failure (e.g. the variable is still a group member —
@@ -4031,6 +4226,255 @@ shard = "picked-value"
             .contains(&"shard".to_string()),
         "the group membership must be untouched too"
     );
+}
+
+// -------------------------------------------------------------
+// Finding 3: option delete
+// -------------------------------------------------------------
+
+#[test]
+fn delete_option_removes_a_shared_only_option() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    app.update(Action::VarStruct(VarStructOp::DeleteOption {
+        owner: "user".into(),
+        key: "bob".into(),
+    }));
+
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    assert!(!app.project.model.vars["user"].options.contains_key("bob"));
+}
+
+#[test]
+fn delete_option_removes_an_env_only_override() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    std::fs::write(
+        dir.path().join("environments/qa.toml"),
+        "base_url = \"https://qa.example.com\"\n[options.user.carol]\nvalue = \"3003\"\n",
+    )
+    .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    assert!(
+        app.project
+            .env_data
+            .options
+            .get("user")
+            .is_some_and(|m| m.contains_key("carol"))
+    );
+
+    app.update(Action::VarStruct(VarStructOp::DeleteOption {
+        owner: "user".into(),
+        key: "carol".into(),
+    }));
+
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    assert!(
+        !app.project
+            .env_data
+            .options
+            .get("user")
+            .is_some_and(|m| m.contains_key("carol"))
+    );
+    // "carol" was never a shared option, so there's nothing left to remove
+    // on a second delete either.
+    assert!(!app.project.model.vars["user"].options.contains_key("carol"));
+}
+
+/// A key that's both a shared option AND env-overridden: the first delete
+/// removes only the env override, leaving the shared option intact; a
+/// second delete then removes the shared option too.
+#[test]
+fn delete_option_present_in_both_removes_the_env_override_first_then_the_shared_option() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    std::fs::write(
+        dir.path().join("environments/qa.toml"),
+        "base_url = \"https://qa.example.com\"\n[options.user.alice]\nvalue = \"9001\"\n",
+    )
+    .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    app.update(Action::VarStruct(VarStructOp::DeleteOption {
+        owner: "user".into(),
+        key: "alice".into(),
+    }));
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    assert!(
+        !app.project
+            .env_data
+            .options
+            .get("user")
+            .is_some_and(|m| m.contains_key("alice")),
+        "the first delete must strip only the env override"
+    );
+    assert!(
+        app.project.model.vars["user"].options.contains_key("alice"),
+        "the shared option must survive the first delete"
+    );
+
+    app.update(Action::VarStruct(VarStructOp::DeleteOption {
+        owner: "user".into(),
+        key: "alice".into(),
+    }));
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    assert!(
+        !app.project.model.vars["user"].options.contains_key("alice"),
+        "the second delete must remove the now env-override-free shared option"
+    );
+}
+
+#[test]
+fn delete_option_clears_the_selection_when_the_deleted_key_was_selected() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.project.set_selection("user", "alice");
+    assert_eq!(app.project.resolved.values["user"], "1001");
+
+    app.update(Action::VarStruct(VarStructOp::DeleteOption {
+        owner: "user".into(),
+        key: "alice".into(),
+    }));
+
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    assert!(!app.project.selections_for("qa").contains_key("user"));
+    assert!(!app.project.resolved.values.contains_key("user"));
+}
+
+#[test]
+fn confirm_delete_option_body_names_the_env_override_when_shared_and_env_both_exist() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    std::fs::write(
+        dir.path().join("environments/qa.toml"),
+        "base_url = \"https://qa.example.com\"\n[options.user.alice]\nvalue = \"9001\"\n",
+    )
+    .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    app.update(Action::ConfirmDeleteOption {
+        owner: "user".into(),
+        key: "alice".into(),
+    });
+
+    let Some(Modal::Confirm { body, .. }) = app.modals.top() else {
+        panic!("expected a Confirm modal");
+    };
+    assert!(
+        body.contains("qa") && body.to_lowercase().contains("override"),
+        "{body}"
+    );
+}
+
+/// The footer chip / `d`-key parity check (spec §5), for an `OptionRow`
+/// this time — finding 3 explicitly calls out keyboard + click parity via
+/// the shared `struct_action_target` gate.
+#[test]
+fn clicking_the_delete_chip_on_an_option_row_opens_the_same_confirm_as_the_d_key() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.varmanager.expanded.insert("user".to_string());
+    goto_row(
+        &mut app,
+        |r| matches!(r, crate::components::varmanager::RowKind::OptionRow { owner, key } if owner == "user" && key == "bob"),
+    );
+    rendered_text(&mut app);
+
+    let hit = crate::hit::Hit::FooterChip(Action::ConfirmDeleteOption {
+        owner: "user".into(),
+        key: "bob".into(),
+    });
+    let rect = app
+        .hits
+        .rect_of(&hit)
+        .expect("delete chip must be painted and hit-mapped for an option row");
+
+    assert!(app.handle_mouse(left_down(rect.x, rect.y)));
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+}
+
+// -------------------------------------------------------------
+// Finding 7: rename usage-scan parity
+// -------------------------------------------------------------
+
+#[test]
+fn prompt_rename_var_surfaces_scan_usage_count_like_delete_does() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let mut r = req("https://x/uses-it/{{base_url}}");
+    r.url = "https://x/uses-it/{{base_url}}".into();
+    postui_core::storage::save_request(dir.path(), "uses-it", &r).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    app.update(Action::PromptRenameVar {
+        from: "base_url".into(),
+    });
+
+    let Some(Modal::Prompt { title, .. }) = app.modals.top() else {
+        panic!("expected a Prompt modal");
+    };
+    assert!(
+        title.contains("uses-it") && title.contains('1'),
+        "the rename prompt must name the referencing request: {title}"
+    );
+}
+
+#[test]
+fn prompt_rename_var_with_no_usage_has_a_plain_title() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    app.update(Action::PromptRenameVar {
+        from: "base_url".into(),
+    });
+
+    let Some(Modal::Prompt { title, .. }) = app.modals.top() else {
+        panic!("expected a Prompt modal");
+    };
+    assert_eq!(title, "Rename base_url");
+}
+
+// -------------------------------------------------------------
+// Finding 8: promote-onto-secret refusal
+// -------------------------------------------------------------
+
+#[test]
+fn prompt_promote_var_onto_an_existing_secret_name_refuses_with_a_message_modal() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    // `api_key` (var_project) is already `secret = true`; a request-scope
+    // entry of the SAME name is exactly the promote-onto-secret case.
+    request_with_var(dir.path(), "ping", "api_key", "sk-oops");
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("ping".into()));
+
+    app.update(Action::PromptPromoteVar {
+        name: "api_key".into(),
+    });
+
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Message { .. })),
+        "promoting onto a secret name must be refused with a message modal, not a raw parse error"
+    );
+    assert!(
+        app.project.model.vars["api_key"].secret,
+        "the declaration must be untouched"
+    );
+    assert!(app.editor.variables.contains_key("api_key"));
 }
 
 #[test]
@@ -4953,6 +5397,50 @@ fn extract_to_variable_prompts_writes_and_replaces_field_text_dirty_saved() {
     let doc = std::fs::read_to_string(app.project.root.join("variables.toml")).unwrap();
     assert!(doc.contains("[api_key]"), "{doc}");
     assert!(doc.contains("abc123"), "{doc}");
+}
+
+/// MINOR 9 (Task 18 review, sweep finding left inconclusive): a table cell
+/// genuinely in editing state, then the palette opened and "Extract to
+/// variable" run through it (not `Action::ExtractToVariable` dispatched
+/// directly) — the palette modal stacks on top of the still-open cell
+/// edit, and confirming it must reach `focused_field_text`'s table-cell
+/// branch and open the extract prompt, exactly like the direct-action test
+/// above.
+#[test]
+fn palette_extract_to_variable_with_a_table_cell_genuinely_in_edit_opens_the_prompt() {
+    let mut app = App::new_for_test();
+    app.editor.headers.insert(
+        "x-api-key".into(),
+        postui_core::model::Entry {
+            value: "abc123".into(),
+            enabled: true,
+        },
+    );
+    app.editor.mark_saved();
+    let keymap = Keymap::default_bindings();
+    focus_header_value_cell(&mut app);
+    assert!(
+        app.editor.table.editing.is_some(),
+        "the cell must genuinely be in edit before the palette opens"
+    );
+
+    app.update(Action::OpenPalette);
+    assert!(matches!(app.modals.top(), Some(Modal::Palette(_))));
+    for c in "Extract to variable".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, enter_key());
+
+    let Some(Modal::MultiPrompt { kind, .. }) = app.modals.top() else {
+        panic!("expected the extract-variable multi-prompt to open");
+    };
+    assert!(matches!(kind, PromptKind::ExtractVariable));
+    // The table cell edit must still be intact underneath — the palette
+    // command didn't disturb it, only read through it.
+    assert_eq!(
+        app.editor.table.editing.as_ref().unwrap().input.text(),
+        "abc123"
+    );
 }
 
 #[test]

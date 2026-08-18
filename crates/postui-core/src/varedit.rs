@@ -96,6 +96,18 @@ fn rename_key(parent: &mut Table, from: &str, to: &str) {
     *parent = rebuilt;
 }
 
+/// Whether `name` already occupies either namespace a variable/group
+/// declaration could collide with: a top-level key, or a `[groups.<name>]`
+/// entry — variable and group names share one namespace (spec §1), so a
+/// rename target must be checked against both.
+fn name_exists(root: &Table, name: &str) -> bool {
+    root.contains_key(name)
+        || root
+            .get("groups")
+            .and_then(Item::as_table)
+            .is_some_and(|g| g.contains_key(name))
+}
+
 /// Finds the table that owns shared options: either a top-level variable
 /// table `[owner]`, or a group table `[groups.owner]`.
 fn locate_owner_table<'a>(root: &'a mut Table, owner: &str) -> Result<&'a mut Table, EditError> {
@@ -289,6 +301,11 @@ pub fn rename_var(doc: &str, from: &str, to: &str) -> Result<String, EditError> 
     let root = doc.as_table_mut();
     if !root.contains_key(from) {
         return Err(not_found(format!("variable \"{from}\" not found")));
+    }
+    if from != to && name_exists(root, to) {
+        return Err(EditError::Conflict(format!(
+            "\"{to}\" already exists; rename would merge two declarations into one"
+        )));
     }
     rename_key(root, from, to);
 
@@ -501,12 +518,39 @@ pub fn upsert_env_option(
 pub fn rename_env_var(doc: &str, from: &str, to: &str) -> Result<String, EditError> {
     let mut doc = parse(doc)?;
     let root = doc.as_table_mut();
-    if root.contains_key(from) {
+    let has_flat = root.contains_key(from);
+    let has_options = root
+        .get("options")
+        .and_then(Item::as_table)
+        .is_some_and(|o| o.contains_key(from));
+    if !has_flat && !has_options {
+        return Ok(doc.to_string());
+    }
+    // Conflict check up front, before any mutation: a `to` that already
+    // occupies the same slot `from` is being moved into would otherwise
+    // silently merge two entries into one (`rename_key`'s rebuild would
+    // encounter `to` twice and the second insert wins, dropping the first).
+    if from != to {
+        let flat_conflict = has_flat && root.contains_key(to);
+        let options_conflict = has_options
+            && root
+                .get("options")
+                .and_then(Item::as_table)
+                .is_some_and(|o| o.contains_key(to));
+        if flat_conflict || options_conflict {
+            return Err(EditError::Conflict(format!(
+                "\"{to}\" already exists in this environment; rename would merge two entries into one"
+            )));
+        }
+    }
+    if has_flat {
         rename_key(root, from, to);
     }
-    if let Some(options) = root.get_mut("options").and_then(Item::as_table_mut)
-        && options.contains_key(from)
-    {
+    if has_options {
+        let options = root
+            .get_mut("options")
+            .and_then(Item::as_table_mut)
+            .expect("has_options confirmed the table exists above");
         rename_key(options, from, to);
     }
     Ok(doc.to_string())
@@ -588,6 +632,18 @@ pub fn promote_var(
         )));
     }
 
+    if root
+        .get(name)
+        .and_then(Item::as_table)
+        .and_then(|t| t.get("secret"))
+        .and_then(Item::as_bool)
+        .unwrap_or(false)
+    {
+        return Err(EditError::Conflict(format!(
+            "variable \"{name}\" is secret; promoting a plain value onto it would either commit a secret to variables.toml or make the declaration invalid"
+        )));
+    }
+
     if let Some(groups_table) = root.get("groups").and_then(Item::as_table) {
         if groups_table.contains_key(name) {
             return Err(EditError::Conflict(format!(
@@ -622,6 +678,22 @@ pub fn promote_var(
             Ok((new_vars, Some(new_env)))
         }
     }
+}
+
+/// Removes every environment-level trace of `name`: its flat `name =
+/// "value"` pair (if any) and its whole `[options.name.*]` table (if any).
+/// No-op (returns `doc` unchanged) when neither exists — mirrors
+/// `rename_env_var`'s per-env-loop-friendly behavior, since the caller
+/// (the Manager's delete cascade) loops this across every environment
+/// unconditionally, most of which won't have anything for a given name.
+pub fn delete_env_var(doc: &str, name: &str) -> Result<String, EditError> {
+    let mut doc = parse(doc)?;
+    let root = doc.as_table_mut();
+    remove_transferring_header(root, name);
+    if let Some(options) = root.get_mut("options").and_then(Item::as_table_mut) {
+        remove_transferring_header(options, name);
+    }
+    Ok(doc.to_string())
 }
 
 /// Removes `[options.owner.key]`. `NotFound` if it wasn't there.
@@ -941,6 +1013,26 @@ account_id = "1001"
 customer_id = "c-77"
 "#
         );
+    }
+
+    #[test]
+    fn rename_var_conflict_when_to_already_exists_as_a_variable() {
+        let err = rename_var(VARS, "base_url", "api_key").unwrap_err();
+        assert_eq!(
+            err,
+            EditError::Conflict(
+                "\"api_key\" already exists; rename would merge two declarations into one"
+                    .to_string()
+            )
+        );
+        // Nothing changed on a rejected rename.
+        assert!(rename_var(VARS, "base_url", "api_key").is_err());
+    }
+
+    #[test]
+    fn rename_var_conflict_when_to_already_exists_as_a_group() {
+        let err = rename_var(VARS, "base_url", "test-user").unwrap_err();
+        assert!(matches!(err, EditError::Conflict(_)));
     }
 
     #[test]
@@ -1517,6 +1609,31 @@ value = "https://qa2.example.com"
     }
 
     #[test]
+    fn rename_env_var_conflict_when_to_flat_pair_already_exists() {
+        // ENV has both a flat "base_url" pair and options for "user"/
+        // "test-user"; renaming "base_url" onto the existing flat-pair-less
+        // but options-bearing "user" is fine (no flat "user" pair), so use
+        // a fixture where the target name already has a flat pair too.
+        let env = r#"base_url = "https://qa.example.com"
+region = "us-east"
+"#;
+        let err = rename_env_var(env, "base_url", "region").unwrap_err();
+        assert_eq!(
+            err,
+            EditError::Conflict(
+                "\"region\" already exists in this environment; rename would merge two entries into one"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn rename_env_var_conflict_when_to_options_table_already_exists() {
+        let err = rename_env_var(ENV, "user", "test-user").unwrap_err();
+        assert!(matches!(err, EditError::Conflict(_)));
+    }
+
+    #[test]
     fn rename_env_var_is_a_no_op_when_the_name_is_absent() {
         let out = rename_env_var(ENV, "nope", "still-nope").unwrap();
         assert_eq!(
@@ -1598,6 +1715,64 @@ user_id = "9001"
             err,
             EditError::NotFound("[options.user.nope] not found".to_string())
         );
+    }
+
+    #[test]
+    fn delete_env_var_removes_the_flat_pair_and_the_options_table() {
+        let env = r#"base_url = "https://qa.example.com"
+shard = "d-1"
+
+[options.shard.east]
+value = "e-1"
+[options.user.alice]
+value = "9001"
+"#;
+        let out = delete_env_var(env, "shard").unwrap();
+        assert_eq!(
+            out,
+            r#"base_url = "https://qa.example.com"
+[options.user.alice]
+value = "9001"
+"#
+        );
+    }
+
+    #[test]
+    fn delete_env_var_flat_pair_only() {
+        let out = delete_env_var(ENV, "base_url").unwrap();
+        assert_eq!(
+            out,
+            r#"# environments/qa.toml
+
+[options.user.alice]
+value = "9001"
+[options.user.qa-only]
+description = "exists only in qa"
+value = "3003"
+[options.test-user.alice]
+user_id = "9001"
+"#
+        );
+    }
+
+    #[test]
+    fn delete_env_var_options_table_only() {
+        let out = delete_env_var(ENV, "user").unwrap();
+        assert_eq!(
+            out,
+            r#"# environments/qa.toml
+
+base_url = "https://qa.example.com"
+[options.test-user.alice]
+user_id = "9001"
+"#
+        );
+    }
+
+    #[test]
+    fn delete_env_var_is_a_no_op_when_the_name_is_absent() {
+        let out = delete_env_var(ENV, "nope").unwrap();
+        assert_eq!(out, ENV);
     }
 
     // -------------------------------------------------------------
@@ -1856,6 +2031,27 @@ user_id = "9001"
             VARS,
             Some(ENV),
             "test-user",
+            "whatever",
+            PromoteTarget::Default,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, EditError::Conflict(_)),
+            "expected Conflict, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn promote_var_onto_existing_secret_name_is_conflict() {
+        // "api_key" is `secret = true` with no options — the enumerated
+        // check above doesn't catch it, so this exercises the dedicated
+        // secret guard (review finding: this used to fall through to
+        // `upsert_var` writing a `default` alongside `secret = true`,
+        // producing a `variables.toml` that fails to parse on next load).
+        let err = promote_var(
+            VARS,
+            Some(ENV),
+            "api_key",
             "whatever",
             PromoteTarget::Default,
         )

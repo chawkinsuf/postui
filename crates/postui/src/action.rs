@@ -273,6 +273,13 @@ pub enum Action {
     ConfirmDeleteVar {
         name: String,
     },
+    /// `d`/`Delete` on an `OptionRow` (finding 3): open the delete confirm,
+    /// its body naming whether this removes the active env's override, the
+    /// shared option, or (when both exist) just the override first.
+    ConfirmDeleteOption {
+        owner: String,
+        key: String,
+    },
     /// `s` on a non-enumerated `Var` row: open the secret-flag transition
     /// confirm (spec §3) — its wording and the value(s) it offers for copy
     /// depend on which direction the flip goes.
@@ -337,9 +344,12 @@ pub enum Action {
     ExtractToVariable,
     /// Confirmed `PromptKind::ExtractVariable`: declares/writes `name` at
     /// `destination`, then replaces the still-focused field's text with
-    /// `{{name}}` (dirty-saving it) — the origin field is re-read from
-    /// current focus rather than carried in the prompt, since focus can't
-    /// move while a modal has input captured.
+    /// `{{name}}` — the origin field is re-read from current focus rather
+    /// than carried in the prompt, since focus can't move while a modal has
+    /// input captured. For `Request`, the request file is saved
+    /// synchronously afterward (finding 2's ruling); the other two
+    /// destinations leave the field edit save-on-demand, same as ordinary
+    /// typing.
     ConfirmExtractVariable {
         name: String,
         destination: ExtractDestination,

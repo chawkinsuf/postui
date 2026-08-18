@@ -146,6 +146,14 @@ pub enum ModelError {
     )]
     EnvValueForSecret(String),
     #[error(
+        "environment sets a flat value for \"{0}\", which is a group name; groups don't take a flat value, use [options.{0}.<key>] instead"
+    )]
+    EnvValueForGroup(String),
+    #[error(
+        "environment sets a flat value for \"{name}\", which is a member of group \"{group}\"; its value comes from the group's selected option, not a flat value"
+    )]
+    EnvValueForGroupMember { name: String, group: String },
+    #[error(
         "[options.{0}] does not match a declared variable or group; declare it in variables.toml or fix the typo"
     )]
     EnvOptionsUndeclared(String),
@@ -564,6 +572,21 @@ pub fn validate_env(model: &VarModel, env: &EnvData) -> Result<(), ModelError> {
             if !merged_var_options(model, env, key).is_empty() {
                 return Err(ModelError::EnvValueForEnumerated(key.clone()));
             }
+            continue;
+        }
+        if model.groups.contains_key(key) {
+            return Err(ModelError::EnvValueForGroup(key.clone()));
+        }
+        if let Some(group_name) = model
+            .groups
+            .iter()
+            .find(|(_, g)| g.members.contains(key))
+            .map(|(gname, _)| gname.clone())
+        {
+            return Err(ModelError::EnvValueForGroupMember {
+                name: key.clone(),
+                group: group_name,
+            });
         }
     }
 
@@ -1167,6 +1190,53 @@ api_key = "sekret"
         .unwrap();
         let err = validate_env(&m, &e).unwrap_err();
         assert_eq!(err, ModelError::EnvValueForSecret("api_key".into()));
+    }
+
+    #[test]
+    fn validate_env_flat_value_naming_a_group_errors() {
+        let m = parse_variables(
+            r#"
+[groups.test-user]
+members = ["user_id", "customer_id"]
+"#,
+        )
+        .unwrap();
+        let e = parse_environment(
+            r#"
+test-user = "alice"
+"#,
+        )
+        .unwrap();
+        let err = validate_env(&m, &e).unwrap_err();
+        assert_eq!(err, ModelError::EnvValueForGroup("test-user".into()));
+        assert!(err.to_string().contains("test-user"));
+    }
+
+    #[test]
+    fn validate_env_flat_value_naming_a_group_member_errors() {
+        let m = parse_variables(
+            r#"
+[groups.test-user]
+members = ["user_id", "customer_id"]
+"#,
+        )
+        .unwrap();
+        let e = parse_environment(
+            r#"
+user_id = "1001"
+"#,
+        )
+        .unwrap();
+        let err = validate_env(&m, &e).unwrap_err();
+        assert_eq!(
+            err,
+            ModelError::EnvValueForGroupMember {
+                name: "user_id".into(),
+                group: "test-user".into(),
+            }
+        );
+        assert!(err.to_string().contains("user_id"));
+        assert!(err.to_string().contains("test-user"));
     }
 
     #[test]

@@ -1402,8 +1402,23 @@ impl App {
                 true
             }
             Action::PromptRenameVar { from } => {
+                // Finding 7: surface `scan_usage`'s count the same way
+                // `ConfirmDeleteVar` already does — renaming doesn't break
+                // those requests (references keep the old name until
+                // someone edits them), but the user should still know the
+                // name isn't as free-standing as it looks.
+                let usage = postui_core::varedit::scan_usage(&self.project.root, &from);
+                let title = if usage.is_empty() {
+                    format!("Rename {from}")
+                } else {
+                    format!(
+                        "Rename {from} \u{2014} referenced by {} request(s): {} (references keep the old name)",
+                        usage.len(),
+                        usage.join(", ")
+                    )
+                };
                 self.modals.push(Modal::Prompt {
-                    title: format!("Rename {from}"),
+                    title,
                     input: LineInput::new(&from),
                     kind: PromptKind::RenameVariable { from },
                     revealed: false,
@@ -1451,11 +1466,75 @@ impl App {
                 });
                 true
             }
+            Action::ConfirmDeleteOption { owner, key } => {
+                let env_override = self.project.active_env.as_deref().is_some_and(|_| {
+                    self.project
+                        .env_data
+                        .options
+                        .get(&owner)
+                        .and_then(|m| m.get(&key))
+                        .is_some()
+                });
+                let shared_exists = self
+                    .project
+                    .model
+                    .vars
+                    .get(&owner)
+                    .is_some_and(|d| d.options.contains_key(&key))
+                    || self
+                        .project
+                        .model
+                        .groups
+                        .get(&owner)
+                        .is_some_and(|g| g.options.contains_key(&key));
+                let env_label = self.project.active_env.clone().unwrap_or_default();
+                let body = if env_override && shared_exists {
+                    format!(
+                        "Delete \"{key}\" on \"{owner}\"? This removes the {env_label} override first \u{2014} the shared option stays; delete again to remove that too. This cannot be undone."
+                    )
+                } else if env_override {
+                    format!(
+                        "Delete \"{key}\" on \"{owner}\"? Removes the {env_label} override. This cannot be undone."
+                    )
+                } else {
+                    format!("Delete \"{key}\" on \"{owner}\"? This cannot be undone.")
+                };
+                self.modals.push(Modal::Confirm {
+                    title: format!("Delete {key}"),
+                    body,
+                    choices: vec![
+                        ('n', "Cancel".into(), vec![]),
+                        (
+                            'y',
+                            "Delete".into(),
+                            vec![Action::VarStruct(VarStructOp::DeleteOption { owner, key })],
+                        ),
+                    ],
+                });
+                true
+            }
             Action::ToggleSecretVar { name } => {
                 self.open_toggle_secret_confirm(name);
                 true
             }
             Action::PromptPromoteVar { name } => {
+                // Finding 8: a secret already declared at `name` used to
+                // fall through to `upsert_var` writing a `default`
+                // alongside `secret = true` — `edit_variables` then
+                // rejected the resulting `variables.toml` on re-parse
+                // (`ModelError::SecretWithDefault`), surfacing as an
+                // incidental parse-error toast instead of an intentional
+                // refusal. Refuse up front instead, mirroring
+                // `open_demote_confirm`'s refusal modals.
+                if self.project.model.vars.get(&name).is_some_and(|d| d.secret) {
+                    self.modals.push(Modal::Message {
+                        title: "Can't promote".into(),
+                        body: format!(
+                            "\"{name}\" is already declared as a secret; promoting a plain value onto it would either commit a secret to variables.toml or make the declaration invalid."
+                        ),
+                    });
+                    return true;
+                }
                 let mut choices = vec![(
                     'd',
                     "Default value".to_string(),
@@ -1794,9 +1873,27 @@ impl App {
                         Ok(())
                     }
                 };
+                let wrote_to_request = matches!(destination, ExtractDestination::Request);
                 match write_result {
                     Ok(()) => {
                         self.replace_focused_field_with_token(&name);
+                        // Finding 2, same ruling as demote/promote: the
+                        // `Request` destination's write only exists so far
+                        // in the dirty editor buffer (both the new
+                        // `[variables]` entry above and the field text
+                        // `replace_focused_field_with_token` just
+                        // committed) — save it synchronously rather than
+                        // leaving it save-on-demand, so "extract to
+                        // request, then quit" can't lose it.
+                        if wrote_to_request && let Err(e) = self.save_open_request() {
+                            self.toasts.push(
+                                format!(
+                                    "extracted to {{{{{name}}}}} but {e} \u{2014} save the request manually"
+                                ),
+                                ToastKind::Error,
+                            );
+                            return true;
+                        }
                         self.toasts
                             .push(format!("extracted to {{{{{name}}}}}"), ToastKind::Success);
                     }
@@ -2295,7 +2392,46 @@ impl App {
                 Ok(())
             }
             VarStructOp::Delete { name } => {
-                if self.project.model.groups.contains_key(name) {
+                let is_group = self.project.model.groups.contains_key(name);
+                if !is_group {
+                    // Mirror `delete_var`'s own "still a group member"
+                    // conflict up front, using the already-loaded model —
+                    // before any environment file is touched, so a refusal
+                    // here leaves everything unchanged (`apply_var_struct`'s
+                    // documented contract), matching what `delete_var`
+                    // itself would have refused a moment later anyway.
+                    if let Some(gname) = self
+                        .project
+                        .model
+                        .groups
+                        .iter()
+                        .find_map(|(gname, g)| g.members.contains(name).then(|| gname.clone()))
+                    {
+                        return Err(format!(
+                            "variable \"{name}\" is a member of group \"{gname}\"; remove it from the group first"
+                        ));
+                    }
+                }
+                // Finding 1: `delete_var`/`delete_group` only ever touch
+                // `variables.toml`. An env's `[options.<name>]` table for
+                // the deleted name would otherwise strand that env file —
+                // refused by `validate_env` in the ACTIVE env (a confusing
+                // parse-style toast), or silently left invalid with no GUI
+                // repair path in a NON-active one. Cascade into every
+                // environment FIRST — a strip can only shrink an env file,
+                // so it can never itself fail `validate_env` — and only
+                // THEN remove the declaration: doing it in the other order
+                // would have the declaration-removal's own `edit_variables`
+                // call validate the ACTIVE env's *not-yet-stripped*
+                // `[options.<name>]` table against a model that already
+                // doesn't declare `name`, reproducing the exact "confusing
+                // parse-style toast" this fix removes. `delete_env_var`
+                // no-ops for an environment with nothing to remove.
+                for env in self.project.environments.clone() {
+                    self.project
+                        .edit_env(&env, |doc| varedit::delete_env_var(doc, name))?;
+                }
+                if is_group {
                     self.project
                         .edit_variables(|doc| varedit::delete_group(doc, name))
                 } else {
@@ -2315,7 +2451,65 @@ impl App {
             }
             VarStructOp::Promote { name, target } => self.apply_promote(name, *target),
             VarStructOp::Demote { name } => self.apply_demote(name),
+            VarStructOp::DeleteOption { owner, key } => self.apply_delete_option(owner, key),
         }
+    }
+
+    /// [`VarStructOp::DeleteOption`] (finding 3): location-aware option
+    /// delete. If `key` is overridden in the active environment, that
+    /// override is stripped first — leaving a shared option of the same
+    /// name (if any) intact, so a second delete then removes it. Otherwise,
+    /// if `key` is a shared option (on the variable's or group's own
+    /// table), it's removed from `variables.toml`. Neither existing is a
+    /// quiet no-op success (a stale row — nothing left to do). Also clears
+    /// any per-env selection naming the deleted key, in every environment,
+    /// so local state doesn't accumulate dead selections (`resolve_env`
+    /// already degrades a stale selection harmlessly, but there's no
+    /// reason to leave it).
+    fn apply_delete_option(&mut self, owner: &str, key: &str) -> Result<(), String> {
+        let env_override = self.project.active_env.clone().filter(|_| {
+            self.project
+                .env_data
+                .options
+                .get(owner)
+                .and_then(|m| m.get(key))
+                .is_some()
+        });
+        if let Some(env) = env_override {
+            self.project.edit_env(&env, |doc| {
+                postui_core::varedit::delete_env_option(doc, owner, key)
+            })?;
+        } else {
+            let shared_exists = self
+                .project
+                .model
+                .vars
+                .get(owner)
+                .is_some_and(|d| d.options.contains_key(key))
+                || self
+                    .project
+                    .model
+                    .groups
+                    .get(owner)
+                    .is_some_and(|g| g.options.contains_key(key));
+            if shared_exists {
+                self.project.edit_variables(|doc| {
+                    postui_core::varedit::delete_shared_option(doc, owner, key)
+                })?;
+            }
+        }
+        for env in self.project.environments.clone() {
+            if self
+                .project
+                .selections_for(&env)
+                .get(owner)
+                .map(String::as_str)
+                == Some(key)
+            {
+                self.project.clear_selection_for(&env, owner);
+            }
+        }
+        Ok(())
     }
 
     /// [`VarStructOp::ToggleSecret`]'s two directions (spec §3). Off->on
@@ -2405,6 +2599,22 @@ impl App {
             self.project.edit_env(&env, |_| Ok(new_env))?;
         }
         self.editor.variables.shift_remove(name);
+        // Finding 2: the project side of the promote is durable the moment
+        // `edit_variables`/`edit_env` above return `Ok` (both write
+        // atomically). The compensating half — removing the entry from the
+        // request's own `[variables]` — only exists in the dirty editor
+        // buffer until now; save it synchronously so "promote, then quit"
+        // can't leave the old value stranded in both places. The project
+        // write already succeeded, so a save failure here is reported as a
+        // toast rather than an `Err` (which would incorrectly roll back an
+        // op that, on the project side, already committed) — the removal
+        // stays live in the editor buffer, just not yet on disk.
+        if let Err(e) = self.save_open_request() {
+            self.toasts.push(
+                format!("promoted \"{name}\" but {e} \u{2014} save the request manually"),
+                ToastKind::Error,
+            );
+        }
         Ok(())
     }
 
@@ -2438,11 +2648,49 @@ impl App {
                 enabled: true,
             },
         );
+        // Finding 2: the destructive half (the declaration is gone) is
+        // already durable via `edit_variables` above. The compensating
+        // half — the request now carrying the value — only exists in the
+        // dirty editor buffer so far; save it synchronously right after the
+        // buffer mutation, and before the (best-effort, already-`let _ =`)
+        // env strip below, so "demote, then quit" can't lose the value
+        // everywhere. A save failure here is reported as a toast, not an
+        // `Err` — the declaration is genuinely gone either way, and rolling
+        // that back would be a second, separate write this function isn't
+        // set up to attempt; the value is still safe in the dirty editor
+        // buffer for a manual save.
+        if let Err(e) = self.save_open_request() {
+            self.toasts.push(
+                format!("demoted \"{name}\" but {e} \u{2014} save the request manually"),
+                ToastKind::Error,
+            );
+        }
         for env in self.project.environments.clone() {
             let _ = self.project.edit_env(&env, |doc| {
                 postui_core::varedit::set_env_value(doc, name, None)
             });
         }
+        Ok(())
+    }
+
+    /// Synchronously persists the currently open request to disk, mirroring
+    /// `Action::SaveRequest`'s slugged branch (no SaveAs prompt — every
+    /// caller here already knows a slug is open). Used by ops (demote,
+    /// promote, extract-to-request) whose spec-mandated "writes
+    /// immediately" (spec §5) binds the request-file half of a
+    /// MANAGER-driven mutation — unlike ordinary Vars-tab typing, which
+    /// stays save-on-demand (plan-mandated) and never calls this.
+    fn save_open_request(&mut self) -> Result<(), String> {
+        let slug = self
+            .editor
+            .slug
+            .clone()
+            .ok_or_else(|| "no request is open".to_string())?;
+        let req = self.editor.current_request();
+        postui_core::storage::save_request(&self.project.root, &slug, &req)
+            .map_err(|e| format!("could not save {slug}: {e}"))?;
+        self.editor.mark_saved();
+        self.refresh_sidebar();
         Ok(())
     }
 

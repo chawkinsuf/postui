@@ -149,6 +149,12 @@ pub enum VarStructOp {
     Rename { from: String, to: String },
     /// `d`/`Delete` on a `Var` or `GroupHeader` row.
     Delete { name: String },
+    /// `d`/`Delete` on an `OptionRow` (finding 3): location-aware — the
+    /// active env's override if it has one (leaving a shared option, if
+    /// any, intact — a second delete then removes it), the shared option
+    /// otherwise. `App::apply_delete_option` recomputes which at apply
+    /// time, matching `Delete`'s own var-vs-group recompute above.
+    DeleteOption { owner: String, key: String },
     /// `s` on a non-enumerated `Var` row: flips `secret` (spec §3's two
     /// transitions — `App::apply_var_struct` does the value-moving work).
     ToggleSecret { name: String },
@@ -1018,6 +1024,12 @@ impl VarManager {
             }
             (StructKind::Delete, RowKind::Var { name } | RowKind::GroupHeader { name }) => {
                 Some(Action::ConfirmDeleteVar { name: name.clone() })
+            }
+            (StructKind::Delete, RowKind::OptionRow { owner, key }) => {
+                Some(Action::ConfirmDeleteOption {
+                    owner: owner.clone(),
+                    key: key.clone(),
+                })
             }
             (StructKind::ToggleSecret, RowKind::Var { name })
                 if union_var_option_keys(ctx, name).is_empty() =>

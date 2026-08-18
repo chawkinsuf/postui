@@ -73,6 +73,44 @@ fn atomic_write(path: &Path, contents: &str) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Drops any entry in `selections` naming an option key that no longer
+/// exists in `model`/`env`'s merged options for that name (spec §1.3: "a
+/// selection naming a missing option key degrades to unselected ... with a
+/// toast on load"). `resolve_env` already degrades a stale selection to
+/// `NeedsSelection` on its own, so this isn't required for correct
+/// resolution — it's purely so the user gets told once, and so the stale
+/// entry doesn't linger forever in `.local/state.toml`. Returns one warning
+/// per cleared entry, worded to match the finding's example exactly.
+fn prune_stale_selections(
+    model: &VarModel,
+    env_data: &varmodel::EnvData,
+    env_label: &str,
+    selections: &mut IndexMap<String, String>,
+) -> Vec<String> {
+    let stale: Vec<String> = selections
+        .iter()
+        .filter(|(name, key)| {
+            let merged_has_key = if model.vars.contains_key(name.as_str()) {
+                varmodel::merged_var_options(model, env_data, name).contains_key(key.as_str())
+            } else if model.groups.contains_key(name.as_str()) {
+                varmodel::merged_group_options(model, env_data, name).contains_key(key.as_str())
+            } else {
+                false
+            };
+            !merged_has_key
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+
+    stale
+        .into_iter()
+        .map(|name| {
+            selections.shift_remove(&name);
+            format!("selection for `{name}` no longer exists in env `{env_label}` \u{2014} cleared")
+        })
+        .collect()
+}
+
 fn mtime(path: &PathBuf) -> Option<SystemTime> {
     std::fs::metadata(path).ok().and_then(|m| m.modified().ok())
 }
@@ -164,6 +202,20 @@ impl ProjectContext {
             stamps,
             local_open_request: local_state.open_request,
         };
+        if let Some(env) = ctx.active_env.clone() {
+            let stale = prune_stale_selections(
+                &ctx.model,
+                &ctx.env_data,
+                &env,
+                ctx.selections.entry(env.clone()).or_default(),
+            );
+            if !stale.is_empty() {
+                let open_request = ctx.local_open_request.clone();
+                ctx.persist_local_state(open_request.as_deref());
+            }
+            warnings.extend(stale);
+        }
+
         ctx.refresh_resolved();
         (ctx, warnings)
     }
@@ -232,6 +284,26 @@ impl ProjectContext {
         // (including `Self::set_selection`) addresses it by its storage key
         // `""` — comparing against `active_env` directly would never equal
         // `Some("")` and silently skip the resolve.
+        if self.env_key() == env {
+            self.refresh_resolved();
+        }
+    }
+
+    /// Drops `name`'s recorded selection for `env`, if any — used when the
+    /// option key it names is deleted out from under it (finding 3: a
+    /// deleted-while-selected option would otherwise leave a stale
+    /// selection entry; `resolve_env` already degrades that to
+    /// `NeedsSelection` harmlessly, but clearing it here keeps local state
+    /// tidy rather than accumulating dead entries). A no-op if `name` has
+    /// no selection recorded for `env`.
+    pub fn clear_selection_for(&mut self, env: &str, name: &str) {
+        let Some(sel) = self.selections.get_mut(env) else {
+            return;
+        };
+        if sel.shift_remove(name).is_none() {
+            return;
+        }
+        self.persist_local_state_keep_open_request();
         if self.env_key() == env {
             self.refresh_resolved();
         }
@@ -354,6 +426,19 @@ impl ProjectContext {
                     Err(e) => warnings.push(format!("could not load environment {env:?}: {e}")),
                 }
             }
+        }
+
+        if let Some(env) = self.active_env.clone() {
+            let stale = prune_stale_selections(
+                &self.model,
+                &self.env_data,
+                &env,
+                self.selections.entry(env.clone()).or_default(),
+            );
+            if !stale.is_empty() {
+                self.persist_local_state_keep_open_request();
+            }
+            warnings.extend(stale);
         }
 
         self.stamps = stamp(&self.root, &self.active_env);
@@ -615,6 +700,138 @@ mod tests {
         assert!(warns.is_empty(), "{warns:?}");
         assert_eq!(ctx.resolved.values["user"], "2002");
         assert_eq!(ctx.resolved.values["api_key"], "sk-test");
+    }
+
+    /// MINOR 4 (spec §1.3): a selection naming a missing option key must
+    /// warn once on load and be cleared from local state, not linger
+    /// silently forever.
+    #[test]
+    fn open_warns_and_clears_a_stale_selection() {
+        let dir = tempfile::tempdir().unwrap();
+        postui_core::project::init_project(dir.path(), None).unwrap();
+        std::fs::write(
+            dir.path().join("variables.toml"),
+            "[user]\n[user.options.alice]\nvalue = \"1001\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("environments/qa.toml"), "").unwrap();
+        let mut selections = IndexMap::new();
+        let mut qa_sel = IndexMap::new();
+        qa_sel.insert("user".to_string(), "ghost".to_string());
+        selections.insert("qa".to_string(), qa_sel);
+        postui_core::project::save_local_state(
+            dir.path(),
+            &postui_core::project::LocalState {
+                environment: Some("qa".into()),
+                selections,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf());
+        assert!(
+            warns
+                .iter()
+                .any(|w| w.contains("user") && w.contains("qa") && w.contains("no longer exists")),
+            "{warns:?}"
+        );
+        assert!(
+            !ctx.selections_for("qa").contains_key("user"),
+            "the stale selection must be cleared in memory"
+        );
+        assert!(!ctx.resolved.values.contains_key("user"));
+
+        // ...and persisted, so the warning doesn't repeat forever.
+        let state = postui_core::project::load_local_state(dir.path()).unwrap();
+        assert!(
+            !state
+                .selections
+                .get("qa")
+                .is_some_and(|s| s.contains_key("user"))
+        );
+    }
+
+    #[test]
+    fn reload_warns_and_clears_a_stale_selection_when_the_option_disappears() {
+        let dir = tempfile::tempdir().unwrap();
+        postui_core::project::init_project(dir.path(), None).unwrap();
+        std::fs::write(
+            dir.path().join("variables.toml"),
+            "[user]\n[user.options.alice]\nvalue = \"1001\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("environments/qa.toml"), "").unwrap();
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        ctx.set_env(Some("qa".into()));
+        ctx.set_selection("user", "alice");
+        assert_eq!(ctx.resolved.values["user"], "1001");
+
+        std::fs::write(
+            dir.path().join("variables.toml"),
+            "[user]\n[user.options.bob]\nvalue = \"2002\"\n",
+        )
+        .unwrap();
+        bump_mtime(&dir.path().join("variables.toml"));
+
+        let (changed, warns) = ctx.reload_if_changed();
+        assert!(changed);
+        assert!(
+            warns
+                .iter()
+                .any(|w| w.contains("user") && w.contains("no longer exists")),
+            "{warns:?}"
+        );
+        assert!(!ctx.selections_for("qa").contains_key("user"));
+    }
+
+    #[test]
+    fn clear_selection_for_removes_the_entry_and_re_resolves_the_active_env() {
+        let dir = tempfile::tempdir().unwrap();
+        postui_core::project::init_project(dir.path(), None).unwrap();
+        std::fs::write(
+            dir.path().join("variables.toml"),
+            "[user]\n[user.options.alice]\nvalue = \"1001\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("environments/qa.toml"), "").unwrap();
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        ctx.set_env(Some("qa".into()));
+        ctx.set_selection("user", "alice");
+        assert_eq!(ctx.resolved.values["user"], "1001");
+
+        ctx.clear_selection_for("qa", "user");
+
+        assert!(!ctx.selections_for("qa").contains_key("user"));
+        assert!(!ctx.resolved.values.contains_key("user"));
+        let state = postui_core::project::load_local_state(dir.path()).unwrap();
+        assert!(!state.selections["qa"].contains_key("user"));
+    }
+
+    #[test]
+    fn clear_selection_for_a_non_active_env_does_not_touch_resolved() {
+        let dir = tempfile::tempdir().unwrap();
+        postui_core::project::init_project(dir.path(), None).unwrap();
+        std::fs::write(
+            dir.path().join("variables.toml"),
+            "[user]\n[user.options.alice]\nvalue = \"1001\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("environments/qa.toml"), "").unwrap();
+        std::fs::write(dir.path().join("environments/dev.toml"), "").unwrap();
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        ctx.set_env(Some("qa".into()));
+        ctx.set_selection("user", "alice");
+        ctx.set_selection_for("dev", "user", "alice");
+        assert_eq!(ctx.resolved.values["user"], "1001");
+
+        ctx.clear_selection_for("dev", "user");
+
+        assert!(!ctx.selections_for("dev").contains_key("user"));
+        assert_eq!(
+            ctx.resolved.values["user"], "1001",
+            "clearing a non-active env's selection must not disturb the active env's resolution"
+        );
     }
 
     #[test]
