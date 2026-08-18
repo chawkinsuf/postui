@@ -1,4 +1,4 @@
-use crate::app::App;
+use crate::app::{App, Screen};
 use crate::components::{Component, DrawCtx};
 use crate::hit::Hit;
 use crate::layout::{PaneId, compute_layout};
@@ -14,6 +14,11 @@ use ratatui::Frame;
 /// rects are registered first so any hit a component registers later (a
 /// button, a row) is topmost at that point per [`HitMap::hit_at`]'s
 /// last-registered-wins rule.
+///
+/// `app.screen` (spec §5) branches the body: `Screen::Main` draws the usual
+/// three panes; any other screen draws full-frame into `layout.body`
+/// instead, while the header and footer stay exactly as they are on
+/// `Main`.
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let editor_collapsed_to_chrome = app.table_collapsed
         && matches!(
@@ -23,56 +28,87 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         );
     let layout = compute_layout(frame.area(), editor_collapsed_to_chrome);
     let focus = app.focus;
+    let screen = app.screen;
     let mut hits = std::mem::take(&mut app.hits);
     hits.clear();
-    hits.register(layout.sidebar, Hit::Pane(PaneId::Sidebar));
-    hits.register(layout.editor, Hit::Pane(PaneId::Editor));
-    hits.register(layout.response, Hit::Pane(PaneId::Response));
-    // The painted gutter separating the sidebar from the main panes — the
-    // surviving separator now that panes no longer draw a `│` border of
-    // their own.
-    crate::paint::fill(frame.buffer_mut(), layout.gutter, app.theme.page);
-    let hovered = app.hovered.as_ref();
-    let dragged_pane = app.drag.as_ref().map(|d| d.pane);
-    // Destructured so each component can be borrowed mutably alongside the
-    // shared theme reference its DrawCtx holds.
-    let App {
-        theme,
-        sidebar,
-        editor,
-        session,
-        toasts,
-        modals,
-        ..
-    } = app;
-    let response = &mut session.response;
+
+    let project_name = app.project.display_name();
+    let env_label = app.project.env_label();
     crate::components::header_bar::draw_header(
         frame,
         layout.header,
-        theme,
-        &app.project.display_name(),
-        &app.project.env_label(),
+        &app.theme,
+        &project_name,
+        &env_label,
         &mut hits,
-        hovered,
+        app.hovered.as_ref(),
     );
-    let ctx = |pane: PaneId| DrawCtx {
-        theme,
-        focused: focus == pane,
-        hovered,
-        dragging: dragged_pane == Some(pane),
-    };
-    sidebar.draw(frame, layout.sidebar, &ctx(PaneId::Sidebar), &mut hits);
-    editor.draw(frame, layout.editor, &ctx(PaneId::Editor), &mut hits);
-    response.draw(frame, layout.response, &ctx(PaneId::Response), &mut hits);
-    let focused_rect = match focus {
-        PaneId::Sidebar => layout.sidebar,
-        PaneId::Editor => layout.editor,
-        PaneId::Response => layout.response,
-    };
-    focus_bar(frame.buffer_mut(), focused_rect, theme);
-    crate::components::footer::draw_footer(frame, layout.footer, theme, focus, &mut hits, hovered);
-    toasts.draw(frame, frame.area(), theme);
-    modals.draw(frame, frame.area(), theme, &mut hits, hovered);
+
+    match screen {
+        Screen::Main => {
+            hits.register(layout.sidebar, Hit::Pane(PaneId::Sidebar));
+            hits.register(layout.editor, Hit::Pane(PaneId::Editor));
+            hits.register(layout.response, Hit::Pane(PaneId::Response));
+            // The painted gutter separating the sidebar from the main
+            // panes — the surviving separator now that panes no longer
+            // draw a `│` border of their own.
+            crate::paint::fill(frame.buffer_mut(), layout.gutter, app.theme.page);
+            let hovered = app.hovered.as_ref();
+            let dragged_pane = app.drag.as_ref().map(|d| d.pane);
+            // Destructured so each component can be borrowed mutably
+            // alongside the shared theme reference its DrawCtx holds.
+            let App {
+                theme,
+                sidebar,
+                editor,
+                session,
+                ..
+            } = app;
+            let response = &mut session.response;
+            let ctx = |pane: PaneId| DrawCtx {
+                theme,
+                focused: focus == pane,
+                hovered,
+                dragging: dragged_pane == Some(pane),
+            };
+            sidebar.draw(frame, layout.sidebar, &ctx(PaneId::Sidebar), &mut hits);
+            editor.draw(frame, layout.editor, &ctx(PaneId::Editor), &mut hits);
+            response.draw(frame, layout.response, &ctx(PaneId::Response), &mut hits);
+            let focused_rect = match focus {
+                PaneId::Sidebar => layout.sidebar,
+                PaneId::Editor => layout.editor,
+                PaneId::Response => layout.response,
+            };
+            focus_bar(frame.buffer_mut(), focused_rect, theme);
+        }
+        Screen::VarManager => {
+            app.varmanager.draw(
+                frame,
+                layout.body,
+                &app.theme,
+                &project_name,
+                &env_label,
+                &mut hits,
+            );
+        }
+    }
+
+    crate::components::footer::draw_footer(
+        frame,
+        layout.footer,
+        &app.theme,
+        focus,
+        &mut hits,
+        app.hovered.as_ref(),
+    );
+    app.toasts.draw(frame, frame.area(), &app.theme);
+    app.modals.draw(
+        frame,
+        frame.area(),
+        &app.theme,
+        &mut hits,
+        app.hovered.as_ref(),
+    );
     app.hits = hits;
 }
 

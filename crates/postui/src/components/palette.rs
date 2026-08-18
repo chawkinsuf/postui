@@ -146,6 +146,11 @@ pub fn all_commands() -> Vec<Command> {
             action: Action::PromptSaveBody,
         },
         Command {
+            id: "var-manager",
+            name: "Variable Manager",
+            action: Action::OpenVarManager,
+        },
+        Command {
             id: "quit",
             name: "Quit",
             action: Action::Quit,

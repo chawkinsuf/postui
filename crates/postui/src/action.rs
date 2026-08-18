@@ -201,4 +201,12 @@ pub enum Action {
     /// Write the ready response body to `path` (from the save-body prompt),
     /// expanding `~` and creating parent directories as needed.
     SaveBodyToFile(String),
+    /// Open the Variable Manager screen (spec §5): stores the current
+    /// focus so `Action::CloseScreen` can restore it, then switches
+    /// `App::screen` to `Screen::VarManager`. A no-op when the Manager is
+    /// already open.
+    OpenVarManager,
+    /// Leave the current non-`Main` screen and return to `Screen::Main`,
+    /// restoring the focus that was active when the screen was opened.
+    CloseScreen,
 }

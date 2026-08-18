@@ -4,6 +4,7 @@ use crate::components::modal::{Modal, ModalResult, ModalStack, PromptKind};
 use crate::components::response::ResponseState;
 use crate::components::sidebar::Row;
 use crate::components::toast::{ToastKind, Toasts};
+use crate::components::varmanager::VarManager;
 use crate::components::{Component, sidebar::Sidebar};
 use crate::hit::{Hit, HitMap, ScrollbarSpec};
 use crate::keys::{KeyCombo, Keymap};
@@ -23,12 +24,32 @@ pub struct Drag {
     pub grab_offset: u16,
 }
 
+/// Which full-frame screen is showing. `ui::draw` and `App::handle_key`
+/// each branch on this once; every screen but `Main` replaces the three
+/// panes with its own full-frame draw while the header and footer stay.
+/// This is also where future screens (history, console) slot in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Screen {
+    #[default]
+    Main,
+    VarManager,
+}
+
 pub struct App {
     pub should_quit: bool,
     pub focus: PaneId,
+    /// Which full-frame screen is showing (spec §5). `Screen::Main` is the
+    /// normal three-pane layout.
+    pub screen: Screen,
+    /// The focus `Screen::Main` had when a non-`Main` screen was opened, so
+    /// `Action::CloseScreen` can restore it exactly as left.
+    prior_focus: PaneId,
     pub theme: Theme,
     pub sidebar: Sidebar,
     pub editor: Editor,
+    /// The Variable Manager screen's own state, shown full-frame while
+    /// `screen == Screen::VarManager`.
+    pub varmanager: VarManager,
     /// The request session: the open request's on-screen response, the
     /// per-request response cache, and the in-flight send.
     pub session: crate::session::Session,
@@ -319,9 +340,12 @@ impl App {
         Self {
             should_quit: false,
             focus: PaneId::Sidebar,
+            screen: Screen::default(),
+            prior_focus: PaneId::Sidebar,
             theme: Theme::for_terminal(),
             sidebar: Sidebar::default(),
             editor: Editor::default(),
+            varmanager: VarManager,
             session: crate::session::Session::default(),
             toasts,
             modals: ModalStack::default(),
@@ -1211,6 +1235,18 @@ impl App {
                 }
                 true
             }
+            Action::OpenVarManager => {
+                if self.screen != Screen::VarManager {
+                    self.prior_focus = self.focus;
+                    self.screen = Screen::VarManager;
+                }
+                true
+            }
+            Action::CloseScreen => {
+                self.screen = Screen::Main;
+                self.focus = self.prior_focus;
+                true
+            }
         }
     }
 
@@ -1355,12 +1391,19 @@ impl App {
     ///    including open modals — ctrl+c must always quit.
     /// 2. An open modal stack captures all remaining input (swallowed keys
     ///    still count as "handled" — they return true).
-    /// 3. With no modal open, a CTRL/ALT combo prefers the global keymap
+    /// 3. With no modal open and a non-`Main` screen showing (e.g. the
+    ///    Variable Manager), a CTRL/ALT combo still prefers the global
+    ///    keymap first (so e.g. ctrl+p still opens the palette on top of
+    ///    the screen), then every remaining key goes to that screen's own
+    ///    component; anything it doesn't handle is swallowed rather than
+    ///    falling through to the global keymap, so e.g. plain `q` does not
+    ///    quit the app from a non-`Main` screen.
+    /// 4. On `Screen::Main`, a CTRL/ALT combo prefers the global keymap
     ///    over the focused component (app shortcuts beat editors), falling
     ///    through to the component if unbound.
-    /// 4. Plain keys (and unbound modified ones) go to the focused
+    /// 5. Plain keys (and unbound modified ones) go to the focused
     ///    component first.
-    /// 5. Anything the component ignores falls back to the global keymap.
+    /// 6. Anything the component ignores falls back to the global keymap.
     ///
     /// Returns whether an action was applied or a modal consumed the key
     /// (i.e. whether the caller should redraw): the OR of every
@@ -1386,17 +1429,29 @@ impl App {
             return self.apply_modal_result(res);
         }
 
-        // 3. Modified combos prefer the global keymap (app shortcuts beat editors).
+        // 3. A non-Main screen captures all remaining input, like a modal —
+        // except a modified global shortcut still gets first refusal.
+        if self.screen != Screen::Main {
+            if modified && let Some(a) = global {
+                return self.update(a);
+            }
+            if let Some(a) = self.varmanager.handle_key(ev) {
+                return self.update(a);
+            }
+            return true; // swallowed: no fallback to the global keymap
+        }
+
+        // 4. Modified combos prefer the global keymap (app shortcuts beat editors).
         if modified && let Some(a) = global {
             return self.update(a);
         }
 
-        // 4. The focused component gets plain keys (and unbound modified ones) next.
+        // 5. The focused component gets plain keys (and unbound modified ones) next.
         if let Some(a) = self.focused_component_key(ev) {
             return self.update(a);
         }
 
-        // 5. Global fallback for plain keys the component ignored.
+        // 6. Global fallback for plain keys the component ignored.
         if let Some(a) = global {
             return self.update(a);
         }

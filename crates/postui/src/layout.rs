@@ -24,6 +24,11 @@ impl PaneId {
 
 pub struct AppLayout {
     pub header: Rect,
+    /// The full-width area between the header and footer, before it's
+    /// split into `sidebar`/`gutter`/`editor`/`response` — what a
+    /// full-frame screen (e.g. the Variable Manager) draws into instead of
+    /// the three panes.
+    pub body: Rect,
     pub sidebar: Rect,
     /// The 1-col painted gutter between the sidebar and the main panes,
     /// filled with `theme.page` by `ui::draw` — the surviving separator
@@ -50,6 +55,7 @@ pub fn compute_layout(area: Rect, editor_collapsed_to_chrome: bool) -> AppLayout
             Constraint::Length(crate::components::footer::FOOTER_HEIGHT),
         ])
         .split(area);
+    let body = rows[1];
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -57,7 +63,7 @@ pub fn compute_layout(area: Rect, editor_collapsed_to_chrome: bool) -> AppLayout
             Constraint::Length(1), // painted gutter separating sidebar from main
             Constraint::Percentage(72),
         ])
-        .split(rows[1]);
+        .split(body);
     let right_constraints = if editor_collapsed_to_chrome {
         [
             Constraint::Length(editor::CHROME_HEIGHT),
@@ -72,6 +78,7 @@ pub fn compute_layout(area: Rect, editor_collapsed_to_chrome: bool) -> AppLayout
         .split(cols[2]);
     AppLayout {
         header: rows[0],
+        body,
         sidebar: cols[0],
         gutter: cols[1],
         editor: right[0],

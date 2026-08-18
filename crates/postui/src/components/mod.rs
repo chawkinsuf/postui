@@ -11,6 +11,7 @@ pub mod sidebar;
 pub mod table_editor;
 pub mod toast;
 pub mod var_picker;
+pub mod varmanager;
 
 use crate::action::Action;
 use crate::paint::fill;

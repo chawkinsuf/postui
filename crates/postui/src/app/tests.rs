@@ -2731,3 +2731,98 @@ fn copy_body_with_no_response_toasts_nothing_to_copy_and_leaves_clipboard_untouc
     assert!(!out.exists(), "clipboard must not be touched");
     assert!(rendered_text(&mut app).contains("nothing to copy — send a request first"));
 }
+
+// --- Task 9: Screen enum + Variable Manager shell (spec §5) ---------------
+
+#[test]
+fn alt_v_opens_the_manager_and_renders_its_title() {
+    let mut app = App::new_for_test();
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, alt('v'));
+    assert_eq!(app.screen, crate::app::Screen::VarManager);
+    let content = rendered_text(&mut app);
+    assert!(content.contains("Variables"));
+}
+
+#[test]
+fn palette_variable_manager_command_opens_the_manager() {
+    let mut app = App::new_for_test();
+    let keymap = Keymap::default_bindings();
+    app.update(Action::OpenPalette);
+    for c in "Variable Manager".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.screen, crate::app::Screen::VarManager);
+    assert!(
+        app.modals.is_empty(),
+        "palette closes after running the command"
+    );
+}
+
+#[test]
+fn esc_returns_to_main_with_prior_focus_restored() {
+    let mut app = App::new_for_test();
+    app.focus = PaneId::Response;
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, alt('v'));
+    assert_eq!(app.screen, crate::app::Screen::VarManager);
+
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.screen, crate::app::Screen::Main);
+    assert_eq!(app.focus, PaneId::Response, "prior focus is restored");
+}
+
+#[test]
+fn modals_still_open_and_close_on_top_of_the_manager_screen() {
+    let mut app = App::new_for_test();
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, alt('v'));
+    assert_eq!(app.screen, crate::app::Screen::VarManager);
+
+    // ctrl+p still opens the palette on top of the Manager screen.
+    app.handle_key(&keymap, ctrl('p'));
+    assert!(!app.modals.is_empty());
+    assert_eq!(
+        app.screen,
+        crate::app::Screen::VarManager,
+        "opening a modal must not leave the screen"
+    );
+
+    // Esc closes the modal first, without leaving the Manager screen.
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.modals.is_empty());
+    assert_eq!(
+        app.screen,
+        crate::app::Screen::VarManager,
+        "closing the modal must not also leave the screen"
+    );
+}
+
+#[test]
+fn plain_q_does_not_quit_from_the_manager_screen() {
+    let mut app = App::new_for_test();
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, alt('v'));
+    assert_eq!(app.screen, crate::app::Screen::VarManager);
+
+    app.handle_key(&keymap, plain('q'));
+    assert!(!app.should_quit, "q is not the palette and must not quit");
+    assert_eq!(app.screen, crate::app::Screen::VarManager);
+}
+
+#[test]
+fn manager_screen_replaces_the_three_panes_but_keeps_header_and_footer() {
+    let mut app = App::new_for_test();
+    app.update(Action::OpenVarManager);
+    let content = rendered_text(&mut app);
+    assert!(content.contains("postui"), "header wordmark stays");
+    assert!(
+        content.contains("esc"),
+        "footer hint stays / manager hint shows"
+    );
+    assert!(
+        !content.contains("REQUESTS"),
+        "the sidebar pane is replaced by the full-frame Manager"
+    );
+}

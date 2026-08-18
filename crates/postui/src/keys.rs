@@ -118,6 +118,7 @@ fn named_actions() -> Vec<(&'static str, Action)> {
         ("env_cycle", Action::CycleEnv),
         ("pick_variable", Action::OpenVarPicker { completing: false }),
         ("toggle_table_collapse", Action::ToggleTableCollapse),
+        ("var_manager_open", Action::OpenVarManager),
     ]
 }
 
@@ -174,6 +175,7 @@ impl Keymap {
             ("alt+c", Action::CycleEnv),
             ("ctrl+v", Action::OpenVarPicker { completing: false }),
             ("alt+p", Action::ToggleTableCollapse),
+            ("alt+v", Action::OpenVarManager),
         ];
         let mut map = Self {
             bindings: HashMap::new(),
@@ -307,6 +309,7 @@ mod tests {
             get("ctrl+v"),
             Some(Action::OpenVarPicker { completing: false })
         );
+        assert_eq!(get("alt+v"), Some(Action::OpenVarManager));
     }
 
     #[test]
