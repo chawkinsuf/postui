@@ -119,6 +119,7 @@ fn named_actions() -> Vec<(&'static str, Action)> {
         ("pick_variable", Action::OpenVarPicker { completing: false }),
         ("toggle_table_collapse", Action::ToggleTableCollapse),
         ("var_manager_open", Action::OpenVarManager),
+        ("extract_to_variable", Action::ExtractToVariable),
     ]
 }
 
@@ -176,6 +177,7 @@ impl Keymap {
             ("ctrl+v", Action::OpenVarPicker { completing: false }),
             ("alt+p", Action::ToggleTableCollapse),
             ("alt+v", Action::OpenVarManager),
+            ("ctrl+shift+e", Action::ExtractToVariable),
         ];
         let mut map = Self {
             bindings: HashMap::new(),

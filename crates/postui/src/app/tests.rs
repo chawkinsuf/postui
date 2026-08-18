@@ -4730,3 +4730,253 @@ fn secret_prompt_input_renders_masked_dots_not_the_typed_text() {
         "masked dots must render: {content}"
     );
 }
+
+// -- Task 17: in-context flows (spec §6) --------------------------------
+
+fn tab_key() -> KeyEvent {
+    KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)
+}
+
+fn enter_key() -> KeyEvent {
+    KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+}
+
+/// Types `text` into whichever `Modal::MultiPrompt` field currently has
+/// focus, without confirming.
+fn type_into_field(app: &mut App, keymap: &Keymap, text: &str) {
+    for c in text.chars() {
+        app.handle_key(keymap, plain(c));
+    }
+}
+
+#[test]
+fn add_new_option_writes_to_the_active_envs_options_table_selects_it_and_restores_focus() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let keymap = Keymap::default_bindings();
+
+    let url = "https://x/{{user}}";
+    focus_url_with_cursor_on(&mut app, url, "{{user}}");
+    app.update(Action::OpenVarPicker { completing: false });
+
+    // "user" has two options (alice, bob); the ghost "add new option…" row
+    // sits one past them.
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(&keymap, enter_key());
+
+    let Some(Modal::MultiPrompt { kind, .. }) = app.modals.top() else {
+        panic!("expected the new-option-inline multi-prompt");
+    };
+    assert!(matches!(kind, PromptKind::NewOptionInline { owner } if owner == "user"));
+
+    type_into_field(&mut app, &keymap, "carol");
+    app.handle_key(&keymap, tab_key());
+    type_into_field(&mut app, &keymap, "3003");
+    app.handle_key(&keymap, tab_key());
+    type_into_field(&mut app, &keymap, "temp hire");
+    app.handle_key(&keymap, enter_key());
+
+    assert!(app.modals.is_empty(), "closes back to the field");
+    assert_eq!(app.focus, PaneId::Editor, "focus restored to where it was");
+    assert_eq!(app.editor.sub_focus, SubFocus::Url);
+    assert_eq!(app.editor.url.text(), url, "the token text is untouched");
+
+    // Written to the ACTIVE ENV's options table, not the shared file.
+    let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(env_doc.contains("[options.user.carol]"), "{env_doc}");
+    assert!(env_doc.contains("3003"), "{env_doc}");
+    assert!(env_doc.contains("temp hire"), "{env_doc}");
+
+    let shared_doc = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    assert!(
+        !shared_doc.contains("carol"),
+        "must not land in the shared declaration: {shared_doc}"
+    );
+
+    assert_eq!(app.project.selections_for("qa")["user"], "carol");
+}
+
+#[test]
+fn e_on_a_shared_option_edits_it_in_variables_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let keymap = Keymap::default_bindings();
+
+    focus_url_with_cursor_on(&mut app, "https://x/{{user}}", "{{user}}");
+    app.update(Action::OpenVarPicker { completing: false });
+    // Row 0 is "alice" (first option, current default order).
+    app.handle_key(
+        &keymap,
+        KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE),
+    );
+
+    let Some(Modal::MultiPrompt { kind, fields, .. }) = app.modals.top() else {
+        panic!("expected the edit-option multi-prompt");
+    };
+    assert!(
+        matches!(kind, PromptKind::EditOption { owner, key } if owner == "user" && key == "alice")
+    );
+    assert_eq!(
+        fields[0].input.text(),
+        "1001",
+        "prefilled with the current value"
+    );
+
+    for _ in 0..4 {
+        app.handle_key(
+            &keymap,
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+        );
+    }
+    type_into_field(&mut app, &keymap, "9999");
+    app.handle_key(&keymap, enter_key());
+
+    assert!(app.modals.is_empty());
+    let shared_doc = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    assert!(shared_doc.contains("9999"), "{shared_doc}");
+    let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(
+        !env_doc.contains("9999"),
+        "a shared option's edit must not create an env override: {env_doc}"
+    );
+}
+
+#[test]
+fn e_on_an_env_overridden_option_edits_the_env_file_not_the_shared_one() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    // Give qa its own override of "alice" on top of the shared declaration.
+    std::fs::write(
+        dir.path().join("environments/qa.toml"),
+        "base_url = \"https://qa.example.com\"\n[options.user.alice]\nvalue = \"9001\"\n",
+    )
+    .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let keymap = Keymap::default_bindings();
+
+    focus_url_with_cursor_on(&mut app, "https://x/{{user}}", "{{user}}");
+    app.update(Action::OpenVarPicker { completing: false });
+    app.handle_key(
+        &keymap,
+        KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE),
+    );
+
+    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
+        panic!("expected the edit-option multi-prompt");
+    };
+    assert_eq!(
+        fields[0].input.text(),
+        "9001",
+        "prefilled with the env's overriding value"
+    );
+
+    for _ in 0..4 {
+        app.handle_key(
+            &keymap,
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+        );
+    }
+    type_into_field(&mut app, &keymap, "9002");
+    app.handle_key(&keymap, enter_key());
+
+    let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(env_doc.contains("9002"), "{env_doc}");
+    let shared_doc = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    assert!(
+        shared_doc.contains("1001") && !shared_doc.contains("9002"),
+        "an env override's edit must not touch the shared declaration: {shared_doc}"
+    );
+}
+
+/// Selects header row 0, begins editing its key, and Tabs into the value
+/// cell — the state `focused_field_text`/extract requires (a table cell
+/// under edit).
+fn focus_header_value_cell(app: &mut App) {
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor.sub_focus = SubFocus::Content;
+    app.focus = PaneId::Editor;
+    app.editor.table.selected = Some(0);
+    let map = app.editor.headers.clone();
+    app.editor.table.begin_edit_selected(&map);
+    app.editor
+        .table
+        .handle_key(tab_key(), &mut app.editor.headers);
+}
+
+#[test]
+fn extract_to_variable_prompts_writes_and_replaces_field_text_dirty_saved() {
+    let mut app = App::new_for_test();
+    app.editor.headers.insert(
+        "x-api-key".into(),
+        postui_core::model::Entry {
+            value: "abc123".into(),
+            enabled: true,
+        },
+    );
+    app.editor.mark_saved();
+    let keymap = Keymap::default_bindings();
+    focus_header_value_cell(&mut app);
+    assert_eq!(
+        app.editor.table.editing.as_ref().unwrap().input.text(),
+        "abc123"
+    );
+
+    app.update(Action::ExtractToVariable);
+    let Some(Modal::MultiPrompt { kind, .. }) = app.modals.top() else {
+        panic!("expected the extract-variable multi-prompt");
+    };
+    assert!(matches!(kind, PromptKind::ExtractVariable));
+
+    type_into_field(&mut app, &keymap, "api_key");
+    app.handle_key(&keymap, enter_key());
+
+    assert!(app.modals.is_empty());
+    let content = rendered_text(&mut app);
+    assert!(content.contains("extracted to {{api_key}}"), "{content}");
+
+    assert_eq!(
+        app.editor.headers["x-api-key"].value, "{{api_key}}",
+        "the field is committed into the map, not left as a pending edit"
+    );
+    assert!(
+        app.editor.table.editing.is_none(),
+        "the cell edit is committed, not left open"
+    );
+    assert!(app.editor.is_dirty(), "the field is dirty-saved");
+
+    let doc = std::fs::read_to_string(app.project.root.join("variables.toml")).unwrap();
+    assert!(doc.contains("[api_key]"), "{doc}");
+    assert!(doc.contains("abc123"), "{doc}");
+}
+
+#[test]
+fn extract_to_variable_with_cursor_in_the_body_is_refused_with_a_toast() {
+    let mut app = App::new_for_test();
+    app.focus = PaneId::Editor;
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.sub_focus = SubFocus::Content;
+
+    app.update(Action::ExtractToVariable);
+
+    assert!(app.modals.is_empty());
+    let content = rendered_text(&mut app);
+    assert!(content.contains("body"), "{content}");
+}
+
+#[test]
+fn extract_to_variable_with_no_focused_field_is_refused_with_a_toast() {
+    let mut app = App::new_for_test();
+    app.focus = PaneId::Sidebar;
+
+    app.update(Action::ExtractToVariable);
+
+    assert!(app.modals.is_empty());
+    let content = rendered_text(&mut app);
+    assert!(content.contains("focus a text field"), "{content}");
+}

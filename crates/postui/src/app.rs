@@ -1515,6 +1515,241 @@ impl App {
                 }
                 true
             }
+
+            // -- Task 17: in-context flows (spec §6) --
+            Action::OpenNewOptionInlinePrompt { owner } => {
+                use crate::components::modal::PromptField;
+                self.modals.push(Modal::MultiPrompt {
+                    title: format!("Add option on {owner}"),
+                    fields: vec![
+                        PromptField::text("key", "Key", ""),
+                        PromptField::text("value", "Value", ""),
+                        PromptField::text("description", "Description", ""),
+                    ],
+                    focus: 0,
+                    kind: PromptKind::NewOptionInline { owner },
+                });
+                true
+            }
+            Action::OpenEditOptionPrompt {
+                owner,
+                key,
+                description,
+                values,
+            } => {
+                use crate::components::modal::PromptField;
+                let mut fields: Vec<PromptField> = values
+                    .iter()
+                    .map(|(k, v)| {
+                        let label = if k == "value" { "Value" } else { k.as_str() };
+                        PromptField::text(k, label, v)
+                    })
+                    .collect();
+                fields.push(PromptField::text(
+                    "description",
+                    "Description",
+                    description.as_deref().unwrap_or(""),
+                ));
+                self.modals.push(Modal::MultiPrompt {
+                    title: format!("Edit {key} on {owner}"),
+                    fields,
+                    focus: 0,
+                    kind: PromptKind::EditOption { owner, key },
+                });
+                true
+            }
+            Action::ConfirmNewOptionInline {
+                owner,
+                key,
+                value,
+                description,
+            } => {
+                if !postui_core::vars::is_valid_var_name(&key) {
+                    self.toasts.push(
+                        format!("\"{key}\" is not a valid option key"),
+                        ToastKind::Error,
+                    );
+                    return true;
+                }
+                let Some(env) = self.project.active_env.clone() else {
+                    self.toasts.push(
+                        "no active environment \u{2014} switch to one first",
+                        ToastKind::Warning,
+                    );
+                    return true;
+                };
+                let mut fields = indexmap::IndexMap::new();
+                fields.insert("value".to_string(), value);
+                if let Some(d) = &description {
+                    fields.insert("description".to_string(), d.clone());
+                }
+                match self.project.edit_env(&env, |doc| {
+                    postui_core::varedit::upsert_env_option(doc, &owner, &key, &fields)
+                }) {
+                    Ok(()) => {
+                        self.project.set_selection_for(&env, &owner, &key);
+                        self.toasts.push(
+                            format!("{owner} \u{2192} {key} ({env})"),
+                            ToastKind::Success,
+                        );
+                    }
+                    Err(msg) => self.toasts.push(msg, ToastKind::Error),
+                }
+                true
+            }
+            Action::ConfirmEditOption {
+                owner,
+                key,
+                values,
+                description,
+            } => {
+                let is_var = self.project.model.vars.contains_key(&owner);
+                let probe: Option<String> = if is_var {
+                    None
+                } else {
+                    values.keys().next().cloned()
+                };
+                let target_env = self.project.active_env.clone().filter(|env| {
+                    varmanager::option_value_is_env_override(
+                        &self.project,
+                        env,
+                        &owner,
+                        &key,
+                        probe.as_deref(),
+                    )
+                });
+                let result = match target_env {
+                    Some(env) => {
+                        let mut fields = values.clone();
+                        if let Some(d) = &description {
+                            fields.insert("description".to_string(), d.clone());
+                        }
+                        self.project.edit_env(&env, |doc| {
+                            postui_core::varedit::upsert_env_option(doc, &owner, &key, &fields)
+                        })
+                    }
+                    None => self.project.edit_variables(|doc| {
+                        postui_core::varedit::upsert_shared_option(
+                            doc,
+                            &owner,
+                            &key,
+                            description.as_deref(),
+                            &values,
+                        )
+                    }),
+                };
+                match result {
+                    Ok(()) => self
+                        .toasts
+                        .push(format!("{key} updated"), ToastKind::Success),
+                    Err(msg) => self.toasts.push(msg, ToastKind::Error),
+                }
+                true
+            }
+            Action::ExtractToVariable => {
+                if self.focus == PaneId::Editor
+                    && self.editor.active_tab == EditorTab::Body
+                    && self.editor.sub_focus == SubFocus::Content
+                {
+                    self.toasts.push(
+                        "extract to variable isn't available in the body yet",
+                        ToastKind::Warning,
+                    );
+                    return true;
+                }
+                let Some(text) = self.focused_field_text().map(|(t, _)| t.to_string()) else {
+                    self.toasts
+                        .push("focus a text field first", ToastKind::Warning);
+                    return true;
+                };
+                if text.trim().is_empty() {
+                    self.toasts.push(
+                        "nothing to extract \u{2014} the field is empty",
+                        ToastKind::Warning,
+                    );
+                    return true;
+                }
+                use crate::components::modal::PromptField;
+                self.modals.push(Modal::MultiPrompt {
+                    title: "Extract to variable".into(),
+                    fields: vec![
+                        PromptField::text("name", "Name", ""),
+                        PromptField::choice(
+                            "destination",
+                            "Destination",
+                            &["Project default", "Active env value", "This request"],
+                        ),
+                    ],
+                    focus: 0,
+                    kind: PromptKind::ExtractVariable,
+                });
+                true
+            }
+            Action::ConfirmExtractVariable { name, destination } => {
+                if !postui_core::vars::is_valid_var_name(&name) {
+                    self.toasts.push(
+                        format!("\"{name}\" is not a valid variable name"),
+                        ToastKind::Error,
+                    );
+                    return true;
+                }
+                let Some(text) = self.focused_field_text().map(|(t, _)| t.to_string()) else {
+                    self.toasts
+                        .push("focus a text field first", ToastKind::Warning);
+                    return true;
+                };
+                use crate::action::ExtractDestination;
+                let write_result: Result<(), String> = match destination {
+                    ExtractDestination::ProjectDefault => {
+                        if self.project.model.vars.contains_key(&name)
+                            || self.project.model.groups.contains_key(&name)
+                        {
+                            Err(format!("\"{name}\" already exists"))
+                        } else {
+                            self.project.edit_variables(|doc| {
+                                postui_core::varedit::upsert_var(doc, &name, None, Some(&text))
+                            })
+                        }
+                    }
+                    ExtractDestination::ActiveEnv => {
+                        let Some(env) = self.project.active_env.clone() else {
+                            self.toasts
+                                .push("no active environment", ToastKind::Warning);
+                            return true;
+                        };
+                        if !self.project.model.vars.contains_key(&name)
+                            && let Err(msg) = self.project.edit_variables(|doc| {
+                                postui_core::varedit::upsert_var(doc, &name, None, None)
+                            })
+                        {
+                            self.toasts.push(msg, ToastKind::Error);
+                            return true;
+                        }
+                        self.project.edit_env(&env, |doc| {
+                            postui_core::varedit::set_env_value(doc, &name, Some(&text))
+                        })
+                    }
+                    ExtractDestination::Request => {
+                        self.editor.variables.insert(
+                            name.clone(),
+                            postui_core::model::Entry {
+                                value: text.clone(),
+                                enabled: true,
+                            },
+                        );
+                        Ok(())
+                    }
+                };
+                match write_result {
+                    Ok(()) => {
+                        self.replace_focused_field_with_token(&name);
+                        self.toasts
+                            .push(format!("extracted to {{{{{name}}}}}"), ToastKind::Success);
+                    }
+                    Err(msg) => self.toasts.push(msg, ToastKind::Error),
+                }
+                true
+            }
         }
     }
 
@@ -1581,6 +1816,44 @@ impl App {
         }
     }
 
+    /// `Action::ConfirmExtractVariable`'s tail: replaces whichever field
+    /// `focused_field_text` found (unchanged since the extract flow opened
+    /// — modals capture all input) with `{{name}}`. For the URL, that's a
+    /// direct field replacement (already "dirty" the instant it differs
+    /// from the saved snapshot); for a table cell under edit, the new text
+    /// is committed through the table's own `Enter` path so it lands in the
+    /// map (not left as a pending, uncommitted edit) and rides the same
+    /// dirty/save path as any other row commit.
+    fn replace_focused_field_with_token(&mut self, name: &str) {
+        let token = format!("{{{{{name}}}}}");
+        if self.editor.sub_focus == SubFocus::Url {
+            self.editor.url = LineInput::new(&token);
+            return;
+        }
+        if let Some(edit) = self.editor.table.editing.as_mut() {
+            edit.input = LineInput::new(&token);
+        } else {
+            return;
+        }
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        match self.editor.active_tab {
+            EditorTab::Params => {
+                self.editor.table.handle_key(enter, &mut self.editor.params);
+            }
+            EditorTab::Headers => {
+                self.editor
+                    .table
+                    .handle_key(enter, &mut self.editor.headers);
+            }
+            EditorTab::Vars => {
+                self.editor
+                    .table
+                    .handle_key(enter, &mut self.editor.variables);
+            }
+            EditorTab::Body => {}
+        }
+    }
+
     /// Builds and opens the `SelectOption` picker (spec §6's first
     /// context) for `name` (a group member when `group` is `Some`): rows
     /// are the merged options for the active env, `key  description
@@ -1625,10 +1898,11 @@ impl App {
                     let selected = selected_key.as_deref() == Some(key.as_str());
                     SelectEntry {
                         key,
-                        description: None,
+                        description: opt.description.clone(),
                         value: None,
                         preview: Some(parts.join(" \u{b7} ")),
                         selected,
+                        values: Some(opt.values.clone()),
                     }
                 })
                 .collect()
@@ -1645,6 +1919,7 @@ impl App {
                         value: Some(opt.value.clone()),
                         preview: None,
                         selected,
+                        values: None,
                     }
                 })
                 .collect()

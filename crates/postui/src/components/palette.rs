@@ -151,6 +151,11 @@ pub fn all_commands() -> Vec<Command> {
             action: Action::OpenVarManager,
         },
         Command {
+            id: "vars-extract",
+            name: "Extract to variable",
+            action: Action::ExtractToVariable,
+        },
+        Command {
             id: "quit",
             name: "Quit",
             action: Action::Quit,

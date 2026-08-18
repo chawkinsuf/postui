@@ -1,5 +1,5 @@
 use super::line_input::LineInput;
-use crate::action::Action;
+use crate::action::{Action, ExtractDestination};
 use crate::components::varmanager::VarStructOp;
 use crate::paint::{
     self, BUTTON_HEIGHT, Button, ButtonKind, ControlState, FIELD_HEIGHT, TextField,
@@ -10,6 +10,7 @@ use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::Style;
+use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Wrap};
 
 /// What a `Modal::Prompt`'s confirmed text becomes: which `Action` it maps
@@ -66,6 +67,78 @@ pub enum PromptKind {
         name: String,
         env: String,
     },
+    /// The `SelectOption` picker's "add new option…" ghost row (Task 17,
+    /// spec §6): a `Modal::MultiPrompt` with `key`/`value`/`description`
+    /// fields (in that order — see `PromptField`'s `key`s). Confirming
+    /// emits `Action::ConfirmNewOptionInline`, which writes to the active
+    /// environment and selects it.
+    NewOptionInline {
+        owner: String,
+    },
+    /// `e` on a highlighted `SelectOption` row (Task 17, spec §6): a
+    /// `Modal::MultiPrompt` with one field per value (the option's own
+    /// `value`, or one per group member) plus a trailing `description`
+    /// field. Confirming emits `Action::ConfirmEditOption`, which writes to
+    /// wherever the option currently lives.
+    EditOption {
+        owner: String,
+        key: String,
+    },
+    /// `Action::ExtractToVariable` (Task 17, spec §6): a `Modal::MultiPrompt`
+    /// with a `name` field and a `destination` choice field (project
+    /// default / active env value / this request). Confirming emits
+    /// `Action::ConfirmExtractVariable`; the origin field to rewrite is
+    /// re-read from current focus rather than carried here.
+    ExtractVariable,
+}
+
+/// One field of a `Modal::MultiPrompt`: a stable domain `key` (e.g.
+/// `"value"`, `"description"`, or a group member's own name) distinct from
+/// its display `label`, a text buffer, and — for a fixed-choice field like
+/// `ExtractVariable`'s destination — the list of choices Left/Right cycle
+/// through instead of free typing (`choices.is_empty()` is an ordinary text
+/// field).
+pub struct PromptField {
+    pub key: String,
+    pub label: String,
+    pub input: LineInput,
+    pub choices: Vec<String>,
+}
+
+impl PromptField {
+    pub fn text(key: &str, label: &str, seed: &str) -> Self {
+        Self {
+            key: key.to_string(),
+            label: label.to_string(),
+            input: LineInput::new(seed),
+            choices: Vec::new(),
+        }
+    }
+
+    pub fn choice(key: &str, label: &str, choices: &[&str]) -> Self {
+        Self {
+            key: key.to_string(),
+            label: label.to_string(),
+            input: LineInput::new(choices.first().copied().unwrap_or("")),
+            choices: choices.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    /// Cycles a choice field's selection by `dir` (`-1`/`1`), wrapping. A
+    /// no-op on an ordinary text field.
+    fn cycle(&mut self, dir: i32) {
+        if self.choices.is_empty() {
+            return;
+        }
+        let cur = self
+            .choices
+            .iter()
+            .position(|c| c == self.input.text())
+            .unwrap_or(0);
+        let n = self.choices.len() as i32;
+        let next = ((cur as i32 + dir) % n + n) % n;
+        self.input = LineInput::new(&self.choices[next as usize]);
+    }
 }
 
 impl PromptKind {
@@ -180,6 +253,18 @@ pub enum Modal {
     /// screen bottom), Up/Down move `selected`, Enter dispatches the
     /// selected row's action and closes.
     Dropdown(DropdownState),
+    /// A multi-field prompt (Task 17, spec §6): the in-context option/
+    /// extract flows' modal — one `LineInput` per `PromptField`, Tab/Down
+    /// (or Shift-Tab/Up) switching focus, mirroring `NewProject`'s two-field
+    /// layout generalized to N fields. `Enter` builds and dispatches
+    /// `kind`'s action from the fields' current text; `Esc` closes with no
+    /// action.
+    MultiPrompt {
+        title: String,
+        fields: Vec<PromptField>,
+        focus: usize,
+        kind: PromptKind,
+    },
 }
 
 /// State for `Modal::Dropdown`: the cell it opens from, its `(label,
@@ -358,6 +443,13 @@ impl ModalStack {
                             name: name.clone(),
                             value: text.to_string(),
                         }]),
+                        // Task 17's three kinds are `Modal::MultiPrompt`
+                        // only — never a single-input `Modal::Prompt`.
+                        PromptKind::NewOptionInline { .. }
+                        | PromptKind::EditOption { .. }
+                        | PromptKind::ExtractVariable => {
+                            unreachable!("Task 17 prompt kinds only ever back Modal::MultiPrompt")
+                        }
                     };
                     // A well-formed-but-incomplete comma prompt (e.g. a
                     // group option still missing a member) swallows Enter
@@ -451,6 +543,95 @@ impl ModalStack {
                     ..Default::default()
                 }),
                 _ => None, // swallowed: modals capture all input
+            },
+            Modal::MultiPrompt {
+                fields,
+                kind,
+                focus,
+                ..
+            } => match key.code {
+                KeyCode::Esc => Some(ModalResult {
+                    actions: vec![],
+                    close: true,
+                    ..Default::default()
+                }),
+                KeyCode::Tab | KeyCode::Down => {
+                    *focus = (*focus + 1) % fields.len();
+                    None // swallowed: modals capture all input
+                }
+                KeyCode::BackTab | KeyCode::Up => {
+                    *focus = (*focus + fields.len() - 1) % fields.len();
+                    None // swallowed: modals capture all input
+                }
+                KeyCode::Left if !fields[*focus].choices.is_empty() => {
+                    fields[*focus].cycle(-1);
+                    None // swallowed: modals capture all input
+                }
+                KeyCode::Right if !fields[*focus].choices.is_empty() => {
+                    fields[*focus].cycle(1);
+                    None // swallowed: modals capture all input
+                }
+                KeyCode::Enter => {
+                    let get = |k: &str| {
+                        fields
+                            .iter()
+                            .find(|f| f.key == k)
+                            .map(|f| f.input.text().trim())
+                    };
+                    let actions = match kind {
+                        PromptKind::NewOptionInline { owner } => {
+                            let key_text = get("key").filter(|s| !s.is_empty())?.to_string();
+                            let value = get("value").unwrap_or("").to_string();
+                            let description = get("description")
+                                .filter(|s| !s.is_empty())
+                                .map(str::to_string);
+                            vec![Action::ConfirmNewOptionInline {
+                                owner: owner.clone(),
+                                key: key_text,
+                                value,
+                                description,
+                            }]
+                        }
+                        PromptKind::EditOption { owner, key } => {
+                            let mut values = IndexMap::new();
+                            for f in fields.iter() {
+                                if f.key != "description" {
+                                    values.insert(f.key.clone(), f.input.text().to_string());
+                                }
+                            }
+                            let description = get("description")
+                                .filter(|s| !s.is_empty())
+                                .map(str::to_string);
+                            vec![Action::ConfirmEditOption {
+                                owner: owner.clone(),
+                                key: key.clone(),
+                                values,
+                                description,
+                            }]
+                        }
+                        PromptKind::ExtractVariable => {
+                            let name = get("name").filter(|s| !s.is_empty())?.to_string();
+                            let destination = match get("destination") {
+                                Some("Active env value") => ExtractDestination::ActiveEnv,
+                                Some("This request") => ExtractDestination::Request,
+                                _ => ExtractDestination::ProjectDefault,
+                            };
+                            vec![Action::ConfirmExtractVariable { name, destination }]
+                        }
+                        _ => return None, // not a MultiPrompt kind
+                    };
+                    Some(ModalResult {
+                        actions,
+                        close: true,
+                        ..Default::default()
+                    })
+                }
+                _ => {
+                    if fields[*focus].choices.is_empty() {
+                        fields[*focus].input.handle_key(key);
+                    }
+                    None // swallowed: modals capture all input
+                }
             },
         }
     }
@@ -787,6 +968,96 @@ impl ModalStack {
                 draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered);
             }
             Modal::Dropdown(state) => draw_dropdown(frame, screen, theme, hits, hovered, state),
+            Modal::MultiPrompt {
+                title,
+                fields,
+                focus,
+                ..
+            } => {
+                // 2 rows per field (label + input), plus the title/hint/
+                // button chrome — mirrors `NewProject`'s fixed two-field
+                // layout, generalized to N.
+                let height = (6 + fields.len() as u16 * 2 + 2).min(screen.height);
+                let area = centered_rect(screen, 60.min(screen.width), height);
+                hits.register(area, crate::hit::Hit::ModalBody);
+                paint::floating_panel(frame.buffer_mut(), area, screen, theme);
+
+                let title_y = area.y + 1;
+                paint::text(
+                    frame.buffer_mut(),
+                    area.x + 2,
+                    title_y,
+                    title,
+                    theme.text,
+                    theme.panel,
+                    true,
+                );
+
+                let field_x = area.x + 2;
+                let field_w = area.width.saturating_sub(4);
+                let mut y = title_y + 2;
+                for (i, field) in fields.iter().enumerate() {
+                    let focused = i == *focus;
+                    let label = format!("{}:", field.label);
+                    paint::text(
+                        frame.buffer_mut(),
+                        field_x,
+                        y,
+                        &label,
+                        theme.text_muted,
+                        theme.panel,
+                        false,
+                    );
+                    let field_area = Rect {
+                        x: field_x,
+                        y: y + 1,
+                        width: field_w,
+                        height: FIELD_HEIGHT,
+                    };
+                    if field.choices.is_empty() {
+                        TextField {
+                            content: field.input.draw_line_windowed(
+                                focused,
+                                theme,
+                                field_w.saturating_sub(2),
+                            ),
+                            state: if focused {
+                                ControlState::Focused
+                            } else {
+                                ControlState::Normal
+                            },
+                        }
+                        .paint(frame.buffer_mut(), field_area, theme);
+                    } else {
+                        let content =
+                            Line::from(format!("\u{2039} {} \u{203a}", field.input.text()));
+                        TextField {
+                            content,
+                            state: if focused {
+                                ControlState::Focused
+                            } else {
+                                ControlState::Normal
+                            },
+                        }
+                        .paint(frame.buffer_mut(), field_area, theme);
+                    }
+                    y += FIELD_HEIGHT + 1;
+                }
+
+                let hint_y = y;
+                paint::text(
+                    frame.buffer_mut(),
+                    field_x,
+                    hint_y,
+                    "tab switch  enter confirm  esc cancel",
+                    theme.text_muted,
+                    theme.panel,
+                    false,
+                );
+
+                let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
+                draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered);
+            }
         }
     }
 }

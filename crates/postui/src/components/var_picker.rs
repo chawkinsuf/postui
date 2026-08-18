@@ -5,6 +5,7 @@ use crate::components::toast::ToastKind;
 use crate::components::varmanager::VarEditOp;
 use crate::paint::{self, Chip, ControlState, FIELD_HEIGHT, PillRow, RowHighlight, TextField};
 use crate::theme::Theme;
+use indexmap::IndexMap;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
@@ -145,6 +146,12 @@ pub struct SelectEntry {
     pub value: Option<String>,
     pub preview: Option<String>,
     pub selected: bool,
+    /// The raw per-field values this option carries — `None` for a plain
+    /// variable option (whose single value lives in `value` instead);
+    /// `Some(member -> new value)` for a group option, in member order.
+    /// `e` (Task 17, spec §6) prefills its edit-in-place fields from this
+    /// rather than re-parsing `preview`'s formatted text.
+    pub values: Option<IndexMap<String, String>>,
 }
 
 /// A fuzzy-filterable list of declared variables (`Insert` mode) or of one
@@ -222,16 +229,12 @@ impl VarPickerState {
     }
 
     /// Total selectable rows: the filtered entries, plus one extra ghost
-    /// row in `Insert` mode — "new variable…", always the last row
-    /// regardless of what's typed (spec §6: the autocomplete "ends with
-    /// 'new variable…'").
+    /// row, always the last row regardless of what's typed — "new
+    /// variable…" in `Insert` mode (spec §6: the autocomplete "ends with
+    /// 'new variable…'"), "add new option…" in `SelectOption` mode (Task
+    /// 17, spec §6's in-context "Add new option…" flow).
     fn row_count(&self) -> usize {
-        self.filtered.len()
-            + if matches!(self.mode, PickerMode::Insert) {
-                1
-            } else {
-                0
-            }
+        self.filtered.len() + 1
     }
 
     /// Moves the cursor to row `i` (clamped in range, including the
@@ -247,19 +250,30 @@ impl VarPickerState {
     /// The `ModalResult` an `Enter` (or a confirming click) on the current
     /// selection produces — `None` when nothing is selected.
     pub fn confirm(&self) -> Option<super::modal::ModalResult> {
-        if self.mode == PickerMode::Insert && self.selected == self.filtered.len() {
-            // The ghost "new variable…" row: open the create-and-insert
-            // prompt pre-filled with whatever was typed, and close this
-            // picker (not stack on top of it) so focus stays exactly
-            // where it was once the prompt itself confirms or cancels.
-            return Some(super::modal::ModalResult {
-                actions: vec![Action::OpenNewVariablePrompt {
-                    prefill: self.input.clone(),
-                    completing: self.completing,
-                }],
-                close: true,
-                ..Default::default()
-            });
+        if self.selected == self.filtered.len() {
+            // The ghost row: open the create-and-insert prompt (`Insert`
+            // mode) or the "add new option…" prompt (`SelectOption` mode),
+            // pre-filled with whatever was typed, and close this picker
+            // (not stack on top of it) so focus stays exactly where it was
+            // once the prompt itself confirms or cancels.
+            return match &self.mode {
+                PickerMode::Insert => Some(super::modal::ModalResult {
+                    actions: vec![Action::OpenNewVariablePrompt {
+                        prefill: self.input.clone(),
+                        completing: self.completing,
+                    }],
+                    close: true,
+                    ..Default::default()
+                }),
+                PickerMode::SelectOption { name, group } => {
+                    let owner = group.clone().unwrap_or_else(|| name.clone());
+                    Some(super::modal::ModalResult {
+                        actions: vec![Action::OpenNewOptionInlinePrompt { owner }],
+                        close: true,
+                        ..Default::default()
+                    })
+                }
+            };
         }
         let &idx = self.filtered.get(self.selected)?;
         match &self.mode {
@@ -374,6 +388,41 @@ impl VarPickerState {
                 self.input.pop();
                 self.refilter();
             }
+            // `e` on a highlighted option (Task 17, spec §6): edit its
+            // value(s)/description in place. Unmodified `e` doubles as the
+            // fuzzy filter's own text otherwise, so this only fires in
+            // `SelectOption` mode, where the filter is over option keys
+            // (not the far more `e`-prone declared variable names) and
+            // "arrow to a row, then edit" is the expected flow.
+            KeyCode::Char('e')
+                if key.modifiers.is_empty()
+                    && matches!(self.mode, PickerMode::SelectOption { .. }) =>
+            {
+                if self.selected == self.filtered.len() {
+                    return None; // the ghost row itself has nothing to edit
+                }
+                let &idx = self.filtered.get(self.selected)?;
+                let PickerMode::SelectOption { name, group } = &self.mode else {
+                    unreachable!("guarded above")
+                };
+                let owner = group.clone().unwrap_or_else(|| name.clone());
+                let entry = &self.select_entries[idx];
+                let values = entry.values.clone().unwrap_or_else(|| {
+                    let mut m = IndexMap::new();
+                    m.insert("value".to_string(), entry.value.clone().unwrap_or_default());
+                    m
+                });
+                return Some(super::modal::ModalResult {
+                    actions: vec![Action::OpenEditOptionPrompt {
+                        owner,
+                        key: entry.key.clone(),
+                        description: entry.description.clone(),
+                        values,
+                    }],
+                    close: true,
+                    ..Default::default()
+                });
+            }
             KeyCode::Char(c) if key.modifiers.difference(KeyModifiers::SHIFT).is_empty() => {
                 self.input.push(c);
                 self.refilter();
@@ -481,21 +530,34 @@ impl VarPickerState {
 
             let right = list_area.x + list_area.width;
             let mut x = list_area.x + 1;
-            // The Insert-mode ghost "new variable…" row: sits one past the
-            // filtered entries at `filtered.len()`.
-            let new_var_row = self.mode == PickerMode::Insert && i == self.filtered.len();
+            // The ghost row: sits one past the filtered entries at
+            // `filtered.len()` — "new variable…" in `Insert` mode, "add
+            // new option…" in `SelectOption` mode.
+            let ghost_row = i == self.filtered.len();
+            if ghost_row {
+                let label = match &self.mode {
+                    PickerMode::Insert => "+ new variable\u{2026}",
+                    PickerMode::SelectOption { .. } => "+ add new option\u{2026}",
+                };
+                paint::text(
+                    frame.buffer_mut(),
+                    x,
+                    text_row,
+                    label,
+                    theme.accent,
+                    row_fill,
+                    selected,
+                );
+                let row_rect = Rect {
+                    x: list_area.x,
+                    y: text_row,
+                    width: list_area.width,
+                    height: 1,
+                };
+                hits.register(row_rect, crate::hit::Hit::VarPickerRow(i));
+                continue;
+            }
             match &self.mode {
-                PickerMode::Insert if new_var_row => {
-                    paint::text(
-                        frame.buffer_mut(),
-                        x,
-                        text_row,
-                        "+ new variable\u{2026}",
-                        theme.accent,
-                        row_fill,
-                        selected,
-                    );
-                }
                 PickerMode::Insert => {
                     let entry = &self.entries[self.filtered[i]];
                     let badge_w = Chip {
@@ -922,6 +984,7 @@ mod tests {
                 value: Some("qa-token".into()),
                 preview: None,
                 selected: false,
+                values: None,
             },
             SelectEntry {
                 key: "bob".into(),
@@ -929,6 +992,7 @@ mod tests {
                 value: Some("qa-bob".into()),
                 preview: None,
                 selected: true,
+                values: None,
             },
         ];
         let mut p = VarPickerState::new_select(entries, "user".into(), None, "qa".into());
@@ -955,6 +1019,7 @@ mod tests {
             value: None,
             preview: Some("admin \u{b7} user_id 1001 \u{b7} customer_id c-77".into()),
             selected: false,
+            values: None,
         }];
         let mut p = VarPickerState::new_select(
             entries,
@@ -984,6 +1049,7 @@ mod tests {
             value: Some("x".into()),
             preview: None,
             selected: false,
+            values: None,
         }];
         let mut p = VarPickerState::new_select(entries, "user".into(), None, "qa".into());
         let res = p.handle_key(key(KeyCode::Esc)).unwrap();
@@ -999,6 +1065,7 @@ mod tests {
                 value: Some("qa-token".into()),
                 preview: None,
                 selected: false,
+                values: None,
             },
             SelectEntry {
                 key: "bob".into(),
@@ -1006,6 +1073,7 @@ mod tests {
                 value: Some("qa-bob".into()),
                 preview: None,
                 selected: false,
+                values: None,
             },
         ];
         let mut p = VarPickerState::new_select(entries, "user".into(), None, "qa".into());
@@ -1035,6 +1103,7 @@ mod tests {
                 value: None,
                 preview: Some("admin \u{b7} user_id 1001 \u{b7} customer_id c-77".into()),
                 selected: true,
+                values: None,
             },
             SelectEntry {
                 key: "bob".into(),
@@ -1042,6 +1111,7 @@ mod tests {
                 value: None,
                 preview: Some("reader \u{b7} user_id 1002 \u{b7} customer_id c-78".into()),
                 selected: false,
+                values: None,
             },
         ];
         let mut p = VarPickerState::new_select(
@@ -1085,5 +1155,168 @@ mod tests {
         let row2 = hits.rect_of(&crate::hit::Hit::VarPickerRow(2)).unwrap();
         assert_eq!(row1.y - row0.y, 2, "rows sit on a 2-row pitch");
         assert_eq!(row2.y - row1.y, 2, "rows sit on a 2-row pitch");
+    }
+
+    // --- Task 17: in-context flows (spec §6) -------------------------------
+
+    #[test]
+    fn select_mode_ghost_row_opens_new_option_inline_prompt() {
+        let entries = vec![SelectEntry {
+            key: "alice".into(),
+            description: Some("admin".into()),
+            value: Some("qa-token".into()),
+            preview: None,
+            selected: false,
+            values: None,
+        }];
+        let mut p = VarPickerState::new_select(entries, "user".into(), None, "qa".into());
+        // Down once lands on the ghost row (row 1, one past the one entry).
+        p.handle_key(key(KeyCode::Down));
+        let res = p.handle_key(key(KeyCode::Enter)).unwrap();
+        assert_eq!(
+            res.actions,
+            vec![Action::OpenNewOptionInlinePrompt {
+                owner: "user".into()
+            }]
+        );
+        assert!(res.close);
+    }
+
+    #[test]
+    fn select_mode_ghost_row_targets_the_group_name() {
+        let entries = vec![SelectEntry {
+            key: "alice".into(),
+            description: None,
+            value: None,
+            preview: Some("admin".into()),
+            selected: false,
+            values: Some(IndexMap::new()),
+        }];
+        let mut p = VarPickerState::new_select(
+            entries,
+            "user_id".into(),
+            Some("identity".into()),
+            "qa".into(),
+        );
+        p.handle_key(key(KeyCode::Down));
+        let res = p.handle_key(key(KeyCode::Enter)).unwrap();
+        assert_eq!(
+            res.actions,
+            vec![Action::OpenNewOptionInlinePrompt {
+                owner: "identity".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn select_mode_ghost_row_renders_add_new_option_label() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let entries = vec![SelectEntry {
+            key: "alice".into(),
+            description: None,
+            value: Some("x".into()),
+            preview: None,
+            selected: false,
+            values: None,
+        }];
+        let mut p = VarPickerState::new_select(entries, "user".into(), None, "qa".into());
+        let theme = Theme::dark();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None))
+            .unwrap();
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(content.contains("add new option"), "{content}");
+    }
+
+    #[test]
+    fn e_on_a_plain_var_option_opens_edit_prompt_prefilled_with_value_and_description() {
+        let entries = vec![SelectEntry {
+            key: "alice".into(),
+            description: Some("admin".into()),
+            value: Some("qa-token".into()),
+            preview: None,
+            selected: false,
+            values: None,
+        }];
+        let mut p = VarPickerState::new_select(entries, "user".into(), None, "qa".into());
+        let res = p
+            .handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE))
+            .unwrap();
+        let mut values = IndexMap::new();
+        values.insert("value".to_string(), "qa-token".to_string());
+        assert_eq!(
+            res.actions,
+            vec![Action::OpenEditOptionPrompt {
+                owner: "user".into(),
+                key: "alice".into(),
+                description: Some("admin".into()),
+                values,
+            }]
+        );
+        assert!(res.close);
+    }
+
+    #[test]
+    fn e_on_a_group_option_opens_edit_prompt_prefilled_with_every_member() {
+        let mut values = IndexMap::new();
+        values.insert("user_id".to_string(), "1001".to_string());
+        values.insert("customer_id".to_string(), "c-77".to_string());
+        let entries = vec![SelectEntry {
+            key: "alice".into(),
+            description: Some("admin".into()),
+            value: None,
+            preview: Some("admin \u{b7} user_id 1001 \u{b7} customer_id c-77".into()),
+            selected: false,
+            values: Some(values.clone()),
+        }];
+        let mut p = VarPickerState::new_select(
+            entries,
+            "user_id".into(),
+            Some("identity".into()),
+            "qa".into(),
+        );
+        let res = p
+            .handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(
+            res.actions,
+            vec![Action::OpenEditOptionPrompt {
+                owner: "identity".into(),
+                key: "alice".into(),
+                description: Some("admin".into()),
+                values,
+            }]
+        );
+    }
+
+    #[test]
+    fn e_on_the_ghost_row_is_a_no_op() {
+        let entries = vec![SelectEntry {
+            key: "alice".into(),
+            description: None,
+            value: Some("x".into()),
+            preview: None,
+            selected: false,
+            values: None,
+        }];
+        let mut p = VarPickerState::new_select(entries, "user".into(), None, "qa".into());
+        p.handle_key(key(KeyCode::Down));
+        assert!(
+            p.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn e_in_insert_mode_types_into_the_filter_instead_of_editing() {
+        let mut p = VarPickerState::new(entries(&["env"]), false);
+        p.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        let res = p.handle_key(key(KeyCode::Enter)).unwrap();
+        assert_eq!(res.actions, vec![Action::InsertVarText("{{env}}".into())]);
     }
 }

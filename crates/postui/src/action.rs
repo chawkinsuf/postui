@@ -1,6 +1,18 @@
 use crate::components::toast::ToastKind;
 use crate::components::varmanager::{VarEditOp, VarStructOp};
 use crate::layout::PaneId;
+use indexmap::IndexMap;
+
+/// Where `Action::ConfirmExtractVariable` writes the extracted value (spec
+/// §6): the shared declaration's `default`, the active environment's own
+/// value, or the open request's own `[variables]` — the three choices the
+/// extract prompt's destination field cycles through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtractDestination {
+    ProjectDefault,
+    ActiveEnv,
+    Request,
+}
 
 /// What [`Action::CopyToClipboard`] copies: the ready response body, one of
 /// its headers by index, or the editor's URL as written.
@@ -279,4 +291,57 @@ pub enum Action {
     },
     /// A confirmed structural mutation; `App::apply_var_struct` applies it.
     VarStruct(VarStructOp),
+
+    // -- Task 17: in-context flows (spec §6) --
+    /// The `SelectOption` picker's "add new option…" ghost row: opens the
+    /// key/value/description prompt for a new option on `owner`, closing
+    /// the picker (not stacking on top of it) so focus returns to the
+    /// field once the prompt itself confirms or cancels.
+    OpenNewOptionInlinePrompt {
+        owner: String,
+    },
+    /// `e` on a highlighted `SelectOption` row: opens the value(s)/
+    /// description edit prompt, prefilled from the option's current
+    /// content — `values` is `{"value": ...}` for a plain variable option,
+    /// or one entry per member for a group option.
+    OpenEditOptionPrompt {
+        owner: String,
+        key: String,
+        description: Option<String>,
+        values: IndexMap<String, String>,
+    },
+    /// Confirmed `PromptKind::NewOptionInline`: writes `key`/`value`/
+    /// `description` to the ACTIVE environment's `[options.owner.key]`
+    /// table (spec §1's merge rule makes it an env-specific addition) and
+    /// selects it immediately.
+    ConfirmNewOptionInline {
+        owner: String,
+        key: String,
+        value: String,
+        description: Option<String>,
+    },
+    /// Confirmed `PromptKind::EditOption`: writes `values`/`description` to
+    /// wherever `key` currently lives — the active env's override if it has
+    /// one, `variables.toml`'s shared declaration otherwise.
+    ConfirmEditOption {
+        owner: String,
+        key: String,
+        values: IndexMap<String, String>,
+        description: Option<String>,
+    },
+    /// Focused a line-input field or table cell with literal text and asked
+    /// to extract it to a variable (palette + `ctrl+shift+e`): opens the
+    /// name/destination prompt. Refused with a toast when focus is
+    /// elsewhere, the field is empty, or the cursor is in the body (no body
+    /// text selection yet this stage).
+    ExtractToVariable,
+    /// Confirmed `PromptKind::ExtractVariable`: declares/writes `name` at
+    /// `destination`, then replaces the still-focused field's text with
+    /// `{{name}}` (dirty-saving it) — the origin field is re-read from
+    /// current focus rather than carried in the prompt, since focus can't
+    /// move while a modal has input captured.
+    ConfirmExtractVariable {
+        name: String,
+        destination: ExtractDestination,
+    },
 }
