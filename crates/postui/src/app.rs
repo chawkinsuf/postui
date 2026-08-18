@@ -1717,11 +1717,52 @@ impl App {
                                 .push("no active environment", ToastKind::Warning);
                             return true;
                         };
-                        if !self.project.model.vars.contains_key(&name)
-                            && let Err(msg) = self.project.edit_variables(|doc| {
-                                postui_core::varedit::upsert_var(doc, &name, None, None)
-                            })
-                        {
+                        // Same namespace-collision guard as `ProjectDefault`
+                        // (a group of this name would otherwise sit
+                        // alongside a same-named plain variable), plus the
+                        // two `validate_env` would reject outright if we
+                        // wrote a flat env value anyway: a secret variable
+                        // (env values for secrets are forbidden —
+                        // `ModelError::EnvValueForSecret`) and an
+                        // already-enumerated one in this env
+                        // (`ModelError::EnvValueForEnumerated`). Catching
+                        // both here — rather than letting `edit_env` fail
+                        // after the fact — keeps the refusal a clean toast
+                        // instead of a write attempt against a doc that
+                        // `validate_env` would then reject.
+                        if self.project.model.groups.contains_key(&name) {
+                            self.toasts
+                                .push(format!("\"{name}\" already exists"), ToastKind::Error);
+                            return true;
+                        }
+                        if let Some(decl) = self.project.model.vars.get(&name) {
+                            if decl.secret {
+                                self.toasts.push(
+                                    format!(
+                                        "\"{name}\" is a secret variable \u{2014} can't set a plain env value for it"
+                                    ),
+                                    ToastKind::Error,
+                                );
+                                return true;
+                            }
+                            if !postui_core::varmodel::merged_var_options(
+                                &self.project.model,
+                                &self.project.env_data,
+                                &name,
+                            )
+                            .is_empty()
+                            {
+                                self.toasts.push(
+                                    format!(
+                                        "\"{name}\" is enumerated in {env} \u{2014} pick an option instead of a flat value"
+                                    ),
+                                    ToastKind::Error,
+                                );
+                                return true;
+                            }
+                        } else if let Err(msg) = self.project.edit_variables(|doc| {
+                            postui_core::varedit::upsert_var(doc, &name, None, None)
+                        }) {
                             self.toasts.push(msg, ToastKind::Error);
                             return true;
                         }
@@ -1730,6 +1771,19 @@ impl App {
                         })
                     }
                     ExtractDestination::Request => {
+                        // No structural-file hazard here — `[variables]`
+                        // entries are a separate resolution layer (spec §2)
+                        // with no `validate_env`-style cross-checks — but an
+                        // existing entry of the same name would otherwise be
+                        // silently clobbered, same as `ProjectDefault`'s
+                        // "already exists" refusal.
+                        if self.editor.variables.contains_key(&name) {
+                            self.toasts.push(
+                                format!("\"{name}\" already exists in this request's variables"),
+                                ToastKind::Error,
+                            );
+                            return true;
+                        }
                         self.editor.variables.insert(
                             name.clone(),
                             postui_core::model::Entry {

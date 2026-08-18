@@ -4980,3 +4980,229 @@ fn extract_to_variable_with_no_focused_field_is_refused_with_a_toast() {
     let content = rendered_text(&mut app);
     assert!(content.contains("focus a text field"), "{content}");
 }
+
+// -- Task 17 review fix: ActiveEnv/Request destinations + guards --------
+
+fn right_key() -> KeyEvent {
+    KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)
+}
+
+/// Drives the extract flow through the palette-equivalent `Action` and the
+/// live `Modal::MultiPrompt`: focuses `url` (with the whole text as the
+/// literal to extract), opens the prompt, types `name`, cycles the
+/// destination choice field right `rights` times (0 = Project default, 1 =
+/// Active env value, 2 = This request), and confirms.
+fn extract_url(app: &mut App, keymap: &Keymap, url: &str, name: &str, rights: u8) {
+    app.editor.url = LineInput::new(url);
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Url;
+
+    app.update(Action::ExtractToVariable);
+    assert!(
+        matches!(app.modals.top(), Some(Modal::MultiPrompt { .. })),
+        "expected the extract-variable multi-prompt to open"
+    );
+    type_into_field(app, keymap, name);
+    app.handle_key(keymap, tab_key());
+    for _ in 0..rights {
+        app.handle_key(keymap, right_key());
+    }
+    app.handle_key(keymap, enter_key());
+}
+
+#[test]
+fn extract_to_active_env_writes_the_flat_pair_and_a_bare_declaration_and_replaces_the_field() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let keymap = Keymap::default_bindings();
+
+    extract_url(
+        &mut app,
+        &keymap,
+        "https://x/token-abc123",
+        "session_token",
+        1, // Active env value
+    );
+
+    assert!(app.modals.is_empty());
+    assert_eq!(app.editor.url.text(), "{{session_token}}");
+
+    let shared_doc = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    let session_token_block = shared_doc
+        .split_once("[session_token]")
+        .expect("session_token declared")
+        .1;
+    assert!(
+        !session_token_block.contains("default"),
+        "ActiveEnv must declare bare (no shared default): {shared_doc}"
+    );
+
+    let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(
+        env_doc.contains("session_token = \"https://x/token-abc123\""),
+        "{env_doc}"
+    );
+
+    assert_eq!(
+        app.project.resolved.values["session_token"],
+        "https://x/token-abc123"
+    );
+}
+
+#[test]
+fn extract_to_request_writes_editor_variables_and_dirty_saves() {
+    let mut app = App::new_for_test();
+    app.editor.mark_saved();
+    let keymap = Keymap::default_bindings();
+
+    extract_url(
+        &mut app,
+        &keymap,
+        "https://x/inline-value",
+        "inline_var",
+        2, // This request
+    );
+
+    assert!(app.modals.is_empty());
+    assert_eq!(app.editor.url.text(), "{{inline_var}}");
+    assert_eq!(
+        app.editor.variables["inline_var"].value,
+        "https://x/inline-value"
+    );
+    assert!(app.editor.variables["inline_var"].enabled);
+    assert!(app.editor.is_dirty(), "the field is dirty-saved");
+}
+
+#[test]
+fn extract_to_active_env_refuses_a_name_colliding_with_an_existing_group() {
+    let dir = tempfile::tempdir().unwrap();
+    group_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let keymap = Keymap::default_bindings();
+
+    let shared_before = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    let env_before = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+
+    extract_url(
+        &mut app,
+        &keymap,
+        "https://x/whatever",
+        "identity", // collides with the declared group
+        1,          // Active env value
+    );
+
+    assert!(app.modals.is_empty());
+    let content = rendered_text(&mut app);
+    assert!(content.contains("already exists"), "{content}");
+    assert_eq!(
+        app.editor.url.text(),
+        "https://x/whatever",
+        "a refused extract must not touch the field"
+    );
+
+    let shared_after = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    let env_after = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert_eq!(shared_before, shared_after, "no file write on refusal");
+    assert_eq!(env_before, env_after, "no file write on refusal");
+}
+
+#[test]
+fn extract_to_active_env_refuses_a_name_colliding_with_an_existing_secret() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let keymap = Keymap::default_bindings();
+
+    let shared_before = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    let env_before = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+
+    extract_url(
+        &mut app,
+        &keymap,
+        "https://x/whatever",
+        "api_key", // declared secret in var_project
+        1,         // Active env value
+    );
+
+    assert!(app.modals.is_empty());
+    let content = rendered_text(&mut app);
+    assert!(content.contains("secret"), "{content}");
+    assert_eq!(
+        app.editor.url.text(),
+        "https://x/whatever",
+        "a refused extract must not touch the field"
+    );
+
+    let shared_after = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    let env_after = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert_eq!(
+        shared_before, shared_after,
+        "no file write on refusal (must never persist a flat value for a secret)"
+    );
+    assert_eq!(env_before, env_after, "no file write on refusal");
+}
+
+#[test]
+fn confirm_edit_option_on_a_shared_group_option_writes_variables_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    group_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    let mut values = indexmap::IndexMap::new();
+    values.insert("user_id".to_string(), "9999".to_string());
+    values.insert("customer_id".to_string(), "c-99".to_string());
+    app.update(Action::ConfirmEditOption {
+        owner: "identity".into(),
+        key: "alice".into(),
+        values,
+        description: Some("admin".into()),
+    });
+
+    let shared_doc = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    assert!(shared_doc.contains("9999"), "{shared_doc}");
+    assert!(shared_doc.contains("c-99"), "{shared_doc}");
+
+    let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(
+        !env_doc.contains("9999"),
+        "a shared group option's edit must not create an env override: {env_doc}"
+    );
+}
+
+#[test]
+fn confirm_edit_option_on_an_env_overridden_group_option_writes_the_env_file() {
+    let dir = tempfile::tempdir().unwrap();
+    group_project(dir.path());
+    std::fs::write(
+        dir.path().join("environments/qa.toml"),
+        "[options.identity.alice]\nuser_id = \"5000\"\n",
+    )
+    .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    let mut values = indexmap::IndexMap::new();
+    values.insert("user_id".to_string(), "9001".to_string());
+    values.insert("customer_id".to_string(), "c-101".to_string());
+    app.update(Action::ConfirmEditOption {
+        owner: "identity".into(),
+        key: "alice".into(),
+        values,
+        description: Some("admin updated".into()),
+    });
+
+    let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(env_doc.contains("9001"), "{env_doc}");
+    assert!(env_doc.contains("c-101"), "{env_doc}");
+
+    let shared_doc = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    assert!(
+        shared_doc.contains("1001") && !shared_doc.contains("9001"),
+        "an env override's edit must not touch the shared declaration: {shared_doc}"
+    );
+}
