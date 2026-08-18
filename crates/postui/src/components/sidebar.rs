@@ -437,11 +437,20 @@ impl Component for Sidebar {
             if text_row >= area.y + area.height {
                 break;
             }
-            let is_selected = Some(i) == self.selected;
+            // Two separate things can mark a row: the accent pill sits on
+            // the OPEN request (the one loaded in the editor) and stays put
+            // while the user browses; the arrow-key cursor is a keyboard
+            // hover — same fill as mouse hover, painted only while the pane
+            // actually has the keyboard.
+            let is_open = matches!(
+                row,
+                Row::Request { slug, .. } if self.open_slug.as_deref() == Some(slug.as_str())
+            );
+            let is_cursor = ctx.focused && Some(i) == self.selected;
             let is_hovered = ctx.hovered == Some(&Hit::SidebarRow(i));
-            let highlight = if is_selected {
+            let highlight = if is_open {
                 RowHighlight::Selected
-            } else if is_hovered {
+            } else if is_cursor || is_hovered {
                 RowHighlight::Hover
             } else {
                 RowHighlight::None
@@ -466,7 +475,7 @@ impl Component for Sidebar {
                 theme,
             );
 
-            self.paint_row(buf, row, text_row, list_area, row_fill, is_selected, theme);
+            self.paint_row(buf, row, text_row, list_area, row_fill, is_open, theme);
 
             // The hit rect covers the text row and its two half-pad rows
             // (clipped to the pane), so a click anywhere in the padding
@@ -547,7 +556,7 @@ impl Sidebar {
         text_row: u16,
         list_area: Rect,
         row_fill: Color,
-        selected: bool,
+        open: bool,
         theme: &Theme,
     ) {
         let right = list_area.x + list_area.width;
@@ -647,7 +656,7 @@ impl Sidebar {
                     Self::clip(basename, right - name_x),
                     name_fg,
                     row_fill,
-                    selected,
+                    open,
                 );
             }
         }
@@ -990,11 +999,16 @@ mod tests {
         );
     }
 
+    /// The accent pill marks the OPEN request and stays put while the
+    /// arrow-key cursor browses; the cursor row shows as a keyboard hover
+    /// (control fill, no bar) until Enter opens it.
     #[test]
-    fn selected_row_gets_control_hover_fill_and_accent_bar() {
+    fn open_row_keeps_the_accent_pill_while_the_cursor_browses() {
         let mut s = Sidebar::default();
+        // Rows sort by slug: row 0 is "next", row 1 is "top".
         s.refresh(listing(&["top", "next"]), &expanded(&[]));
-        s.selected = Some(0);
+        s.open_slug = Some("next".into());
+        s.selected = Some(1); // cursor browsed onto "top"
         let theme = Theme::dark();
         let ctx = draw_ctx(&theme, None);
         let backend = ratatui::backend::TestBackend::new(30, 12);
@@ -1003,18 +1017,31 @@ mod tests {
         terminal
             .draw(|f| s.draw(f, f.area(), &ctx, &mut hits))
             .unwrap();
+        let buf = terminal.backend().buffer();
+
+        // Row 0 ("top", open): accent bar + control_hover fill.
         let row0 = hits.rect_of(&Hit::SidebarRow(0)).unwrap();
         let text_row = row0.y + 1;
-        let buf = terminal.backend().buffer();
         let bar_cell = buf[(row0.x, text_row)].clone();
         // Far right of the row, past the chip/name text, where only the
         // pill's plain fill (not glyph content) is painted.
         let fill_cell = buf[(row0.x + row0.width - 2, text_row)].clone();
-        assert_eq!(bar_cell.symbol(), "\u{2588}", "accent bar at column 0");
+        assert_eq!(bar_cell.symbol(), "\u{2588}", "accent bar on the open row");
         assert_eq!(bar_cell.fg, theme.accent);
         assert_eq!(
             fill_cell.bg, theme.control_hover,
-            "selected row fills with control_hover"
+            "open row fills with control_hover"
+        );
+
+        // Row 1 ("next", cursor): keyboard hover — control fill, no bar.
+        let row1 = hits.rect_of(&Hit::SidebarRow(1)).unwrap();
+        let text_row = row1.y + 1;
+        let bar_cell = buf[(row1.x, text_row)].clone();
+        let fill_cell = buf[(row1.x + row1.width - 2, text_row)].clone();
+        assert_ne!(bar_cell.fg, theme.accent, "no accent bar on the cursor row");
+        assert_eq!(
+            fill_cell.bg, theme.control,
+            "cursor row shows the hover fill until Enter opens it"
         );
     }
 

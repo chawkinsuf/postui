@@ -267,6 +267,8 @@ fn selected_request_marker_sits_beside_the_sidebar_focus_bar() {
         method: Some(Method::Get),
     });
     app.sidebar.selected = Some(0);
+    // The accent marker tracks the OPEN request, not the browse cursor.
+    app.sidebar.open_slug = Some("go".into());
     assert_eq!(app.focus, PaneId::Sidebar);
     let term = render(&mut app);
     let layout = postui::layout::compute_layout(term.backend().buffer().area, false);
