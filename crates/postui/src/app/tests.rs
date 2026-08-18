@@ -2826,3 +2826,107 @@ fn manager_screen_replaces_the_three_panes_but_keeps_header_and_footer() {
         "the sidebar pane is replaced by the full-frame Manager"
     );
 }
+
+/// Regression test for the Task 9 review finding: the screen-routing
+/// carve-out let ANY modified global shortcut through, not just
+/// modal-opening ones — so ctrl+enter/ctrl+r sent the loaded request
+/// invisibly while the Manager screen was open (its panes aren't even
+/// drawn). Only `screen_escape_whitelist`'s small set of actions may
+/// escape; `Send` must not be one of them.
+#[test]
+fn ctrl_r_and_ctrl_enter_do_not_send_from_the_manager_screen() {
+    let mut app = App::new_for_test();
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, alt('v'));
+    assert_eq!(app.screen, crate::app::Screen::VarManager);
+    assert!(app.toasts.is_empty());
+
+    app.handle_key(&keymap, ctrl('r'));
+    assert!(
+        app.toasts.is_empty(),
+        "ctrl+r must not reach Action::Send (an empty-URL send would toast)"
+    );
+    assert!(app.session.in_flight.is_none());
+    assert_eq!(app.screen, crate::app::Screen::VarManager);
+
+    app.handle_key(
+        &keymap,
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL),
+    );
+    assert!(
+        app.toasts.is_empty(),
+        "ctrl+enter must not reach Action::Send either"
+    );
+    assert!(app.session.in_flight.is_none());
+    assert_eq!(app.screen, crate::app::Screen::VarManager);
+}
+
+/// Same finding: alt+u (`Action::FocusUrl`) must not silently reassign
+/// `App::focus` while the Manager screen is open — that would corrupt the
+/// focus `Action::CloseScreen` is supposed to restore.
+#[test]
+fn alt_u_does_not_move_focus_from_the_manager_screen() {
+    let mut app = App::new_for_test();
+    app.focus = PaneId::Response;
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, alt('v'));
+    assert_eq!(app.screen, crate::app::Screen::VarManager);
+
+    app.handle_key(&keymap, alt('u'));
+    assert_eq!(
+        app.focus,
+        PaneId::Response,
+        "alt+u must not reach Action::FocusUrl while the screen is open"
+    );
+
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.screen, crate::app::Screen::Main);
+    assert_eq!(
+        app.focus,
+        PaneId::Response,
+        "CloseScreen restores the untouched prior focus"
+    );
+}
+
+/// Same finding: alt+o (`Action::CycleProject`) and alt+c
+/// (`Action::CycleEnv`) — arbitrary other global shortcuts — must not
+/// reach their actions from the Manager screen either.
+#[test]
+fn other_unwhitelisted_global_shortcuts_are_swallowed_by_the_manager_screen() {
+    let mut app = App::new_for_test();
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, alt('v'));
+    assert_eq!(app.screen, crate::app::Screen::VarManager);
+    assert!(app.toasts.is_empty());
+
+    app.handle_key(&keymap, alt('o')); // CycleProject: would toast "only one project registered"
+    assert!(
+        app.toasts.is_empty(),
+        "alt+o must not reach Action::CycleProject"
+    );
+
+    app.handle_key(&keymap, alt('c')); // CycleEnv: would toast "no environments — ..."
+    assert!(
+        app.toasts.is_empty(),
+        "alt+c must not reach Action::CycleEnv"
+    );
+    assert_eq!(app.screen, crate::app::Screen::VarManager);
+}
+
+/// The whitelist's whole point: opening the palette on top of the Manager
+/// screen must keep working via the same ctrl+p combo used on `Main`.
+#[test]
+fn ctrl_p_still_opens_the_palette_on_top_of_the_manager_screen() {
+    let mut app = App::new_for_test();
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, alt('v'));
+    assert_eq!(app.screen, crate::app::Screen::VarManager);
+
+    app.handle_key(&keymap, ctrl('p'));
+    assert!(matches!(app.modals.top(), Some(Modal::Palette(_))));
+    assert_eq!(
+        app.screen,
+        crate::app::Screen::VarManager,
+        "opening the palette must not leave the screen"
+    );
+}

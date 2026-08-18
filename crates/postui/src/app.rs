@@ -1392,12 +1392,17 @@ impl App {
     /// 2. An open modal stack captures all remaining input (swallowed keys
     ///    still count as "handled" — they return true).
     /// 3. With no modal open and a non-`Main` screen showing (e.g. the
-    ///    Variable Manager), a CTRL/ALT combo still prefers the global
-    ///    keymap first (so e.g. ctrl+p still opens the palette on top of
-    ///    the screen), then every remaining key goes to that screen's own
-    ///    component; anything it doesn't handle is swallowed rather than
-    ///    falling through to the global keymap, so e.g. plain `q` does not
-    ///    quit the app from a non-`Main` screen.
+    ///    Variable Manager), that screen captures all remaining input like
+    ///    a modal does: only the small [`screen_escape_whitelist`] of
+    ///    global actions (opening the palette on top of the screen,
+    ///    quitting, and the screen open/close actions themselves) can
+    ///    still fire on a CTRL/ALT combo; every other global shortcut
+    ///    (send, save, cycle project/env, focus URL, …) is *not* reachable
+    ///    from here, since none of it is meaningful with the panes it
+    ///    targets not even drawn. Anything the screen's own component
+    ///    doesn't claim is swallowed rather than falling through to the
+    ///    global keymap, so e.g. plain `q` does not quit the app from a
+    ///    non-`Main` screen.
     /// 4. On `Screen::Main`, a CTRL/ALT combo prefers the global keymap
     ///    over the focused component (app shortcuts beat editors), falling
     ///    through to the component if unbound.
@@ -1430,9 +1435,13 @@ impl App {
         }
 
         // 3. A non-Main screen captures all remaining input, like a modal —
-        // except a modified global shortcut still gets first refusal.
+        // except the small whitelist of global actions that legitimately
+        // work "on top of" any screen still gets first refusal.
         if self.screen != Screen::Main {
-            if modified && let Some(a) = global {
+            if modified
+                && let Some(a) = global.clone()
+                && screen_escape_whitelist(&a)
+            {
                 return self.update(a);
             }
             if let Some(a) = self.varmanager.handle_key(ev) {
@@ -1484,6 +1493,23 @@ impl App {
         }
         changed
     }
+}
+
+/// The only global actions a modified (ctrl/alt) combo may still trigger
+/// while a non-`Main` screen (e.g. the Variable Manager) has captured
+/// input: opening a modal on top of the screen (today, just the command
+/// palette — the spec's "the modal stack works on top unchanged"), the
+/// screen open/close actions themselves, and quit. Everything else in the
+/// global keymap (send, save, cycle project/env, focus URL, …) targets
+/// panes that aren't even drawn while a non-`Main` screen is open, so it
+/// must not be reachable from here — see the Task 9 review finding this
+/// whitelist fixes: an unbounded carve-out let ctrl+enter send the loaded
+/// request invisibly, alt+u silently reassign focus, etc.
+fn screen_escape_whitelist(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::OpenPalette | Action::OpenVarManager | Action::CloseScreen | Action::Quit
+    )
 }
 
 mod mouse;
