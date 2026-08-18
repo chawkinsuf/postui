@@ -466,7 +466,6 @@ impl ModalStack {
                     state: ControlState::Focused,
                 }
                 .paint(frame.buffer_mut(), field_area, theme);
-                paint::focus_ring(frame.buffer_mut(), field_area, theme.panel, theme);
 
                 let hint_y = field_area.y + FIELD_HEIGHT + 1;
                 paint::text(
@@ -534,9 +533,6 @@ impl ModalStack {
                     },
                 }
                 .paint(frame.buffer_mut(), name_area, theme);
-                if !*on_path {
-                    paint::focus_ring(frame.buffer_mut(), name_area, theme.panel, theme);
-                }
 
                 let path_label_y = name_area.y + FIELD_HEIGHT + 1;
                 paint::text(
@@ -563,9 +559,6 @@ impl ModalStack {
                     },
                 }
                 .paint(frame.buffer_mut(), path_area, theme);
-                if *on_path {
-                    paint::focus_ring(frame.buffer_mut(), path_area, theme.panel, theme);
-                }
 
                 let hint_y = path_area.y + FIELD_HEIGHT + 1;
                 paint::text(

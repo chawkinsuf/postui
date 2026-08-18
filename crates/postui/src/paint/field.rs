@@ -1,6 +1,7 @@
 //! A painted text field: a 3-row filled rect with light/dark bevel edges on
-//! the top/bottom rows and left-padded content on the middle row, plus a
-//! standalone focus ring painted in the cells surrounding a focused control.
+//! the top/bottom rows and left-padded content on the middle row. Focus
+//! lifts the field's own fill (bevel following), matching the address bar's
+//! focus language — no ring in surrounding cells.
 
 use ratatui::{
     buffer::Buffer,
@@ -17,10 +18,9 @@ use crate::theme::Theme;
 pub const FIELD_HEIGHT: u16 = 3;
 
 /// A painted text field: its content line and current interaction state.
-/// `paint` draws it into a 3-row-tall area. When `state` is
-/// [`ControlState::Focused`], the caller is responsible for also calling
-/// [`focus_ring`] on the surrounding cells — `paint` itself only draws the
-/// normal face.
+/// `paint` draws it into a 3-row-tall area. [`ControlState::Focused`]
+/// brightens the fill two hover-steps (the same lift the address bar's URL
+/// well uses), with the bevel following the lifted fill.
 pub struct TextField<'a> {
     pub content: Line<'a>,
     pub state: ControlState,
@@ -73,11 +73,22 @@ impl TextField<'_> {
     }
 
     fn face(&self, theme: &Theme) -> Face {
+        use crate::theme::lift_color;
         match self.state {
-            ControlState::Normal | ControlState::Focused => Face {
+            ControlState::Normal => Face {
                 fill: theme.control,
                 edges: Some((theme.edge_light, theme.edge_dark)),
             },
+            // Two hover-steps up, like the address bar's focused URL well —
+            // one step is nearly invisible on a dark fill. Bevel follows
+            // the lifted fill at the same ±0.08 the resting bevel uses.
+            ControlState::Focused => {
+                let fill = lift_color(theme.control, 0.12);
+                Face {
+                    fill,
+                    edges: Some((lift_color(fill, 0.08), lift_color(fill, -0.08))),
+                }
+            }
             ControlState::Hover => Face {
                 fill: theme.control_hover,
                 edges: Some((theme.edge_light, theme.edge_dark)),
@@ -94,40 +105,6 @@ impl TextField<'_> {
     }
 }
 
-/// Paints an accent ring in the cells one step out from `inner` on all
-/// sides, over `surround_bg`. Used by [`TextField`] (when `state ==
-/// Focused`) and by any other standalone focused control — the caller is
-/// expected to have reserved that surrounding ring of cells already.
-pub fn focus_ring(buf: &mut Buffer, inner: Rect, surround_bg: Color, theme: &Theme) {
-    let fg = theme.focus_ring;
-    let left = inner.x.saturating_sub(1);
-    let top = inner.y.saturating_sub(1);
-    let right = inner.x + inner.width;
-    let bottom = inner.y + inner.height;
-
-    let set = |buf: &mut Buffer, x: u16, y: u16, s: &str| {
-        if let Some(cell) = buf.cell_mut((x, y)) {
-            cell.set_symbol(s);
-            cell.set_fg(fg);
-            cell.set_bg(surround_bg);
-        }
-    };
-
-    set(buf, left, top, "┌");
-    set(buf, right, top, "┐");
-    set(buf, left, bottom, "└");
-    set(buf, right, bottom, "┘");
-
-    for x in (left + 1)..right {
-        set(buf, x, top, "─");
-        set(buf, x, bottom, "─");
-    }
-    for y in (top + 1)..bottom {
-        set(buf, left, y, "│");
-        set(buf, right, y, "│");
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,7 +116,7 @@ mod tests {
     }
 
     #[test]
-    fn focused_field_draws_ring_in_surrounding_cells() {
+    fn focused_field_lifts_its_own_fill() {
         let theme = Theme::dark();
         let mut term = Terminal::new(TestBackend::new(30, 7)).unwrap();
         term.draw(|f| {
@@ -149,13 +126,20 @@ mod tests {
                 state: ControlState::Focused,
             }
             .paint(f.buffer_mut(), inner, &theme);
-            focus_ring(f.buffer_mut(), inner, theme.panel, &theme);
         })
         .unwrap();
-        assert_eq!(buf_cell(&term, 1, 1).symbol(), "┌");
-        assert_eq!(buf_cell(&term, 1, 1).fg, theme.focus_ring);
-        assert_eq!(buf_cell(&term, 28, 5).symbol(), "┘");
-        assert_eq!(buf_cell(&term, 4, 3).symbol(), "h"); // 2-col padding
+        let lifted = crate::theme::lift_color(theme.control, 0.12);
+        let mid = buf_cell(&term, 4, 3);
+        assert_eq!(mid.symbol(), "h"); // 2-col padding
+        assert_eq!(mid.bg, lifted, "focused fill outshines control_hover");
+        assert_ne!(lifted, theme.control_hover);
+        // Bevel follows the lifted fill, not the resting edge tokens.
+        assert_eq!(
+            buf_cell(&term, 2, 2).fg,
+            crate::theme::lift_color(lifted, 0.08)
+        );
+        // No ring: surrounding cells stay untouched.
+        assert_eq!(buf_cell(&term, 1, 1).symbol(), " ");
     }
 
     #[test]

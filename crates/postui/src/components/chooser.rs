@@ -193,7 +193,6 @@ impl ChooserState {
             state: ControlState::Focused,
         }
         .paint(frame.buffer_mut(), field_area, theme);
-        paint::focus_ring(frame.buffer_mut(), field_area, theme.panel, theme);
 
         let list_area = Rect {
             x: area.x + 1,
@@ -461,7 +460,7 @@ mod tests {
     }
 
     #[test]
-    fn focus_ring_bottom_left_corner_survives_the_list_draw() {
+    fn field_fill_and_gap_row_survive_the_list_draw() {
         let mut c = ChooserState::new("Projects", items(&["svc", "web", "auth"]));
         let theme = Theme::dark();
         let backend = TestBackend::new(80, 24);
@@ -478,16 +477,15 @@ mod tests {
             width: area.width.saturating_sub(2),
             height: FIELD_HEIGHT,
         };
-        let corner_x = field_area.x.saturating_sub(1);
-        let corner_y = field_area.y + FIELD_HEIGHT;
         let buffer = terminal.backend().buffer();
-        let corner = buffer[(corner_x, corner_y)].clone();
-        assert_eq!(
-            corner.symbol(),
-            "└",
-            "row 0's top pad must not overwrite the focus ring's bottom-left corner"
-        );
-        assert_eq!(corner.fg, theme.focus_ring);
+        // The focused field's lifted fill reaches its bottom bevel row...
+        let lifted = crate::theme::lift_color(theme.control, 0.12);
+        let bevel = buffer[(field_area.x, field_area.y + FIELD_HEIGHT - 1)].clone();
+        assert_eq!(bevel.bg, lifted, "field bottom row keeps the lifted fill");
+        // ...and row 0's top pad must not creep into the gap row below it.
+        let gap = buffer[(field_area.x, field_area.y + FIELD_HEIGHT)].clone();
+        assert_eq!(gap.bg, theme.panel, "gap row below the field stays panel");
+        assert_eq!(gap.symbol(), " ");
     }
 
     #[test]
