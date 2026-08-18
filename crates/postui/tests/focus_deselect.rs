@@ -140,9 +140,9 @@ fn typing_while_blurred_reaches_no_input() {
 
 // --- focus visibility ----------------------------------------------------
 
-/// Whether any cell inside `pane`'s rect shows the focus-ring's `┌` corner
-/// glyph in the focus-ring color.
-fn has_ring_corner(term: &Terminal<TestBackend>, app: &App, pane: PaneId) -> bool {
+/// Whether any cell inside `pane`'s rect shows the focused URL well's
+/// lifted fill color (the URL input's focus indicator).
+fn has_lifted_url_fill(term: &Terminal<TestBackend>, app: &App, pane: PaneId) -> bool {
     let area = term.backend().buffer().area;
     let layout = postui::layout::compute_layout(area, false);
     let r = match pane {
@@ -150,11 +150,11 @@ fn has_ring_corner(term: &Terminal<TestBackend>, app: &App, pane: PaneId) -> boo
         PaneId::Editor => layout.editor,
         PaneId::Response => layout.response,
     };
+    let lifted = postui::theme::lift_color(app.theme.control, 0.12);
     let buf = term.backend().buffer();
     for y in r.y..r.y + r.height {
         for x in r.x..r.x + r.width {
-            let cell = &buf[(x, y)];
-            if cell.symbol() == "┌" && cell.fg == app.theme.focus_ring {
+            if buf[(x, y)].bg == lifted {
                 return true;
             }
         }
@@ -163,7 +163,7 @@ fn has_ring_corner(term: &Terminal<TestBackend>, app: &App, pane: PaneId) -> boo
 }
 
 #[test]
-fn url_focus_ring_paints_only_when_the_editor_pane_is_focused() {
+fn url_focus_lift_paints_only_when_the_editor_pane_is_focused() {
     let mut app = App::new_for_test();
     // Default state: sub_focus is Url but the Sidebar pane has focus — keys
     // do not reach the URL input, so it must not claim focus on screen.
@@ -171,22 +171,22 @@ fn url_focus_ring_paints_only_when_the_editor_pane_is_focused() {
     assert_eq!(app.focus, PaneId::Sidebar);
     let term = render(&mut app);
     assert!(
-        !has_ring_corner(&term, &app, PaneId::Editor),
-        "no URL focus ring while the sidebar pane has focus"
+        !has_lifted_url_fill(&term, &app, PaneId::Editor),
+        "no lifted URL fill while the sidebar pane has focus"
     );
 
     app.focus = PaneId::Editor;
     let term = render(&mut app);
     assert!(
-        has_ring_corner(&term, &app, PaneId::Editor),
-        "URL focus ring shows when the editor pane has focus and sub-focus is Url"
+        has_lifted_url_fill(&term, &app, PaneId::Editor),
+        "the URL well lifts when the editor pane has focus and sub-focus is Url"
     );
 
     app.focus = PaneId::Response;
     let term = render(&mut app);
     assert!(
-        !has_ring_corner(&term, &app, PaneId::Editor),
-        "tabbing away removes the URL focus ring"
+        !has_lifted_url_fill(&term, &app, PaneId::Editor),
+        "tabbing away drops the URL well back to its resting fill"
     );
 }
 

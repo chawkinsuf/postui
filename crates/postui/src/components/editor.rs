@@ -593,10 +593,11 @@ impl Editor {
     /// Paints the fused method/URL/Send address bar: one 3-cell-row control
     /// (a shaded half-block cap row, the text row, a shaded half-block cap
     /// row — reading as 2 text lines) with no gap columns between its
-    /// segments, plus the 1-row/1-column margin around it that gives
-    /// [`focus_ring`](crate::paint::focus_ring) cells to paint into when
-    /// the URL has focus. `area` is that whole envelope (5 rows tall, the
-    /// pane's full inner width).
+    /// segments, plus a 1-row/1-column breathing margin around it. Focus is
+    /// shown by lifting the focused segment's own fill/caps (no ring): the
+    /// URL well brightens two hover-steps, the method badge takes hover's
+    /// lift color. `area` is the whole envelope (5 rows tall, the pane's
+    /// full inner width).
     fn draw_address_bar(
         &mut self,
         frame: &mut Frame,
@@ -608,16 +609,17 @@ impl Editor {
 
         let theme = ctx.theme;
         // Focus styling must track where keys actually go: the URL only
-        // counts as focused while its pane is, or the ring/caret would keep
-        // painting after Tab moves the keyboard elsewhere.
+        // counts as focused while its pane is, or the lifted fill/caret
+        // would keep painting after Tab moves the keyboard elsewhere.
         let url_focused = ctx.focused && self.sub_focus == SubFocus::Url;
+        let method_focused = ctx.focused && self.sub_focus == SubFocus::Method;
 
         let margins = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1), // ring margin above
+                Constraint::Length(1), // breathing margin above
                 Constraint::Length(3), // the bar itself
-                Constraint::Length(1), // ring margin below
+                Constraint::Length(1), // breathing margin below
             ])
             .split(area);
         let bar_outer = margins[1];
@@ -646,20 +648,13 @@ impl Editor {
 
         let buf = frame.buffer_mut();
 
-        if url_focused {
-            crate::paint::focus_ring(buf, bar, theme.page, theme);
-        }
-        // The badge gets its own, tighter ring when it holds focus — the
-        // whole-bar ring means "typing lands in the URL", and reusing it
-        // here would say the wrong thing.
-        if ctx.focused && self.sub_focus == SubFocus::Method {
-            crate::paint::focus_ring(buf, cols[0], theme.page, theme);
-        }
-
         // --- method segment --------------------------------------------
+        // Focus reuses hover's lift color: the badge has no pressed state,
+        // so the lift is unambiguous, and hover/focus rarely coexist (a
+        // deliberate choice over a ring — see the focus-outline sweep).
         let method_face = theme.method_color(self.method);
         let method_hovered = ctx.hovered == Some(&crate::hit::Hit::MethodSelector);
-        let method_fill = if method_hovered {
+        let method_fill = if method_hovered || method_focused {
             face_edges(method_face, theme).0
         } else {
             method_face
@@ -693,9 +688,22 @@ impl Editor {
         });
 
         // --- URL segment -------------------------------------------------
-        half_cap_top(buf, cap_top_row(url_area), theme.edge_light, theme.page);
-        fill(buf, text_row(url_area), theme.control);
-        half_cap_bottom(buf, cap_bottom_row(url_area), theme.edge_dark, theme.page);
+        // Focus lifts the fill two hover-steps up — a stronger step than
+        // `control_hover`, because the URL well is large and dark and a
+        // single step is nearly invisible. Caps follow the lifted fill.
+        let url_fill = if url_focused {
+            crate::theme::lift_color(theme.control, 0.12)
+        } else {
+            theme.control
+        };
+        let (u_light, u_dark) = if url_focused {
+            face_edges(url_fill, theme)
+        } else {
+            (theme.edge_light, theme.edge_dark)
+        };
+        half_cap_top(buf, cap_top_row(url_area), u_light, theme.page);
+        fill(buf, text_row(url_area), url_fill);
+        half_cap_bottom(buf, cap_bottom_row(url_area), u_dark, theme.page);
         // The text is inset URL_PAD columns from the method segment so it
         // isn't flush against the badge.
         let url_text_area = Rect {
@@ -706,7 +714,7 @@ impl Editor {
         let mut url_line = self
             .url
             .draw_line_windowed(url_focused, theme, url_text_area.width);
-        url_line.style = Style::default().bg(theme.control).patch(url_line.style);
+        url_line.style = Style::default().bg(url_fill).patch(url_line.style);
         buf.set_line(url_text_area.x, text_y, &url_line, url_text_area.width);
         hits.register(url_area, crate::hit::Hit::UrlBar);
         self.last_url_text_area = Some(Rect {
@@ -1647,7 +1655,7 @@ url = "https://api.example.com/users""#,
     }
 
     #[test]
-    fn method_focus_paints_a_ring_around_the_badge() {
+    fn method_focus_lifts_the_badge_to_hovers_color() {
         let mut e = Editor {
             sub_focus: SubFocus::Method,
             ..Editor::default()
@@ -1656,16 +1664,19 @@ url = "https://api.example.com/users""#,
         let (terminal, hits) = draw_for_bar_test(&mut e);
         let method_area = hits.rect_of(&crate::hit::Hit::MethodSelector).unwrap();
         let buf = terminal.backend().buffer();
-        // The ring cell just left of the badge, on its text row.
-        let cell = buf
-            .cell((method_area.x.saturating_sub(1), method_area.y + 1))
-            .unwrap();
+        let method_face = theme.method_color(postui_core::model::Method::Get);
+        let cell = buf.cell((method_area.x, method_area.y + 1)).unwrap();
         assert_eq!(
-            cell.fg,
-            theme.focus_ring,
-            "the focused method badge wears a focus ring, so a keyboard \
+            cell.bg,
+            crate::paint::face_edges(method_face, &theme).0,
+            "the focused method badge lifts to hover's color, so a keyboard \
              user can see where Enter will land"
         );
+        // No ring: the margin cell left of the badge stays plain page.
+        let margin = buf
+            .cell((method_area.x.saturating_sub(1), method_area.y + 1))
+            .unwrap();
+        assert_eq!(margin.symbol(), " ", "no ring glyph beside the badge");
     }
 
     #[test]
@@ -1693,6 +1704,9 @@ url = "https://api.example.com/users""#,
             Some("a".into()),
             HttpRequest::from_toml_str(r#"url = "https://x/y""#).unwrap(),
         );
+        // This test asserts the resting bevel; URL focus (which `load`
+        // grants) would lift the caps.
+        e.sub_focus = SubFocus::None;
         let theme = Theme::dark();
         let (terminal, hits) = draw_for_bar_test(&mut e);
         let method_area = hits.rect_of(&crate::hit::Hit::MethodSelector).unwrap();
@@ -1859,7 +1873,7 @@ url = "https://api.example.com/users""#,
     }
 
     #[test]
-    fn focused_url_draws_ring_around_the_whole_bar() {
+    fn focused_url_lifts_the_url_fill_and_caps() {
         let mut e = Editor::default();
         e.load(
             Some("a".into()),
@@ -1870,13 +1884,27 @@ url = "https://api.example.com/users""#,
         let (terminal, hits) = draw_for_bar_test(&mut e);
         let method_area = hits.rect_of(&crate::hit::Hit::MethodSelector).unwrap();
         let buf = terminal.backend().buffer();
-        // The method segment is the bar's leftmost segment, so the bar's
-        // own top-left corner is exactly one cell up and left of it.
-        let ring_x = method_area.x.saturating_sub(1);
-        let ring_y = method_area.y.saturating_sub(1);
-        let corner = buf.cell((ring_x, ring_y)).unwrap();
-        assert_eq!(corner.symbol(), "┌", "ring top-left corner: {corner:?}");
-        assert_eq!(corner.fg, theme.focus_ring);
+        let text_y = method_area.y + 1;
+        let url_x = method_area.x + method_area.width;
+        let lifted = crate::theme::lift_color(theme.control, 0.12);
+        let well = buf.cell((url_x, text_y)).unwrap();
+        assert_eq!(
+            well.bg, lifted,
+            "the focused URL well brightens past control_hover: {well:?}"
+        );
+        assert_ne!(lifted, theme.control_hover, "focus must outshine hover");
+        // Caps follow the lifted fill.
+        let cap = buf.cell((url_x, method_area.y)).unwrap();
+        assert_eq!(cap.symbol(), "▄", "url top cap: {cap:?}");
+        assert_eq!(cap.fg, crate::paint::face_edges(lifted, &theme).0);
+        // No ring: the bar's old top-left ring corner cell stays plain.
+        let corner = buf
+            .cell((
+                method_area.x.saturating_sub(1),
+                method_area.y.saturating_sub(1),
+            ))
+            .unwrap();
+        assert_eq!(corner.symbol(), " ", "no ring glyph around the bar");
     }
 
     #[test]
