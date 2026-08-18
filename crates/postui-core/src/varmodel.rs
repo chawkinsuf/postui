@@ -1,0 +1,711 @@
+//! Stage-6 variable model: parsing `variables.toml` (declarations, options,
+//! groups) and `environments/<env>.toml` (flat values + keyed option
+//! overrides). Pure parsing only — merging declarations against an
+//! environment happens in a later module.
+
+use indexmap::IndexMap;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OptionDecl {
+    pub description: Option<String>,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct VarDecl {
+    pub description: Option<String>,
+    pub default: Option<String>,
+    pub secret: bool,
+    pub options: IndexMap<String, OptionDecl>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GroupOption {
+    pub description: Option<String>,
+    /// member name → value
+    pub values: IndexMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GroupDecl {
+    pub description: Option<String>,
+    pub members: Vec<String>,
+    pub options: IndexMap<String, GroupOption>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct VarModel {
+    pub vars: IndexMap<String, VarDecl>,
+    pub groups: IndexMap<String, GroupDecl>,
+}
+
+/// Flat env values plus raw option override tables, interpreted against a
+/// `VarModel` elsewhere.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct EnvData {
+    pub values: IndexMap<String, String>,
+    /// name → key → field/member → string
+    pub options: IndexMap<String, IndexMap<String, IndexMap<String, String>>>,
+}
+
+#[derive(thiserror::Error, Debug, Clone, PartialEq)]
+pub enum ModelError {
+    #[error("could not parse TOML: {0}")]
+    Toml(String),
+    #[error(
+        "\"{0}\" is a reserved name and can't be used for a variable or group; rename it to something else"
+    )]
+    ReservedName(String),
+    #[error(
+        "\"{0}\" is not a valid name; use only ASCII letters, digits, `_`, and `-`, and make it non-empty"
+    )]
+    InvalidName(String),
+    #[error("\"{0}\" is declared as both a variable and a group; rename one so the name is unique")]
+    NameCollision(String),
+    #[error("\"{0}\" must be a table, e.g. [{0}]")]
+    NotATable(String),
+    #[error("[{table}] has unknown field \"{field}\"; remove it or fix the typo")]
+    UnknownField { table: String, field: String },
+    #[error("[{table}] field \"{field}\" must be a string")]
+    NotAString { table: String, field: String },
+    #[error("[{table}] field \"{field}\" must be a boolean (true or false)")]
+    NotABool { table: String, field: String },
+    #[error("[{table}] field \"members\" must be an array of variable names")]
+    MembersNotArray { table: String },
+    #[error("[groups.{group}] is missing required field \"members\"")]
+    MissingMembers { group: String },
+    #[error("[{table}] is missing required field \"value\"")]
+    MissingValue { table: String },
+    #[error(
+        "variable \"{0}\" is secret = true and also sets a default; remove default so no secret value is committed to variables.toml"
+    )]
+    SecretWithDefault(String),
+    #[error(
+        "variable \"{0}\" is secret = true and also declares options; remove options so no secret value is committed to variables.toml"
+    )]
+    SecretWithOptions(String),
+    #[error(
+        "group \"{group}\" member \"{member}\" declares its own [options]; give the option values on the group instead"
+    )]
+    MemberHasOptions { group: String, member: String },
+    #[error(
+        "group \"{group}\" member \"{member}\" is declared secret = true; a secret can't be a group member"
+    )]
+    MemberIsSecret { group: String, member: String },
+    #[error(
+        "variable \"{var}\" belongs to both group \"{first}\" and group \"{second}\"; a variable can only belong to one group"
+    )]
+    VariableInMultipleGroups {
+        var: String,
+        first: String,
+        second: String,
+    },
+    #[error("[options.{0}] must be a table (e.g. [options.{0}.<key>]); found a non-table value")]
+    OptionsNotTable(String),
+}
+
+// ---------------------------------------------------------------------
+// variables.toml
+// ---------------------------------------------------------------------
+
+const RESERVED_NAMES: [&str; 2] = ["options", "groups"];
+
+fn is_reserved(name: &str) -> bool {
+    RESERVED_NAMES.contains(&name)
+}
+
+fn check_name(name: &str) -> Result<(), ModelError> {
+    if is_reserved(name) {
+        return Err(ModelError::ReservedName(name.to_string()));
+    }
+    if !crate::vars::is_valid_var_name(name) {
+        return Err(ModelError::InvalidName(name.to_string()));
+    }
+    Ok(())
+}
+
+fn as_table<'a>(
+    value: &'a toml::Value,
+    table_path: &str,
+) -> Result<&'a toml::map::Map<String, toml::Value>, ModelError> {
+    value
+        .as_table()
+        .ok_or_else(|| ModelError::NotATable(table_path.to_string()))
+}
+
+fn get_string(
+    table: &toml::map::Map<String, toml::Value>,
+    field: &str,
+    table_path: &str,
+) -> Result<Option<String>, ModelError> {
+    match table.get(field) {
+        None => Ok(None),
+        Some(v) => v
+            .as_str()
+            .map(|s| Some(s.to_string()))
+            .ok_or_else(|| ModelError::NotAString {
+                table: table_path.to_string(),
+                field: field.to_string(),
+            }),
+    }
+}
+
+fn get_bool(
+    table: &toml::map::Map<String, toml::Value>,
+    field: &str,
+    table_path: &str,
+) -> Result<bool, ModelError> {
+    match table.get(field) {
+        None => Ok(false),
+        Some(v) => v.as_bool().ok_or_else(|| ModelError::NotABool {
+            table: table_path.to_string(),
+            field: field.to_string(),
+        }),
+    }
+}
+
+fn check_unknown_fields(
+    table: &toml::map::Map<String, toml::Value>,
+    allowed: &[&str],
+    table_path: &str,
+) -> Result<(), ModelError> {
+    for key in table.keys() {
+        if !allowed.contains(&key.as_str()) {
+            return Err(ModelError::UnknownField {
+                table: table_path.to_string(),
+                field: key.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn parse_option_decl(value: &toml::Value, table_path: &str) -> Result<OptionDecl, ModelError> {
+    let table = as_table(value, table_path)?;
+    check_unknown_fields(table, &["description", "value"], table_path)?;
+    let description = get_string(table, "description", table_path)?;
+    let value =
+        get_string(table, "value", table_path)?.ok_or_else(|| ModelError::MissingValue {
+            table: table_path.to_string(),
+        })?;
+    Ok(OptionDecl { description, value })
+}
+
+fn parse_var_options(
+    value: &toml::Value,
+    var_name: &str,
+) -> Result<IndexMap<String, OptionDecl>, ModelError> {
+    let table_path = format!("{var_name}.options");
+    let table = as_table(value, &table_path)?;
+    let mut out = IndexMap::new();
+    for (key, v) in table {
+        check_name(key)?;
+        let entry_path = format!("{table_path}.{key}");
+        out.insert(key.clone(), parse_option_decl(v, &entry_path)?);
+    }
+    Ok(out)
+}
+
+fn parse_var_decl(value: &toml::Value, var_name: &str) -> Result<VarDecl, ModelError> {
+    let table = as_table(value, var_name)?;
+    check_unknown_fields(
+        table,
+        &["description", "default", "secret", "options"],
+        var_name,
+    )?;
+    let description = get_string(table, "description", var_name)?;
+    let default = get_string(table, "default", var_name)?;
+    let secret = get_bool(table, "secret", var_name)?;
+    let options = match table.get("options") {
+        None => IndexMap::new(),
+        Some(v) => parse_var_options(v, var_name)?,
+    };
+    if secret && default.is_some() {
+        return Err(ModelError::SecretWithDefault(var_name.to_string()));
+    }
+    if secret && !options.is_empty() {
+        return Err(ModelError::SecretWithOptions(var_name.to_string()));
+    }
+    Ok(VarDecl {
+        description,
+        default,
+        secret,
+        options,
+    })
+}
+
+fn parse_group_option(value: &toml::Value, table_path: &str) -> Result<GroupOption, ModelError> {
+    let table = as_table(value, table_path)?;
+    let description = get_string(table, "description", table_path)?;
+    let mut values = IndexMap::new();
+    for (key, v) in table {
+        if key == "description" {
+            continue;
+        }
+        let value = v.as_str().ok_or_else(|| ModelError::NotAString {
+            table: table_path.to_string(),
+            field: key.clone(),
+        })?;
+        values.insert(key.clone(), value.to_string());
+    }
+    Ok(GroupOption {
+        description,
+        values,
+    })
+}
+
+fn parse_group_decl(value: &toml::Value, group_name: &str) -> Result<GroupDecl, ModelError> {
+    let table_path = format!("groups.{group_name}");
+    let table = as_table(value, &table_path)?;
+    check_unknown_fields(table, &["description", "members", "options"], &table_path)?;
+    let description = get_string(table, "description", &table_path)?;
+    let members_value = table
+        .get("members")
+        .ok_or_else(|| ModelError::MissingMembers {
+            group: group_name.to_string(),
+        })?;
+    let members_array = members_value
+        .as_array()
+        .ok_or_else(|| ModelError::MembersNotArray {
+            table: table_path.clone(),
+        })?;
+    let mut members = Vec::new();
+    for m in members_array {
+        let name = m.as_str().ok_or_else(|| ModelError::MembersNotArray {
+            table: table_path.clone(),
+        })?;
+        check_name(name)?;
+        members.push(name.to_string());
+    }
+    let mut options = IndexMap::new();
+    if let Some(opts_value) = table.get("options") {
+        let opts_table = as_table(opts_value, &format!("{table_path}.options"))?;
+        for (key, v) in opts_table {
+            check_name(key)?;
+            let entry_path = format!("{table_path}.options.{key}");
+            options.insert(key.clone(), parse_group_option(v, &entry_path)?);
+        }
+    }
+    Ok(GroupDecl {
+        description,
+        members,
+        options,
+    })
+}
+
+pub fn parse_variables(s: &str) -> Result<VarModel, ModelError> {
+    let top: IndexMap<String, toml::Value> =
+        toml::from_str(s).map_err(|e| ModelError::Toml(e.to_string()))?;
+
+    let mut vars = IndexMap::new();
+    for (name, value) in &top {
+        if name == "groups" {
+            continue;
+        }
+        check_name(name)?;
+        vars.insert(name.clone(), parse_var_decl(value, name)?);
+    }
+
+    let mut groups = IndexMap::new();
+    // member name -> group name that has already claimed it
+    let mut member_owner: IndexMap<String, String> = IndexMap::new();
+    if let Some(groups_value) = top.get("groups") {
+        let groups_table = as_table(groups_value, "groups")?;
+        for (group_name, value) in groups_table {
+            // A flat (non-table) entry under `[groups]` means someone tried
+            // to use the reserved name "groups" as a plain variable table
+            // (e.g. `[groups]\ndefault = "x"`) rather than declaring a
+            // nested `[groups.<name>]`.
+            if value.as_table().is_none() {
+                return Err(ModelError::ReservedName("groups".to_string()));
+            }
+            check_name(group_name)?;
+            if vars.contains_key(group_name) {
+                return Err(ModelError::NameCollision(group_name.clone()));
+            }
+            let decl = parse_group_decl(value, group_name)?;
+            for member in &decl.members {
+                if let Some(existing) = member_owner.get(member) {
+                    return Err(ModelError::VariableInMultipleGroups {
+                        var: member.clone(),
+                        first: existing.clone(),
+                        second: group_name.clone(),
+                    });
+                }
+                member_owner.insert(member.clone(), group_name.clone());
+                if let Some(var_decl) = vars.get(member) {
+                    if !var_decl.options.is_empty() {
+                        return Err(ModelError::MemberHasOptions {
+                            group: group_name.clone(),
+                            member: member.clone(),
+                        });
+                    }
+                    if var_decl.secret {
+                        return Err(ModelError::MemberIsSecret {
+                            group: group_name.clone(),
+                            member: member.clone(),
+                        });
+                    }
+                }
+            }
+            groups.insert(group_name.clone(), decl);
+        }
+    }
+
+    Ok(VarModel { vars, groups })
+}
+
+// ---------------------------------------------------------------------
+// environments/<env>.toml
+// ---------------------------------------------------------------------
+
+pub fn parse_environment(s: &str) -> Result<EnvData, ModelError> {
+    let top: IndexMap<String, toml::Value> =
+        toml::from_str(s).map_err(|e| ModelError::Toml(e.to_string()))?;
+
+    let mut values = IndexMap::new();
+    let mut options = IndexMap::new();
+
+    for (key, value) in &top {
+        if key == "options" {
+            let opts_table = as_table(value, "options")?;
+            for (name, name_value) in opts_table {
+                let name_table = name_value
+                    .as_table()
+                    .ok_or_else(|| ModelError::OptionsNotTable(name.clone()))?;
+                let mut per_name = IndexMap::new();
+                for (opt_key, opt_value) in name_table {
+                    let entry_path = format!("options.{name}.{opt_key}");
+                    let entry_table = as_table(opt_value, &entry_path)?;
+                    let mut fields = IndexMap::new();
+                    for (field, field_value) in entry_table {
+                        let s = field_value.as_str().ok_or_else(|| ModelError::NotAString {
+                            table: entry_path.clone(),
+                            field: field.clone(),
+                        })?;
+                        fields.insert(field.clone(), s.to_string());
+                    }
+                    per_name.insert(opt_key.clone(), fields);
+                }
+                options.insert(name.clone(), per_name);
+            }
+            continue;
+        }
+        let s = value.as_str().ok_or_else(|| ModelError::NotAString {
+            table: "<root>".to_string(),
+            field: key.clone(),
+        })?;
+        values.insert(key.clone(), s.to_string());
+    }
+
+    Ok(EnvData { values, options })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_simple_secret_enumerated_and_group() {
+        let m = parse_variables(
+            r#"
+[base_url]
+description = "API root"
+default = "http://localhost:8080"
+
+[api_key]
+secret = true
+
+[user]
+[user.options.alice]
+description = "admin"
+value = "1001"
+[user.options.bob]
+value = "2002"
+
+[groups.test-user]
+members = ["user_id", "customer_id"]
+[groups.test-user.options.alice]
+user_id = "1001"
+customer_id = "c-77"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            m.vars["user"].options.keys().collect::<Vec<_>>(),
+            ["alice", "bob"]
+        );
+        assert!(m.vars["api_key"].secret);
+        assert_eq!(m.groups["test-user"].members, ["user_id", "customer_id"]);
+        assert_eq!(
+            m.groups["test-user"].options["alice"].values["customer_id"],
+            "c-77"
+        );
+    }
+
+    #[test]
+    fn base_url_decl_fields_are_captured() {
+        let m = parse_variables(
+            r#"
+[base_url]
+description = "API root"
+default = "http://localhost:8080"
+"#,
+        )
+        .unwrap();
+        let decl = &m.vars["base_url"];
+        assert_eq!(decl.description.as_deref(), Some("API root"));
+        assert_eq!(decl.default.as_deref(), Some("http://localhost:8080"));
+        assert!(!decl.secret);
+        assert!(decl.options.is_empty());
+    }
+
+    #[test]
+    fn variable_named_options_is_rejected() {
+        let err = parse_variables(
+            r#"
+[options]
+default = "x"
+"#,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            ModelError::ReservedName("options".into()).to_string()
+        );
+        assert!(err.to_string().contains("reserved"));
+    }
+
+    #[test]
+    fn variable_named_groups_is_rejected() {
+        // `[groups]` is always the group container; a flat field under it
+        // (as if declaring a variable named "groups") is rejected the same
+        // way as `[options]` above.
+        let err = parse_variables(
+            r#"
+[groups]
+default = "x"
+"#,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            ModelError::ReservedName("groups".into()).to_string()
+        );
+        assert!(err.to_string().contains("reserved"));
+    }
+
+    #[test]
+    fn group_name_colliding_with_variable_name_is_rejected() {
+        let err = parse_variables(
+            r#"
+[widget]
+default = "x"
+
+[groups.widget]
+members = ["thing"]
+"#,
+        )
+        .unwrap_err();
+        assert_eq!(err, ModelError::NameCollision("widget".into()));
+        assert!(err.to_string().contains("widget"));
+        assert!(err.to_string().to_lowercase().contains("both"));
+    }
+
+    #[test]
+    fn member_with_its_own_options_is_rejected() {
+        let err = parse_variables(
+            r#"
+[session_id]
+[session_id.options.x]
+value = "1"
+
+[groups.auth_group]
+members = ["session_id"]
+"#,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            ModelError::MemberHasOptions {
+                group: "auth_group".into(),
+                member: "session_id".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn member_declared_secret_is_rejected() {
+        let err = parse_variables(
+            r#"
+[api_key]
+secret = true
+
+[groups.creds]
+members = ["api_key"]
+"#,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            ModelError::MemberIsSecret {
+                group: "creds".into(),
+                member: "api_key".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn variable_in_two_groups_is_rejected() {
+        let err = parse_variables(
+            r#"
+[groups.team_a]
+members = ["shared_id"]
+
+[groups.team_b]
+members = ["shared_id"]
+"#,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            ModelError::VariableInMultipleGroups {
+                var: "shared_id".into(),
+                first: "team_a".into(),
+                second: "team_b".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn secret_with_default_is_rejected() {
+        let err = parse_variables(
+            r#"
+[token]
+secret = true
+default = "x"
+"#,
+        )
+        .unwrap_err();
+        assert_eq!(err, ModelError::SecretWithDefault("token".into()));
+        assert!(err.to_string().contains("token"));
+        assert!(err.to_string().contains("default"));
+    }
+
+    #[test]
+    fn secret_with_options_is_rejected() {
+        let err = parse_variables(
+            r#"
+[token]
+secret = true
+[token.options.x]
+value = "1"
+"#,
+        )
+        .unwrap_err();
+        assert_eq!(err, ModelError::SecretWithOptions("token".into()));
+        assert!(err.to_string().contains("token"));
+        assert!(err.to_string().contains("options"));
+    }
+
+    #[test]
+    fn invalid_variable_name_is_rejected() {
+        let err = parse_variables(
+            r#"
+["bad name!"]
+default = "x"
+"#,
+        )
+        .unwrap_err();
+        assert_eq!(err, ModelError::InvalidName("bad name!".into()));
+        assert!(err.to_string().contains("bad name!"));
+    }
+
+    #[test]
+    fn invalid_option_key_name_is_rejected() {
+        let err = parse_variables(
+            r#"
+[widget]
+[widget.options."bad key!"]
+value = "1"
+"#,
+        )
+        .unwrap_err();
+        assert_eq!(err, ModelError::InvalidName("bad key!".into()));
+        assert!(err.to_string().contains("bad key!"));
+    }
+
+    #[test]
+    fn unknown_field_in_variable_table_is_rejected() {
+        let err = parse_variables(
+            r#"
+[widget]
+color = "blue"
+"#,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            ModelError::UnknownField {
+                table: "widget".into(),
+                field: "color".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn env_flat_pairs_and_options_tables_parse() {
+        let e = parse_environment(
+            r#"
+base_url = "https://qa.example.com"
+
+[options.user.alice]
+value = "9001"
+[options.user.qa-only]
+description = "exists only in qa"
+value = "3003"
+[options.test-user.alice]
+user_id = "9001"
+"#,
+        )
+        .unwrap();
+        assert_eq!(e.values["base_url"], "https://qa.example.com");
+        assert_eq!(e.options["user"]["alice"]["value"], "9001");
+        assert_eq!(
+            e.options["user"]["qa-only"]["description"],
+            "exists only in qa"
+        );
+        assert_eq!(e.options["test-user"]["alice"]["user_id"], "9001");
+    }
+
+    #[test]
+    fn env_non_table_under_options_errors() {
+        let err = parse_environment(
+            r#"
+[options]
+user = "not-a-table"
+"#,
+        )
+        .unwrap_err();
+        assert_eq!(err, ModelError::OptionsNotTable("user".into()));
+        assert!(err.to_string().contains("options.user"));
+    }
+
+    #[test]
+    fn env_non_string_flat_value_errors() {
+        let err = parse_environment(
+            r#"
+base_url = 123
+"#,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            ModelError::NotAString {
+                table: "<root>".into(),
+                field: "base_url".into(),
+            }
+        );
+        assert!(err.to_string().contains("base_url"));
+    }
+}
