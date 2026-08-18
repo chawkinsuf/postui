@@ -2305,6 +2305,45 @@ fn insert_picker_new_variable_confirm_creates_the_var_and_inserts_at_the_origina
 }
 
 #[test]
+fn insert_picker_new_variable_confirm_with_a_reserved_name_toasts_and_inserts_nothing() {
+    // Review finding: apply_modal_result used to dispatch every action in a
+    // ModalResult unconditionally, so a failed NewVar (reserved/invalid/
+    // colliding name — LineInput doesn't restrict characters) still ran the
+    // InsertVarText that followed it, leaving a `{{options}}` token
+    // referencing a variable that was never declared.
+    let mut app = app_with_vars();
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Url;
+    app.editor.url = crate::components::line_input::LineInput::new("https://x/?a=1");
+    app.editor.url.set_cursor(10);
+    app.update(Action::OpenVarPicker { completing: false });
+    let keymap = Keymap::default_bindings();
+    for c in "options".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(app.modals.is_empty(), "the prompt still closes on Enter");
+    assert!(!app.toasts.is_empty(), "the reserved-name error toasts");
+    assert_eq!(
+        app.editor.url.text(),
+        "https://x/?a=1",
+        "no {{options}} token — the insert must not run after NewVar failed"
+    );
+    assert!(
+        !app.project.model.vars.contains_key("options"),
+        "\"options\" must not be declared — it's a reserved name"
+    );
+    let saved = postui_core::project::load_variables(&app.project.root).unwrap();
+    assert!(
+        !saved.vars.contains_key("options"),
+        "variables.toml on disk must be unchanged"
+    );
+}
+
+#[test]
 fn click_editor_tab_selects_it() {
     // Draw order is Params, Headers, Vars, Body — position 2 is Vars.
     let mut app = App::new_for_test();

@@ -106,6 +106,13 @@ pub struct App {
     /// The most recent left-click's hit and when it landed, used to detect
     /// a double-click (same hit, within 400ms).
     last_click: Option<(Hit, std::time::Instant)>,
+    /// Set by `Action::VarStruct`'s handler when `apply_var_struct` returns
+    /// `Err` (and cleared before every action `update` dispatches), so
+    /// `apply_modal_result` can stop a sequenced `ModalResult` — e.g.
+    /// `PromptKind::NewVariableAndInsert`'s `[NewVar, InsertVarText]` — from
+    /// running its later actions after an earlier one failed. Nothing else
+    /// reads or sets this; every other action leaves it `false`.
+    last_action_failed: bool,
     /// Keeps the test-only channel's receiver alive so `tx` doesn't become
     /// a dangling sender in `App::new_for_test()`. Always `None` outside
     /// of tests.
@@ -365,6 +372,7 @@ impl App {
             drag: None,
             table_collapsed: false,
             last_click: None,
+            last_action_failed: false,
             _test_rx: None,
             _test_dir: None,
         }
@@ -1451,7 +1459,10 @@ impl App {
                             .min(self.project.environments.len());
                         self.varmanager.ensure_visible = true;
                     }
-                    Err(msg) => self.toasts.push(msg, ToastKind::Error),
+                    Err(msg) => {
+                        self.toasts.push(msg, ToastKind::Error);
+                        self.last_action_failed = true;
+                    }
                 }
                 true
             }
@@ -1827,7 +1838,11 @@ impl App {
     /// §5's action list; §4's promote/demote; §3's secret-flag
     /// transitions). `Err(msg)` — safe to toast, never a secret value —
     /// leaves everything unchanged; the caller (`Action::VarStruct`) never
-    /// clears any modal/editing state on failure of its own accord.
+    /// clears any modal/editing state on failure of its own accord, and
+    /// also sets `last_action_failed` so `apply_modal_result` breaks off a
+    /// sequenced `ModalResult` before running any action after this one
+    /// (e.g. `PromptKind::NewVariableAndInsert`'s trailing `InsertVarText`,
+    /// which must never fire for a variable that failed to declare).
     fn apply_var_struct(&mut self, op: &VarStructOp) -> Result<(), String> {
         use postui_core::varedit;
         use postui_core::vars::is_valid_var_name;
@@ -2291,6 +2306,13 @@ impl App {
     /// actions, exactly like the key path used to inline — shared by
     /// `handle_key`'s modal branch and `on_hit`'s modal click arms so a
     /// click and the equivalent keypress can never disagree.
+    ///
+    /// Stops dispatching the remaining actions the moment one of them is a
+    /// failed `Action::VarStruct` (`last_action_failed`) — a sequenced
+    /// result like `PromptKind::NewVariableAndInsert`'s `[NewVar,
+    /// InsertVarText]` must not run its later, dependent actions (e.g.
+    /// inserting a `{{name}}` token) after the mutation they depend on
+    /// (declaring `name`) was refused.
     fn apply_modal_result(&mut self, res: ModalResult) -> bool {
         let mut changed = res.close;
         if res.close {
@@ -2300,7 +2322,11 @@ impl App {
             self.usage.record(id, crate::usage::now());
         }
         for a in res.actions {
+            self.last_action_failed = false;
             changed |= self.update(a);
+            if self.last_action_failed {
+                break;
+            }
         }
         changed
     }

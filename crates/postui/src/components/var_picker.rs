@@ -712,6 +712,47 @@ mod tests {
     }
 
     #[test]
+    fn insert_entries_merges_a_name_declared_at_both_project_and_request_scope_into_one_row() {
+        let mut model = postui_core::varmodel::VarModel::default();
+        model.vars.insert(
+            "trace_id".to_string(),
+            postui_core::varmodel::VarDecl {
+                description: Some("project-level default".to_string()),
+                default: Some("proj-value".to_string()),
+                secret: false,
+                options: indexmap::IndexMap::new(),
+            },
+        );
+        let mut resolved = indexmap::IndexMap::new();
+        resolved.insert("trace_id".to_string(), "proj-value".to_string());
+        let mut request_vars = indexmap::IndexMap::new();
+        request_vars.insert(
+            "trace_id".to_string(),
+            postui_core::model::Entry {
+                value: "req-value".to_string(),
+                enabled: true,
+            },
+        );
+
+        let entries = insert_entries(&model, &resolved, &request_vars);
+
+        assert_eq!(
+            entries.len(),
+            1,
+            "one name defined at two scopes is one row, not two"
+        );
+        let entry = &entries[0];
+        assert_eq!(entry.name, "trace_id");
+        assert_eq!(entry.scope, VarScope::Request, "request shadows project");
+        assert_eq!(
+            entry.value.as_deref(),
+            Some("req-value"),
+            "the request's own value wins, not the resolved project value"
+        );
+        assert!(!entry.secret);
+    }
+
+    #[test]
     fn enter_emits_completion_or_full_token() {
         let entries = vec![var_entry("base_url", None, Some("x"))];
         let mut p = VarPickerState::new(entries.clone(), true);
