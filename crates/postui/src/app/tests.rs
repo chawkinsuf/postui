@@ -4199,3 +4199,170 @@ fn prompt_new_group_comma_syntax_parses_name_and_members() {
         vec!["user_id".to_string(), "customer_id".to_string()]
     );
 }
+
+// --- Task 14: selection-context picker ---------------------------------
+
+fn group_project(dir: &std::path::Path) {
+    postui_core::project::init_project(dir, Some("demo")).unwrap();
+    std::fs::write(
+        dir.join("variables.toml"),
+        r#"
+[groups.identity]
+description = "identity"
+members = ["user_id", "customer_id"]
+
+[groups.identity.options.alice]
+description = "admin"
+user_id = "1001"
+customer_id = "c-77"
+
+[groups.identity.options.bob]
+description = "reader"
+user_id = "1002"
+customer_id = "c-78"
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.join("environments/qa.toml"), "").unwrap();
+    postui_core::project::save_local_state(
+        dir,
+        &postui_core::project::LocalState {
+            environment: Some("qa".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+}
+
+/// Places `app.editor.url` at `url` with the caret inside the first
+/// occurrence of `token` (used to land the caret on a `{{name}}`) and
+/// focuses it, as if the user had clicked/typed their way there.
+fn focus_url_with_cursor_on(app: &mut App, url: &str, token: &str) {
+    let mid = url.find(token).unwrap() + token.len() / 2;
+    let mut input = crate::components::line_input::LineInput::new(url);
+    input.set_cursor(mid);
+    app.editor.url = input;
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Url;
+}
+
+#[test]
+fn ctrl_v_on_enumerated_token_opens_select_option_with_checkmark() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.project.set_selection_for("qa", "user", "alice");
+
+    focus_url_with_cursor_on(&mut app, "https://x/{{user}}", "{{user}}");
+    app.update(Action::OpenVarPicker { completing: false });
+
+    let Some(Modal::VarPicker(p)) = app.modals.top() else {
+        panic!("expected the selection-context picker to open")
+    };
+    assert_eq!(
+        p.mode,
+        crate::components::var_picker::PickerMode::SelectOption {
+            name: "user".into(),
+            group: None,
+        }
+    );
+
+    let content = rendered_text(&mut app);
+    assert!(content.contains("alice"), "{content}");
+    assert!(content.contains("bob"), "{content}");
+    assert!(content.contains("1001"), "{content}");
+    assert!(
+        content.contains("\u{2713}"),
+        "current pick is checked: {content}"
+    );
+}
+
+#[test]
+fn ctrl_v_on_group_member_token_shows_the_group_s_options_with_full_preview() {
+    let dir = tempfile::tempdir().unwrap();
+    group_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    focus_url_with_cursor_on(&mut app, "https://x/{{user_id}}", "{{user_id}}");
+    app.update(Action::OpenVarPicker { completing: false });
+
+    let Some(Modal::VarPicker(p)) = app.modals.top() else {
+        panic!("expected the selection-context picker to open")
+    };
+    assert_eq!(
+        p.mode,
+        crate::components::var_picker::PickerMode::SelectOption {
+            name: "user_id".into(),
+            group: Some("identity".into()),
+        }
+    );
+
+    let content = rendered_text(&mut app);
+    assert!(content.contains("alice"), "{content}");
+    assert!(content.contains("admin"), "{content}");
+    assert!(content.contains("user_id 1001"), "{content}");
+    assert!(content.contains("customer_id c-77"), "{content}");
+}
+
+#[test]
+fn select_option_enter_writes_selection_to_state_toml_and_leaves_url_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let keymap = Keymap::default_bindings();
+
+    let url = "https://x/{{user}}";
+    focus_url_with_cursor_on(&mut app, url, "{{user}}");
+    app.update(Action::OpenVarPicker { completing: false });
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(app.modals.is_empty());
+    assert_eq!(app.editor.url.text(), url, "token text must be untouched");
+    assert_eq!(app.project.selections_for("qa")["user"], "alice");
+
+    let state = postui_core::project::load_local_state(dir.path()).unwrap();
+    assert_eq!(state.selections["qa"]["user"], "alice");
+
+    assert!(
+        rendered_text(&mut app).contains("user \u{2192} alice (qa)"),
+        "confirm toasts the selection"
+    );
+}
+
+#[test]
+fn select_option_typing_filters_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let keymap = Keymap::default_bindings();
+
+    focus_url_with_cursor_on(&mut app, "https://x/{{user}}", "{{user}}");
+    app.update(Action::OpenVarPicker { completing: false });
+    for c in "bob".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(app.project.selections_for("qa")["user"], "bob");
+}
+
+#[test]
+fn blocked_send_toast_names_first_needs_selection_var_with_a_ctrl_v_hint() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    postui_core::storage::save_request(dir.path(), "r", &req("https://x/{{user}}")).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("r".into()));
+
+    app.update(Action::ForceSend);
+
+    assert!(app.session.in_flight.is_none());
+    let content = rendered_text(&mut app);
+    assert!(content.contains("need a selection"), "{content}");
+    assert!(content.contains("press ctrl+v to select user"), "{content}");
+}

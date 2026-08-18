@@ -884,10 +884,23 @@ impl App {
                     &self.project.prepare_context(),
                 ) {
                     Ok(x) => x,
-                    Err(err @ postui_core::prepare::PrepareError::Unresolved(_)) => {
+                    Err(postui_core::prepare::PrepareError::Unresolved(causes)) => {
                         let label = self.project.env_label();
-                        self.toasts
-                            .push(format!("{err} ({label})"), ToastKind::Error);
+                        let mut msg = format!(
+                            "{} ({label})",
+                            postui_core::prepare::PrepareError::Unresolved(causes.clone())
+                        );
+                        // Name the first (alphabetically — `causes` is a
+                        // `BTreeMap`) variable that just needs a pick, not
+                        // a fix, so `ctrl+v` is a visible next step rather
+                        // than a dead end.
+                        if let Some(name) = causes.iter().find_map(|(name, cause)| {
+                            (*cause == postui_core::prepare::UnresolvedCause::NeedsSelection)
+                                .then(|| name.clone())
+                        }) {
+                            msg.push_str(&format!(" \u{2014} press ctrl+v to select {name}"));
+                        }
+                        self.toasts.push(msg, ToastKind::Error);
                         return true;
                     }
                 };
@@ -1211,6 +1224,14 @@ impl App {
             }
             Action::OpenVarPicker { completing } => {
                 self.apply(Action::ReloadProjectFiles);
+                if !completing
+                    && let Some((text, cursor)) =
+                        self.focused_field_text().map(|(t, c)| (t.to_string(), c))
+                    && let Some((name, group)) =
+                        Self::selection_picker_target(&self.project, &text, cursor)
+                {
+                    return self.open_select_picker(name, group);
+                }
                 if self.project.model.vars.is_empty() {
                     self.toasts.push(
                         "no variables declared — edit variables.toml",
@@ -1440,6 +1461,149 @@ impl App {
                 true
             }
         }
+    }
+
+    /// The `(text, cursor)` of whichever plain text field currently holds
+    /// the caret — the URL line or a table cell under edit — for
+    /// cursor-on-token detection (spec §6's first picker context). `None`
+    /// when focus is elsewhere (a different pane, the Body tab's edtui
+    /// buffer, or a table row that's selected but not under edit).
+    fn focused_field_text(&self) -> Option<(&str, usize)> {
+        if self.focus != PaneId::Editor {
+            return None;
+        }
+        if self.editor.sub_focus == SubFocus::Url {
+            return Some((self.editor.url.text(), self.editor.url.cursor()));
+        }
+        if self.editor.sub_focus == SubFocus::Content
+            && let Some(edit) = &self.editor.table.editing
+        {
+            return Some((edit.input.text(), edit.input.cursor()));
+        }
+        None
+    }
+
+    /// Whether `cursor` (a char index into `text`) sits on a `{{name}}`
+    /// token whose name is enumerated-or-group-member in the active env
+    /// (spec §6's cursor-on-token rule) — and if so, the `(name, group)`
+    /// pair `PickerMode::SelectOption` wants: `name` is the token's own
+    /// name; `group` is the owning group's name for a group member,
+    /// `None` for a plain enumerated variable. `None` when the cursor
+    /// isn't on a token, or the token's name doesn't resolve to either
+    /// shape (a simple/secret/undeclared name — `ctrl+v` there falls back
+    /// to ordinary `Insert` autocomplete).
+    fn selection_picker_target(
+        ctx: &ProjectContext,
+        text: &str,
+        cursor: usize,
+    ) -> Option<(String, Option<String>)> {
+        let byte_off = text
+            .char_indices()
+            .nth(cursor)
+            .map(|(b, _)| b)
+            .unwrap_or(text.len());
+        let token = postui_core::vars::find_tokens(text)
+            .into_iter()
+            .find(|t| byte_off >= t.start && byte_off <= t.end)?;
+        use postui_core::varmodel::VarMeta;
+        match ctx.resolved.meta.get(&token.name) {
+            Some(VarMeta::Enumerated { .. }) => Some((token.name, None)),
+            Some(VarMeta::GroupMember { group, .. }) => Some((token.name, Some(group.clone()))),
+            Some(VarMeta::NeedsSelection) => {
+                if ctx.model.vars.contains_key(&token.name) {
+                    Some((token.name, None))
+                } else {
+                    let group = ctx
+                        .model
+                        .groups
+                        .iter()
+                        .find(|(_, g)| g.members.contains(&token.name))
+                        .map(|(n, _)| n.clone())?;
+                    Some((token.name, Some(group)))
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Builds and opens the `SelectOption` picker (spec §6's first
+    /// context) for `name` (a group member when `group` is `Some`): rows
+    /// are the merged options for the active env, `key  description
+    /// value` for a plain variable or a full per-member preview line for
+    /// a group, current selection marked with a ✓.
+    fn open_select_picker(&mut self, name: String, group: Option<String>) -> bool {
+        use crate::components::modal::Modal;
+        use crate::components::var_picker::{SelectEntry, VarPickerState};
+        use postui_core::varmodel;
+
+        let owner = group.clone().unwrap_or_else(|| name.clone());
+        let env_key = self.project.active_env.clone().unwrap_or_default();
+        let entries: Vec<SelectEntry> = if let Some(group_name) = &group {
+            let opts = varmodel::merged_group_options(
+                &self.project.model,
+                &self.project.env_data,
+                group_name,
+            );
+            let members: Vec<String> = self
+                .project
+                .model
+                .groups
+                .get(group_name)
+                .map(|g| g.members.clone())
+                .unwrap_or_default();
+            let selected_key = self
+                .project
+                .selections_for(&env_key)
+                .get(group_name)
+                .cloned();
+            opts.into_iter()
+                .map(|(key, opt)| {
+                    let mut parts: Vec<String> = Vec::new();
+                    if let Some(desc) = &opt.description {
+                        parts.push(desc.clone());
+                    }
+                    for m in &members {
+                        if let Some(v) = opt.values.get(m) {
+                            parts.push(format!("{m} {v}"));
+                        }
+                    }
+                    let selected = selected_key.as_deref() == Some(key.as_str());
+                    SelectEntry {
+                        key,
+                        description: None,
+                        value: None,
+                        preview: Some(parts.join(" \u{b7} ")),
+                        selected,
+                    }
+                })
+                .collect()
+        } else {
+            let opts =
+                varmodel::merged_var_options(&self.project.model, &self.project.env_data, &name);
+            let selected_key = self.project.selections_for(&env_key).get(&name).cloned();
+            opts.into_iter()
+                .map(|(key, opt)| {
+                    let selected = selected_key.as_deref() == Some(key.as_str());
+                    SelectEntry {
+                        key,
+                        description: opt.description.clone(),
+                        value: Some(opt.value.clone()),
+                        preview: None,
+                        selected,
+                    }
+                })
+                .collect()
+        };
+        if entries.is_empty() {
+            self.toasts
+                .push(format!("{owner} has no options"), ToastKind::Warning);
+            return true;
+        }
+        self.modals
+            .push(Modal::VarPicker(VarPickerState::new_select(
+                entries, name, group, env_key,
+            )));
+        true
     }
 
     /// Applies one committed Variable Manager op (spec §5), writing

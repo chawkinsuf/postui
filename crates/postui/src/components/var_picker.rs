@@ -1,6 +1,8 @@
 use super::chooser::clip;
 use super::palette::fuzzy_match;
 use crate::action::Action;
+use crate::components::toast::ToastKind;
+use crate::components::varmanager::VarEditOp;
 use crate::paint::{self, ControlState, FIELD_HEIGHT, PillRow, RowHighlight, TextField};
 use crate::theme::Theme;
 use ratatui::Frame;
@@ -19,20 +21,58 @@ pub struct VarEntry {
     pub value: Option<String>,
 }
 
-/// A fuzzy-filterable list of declared variables. Structure mirrors
-/// `ChooserState`: typed input filters `entries` by fuzzy-matching against
-/// `name + " " + description`; arrows move the selection; `Enter` inserts
-/// the picked variable's text and closes. `completing` distinguishes
-/// whether the picker was triggered mid-`{{` (Enter inserts just the
-/// closing `name}}`) or explicitly (Enter inserts the full `{{name}}`
-/// token); `Esc` always just closes — a typed `{{` that triggered the
-/// picker is left as literal text in that case.
+/// Which flow [`VarPickerState`] is running (spec §6's two picker
+/// contexts). `Insert` is today's autocomplete-over-all-names behavior
+/// (Task 15 upgrades its entries with scope badges). `SelectOption` is
+/// Task 14's second context: the cursor sat on an existing `{{name}}`
+/// token whose name resolves to an enumerated variable or a group member
+/// — `name` is that token's own name; `group` is the owning group's name
+/// for a group member (`None` for a plain enumerated variable). Either
+/// way the rows shown are the *options*, not the declared names, and
+/// `Enter` never touches the token text — it records a selection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PickerMode {
+    Insert,
+    SelectOption { name: String, group: Option<String> },
+}
+
+/// One option row, as offered by the `SelectOption` picker: its key,
+/// optional description, and either a single resolved `value` (a plain
+/// enumerated variable's option) or a pre-formatted `preview` line (a
+/// group option's per-member preview, e.g. "admin · user_id 1001 ·
+/// customer_id c-77") — never both. `selected` marks the env's current
+/// selection for this name/group with a ✓.
+#[derive(Clone)]
+pub struct SelectEntry {
+    pub key: String,
+    pub description: Option<String>,
+    pub value: Option<String>,
+    pub preview: Option<String>,
+    pub selected: bool,
+}
+
+/// A fuzzy-filterable list of declared variables (`Insert` mode) or of one
+/// variable's/group's options (`SelectOption` mode). Structure mirrors
+/// `ChooserState`: typed input filters the active list by fuzzy-matching;
+/// arrows move the selection; `Enter` confirms (inserts a token in
+/// `Insert` mode, records a selection in `SelectOption` mode) and closes.
+/// `completing` (only meaningful in `Insert` mode) distinguishes whether
+/// the picker was triggered mid-`{{` (Enter inserts just the closing
+/// `name}}`) or explicitly (Enter inserts the full `{{name}}` token);
+/// `Esc` always just closes — a typed `{{` that triggered the picker is
+/// left as literal text in that case.
 pub struct VarPickerState {
     input: String,
     selected: usize,
     entries: Vec<VarEntry>,
+    select_entries: Vec<SelectEntry>,
     filtered: Vec<usize>,
     pub completing: bool,
+    pub mode: PickerMode,
+    /// The active environment's name, captured at open — `SelectOption`
+    /// mode's target for `VarEditOp::Select` and its toast. Unused (empty)
+    /// in `Insert` mode.
+    env: String,
     /// First visible row's index into `filtered`. See `ChooserState` for the
     /// `ensure_visible` contract this mirrors.
     scroll: usize,
@@ -46,8 +86,36 @@ impl VarPickerState {
             input: String::new(),
             selected: 0,
             entries,
+            select_entries: Vec::new(),
             filtered,
             completing,
+            mode: PickerMode::Insert,
+            env: String::new(),
+            scroll: 0,
+            ensure_visible: true,
+        }
+    }
+
+    /// Opens `SelectOption` mode: `entries` are the merged options for
+    /// `name` (or, for a group member, its group — see [`PickerMode`]),
+    /// with the env's current selection already marked. `env` is the
+    /// active environment, captured for the `Enter` action.
+    pub fn new_select(
+        entries: Vec<SelectEntry>,
+        name: String,
+        group: Option<String>,
+        env: String,
+    ) -> Self {
+        let filtered = (0..entries.len()).collect();
+        Self {
+            input: String::new(),
+            selected: 0,
+            entries: Vec::new(),
+            select_entries: entries,
+            filtered,
+            completing: false,
+            mode: PickerMode::SelectOption { name, group },
+            env,
             scroll: 0,
             ensure_visible: true,
         }
@@ -70,17 +138,42 @@ impl VarPickerState {
     /// selection produces — `None` when nothing is selected.
     pub fn confirm(&self) -> Option<super::modal::ModalResult> {
         let &idx = self.filtered.get(self.selected)?;
-        let name = &self.entries[idx].name;
-        let text = if self.completing {
-            format!("{name}}}}}")
-        } else {
-            format!("{{{{{name}}}}}")
-        };
-        Some(super::modal::ModalResult {
-            actions: vec![Action::InsertVarText(text)],
-            close: true,
-            ..Default::default()
-        })
+        match &self.mode {
+            PickerMode::Insert => {
+                let name = &self.entries[idx].name;
+                let text = if self.completing {
+                    format!("{name}}}}}")
+                } else {
+                    format!("{{{{{name}}}}}")
+                };
+                Some(super::modal::ModalResult {
+                    actions: vec![Action::InsertVarText(text)],
+                    close: true,
+                    ..Default::default()
+                })
+            }
+            PickerMode::SelectOption { name, group } => {
+                // A group member's selection is recorded under the
+                // *group's* name (spec §1.2: one selection per group,
+                // shared by every member) — the token's own name is only
+                // for display (the picker's title).
+                let owner = group.clone().unwrap_or_else(|| name.clone());
+                let key = self.select_entries[idx].key.clone();
+                let toast = format!("{owner} \u{2192} {key} ({})", self.env);
+                Some(super::modal::ModalResult {
+                    actions: vec![
+                        Action::VarEdit(VarEditOp::Select {
+                            env: self.env.clone(),
+                            name: owner,
+                            key,
+                        }),
+                        Action::ShowToast(toast, ToastKind::Success),
+                    ],
+                    close: true,
+                    ..Default::default()
+                })
+            }
+        }
     }
 
     /// Adjusts `scroll` by `delta` lines, clamped, without moving
@@ -95,19 +188,39 @@ impl VarPickerState {
     }
 
     fn refilter(&mut self) {
-        self.filtered = self
-            .entries
-            .iter()
-            .enumerate()
-            .filter(|(_, entry)| {
-                let haystack = match &entry.description {
-                    Some(desc) => format!("{} {}", entry.name, desc),
-                    None => entry.name.clone(),
-                };
-                fuzzy_match(&self.input, &haystack)
-            })
-            .map(|(i, _)| i)
-            .collect();
+        self.filtered = match &self.mode {
+            PickerMode::Insert => self
+                .entries
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| {
+                    let haystack = match &entry.description {
+                        Some(desc) => format!("{} {}", entry.name, desc),
+                        None => entry.name.clone(),
+                    };
+                    fuzzy_match(&self.input, &haystack)
+                })
+                .map(|(i, _)| i)
+                .collect(),
+            PickerMode::SelectOption { .. } => self
+                .select_entries
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| {
+                    let mut haystack = entry.key.clone();
+                    if let Some(desc) = &entry.description {
+                        haystack.push(' ');
+                        haystack.push_str(desc);
+                    }
+                    if let Some(preview) = &entry.preview {
+                        haystack.push(' ');
+                        haystack.push_str(preview);
+                    }
+                    fuzzy_match(&self.input, &haystack)
+                })
+                .map(|(i, _)| i)
+                .collect(),
+        };
         self.selected = 0;
         self.scroll = 0;
         self.ensure_visible = true;
@@ -163,11 +276,17 @@ impl VarPickerState {
         paint::floating_panel(frame.buffer_mut(), area, screen, theme);
 
         let title_y = area.y + 1;
+        let title = match &self.mode {
+            PickerMode::Insert => "Variables".to_string(),
+            PickerMode::SelectOption { name, group } => {
+                format!("Select \u{2014} {}", group.as_deref().unwrap_or(name))
+            }
+        };
         paint::text(
             frame.buffer_mut(),
             area.x + 2,
             title_y,
-            "Variables",
+            &title,
             theme.text,
             theme.panel,
             true,
@@ -216,7 +335,6 @@ impl VarPickerState {
             .skip(self.scroll)
             .take(list_h.max(1))
         {
-            let entry = &self.entries[idx];
             let text_row = list_area.y + ((i - self.scroll) as u16) * 2;
             let selected = i == self.selected;
             let row_hovered = hovered == Some(&crate::hit::Hit::VarPickerRow(i));
@@ -244,57 +362,134 @@ impl VarPickerState {
 
             let right = list_area.x + list_area.width;
             let mut x = list_area.x + 1;
-            let name_w = (entry.name.chars().count() as u16).min(right.saturating_sub(x));
-            paint::text(
-                frame.buffer_mut(),
-                x,
-                text_row,
-                &entry.name,
-                theme.text,
-                row_fill,
-                selected,
-            );
-            x += name_w;
-            if let Some(desc) = &entry.description {
-                let desc = format!(" {desc}");
-                let w = right.saturating_sub(x);
-                let clipped = clip(&desc, w);
-                paint::text(
-                    frame.buffer_mut(),
-                    x,
-                    text_row,
-                    clipped,
-                    theme.text_muted,
-                    row_fill,
-                    false,
-                );
-                x += clipped.chars().count() as u16;
-            }
-            match &entry.value {
-                Some(v) => {
-                    let s = format!(" = {v}");
-                    let w = right.saturating_sub(x);
+            match &self.mode {
+                PickerMode::Insert => {
+                    let entry = &self.entries[idx];
+                    let name_w = (entry.name.chars().count() as u16).min(right.saturating_sub(x));
                     paint::text(
                         frame.buffer_mut(),
                         x,
                         text_row,
-                        clip(&s, w),
-                        theme.text_muted,
+                        &entry.name,
+                        theme.text,
                         row_fill,
-                        false,
+                        selected,
                     );
+                    x += name_w;
+                    if let Some(desc) = &entry.description {
+                        let desc = format!(" {desc}");
+                        let w = right.saturating_sub(x);
+                        let clipped = clip(&desc, w);
+                        paint::text(
+                            frame.buffer_mut(),
+                            x,
+                            text_row,
+                            clipped,
+                            theme.text_muted,
+                            row_fill,
+                            false,
+                        );
+                        x += clipped.chars().count() as u16;
+                    }
+                    match &entry.value {
+                        Some(v) => {
+                            let s = format!(" = {v}");
+                            let w = right.saturating_sub(x);
+                            paint::text(
+                                frame.buffer_mut(),
+                                x,
+                                text_row,
+                                clip(&s, w),
+                                theme.text_muted,
+                                row_fill,
+                                false,
+                            );
+                        }
+                        None => {
+                            let w = right.saturating_sub(x);
+                            paint::text(
+                                frame.buffer_mut(),
+                                x,
+                                text_row,
+                                clip(" unset", w),
+                                theme.warning,
+                                row_fill,
+                                false,
+                            );
+                        }
+                    }
                 }
-                None => {
-                    let w = right.saturating_sub(x);
+                PickerMode::SelectOption { .. } => {
+                    let entry = &self.select_entries[idx];
+                    // A fixed two-column check gutter (mirrors the accent
+                    // bar's own column) so unchecked rows still line their
+                    // keys up under checked ones.
+                    let check = if entry.selected { "\u{2713} " } else { "  " };
                     paint::text(
                         frame.buffer_mut(),
                         x,
                         text_row,
-                        clip(" unset", w),
-                        theme.warning,
+                        check,
+                        theme.success,
                         row_fill,
                         false,
                     );
+                    x += 2;
+                    let key_w = (entry.key.chars().count() as u16).min(right.saturating_sub(x));
+                    paint::text(
+                        frame.buffer_mut(),
+                        x,
+                        text_row,
+                        &entry.key,
+                        theme.text,
+                        row_fill,
+                        selected,
+                    );
+                    x += key_w;
+                    if let Some(preview) = &entry.preview {
+                        // Group option: one pre-formatted preview line
+                        // covering every member's new value.
+                        let s = format!(" \u{2014} {preview}");
+                        let w = right.saturating_sub(x);
+                        paint::text(
+                            frame.buffer_mut(),
+                            x,
+                            text_row,
+                            clip(&s, w),
+                            theme.text_muted,
+                            row_fill,
+                            false,
+                        );
+                    } else {
+                        if let Some(desc) = &entry.description {
+                            let desc = format!(" {desc}");
+                            let w = right.saturating_sub(x);
+                            let clipped = clip(&desc, w);
+                            paint::text(
+                                frame.buffer_mut(),
+                                x,
+                                text_row,
+                                clipped,
+                                theme.text_muted,
+                                row_fill,
+                                false,
+                            );
+                            x += clipped.chars().count() as u16;
+                        }
+                        if let Some(v) = &entry.value {
+                            let s = format!(" = {v}");
+                            let w = right.saturating_sub(x);
+                            paint::text(
+                                frame.buffer_mut(),
+                                x,
+                                text_row,
+                                clip(&s, w),
+                                theme.text_muted,
+                                row_fill,
+                                false,
+                            );
+                        }
+                    }
                 }
             }
 
@@ -307,12 +502,16 @@ impl VarPickerState {
             hits.register(row_rect, crate::hit::Hit::VarPickerRow(i));
         }
 
+        let footer = match &self.mode {
+            PickerMode::Insert => "enter insert  esc cancel",
+            PickerMode::SelectOption { .. } => "enter select  esc cancel",
+        };
         let footer_y = area.y + area.height.saturating_sub(2);
         paint::text(
             frame.buffer_mut(),
             area.x + 2,
             footer_y,
-            "enter insert  esc cancel",
+            footer,
             theme.text_muted,
             theme.panel,
             false,
@@ -521,6 +720,160 @@ mod tests {
             right_edge.bg, theme.control,
             "the hovered (non-selected) row's pill fill must span the full row width"
         );
+    }
+
+    #[test]
+    fn select_mode_enter_emits_select_edit_and_toast() {
+        let entries = vec![
+            SelectEntry {
+                key: "alice".into(),
+                description: Some("admin".into()),
+                value: Some("qa-token".into()),
+                preview: None,
+                selected: false,
+            },
+            SelectEntry {
+                key: "bob".into(),
+                description: None,
+                value: Some("qa-bob".into()),
+                preview: None,
+                selected: true,
+            },
+        ];
+        let mut p = VarPickerState::new_select(entries, "user".into(), None, "qa".into());
+        let res = p.handle_key(key(KeyCode::Enter)).unwrap();
+        assert_eq!(
+            res.actions,
+            vec![
+                Action::VarEdit(VarEditOp::Select {
+                    env: "qa".into(),
+                    name: "user".into(),
+                    key: "alice".into(),
+                }),
+                Action::ShowToast("user \u{2192} alice (qa)".into(), ToastKind::Success),
+            ]
+        );
+        assert!(res.close);
+    }
+
+    #[test]
+    fn select_mode_group_member_targets_the_group_name() {
+        let entries = vec![SelectEntry {
+            key: "alice".into(),
+            description: None,
+            value: None,
+            preview: Some("admin \u{b7} user_id 1001 \u{b7} customer_id c-77".into()),
+            selected: false,
+        }];
+        let mut p = VarPickerState::new_select(
+            entries,
+            "user_id".into(),
+            Some("identity".into()),
+            "qa".into(),
+        );
+        let res = p.handle_key(key(KeyCode::Enter)).unwrap();
+        assert_eq!(
+            res.actions,
+            vec![
+                Action::VarEdit(VarEditOp::Select {
+                    env: "qa".into(),
+                    name: "identity".into(),
+                    key: "alice".into(),
+                }),
+                Action::ShowToast("identity \u{2192} alice (qa)".into(), ToastKind::Success),
+            ]
+        );
+    }
+
+    #[test]
+    fn select_mode_esc_closes_without_editing() {
+        let entries = vec![SelectEntry {
+            key: "alice".into(),
+            description: None,
+            value: Some("x".into()),
+            preview: None,
+            selected: false,
+        }];
+        let mut p = VarPickerState::new_select(entries, "user".into(), None, "qa".into());
+        let res = p.handle_key(key(KeyCode::Esc)).unwrap();
+        assert!(res.close && res.actions.is_empty());
+    }
+
+    #[test]
+    fn select_mode_typing_filters_options() {
+        let entries = vec![
+            SelectEntry {
+                key: "alice".into(),
+                description: Some("admin".into()),
+                value: Some("qa-token".into()),
+                preview: None,
+                selected: false,
+            },
+            SelectEntry {
+                key: "bob".into(),
+                description: Some("reader".into()),
+                value: Some("qa-bob".into()),
+                preview: None,
+                selected: false,
+            },
+        ];
+        let mut p = VarPickerState::new_select(entries, "user".into(), None, "qa".into());
+        for c in "bob".chars() {
+            p.handle_key(key(KeyCode::Char(c)));
+        }
+        let res = p.handle_key(key(KeyCode::Enter)).unwrap();
+        assert_eq!(
+            res.actions[0],
+            Action::VarEdit(VarEditOp::Select {
+                env: "qa".into(),
+                name: "user".into(),
+                key: "bob".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn select_mode_draw_marks_current_selection_and_renders_group_preview() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let entries = vec![
+            SelectEntry {
+                key: "alice".into(),
+                description: None,
+                value: None,
+                preview: Some("admin \u{b7} user_id 1001 \u{b7} customer_id c-77".into()),
+                selected: true,
+            },
+            SelectEntry {
+                key: "bob".into(),
+                description: None,
+                value: None,
+                preview: Some("reader \u{b7} user_id 1002 \u{b7} customer_id c-78".into()),
+                selected: false,
+            },
+        ];
+        let mut p = VarPickerState::new_select(
+            entries,
+            "user_id".into(),
+            Some("identity".into()),
+            "qa".into(),
+        );
+        let theme = Theme::dark();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None))
+            .unwrap();
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(content.contains("\u{2713}"), "checked row shows a ✓");
+        assert!(content.contains("alice"));
+        assert!(content.contains("admin"));
+        assert!(content.contains("user_id 1001"));
+        assert!(content.contains("customer_id c-77"));
+        assert!(content.contains("Select"));
+        assert!(content.contains("identity"));
     }
 
     #[test]
