@@ -39,6 +39,41 @@ pub struct VarModel {
     pub groups: IndexMap<String, GroupDecl>,
 }
 
+/// One env's `name → selected option key` (variables and groups share the
+/// namespace, so a single map serves both).
+pub type Selections = IndexMap<String, String>;
+
+/// One env's `name → secret value`.
+pub type SecretValues = IndexMap<String, String>;
+
+/// Why a resolved (or unresolved) name has the value it has.
+#[derive(Debug, Clone, PartialEq)]
+pub enum VarMeta {
+    Simple,
+    Enumerated {
+        selected: String,
+    },
+    GroupMember {
+        group: String,
+        selected: String,
+    },
+    Secret,
+    /// Enumerated/group with no (or stale) selection.
+    NeedsSelection,
+    /// Secret with no value for this env.
+    MissingSecret,
+}
+
+/// The result of resolving a `VarModel` against one environment, its
+/// selections, and its secrets.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Resolved {
+    /// Names needing a selection or secret are omitted here.
+    pub values: IndexMap<String, String>,
+    /// Every declared name (vars + group members) has an entry.
+    pub meta: IndexMap<String, VarMeta>,
+}
+
 /// Flat env values plus raw option override tables, interpreted against a
 /// `VarModel` elsewhere.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -566,6 +601,118 @@ pub fn validate_env(model: &VarModel, env: &EnvData) -> Result<(), ModelError> {
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------
+// resolve_env
+// ---------------------------------------------------------------------
+
+/// Resolve a `VarModel` against one environment's data, selections, and
+/// secrets. Pure: no I/O, no file system.
+///
+/// Precedence per name, first hit wins (spec §2, layers 3–6; layers 1–2 —
+/// request overlay and script-set values — are applied elsewhere):
+/// secret value for the active env → selected option's value from the
+/// env-merged list (enumerated/group) → simple env value → declaration
+/// default. Names needing a selection or secret are omitted from `values`
+/// but still get a `meta` entry. Undeclared env values pass through into
+/// `values` with no `meta` entry (stage-3 leniency).
+pub fn resolve_env(
+    model: &VarModel,
+    env: &EnvData,
+    selections: &Selections,
+    secrets: &SecretValues,
+) -> Resolved {
+    let mut values = IndexMap::new();
+    let mut meta = IndexMap::new();
+
+    for (name, decl) in &model.vars {
+        if decl.secret {
+            match secrets.get(name) {
+                Some(value) => {
+                    values.insert(name.clone(), value.clone());
+                    meta.insert(name.clone(), VarMeta::Secret);
+                }
+                None => {
+                    meta.insert(name.clone(), VarMeta::MissingSecret);
+                }
+            }
+            continue;
+        }
+
+        let merged_options = merged_var_options(model, env, name);
+        if !merged_options.is_empty() {
+            match selections
+                .get(name)
+                .and_then(|key| merged_options.get(key).map(|opt| (key, opt)))
+            {
+                Some((key, opt)) => {
+                    values.insert(name.clone(), opt.value.clone());
+                    meta.insert(
+                        name.clone(),
+                        VarMeta::Enumerated {
+                            selected: key.clone(),
+                        },
+                    );
+                }
+                None => {
+                    meta.insert(name.clone(), VarMeta::NeedsSelection);
+                }
+            }
+            continue;
+        }
+
+        if let Some(value) = env.values.get(name) {
+            values.insert(name.clone(), value.clone());
+        } else if let Some(default) = &decl.default {
+            values.insert(name.clone(), default.clone());
+        }
+        meta.insert(name.clone(), VarMeta::Simple);
+    }
+
+    for (group_name, group_decl) in &model.groups {
+        let merged_options = merged_group_options(model, env, group_name);
+        let selected = selections
+            .get(group_name)
+            .and_then(|key| merged_options.get(key).map(|opt| (key, opt)));
+
+        for member in &group_decl.members {
+            match selected {
+                Some((key, opt)) => {
+                    if let Some(value) = opt.values.get(member) {
+                        values.insert(member.clone(), value.clone());
+                    } else {
+                        values.shift_remove(member);
+                    }
+                    meta.insert(
+                        member.clone(),
+                        VarMeta::GroupMember {
+                            group: group_name.clone(),
+                            selected: key.clone(),
+                        },
+                    );
+                }
+                None => {
+                    values.shift_remove(member);
+                    meta.insert(member.clone(), VarMeta::NeedsSelection);
+                }
+            }
+        }
+    }
+
+    let declared_members: std::collections::HashSet<&str> = model
+        .groups
+        .values()
+        .flat_map(|g| g.members.iter().map(String::as_str))
+        .collect();
+    for (name, value) in &env.values {
+        if model.vars.contains_key(name) || declared_members.contains(name.as_str()) {
+            continue;
+        }
+        values.insert(name.clone(), value.clone());
+    }
+
+    Resolved { values, meta }
 }
 
 #[cfg(test)]
@@ -1153,5 +1300,268 @@ user_id = "9001"
         )
         .unwrap();
         validate_env(&m, &e).unwrap();
+    }
+
+    // -------------------------------------------------------------
+    // resolve_env
+    // -------------------------------------------------------------
+
+    #[test]
+    fn resolve_secret_present_yields_secret_meta_and_value() {
+        let m = parse_variables(
+            r#"
+[api_key]
+secret = true
+"#,
+        )
+        .unwrap();
+        let e = parse_environment("").unwrap();
+        let selections = Selections::new();
+        let mut secrets = SecretValues::new();
+        secrets.insert("api_key".into(), "sk-qa-123".into());
+        let r = resolve_env(&m, &e, &selections, &secrets);
+        assert_eq!(r.values["api_key"], "sk-qa-123");
+        assert_eq!(r.meta["api_key"], VarMeta::Secret);
+    }
+
+    #[test]
+    fn resolve_secret_absent_yields_missing_secret_and_omitted() {
+        let m = parse_variables(
+            r#"
+[api_key]
+secret = true
+"#,
+        )
+        .unwrap();
+        let e = parse_environment("").unwrap();
+        let r = resolve_env(&m, &e, &Selections::new(), &SecretValues::new());
+        assert!(!r.values.contains_key("api_key"));
+        assert_eq!(r.meta["api_key"], VarMeta::MissingSecret);
+    }
+
+    #[test]
+    fn resolve_enumerated_var_with_selection_resolves_value() {
+        let m = parse_variables(
+            r#"
+[user]
+[user.options.alice]
+value = "1001"
+[user.options.bob]
+value = "2002"
+"#,
+        )
+        .unwrap();
+        let e = parse_environment("").unwrap();
+        let mut selections = Selections::new();
+        selections.insert("user".into(), "bob".into());
+        let r = resolve_env(&m, &e, &selections, &SecretValues::new());
+        assert_eq!(r.values["user"], "2002");
+        assert_eq!(
+            r.meta["user"],
+            VarMeta::Enumerated {
+                selected: "bob".into()
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_enumerated_var_without_selection_needs_selection_and_omitted() {
+        let m = parse_variables(
+            r#"
+[user]
+[user.options.alice]
+value = "1001"
+"#,
+        )
+        .unwrap();
+        let e = parse_environment("").unwrap();
+        let r = resolve_env(&m, &e, &Selections::new(), &SecretValues::new());
+        assert!(!r.values.contains_key("user"));
+        assert_eq!(r.meta["user"], VarMeta::NeedsSelection);
+    }
+
+    #[test]
+    fn resolve_enumerated_var_with_stale_selection_needs_selection_and_omitted() {
+        let m = parse_variables(
+            r#"
+[user]
+[user.options.alice]
+value = "1001"
+"#,
+        )
+        .unwrap();
+        let e = parse_environment("").unwrap();
+        let mut selections = Selections::new();
+        selections.insert("user".into(), "ghost".into());
+        let r = resolve_env(&m, &e, &selections, &SecretValues::new());
+        assert!(!r.values.contains_key("user"));
+        assert_eq!(r.meta["user"], VarMeta::NeedsSelection);
+    }
+
+    #[test]
+    fn resolve_simple_env_value_used_over_default() {
+        let m = parse_variables(
+            r#"
+[base_url]
+default = "http://localhost:8080"
+"#,
+        )
+        .unwrap();
+        let e = parse_environment(
+            r#"
+base_url = "https://qa.example.com"
+"#,
+        )
+        .unwrap();
+        let r = resolve_env(&m, &e, &Selections::new(), &SecretValues::new());
+        assert_eq!(r.values["base_url"], "https://qa.example.com");
+        assert_eq!(r.meta["base_url"], VarMeta::Simple);
+    }
+
+    #[test]
+    fn resolve_falls_back_to_default_when_no_env_value() {
+        let m = parse_variables(
+            r#"
+[base_url]
+default = "http://localhost:8080"
+"#,
+        )
+        .unwrap();
+        let e = parse_environment("").unwrap();
+        let r = resolve_env(&m, &e, &Selections::new(), &SecretValues::new());
+        assert_eq!(r.values["base_url"], "http://localhost:8080");
+        assert_eq!(r.meta["base_url"], VarMeta::Simple);
+    }
+
+    #[test]
+    fn resolve_group_member_from_selected_option() {
+        let m = parse_variables(
+            r#"
+[groups.test-user]
+members = ["user_id", "customer_id"]
+[groups.test-user.options.alice]
+user_id = "1001"
+customer_id = "c-77"
+"#,
+        )
+        .unwrap();
+        let e = parse_environment("").unwrap();
+        let mut selections = Selections::new();
+        selections.insert("test-user".into(), "alice".into());
+        let r = resolve_env(&m, &e, &selections, &SecretValues::new());
+        assert_eq!(r.values["user_id"], "1001");
+        assert_eq!(r.values["customer_id"], "c-77");
+        assert_eq!(
+            r.meta["user_id"],
+            VarMeta::GroupMember {
+                group: "test-user".into(),
+                selected: "alice".into()
+            }
+        );
+        assert_eq!(
+            r.meta["customer_id"],
+            VarMeta::GroupMember {
+                group: "test-user".into(),
+                selected: "alice".into()
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_group_member_without_selection_needs_selection_and_omitted() {
+        let m = parse_variables(
+            r#"
+[groups.test-user]
+members = ["user_id", "customer_id"]
+[groups.test-user.options.alice]
+user_id = "1001"
+customer_id = "c-77"
+"#,
+        )
+        .unwrap();
+        let e = parse_environment("").unwrap();
+        let r = resolve_env(&m, &e, &Selections::new(), &SecretValues::new());
+        assert!(!r.values.contains_key("user_id"));
+        assert!(!r.values.contains_key("customer_id"));
+        assert_eq!(r.meta["user_id"], VarMeta::NeedsSelection);
+        assert_eq!(r.meta["customer_id"], VarMeta::NeedsSelection);
+    }
+
+    #[test]
+    fn resolve_group_member_with_stale_selection_needs_selection_and_omitted() {
+        let m = parse_variables(
+            r#"
+[groups.test-user]
+members = ["user_id", "customer_id"]
+[groups.test-user.options.alice]
+user_id = "1001"
+customer_id = "c-77"
+"#,
+        )
+        .unwrap();
+        let e = parse_environment("").unwrap();
+        let mut selections = Selections::new();
+        selections.insert("test-user".into(), "ghost".into());
+        let r = resolve_env(&m, &e, &selections, &SecretValues::new());
+        assert!(!r.values.contains_key("user_id"));
+        assert_eq!(r.meta["user_id"], VarMeta::NeedsSelection);
+    }
+
+    #[test]
+    fn resolve_per_env_enumerated_var_resolves_in_that_env_and_simple_in_another() {
+        let m = parse_variables(
+            r#"
+[user]
+"#,
+        )
+        .unwrap();
+        let qa = parse_environment(
+            r#"
+[options.user.alice]
+value = "9001"
+"#,
+        )
+        .unwrap();
+        let mut selections = Selections::new();
+        selections.insert("user".into(), "alice".into());
+        let r_qa = resolve_env(&m, &qa, &selections, &SecretValues::new());
+        assert_eq!(r_qa.values["user"], "9001");
+        assert_eq!(
+            r_qa.meta["user"],
+            VarMeta::Enumerated {
+                selected: "alice".into()
+            }
+        );
+
+        let dev = parse_environment(
+            r#"
+user = "plain-value"
+"#,
+        )
+        .unwrap();
+        let r_dev = resolve_env(&m, &dev, &Selections::new(), &SecretValues::new());
+        assert_eq!(r_dev.values["user"], "plain-value");
+        assert_eq!(r_dev.meta["user"], VarMeta::Simple);
+    }
+
+    #[test]
+    fn resolve_undeclared_env_value_passes_through_with_no_meta() {
+        let m = parse_variables(
+            r#"
+[base_url]
+default = "http://localhost:8080"
+"#,
+        )
+        .unwrap();
+        let e = parse_environment(
+            r#"
+base_url = "https://qa.example.com"
+legacy_flag = "on"
+"#,
+        )
+        .unwrap();
+        let r = resolve_env(&m, &e, &Selections::new(), &SecretValues::new());
+        assert_eq!(r.values["legacy_flag"], "on");
+        assert!(!r.meta.contains_key("legacy_flag"));
     }
 }
