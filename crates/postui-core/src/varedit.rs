@@ -488,6 +488,30 @@ pub fn upsert_env_option(
     Ok(doc.to_string())
 }
 
+/// Renames `from` to `to` wherever `from` appears in an environment file:
+/// its flat `from = "value"` pair (if any) and its `[options.from.*]`
+/// table (if any) — the cascade `rename_var` itself doesn't (and can't;
+/// `rename_var` only ever sees `variables.toml`) do, so the Manager's
+/// rename op loops this across every environment after `rename_var`
+/// succeeds. Neither being present is a no-op (returns `doc` unchanged,
+/// not `NotFound`) — most environments won't have anything to rename for
+/// a given variable, and the caller's per-env loop reads far simpler
+/// unconditionally calling this than having to first check which
+/// environments need it.
+pub fn rename_env_var(doc: &str, from: &str, to: &str) -> Result<String, EditError> {
+    let mut doc = parse(doc)?;
+    let root = doc.as_table_mut();
+    if root.contains_key(from) {
+        rename_key(root, from, to);
+    }
+    if let Some(options) = root.get_mut("options").and_then(Item::as_table_mut)
+        && options.contains_key(from)
+    {
+        rename_key(options, from, to);
+    }
+    Ok(doc.to_string())
+}
+
 // ---------------------------------------------------------------------
 // Manager integration: usage scan + promote (spec §4)
 // ---------------------------------------------------------------------
@@ -1419,6 +1443,86 @@ user_id = "9001"
     fn set_env_value_none_not_found_when_pair_absent() {
         let err = set_env_value(ENV, "nope", None).unwrap_err();
         assert_eq!(err, EditError::NotFound("\"nope\" not found".to_string()));
+    }
+
+    #[test]
+    fn rename_env_var_renames_the_flat_pair_preserving_its_own_comment() {
+        let env = r#"# environments/qa.toml
+
+base_url = "https://qa.example.com"
+# staging region override, remove once qa2 is retired
+region = "eu-west"
+
+[options.user.alice]
+value = "9001"
+"#;
+        let out = rename_env_var(env, "region", "aws_region").unwrap();
+        assert_eq!(
+            out,
+            r#"# environments/qa.toml
+
+base_url = "https://qa.example.com"
+# staging region override, remove once qa2 is retired
+aws_region = "eu-west"
+
+[options.user.alice]
+value = "9001"
+"#
+        );
+    }
+
+    #[test]
+    fn rename_env_var_renames_the_options_table_key() {
+        let out = rename_env_var(ENV, "user", "person").unwrap();
+        assert_eq!(
+            out,
+            r#"# environments/qa.toml
+
+base_url = "https://qa.example.com"
+
+[options.person.alice]
+value = "9001"
+[options.person.qa-only]
+description = "exists only in qa"
+value = "3003"
+[options.test-user.alice]
+user_id = "9001"
+"#
+        );
+    }
+
+    #[test]
+    fn rename_env_var_renames_both_the_flat_pair_and_its_options_table() {
+        // A variable can be simple in one env and enumerated in another
+        // (spec §1.2), so a single env file can legitimately carry both a
+        // flat pair AND an `[options.<name>]` table for two DIFFERENT
+        // names — but this fixture exercises the same name appearing as
+        // both in one file (the `Rename` op doesn't know which shape each
+        // environment uses ahead of time, so it must handle either, or
+        // both, without erroring).
+        let env = r#"base_url = "https://qa.example.com"
+
+[options.base_url.primary]
+value = "https://qa2.example.com"
+"#;
+        let out = rename_env_var(env, "base_url", "root_url").unwrap();
+        assert_eq!(
+            out,
+            r#"root_url = "https://qa.example.com"
+
+[options.root_url.primary]
+value = "https://qa2.example.com"
+"#
+        );
+    }
+
+    #[test]
+    fn rename_env_var_is_a_no_op_when_the_name_is_absent() {
+        let out = rename_env_var(ENV, "nope", "still-nope").unwrap();
+        assert_eq!(
+            out, ENV,
+            "an environment with nothing to rename must come back unchanged, not error"
+        );
     }
 
     #[test]

@@ -3464,6 +3464,68 @@ fn var_struct_rename_updates_the_declaration() {
     assert!(app.project.model.vars.contains_key("root_url"));
 }
 
+/// Review finding: `rename_var` only ever touches `variables.toml`, so a
+/// rename used to leave every environment's flat value/`[options.*]`
+/// table under the OLD name — silently degrading to the declaration's
+/// default post-rename, with no error and no warning. `shard` is simple
+/// (a flat value) in `dev` and enumerated (an env-only options table) in
+/// `qa` — spec §1.2's "enumerated in one env, simple in another" case —
+/// so this one rename exercises both cascades `rename_env_var` handles.
+#[test]
+fn var_struct_rename_cascades_into_every_environments_flat_value_and_options_table() {
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::project::init_project(dir.path(), Some("demo")).unwrap();
+    std::fs::write(
+        dir.path().join("variables.toml"),
+        r#"
+[shard]
+description = "shard id"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("environments/dev.toml"),
+        "shard = \"d-1\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("environments/qa.toml"),
+        "[options.shard.east]\nvalue = \"e-1\"\n",
+    )
+    .unwrap();
+    postui_core::project::save_local_state(
+        dir.path(),
+        &postui_core::project::LocalState {
+            environment: Some("dev".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    assert_eq!(app.project.resolved.values["shard"], "d-1");
+
+    app.update(Action::VarStruct(VarStructOp::Rename {
+        from: "shard".into(),
+        to: "node".into(),
+    }));
+
+    assert!(app.toasts.is_empty());
+    assert!(app.project.model.vars.contains_key("node"));
+    assert!(!app.project.model.vars.contains_key("shard"));
+    // Resolution follows the rename — still "d-1" in dev, now under "node".
+    assert_eq!(app.project.resolved.values["node"], "d-1");
+    assert!(!app.project.resolved.values.contains_key("shard"));
+
+    let dev_on_disk = std::fs::read_to_string(dir.path().join("environments/dev.toml")).unwrap();
+    assert!(dev_on_disk.contains("node = \"d-1\""), "{dev_on_disk}");
+    assert!(!dev_on_disk.contains("shard"), "{dev_on_disk}");
+
+    let qa_on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(qa_on_disk.contains("[options.node.east]"), "{qa_on_disk}");
+    assert!(!qa_on_disk.contains("shard"), "{qa_on_disk}");
+}
+
 #[test]
 fn var_struct_delete_var_removes_the_declaration_and_clamps_the_cursor() {
     let dir = tempfile::tempdir().unwrap();
@@ -3589,6 +3651,79 @@ fn var_struct_demote_writes_the_resolved_value_into_the_request_and_strips_the_p
     assert!(!app.project.model.vars.contains_key("base_url"));
     let env_on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(!env_on_disk.contains("qa.example.com"), "{env_on_disk}");
+}
+
+/// Review finding: `apply_demote` used to insert the demoted entry into
+/// `editor.variables` BEFORE the fallible `delete_var` write, so a
+/// `delete_var` failure (e.g. the variable is still a group member —
+/// `varedit::delete_var`'s own `Conflict`) left a demoted entry live in
+/// the editor while the project still held the declaration, violating
+/// `apply_var_struct`'s documented "Err leaves everything unchanged"
+/// contract. This drives exactly that failure path.
+#[test]
+fn demote_leaves_the_editor_untouched_when_the_project_write_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::project::init_project(dir.path(), Some("demo")).unwrap();
+    std::fs::write(
+        dir.path().join("variables.toml"),
+        r#"
+[shard]
+default = "member-default"
+
+[groups.g]
+members = ["shard"]
+[groups.g.options.pick]
+shard = "picked-value"
+"#,
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("environments/dev.toml"), "").unwrap();
+    let mut selections = indexmap::IndexMap::new();
+    let mut dev_sel = indexmap::IndexMap::new();
+    dev_sel.insert("g".to_string(), "pick".to_string());
+    selections.insert("dev".to_string(), dev_sel);
+    postui_core::project::save_local_state(
+        dir.path(),
+        &postui_core::project::LocalState {
+            environment: Some("dev".into()),
+            selections,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    postui_core::storage::save_request(dir.path(), "r", &req("https://x/r")).unwrap();
+
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("r".into()));
+    assert_eq!(
+        app.project.resolved.values.get("shard"),
+        Some(&"picked-value".to_string()),
+        "shard must resolve (via the group's selected option) so apply_demote reaches delete_var"
+    );
+
+    app.update(Action::VarStruct(VarStructOp::Demote {
+        name: "shard".into(),
+    }));
+
+    assert!(
+        !app.toasts.is_empty(),
+        "delete_var's Conflict (still a group member) must toast"
+    );
+    assert!(
+        !app.editor.variables.contains_key("shard"),
+        "the editor must NOT gain a demoted entry when the project write failed"
+    );
+    assert!(
+        app.project.model.vars.contains_key("shard"),
+        "the declaration must be untouched"
+    );
+    assert!(
+        app.project.model.groups["g"]
+            .members
+            .contains(&"shard".to_string()),
+        "the group membership must be untouched too"
+    );
 }
 
 #[test]

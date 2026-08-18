@@ -1697,7 +1697,19 @@ impl App {
                     return Err(format!("\"{to}\" already exists"));
                 }
                 self.project
-                    .edit_variables(|doc| varedit::rename_var(doc, from, to))
+                    .edit_variables(|doc| varedit::rename_var(doc, from, to))?;
+                // `rename_var` only ever touches `variables.toml` — an
+                // active env override for `from` would otherwise silently
+                // degrade to the default post-rename (no error, no
+                // warning, just a wrong-looking resolved value). Cascade
+                // into every environment's flat pair and `[options.*]`
+                // table too; `rename_env_var` no-ops for an environment
+                // with nothing to rename.
+                for env in self.project.environments.clone() {
+                    self.project
+                        .edit_env(&env, |doc| varedit::rename_env_var(doc, from, to))?;
+                }
+                Ok(())
             }
             VarStructOp::Delete { name } => {
                 if self.project.model.groups.contains_key(name) {
@@ -1830,6 +1842,12 @@ impl App {
         if self.editor.slug.is_none() {
             return Err("open a request to demote into".to_string());
         }
+        // The fallible write goes first: `apply_var_struct`'s documented
+        // "Err leaves everything unchanged" contract means the editor must
+        // not gain a demoted entry unless the project actually lost the
+        // declaration.
+        self.project
+            .edit_variables(|doc| postui_core::varedit::delete_var(doc, name))?;
         self.editor.variables.insert(
             name.to_string(),
             postui_core::model::Entry {
@@ -1837,8 +1855,6 @@ impl App {
                 enabled: true,
             },
         );
-        self.project
-            .edit_variables(|doc| postui_core::varedit::delete_var(doc, name))?;
         for env in self.project.environments.clone() {
             let _ = self.project.edit_env(&env, |doc| {
                 postui_core::varedit::set_env_value(doc, name, None)
