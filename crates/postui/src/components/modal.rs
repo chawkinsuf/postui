@@ -26,6 +26,15 @@ pub enum PromptKind {
     /// `n` (spec §5): a bare variable name — the grid's own cell edit sets
     /// its default/description afterward.
     NewVariable,
+    /// The Insert-mode picker's "new variable…" row (Task 15, spec §6): the
+    /// text is the new variable's name, pre-filled with what was typed in
+    /// the picker. Confirming both declares the variable (`VarStructOp::
+    /// NewVar`) and inserts its `{{name}}` token — `completing` picks
+    /// between the completion form (`name}}`, closing an already-typed
+    /// `{{`) and the full token, mirroring `VarPickerState::confirm`.
+    NewVariableAndInsert {
+        completing: bool,
+    },
     /// `g`: comma-separated `name, member, member, ...` — the group's own
     /// name is the first token (see the module-level format note on
     /// `parse_group_prompt`).
@@ -239,54 +248,75 @@ impl ModalStack {
                     if text.is_empty() {
                         return None; // swallowed: nothing to confirm yet
                     }
-                    let action = match kind {
-                        PromptKind::NewRequest => Some(Action::CreateRequest(text.to_string())),
-                        PromptKind::RenameRequest { from } => Some(Action::RenameRequest {
+                    let actions: Option<Vec<Action>> = match kind {
+                        PromptKind::NewRequest => {
+                            Some(vec![Action::CreateRequest(text.to_string())])
+                        }
+                        PromptKind::RenameRequest { from } => Some(vec![Action::RenameRequest {
                             from: from.clone(),
                             to: text.to_string(),
-                        }),
-                        PromptKind::SaveAs => Some(Action::SaveRequestAs(text.to_string())),
+                        }]),
+                        PromptKind::SaveAs => Some(vec![Action::SaveRequestAs(text.to_string())]),
                         PromptKind::OpenProjectPath => {
-                            Some(Action::OpenProjectByPath(text.to_string()))
+                            Some(vec![Action::OpenProjectByPath(text.to_string())])
                         }
-                        PromptKind::SaveBodyAs => Some(Action::SaveBodyToFile(text.to_string())),
-                        PromptKind::NewVariable => Some(Action::VarStruct(VarStructOp::NewVar {
-                            name: text.to_string(),
-                            description: None,
-                        })),
+                        PromptKind::SaveBodyAs => {
+                            Some(vec![Action::SaveBodyToFile(text.to_string())])
+                        }
+                        PromptKind::NewVariable => {
+                            Some(vec![Action::VarStruct(VarStructOp::NewVar {
+                                name: text.to_string(),
+                                description: None,
+                            })])
+                        }
+                        PromptKind::NewVariableAndInsert { completing } => {
+                            let name = text.to_string();
+                            let insert_text = if *completing {
+                                format!("{name}}}}}")
+                            } else {
+                                format!("{{{{{name}}}}}")
+                            };
+                            Some(vec![
+                                Action::VarStruct(VarStructOp::NewVar {
+                                    name,
+                                    description: None,
+                                }),
+                                Action::InsertVarText(insert_text),
+                            ])
+                        }
                         PromptKind::NewGroup => parse_group_prompt(text).map(|(name, members)| {
-                            Action::VarStruct(VarStructOp::NewGroup { name, members })
+                            vec![Action::VarStruct(VarStructOp::NewGroup { name, members })]
                         }),
                         PromptKind::NewOption {
                             owner,
                             member_names,
                         } => parse_option_prompt(text, member_names).map(|(key, values)| {
-                            Action::VarStruct(VarStructOp::NewOption {
+                            vec![Action::VarStruct(VarStructOp::NewOption {
                                 owner: owner.clone(),
                                 key,
                                 description: None,
                                 values,
-                            })
+                            })]
                         }),
                         PromptKind::RenameVariable { from } => {
-                            Some(Action::VarStruct(VarStructOp::Rename {
+                            Some(vec![Action::VarStruct(VarStructOp::Rename {
                                 from: from.clone(),
                                 to: text.to_string(),
-                            }))
+                            })])
                         }
                         PromptKind::GroupMembers { group } => {
-                            Some(Action::VarStruct(VarStructOp::SetMembers {
+                            Some(vec![Action::VarStruct(VarStructOp::SetMembers {
                                 group: group.clone(),
                                 members: comma_tokens(text),
-                            }))
+                            })])
                         }
                     };
                     // A well-formed-but-incomplete comma prompt (e.g. a
                     // group option still missing a member) swallows Enter
                     // rather than closing on nonsense — same "not ready
                     // yet" treatment as the empty-text case above.
-                    action.map(|action| ModalResult {
-                        actions: vec![action],
+                    actions.map(|actions| ModalResult {
+                        actions,
                         close: true,
                         ..Default::default()
                     })

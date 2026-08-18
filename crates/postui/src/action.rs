@@ -169,12 +169,16 @@ pub enum Action {
     /// Flip `editor.substitute_body` — whether `{{var}}` tokens in the body
     /// are substituted at send time.
     ToggleBodyVars,
-    /// Open the variable picker: reload project files, then list declared
-    /// variables (`project.variables` order) with their resolved value (if
-    /// any). `completing` is true when triggered by typing `{{` in a text
-    /// field (Enter inserts just the closing `name}}`) and false when
-    /// triggered explicitly (Enter inserts the full `{{name}}` token).
-    /// Toasts instead of opening when no variables are declared.
+    /// Open the variable picker: reload project files, then (barring the
+    /// selection-context redirect — see `open_select_picker`) list every
+    /// defined name — project variables, group members, and the open
+    /// request's own `[variables]` — scope-badged, with a "new variable…"
+    /// row at the end (Task 15, spec §6). `completing` is true when
+    /// triggered by typing `{{` in a text field (Enter inserts just the
+    /// closing `name}}`) and false when triggered explicitly (Enter
+    /// inserts the full `{{name}}` token). Always opens, even with nothing
+    /// declared yet — the "new variable…" row makes it a creation flow
+    /// too.
     OpenVarPicker {
         completing: bool,
     },
@@ -183,6 +187,16 @@ pub enum Action {
     /// content focus). Toasts "nowhere to insert" when focus isn't on a
     /// text field.
     InsertVarText(String),
+    /// The Insert-mode picker's "new variable…" row (Task 15): opens the
+    /// new-variable prompt pre-filled with the typed filter text.
+    /// `completing` carries the picker's own flag through, so confirming
+    /// the prompt inserts the same completion/full-token form the picker
+    /// would have. Replaces the picker modal (not stacked on top of it),
+    /// so focus stays exactly where the picker found it.
+    OpenNewVariablePrompt {
+        prefill: String,
+        completing: bool,
+    },
     /// Switch the response pane's view (the tabs row's click target).
     ResponseViewMode(crate::components::response::ViewMode),
     /// Click on a JSON-tree body row: moves the cursor there, and — when

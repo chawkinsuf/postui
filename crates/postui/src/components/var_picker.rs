@@ -3,7 +3,7 @@ use super::palette::fuzzy_match;
 use crate::action::Action;
 use crate::components::toast::ToastKind;
 use crate::components::varmanager::VarEditOp;
-use crate::paint::{self, ControlState, FIELD_HEIGHT, PillRow, RowHighlight, TextField};
+use crate::paint::{self, Chip, ControlState, FIELD_HEIGHT, PillRow, RowHighlight, TextField};
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -11,14 +11,110 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-/// One declared variable, as offered by the picker: its name, optional
-/// description (from `variables.toml`), and resolved value (from
-/// `prepare_context().vars`, when the variable has one).
+/// Which of the three name sources an Insert-mode [`VarEntry`] comes from
+/// (spec §6: "scope-badged (request / project / group member)"). A name
+/// shadowed at a more specific scope (a request `[variables]` entry
+/// overriding a project variable of the same name) is listed once, tagged
+/// with the scope that actually resolves — `Request` beats `Project`/
+/// `Group`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VarScope {
+    Request,
+    Project,
+    Group,
+}
+
+impl VarScope {
+    fn badge(self) -> &'static str {
+        match self {
+            VarScope::Request => "req",
+            VarScope::Project => "proj",
+            VarScope::Group => "grp",
+        }
+    }
+}
+
+/// One declared variable, as offered by the Insert-mode picker: its name,
+/// optional description (from `variables.toml`), resolved value (from
+/// `prepare_context().vars`, when the variable has one), which scope
+/// declares it, and whether it's a secret (its value is never shown even
+/// when `value` is `Some` — the row renders a masked placeholder instead).
 #[derive(Clone)]
 pub struct VarEntry {
     pub name: String,
     pub description: Option<String>,
     pub value: Option<String>,
+    pub scope: VarScope,
+    pub secret: bool,
+}
+
+/// Builds the Insert-mode picker's entries (spec §6: "autocomplete over
+/// all defined names") from every source that declares one: project
+/// variables (`model.vars`, minus names that are actually group members —
+/// a member may carry its own top-level table for a description, but it's
+/// listed once, as `Group`), group members (`model.groups`), and the open
+/// request's own `[variables]` (`request_vars`; `None`/disabled entries
+/// show as unset rather than being dropped). A name defined at more than
+/// one scope (a request entry shadowing a project variable) appears once,
+/// tagged with the scope that actually resolves — request wins.
+pub fn insert_entries(
+    model: &postui_core::varmodel::VarModel,
+    resolved: &indexmap::IndexMap<String, String>,
+    request_vars: &indexmap::IndexMap<String, postui_core::model::Entry>,
+) -> Vec<VarEntry> {
+    let group_members: std::collections::HashSet<&str> = model
+        .groups
+        .values()
+        .flat_map(|g| g.members.iter().map(String::as_str))
+        .collect();
+
+    let mut entries: Vec<VarEntry> = Vec::new();
+
+    for (name, decl) in &model.vars {
+        if group_members.contains(name.as_str()) {
+            continue;
+        }
+        entries.push(VarEntry {
+            name: name.clone(),
+            description: decl.description.clone(),
+            value: resolved.get(name).cloned(),
+            scope: VarScope::Project,
+            secret: decl.secret,
+        });
+    }
+
+    for group in model.groups.values() {
+        for member in &group.members {
+            let description = model.vars.get(member).and_then(|d| d.description.clone());
+            entries.push(VarEntry {
+                name: member.clone(),
+                description,
+                value: resolved.get(member).cloned(),
+                scope: VarScope::Group,
+                secret: false,
+            });
+        }
+    }
+
+    for (name, entry) in request_vars {
+        let value = entry.enabled.then(|| entry.value.clone());
+        match entries.iter_mut().find(|e| &e.name == name) {
+            Some(existing) => {
+                existing.scope = VarScope::Request;
+                existing.value = value;
+                existing.secret = false;
+            }
+            None => entries.push(VarEntry {
+                name: name.clone(),
+                description: None,
+                value,
+                scope: VarScope::Request,
+                secret: false,
+            }),
+        }
+    }
+
+    entries
 }
 
 /// Which flow [`VarPickerState`] is running (spec §6's two picker
@@ -125,10 +221,24 @@ impl VarPickerState {
         self.selected
     }
 
-    /// Moves the cursor to filtered row `i` (clamped in range) and asks the
-    /// next draw to scroll it into view.
+    /// Total selectable rows: the filtered entries, plus one extra ghost
+    /// row in `Insert` mode — "new variable…", always the last row
+    /// regardless of what's typed (spec §6: the autocomplete "ends with
+    /// 'new variable…'").
+    fn row_count(&self) -> usize {
+        self.filtered.len()
+            + if matches!(self.mode, PickerMode::Insert) {
+                1
+            } else {
+                0
+            }
+    }
+
+    /// Moves the cursor to row `i` (clamped in range, including the
+    /// `Insert`-mode ghost row) and asks the next draw to scroll it into
+    /// view.
     pub fn select(&mut self, i: usize) {
-        if i < self.filtered.len() {
+        if i < self.row_count() {
             self.selected = i;
             self.ensure_visible = true;
         }
@@ -137,6 +247,20 @@ impl VarPickerState {
     /// The `ModalResult` an `Enter` (or a confirming click) on the current
     /// selection produces — `None` when nothing is selected.
     pub fn confirm(&self) -> Option<super::modal::ModalResult> {
+        if self.mode == PickerMode::Insert && self.selected == self.filtered.len() {
+            // The ghost "new variable…" row: open the create-and-insert
+            // prompt pre-filled with whatever was typed, and close this
+            // picker (not stack on top of it) so focus stays exactly
+            // where it was once the prompt itself confirms or cancels.
+            return Some(super::modal::ModalResult {
+                actions: vec![Action::OpenNewVariablePrompt {
+                    prefill: self.input.clone(),
+                    completing: self.completing,
+                }],
+                close: true,
+                ..Default::default()
+            });
+        }
         let &idx = self.filtered.get(self.selected)?;
         match &self.mode {
             PickerMode::Insert => {
@@ -179,10 +303,10 @@ impl VarPickerState {
     /// Adjusts `scroll` by `delta` lines, clamped, without moving
     /// `selected`. A no-op on an empty list.
     pub fn scroll_by(&mut self, delta: i16) {
-        if self.filtered.is_empty() {
+        if self.row_count() == 0 {
             return;
         }
-        let max = self.filtered.len().saturating_sub(1);
+        let max = self.row_count().saturating_sub(1);
         self.scroll = (self.scroll as i32 + delta as i32).clamp(0, max as i32) as usize;
         self.ensure_visible = false;
     }
@@ -241,7 +365,7 @@ impl VarPickerState {
                 self.ensure_visible = true;
             }
             KeyCode::Down => {
-                if self.selected + 1 < self.filtered.len() {
+                if self.selected + 1 < self.row_count() {
                     self.selected += 1;
                 }
                 self.ensure_visible = true;
@@ -269,7 +393,7 @@ impl VarPickerState {
     ) {
         let width = 60.min(screen.width);
         const CHROME: u16 = 10;
-        let content_rows = (self.filtered.len() as u16).clamp(1, 10) * 2;
+        let content_rows = (self.row_count() as u16).clamp(1, 10) * 2;
         let height = (CHROME + content_rows).clamp(13, 26).min(screen.height);
         let area = super::modal::centered_rect(screen, width, height);
         hits.register(area, crate::hit::Hit::ModalBody);
@@ -322,19 +446,14 @@ impl VarPickerState {
                 } else if self.selected >= self.scroll + list_h {
                     self.scroll = self.selected + 1 - list_h;
                 }
-                let max_scroll = self.filtered.len().saturating_sub(list_h);
+                let max_scroll = self.row_count().saturating_sub(list_h);
                 self.scroll = self.scroll.min(max_scroll);
             }
             self.ensure_visible = false;
         }
 
-        for (i, &idx) in self
-            .filtered
-            .iter()
-            .enumerate()
-            .skip(self.scroll)
-            .take(list_h.max(1))
-        {
+        let row_count = self.row_count();
+        for i in (self.scroll..row_count).take(list_h.max(1)) {
             let text_row = list_area.y + ((i - self.scroll) as u16) * 2;
             let selected = i == self.selected;
             let row_hovered = hovered == Some(&crate::hit::Hit::VarPickerRow(i));
@@ -362,9 +481,47 @@ impl VarPickerState {
 
             let right = list_area.x + list_area.width;
             let mut x = list_area.x + 1;
+            // The Insert-mode ghost "new variable…" row: sits one past the
+            // filtered entries at `filtered.len()`.
+            let new_var_row = self.mode == PickerMode::Insert && i == self.filtered.len();
             match &self.mode {
+                PickerMode::Insert if new_var_row => {
+                    paint::text(
+                        frame.buffer_mut(),
+                        x,
+                        text_row,
+                        "+ new variable\u{2026}",
+                        theme.accent,
+                        row_fill,
+                        selected,
+                    );
+                }
                 PickerMode::Insert => {
-                    let entry = &self.entries[idx];
+                    let entry = &self.entries[self.filtered[i]];
+                    let badge_w = Chip {
+                        label: entry.scope.badge(),
+                        color: theme.text_muted,
+                    }
+                    .paint(frame.buffer_mut(), x, text_row, row_fill, theme);
+                    x += badge_w;
+                    if entry.secret {
+                        // The lock glyph is double-width in most terminals
+                        // (unlike the ✓ used elsewhere in this file) — use
+                        // its real display width, not its char count, so
+                        // the name after it doesn't overlap the glyph's
+                        // second cell.
+                        const LOCK: &str = "\u{1f512} ";
+                        paint::text(
+                            frame.buffer_mut(),
+                            x,
+                            text_row,
+                            LOCK,
+                            theme.warning,
+                            row_fill,
+                            false,
+                        );
+                        x += Span::raw(LOCK).width() as u16;
+                    }
                     let name_w = (entry.name.chars().count() as u16).min(right.saturating_sub(x));
                     paint::text(
                         frame.buffer_mut(),
@@ -391,36 +548,51 @@ impl VarPickerState {
                         );
                         x += clipped.chars().count() as u16;
                     }
-                    match &entry.value {
-                        Some(v) => {
-                            let s = format!(" = {v}");
-                            let w = right.saturating_sub(x);
-                            paint::text(
-                                frame.buffer_mut(),
-                                x,
-                                text_row,
-                                clip(&s, w),
-                                theme.text_muted,
-                                row_fill,
-                                false,
-                            );
-                        }
-                        None => {
-                            let w = right.saturating_sub(x);
-                            paint::text(
-                                frame.buffer_mut(),
-                                x,
-                                text_row,
-                                clip(" unset", w),
-                                theme.warning,
-                                row_fill,
-                                false,
-                            );
+                    if entry.secret {
+                        // Secret VALUES never render, per whether or not one
+                        // is resolved — a masked placeholder stands in.
+                        let w = right.saturating_sub(x);
+                        paint::text(
+                            frame.buffer_mut(),
+                            x,
+                            text_row,
+                            clip(" \u{25cf}\u{25cf}\u{25cf}\u{25cf}", w),
+                            theme.text_muted,
+                            row_fill,
+                            false,
+                        );
+                    } else {
+                        match &entry.value {
+                            Some(v) => {
+                                let s = format!(" = {v}");
+                                let w = right.saturating_sub(x);
+                                paint::text(
+                                    frame.buffer_mut(),
+                                    x,
+                                    text_row,
+                                    clip(&s, w),
+                                    theme.text_muted,
+                                    row_fill,
+                                    false,
+                                );
+                            }
+                            None => {
+                                let w = right.saturating_sub(x);
+                                paint::text(
+                                    frame.buffer_mut(),
+                                    x,
+                                    text_row,
+                                    clip(" unset", w),
+                                    theme.warning,
+                                    row_fill,
+                                    false,
+                                );
+                            }
                         }
                     }
                 }
                 PickerMode::SelectOption { .. } => {
-                    let entry = &self.select_entries[idx];
+                    let entry = &self.select_entries[self.filtered[i]];
                     // A fixed two-column check gutter (mirrors the accent
                     // bar's own column) so unchecked rows still line their
                     // keys up under checked ones.
@@ -527,13 +699,21 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
+    /// A `VarScope::Project`, non-secret entry — the common case for tests
+    /// that don't care about badges.
+    fn var_entry(name: &str, description: Option<&str>, value: Option<&str>) -> VarEntry {
+        VarEntry {
+            name: name.to_string(),
+            description: description.map(str::to_string),
+            value: value.map(str::to_string),
+            scope: VarScope::Project,
+            secret: false,
+        }
+    }
+
     #[test]
     fn enter_emits_completion_or_full_token() {
-        let entries = vec![VarEntry {
-            name: "base_url".into(),
-            description: None,
-            value: Some("x".into()),
-        }];
+        let entries = vec![var_entry("base_url", None, Some("x"))];
         let mut p = VarPickerState::new(entries.clone(), true);
         let res = p.handle_key(key(KeyCode::Enter)).unwrap();
         assert_eq!(
@@ -550,14 +730,7 @@ mod tests {
 
     #[test]
     fn esc_closes_with_no_actions() {
-        let mut p = VarPickerState::new(
-            vec![VarEntry {
-                name: "a".into(),
-                description: None,
-                value: None,
-            }],
-            true,
-        );
+        let mut p = VarPickerState::new(vec![var_entry("a", None, None)], true);
         let res = p.handle_key(key(KeyCode::Esc)).unwrap();
         assert!(res.close && res.actions.is_empty());
     }
@@ -566,16 +739,8 @@ mod tests {
     fn typing_filters_on_name_and_description() {
         let mut p = VarPickerState::new(
             vec![
-                VarEntry {
-                    name: "base".into(),
-                    description: Some("api root".into()),
-                    value: None,
-                },
-                VarEntry {
-                    name: "tok".into(),
-                    description: None,
-                    value: Some("secret".into()),
-                },
+                var_entry("base", Some("api root"), None),
+                var_entry("tok", None, Some("secret")),
             ],
             false,
         );
@@ -593,16 +758,8 @@ mod tests {
 
         let mut p = VarPickerState::new(
             vec![
-                VarEntry {
-                    name: "base".into(),
-                    description: Some("api root".into()),
-                    value: Some("http://x".into()),
-                },
-                VarEntry {
-                    name: "tok".into(),
-                    description: None,
-                    value: None,
-                },
+                var_entry("base", Some("api root"), Some("http://x")),
+                var_entry("tok", None, None),
             ],
             false,
         );
@@ -621,14 +778,7 @@ mod tests {
     }
 
     fn entries(names: &[&str]) -> Vec<VarEntry> {
-        names
-            .iter()
-            .map(|n| VarEntry {
-                name: n.to_string(),
-                description: None,
-                value: None,
-            })
-            .collect()
+        names.iter().map(|n| var_entry(n, None, None)).collect()
     }
 
     #[test]

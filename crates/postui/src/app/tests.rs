@@ -2154,11 +2154,154 @@ fn body_insert_autoenables_substitution() {
 }
 
 #[test]
-fn picker_with_no_declared_vars_toasts() {
+fn picker_with_no_declared_vars_still_offers_the_new_variable_row() {
+    // Task 15: the picker no longer needs anything declared — the "new
+    // variable…" row makes it a creation flow too, so opening it with an
+    // empty project stays open on that one row instead of toasting.
     let mut app = App::new_for_test();
     app.update(Action::OpenVarPicker { completing: false });
-    assert!(app.modals.is_empty());
-    assert!(!app.toasts.is_empty());
+    assert!(app.modals.top().is_some());
+    let content = rendered_text(&mut app);
+    assert!(content.contains("new variable"), "{content}");
+}
+
+#[test]
+fn insert_picker_lists_project_group_and_request_vars_with_badges_and_descriptions() {
+    let dir = tempfile::tempdir().unwrap();
+    group_project(dir.path());
+    std::fs::write(
+        dir.path().join("variables.toml"),
+        r#"
+[base_url]
+description = "API root"
+default = "http://localhost:8080"
+
+[groups.identity]
+description = "identity"
+members = ["user_id", "customer_id"]
+
+[groups.identity.options.alice]
+description = "admin"
+user_id = "1001"
+customer_id = "c-77"
+"#,
+    )
+    .unwrap();
+    let mut req = req("https://x/ping");
+    req.variables.insert(
+        "trace_id".into(),
+        postui_core::model::Entry {
+            value: "abc-123".into(),
+            enabled: true,
+        },
+    );
+    postui_core::storage::save_request(dir.path(), "r", &req).unwrap();
+
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("r".into()));
+    app.update(Action::OpenVarPicker { completing: false });
+
+    let Some(Modal::VarPicker(p)) = app.modals.top() else {
+        panic!("expected the insert picker to open")
+    };
+    assert_eq!(p.mode, crate::components::var_picker::PickerMode::Insert);
+
+    let content = rendered_text(&mut app);
+    assert!(content.contains("base_url"), "{content}");
+    assert!(content.contains("API root"), "{content}");
+    assert!(content.contains("user_id"), "{content}");
+    assert!(content.contains("trace_id"), "{content}");
+    assert!(content.contains("proj"), "{content}");
+    assert!(content.contains("grp"), "{content}");
+    assert!(content.contains("req"), "{content}");
+    assert!(content.contains("new variable"), "{content}");
+}
+
+#[test]
+fn insert_picker_marks_secret_vars_with_the_lock_badge_and_never_shows_the_value() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    postui_core::project::save_secrets(dir.path(), &{
+        let mut secrets = indexmap::IndexMap::new();
+        let mut qa = indexmap::IndexMap::new();
+        qa.insert("api_key".to_string(), "sk-super-secret".to_string());
+        secrets.insert("qa".to_string(), qa);
+        secrets
+    })
+    .unwrap();
+
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::OpenVarPicker { completing: false });
+
+    let content = rendered_text(&mut app);
+    assert!(content.contains("api_key"), "{content}");
+    assert!(content.contains("\u{1f512}"), "secret badge: {content}");
+    assert!(
+        !content.contains("sk-super-secret"),
+        "secret value must never render: {content}"
+    );
+}
+
+#[test]
+fn insert_picker_new_variable_row_opens_prompt_prefilled_with_typed_filter() {
+    let mut app = app_with_vars();
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Url;
+    app.update(Action::OpenVarPicker { completing: false });
+    let keymap = Keymap::default_bindings();
+    for c in "brand_new".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    // With nothing named "brand_new" declared, the filtered list is empty —
+    // the ghost row is still there and still selectable.
+    let Some(Modal::VarPicker(p)) = app.modals.top() else {
+        panic!("expected the picker to still be open")
+    };
+    assert_eq!(p.selected(), 0, "the only row left is the ghost row");
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    let Some(Modal::Prompt { input, kind, .. }) = app.modals.top() else {
+        panic!("expected the new-variable prompt to open")
+    };
+    assert_eq!(input.text(), "brand_new");
+    assert_eq!(
+        *kind,
+        crate::components::modal::PromptKind::NewVariableAndInsert { completing: false }
+    );
+}
+
+#[test]
+fn insert_picker_new_variable_confirm_creates_the_var_and_inserts_at_the_original_cursor() {
+    let mut app = app_with_vars();
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Url;
+    app.editor.url = crate::components::line_input::LineInput::new("https://x/?a=1");
+    app.editor.url.set_cursor(10);
+    app.update(Action::OpenVarPicker { completing: false });
+    let keymap = Keymap::default_bindings();
+    for c in "token".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    // Confirming the ghost row swaps the picker for the prompt — same
+    // focus, no separate stacked modal to dismiss.
+    assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(app.modals.is_empty(), "both modals closed");
+    assert_eq!(
+        app.editor.url.text(),
+        "https://x/{{token}}?a=1",
+        "inserted at the original cursor, focus returned exactly where it was"
+    );
+    assert!(
+        app.project.model.vars.contains_key("token"),
+        "the new variable was declared"
+    );
+    let saved = postui_core::project::load_variables(&app.project.root).unwrap();
+    assert!(saved.vars.contains_key("token"), "written to disk too");
 }
 
 #[test]

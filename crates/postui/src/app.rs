@@ -1232,29 +1232,24 @@ impl App {
                 {
                     return self.open_select_picker(name, group);
                 }
-                if self.project.model.vars.is_empty() {
-                    self.toasts.push(
-                        "no variables declared — edit variables.toml",
-                        ToastKind::Warning,
-                    );
-                    return true;
-                }
                 let resolved = self.project.prepare_context().vars;
                 use crate::components::modal::Modal;
-                use crate::components::var_picker::{VarEntry, VarPickerState};
-                let entries: Vec<VarEntry> = self
-                    .project
-                    .model
-                    .vars
-                    .keys()
-                    .map(|name| VarEntry {
-                        name: name.clone(),
-                        description: self.project.model.vars[name].description.clone(),
-                        value: resolved.get(name).cloned(),
-                    })
-                    .collect();
+                use crate::components::var_picker::{VarPickerState, insert_entries};
+                let entries =
+                    insert_entries(&self.project.model, &resolved, &self.editor.variables);
                 self.modals
                     .push(Modal::VarPicker(VarPickerState::new(entries, completing)));
+                true
+            }
+            Action::OpenNewVariablePrompt {
+                prefill,
+                completing,
+            } => {
+                self.modals.push(Modal::Prompt {
+                    title: "New variable".into(),
+                    input: LineInput::new(&prefill),
+                    kind: PromptKind::NewVariableAndInsert { completing },
+                });
                 true
             }
             Action::InsertVarText(text) => {
