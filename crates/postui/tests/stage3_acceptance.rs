@@ -79,6 +79,7 @@ fn write_beta(root: &Path) {
             environment: None,
             open_request: Some("pong".into()),
             expanded: vec![],
+            ..Default::default()
         },
     )
     .unwrap();

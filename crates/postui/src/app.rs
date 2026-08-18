@@ -1157,7 +1157,7 @@ impl App {
             }
             Action::OpenVarPicker { completing } => {
                 self.apply(Action::ReloadProjectFiles);
-                if self.project.variables.is_empty() {
+                if self.project.variables.vars.is_empty() {
                     self.toasts.push(
                         "no variables declared — edit variables.toml",
                         ToastKind::Warning,
@@ -1170,10 +1170,11 @@ impl App {
                 let entries: Vec<VarEntry> = self
                     .project
                     .variables
+                    .vars
                     .keys()
                     .map(|name| VarEntry {
                         name: name.clone(),
-                        description: self.project.variables[name].description.clone(),
+                        description: self.project.variables.vars[name].description.clone(),
                         value: resolved.get(name).cloned(),
                     })
                     .collect();

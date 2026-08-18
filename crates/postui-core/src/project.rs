@@ -3,6 +3,7 @@
 //! overlays), and `.local/state.toml` (machine-owned UI state).
 
 use crate::model::Entry;
+use crate::varmodel;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -16,23 +17,15 @@ pub struct ProjectMeta {
     pub default_headers: IndexMap<String, Entry>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct VarDecl {
-    #[serde(default)]
-    pub description: Option<String>,
-    #[serde(default)]
-    pub default: Option<String>,
-}
-
-pub type Variables = IndexMap<String, VarDecl>;
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LocalState {
     pub environment: Option<String>,
     pub open_request: Option<String>,
     pub expanded: Vec<String>,
+    /// Per-environment `name → selected option key`, shared by variables
+    /// and groups (spec §1.3).
+    pub selections: IndexMap<String, IndexMap<String, String>>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -74,19 +67,13 @@ pub fn load_meta(root: &Path) -> Result<ProjectMeta, ProjectError> {
     }
 }
 
-pub fn load_variables(root: &Path) -> Result<Variables, ProjectError> {
-    let vars: Variables = match read_optional(&root.join("variables.toml"))? {
-        None => return Ok(Variables::new()),
+pub fn load_variables(root: &Path) -> Result<varmodel::VarModel, ProjectError> {
+    match read_optional(&root.join("variables.toml"))? {
+        None => Ok(varmodel::VarModel::default()),
         Some(contents) => {
-            toml::from_str(&contents).map_err(|e| ProjectError::Parse(e.to_string()))?
-        }
-    };
-    for key in vars.keys() {
-        if !crate::vars::is_valid_var_name(key) {
-            return Err(ProjectError::BadName(key.clone()));
+            varmodel::parse_variables(&contents).map_err(|e| ProjectError::Parse(e.to_string()))
         }
     }
-    Ok(vars)
 }
 
 pub fn list_environments(root: &Path) -> Vec<String> {
@@ -111,31 +98,13 @@ pub fn list_environments(root: &Path) -> Vec<String> {
     out
 }
 
-pub fn load_environment(root: &Path, name: &str) -> Result<IndexMap<String, String>, ProjectError> {
+pub fn load_environment(root: &Path, name: &str) -> Result<varmodel::EnvData, ProjectError> {
     if name.contains('/') || crate::storage::validate_slug(name).is_err() {
         return Err(ProjectError::BadName(name.to_string()));
     }
     let path = root.join("environments").join(format!("{name}.toml"));
     let contents = std::fs::read_to_string(&path)?;
-    toml::from_str(&contents).map_err(|e| ProjectError::Parse(e.to_string()))
-}
-
-pub fn resolve(
-    vars: &Variables,
-    env: Option<&IndexMap<String, String>>,
-) -> IndexMap<String, String> {
-    let mut out = IndexMap::new();
-    for (name, decl) in vars {
-        if let Some(default) = &decl.default {
-            out.insert(name.clone(), default.clone());
-        }
-    }
-    if let Some(env) = env {
-        for (k, v) in env {
-            out.insert(k.clone(), v.clone());
-        }
-    }
-    out
+    varmodel::parse_environment(&contents).map_err(|e| ProjectError::Parse(e.to_string()))
 }
 
 pub fn load_local_state(root: &Path) -> Result<LocalState, ProjectError> {
@@ -150,6 +119,31 @@ pub fn save_local_state(root: &Path, state: &LocalState) -> std::io::Result<()> 
     std::fs::create_dir_all(&dir)?;
     let contents = toml::to_string(state).expect("LocalState always serializes");
     std::fs::write(dir.join("state.toml"), contents)
+}
+
+/// Loads `.local/secrets.toml`: env → name → value. Missing file yields an
+/// empty map (secrets are never required to exist).
+pub fn load_secrets(
+    root: &Path,
+) -> Result<IndexMap<String, IndexMap<String, String>>, ProjectError> {
+    match read_optional(&root.join(".local").join("secrets.toml"))? {
+        None => Ok(IndexMap::new()),
+        Some(contents) => toml::from_str(&contents).map_err(|e| ProjectError::Parse(e.to_string())),
+    }
+}
+
+/// Writes `.local/secrets.toml` atomically (temp file + rename), creating
+/// `.local/` if needed.
+pub fn save_secrets(
+    root: &Path,
+    secrets: &IndexMap<String, IndexMap<String, String>>,
+) -> std::io::Result<()> {
+    let dir = root.join(".local");
+    std::fs::create_dir_all(&dir)?;
+    let contents = toml::to_string(secrets).expect("secrets always serialize");
+    let tmp_path = dir.join(".secrets.toml.tmp");
+    std::fs::write(&tmp_path, contents)?;
+    std::fs::rename(&tmp_path, dir.join("secrets.toml"))
 }
 
 /// Writes `path` with `contents` only if it does not already exist.
@@ -267,7 +261,7 @@ mod tests {
     fn variables_parse_validate_names_and_reject_unknown_fields() {
         let dir = tempdir().unwrap();
         assert!(
-            load_variables(dir.path()).unwrap().is_empty(),
+            load_variables(dir.path()).unwrap().vars.is_empty(),
             "missing file is empty"
         );
         std::fs::write(
@@ -276,13 +270,13 @@ mod tests {
         )
         .unwrap();
         let vars = load_variables(dir.path()).unwrap();
-        assert_eq!(vars["base_url"].default.as_deref(), Some("http://l"));
-        assert!(vars["token"].default.is_none());
+        assert_eq!(vars.vars["base_url"].default.as_deref(), Some("http://l"));
+        assert!(vars.vars["token"].default.is_none());
 
         std::fs::write(dir.path().join("variables.toml"), "[\"bad name\"]\n").unwrap();
         assert!(matches!(
             load_variables(dir.path()),
-            Err(ProjectError::BadName(_))
+            Err(ProjectError::Parse(_))
         ));
         std::fs::write(dir.path().join("variables.toml"), "[a]\nbogus = 1\n").unwrap();
         assert!(matches!(
@@ -312,42 +306,70 @@ mod tests {
             vec!["prod".to_string(), "qa".to_string()]
         );
 
-        let mut vars: Variables = Variables::new();
-        vars.insert(
+        let mut model = varmodel::VarModel::default();
+        model.vars.insert(
             "base".into(),
-            VarDecl {
+            varmodel::VarDecl {
                 description: None,
                 default: Some("http://l".into()),
+                secret: false,
+                options: IndexMap::new(),
             },
         );
-        vars.insert(
+        model.vars.insert(
             "token".into(),
-            VarDecl {
+            varmodel::VarDecl {
                 description: None,
                 default: None,
+                secret: false,
+                options: IndexMap::new(),
             },
         );
         let env = load_environment(dir.path(), "qa").unwrap();
-        let r = resolve(&vars, Some(&env));
-        assert_eq!(r["base"], "http://l", "default used when env has no value");
-        assert_eq!(r["token"], "qa-tok", "env value wins");
+        let r = varmodel::resolve_env(
+            &model,
+            &env,
+            &varmodel::Selections::new(),
+            &varmodel::SecretValues::new(),
+        );
         assert_eq!(
-            r["extra"], "e",
+            r.values["base"], "http://l",
+            "default used when env has no value"
+        );
+        assert_eq!(r.values["token"], "qa-tok", "env value wins");
+        assert_eq!(
+            r.values["extra"], "e",
             "undeclared env value still resolves (lenient)"
         );
-        let r = resolve(&vars, None);
-        assert_eq!(r.get("token"), None, "no env: only defaults resolve");
+        let empty_env = varmodel::EnvData::default();
+        let r = varmodel::resolve_env(
+            &model,
+            &empty_env,
+            &varmodel::Selections::new(),
+            &varmodel::SecretValues::new(),
+        );
+        assert_eq!(r.values.get("token"), None, "no env: only defaults resolve");
     }
 
     #[test]
     fn local_state_round_trips_and_missing_is_default() {
         let dir = tempdir().unwrap();
         let s = load_local_state(dir.path()).unwrap();
-        assert!(s.environment.is_none() && s.open_request.is_none() && s.expanded.is_empty());
+        assert!(
+            s.environment.is_none()
+                && s.open_request.is_none()
+                && s.expanded.is_empty()
+                && s.selections.is_empty()
+        );
+        let mut selections = IndexMap::new();
+        let mut qa_selections = IndexMap::new();
+        qa_selections.insert("user".into(), "alice".into());
+        selections.insert("qa".to_string(), qa_selections);
         let state = LocalState {
             environment: Some("qa".into()),
             open_request: Some("users/list".into()),
             expanded: vec!["users".into()],
+            selections,
         };
         save_local_state(dir.path(), &state).unwrap();
         assert_eq!(load_local_state(dir.path()).unwrap(), state);
@@ -357,5 +379,77 @@ mod tests {
             load_local_state(dir.path()).is_err(),
             "corrupt state is an Err the app degrades from"
         );
+    }
+
+    #[test]
+    fn local_state_without_selections_field_still_parses() {
+        // Old state.toml files written before selections existed have no
+        // [selections] table at all; they must still load with an empty map.
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".local")).unwrap();
+        std::fs::write(
+            dir.path().join(".local/state.toml"),
+            "environment = \"qa\"\nopen_request = \"ping\"\nexpanded = [\"users\"]\n",
+        )
+        .unwrap();
+        let s = load_local_state(dir.path()).unwrap();
+        assert_eq!(s.environment.as_deref(), Some("qa"));
+        assert!(s.selections.is_empty());
+    }
+
+    #[test]
+    fn local_state_with_unknown_field_is_still_permissive() {
+        // LocalState does not `deny_unknown_fields`; unknown top-level keys
+        // are ignored rather than erroring (today's behavior, preserved).
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".local")).unwrap();
+        std::fs::write(
+            dir.path().join(".local/state.toml"),
+            "environment = \"qa\"\nfuture_field = \"whatever\"\n",
+        )
+        .unwrap();
+        let s = load_local_state(dir.path()).unwrap();
+        assert_eq!(s.environment.as_deref(), Some("qa"));
+    }
+
+    #[test]
+    fn secrets_round_trip_and_missing_file_is_empty() {
+        let dir = tempdir().unwrap();
+        assert!(
+            load_secrets(dir.path()).unwrap().is_empty(),
+            "missing secrets.toml is empty"
+        );
+
+        let mut secrets = IndexMap::new();
+        let mut qa = IndexMap::new();
+        qa.insert("api_key".to_string(), "sk-qa-123".to_string());
+        secrets.insert("qa".to_string(), qa);
+        let mut prod = IndexMap::new();
+        prod.insert("api_key".to_string(), "sk-prod-456".to_string());
+        secrets.insert("prod".to_string(), prod);
+
+        save_secrets(dir.path(), &secrets).unwrap();
+        assert!(dir.path().join(".local/secrets.toml").is_file());
+        let loaded = load_secrets(dir.path()).unwrap();
+        assert_eq!(loaded, secrets);
+    }
+
+    #[test]
+    fn save_secrets_writes_atomically_via_temp_and_rename() {
+        let dir = tempdir().unwrap();
+        let mut secrets = IndexMap::new();
+        let mut qa = IndexMap::new();
+        qa.insert("api_key".to_string(), "sk-qa-123".to_string());
+        secrets.insert("qa".to_string(), qa);
+        save_secrets(dir.path(), &secrets).unwrap();
+
+        // no stray temp files left behind in .local/
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path().join(".local"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n != "secrets.toml")
+            .collect();
+        assert!(leftovers.is_empty(), "leftover files: {leftovers:?}");
     }
 }

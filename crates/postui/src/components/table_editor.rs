@@ -532,8 +532,7 @@ impl TableEditorState {
             // rows); it shows with the same lift as hover, held. It's a
             // pure cursor, so it only paints while the pane actually has
             // the keyboard — an unfocused lift would say keys land here.
-            let ghost_selected =
-                ctx.focused && self.selected == Some(map_len) && !new_row_pending;
+            let ghost_selected = ctx.focused && self.selected == Some(map_len) && !new_row_pending;
             let bg = if ghost_hovered || ghost_selected {
                 theme.control_hover
             } else {

@@ -3,14 +3,15 @@
 //! (active environment, expanded sidebar dirs) that persist across runs.
 
 use indexmap::IndexMap;
-use postui_core::project::{ProjectMeta, Variables};
+use postui_core::project::ProjectMeta;
+use postui_core::varmodel::{self, VarModel};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
 pub struct ProjectContext {
     pub root: PathBuf,
     pub meta: ProjectMeta,
-    pub variables: Variables,
+    pub variables: VarModel,
     pub environments: Vec<String>,
     pub active_env: Option<String>,
     pub env_values: IndexMap<String, String>,
@@ -22,6 +23,21 @@ pub struct ProjectContext {
     /// caller can restore the previously-open request. Not kept in sync
     /// afterward — it's a one-shot startup value.
     local_open_request: Option<String>,
+}
+
+/// Loads an environment's flat values, validating it against `model` (spec
+/// §1.2: a flat value for an enumerated/secret name, or an `[options.*]`
+/// table for an undeclared/secret name, is an error). Returns just the flat
+/// `values` map — option tables aren't consumed by `ProjectContext` yet
+/// (selections/secrets wiring lands with the full stage-6 integration).
+fn load_and_validate_env(
+    root: &std::path::Path,
+    name: &str,
+    model: &VarModel,
+) -> Result<IndexMap<String, String>, String> {
+    let env = postui_core::project::load_environment(root, name).map_err(|e| e.to_string())?;
+    varmodel::validate_env(model, &env).map_err(|e| e.to_string())?;
+    Ok(env.values)
 }
 
 fn mtime(path: &PathBuf) -> Option<SystemTime> {
@@ -67,7 +83,7 @@ impl ProjectContext {
         });
         let variables = postui_core::project::load_variables(&root).unwrap_or_else(|e| {
             warnings.push(format!("could not read variables.toml: {e}"));
-            Variables::default()
+            VarModel::default()
         });
         let environments = postui_core::project::list_environments(&root);
 
@@ -82,7 +98,7 @@ impl ProjectContext {
             if !environments.contains(&env) {
                 warnings.push(format!("saved environment {env:?} no longer exists"));
             } else {
-                match postui_core::project::load_environment(&root, &env) {
+                match load_and_validate_env(&root, &env, &variables) {
                     Ok(values) => {
                         env_values = values;
                         active_env = Some(env);
@@ -126,12 +142,23 @@ impl ProjectContext {
 
     /// Builds the `PrepareContext` for sending: variables resolved (env
     /// over declared defaults) plus the project's default headers.
+    ///
+    /// Temporary: resolves with empty selections/secrets until the full
+    /// stage-6 integration (task 8) wires `.local/` selections and secrets
+    /// through `ProjectContext`.
     pub fn prepare_context(&self) -> postui_core::prepare::PrepareContext {
+        let env = varmodel::EnvData {
+            values: self.env_values.clone(),
+            options: IndexMap::new(),
+        };
+        let resolved = varmodel::resolve_env(
+            &self.variables,
+            &env,
+            &varmodel::Selections::new(),
+            &varmodel::SecretValues::new(),
+        );
         postui_core::prepare::PrepareContext {
-            vars: postui_core::project::resolve(
-                &self.variables,
-                self.active_env.is_some().then_some(&self.env_values),
-            ),
+            vars: resolved.values,
             default_headers: self.meta.default_headers.clone(),
         }
     }
@@ -149,7 +176,7 @@ impl ProjectContext {
                 self.env_values = IndexMap::new();
                 self.stamps = stamp(&self.root, &self.active_env);
             }
-            Some(name) => match postui_core::project::load_environment(&self.root, &name) {
+            Some(name) => match load_and_validate_env(&self.root, &name, &self.variables) {
                 Ok(values) => {
                     self.env_values = values;
                     self.active_env = Some(name);
@@ -193,7 +220,7 @@ impl ProjectContext {
                 self.active_env = None;
                 self.env_values = IndexMap::new();
             } else {
-                match postui_core::project::load_environment(&self.root, &env) {
+                match load_and_validate_env(&self.root, &env, &self.variables) {
                     Ok(values) => self.env_values = values,
                     Err(e) => warnings.push(format!("could not load environment {env:?}: {e}")),
                 }
@@ -211,11 +238,13 @@ impl ProjectContext {
         if !self.can_persist() {
             return;
         }
-        let state = postui_core::project::LocalState {
-            environment: self.active_env.clone(),
-            open_request: open_request.map(|s| s.to_string()),
-            expanded: self.expanded.iter().cloned().collect(),
-        };
+        // `selections` isn't tracked in-memory by `ProjectContext` yet (that
+        // lands with the full stage-6 integration in task 8), so start from
+        // whatever is on disk to avoid clobbering it here.
+        let mut state = postui_core::project::load_local_state(&self.root).unwrap_or_default();
+        state.environment = self.active_env.clone();
+        state.open_request = open_request.map(|s| s.to_string());
+        state.expanded = self.expanded.iter().cloned().collect();
         let _ = postui_core::project::save_local_state(&self.root, &state);
     }
 
@@ -252,6 +281,7 @@ mod tests {
                 environment: Some("qa".into()),
                 open_request: Some("ping".into()),
                 expanded: vec!["users".into()],
+                ..Default::default()
             },
         )
         .unwrap();
@@ -319,13 +349,13 @@ mod tests {
         postui_core::project::init_project(dir.path(), None).unwrap();
         std::fs::write(dir.path().join("variables.toml"), "[a]\ndefault = \"1\"\n").unwrap();
         let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
-        assert_eq!(ctx.variables["a"].default.as_deref(), Some("1"));
+        assert_eq!(ctx.variables.vars["a"].default.as_deref(), Some("1"));
         std::fs::write(dir.path().join("variables.toml"), "not toml [").unwrap();
         bump_mtime(&dir.path().join("variables.toml"));
         let (_, warns) = ctx.reload_if_changed();
         assert!(!warns.is_empty(), "parse failure surfaced");
         assert_eq!(
-            ctx.variables["a"].default.as_deref(),
+            ctx.variables.vars["a"].default.as_deref(),
             Some("1"),
             "previous good state kept"
         );

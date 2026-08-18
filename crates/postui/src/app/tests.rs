@@ -807,6 +807,7 @@ fn startup_restores_persisted_open_request() {
             environment: None,
             open_request: Some("ping".into()),
             expanded: vec![],
+            ..Default::default()
         },
     )
     .unwrap();
@@ -833,6 +834,7 @@ fn startup_restores_open_request_inside_a_collapsed_folder() {
             environment: None,
             open_request: Some("auth/login".into()),
             expanded: vec![],
+            ..Default::default()
         },
     )
     .unwrap();
@@ -1788,7 +1790,7 @@ fn cycle_env_reloads_project_files_before_switching() {
 
     app.update(Action::CycleEnv);
     assert_eq!(
-        app.project.variables["greeting"].default.as_deref(),
+        app.project.variables.vars["greeting"].default.as_deref(),
         Some("hi"),
         "CycleEnv must reload project files (spec sec7 symmetry with OpenEnvChooser)"
     );
