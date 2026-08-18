@@ -83,15 +83,15 @@ impl TabStrip<'_> {
                     true,
                 );
             }
-            // Keyboard focus shows on the active tab's cap: the strip's
-            // one always-painted accent row, so the recolor can't be
-            // mistaken for a hover lift.
-            let cap_color = if active && self.focused {
-                theme.focus_ring
+            // Keyboard focus shows as a SHAPE change on the active tab:
+            // its half-cap thickens into a solid accent row. A recolor
+            // can't work here — focus_ring and accent are the same color,
+            // so a "focus-colored" cap is indistinguishable from normal.
+            if active && self.focused {
+                fill(buf, Rect::new(x, cap_y, width, 1), face);
             } else {
-                face
-            };
-            half_cap_bottom(buf, Rect::new(x, cap_y, width, 1), cap_color, on);
+                half_cap_bottom(buf, Rect::new(x, cap_y, width, 1), face, on);
+            }
 
             rects.push(Rect::new(x, labels_y, width, 2));
             x += width + 1; // 1-column gap between tabs
@@ -180,17 +180,20 @@ mod tests {
             .paint(f.buffer_mut(), Rect::new(0, 0, 40, 2), theme.panel, &theme);
         })
         .unwrap();
+        // The indicator must be a SHAPE change, not a recolor: focus_ring
+        // and accent are the same color in the default themes, so a
+        // half-cap recolored "to focus_ring" is indistinguishable from the
+        // normal active cap.
         let cap = buf_cell(&term, rects[0].x, 1);
         assert_eq!(
-            cap.fg, theme.focus_ring,
-            "keyboard focus recolors the active tab's cap so the strip \
-             visibly holds the arrow keys"
+            cap.bg, theme.accent,
+            "keyboard focus thickens the active tab's half-cap into a \
+             solid accent row, so the strip visibly holds the arrow keys"
         );
-        assert_eq!(
-            buf_cell(&term, rects[1].x, 1).fg,
-            theme.control,
-            "inactive tabs keep their normal cap"
-        );
+        assert_eq!(cap.symbol(), " ", "solid row, no half-block glyph");
+        let inactive_cap = buf_cell(&term, rects[1].x, 1);
+        assert_eq!(inactive_cap.symbol(), "▀", "inactive tabs keep half-caps");
+        assert_eq!(inactive_cap.fg, theme.control);
     }
 
     #[test]

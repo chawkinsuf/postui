@@ -161,6 +161,13 @@ impl TableEditorState {
         self.clamp_selected(map);
     }
 
+    /// Whether the cursor sits on the ghost "+ Add" row — one past the data
+    /// rows. Not true while a brand-new row is being typed (`begin_add`
+    /// parks `selected` there too, but the editing state owns those keys).
+    fn ghost_selected(&self, map: &IndexMap<String, Entry>) -> bool {
+        self.selected == Some(map.len()) && self.editing.is_none()
+    }
+
     fn clamp_selected(&mut self, map: &IndexMap<String, Entry>) {
         self.selected = match self.selected {
             Some(_) if map.is_empty() => None,
@@ -179,22 +186,22 @@ impl TableEditorState {
     fn handle_nav_key(&mut self, ev: KeyEvent, map: &mut IndexMap<String, Entry>) -> TableOutcome {
         match ev.code {
             KeyCode::Char('j') | KeyCode::Down => {
-                if map.is_empty() {
-                    return TableOutcome::not_consumed();
-                }
+                // The cursor's range is the data rows plus one: index
+                // `map.len()` is the ghost "+ Add" row, so the keyboard can
+                // reach it the same way the mouse can (and an empty table
+                // still has that one stop to land on).
                 self.selected = Some(match self.selected {
                     None => 0, // nothing selected: Down selects the first row
-                    Some(s) => (s + 1).min(map.len() - 1),
+                    Some(s) => (s + 1).min(map.len()),
                 });
                 TableOutcome::consumed()
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                // Row 0, no selection, and an empty table leave Up
-                // unconsumed so the caller (Editor) can fall back to moving
-                // focus to the URL line instead of leaving the user stuck
-                // with no way back.
+                // Row 0 and no selection leave Up unconsumed so the caller
+                // (Editor) can fall back to climbing out to the tab strip
+                // instead of leaving the user stuck with no way back.
                 match self.selected {
-                    Some(s) if s > 0 && !map.is_empty() => {
+                    Some(s) if s > 0 => {
                         self.selected = Some(s - 1);
                         TableOutcome::consumed()
                     }
@@ -215,11 +222,22 @@ impl TableEditorState {
                 self.begin_add(map);
                 TableOutcome::consumed()
             }
+            // On the ghost row, Enter and Space both activate it (it's a
+            // button, not an entry): start a brand-new row, exactly like
+            // clicking "+ Add" or pressing `a`.
+            KeyCode::Enter if self.ghost_selected(map) => {
+                self.begin_add(map);
+                TableOutcome::consumed()
+            }
             KeyCode::Enter => {
                 if map.is_empty() || self.selected.is_none() {
                     return TableOutcome::not_consumed();
                 }
                 self.begin_edit_selected(map);
+                TableOutcome::consumed()
+            }
+            KeyCode::Char(' ') if self.ghost_selected(map) => {
+                self.begin_add(map);
                 TableOutcome::consumed()
             }
             KeyCode::Char(' ') => {
@@ -233,7 +251,7 @@ impl TableEditorState {
                 TableOutcome::consumed()
             }
             KeyCode::Char('d') | KeyCode::Delete => {
-                if map.is_empty() || self.selected.is_none() {
+                if map.is_empty() || self.selected.is_none() || self.ghost_selected(map) {
                     return TableOutcome::not_consumed();
                 }
                 self.clamp_selected(map);
@@ -412,7 +430,9 @@ impl TableEditorState {
         if map_len == 0 {
             return None;
         }
-        self.selected.map(|s| s.min(map_len - 1))
+        // A cursor on the ghost "+ Add" row (== map_len) expands nothing —
+        // clamping it onto the last data row would wrongly expand that row.
+        self.selected.filter(|s| *s < map_len)
     }
 
     /// Draws the table as one contiguous painted control: a muted-uppercase
@@ -508,12 +528,15 @@ impl TableEditorState {
         // --- ghost "+ Add" row -----------------------------------------
         if y < bottom {
             let ghost_hovered = ctx.hovered == Some(&Hit::TableAdd);
-            let bg = if ghost_hovered {
+            // The keyboard cursor can rest here too (one past the data
+            // rows); it shows with the same lift as hover, held.
+            let ghost_selected = self.selected == Some(map_len) && !new_row_pending;
+            let bg = if ghost_hovered || ghost_selected {
                 theme.control_hover
             } else {
                 theme.control
             };
-            let fg = if ghost_hovered {
+            let fg = if ghost_hovered || ghost_selected {
                 theme.text
             } else {
                 theme.text_muted
@@ -729,6 +752,95 @@ mod tests {
             }
         );
         assert!(t.editing.is_none());
+    }
+
+    fn two_row_map() -> IndexMap<String, Entry> {
+        let mut map = IndexMap::new();
+        for (k, v) in [("a", "1"), ("b", "2")] {
+            map.insert(
+                k.into(),
+                Entry {
+                    value: v.into(),
+                    enabled: true,
+                },
+            );
+        }
+        map
+    }
+
+    #[test]
+    fn down_past_the_last_row_reaches_the_ghost_add_row() {
+        let mut map = two_row_map();
+        let mut t = TableEditorState {
+            selected: Some(1),
+            ..TableEditorState::default()
+        };
+        assert!(t.handle_key(key(KeyCode::Down), &mut map).consumed);
+        assert_eq!(
+            t.selected,
+            Some(2),
+            "one past the data rows is the ghost + Add row"
+        );
+        assert!(
+            t.handle_key(key(KeyCode::Down), &mut map).consumed,
+            "clamped at the ghost row, still consumed"
+        );
+        assert_eq!(t.selected, Some(2));
+        assert!(t.handle_key(key(KeyCode::Up), &mut map).consumed);
+        assert_eq!(t.selected, Some(1), "Up climbs back onto the last row");
+    }
+
+    #[test]
+    fn down_on_an_empty_table_selects_the_ghost_row() {
+        let mut map = IndexMap::new();
+        let mut t = TableEditorState::default();
+        assert!(
+            t.handle_key(key(KeyCode::Down), &mut map).consumed,
+            "an empty table still has the ghost row to land on"
+        );
+        assert_eq!(t.selected, Some(0));
+    }
+
+    #[test]
+    fn enter_or_space_on_the_ghost_row_begins_an_add() {
+        let mut map = two_row_map();
+        let mut t = TableEditorState {
+            selected: Some(2),
+            ..TableEditorState::default()
+        };
+        assert!(t.handle_key(key(KeyCode::Enter), &mut map).consumed);
+        assert!(
+            t.editing.as_ref().is_some_and(|e| e.original_key.is_none()),
+            "Enter on the ghost row starts a brand-new row, like clicking it"
+        );
+
+        let mut t = TableEditorState {
+            selected: Some(2),
+            ..TableEditorState::default()
+        };
+        assert!(t.handle_key(key(KeyCode::Char(' ')), &mut map).consumed);
+        assert!(t.editing.as_ref().is_some_and(|e| e.original_key.is_none()));
+        assert_eq!(map.len(), 2, "no entry inserted until the key commits");
+    }
+
+    #[test]
+    fn ghost_selection_never_expands_or_deletes_a_data_row() {
+        let mut map = two_row_map();
+        let mut t = TableEditorState {
+            selected: Some(2),
+            ..TableEditorState::default()
+        };
+        assert_eq!(
+            t.active_index(map.len()),
+            None,
+            "the ghost row has nothing to expand"
+        );
+        let out = t.handle_key(key(KeyCode::Char('d')), &mut map);
+        assert_eq!(
+            out.request_delete, None,
+            "d on the ghost row must not target the last data row"
+        );
+        assert_eq!(map.len(), 2);
     }
 
     #[test]

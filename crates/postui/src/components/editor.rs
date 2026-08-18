@@ -366,6 +366,15 @@ impl Component for Editor {
                 KeyCode::Right => Some(Action::EditorTabCycle(1)),
                 KeyCode::Down | KeyCode::Enter => {
                     self.sub_focus = SubFocus::Content;
+                    // Entering a table tab must land somewhere visible:
+                    // select its first row — or, on an empty table, its
+                    // ghost "+ Add" row (index 0 either way) — instead of
+                    // a focused-but-nothing-selected limbo.
+                    if matches!(self.active_tab, EditorTab::Params | EditorTab::Headers)
+                        && self.table.selected.is_none()
+                    {
+                        self.table.selected = Some(0);
+                    }
                     Some(Action::Render)
                 }
                 KeyCode::Up => {
@@ -1231,6 +1240,37 @@ mod tests {
     }
 
     #[test]
+    fn descending_from_the_tab_strip_lands_on_a_visible_selection() {
+        // Entering the content must never be an invisible state: on
+        // Params/Headers the first row (or the ghost + Add row of an empty
+        // table) is selected immediately, so every keyboard stop shows.
+        let mut e = Editor::default();
+        e.params.insert(
+            "a".into(),
+            Entry {
+                value: "1".into(),
+                enabled: true,
+            },
+        );
+        e.sub_focus = SubFocus::Tabs;
+        e.handle_key(key(KeyCode::Down));
+        assert_eq!(e.sub_focus, SubFocus::Content);
+        assert_eq!(e.table.selected, Some(0), "first row selected on entry");
+
+        let mut e = Editor {
+            sub_focus: SubFocus::Tabs,
+            ..Editor::default() // empty params table
+        };
+        e.handle_key(key(KeyCode::Enter));
+        assert_eq!(e.sub_focus, SubFocus::Content);
+        assert_eq!(
+            e.table.selected,
+            Some(0),
+            "an empty table's entry point is its ghost + Add row"
+        );
+    }
+
+    #[test]
     fn params_tab_up_at_row_zero_returns_to_tab_strip() {
         // A non-empty table still doesn't consume Up at row 0 (the top),
         // so Editor's fallback kicks in even though the table has rows.
@@ -1629,7 +1669,7 @@ url = "https://api.example.com/users""#,
     }
 
     #[test]
-    fn tab_strip_focus_recolors_the_active_tabs_cap() {
+    fn tab_strip_focus_solidifies_the_active_tabs_cap() {
         let mut e = Editor {
             sub_focus: SubFocus::Tabs,
             ..Editor::default()
@@ -1639,7 +1679,11 @@ url = "https://api.example.com/users""#,
         let tab0 = hits.rect_of(&crate::hit::Hit::EditorTab(0)).unwrap();
         let buf = terminal.backend().buffer();
         let cap = buf.cell((tab0.x, tab0.y + 1)).unwrap();
-        assert_eq!(cap.fg, theme.focus_ring);
+        assert_eq!(
+            cap.bg, theme.accent,
+            "focused strip: the active tab's cap is a solid accent row"
+        );
+        assert_eq!(cap.symbol(), " ");
     }
 
     #[test]
