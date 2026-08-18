@@ -8,7 +8,7 @@
 //! the round-trip fixture tests below for the contract in practice.
 
 use indexmap::IndexMap;
-use toml_edit::{Array, DocumentMut, Item, Key, Table, Value, value};
+use toml_edit::{Array, DocumentMut, Item, Key, RawString, Table, Value, value};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EditError {
@@ -116,6 +116,120 @@ fn locate_owner_table<'a>(root: &'a mut Table, owner: &str) -> Result<&'a mut Ta
     Err(not_found(format!(
         "\"{owner}\" is not a declared variable or group"
     )))
+}
+
+/// Splits a leading-decor prefix at its LAST blank line into `(file_header,
+/// own_comment)`. `own_comment` is the block contiguous with the item the
+/// prefix belongs to (from just after that blank line through the end of
+/// `prefix`) — it's specific to that item and leaves with it on delete.
+/// `file_header` is everything up to and including the blank line — the
+/// part that predates the item and should survive it. Returns `None` when
+/// `prefix` has no blank line at all, i.e. it's *only* the item's own
+/// contiguous comment with nothing to transfer.
+fn split_leading_decor(prefix: &str) -> Option<(&str, &str)> {
+    let idx = prefix.rfind("\n\n")?;
+    let split_at = idx + 2;
+    Some((&prefix[..split_at], &prefix[split_at..]))
+}
+
+/// Joins a transferred file header onto the new first item's own existing
+/// leading decor, collapsing any run of 3+ consecutive newlines down to a
+/// single blank line (2). Both halves independently end their own block
+/// with a blank-line separator — the header's trailing blank line and the
+/// new-first-item's former separator-from-the-deleted-item are the same
+/// logical blank line once merged, so naive concatenation would otherwise
+/// double it up.
+fn join_decor_prefix(header: &str, existing: &str) -> String {
+    let mut out = String::with_capacity(header.len() + existing.len());
+    let mut newline_run = 0usize;
+    for ch in header.chars().chain(existing.chars()) {
+        if ch == '\n' {
+            newline_run += 1;
+            if newline_run <= 2 {
+                out.push(ch);
+            }
+        } else {
+            newline_run = 0;
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// Prepends `header` onto the leading decor of whatever will actually
+/// *print first* in `parent` after a deletion. Table headers keep their
+/// leading decor on the `Table` itself; flat `key = value` pairs keep it on
+/// their `Key`'s `leaf_decor`. An implicit ancestor table with no flat
+/// children of its own (e.g. `options`, kept invisible on purpose per spec
+/// §1.1 so only its leaves like `[user.options.alice]` print) never prints
+/// its own decor, so this recurses into such a table's first child to find
+/// the entry that will actually be first on the page.
+fn attach_header_to_new_first(parent: &mut Table, header: &str) {
+    let Some(key) = parent.iter().next().map(|(k, _)| k.to_string()) else {
+        return;
+    };
+    let recurse_into_child = matches!(
+        parent.get(&key),
+        Some(Item::Table(t)) if t.is_implicit() && !t.is_empty() && t.get_values().is_empty()
+    );
+    if recurse_into_child {
+        if let Some(child) = parent.get_mut(&key).and_then(Item::as_table_mut) {
+            attach_header_to_new_first(child, header);
+        }
+        return;
+    }
+    match parent.get_mut(&key) {
+        Some(Item::Table(t)) => {
+            let existing = t
+                .decor()
+                .prefix()
+                .and_then(RawString::as_str)
+                .unwrap_or_default()
+                .to_string();
+            t.decor_mut()
+                .set_prefix(join_decor_prefix(header, &existing));
+        }
+        _ => {
+            if let Some(mut km) = parent.key_mut(&key) {
+                let existing = km
+                    .leaf_decor()
+                    .prefix()
+                    .and_then(RawString::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                km.leaf_decor_mut()
+                    .set_prefix(join_decor_prefix(header, &existing));
+            }
+        }
+    }
+}
+
+/// Removes `key` from `parent`. If `key` was the first item, the file-header
+/// portion of its own leading decor (see `split_leading_decor`) is
+/// transferred onto whatever becomes the new first-printed item, so the
+/// file header outlives the deleted item even though that item's own
+/// contiguous comment leaves with it (spec §7 write fidelity).
+fn remove_transferring_header(parent: &mut Table, key: &str) -> Option<Item> {
+    let is_first = parent.iter().next().is_some_and(|(k, _)| k == key);
+    let header = is_first
+        .then(|| match parent.get(key) {
+            Some(Item::Table(t)) => t.decor().prefix().and_then(RawString::as_str),
+            _ => parent
+                .key(key)
+                .and_then(|k| k.leaf_decor().prefix())
+                .and_then(RawString::as_str),
+        })
+        .flatten()
+        .and_then(split_leading_decor)
+        .map(|(header, _own_comment)| header.to_string());
+
+    let removed = parent.remove(key);
+
+    if let Some(header) = header {
+        attach_header_to_new_first(parent, &header);
+    }
+
+    removed
 }
 
 // ---------------------------------------------------------------------
@@ -243,7 +357,7 @@ pub fn delete_var(doc: &str, name: &str) -> Result<String, EditError> {
             }
         }
     }
-    root.remove(name);
+    remove_transferring_header(root, name);
     Ok(doc.to_string())
 }
 
@@ -280,7 +394,7 @@ pub fn delete_shared_option(doc: &str, owner: &str, key: &str) -> Result<String,
     let removed = owner_table
         .get_mut("options")
         .and_then(Item::as_table_mut)
-        .and_then(|t| t.remove(key));
+        .and_then(|t| remove_transferring_header(t, key));
     if removed.is_none() {
         return Err(not_found(format!(
             "option \"{key}\" not found on \"{owner}\""
@@ -320,7 +434,7 @@ pub fn delete_group(doc: &str, name: &str) -> Result<String, EditError> {
     let removed = root
         .get_mut("groups")
         .and_then(Item::as_table_mut)
-        .and_then(|g| g.remove(name));
+        .and_then(|g| remove_transferring_header(g, name));
     if removed.is_none() {
         return Err(not_found(format!("group \"{name}\" not found")));
     }
@@ -338,10 +452,15 @@ pub fn set_env_value(doc: &str, name: &str, val: Option<&str>) -> Result<String,
     let root = doc.as_table_mut();
     match val {
         Some(v) => {
-            root.insert(name, value(v));
+            // Index-assignment updates the existing `Item` in place and
+            // keeps the existing `Key` (and its decor/comment) when the
+            // pair already exists; `Table::insert` would instead build a
+            // fresh, decor-less `Key`, silently dropping any comment
+            // attached to it.
+            root[name] = value(v);
         }
         None => {
-            if root.remove(name).is_none() {
+            if remove_transferring_header(root, name).is_none() {
                 return Err(not_found(format!("\"{name}\" not found")));
             }
         }
@@ -378,7 +497,7 @@ pub fn delete_env_option(doc: &str, owner: &str, key: &str) -> Result<String, Ed
         .and_then(Item::as_table_mut)
         .and_then(|o| o.get_mut(owner))
         .and_then(Item::as_table_mut)
-        .and_then(|t| t.remove(key));
+        .and_then(|t| remove_transferring_header(t, key));
     if removed.is_none() {
         return Err(not_found(format!("[options.{owner}.{key}] not found")));
     }
@@ -702,7 +821,8 @@ customer_id = "c-77"
         let out = delete_var(VARS, "base_url").unwrap();
         assert_eq!(
             out,
-            r#"
+            r#"# variables.toml
+
 [api_key]
 description = "service API key"
 secret = true
@@ -726,6 +846,38 @@ members = ["user_id", "customer_id"]
 description = "admin, active sub"
 user_id = "1001"
 customer_id = "c-77"
+"#
+        );
+    }
+
+    #[test]
+    fn delete_var_of_first_item_keeps_the_file_header_but_drops_its_own_comment() {
+        // Regression: deleting the FIRST top-level item used to drop the
+        // file's leading header comment along with it, because the header
+        // lives in that item's own leading decor. The fix splits that decor
+        // at its last blank line: the file header (above the blank line)
+        // transfers to the new first item; the deleted item's own
+        // contiguous comment (below the blank line, right against the
+        // item) leaves with it, same as before.
+        let vars = r#"# variables.toml
+
+# base_url is the API root, override per-environment as needed
+[base_url]
+description = "API root"
+default = "http://localhost:8080"
+
+[api_key]
+description = "service API key"
+secret = true
+"#;
+        let out = delete_var(vars, "base_url").unwrap();
+        assert_eq!(
+            out,
+            r#"# variables.toml
+
+[api_key]
+description = "service API key"
+secret = true
 "#
         );
     }
@@ -1088,7 +1240,9 @@ user_id = "9001"
         let out = set_env_value(ENV, "base_url", Some("https://qa2.example.com")).unwrap();
         assert_eq!(
             out,
-            r#"base_url = "https://qa2.example.com"
+            r#"# environments/qa.toml
+
+base_url = "https://qa2.example.com"
 
 [options.user.alice]
 value = "9001"
@@ -1102,11 +1256,42 @@ user_id = "9001"
     }
 
     #[test]
+    fn set_env_value_update_preserves_the_keys_own_leading_comment() {
+        // Regression: `set_env_value(Some(v))` on an EXISTING, non-first key
+        // used to build a fresh, decor-less `Key` on every update
+        // (`Table::insert`), silently dropping any comment attached to that
+        // key. Index-assignment instead reuses the existing `Key`.
+        let env = r#"# environments/qa.toml
+
+base_url = "https://qa.example.com"
+# staging region override, remove once qa2 is retired
+region = "eu-west"
+
+[options.user.alice]
+value = "9001"
+"#;
+        let out = set_env_value(env, "region", Some("us-east")).unwrap();
+        assert_eq!(
+            out,
+            r#"# environments/qa.toml
+
+base_url = "https://qa.example.com"
+# staging region override, remove once qa2 is retired
+region = "us-east"
+
+[options.user.alice]
+value = "9001"
+"#
+        );
+    }
+
+    #[test]
     fn set_env_value_none_removes_the_flat_pair() {
         let out = set_env_value(ENV, "base_url", None).unwrap();
         assert_eq!(
             out,
-            r#"
+            r#"# environments/qa.toml
+
 [options.user.alice]
 value = "9001"
 [options.user.qa-only]
