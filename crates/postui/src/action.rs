@@ -170,9 +170,15 @@ pub enum Action {
         path: String,
     },
     /// Open the environment chooser: every `project.environments` entry
-    /// plus a final "no environment" entry. Toasts instead of opening the
-    /// modal when the project has no environments.
+    /// plus a final "no environment" entry and a "new environment…" entry.
+    /// With no environments the chooser still opens (just those two rows) —
+    /// the create row is the escape hatch from the empty state.
     OpenEnvChooser,
+    /// Open the `PromptKind::NewEnvironment` name prompt.
+    OpenNewEnvPrompt,
+    /// Create an empty `environments/<name>.toml` and switch to it. Toasts
+    /// (and changes nothing) on an invalid name or an existing file.
+    CreateEnv(String),
     /// Switch to the next environment after the active one, wrapping;
     /// skips the "no environment" state (from `None`, starts at the
     /// first). Toasts when the project has no environments.

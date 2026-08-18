@@ -24,6 +24,9 @@ pub enum PromptKind {
     SaveAs,
     OpenProjectPath,
     SaveBodyAs,
+    /// The env chooser's "new environment…" row: the text is the new
+    /// environment's name (slug rules).
+    NewEnvironment,
     /// `n` (spec §5): a bare variable name — the grid's own cell edit sets
     /// its default/description afterward.
     NewVariable,
@@ -391,6 +394,9 @@ impl ModalStack {
                         }
                         PromptKind::SaveBodyAs => {
                             Some(vec![Action::SaveBodyToFile(text.to_string())])
+                        }
+                        PromptKind::NewEnvironment => {
+                            Some(vec![Action::CreateEnv(text.to_string())])
                         }
                         PromptKind::NewVariable => {
                             Some(vec![Action::VarStruct(VarStructOp::NewVar {

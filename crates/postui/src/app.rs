@@ -1198,13 +1198,6 @@ impl App {
                 use crate::components::chooser::{ChooserItem, ChooserState};
                 self.project.environments =
                     postui_core::project::list_environments(&self.project.root);
-                if self.project.environments.is_empty() {
-                    self.toasts.push(
-                        "no environments — create environments/<name>.toml in the project",
-                        ToastKind::Warning,
-                    );
-                    return true;
-                }
                 let mut items: Vec<ChooserItem> = self
                     .project
                     .environments
@@ -1220,8 +1213,46 @@ impl App {
                     detail: None,
                     actions: vec![Action::SwitchEnv(None)],
                 });
+                items.push(ChooserItem {
+                    label: "new environment…".into(),
+                    detail: None,
+                    actions: vec![Action::OpenNewEnvPrompt],
+                });
                 self.modals
                     .push(Modal::Chooser(ChooserState::new("Environments", items)));
+                true
+            }
+            Action::OpenNewEnvPrompt => {
+                self.modals.push(Modal::Prompt {
+                    title: "New environment (a-z 0-9 - _)".into(),
+                    input: crate::components::line_input::LineInput::new(""),
+                    kind: PromptKind::NewEnvironment,
+                    revealed: false,
+                });
+                true
+            }
+            Action::CreateEnv(name) => {
+                match postui_core::project::create_environment(&self.project.root, &name) {
+                    Ok(()) => {
+                        self.project.environments =
+                            postui_core::project::list_environments(&self.project.root);
+                        self.apply(Action::SwitchEnv(Some(name)));
+                    }
+                    Err(e) => {
+                        let msg = if self
+                            .project
+                            .root
+                            .join("environments")
+                            .join(format!("{name}.toml"))
+                            .is_file()
+                        {
+                            format!("environment \"{name}\" already exists")
+                        } else {
+                            format!("cannot create environment: {e}")
+                        };
+                        self.toasts.push(msg, ToastKind::Warning);
+                    }
+                }
                 true
             }
             Action::CycleEnv => {

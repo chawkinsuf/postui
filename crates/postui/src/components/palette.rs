@@ -126,6 +126,11 @@ pub fn all_commands() -> Vec<Command> {
             action: Action::CycleEnv,
         },
         Command {
+            id: "env-new",
+            name: "Environment: new…",
+            action: Action::OpenNewEnvPrompt,
+        },
+        Command {
             id: "vars-insert",
             name: "Variables: insert…",
             action: Action::OpenVarPicker { completing: false },

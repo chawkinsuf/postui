@@ -766,17 +766,13 @@ fn header_buffer_shows_dropdown_glyph_for_project_and_env() {
 
 #[test]
 fn click_header_env_opens_env_chooser() {
-    // `App::new_for_test()`'s project has no environments configured, so
-    // firing `OpenEnvChooser` toasts the "no environments" warning
-    // rather than opening a chooser — proof enough that the click
-    // dispatched the action.
     let mut app = App::new_for_test();
     render_once(&mut app);
     let r = app.hits.rect_of(&crate::hit::Hit::HeaderEnv).unwrap();
-    assert!(app.toasts.is_empty());
+    assert!(app.modals.is_empty());
     app.handle_mouse(left_down(r.x, r.y));
     assert!(
-        !app.toasts.is_empty(),
+        matches!(app.modals.top(), Some(Modal::Chooser(_))),
         "clicking the env name should fire OpenEnvChooser"
     );
 }
@@ -2072,6 +2068,87 @@ fn env_chooser_includes_no_environment_entry() {
     app.update(Action::Close);
     app.update(Action::SwitchEnv(None));
     assert_eq!(app.project.env_label(), "no env");
+}
+
+#[test]
+fn env_chooser_new_environment_row_opens_prompt() {
+    let (mut app, _dir) = app_with_envs();
+    let keymap = Keymap::default_bindings();
+    app.update(Action::OpenEnvChooser);
+    assert!(matches!(app.modals.top(), Some(Modal::Chooser(_))));
+    // "new" filters to the "new environment…" row alone (prod/qa/"no
+    // environment" don't match), so Enter confirms it
+    for c in "new".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(
+        matches!(
+            app.modals.top(),
+            Some(Modal::Prompt {
+                kind: PromptKind::NewEnvironment,
+                ..
+            })
+        ),
+        "confirming the create row should open the name prompt"
+    );
+}
+
+#[test]
+fn create_env_prompt_flow_creates_empty_file_and_switches() {
+    let (mut app, dir) = app_with_envs();
+    let keymap = Keymap::default_bindings();
+    app.update(Action::OpenNewEnvPrompt);
+    for c in "dev".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.modals.is_empty());
+    let path = dir.path().join("environments/dev.toml");
+    assert!(path.is_file());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+    assert_eq!(app.project.env_label(), "dev", "switches to the new env");
+    assert!(app.project.environments.contains(&"dev".to_string()));
+    let st = postui_core::project::load_local_state(dir.path()).unwrap();
+    assert_eq!(st.environment.as_deref(), Some("dev"), "persisted");
+}
+
+#[test]
+fn create_env_invalid_or_duplicate_name_toasts_and_keeps_active_env() {
+    let (mut app, dir) = app_with_envs();
+    app.update(Action::SwitchEnv(Some("qa".into())));
+    let toasts_before = app.toasts.messages().len();
+
+    app.update(Action::CreateEnv("Bad Name".into()));
+    assert!(
+        app.toasts.messages().len() > toasts_before,
+        "invalid name must toast"
+    );
+    assert_eq!(app.project.env_label(), "qa");
+    assert!(!dir.path().join("environments/Bad Name.toml").exists());
+
+    let toasts_before = app.toasts.messages().len();
+    app.update(Action::CreateEnv("prod".into()));
+    assert!(
+        app.toasts.messages().len() > toasts_before,
+        "duplicate name must toast"
+    );
+    assert_eq!(app.project.env_label(), "qa", "no switch on failure");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("environments/prod.toml")).unwrap(),
+        "tok = \"p\"\n",
+        "existing file untouched"
+    );
+}
+
+#[test]
+fn env_chooser_with_no_environments_still_opens_with_create_row() {
+    let mut app = App::new_for_test();
+    app.update(Action::OpenEnvChooser);
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Chooser(_))),
+        "empty project opens the chooser (no-env + create rows), not a toast"
+    );
 }
 
 #[test]

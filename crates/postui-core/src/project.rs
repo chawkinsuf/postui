@@ -98,6 +98,23 @@ pub fn list_environments(root: &Path) -> Vec<String> {
     out
 }
 
+/// Creates an empty `root/environments/<name>.toml`, making the directory
+/// if needed. Rejects names `load_environment` would reject, and an already
+/// existing file (`create_new` — the check and the create are one atomic
+/// step, so a concurrent writer can't be clobbered).
+pub fn create_environment(root: &Path, name: &str) -> Result<(), ProjectError> {
+    if name.contains('/') || crate::storage::validate_slug(name).is_err() {
+        return Err(ProjectError::BadName(name.to_string()));
+    }
+    let dir = root.join("environments");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dir.join(format!("{name}.toml")))?;
+    Ok(())
+}
+
 pub fn load_environment(root: &Path, name: &str) -> Result<varmodel::EnvData, ProjectError> {
     if name.contains('/') || crate::storage::validate_slug(name).is_err() {
         return Err(ProjectError::BadName(name.to_string()));
@@ -283,6 +300,50 @@ mod tests {
             load_variables(dir.path()),
             Err(ProjectError::Parse(_))
         ));
+    }
+
+    #[test]
+    fn create_environment_writes_empty_file_and_creates_dir() {
+        let dir = tempdir().unwrap();
+        // no environments/ dir yet — create_environment must make it
+        create_environment(dir.path(), "dev").unwrap();
+        let path = dir.path().join("environments/dev.toml");
+        assert!(path.is_file());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+        assert_eq!(list_environments(dir.path()), vec!["dev".to_string()]);
+        // no stray temp files left behind
+        let leftovers: Vec<String> = std::fs::read_dir(dir.path().join("environments"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n != "dev.toml")
+            .collect();
+        assert!(leftovers.is_empty(), "leftover files: {leftovers:?}");
+    }
+
+    #[test]
+    fn create_environment_rejects_bad_names_and_duplicates() {
+        let dir = tempdir().unwrap();
+        for bad in ["", "Bad Name", "UPPER", "a/b", "..", "dev.toml"] {
+            assert!(
+                matches!(
+                    create_environment(dir.path(), bad),
+                    Err(ProjectError::BadName(_))
+                ),
+                "expected BadName for {bad:?}"
+            );
+        }
+        // nothing written by the rejections
+        assert!(list_environments(dir.path()).is_empty());
+
+        create_environment(dir.path(), "qa").unwrap();
+        std::fs::write(dir.path().join("environments/qa.toml"), "token = \"t\"\n").unwrap();
+        // duplicate is an error and must not clobber the existing contents
+        assert!(create_environment(dir.path(), "qa").is_err());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap(),
+            "token = \"t\"\n"
+        );
     }
 
     #[test]
