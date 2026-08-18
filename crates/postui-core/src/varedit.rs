@@ -488,6 +488,87 @@ pub fn upsert_env_option(
     Ok(doc.to_string())
 }
 
+// ---------------------------------------------------------------------
+// Manager integration: usage scan + promote (spec §4)
+// ---------------------------------------------------------------------
+
+/// Slugs (sorted, matching [`crate::storage::list_requests`] order) of
+/// saved requests whose raw file text contains a well-formed `{{name}}`
+/// token — url, params, headers, body, and `[variables]` values are all
+/// plain TOML string values, so a raw-text [`crate::vars::find_tokens`]
+/// scan is exact and cheap; no need to parse each file's fields
+/// individually.
+pub fn scan_usage(root: &std::path::Path, name: &str) -> Vec<String> {
+    let (listings, _walk_err) = crate::storage::list_requests(root);
+    listings
+        .into_iter()
+        .filter(|listing| {
+            let path = root.join("requests").join(format!("{}.toml", listing.slug));
+            std::fs::read_to_string(&path)
+                .map(|text| {
+                    crate::vars::find_tokens(&text)
+                        .iter()
+                        .any(|t| t.name == name)
+                })
+                .unwrap_or(false)
+        })
+        .map(|listing| listing.slug)
+        .collect()
+}
+
+/// Where a promoted request-scope value lands in the project.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromoteTarget {
+    /// The declaration's shared `default`.
+    Default,
+    /// A flat pair in the active environment, plus a bare declaration
+    /// (name only, no fields) so the variable exists project-wide.
+    Env,
+}
+
+/// Promotes a request-scope `{{name}} = value` into the project:
+/// `Default` writes `value` as the declaration's `default`; `Env` writes a
+/// flat `name = value` pair into `env_doc` and a bare declaration (no
+/// fields) into `vars_doc`. `Conflict` if `name` already names an
+/// enumerated variable (one with an `options` table) — writing over it
+/// would either clobber its options or leave promote's meaning
+/// ambiguous; the caller should offer a rename instead. The caller is
+/// responsible for removing the request's own `[variables]` entry.
+pub fn promote_var(
+    vars_doc: &str,
+    env_doc: Option<&str>,
+    name: &str,
+    value: &str,
+    target: PromoteTarget,
+) -> Result<(String, Option<String>), EditError> {
+    let existing = parse(vars_doc)?;
+    if existing
+        .as_table()
+        .get(name)
+        .and_then(Item::as_table)
+        .is_some_and(|t| t.contains_key("options"))
+    {
+        return Err(EditError::Conflict(format!(
+            "variable \"{name}\" is enumerated; promoting would overwrite its options"
+        )));
+    }
+
+    match target {
+        PromoteTarget::Default => {
+            let new_vars = upsert_var(vars_doc, name, None, Some(value))?;
+            Ok((new_vars, None))
+        }
+        PromoteTarget::Env => {
+            let new_vars = upsert_var(vars_doc, name, None, None)?;
+            let env_doc = env_doc.ok_or_else(|| {
+                not_found("no active environment file to promote into".to_string())
+            })?;
+            let new_env = set_env_value(env_doc, name, Some(value))?;
+            Ok((new_vars, Some(new_env)))
+        }
+    }
+}
+
 /// Removes `[options.owner.key]`. `NotFound` if it wasn't there.
 pub fn delete_env_option(doc: &str, owner: &str, key: &str) -> Result<String, EditError> {
     let mut doc = parse(doc)?;
@@ -1381,6 +1462,254 @@ user_id = "9001"
         assert_eq!(
             err,
             EditError::NotFound("[options.user.nope] not found".to_string())
+        );
+    }
+
+    // -------------------------------------------------------------
+    // scan_usage / promote_var
+    // -------------------------------------------------------------
+
+    fn req_with(
+        url: &str,
+        params: &[(&str, &str)],
+        headers: &[(&str, &str)],
+        variables: &[(&str, &str)],
+        body: Option<&str>,
+    ) -> crate::model::HttpRequest {
+        use crate::model::{Body, Entry, Method};
+        let entry = |v: &str| Entry {
+            value: v.to_string(),
+            enabled: true,
+        };
+        crate::model::HttpRequest {
+            method: Method::Get,
+            url: url.to_string(),
+            substitute_body: false,
+            params: params
+                .iter()
+                .map(|(k, v)| (k.to_string(), entry(v)))
+                .collect(),
+            headers: headers
+                .iter()
+                .map(|(k, v)| (k.to_string(), entry(v)))
+                .collect(),
+            variables: variables
+                .iter()
+                .map(|(k, v)| (k.to_string(), entry(v)))
+                .collect(),
+            body: body.map(|t| Body::Json {
+                text: t.to_string(),
+            }),
+        }
+    }
+
+    #[test]
+    fn scan_usage_finds_tokens_in_every_field_and_ignores_other_names() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::ensure_project(dir.path()).unwrap();
+
+        // url
+        crate::storage::save_request(
+            dir.path(),
+            "in-url",
+            &req_with("https://x.test/{{base_url}}", &[], &[], &[], None),
+        )
+        .unwrap();
+        // params
+        crate::storage::save_request(
+            dir.path(),
+            "in-params",
+            &req_with("https://x.test", &[("q", "{{base_url}}")], &[], &[], None),
+        )
+        .unwrap();
+        // headers
+        crate::storage::save_request(
+            dir.path(),
+            "in-headers",
+            &req_with(
+                "https://x.test",
+                &[],
+                &[("X-Auth", "{{base_url}}")],
+                &[],
+                None,
+            ),
+        )
+        .unwrap();
+        // [variables] value
+        crate::storage::save_request(
+            dir.path(),
+            "in-variables",
+            &req_with(
+                "https://x.test",
+                &[],
+                &[],
+                &[("local", "{{base_url}}")],
+                None,
+            ),
+        )
+        .unwrap();
+        // body
+        crate::storage::save_request(
+            dir.path(),
+            "in-body",
+            &req_with(
+                "https://x.test",
+                &[],
+                &[],
+                &[],
+                Some(r#"{"root": "{{base_url}}"}"#),
+            ),
+        )
+        .unwrap();
+        // a different token only: must be ignored
+        crate::storage::save_request(
+            dir.path(),
+            "unrelated",
+            &req_with("https://x.test/{{other}}", &[], &[], &[], None),
+        )
+        .unwrap();
+        // no token at all
+        crate::storage::save_request(
+            dir.path(),
+            "none",
+            &req_with("https://x.test", &[], &[], &[], None),
+        )
+        .unwrap();
+
+        let mut hits = scan_usage(dir.path(), "base_url");
+        hits.sort();
+        assert_eq!(
+            hits,
+            [
+                "in-body",
+                "in-headers",
+                "in-params",
+                "in-url",
+                "in-variables",
+            ]
+        );
+    }
+
+    #[test]
+    fn scan_usage_empty_when_no_requests_reference_the_name() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::storage::ensure_project(dir.path()).unwrap();
+        crate::storage::save_request(
+            dir.path(),
+            "a",
+            &req_with("https://x.test/{{other}}", &[], &[], &[], None),
+        )
+        .unwrap();
+        assert!(scan_usage(dir.path(), "base_url").is_empty());
+    }
+
+    #[test]
+    fn promote_var_to_default_writes_the_declaration_default() {
+        let (vars_out, env_out) =
+            promote_var(VARS, Some(ENV), "new_var", "hello", PromoteTarget::Default).unwrap();
+        assert!(env_out.is_none());
+        assert_eq!(
+            vars_out,
+            r#"# variables.toml
+
+[base_url]
+description = "API root"
+default = "http://localhost:8080"
+
+[api_key]
+description = "service API key"
+secret = true
+
+[user]
+description = "seeded test user"
+[user.options.alice]
+description = "admin, active sub"
+value = "1001"
+[user.options.bob]
+description = "expired trial"
+value = "2002"
+
+[user_id]
+description = "linked user id"
+
+[groups.test-user]
+description = "user with linked customer"
+members = ["user_id", "customer_id"]
+[groups.test-user.options.alice]
+description = "admin, active sub"
+user_id = "1001"
+customer_id = "c-77"
+
+[new_var]
+default = "hello"
+"#
+        );
+    }
+
+    #[test]
+    fn promote_var_to_env_writes_flat_pair_and_bare_declaration() {
+        let (vars_out, env_out) =
+            promote_var(VARS, Some(ENV), "new_var", "hello", PromoteTarget::Env).unwrap();
+        assert_eq!(
+            vars_out,
+            r#"# variables.toml
+
+[base_url]
+description = "API root"
+default = "http://localhost:8080"
+
+[api_key]
+description = "service API key"
+secret = true
+
+[user]
+description = "seeded test user"
+[user.options.alice]
+description = "admin, active sub"
+value = "1001"
+[user.options.bob]
+description = "expired trial"
+value = "2002"
+
+[user_id]
+description = "linked user id"
+
+[groups.test-user]
+description = "user with linked customer"
+members = ["user_id", "customer_id"]
+[groups.test-user.options.alice]
+description = "admin, active sub"
+user_id = "1001"
+customer_id = "c-77"
+
+[new_var]
+"#
+        );
+        assert_eq!(
+            env_out.unwrap(),
+            r#"# environments/qa.toml
+
+base_url = "https://qa.example.com"
+new_var = "hello"
+
+[options.user.alice]
+value = "9001"
+[options.user.qa-only]
+description = "exists only in qa"
+value = "3003"
+[options.test-user.alice]
+user_id = "9001"
+"#
+        );
+    }
+
+    #[test]
+    fn promote_var_onto_existing_enumerated_name_is_conflict() {
+        let err =
+            promote_var(VARS, Some(ENV), "user", "carol", PromoteTarget::Default).unwrap_err();
+        assert!(
+            matches!(err, EditError::Conflict(_)),
+            "expected Conflict, got {err:?}"
         );
     }
 }
