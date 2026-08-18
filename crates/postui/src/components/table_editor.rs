@@ -88,14 +88,18 @@ fn columns(x0: u16, width: u16) -> Columns {
     }
 }
 
-/// `1 (header) + rows + (2 if a row is expanded) + 1 (ghost add row) + 1
-/// (closing edge)`. `rows` is the total number of data-row *lines* about to
-/// be drawn (`map.len()`, plus one more while a brand-new not-yet-inserted
-/// row is being typed). `active` is `Some(_)` whenever exactly one of those
-/// rows is drawn expanded (hovered or being edited) — its value is unused by
-/// the height math, only its presence.
-pub fn table_height(rows: usize, active: Option<usize>) -> u16 {
-    1 + rows as u16 + active.map_or(0, |_| 2) + 1 + 1
+/// `1 (header) + rows + (2 if a row is expanded, 3 if it also carries a
+/// shadow hint line) + 1 (ghost add row) + 1 (closing edge)`. `rows` is the
+/// total number of data-row *lines* about to be drawn (`map.len()`, plus one
+/// more while a brand-new not-yet-inserted row is being typed). `active` is
+/// `Some(_)` whenever exactly one of those rows is drawn expanded (hovered
+/// or being edited) — its value is unused by the height math, only its
+/// presence. `active_hint` is whether that one expanded row also shows a
+/// shadow hint (the Vars tab's "overrides <env>: <value>" line) — ignored
+/// when `active` is `None`.
+pub fn table_height(rows: usize, active: Option<usize>, active_hint: bool) -> u16 {
+    let expanded_extra = active.map_or(0, |_| if active_hint { 3 } else { 2 });
+    1 + rows as u16 + expanded_extra + 1 + 1
 }
 
 /// Shared cursor/edit state for a key/value table (Params or Headers tab).
@@ -440,6 +444,11 @@ impl TableEditorState {
     /// 1-line rows (the active row — being edited, or hovered — expands to
     /// 3 with a full-row pill and a `✕` delete affordance), a ghost
     /// `+ Add …` row, and a closing `▔` edge.
+    /// `shadow` is `Some` only on the Vars tab: `name → "overrides <env>:
+    /// <value>"`, already formatted (masked for secrets) by the caller. A
+    /// row whose key is present shows that line, dim, under its expanded
+    /// form. `None` on Params/Headers, which have no shadowing concept.
+    #[allow(clippy::too_many_arguments)] // signature is the produced interface, verbatim
     pub fn draw(
         &self,
         frame: &mut Frame,
@@ -448,6 +457,7 @@ impl TableEditorState {
         ctx: &DrawCtx,
         add_label: &str,
         hits: &mut HitMap,
+        shadow: Option<&IndexMap<String, String>>,
     ) {
         let theme = ctx.theme;
         let map_len = map.len();
@@ -502,7 +512,22 @@ impl TableEditorState {
                 break;
             }
             if active == Some(i) {
-                y = self.draw_active_row(buf, hits, area, y, bottom, i, k, e, true, ctx);
+                let hint = shadow
+                    .and_then(|s| s.get(k))
+                    .map(|s| format!("overrides {s}"));
+                y = self.draw_active_row(
+                    buf,
+                    hits,
+                    area,
+                    y,
+                    bottom,
+                    i,
+                    k,
+                    e,
+                    true,
+                    ctx,
+                    hint.as_deref(),
+                );
             } else {
                 let hovered = ctx.hovered == Some(&Hit::TableRow(i));
                 self.draw_plain_row(buf, hits, area, y, i, k, e, hovered, theme);
@@ -521,7 +546,7 @@ impl TableEditorState {
             y = self.draw_active_row(
                 buf, hits, area, y, bottom, map_len, key, &entry,
                 false, // brand-new row: no delete affordance yet
-                ctx,
+                ctx, None, // no shadow hint until the row has a real key
             );
         }
 
@@ -613,8 +638,10 @@ impl TableEditorState {
     }
 
     /// Draws row `i` expanded to 3 lines (pad/text/pad) with the full-row
-    /// pill treatment. `show_delete` gates the `✕` affordance (a brand-new,
-    /// not-yet-inserted row has nothing to delete yet). Returns the next `y`.
+    /// pill treatment — 4 (pad/text/hint/pad) when `hint` is `Some`, adding
+    /// a dim shadow line ("overrides qa: 1001") right under the value row.
+    /// `show_delete` gates the `✕` affordance (a brand-new, not-yet-inserted
+    /// row has nothing to delete yet). Returns the next `y`.
     ///
     /// The expansion itself persists when the pane loses focus (it feeds
     /// `table_geometry`, so collapsing would shift the layout every focus
@@ -633,6 +660,7 @@ impl TableEditorState {
         entry: &Entry,
         show_delete: bool,
         ctx: &DrawCtx,
+        hint: Option<&str>,
     ) -> u16 {
         let theme = ctx.theme;
         let text_row = y + 1;
@@ -712,7 +740,11 @@ impl TableEditorState {
             }
         }
 
-        hits.register(Rect::new(area.x, y, area.width, 3), Hit::TableRow(i));
+        let row_height = if hint.is_some() { 4 } else { 3 };
+        hits.register(
+            Rect::new(area.x, y, area.width, row_height),
+            Hit::TableRow(i),
+        );
         if content_w >= 3 {
             hits.register(
                 Rect::new(cols.check_x, text_row, 1, 1),
@@ -731,6 +763,23 @@ impl TableEditorState {
                 false,
             );
             hits.register(Rect::new(del_x, text_row, 1, 1), Hit::TableDelete(i));
+        }
+
+        // A shadow hint replaces the pad-bottom row `PillRow` already
+        // painted (`text_row + 1`) with a dim "overrides <env>: <value>"
+        // line on the same fill, then adds one more flat row to close the
+        // block — one row taller overall (4 instead of 3).
+        if let Some(hint) = hint {
+            let hint_row = text_row + 1;
+            if hint_row < bottom {
+                fill(buf, Rect::new(area.x, hint_row, area.width, 1), bg);
+                text(buf, content_x, hint_row, hint, theme.text_muted, bg, false);
+            }
+            let closing_row = hint_row + 1;
+            if closing_row < bottom {
+                fill(buf, Rect::new(area.x, closing_row, area.width, 1), bg);
+            }
+            return (closing_row + 1).min(bottom);
         }
 
         (y + 3).min(bottom)
@@ -1051,7 +1100,17 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(40, 8)).unwrap();
         let mut hits = HitMap::default();
         terminal
-            .draw(|f| t.draw(f, f.area(), &map, &unfocused, "+ Add param", &mut hits))
+            .draw(|f| {
+                t.draw(
+                    f,
+                    f.area(),
+                    &map,
+                    &unfocused,
+                    "+ Add param",
+                    &mut hits,
+                    None,
+                )
+            })
             .unwrap();
         let buf = terminal.backend().buffer();
         let row = hits.rect_of(&Hit::TableRow(0)).unwrap();
@@ -1069,7 +1128,17 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(40, 8)).unwrap();
         let mut hits = HitMap::default();
         terminal
-            .draw(|f| t.draw(f, f.area(), &map, &unfocused, "+ Add param", &mut hits))
+            .draw(|f| {
+                t.draw(
+                    f,
+                    f.area(),
+                    &map,
+                    &unfocused,
+                    "+ Add param",
+                    &mut hits,
+                    None,
+                )
+            })
             .unwrap();
         let buf = terminal.backend().buffer();
         let ghost = hits.rect_of(&Hit::TableAdd).unwrap();
@@ -1099,6 +1168,7 @@ mod tests {
                     &ctx(&theme, None),
                     "+ Add param",
                     &mut hits,
+                    None,
                 )
             })
             .unwrap();
@@ -1125,6 +1195,7 @@ mod tests {
                     &ctx(&theme, None),
                     "+ Add param",
                     &mut hits,
+                    None,
                 )
             })
             .unwrap();
@@ -1183,6 +1254,7 @@ mod tests {
                     &ctx(&theme, None),
                     "+ Add param",
                     &mut hits,
+                    None,
                 )
             })
             .unwrap();
@@ -1237,6 +1309,7 @@ mod tests {
                     &ctx(&theme, Some(&hovered)),
                     "+ Add param",
                     &mut hits,
+                    None,
                 )
             })
             .unwrap();
@@ -1283,6 +1356,7 @@ mod tests {
                     &ctx(&theme, None),
                     "+ Add param",
                     &mut hits,
+                    None,
                 )
             })
             .unwrap();
@@ -1322,8 +1396,13 @@ mod tests {
 
     #[test]
     fn table_height_accounts_for_header_ghost_edge_and_expansion() {
-        assert_eq!(table_height(0, None), 3); // header + 0 rows + ghost + edge
-        assert_eq!(table_height(3, None), 6);
-        assert_eq!(table_height(3, Some(1)), 8); // + 2 for the expanded row
+        assert_eq!(table_height(0, None, false), 3); // header + 0 rows + ghost + edge
+        assert_eq!(table_height(3, None, false), 6);
+        assert_eq!(table_height(3, Some(1), false), 8); // + 2 for the expanded row
+        assert_eq!(
+            table_height(3, Some(1), true),
+            9,
+            "+ 3 for the expanded row plus its shadow hint line"
+        );
     }
 }

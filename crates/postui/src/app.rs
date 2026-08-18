@@ -407,6 +407,7 @@ impl App {
         self.sidebar.open_slug = self.editor.slug.clone();
         self.sidebar.open_dirty = self.editor.is_dirty();
         self.editor.inherited_headers = self.project.meta.default_headers.clone();
+        self.editor.shadowed = self.compute_shadowed();
         // The response pane always shows the open request's response;
         // whenever an action changed which request is open (any route),
         // swap in that request's cached response — or an empty one.
@@ -420,6 +421,32 @@ impl App {
             .is_some_and(|f| f.slug == self.editor.slug);
         self.editor.table_collapsed = self.table_collapsed;
         changed || swapped
+    }
+
+    /// Builds the Vars tab's shadow hint map: `name → "overrides <env>:
+    /// <value>"` for every open-request `[variables]` entry that shares a
+    /// name with a resolved project variable — masked (spec §3: secrets are
+    /// masked everywhere by default) rather than the real value when the
+    /// project variable is a secret.
+    fn compute_shadowed(&self) -> indexmap::IndexMap<String, String> {
+        use postui_core::varmodel::VarMeta;
+        let env_label = self.project.env_label();
+        self.editor
+            .variables
+            .keys()
+            .filter_map(|name| {
+                let value = self.project.resolved.values.get(name)?;
+                let display = if matches!(
+                    self.project.resolved.meta.get(name),
+                    Some(VarMeta::Secret) | Some(VarMeta::MissingSecret)
+                ) {
+                    "\u{25cf}\u{25cf}\u{25cf}\u{25cf}"
+                } else {
+                    value.as_str()
+                };
+                Some((name.clone(), format!("{env_label}: {display}")))
+            })
+            .collect()
     }
 
     fn apply(&mut self, action: Action) -> bool {
@@ -573,9 +600,11 @@ impl App {
                 true
             }
             Action::EditorTabCycle(delta) => {
-                let cur = self.editor.active_tab.index() as i8;
-                let next = (cur + delta).rem_euclid(3);
-                self.editor.active_tab = EditorTab::from_index(next as usize);
+                // Cycles the on-screen order (Params → Headers → Vars →
+                // Body), not `EditorTab::index()`'s alt+1/2/3 slot numbers.
+                let cur = self.editor.active_tab.draw_position() as i8;
+                let next = (cur + delta).rem_euclid(4);
+                self.editor.active_tab = EditorTab::from_draw_position(next as usize);
                 self.editor.table.reset();
                 true
             }
@@ -730,6 +759,7 @@ impl App {
                 let (map, noun) = match self.editor.active_tab {
                     EditorTab::Params => (&self.editor.params, "param"),
                     EditorTab::Headers => (&self.editor.headers, "header"),
+                    EditorTab::Vars => (&self.editor.variables, "variable"),
                     EditorTab::Body => return true,
                 };
                 if let Some((key, _)) = map.get_index(i) {
@@ -748,6 +778,7 @@ impl App {
                 let map = match self.editor.active_tab {
                     EditorTab::Params => &mut self.editor.params,
                     EditorTab::Headers => &mut self.editor.headers,
+                    EditorTab::Vars => &mut self.editor.variables,
                     EditorTab::Body => return true,
                 };
                 self.editor.table.delete_row(map, i);
@@ -1211,7 +1242,7 @@ impl App {
                 } else if self.focus == PaneId::Editor
                     && matches!(
                         self.editor.active_tab,
-                        EditorTab::Params | EditorTab::Headers
+                        EditorTab::Params | EditorTab::Headers | EditorTab::Vars
                     )
                     && self.editor.sub_focus == SubFocus::Content
                     && self.editor.table.editing.is_some()

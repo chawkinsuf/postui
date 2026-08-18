@@ -25,6 +25,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             app.editor.active_tab,
             crate::components::editor::EditorTab::Params
                 | crate::components::editor::EditorTab::Headers
+                | crate::components::editor::EditorTab::Vars
         );
     let layout = compute_layout(frame.area(), editor_collapsed_to_chrome);
     let focus = app.focus;

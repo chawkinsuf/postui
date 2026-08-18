@@ -241,8 +241,14 @@ impl App {
                 }
             }
             Hit::EditorTab(i) => {
+                // `i` is the tab's on-screen (draw-order) position — Params,
+                // Headers, Vars, Body — which is not the same numbering as
+                // `EditorTabSelect`'s stable index (kept unchanged so
+                // alt+1/2/3 still land on Params/Headers/Body); convert.
                 self.update(Action::FocusPane(PaneId::Editor));
-                self.update(Action::EditorTabSelect(i))
+                self.update(Action::EditorTabSelect(
+                    EditorTab::from_draw_position(i).index(),
+                ))
             }
             Hit::SendButton => {
                 if self.session.in_flight.is_some() {
@@ -258,7 +264,10 @@ impl App {
                 let map = match self.editor.active_tab {
                     EditorTab::Params => &mut self.editor.params,
                     EditorTab::Headers => &mut self.editor.headers,
-                    EditorTab::Body => unreachable!("TableCheckbox only fires on Params/Headers"),
+                    EditorTab::Vars => &mut self.editor.variables,
+                    EditorTab::Body => {
+                        unreachable!("TableCheckbox only fires on Params/Headers/Vars")
+                    }
                 };
                 if let Some((_, e)) = map.get_index_mut(i) {
                     e.enabled = !e.enabled;
@@ -273,7 +282,10 @@ impl App {
                     let map = match self.editor.active_tab {
                         EditorTab::Params => &mut self.editor.params,
                         EditorTab::Headers => &mut self.editor.headers,
-                        EditorTab::Body => unreachable!("TableRow only fires on Params/Headers"),
+                        EditorTab::Vars => &mut self.editor.variables,
+                        EditorTab::Body => {
+                            unreachable!("TableRow only fires on Params/Headers/Vars")
+                        }
                     };
                     self.editor.table.begin_edit_selected(map);
                 } else if self.editor.table.editing.is_none()
@@ -297,7 +309,8 @@ impl App {
                 let map = match self.editor.active_tab {
                     EditorTab::Params => &self.editor.params,
                     EditorTab::Headers => &self.editor.headers,
-                    EditorTab::Body => unreachable!("TableAdd only fires on Params/Headers"),
+                    EditorTab::Vars => &self.editor.variables,
+                    EditorTab::Body => unreachable!("TableAdd only fires on Params/Headers/Vars"),
                 };
                 self.editor.table.begin_add(map);
                 self.update(Action::Render)

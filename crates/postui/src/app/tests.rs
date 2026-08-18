@@ -332,6 +332,120 @@ fn deleting_a_table_row_by_key_requires_confirmation() {
 }
 
 #[test]
+fn deleting_a_vars_row_by_key_requires_confirmation() {
+    // Same delete-confirm plumbing as Params, pointed at the Vars tab's
+    // request-scoped `[variables]` table.
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Vars;
+    app.editor.variables.insert(
+        "token".into(),
+        postui_core::model::Entry {
+            value: "abc".into(),
+            enabled: true,
+        },
+    );
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.table.selected = Some(0);
+    let keymap = Keymap::default_bindings();
+
+    app.handle_key(&keymap, plain('d'));
+    match app.modals.top() {
+        Some(Modal::Confirm { body, .. }) => {
+            assert!(body.contains("token"), "confirm names the key: {body}")
+        }
+        _ => panic!("expected a Confirm modal"),
+    }
+    assert_eq!(
+        app.editor.variables.len(),
+        1,
+        "row survives until confirmed"
+    );
+
+    app.handle_key(&keymap, plain('y'));
+    assert!(
+        app.editor.variables.is_empty(),
+        "confirming deletes the row"
+    );
+    assert!(app.modals.top().is_none(), "modal closed after the choice");
+}
+
+#[test]
+fn editor_tab_cycle_order_is_params_headers_vars_body() {
+    let mut app = App::new_for_test();
+    assert_eq!(app.editor.active_tab, EditorTab::Params);
+    app.update(Action::EditorTabCycle(1));
+    assert_eq!(app.editor.active_tab, EditorTab::Headers);
+    app.update(Action::EditorTabCycle(1));
+    assert_eq!(app.editor.active_tab, EditorTab::Vars);
+    app.update(Action::EditorTabCycle(1));
+    assert_eq!(app.editor.active_tab, EditorTab::Body);
+    app.update(Action::EditorTabCycle(1));
+    assert_eq!(
+        app.editor.active_tab,
+        EditorTab::Params,
+        "cycle wraps back to Params"
+    );
+}
+
+#[test]
+fn alt_1_2_3_still_select_params_headers_body_with_vars_inserted() {
+    // Task 13: "alt+1/2/3 aliases unaffected" — Vars is reachable by click
+    // or EditorTabCycle only, not by these three shortcuts.
+    let mut app = App::new_for_test();
+    let keymap = Keymap::default_bindings();
+    app.editor.active_tab = EditorTab::Body;
+    app.handle_key(&keymap, alt('1'));
+    assert_eq!(app.editor.active_tab, EditorTab::Params);
+    app.handle_key(&keymap, alt('2'));
+    assert_eq!(app.editor.active_tab, EditorTab::Headers);
+    app.handle_key(&keymap, alt('3'));
+    assert_eq!(app.editor.active_tab, EditorTab::Body);
+}
+
+#[test]
+fn shadowed_var_shows_masked_hint_when_project_var_is_secret() {
+    use postui_core::model::Entry;
+
+    let mut app = App::new_for_test();
+    std::fs::write(
+        app.project.root.join("variables.toml"),
+        "[token]\nsecret = true\n",
+    )
+    .unwrap();
+    app.update(Action::ReloadProjectFiles);
+    app.project
+        .secrets
+        .entry(String::new())
+        .or_default()
+        .insert("token".into(), "s3cr3t".into());
+    app.project.refresh_resolved();
+
+    app.editor.variables.insert(
+        "token".into(),
+        Entry {
+            value: "override".into(),
+            enabled: true,
+        },
+    );
+    app.update(Action::Render);
+
+    let hint = app
+        .editor
+        .shadowed
+        .get("token")
+        .expect("token shadows the project secret");
+    assert!(
+        !hint.contains("s3cr3t"),
+        "the secret's real value must never appear: {hint}"
+    );
+    assert!(
+        hint.contains("\u{25cf}\u{25cf}\u{25cf}\u{25cf}"),
+        "expected a masked secret hint, got: {hint}"
+    );
+}
+
+#[test]
 fn declining_the_table_row_delete_keeps_the_row() {
     let mut app = App::new_for_test();
     app.editor.params.insert(
@@ -1988,7 +2102,9 @@ fn toggle_body_vars_flips_flag_and_shows_badge() {
     assert!(app.editor.substitute_body);
 
     app.editor.active_tab = EditorTab::Body;
-    let backend = TestBackend::new(60, 20);
+    // Wide enough for all 4 tabs (Params, Headers, Vars, Body) plus the
+    // "vars" substitution badge that follows the strip.
+    let backend = TestBackend::new(80, 20);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
     let content = format!("{:?}", terminal.backend().buffer());
@@ -2047,9 +2163,18 @@ fn picker_with_no_declared_vars_toasts() {
 
 #[test]
 fn click_editor_tab_selects_it() {
+    // Draw order is Params, Headers, Vars, Body — position 2 is Vars.
     let mut app = App::new_for_test();
     render_once(&mut app);
     let r = app.hits.rect_of(&Hit::EditorTab(2)).unwrap();
+    app.handle_mouse(left_down(r.x, r.y));
+    assert_eq!(app.editor.active_tab, EditorTab::Vars);
+    assert_eq!(app.focus, PaneId::Editor);
+
+    // Position 3 (Body) still maps correctly too.
+    let mut app = App::new_for_test();
+    render_once(&mut app);
+    let r = app.hits.rect_of(&Hit::EditorTab(3)).unwrap();
     app.handle_mouse(left_down(r.x, r.y));
     assert_eq!(app.editor.active_tab, EditorTab::Body);
     assert_eq!(app.focus, PaneId::Editor);

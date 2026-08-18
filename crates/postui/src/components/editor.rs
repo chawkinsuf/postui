@@ -25,23 +25,54 @@ pub enum EditorTab {
     Params,
     Headers,
     Body,
+    Vars,
 }
 
+/// Left-to-right tab-strip order, and the order `EditorTabCycle` walks:
+/// Params → Headers → Vars → Body. Deliberately *not* the same order as
+/// [`EditorTab::index`] (which stays Params/Headers/Body = 0/1/2 so the
+/// existing alt+1/2/3 keybindings keep landing on the same tabs they always
+/// did, even though Vars now sits between Headers and Body on screen).
+const DRAW_ORDER: [EditorTab; 4] = [
+    EditorTab::Params,
+    EditorTab::Headers,
+    EditorTab::Vars,
+    EditorTab::Body,
+];
+
 impl EditorTab {
+    /// Stable slot number for the `alt+1/2/3` shortcuts (`Action::EditorTabSelect`),
+    /// unaffected by where Vars was inserted on screen: Params=0, Headers=1,
+    /// Body=2, Vars=3 (no shortcut currently reaches it).
     pub fn index(self) -> usize {
         match self {
             EditorTab::Params => 0,
             EditorTab::Headers => 1,
             EditorTab::Body => 2,
+            EditorTab::Vars => 3,
         }
     }
 
     pub fn from_index(i: usize) -> Self {
-        match i % 3 {
+        match i % 4 {
             0 => EditorTab::Params,
             1 => EditorTab::Headers,
-            _ => EditorTab::Body,
+            2 => EditorTab::Body,
+            _ => EditorTab::Vars,
         }
+    }
+
+    /// This tab's position in [`DRAW_ORDER`] — what the tab strip's left-to-
+    /// right layout, mouse clicks, and `EditorTabCycle` all key off.
+    pub fn draw_position(self) -> usize {
+        DRAW_ORDER
+            .iter()
+            .position(|t| *t == self)
+            .expect("DRAW_ORDER lists every tab")
+    }
+
+    pub fn from_draw_position(i: usize) -> Self {
+        DRAW_ORDER[i % DRAW_ORDER.len()]
     }
 
     fn label(self) -> &'static str {
@@ -49,6 +80,7 @@ impl EditorTab {
             EditorTab::Params => "Params",
             EditorTab::Headers => "Headers",
             EditorTab::Body => "Body",
+            EditorTab::Vars => "Vars",
         }
     }
 }
@@ -77,10 +109,17 @@ pub struct Editor {
     pub substitute_body: bool,
     pub params: IndexMap<String, Entry>,
     pub headers: IndexMap<String, Entry>,
-    /// Request-scoped `[variables]`. No editing surface yet (stage-6 Vars
-    /// tab is a later task) — carried through load/save so a request's
-    /// variables round-trip untouched while other fields are edited.
+    /// Request-scoped `[variables]`, edited by the Vars tab (shares the
+    /// Params/Headers table editor) and carried through load/save.
     pub variables: IndexMap<String, Entry>,
+    /// `name → "overrides <env>: <value>"`, already formatted (masked for
+    /// secrets) by `App` out of `ProjectContext::resolved` — one entry per
+    /// project variable that a request-scope entry with the same name
+    /// shadows. Synced by `App` on every `update()` alongside
+    /// `inherited_headers`. Draw-only: consumed by the Vars tab's table draw
+    /// to show the dim "overrides" hint under a shadowing row's expanded
+    /// form; never itself edited here.
+    pub shadowed: IndexMap<String, String>,
     /// Enabled default headers inherited from the project, synced by `App`
     /// on every `update()` alongside `open_slug`. Draw-only: rendered above
     /// the request headers table but never edited directly here.
@@ -139,6 +178,7 @@ impl Default for Editor {
             params: IndexMap::new(),
             headers: IndexMap::new(),
             variables: IndexMap::new(),
+            shadowed: IndexMap::new(),
             inherited_headers: IndexMap::new(),
             body: new_body_state(""),
             body_handler: EditorEventHandler::emacs_mode(),
@@ -377,8 +417,10 @@ impl Component for Editor {
                     // select its first row — or, on an empty table, its
                     // ghost "+ Add" row (index 0 either way) — instead of
                     // a focused-but-nothing-selected limbo.
-                    if matches!(self.active_tab, EditorTab::Params | EditorTab::Headers)
-                        && self.table.selected.is_none()
+                    if matches!(
+                        self.active_tab,
+                        EditorTab::Params | EditorTab::Headers | EditorTab::Vars
+                    ) && self.table.selected.is_none()
                     {
                         self.table.selected = Some(0);
                     }
@@ -399,10 +441,14 @@ impl Component for Editor {
             // the Body tab edtui does, except for the two keys that are the
             // only keyboard route back out of the buffer.
             SubFocus::Content => {
-                if matches!(self.active_tab, EditorTab::Params | EditorTab::Headers) {
+                if matches!(
+                    self.active_tab,
+                    EditorTab::Params | EditorTab::Headers | EditorTab::Vars
+                ) {
                     let map = match self.active_tab {
                         EditorTab::Params => &mut self.params,
                         EditorTab::Headers => &mut self.headers,
+                        EditorTab::Vars => &mut self.variables,
                         EditorTab::Body => unreachable!(),
                     };
                     let outcome = self.table.handle_key(ev, map);
@@ -535,9 +581,11 @@ impl Component for Editor {
         // used are already the Response pane's.
         let content_constraint = match self.active_tab {
             EditorTab::Body => Constraint::Min(0),
-            EditorTab::Params | EditorTab::Headers if self.table_collapsed => Constraint::Length(0),
-            EditorTab::Params | EditorTab::Headers => {
-                let (rows, active) = self.table_geometry();
+            EditorTab::Params | EditorTab::Headers | EditorTab::Vars if self.table_collapsed => {
+                Constraint::Length(0)
+            }
+            EditorTab::Params | EditorTab::Headers | EditorTab::Vars => {
+                let (rows, active, active_hint) = self.table_geometry();
                 let inherited = if self.active_tab == EditorTab::Headers {
                     self.inherited_header_lines(ctx.theme).len() as u16
                 } else {
@@ -550,7 +598,9 @@ impl Component for Editor {
                 let available = inner
                     .height
                     .saturating_sub(ADDRESS_BAR_HEIGHT + TAB_BAR_HEIGHT);
-                Constraint::Length((inherited + table_height(rows, active)).min(available))
+                Constraint::Length(
+                    (inherited + table_height(rows, active, active_hint)).min(available),
+                )
             }
         };
 
@@ -793,15 +843,18 @@ impl Editor {
         }
     }
 
-    /// `(total row-lines, active-row presence)` for the active tab's table
-    /// (Params/Headers only), fed to [`table_height`] both by `draw`'s
-    /// layout pass and `draw_tab_content`'s actual paint.
-    fn table_geometry(&self) -> (usize, Option<usize>) {
-        let map_len = match self.active_tab {
-            EditorTab::Params => self.params.len(),
-            EditorTab::Headers => self.headers.len(),
-            EditorTab::Body => 0,
+    /// `(total row-lines, active-row presence, active row carries a shadow
+    /// hint)` for the active tab's table (Params/Headers/Vars), fed to
+    /// [`table_height`] both by `draw`'s layout pass and
+    /// `draw_tab_content`'s actual paint.
+    fn table_geometry(&self) -> (usize, Option<usize>, bool) {
+        let map = match self.active_tab {
+            EditorTab::Params => &self.params,
+            EditorTab::Headers => &self.headers,
+            EditorTab::Vars => &self.variables,
+            EditorTab::Body => return (0, None, false),
         };
+        let map_len = map.len();
         let new_row_pending = self
             .table
             .editing
@@ -812,7 +865,15 @@ impl Editor {
             .table
             .active_index(map_len)
             .or(new_row_pending.then_some(map_len));
-        (rows, active)
+        let active_hint = active.is_some_and(|_| {
+            self.active_tab == EditorTab::Vars
+                && self
+                    .table
+                    .active_index(map_len)
+                    .and_then(|i| map.get_index(i))
+                    .is_some_and(|(k, _)| self.shadowed.contains_key(k))
+        });
+        (rows, active, active_hint)
     }
 
     fn draw_tab_bar(
@@ -823,7 +884,7 @@ impl Editor {
         hits: &mut crate::hit::HitMap,
     ) {
         let theme = ctx.theme;
-        let tabs = [EditorTab::Params, EditorTab::Headers, EditorTab::Body];
+        let tabs = DRAW_ORDER;
         // Params/Headers carry their entry count inside the tab label; Body
         // carries the live JSON-validity badge, colored from the semantic
         // tokens so it also reads without the glyph.
@@ -833,6 +894,7 @@ impl Editor {
                 let count = match t {
                     EditorTab::Params => self.params.len(),
                     EditorTab::Headers => self.headers.len(),
+                    EditorTab::Vars => self.variables.len(),
                     EditorTab::Body => 0,
                 };
                 let label = if count > 0 {
@@ -851,7 +913,7 @@ impl Editor {
                 (label, badge)
             })
             .collect();
-        let active = self.active_tab.index();
+        let active = self.active_tab.draw_position();
         let hovered = tabs
             .iter()
             .enumerate()
@@ -966,8 +1028,35 @@ impl Editor {
                     hovered: ctx.hovered,
                     dragging: ctx.dragging,
                 };
-                self.table
-                    .draw(frame, area, &self.params, &table_ctx, "+ Add param", hits);
+                self.table.draw(
+                    frame,
+                    area,
+                    &self.params,
+                    &table_ctx,
+                    "+ Add param",
+                    hits,
+                    None,
+                );
+            }
+            EditorTab::Vars => {
+                if self.table_collapsed {
+                    return;
+                }
+                let table_ctx = DrawCtx {
+                    theme,
+                    focused,
+                    hovered: ctx.hovered,
+                    dragging: ctx.dragging,
+                };
+                self.table.draw(
+                    frame,
+                    area,
+                    &self.variables,
+                    &table_ctx,
+                    "+ Add variable",
+                    hits,
+                    Some(&self.shadowed),
+                );
             }
             EditorTab::Headers => {
                 if self.table_collapsed {
@@ -1000,6 +1089,7 @@ impl Editor {
                     &table_ctx,
                     "+ Add header",
                     hits,
+                    None,
                 );
             }
             EditorTab::Body => {
@@ -2040,5 +2130,177 @@ url = "https://api.example.com/users""#,
             cell.bg, app.theme.page,
             "editor pane's lower region must be page-filled, not left at the terminal default: {cell:?}"
         );
+    }
+
+    #[test]
+    fn vars_tab_reuses_the_table_editor_with_a_count_in_its_label() {
+        let mut e = Editor {
+            active_tab: EditorTab::Vars,
+            ..Editor::default()
+        };
+        e.variables.insert(
+            "token".into(),
+            Entry {
+                value: "abc".into(),
+                enabled: true,
+            },
+        );
+        e.variables.insert(
+            "region".into(),
+            Entry {
+                value: "us-east".into(),
+                enabled: true,
+            },
+        );
+        let theme = Theme::dark();
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: None,
+            dragging: false,
+        };
+        let backend = TestBackend::new(80, 14);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            content.contains("Vars · 2"),
+            "count in tab label: {content}"
+        );
+        assert!(content.contains("token"), "key text: {content}");
+        assert!(content.contains("us-east"), "value text: {content}");
+        assert!(
+            hits.rect_of(&crate::hit::Hit::TableAdd).is_some(),
+            "ghost + Add row must be registered on the Vars tab"
+        );
+    }
+
+    #[test]
+    fn vars_tab_add_expand_and_delete_confirm_all_function() {
+        // Reuses the Params tab's own table-editor patterns
+        // (add_edit_commit_creates_entry / descending_from_the_tab_strip_…)
+        // pointed at the Vars tab, proving the shared component works
+        // unmodified there.
+        let mut e = Editor {
+            active_tab: EditorTab::Vars,
+            sub_focus: SubFocus::Content,
+            ..Editor::default()
+        };
+        // Ghost "+ Add" -> type a new row.
+        e.handle_key(key(KeyCode::Char('a')));
+        for c in "token".chars() {
+            e.handle_key(key(KeyCode::Char(c)));
+        }
+        e.handle_key(key(KeyCode::Tab));
+        for c in "abc".chars() {
+            e.handle_key(key(KeyCode::Char(c)));
+        }
+        e.handle_key(key(KeyCode::Enter));
+        assert_eq!(e.variables.len(), 1);
+        assert_eq!(e.variables["token"].value, "abc");
+
+        // Selecting the row expands it (feeds table_geometry / draws 3
+        // lines) exactly like Params/Headers.
+        e.table.selected = Some(0);
+        let (rows, active, hint) = e.table_geometry();
+        assert_eq!(rows, 1);
+        assert_eq!(active, Some(0));
+        assert!(!hint, "no shadow hint without a shadowed project var");
+
+        // `d` requests a delete-confirm, same as Params/Headers.
+        let action = e.handle_key(key(KeyCode::Char('d')));
+        assert_eq!(action, Some(Action::ConfirmDeleteTableRow(0)));
+    }
+
+    #[test]
+    fn vars_tab_shows_dim_overrides_hint_on_a_shadowing_row() {
+        let mut e = Editor {
+            active_tab: EditorTab::Vars,
+            ..Editor::default()
+        };
+        e.variables.insert(
+            "token".into(),
+            Entry {
+                value: "override".into(),
+                enabled: true,
+            },
+        );
+        e.shadowed.insert("token".into(), "qa: 1001".into());
+        e.table.selected = Some(0);
+        let theme = Theme::dark();
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: None,
+            dragging: false,
+        };
+        let backend = TestBackend::new(80, 14);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            content.contains("overrides qa: 1001"),
+            "expected the dim shadow hint: {content}"
+        );
+        let buf = terminal.backend().buffer();
+        let row = hits.rect_of(&crate::hit::Hit::TableRow(0)).unwrap();
+        assert_eq!(row.height, 4, "hint adds one extra row to the expansion");
+        let hint_cell = buf.cell((row.x + 2, row.y + 2)).unwrap();
+        assert_eq!(
+            hint_cell.fg, theme.text_muted,
+            "the overrides hint is dim, not full text color"
+        );
+    }
+
+    #[test]
+    fn params_and_headers_tabs_never_show_a_shadow_hint() {
+        // `shadow` is only ever passed for Vars; Params/Headers keep their
+        // existing 3-line expansion regardless of `Editor::shadowed`.
+        let mut e = Editor::default();
+        e.params.insert(
+            "page".into(),
+            Entry {
+                value: "2".into(),
+                enabled: true,
+            },
+        );
+        e.shadowed.insert("page".into(), "qa: 1001".into());
+        e.table.selected = Some(0);
+        let theme = Theme::dark();
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: None,
+            dragging: false,
+        };
+        let backend = TestBackend::new(80, 14);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+        let row = hits.rect_of(&crate::hit::Hit::TableRow(0)).unwrap();
+        assert_eq!(row.height, 3, "Params tab never grows a hint row");
+    }
+
+    #[test]
+    fn tab_order_and_alt_shortcuts_survive_vars_insertion() {
+        // Draw order / EditorTabCycle: Params -> Headers -> Vars -> Body.
+        assert_eq!(EditorTab::from_draw_position(0), EditorTab::Params);
+        assert_eq!(EditorTab::from_draw_position(1), EditorTab::Headers);
+        assert_eq!(EditorTab::from_draw_position(2), EditorTab::Vars);
+        assert_eq!(EditorTab::from_draw_position(3), EditorTab::Body);
+        // alt+1/2/3 (`EditorTabSelect(0/1/2)`) are unaffected: still
+        // Params/Headers/Body. Vars has no alt shortcut (index 3, unbound).
+        assert_eq!(EditorTab::from_index(0), EditorTab::Params);
+        assert_eq!(EditorTab::from_index(1), EditorTab::Headers);
+        assert_eq!(EditorTab::from_index(2), EditorTab::Body);
+        assert_eq!(EditorTab::from_index(3), EditorTab::Vars);
     }
 }
