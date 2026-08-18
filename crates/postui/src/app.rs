@@ -1,10 +1,11 @@
 use crate::action::{Action, CopyTarget};
 use crate::components::editor::{Editor, EditorTab, SubFocus};
+use crate::components::line_input::LineInput;
 use crate::components::modal::{Modal, ModalResult, ModalStack, PromptKind};
 use crate::components::response::ResponseState;
 use crate::components::sidebar::Row;
 use crate::components::toast::{ToastKind, Toasts};
-use crate::components::varmanager::{self, VarEditOp, VarManager};
+use crate::components::varmanager::{self, VarEditOp, VarManager, VarStructOp};
 use crate::components::{Component, sidebar::Sidebar};
 use crate::hit::{Hit, HitMap, ScrollbarSpec};
 use crate::keys::{KeyCombo, Keymap};
@@ -1254,6 +1255,159 @@ impl App {
                 }
                 true
             }
+            Action::PromptNewVar => {
+                self.modals.push(Modal::Prompt {
+                    title: "New variable".into(),
+                    input: LineInput::new(""),
+                    kind: PromptKind::NewVariable,
+                });
+                true
+            }
+            Action::PromptNewGroup => {
+                self.modals.push(Modal::Prompt {
+                    title: "New group \u{2014} name, member, member, \u{2026}".into(),
+                    input: LineInput::new(""),
+                    kind: PromptKind::NewGroup,
+                });
+                true
+            }
+            Action::PromptNewOption { owner } => {
+                let member_names = self
+                    .project
+                    .model
+                    .groups
+                    .get(&owner)
+                    .map(|g| g.members.clone())
+                    .unwrap_or_default();
+                let title = if member_names.is_empty() {
+                    format!("New option on {owner} \u{2014} key, value")
+                } else {
+                    let fields = member_names
+                        .iter()
+                        .map(|m| format!("{m}=value"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("New option on {owner} \u{2014} key, {fields}")
+                };
+                self.modals.push(Modal::Prompt {
+                    title,
+                    input: LineInput::new(""),
+                    kind: PromptKind::NewOption {
+                        owner,
+                        member_names,
+                    },
+                });
+                true
+            }
+            Action::PromptRenameVar { from } => {
+                self.modals.push(Modal::Prompt {
+                    title: format!("Rename {from}"),
+                    input: LineInput::new(&from),
+                    kind: PromptKind::RenameVariable { from },
+                });
+                true
+            }
+            Action::PromptEditGroupMembers { group } => {
+                let seed = self
+                    .project
+                    .model
+                    .groups
+                    .get(&group)
+                    .map(|g| g.members.join(", "))
+                    .unwrap_or_default();
+                self.modals.push(Modal::Prompt {
+                    title: format!("Members of {group}"),
+                    input: LineInput::new(&seed),
+                    kind: PromptKind::GroupMembers { group },
+                });
+                true
+            }
+            Action::ConfirmDeleteVar { name } => {
+                let usage = postui_core::varedit::scan_usage(&self.project.root, &name);
+                let body = if usage.is_empty() {
+                    format!("Delete \"{name}\"? This cannot be undone.")
+                } else {
+                    format!(
+                        "Delete \"{name}\"? Referenced by {} request(s): {}.",
+                        usage.len(),
+                        usage.join(", ")
+                    )
+                };
+                self.modals.push(Modal::Confirm {
+                    title: format!("Delete {name}"),
+                    body,
+                    choices: vec![
+                        ('n', "Cancel".into(), vec![]),
+                        (
+                            'y',
+                            "Delete".into(),
+                            vec![Action::VarStruct(VarStructOp::Delete { name })],
+                        ),
+                    ],
+                });
+                true
+            }
+            Action::ToggleSecretVar { name } => {
+                self.open_toggle_secret_confirm(name);
+                true
+            }
+            Action::PromptPromoteVar { name } => {
+                let mut choices = vec![(
+                    'd',
+                    "Default value".to_string(),
+                    vec![Action::VarStruct(VarStructOp::Promote {
+                        name: name.clone(),
+                        target: postui_core::varedit::PromoteTarget::Default,
+                    })],
+                )];
+                if let Some(env) = self.project.active_env.clone() {
+                    choices.push((
+                        'e',
+                        format!("Env value ({env})"),
+                        vec![Action::VarStruct(VarStructOp::Promote {
+                            name: name.clone(),
+                            target: postui_core::varedit::PromoteTarget::Env,
+                        })],
+                    ));
+                }
+                choices.push(('c', "Cancel".to_string(), vec![]));
+                self.modals.push(Modal::Confirm {
+                    title: format!("Promote {name}"),
+                    body: "Where should the value land?".into(),
+                    choices,
+                });
+                true
+            }
+            Action::ConfirmDemoteVar { name } => {
+                self.open_demote_confirm(name);
+                true
+            }
+            Action::VarStruct(op) => {
+                match self.apply_var_struct(&op) {
+                    Ok(()) => {
+                        let open_request = self
+                            .editor
+                            .slug
+                            .is_some()
+                            .then(|| self.editor.current_request());
+                        let rows = varmanager::build_rows(
+                            &self.project,
+                            open_request.as_ref(),
+                            &self.varmanager.expanded,
+                        );
+                        self.varmanager.cursor.0 =
+                            self.varmanager.cursor.0.min(rows.len().saturating_sub(1));
+                        self.varmanager.cursor.1 = self
+                            .varmanager
+                            .cursor
+                            .1
+                            .min(self.project.environments.len());
+                        self.varmanager.ensure_visible = true;
+                    }
+                    Err(msg) => self.toasts.push(msg, ToastKind::Error),
+                }
+                true
+            }
         }
     }
 
@@ -1338,6 +1492,359 @@ impl App {
                 Ok(())
             }
         }
+    }
+
+    /// `s` on a non-enumerated `Var` row (spec §3's two transitions): opens
+    /// the direction-appropriate confirm. Un-marking secret shows the
+    /// current value(s) for the user to copy — deliberately, per spec, the
+    /// one place a secret value is displayed outside substituted request
+    /// content — and moves nothing; marking secret lists which environment
+    /// values will move into `.local/secrets.toml` and be stripped from
+    /// their env files.
+    fn open_toggle_secret_confirm(&mut self, name: String) {
+        let is_secret = self.project.model.vars.get(&name).is_some_and(|d| d.secret);
+        if is_secret {
+            let mut lines: Vec<String> = Vec::new();
+            for env in &self.project.environments {
+                if let Some(v) = self.project.secrets.get(env).and_then(|m| m.get(&name)) {
+                    lines.push(format!("{env}: {v}"));
+                }
+            }
+            let body = if lines.is_empty() {
+                format!("Turn off secret for \"{name}\"? No value is stored yet.")
+            } else {
+                format!(
+                    "Turn off secret for \"{name}\"? Copy the current value(s) first \u{2014} nothing is moved automatically:\n{}",
+                    lines.join("\n")
+                )
+            };
+            self.modals.push(Modal::Confirm {
+                title: format!("Un-mark {name} as secret"),
+                body,
+                choices: vec![
+                    ('n', "Cancel".into(), vec![]),
+                    (
+                        'y',
+                        "Turn off".into(),
+                        vec![Action::VarStruct(VarStructOp::ToggleSecret { name })],
+                    ),
+                ],
+            });
+        } else {
+            if !varmanager::union_var_option_keys(&self.project, &name).is_empty() {
+                self.toasts.push(
+                    format!("\"{name}\" has options; remove them before marking it secret"),
+                    ToastKind::Error,
+                );
+                return;
+            }
+            let mut envs_with_values: Vec<String> = Vec::new();
+            for env in self.project.environments.clone() {
+                let env_data = if self.project.active_env.as_deref() == Some(env.as_str()) {
+                    self.project.env_data.clone()
+                } else {
+                    postui_core::project::load_environment(&self.project.root, &env)
+                        .unwrap_or_default()
+                };
+                if env_data.values.contains_key(&name) {
+                    envs_with_values.push(env);
+                }
+            }
+            let body = if envs_with_values.is_empty() {
+                format!("Mark \"{name}\" as secret? No environment values to move.")
+            } else {
+                format!(
+                    "Mark \"{name}\" as secret? These environments' values move into .local/secrets.toml and are stripped from their env files: {}.",
+                    envs_with_values.join(", ")
+                )
+            };
+            self.modals.push(Modal::Confirm {
+                title: format!("Mark {name} as secret"),
+                body,
+                choices: vec![
+                    ('n', "Cancel".into(), vec![]),
+                    (
+                        'y',
+                        "Mark secret".into(),
+                        vec![Action::VarStruct(VarStructOp::ToggleSecret { name })],
+                    ),
+                ],
+            });
+        }
+    }
+
+    /// `P` on a `Var` row (spec §4): refuses (with a message modal, no
+    /// mutation) a secret name — its resolved value would otherwise land in
+    /// a git-tracked request file — or an enumerated/group name (request
+    /// scope is simple-only per spec); otherwise opens the demote confirm,
+    /// its body naming any *other* requests already referencing it.
+    fn open_demote_confirm(&mut self, name: String) {
+        if self.editor.slug.is_none() {
+            self.toasts
+                .push("open a request to demote into", ToastKind::Warning);
+            return;
+        }
+        let is_secret = self.project.model.vars.get(&name).is_some_and(|d| d.secret);
+        if is_secret {
+            self.modals.push(Modal::Message {
+                title: "Can't demote".into(),
+                body: format!(
+                    "\"{name}\" is secret; its value can't be written into a request file."
+                ),
+            });
+            return;
+        }
+        let enumerated = !varmanager::union_var_option_keys(&self.project, &name).is_empty();
+        let is_group = self.project.model.groups.contains_key(&name);
+        if enumerated || is_group {
+            self.modals.push(Modal::Message {
+                title: "Can't demote".into(),
+                body: format!(
+                    "\"{name}\" is enumerated or a group; request scope is simple values only."
+                ),
+            });
+            return;
+        }
+        let this_slug = self.editor.slug.clone();
+        let others: Vec<String> = postui_core::varedit::scan_usage(&self.project.root, &name)
+            .into_iter()
+            .filter(|s| this_slug.as_deref() != Some(s.as_str()))
+            .collect();
+        let body = if others.is_empty() {
+            format!("Demote \"{name}\" into this request?")
+        } else {
+            format!(
+                "Demote \"{name}\" into this request? Referenced by {} other request(s): {}.",
+                others.len(),
+                others.join(", ")
+            )
+        };
+        self.modals.push(Modal::Confirm {
+            title: format!("Demote {name}"),
+            body,
+            choices: vec![
+                ('n', "Cancel".into(), vec![]),
+                (
+                    'y',
+                    "Demote".into(),
+                    vec![Action::VarStruct(VarStructOp::Demote { name })],
+                ),
+            ],
+        });
+    }
+
+    /// Applies one confirmed Variable Manager structural mutation (spec
+    /// §5's action list; §4's promote/demote; §3's secret-flag
+    /// transitions). `Err(msg)` — safe to toast, never a secret value —
+    /// leaves everything unchanged; the caller (`Action::VarStruct`) never
+    /// clears any modal/editing state on failure of its own accord.
+    fn apply_var_struct(&mut self, op: &VarStructOp) -> Result<(), String> {
+        use postui_core::varedit;
+        use postui_core::vars::is_valid_var_name;
+
+        let name_taken = |ctx: &ProjectContext, n: &str| {
+            n == "options"
+                || n == "groups"
+                || ctx.model.vars.contains_key(n)
+                || ctx.model.groups.contains_key(n)
+        };
+
+        match op {
+            VarStructOp::NewVar { name, description } => {
+                if !is_valid_var_name(name) {
+                    return Err(format!("\"{name}\" is not a valid variable name"));
+                }
+                if name_taken(&self.project, name) {
+                    return Err(format!("\"{name}\" already exists"));
+                }
+                self.project.edit_variables(|doc| {
+                    varedit::upsert_var(doc, name, description.as_deref(), None)
+                })
+            }
+            VarStructOp::NewGroup { name, members } => {
+                if !is_valid_var_name(name) {
+                    return Err(format!("\"{name}\" is not a valid group name"));
+                }
+                if name_taken(&self.project, name) {
+                    return Err(format!("\"{name}\" already exists"));
+                }
+                for m in members {
+                    if !is_valid_var_name(m) {
+                        return Err(format!("\"{m}\" is not a valid member name"));
+                    }
+                }
+                self.project
+                    .edit_variables(|doc| varedit::upsert_group(doc, name, None, members))
+            }
+            VarStructOp::NewOption {
+                owner,
+                key,
+                description,
+                values,
+            } => {
+                if !is_valid_var_name(key) {
+                    return Err(format!("\"{key}\" is not a valid option key"));
+                }
+                self.project.edit_variables(|doc| {
+                    varedit::upsert_shared_option(doc, owner, key, description.as_deref(), values)
+                })
+            }
+            VarStructOp::Rename { from, to } => {
+                if !is_valid_var_name(to) {
+                    return Err(format!("\"{to}\" is not a valid variable name"));
+                }
+                if name_taken(&self.project, to) {
+                    return Err(format!("\"{to}\" already exists"));
+                }
+                self.project
+                    .edit_variables(|doc| varedit::rename_var(doc, from, to))
+            }
+            VarStructOp::Delete { name } => {
+                if self.project.model.groups.contains_key(name) {
+                    self.project
+                        .edit_variables(|doc| varedit::delete_group(doc, name))
+                } else {
+                    self.project
+                        .edit_variables(|doc| varedit::delete_var(doc, name))
+                }
+            }
+            VarStructOp::ToggleSecret { name } => self.apply_toggle_secret(name),
+            VarStructOp::SetMembers { group, members } => {
+                for m in members {
+                    if !is_valid_var_name(m) {
+                        return Err(format!("\"{m}\" is not a valid member name"));
+                    }
+                }
+                self.project
+                    .edit_variables(|doc| varedit::upsert_group(doc, group, None, members))
+            }
+            VarStructOp::Promote { name, target } => self.apply_promote(name, *target),
+            VarStructOp::Demote { name } => self.apply_demote(name),
+        }
+    }
+
+    /// [`VarStructOp::ToggleSecret`]'s two directions (spec §3). Off->on
+    /// moves every environment's flat value for `name` into that
+    /// environment's `.local/secrets.toml` slot and strips it from the env
+    /// file; on->off only flips the flag — the local secret value is left
+    /// exactly where it is (never silently promoted into a git-tracked
+    /// file).
+    fn apply_toggle_secret(&mut self, name: &str) -> Result<(), String> {
+        let currently_secret = self.project.model.vars.get(name).is_some_and(|d| d.secret);
+        if currently_secret {
+            return self
+                .project
+                .edit_variables(|doc| postui_core::varedit::set_secret_flag(doc, name, false));
+        }
+        let mut to_move: Vec<(String, String)> = Vec::new();
+        for env in self.project.environments.clone() {
+            let env_data = if self.project.active_env.as_deref() == Some(env.as_str()) {
+                self.project.env_data.clone()
+            } else {
+                postui_core::project::load_environment(&self.project.root, &env).unwrap_or_default()
+            };
+            if let Some(v) = env_data.values.get(name) {
+                to_move.push((env, v.clone()));
+            }
+        }
+        // Order matters: `edit_variables` validates the flipped flag against
+        // the *active* env's current data, so a still-present flat value
+        // there (a flat value for a secret variable is a §1.2 error) would
+        // reject the flag flip. Move each value into secrets.toml and strip
+        // it from its env file first — harmless against the not-yet-secret
+        // model — so the flag flip last sees a model already consistent
+        // with every environment's (now-empty) flat value.
+        for (env, value) in &to_move {
+            self.project.set_secret_for(env, name, value.clone())?;
+        }
+        for (env, _) in &to_move {
+            self.project.edit_env(env, |doc| {
+                postui_core::varedit::set_env_value(doc, name, None)
+            })?;
+        }
+        self.project
+            .edit_variables(|doc| postui_core::varedit::set_secret_flag(doc, name, true))?;
+        Ok(())
+    }
+
+    /// [`VarStructOp::Promote`] (spec §4): writes the request's own
+    /// `[variables]` entry into the project (default or the active
+    /// environment), then removes it from the request now that the
+    /// project owns it.
+    fn apply_promote(
+        &mut self,
+        name: &str,
+        target: postui_core::varedit::PromoteTarget,
+    ) -> Result<(), String> {
+        let entry = self
+            .editor
+            .variables
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("\"{name}\" is not a request-scope variable"))?;
+        let vars_path = self.project.root.join("variables.toml");
+        let vars_text = std::fs::read_to_string(&vars_path).unwrap_or_default();
+        let env_name = self.project.active_env.clone();
+        let env_text = match &env_name {
+            Some(env) => Some(
+                std::fs::read_to_string(
+                    self.project
+                        .root
+                        .join("environments")
+                        .join(format!("{env}.toml")),
+                )
+                .unwrap_or_default(),
+            ),
+            None => None,
+        };
+        let (new_vars, new_env) = postui_core::varedit::promote_var(
+            &vars_text,
+            env_text.as_deref(),
+            name,
+            &entry.value,
+            target,
+        )
+        .map_err(|e| e.to_string())?;
+        self.project.edit_variables(|_| Ok(new_vars))?;
+        if let (Some(new_env), Some(env)) = (new_env, env_name) {
+            self.project.edit_env(&env, |_| Ok(new_env))?;
+        }
+        self.editor.variables.shift_remove(name);
+        Ok(())
+    }
+
+    /// [`VarStructOp::Demote`] (spec §4): writes the currently resolved
+    /// value into the open request's `[variables]`, deletes the project
+    /// declaration, and strips any flat value left behind in every
+    /// environment (best-effort — an environment with nothing to strip is
+    /// not an error). The caller (`open_demote_confirm`) has already
+    /// refused a secret/enumerated/group name before this ever runs.
+    fn apply_demote(&mut self, name: &str) -> Result<(), String> {
+        let value = self
+            .project
+            .resolved
+            .values
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("\"{name}\" has no resolved value to demote"))?;
+        if self.editor.slug.is_none() {
+            return Err("open a request to demote into".to_string());
+        }
+        self.editor.variables.insert(
+            name.to_string(),
+            postui_core::model::Entry {
+                value,
+                enabled: true,
+            },
+        );
+        self.project
+            .edit_variables(|doc| postui_core::varedit::delete_var(doc, name))?;
+        for env in self.project.environments.clone() {
+            let _ = self.project.edit_env(&env, |doc| {
+                postui_core::varedit::set_env_value(doc, name, None)
+            });
+        }
+        Ok(())
     }
 
     /// Re-reads the project directory and rebuilds the sidebar tree,

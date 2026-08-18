@@ -1,5 +1,5 @@
 use crate::components::toast::ToastKind;
-use crate::components::varmanager::VarEditOp;
+use crate::components::varmanager::{VarEditOp, VarStructOp};
 use crate::layout::PaneId;
 
 /// What [`Action::CopyToClipboard`] copies: the ready response body, one of
@@ -215,4 +215,45 @@ pub enum Action {
     /// failure toasts and leaves `VarManager::editing` open with the typed
     /// text rather than clearing it.
     VarEdit(VarEditOp),
+
+    // -- Variable Manager structural actions (spec §5 action list; Task 12) --
+    /// `n`: open the new-variable name prompt.
+    PromptNewVar,
+    /// `g`: open the new-group prompt (comma-separated name + members).
+    PromptNewGroup,
+    /// `o` on an enumerated/group row: open the new-option prompt.
+    PromptNewOption {
+        owner: String,
+    },
+    /// `F2`/`=` on a `Var` row: open the rename prompt, prefilled.
+    PromptRenameVar {
+        from: String,
+    },
+    /// `m` on a `GroupHeader` row: open the member-list prompt, prefilled.
+    PromptEditGroupMembers {
+        group: String,
+    },
+    /// `d`/`Delete` on a `Var`/`GroupHeader` row: open the delete confirm,
+    /// its body listing `varedit::scan_usage`'s referencing requests.
+    ConfirmDeleteVar {
+        name: String,
+    },
+    /// `s` on a non-enumerated `Var` row: open the secret-flag transition
+    /// confirm (spec §3) — its wording and the value(s) it offers for copy
+    /// depend on which direction the flip goes.
+    ToggleSecretVar {
+        name: String,
+    },
+    /// `p` on a `RequestVar` row: open the promote-target choice (spec
+    /// §4) — declaration default, or the active environment.
+    PromptPromoteVar {
+        name: String,
+    },
+    /// `P` on a `Var` row: open the demote confirm (spec §4), or a
+    /// message modal refusing it (secret, enumerated, or a group member).
+    ConfirmDemoteVar {
+        name: String,
+    },
+    /// A confirmed structural mutation; `App::apply_var_struct` applies it.
+    VarStruct(VarStructOp),
 }

@@ -119,6 +119,67 @@ pub enum RowKind {
     AddGroup,
 }
 
+/// A structural mutation dispatched by the Variable Manager (spec §5
+/// action list; §4 promote/demote; §3 secret flag transitions). Unlike
+/// [`VarEditOp`] (one cell's value), these add/remove/rename/reshape
+/// declarations — each still applies through `ctx.edit_variables`/
+/// `edit_env`/the request editor, per `App::apply_var_struct`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VarStructOp {
+    /// `n`: a bare new variable declaration (no default yet — the grid's
+    /// existing cell edit sets it afterward).
+    NewVar {
+        name: String,
+        description: Option<String>,
+    },
+    /// `g`: a new group (or, reused for `m`'s member edit, an update to an
+    /// existing one — `varedit::upsert_group` is create-or-update either
+    /// way).
+    NewGroup { name: String, members: Vec<String> },
+    /// `o` on an enumerated/group row: a new keyed option, written to the
+    /// shared declaration (`varedit::upsert_shared_option`).
+    NewOption {
+        owner: String,
+        key: String,
+        description: Option<String>,
+        values: IndexMap<String, String>,
+    },
+    /// `F2`/`=` on a `Var` row (variables only — see the module doc on why
+    /// groups aren't renameable this task).
+    Rename { from: String, to: String },
+    /// `d`/`Delete` on a `Var` or `GroupHeader` row.
+    Delete { name: String },
+    /// `s` on a non-enumerated `Var` row: flips `secret` (spec §3's two
+    /// transitions — `App::apply_var_struct` does the value-moving work).
+    ToggleSecret { name: String },
+    /// `m` on a `GroupHeader` row: replaces the group's member list.
+    SetMembers { group: String, members: Vec<String> },
+    /// `p` on a `RequestVar` row (spec §4).
+    Promote {
+        name: String,
+        target: postui_core::varedit::PromoteTarget,
+    },
+    /// `P` on a `Var` row (spec §4); refused for secret/enumerated/group
+    /// names before this is ever dispatched.
+    Demote { name: String },
+}
+
+/// The structural action a key/chip asks for — see
+/// `VarManager::struct_action_target`. Not the wire type ([`VarStructOp`]
+/// is that, built once the modal collecting the rest of its fields
+/// confirms); this only picks *which* modal/confirm to open for the
+/// cursor's row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StructKind {
+    NewOption,
+    Rename,
+    Delete,
+    ToggleSecret,
+    EditMembers,
+    Promote,
+    Demote,
+}
+
 /// The full-frame Variable Manager screen (spec §5): a title bar, the
 /// read-only variable/environment grid, and a footer hint row. Editing
 /// (Task 11) will extend `handle_key` and add mutation actions; this task
@@ -256,7 +317,7 @@ fn env_data_for(ctx: &ProjectContext, env: &str) -> postui_core::varmodel::EnvDa
 /// Declared keys come first (in their declared order), then any env-only
 /// keys in environment-list order — order doesn't matter for correctness
 /// (row content is looked up by key), only determinism.
-fn union_var_option_keys(ctx: &ProjectContext, name: &str) -> Vec<String> {
+pub(crate) fn union_var_option_keys(ctx: &ProjectContext, name: &str) -> Vec<String> {
     let mut seen: IndexMap<String, ()> = ctx
         .model
         .vars
@@ -562,6 +623,38 @@ fn expand_glyph(
     })
 }
 
+/// The context-sensitive action chips for the Manager's hint row (spec §5:
+/// "every mutation ... has a keyboard action and a painted button"),
+/// registered as `Hit::FooterChip` — the same generic click-dispatch the
+/// main footer's chips already use, so no new hit-routing code is needed.
+/// `n`/`g` (new variable/new group) are always offered; the rest come from
+/// [`VarManager::struct_action_target`] against the cursor's row, so a key
+/// and its chip can never disagree about which rows accept it.
+fn action_chips(
+    ctx: &ProjectContext,
+    row: Option<&RowKind>,
+) -> Vec<(&'static str, &'static str, Action)> {
+    let mut chips = vec![
+        ("n", "new var", Action::PromptNewVar),
+        ("g", "new group", Action::PromptNewGroup),
+    ];
+    let Some(row) = row else { return chips };
+    for (key, label, kind) in [
+        ("o", "add option", StructKind::NewOption),
+        ("F2", "rename", StructKind::Rename),
+        ("d", "delete", StructKind::Delete),
+        ("s", "secret", StructKind::ToggleSecret),
+        ("m", "members", StructKind::EditMembers),
+        ("p", "promote", StructKind::Promote),
+        ("P", "demote", StructKind::Demote),
+    ] {
+        if let Some(action) = VarManager::struct_action_target(row, kind, ctx) {
+            chips.push((key, label, action));
+        }
+    }
+    chips
+}
+
 /// The name column's indent (in cells) and label for `row`.
 fn name_and_indent(row: &RowKind) -> (u16, String) {
     match row {
@@ -707,6 +800,15 @@ impl VarManager {
                 self.toggle_reveal(ctx);
                 None
             }
+            KeyCode::Char('n') => Some(Action::PromptNewVar),
+            KeyCode::Char('g') => Some(Action::PromptNewGroup),
+            KeyCode::Char('o') => self.struct_action(ctx, StructKind::NewOption),
+            KeyCode::F(2) | KeyCode::Char('=') => self.struct_action(ctx, StructKind::Rename),
+            KeyCode::Char('d') | KeyCode::Delete => self.struct_action(ctx, StructKind::Delete),
+            KeyCode::Char('s') => self.struct_action(ctx, StructKind::ToggleSecret),
+            KeyCode::Char('m') => self.struct_action(ctx, StructKind::EditMembers),
+            KeyCode::Char('p') => self.struct_action(ctx, StructKind::Promote),
+            KeyCode::Char('P') => self.struct_action(ctx, StructKind::Demote),
             _ => None,
         }
     }
@@ -889,6 +991,61 @@ impl VarManager {
         }))
     }
 
+    /// Which structural action a key/chip is asking for — routed through
+    /// [`Self::struct_action`] so the keyboard and the footer chip
+    /// ([`action_chips`]) share exactly one "is this row a valid target"
+    /// gate rather than risking the two disagreeing.
+    fn struct_action_target(
+        row: &RowKind,
+        kind: StructKind,
+        ctx: &ProjectContext,
+    ) -> Option<Action> {
+        match (kind, row) {
+            (StructKind::NewOption, RowKind::Var { name })
+                if !ctx.model.vars.get(name).is_some_and(|d| d.secret) =>
+            {
+                Some(Action::PromptNewOption {
+                    owner: name.clone(),
+                })
+            }
+            (StructKind::NewOption, RowKind::GroupHeader { name }) => {
+                Some(Action::PromptNewOption {
+                    owner: name.clone(),
+                })
+            }
+            (StructKind::Rename, RowKind::Var { name }) => {
+                Some(Action::PromptRenameVar { from: name.clone() })
+            }
+            (StructKind::Delete, RowKind::Var { name } | RowKind::GroupHeader { name }) => {
+                Some(Action::ConfirmDeleteVar { name: name.clone() })
+            }
+            (StructKind::ToggleSecret, RowKind::Var { name })
+                if union_var_option_keys(ctx, name).is_empty() =>
+            {
+                Some(Action::ToggleSecretVar { name: name.clone() })
+            }
+            (StructKind::EditMembers, RowKind::GroupHeader { name }) => {
+                Some(Action::PromptEditGroupMembers {
+                    group: name.clone(),
+                })
+            }
+            (StructKind::Promote, RowKind::RequestVar { name }) => {
+                Some(Action::PromptPromoteVar { name: name.clone() })
+            }
+            (StructKind::Demote, RowKind::Var { name }) => {
+                Some(Action::ConfirmDemoteVar { name: name.clone() })
+            }
+            _ => None,
+        }
+    }
+
+    /// The cursor-row version of [`Self::struct_action_target`] — the
+    /// keyboard path.
+    fn struct_action(&self, ctx: &ProjectContext, kind: StructKind) -> Option<Action> {
+        let row = self.rows.get(self.cursor.0)?;
+        Self::struct_action_target(row, kind, ctx)
+    }
+
     /// `r` on a secret `Var`'s env cell: toggles that one `(name, env)`
     /// pair between masked and plaintext display, replacing any other cell
     /// currently revealed (spec §5: `r` toggles reveal *without* entering
@@ -1035,6 +1192,7 @@ impl VarManager {
     /// the variable/environment grid itself (rebuilt from `ctx` +
     /// `open_request` + `self.expanded` at the top of every call), and a
     /// muted footer hint row.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
         frame: &mut Frame,
@@ -1043,6 +1201,7 @@ impl VarManager {
         ctx: &ProjectContext,
         open_request: Option<&HttpRequest>,
         hits: &mut HitMap,
+        hovered: Option<&crate::hit::Hit>,
     ) {
         self.rows = build_rows(ctx, open_request, &self.expanded);
 
@@ -1305,15 +1464,67 @@ impl VarManager {
 
         fill(buf, hint_row, theme.panel);
         if hint_row.height > 0 {
+            let y = hint_row.y;
+            let esc_label = " esc back ";
+            let esc_area = Rect {
+                x: hint_row.x + 1,
+                y,
+                width: esc_label.chars().count() as u16,
+                height: 1,
+            };
+            let esc_fill = if hovered == Some(&crate::hit::Hit::FooterChip(Action::CloseScreen)) {
+                theme.control_hover
+            } else {
+                theme.panel
+            };
+            if esc_fill != theme.panel {
+                fill(buf, esc_area, esc_fill);
+            }
             text(
                 buf,
-                hint_row.x + 1,
-                hint_row.y,
-                " esc back ",
+                esc_area.x,
+                y,
+                esc_label,
                 theme.text_muted,
-                theme.panel,
+                esc_fill,
                 false,
             );
+            hits.register(esc_area, crate::hit::Hit::FooterChip(Action::CloseScreen));
+
+            let mut x = esc_area.x + esc_area.width + 1;
+            let right_limit = hint_row.x + hint_row.width;
+            for (key, label, action) in action_chips(ctx, self.rows.get(self.cursor.0)) {
+                let key_text = format!(" {key}");
+                let label_text = format!(" {label} ");
+                let width = key_text.chars().count() as u16 + label_text.chars().count() as u16;
+                if x + width > right_limit {
+                    break;
+                }
+                let chip_area = Rect {
+                    x,
+                    y,
+                    width,
+                    height: 1,
+                };
+                let chip_fill = if hovered == Some(&crate::hit::Hit::FooterChip(action.clone())) {
+                    theme.control_hover
+                } else {
+                    theme.control
+                };
+                fill(buf, chip_area, chip_fill);
+                text(buf, x, y, &key_text, theme.accent, chip_fill, true);
+                text(
+                    buf,
+                    x + key_text.chars().count() as u16,
+                    y,
+                    &label_text,
+                    theme.text_muted,
+                    chip_fill,
+                    false,
+                );
+                hits.register(chip_area, crate::hit::Hit::FooterChip(action));
+                x += width + 1;
+            }
         }
     }
 }
@@ -1572,7 +1783,7 @@ customer_id = "c-77"
             ..Default::default()
         };
         terminal
-            .draw(|f| vm.draw(f, f.area(), &theme, ctx, req, &mut hits))
+            .draw(|f| vm.draw(f, f.area(), &theme, ctx, req, &mut hits, None))
             .unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         (content, terminal)

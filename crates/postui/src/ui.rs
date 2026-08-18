@@ -94,6 +94,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 &app.project,
                 open_request.as_ref(),
                 &mut hits,
+                app.hovered.as_ref(),
             );
         }
     }

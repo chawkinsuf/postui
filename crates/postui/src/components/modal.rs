@@ -1,9 +1,11 @@
 use super::line_input::LineInput;
 use crate::action::Action;
+use crate::components::varmanager::VarStructOp;
 use crate::paint::{
     self, BUTTON_HEIGHT, Button, ButtonKind, ControlState, FIELD_HEIGHT, TextField,
 };
 use crate::theme::Theme;
+use indexmap::IndexMap;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
@@ -15,10 +17,93 @@ use ratatui::widgets::{Paragraph, Wrap};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PromptKind {
     NewRequest,
-    RenameRequest { from: String },
+    RenameRequest {
+        from: String,
+    },
     SaveAs,
     OpenProjectPath,
     SaveBodyAs,
+    /// `n` (spec §5): a bare variable name — the grid's own cell edit sets
+    /// its default/description afterward.
+    NewVariable,
+    /// `g`: comma-separated `name, member, member, ...` — the group's own
+    /// name is the first token (see the module-level format note on
+    /// `parse_group_prompt`).
+    NewGroup,
+    /// `o` on an enumerated/group row: comma-separated `key, value` for a
+    /// plain variable's option, or `key, member=value, member=value, ...`
+    /// for a group's — `member_names` (the group's declared members, empty
+    /// for a plain variable) tells `parse_option_prompt` which form to
+    /// expect.
+    NewOption {
+        owner: String,
+        member_names: Vec<String>,
+    },
+    /// `F2`/`=` on a `Var` row.
+    RenameVariable {
+        from: String,
+    },
+    /// `m` on a `GroupHeader` row: comma-separated member names, replacing
+    /// the group's current list.
+    GroupMembers {
+        group: String,
+    },
+}
+
+/// Splits `text` on commas, trims each piece, and drops empty ones — the
+/// shared tokenizer for every comma-separated prompt kind.
+fn comma_tokens(text: &str) -> Vec<String> {
+    text.split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// `PromptKind::NewGroup`'s text -> `(name, members)`: the first
+/// comma-separated token is the group's name, the rest are its members.
+/// `None` when the field has no first token at all (nothing typed yet).
+fn parse_group_prompt(text: &str) -> Option<(String, Vec<String>)> {
+    let mut tokens = comma_tokens(text);
+    if tokens.is_empty() {
+        return None;
+    }
+    let name = tokens.remove(0);
+    Some((name, tokens))
+}
+
+/// `PromptKind::NewOption`'s text -> `(key, values)`. For a plain variable
+/// (`member_names` empty), the second token is the option's `value`. For a
+/// group, every remaining token must be `member=value`; a member outside
+/// `member_names`, or fewer members than the group declares, means "not
+/// finished typing yet" (`None`) rather than a hard error — the field
+/// simply doesn't confirm until it parses.
+fn parse_option_prompt(
+    text: &str,
+    member_names: &[String],
+) -> Option<(String, IndexMap<String, String>)> {
+    let mut tokens = comma_tokens(text);
+    if tokens.is_empty() {
+        return None;
+    }
+    let key = tokens.remove(0);
+    let mut values = IndexMap::new();
+    if member_names.is_empty() {
+        let value = tokens.into_iter().next()?;
+        values.insert("value".to_string(), value);
+    } else {
+        for token in &tokens {
+            let (member, value) = token.split_once('=')?;
+            let member = member.trim();
+            if !member_names.iter().any(|m| m == member) {
+                return None;
+            }
+            values.insert(member.to_string(), value.trim().to_string());
+        }
+        if values.len() != member_names.len() {
+            return None;
+        }
+    }
+    Some((key, values))
 }
 
 pub enum Modal {
@@ -152,26 +237,59 @@ impl ModalStack {
                 KeyCode::Enter => {
                     let text = input.text().trim();
                     if text.is_empty() {
-                        None // swallowed: nothing to confirm yet
-                    } else {
-                        let action = match kind {
-                            PromptKind::NewRequest => Action::CreateRequest(text.to_string()),
-                            PromptKind::RenameRequest { from } => Action::RenameRequest {
+                        return None; // swallowed: nothing to confirm yet
+                    }
+                    let action = match kind {
+                        PromptKind::NewRequest => Some(Action::CreateRequest(text.to_string())),
+                        PromptKind::RenameRequest { from } => Some(Action::RenameRequest {
+                            from: from.clone(),
+                            to: text.to_string(),
+                        }),
+                        PromptKind::SaveAs => Some(Action::SaveRequestAs(text.to_string())),
+                        PromptKind::OpenProjectPath => {
+                            Some(Action::OpenProjectByPath(text.to_string()))
+                        }
+                        PromptKind::SaveBodyAs => Some(Action::SaveBodyToFile(text.to_string())),
+                        PromptKind::NewVariable => Some(Action::VarStruct(VarStructOp::NewVar {
+                            name: text.to_string(),
+                            description: None,
+                        })),
+                        PromptKind::NewGroup => parse_group_prompt(text).map(|(name, members)| {
+                            Action::VarStruct(VarStructOp::NewGroup { name, members })
+                        }),
+                        PromptKind::NewOption {
+                            owner,
+                            member_names,
+                        } => parse_option_prompt(text, member_names).map(|(key, values)| {
+                            Action::VarStruct(VarStructOp::NewOption {
+                                owner: owner.clone(),
+                                key,
+                                description: None,
+                                values,
+                            })
+                        }),
+                        PromptKind::RenameVariable { from } => {
+                            Some(Action::VarStruct(VarStructOp::Rename {
                                 from: from.clone(),
                                 to: text.to_string(),
-                            },
-                            PromptKind::SaveAs => Action::SaveRequestAs(text.to_string()),
-                            PromptKind::OpenProjectPath => {
-                                Action::OpenProjectByPath(text.to_string())
-                            }
-                            PromptKind::SaveBodyAs => Action::SaveBodyToFile(text.to_string()),
-                        };
-                        Some(ModalResult {
-                            actions: vec![action],
-                            close: true,
-                            ..Default::default()
-                        })
-                    }
+                            }))
+                        }
+                        PromptKind::GroupMembers { group } => {
+                            Some(Action::VarStruct(VarStructOp::SetMembers {
+                                group: group.clone(),
+                                members: comma_tokens(text),
+                            }))
+                        }
+                    };
+                    // A well-formed-but-incomplete comma prompt (e.g. a
+                    // group option still missing a member) swallows Enter
+                    // rather than closing on nonsense — same "not ready
+                    // yet" treatment as the empty-text case above.
+                    action.map(|action| ModalResult {
+                        actions: vec![action],
+                        close: true,
+                        ..Default::default()
+                    })
                 }
                 _ => {
                     input.handle_key(key);

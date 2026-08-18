@@ -3308,3 +3308,634 @@ fn keyboard_driven_failed_write_leaves_editing_open_and_toasts() {
             .ends_with('X')
     );
 }
+
+// --- Task 12: Manager structural actions (spec §5 action list; §4
+// promote/demote; §3 secret-flag transitions) --------------------------
+
+/// Opens the Manager and moves the cursor to whichever row matches
+/// `pred`, panicking if none does — `rendered_text` first so
+/// `varmanager.rows` is populated (rows only rebuild inside `draw`).
+fn goto_row(app: &mut App, pred: impl Fn(&crate::components::varmanager::RowKind) -> bool) {
+    app.update(Action::OpenVarManager);
+    rendered_text(app);
+    let i = app
+        .varmanager
+        .rows
+        .iter()
+        .position(pred)
+        .expect("no row matched");
+    app.varmanager.cursor = (i, 0);
+}
+
+#[test]
+fn var_struct_new_var_creates_a_bare_declaration() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    app.update(Action::VarStruct(VarStructOp::NewVar {
+        name: "widget_id".into(),
+        description: None,
+    }));
+
+    assert!(app.toasts.is_empty());
+    assert!(app.project.model.vars.contains_key("widget_id"));
+    let on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    assert!(on_disk.contains("[widget_id]"), "{on_disk}");
+}
+
+#[test]
+fn var_struct_new_var_rejects_a_name_already_taken() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    app.update(Action::VarStruct(VarStructOp::NewVar {
+        name: "base_url".into(),
+        description: None,
+    }));
+
+    assert!(!app.toasts.is_empty(), "must toast on collision");
+}
+
+#[test]
+fn var_struct_new_group_creates_group_with_members() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    app.update(Action::VarStruct(VarStructOp::NewGroup {
+        name: "creds".into(),
+        members: vec!["user_id".into(), "customer_id".into()],
+    }));
+
+    assert!(app.toasts.is_empty());
+    let g = app
+        .project
+        .model
+        .groups
+        .get("creds")
+        .expect("group created");
+    assert_eq!(
+        g.members,
+        vec!["user_id".to_string(), "customer_id".to_string()]
+    );
+}
+
+#[test]
+fn var_struct_new_option_on_a_variable_writes_the_shared_option() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    // A fresh variable, not `base_url` — `base_url` already has a flat `qa`
+    // env value, and a flat value for a variable enumerated *in that env*
+    // is a §1.2 error, which is the right behavior but not what this test
+    // is about.
+    app.update(Action::VarStruct(VarStructOp::NewVar {
+        name: "region".into(),
+        description: None,
+    }));
+
+    let mut values = indexmap::IndexMap::new();
+    values.insert("value".to_string(), "us-east".to_string());
+    app.update(Action::VarStruct(VarStructOp::NewOption {
+        owner: "region".into(),
+        key: "east".into(),
+        description: None,
+        values,
+    }));
+
+    assert!(app.toasts.is_empty());
+    let opt = app.project.model.vars["region"]
+        .options
+        .get("east")
+        .expect("option created");
+    assert_eq!(opt.value, "us-east");
+}
+
+#[test]
+fn var_struct_new_option_on_a_group_writes_every_member_value() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::VarStruct(VarStructOp::NewGroup {
+        name: "creds".into(),
+        members: vec!["user_id".into(), "customer_id".into()],
+    }));
+
+    let mut values = indexmap::IndexMap::new();
+    values.insert("user_id".to_string(), "1001".to_string());
+    values.insert("customer_id".to_string(), "c-77".to_string());
+    app.update(Action::VarStruct(VarStructOp::NewOption {
+        owner: "creds".into(),
+        key: "alice".into(),
+        description: None,
+        values,
+    }));
+
+    assert!(app.toasts.is_empty());
+    let opt = app.project.model.groups["creds"]
+        .options
+        .get("alice")
+        .expect("option created");
+    assert_eq!(opt.values["user_id"], "1001");
+    assert_eq!(opt.values["customer_id"], "c-77");
+}
+
+#[test]
+fn var_struct_rename_updates_the_declaration() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    app.update(Action::VarStruct(VarStructOp::Rename {
+        from: "base_url".into(),
+        to: "root_url".into(),
+    }));
+
+    assert!(app.toasts.is_empty());
+    assert!(!app.project.model.vars.contains_key("base_url"));
+    assert!(app.project.model.vars.contains_key("root_url"));
+}
+
+#[test]
+fn var_struct_delete_var_removes_the_declaration_and_clamps_the_cursor() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| {
+        matches!(r, crate::components::varmanager::RowKind::AddGroup)
+    });
+    let past_end = app.varmanager.rows.len() + 5;
+    app.varmanager.cursor.0 = past_end;
+
+    app.update(Action::VarStruct(VarStructOp::Delete {
+        name: "base_url".into(),
+    }));
+
+    assert!(app.toasts.is_empty());
+    assert!(!app.project.model.vars.contains_key("base_url"));
+    assert!(
+        app.varmanager.cursor.0 < app.varmanager.rows.len().max(1),
+        "cursor must clamp back inside the (now shorter) row list"
+    );
+}
+
+#[test]
+fn var_struct_set_members_replaces_the_group_list() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::VarStruct(VarStructOp::NewGroup {
+        name: "creds".into(),
+        members: vec!["user_id".into()],
+    }));
+
+    app.update(Action::VarStruct(VarStructOp::SetMembers {
+        group: "creds".into(),
+        members: vec!["user_id".into(), "customer_id".into()],
+    }));
+
+    assert_eq!(
+        app.project.model.groups["creds"].members,
+        vec!["user_id".to_string(), "customer_id".to_string()]
+    );
+}
+
+fn request_with_var(dir: &std::path::Path, slug: &str, name: &str, value: &str) {
+    let mut r = postui_core::model::HttpRequest::from_toml_str(&format!(
+        "url = \"https://x/{slug}\"\n[variables]\n{name} = \"{value}\"\n"
+    ))
+    .unwrap();
+    r.url = format!("https://x/{slug}");
+    postui_core::storage::save_request(dir, slug, &r).unwrap();
+}
+
+#[test]
+fn var_struct_promote_to_default_writes_the_declaration_and_removes_the_request_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    request_with_var(dir.path(), "ping", "trace_id", "abc-123");
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("ping".into()));
+
+    app.update(Action::VarStruct(VarStructOp::Promote {
+        name: "trace_id".into(),
+        target: postui_core::varedit::PromoteTarget::Default,
+    }));
+
+    assert!(app.toasts.is_empty());
+    assert_eq!(
+        app.project.model.vars["trace_id"].default.as_deref(),
+        Some("abc-123")
+    );
+    assert!(!app.editor.variables.contains_key("trace_id"));
+}
+
+#[test]
+fn var_struct_promote_to_env_writes_the_env_value_and_a_bare_declaration() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    request_with_var(dir.path(), "ping", "trace_id", "abc-123");
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    assert_eq!(app.project.env_label(), "qa");
+    app.update(Action::ForceOpenRequest("ping".into()));
+
+    app.update(Action::VarStruct(VarStructOp::Promote {
+        name: "trace_id".into(),
+        target: postui_core::varedit::PromoteTarget::Env,
+    }));
+
+    assert!(app.toasts.is_empty());
+    assert!(app.project.model.vars.contains_key("trace_id"));
+    assert!(app.project.model.vars["trace_id"].default.is_none());
+    let env_on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(env_on_disk.contains("abc-123"), "{env_on_disk}");
+    assert!(!app.editor.variables.contains_key("trace_id"));
+}
+
+#[test]
+fn var_struct_demote_writes_the_resolved_value_into_the_request_and_strips_the_project() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    postui_core::storage::save_request(dir.path(), "ping", &req("https://x/ping")).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("ping".into()));
+    assert_eq!(
+        app.project.resolved.values["base_url"],
+        "https://qa.example.com"
+    );
+
+    app.update(Action::VarStruct(VarStructOp::Demote {
+        name: "base_url".into(),
+    }));
+
+    assert!(app.toasts.is_empty());
+    assert_eq!(
+        app.editor.variables["base_url"].value,
+        "https://qa.example.com"
+    );
+    assert!(!app.project.model.vars.contains_key("base_url"));
+    let env_on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(!env_on_disk.contains("qa.example.com"), "{env_on_disk}");
+}
+
+#[test]
+fn confirm_delete_var_lists_referencing_requests_from_scan_usage() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let mut r = req("https://x/uses-it/{{base_url}}");
+    r.url = "https://x/uses-it/{{base_url}}".into();
+    postui_core::storage::save_request(dir.path(), "uses-it", &r).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    app.update(Action::ConfirmDeleteVar {
+        name: "base_url".into(),
+    });
+
+    let Some(Modal::Confirm { body, .. }) = app.modals.top() else {
+        panic!("expected a Confirm modal");
+    };
+    assert!(
+        body.contains("uses-it") && body.contains('1'),
+        "body must name the referencing request: {body}"
+    );
+}
+
+#[test]
+fn confirm_demote_var_on_an_enumerated_variable_refuses_and_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    postui_core::storage::save_request(dir.path(), "ping", &req("https://x/ping")).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("ping".into()));
+
+    app.update(Action::ConfirmDemoteVar {
+        name: "user".into(),
+    });
+
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Message { .. })),
+        "an enumerated variable must be refused with a message modal"
+    );
+    assert!(
+        app.project.model.vars.contains_key("user"),
+        "the declaration must be untouched"
+    );
+    assert!(!app.editor.variables.contains_key("user"));
+}
+
+#[test]
+fn confirm_demote_var_on_a_secret_variable_refuses() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    postui_core::storage::save_request(dir.path(), "ping", &req("https://x/ping")).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("ping".into()));
+
+    app.update(Action::ConfirmDemoteVar {
+        name: "api_key".into(),
+    });
+
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Message { .. })),
+        "a secret variable must be refused, never written into a request file"
+    );
+    assert!(app.project.model.vars.contains_key("api_key"));
+}
+
+#[test]
+fn toggle_secret_var_secret_to_nonsecret_leaves_secrets_toml_untouched_and_shows_copy_offer() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::VarEdit(VarEditOp::SetSecretValue {
+        env: "qa".into(),
+        name: "api_key".into(),
+        value: "sk-live-abc123".into(),
+    }));
+    let secrets_before = std::fs::read_to_string(dir.path().join(".local/secrets.toml")).unwrap();
+
+    app.update(Action::ToggleSecretVar {
+        name: "api_key".into(),
+    });
+
+    let Some(Modal::Confirm { body, .. }) = app.modals.top() else {
+        panic!("expected a Confirm modal");
+    };
+    assert!(
+        body.contains("sk-live-abc123"),
+        "the copy-offer modal must show the value: {body}"
+    );
+    let secrets_after = std::fs::read_to_string(dir.path().join(".local/secrets.toml")).unwrap();
+    assert_eq!(
+        secrets_before, secrets_after,
+        "opening the confirm must not touch secrets.toml yet"
+    );
+
+    // Confirming flips the flag but still moves nothing (spec §3).
+    app.update(Action::VarStruct(VarStructOp::ToggleSecret {
+        name: "api_key".into(),
+    }));
+    assert!(!app.project.model.vars["api_key"].secret);
+    let secrets_final = std::fs::read_to_string(dir.path().join(".local/secrets.toml")).unwrap();
+    assert_eq!(
+        secrets_before, secrets_final,
+        "the value stays where it was"
+    );
+}
+
+#[test]
+fn toggle_secret_var_nonsecret_to_secret_moves_env_values_and_strips_env_files() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    // dev has no value for base_url; qa does — only qa's should move.
+    app.update(Action::ToggleSecretVar {
+        name: "base_url".into(),
+    });
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+
+    app.update(Action::VarStruct(VarStructOp::ToggleSecret {
+        name: "base_url".into(),
+    }));
+
+    assert!(app.toasts.is_empty());
+    assert!(app.project.model.vars["base_url"].secret);
+    let secrets = postui_core::project::load_secrets(dir.path()).unwrap();
+    assert_eq!(secrets["qa"]["base_url"], "https://qa.example.com");
+    let qa_on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(
+        !qa_on_disk.contains("qa.example.com"),
+        "the env file must be stripped: {qa_on_disk}"
+    );
+}
+
+#[test]
+fn toggle_secret_is_refused_for_an_enumerated_variable() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    app.update(Action::ToggleSecretVar {
+        name: "user".into(),
+    });
+
+    assert!(app.modals.is_empty(), "no modal for an invalid target");
+    assert!(!app.toasts.is_empty(), "must toast why it's refused");
+}
+
+// -- every structural op is reachable both by key and by a painted chip --
+
+#[test]
+fn keyboard_n_and_g_open_the_new_var_and_new_group_prompts() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, alt('v'));
+    rendered_text(&mut app);
+
+    app.handle_key(&keymap, plain('n'));
+    assert!(matches!(
+        app.modals.top(),
+        Some(Modal::Prompt {
+            kind: PromptKind::NewVariable,
+            ..
+        })
+    ));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    app.handle_key(&keymap, plain('g'));
+    assert!(matches!(
+        app.modals.top(),
+        Some(Modal::Prompt {
+            kind: PromptKind::NewGroup,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn keyboard_f2_d_s_open_the_matching_var_row_actions() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let keymap = Keymap::default_bindings();
+    goto_row(
+        &mut app,
+        |r| matches!(r, crate::components::varmanager::RowKind::Var { name } if name == "base_url"),
+    );
+
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE));
+    assert!(matches!(
+        app.modals.top(),
+        Some(Modal::Prompt {
+            kind: PromptKind::RenameVariable { .. },
+            ..
+        })
+    ));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    app.handle_key(&keymap, plain('d'));
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.project.model.vars.contains_key("base_url"), "cancelled");
+
+    app.handle_key(&keymap, plain('s'));
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+}
+
+#[test]
+fn keyboard_o_and_m_open_the_option_and_members_prompts_on_a_group() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::VarStruct(VarStructOp::NewGroup {
+        name: "creds".into(),
+        members: vec!["user_id".into()],
+    }));
+    let keymap = Keymap::default_bindings();
+    goto_row(
+        &mut app,
+        |r| matches!(r, crate::components::varmanager::RowKind::GroupHeader { name } if name == "creds"),
+    );
+
+    app.handle_key(&keymap, plain('m'));
+    assert!(matches!(
+        app.modals.top(),
+        Some(Modal::Prompt {
+            kind: PromptKind::GroupMembers { .. },
+            ..
+        })
+    ));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    app.handle_key(&keymap, plain('o'));
+    assert!(matches!(
+        app.modals.top(),
+        Some(Modal::Prompt {
+            kind: PromptKind::NewOption { .. },
+            ..
+        })
+    ));
+}
+
+#[test]
+fn keyboard_p_on_a_request_var_opens_the_promote_choice() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    request_with_var(dir.path(), "ping", "trace_id", "abc-123");
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("ping".into()));
+    let keymap = Keymap::default_bindings();
+    goto_row(
+        &mut app,
+        |r| matches!(r, crate::components::varmanager::RowKind::RequestVar { name } if name == "trace_id"),
+    );
+
+    app.handle_key(&keymap, plain('p'));
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+}
+
+/// The footer chip parity check (spec §5: "every mutation ... has a
+/// keyboard action and a painted button"): clicking the `d` chip on
+/// `base_url`'s row must open the exact same delete confirm the `d` key
+/// does.
+#[test]
+fn clicking_the_delete_chip_opens_the_same_confirm_as_the_d_key() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(
+        &mut app,
+        |r| matches!(r, crate::components::varmanager::RowKind::Var { name } if name == "base_url"),
+    );
+    rendered_text(&mut app);
+
+    let hit = crate::hit::Hit::FooterChip(Action::ConfirmDeleteVar {
+        name: "base_url".into(),
+    });
+    let rect = app
+        .hits
+        .rect_of(&hit)
+        .expect("delete chip must be painted and hit-mapped");
+
+    assert!(app.handle_mouse(left_down(rect.x, rect.y)));
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+}
+
+#[test]
+fn clicking_the_new_var_chip_opens_the_new_variable_prompt() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::OpenVarManager);
+    rendered_text(&mut app);
+
+    let hit = crate::hit::Hit::FooterChip(Action::PromptNewVar);
+    let rect = app
+        .hits
+        .rect_of(&hit)
+        .expect("new-var chip must be painted");
+    assert!(app.handle_mouse(left_down(rect.x, rect.y)));
+
+    assert!(matches!(
+        app.modals.top(),
+        Some(Modal::Prompt {
+            kind: PromptKind::NewVariable,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn prompt_new_group_comma_syntax_parses_name_and_members() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let keymap = Keymap::default_bindings();
+    app.update(Action::PromptNewGroup);
+
+    for c in "creds, user_id, customer_id".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(app.modals.is_empty());
+    let g = app
+        .project
+        .model
+        .groups
+        .get("creds")
+        .expect("group created");
+    assert_eq!(
+        g.members,
+        vec!["user_id".to_string(), "customer_id".to_string()]
+    );
+}
