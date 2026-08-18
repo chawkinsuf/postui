@@ -577,6 +577,7 @@ impl App {
                     title: "Save response body".into(),
                     input: crate::components::line_input::LineInput::new(&prefill),
                     kind: PromptKind::SaveBodyAs,
+                    revealed: false,
                 });
                 true
             }
@@ -716,6 +717,7 @@ impl App {
                             title: "Save request as".into(),
                             input: crate::components::line_input::LineInput::new(""),
                             kind: PromptKind::SaveAs,
+                            revealed: false,
                         });
                     }
                 }
@@ -750,6 +752,7 @@ impl App {
                     title: "New request".into(),
                     input: crate::components::line_input::LineInput::new(""),
                     kind: PromptKind::NewRequest,
+                    revealed: false,
                 });
                 true
             }
@@ -759,6 +762,7 @@ impl App {
                         title: "Rename request".into(),
                         input: crate::components::line_input::LineInput::new(&slug),
                         kind: PromptKind::RenameRequest { from: slug },
+                        revealed: false,
                     });
                 }
                 true
@@ -893,6 +897,34 @@ impl App {
                 ) {
                     Ok(x) => x,
                     Err(postui_core::prepare::PrepareError::Unresolved(causes)) => {
+                        // Send-time secret prompt (spec §3): a missing
+                        // secret pauses the send with a masked prompt
+                        // instead of the usual toast — confirming it
+                        // (`Action::SetSecret`) re-runs `ForceSend`, which
+                        // either prompts for the next missing secret or,
+                        // once every secret is resolved, falls through to
+                        // the ordinary unresolved-variable toast for
+                        // whatever's left (`causes` is a `BTreeMap`, so the
+                        // first name found here is the alphabetically first
+                        // one, same tie-break as the ctrl+v hint below).
+                        if let Some(name) = causes.iter().find_map(|(name, cause)| {
+                            (*cause == postui_core::prepare::UnresolvedCause::MissingSecret)
+                                .then(|| name.clone())
+                        }) {
+                            self.modals.push(Modal::Prompt {
+                                title: format!(
+                                    "Value for `{name}` (secret, env `{}`)",
+                                    self.project.env_label()
+                                ),
+                                input: LineInput::new(""),
+                                kind: PromptKind::SecretValue {
+                                    name,
+                                    env: self.project.env_label(),
+                                },
+                                revealed: false,
+                            });
+                            return true;
+                        }
                         let label = self.project.env_label();
                         let mut msg = format!(
                             "{} ({label})",
@@ -940,6 +972,16 @@ impl App {
                 true
             }
             Action::CancelSend => self.session.cancel(),
+            Action::SetSecret { name, value } => match self.project.set_secret(&name, value) {
+                Ok(()) => self.apply(Action::ForceSend),
+                Err(e) => {
+                    self.toasts.push(
+                        format!("could not save secret {name}: {e}"),
+                        ToastKind::Error,
+                    );
+                    true
+                }
+            },
             Action::ResponseArrived { generation, data } => self.session.arrived(generation, data),
             Action::RequestFailed { generation, error } => self.session.failed(generation, error),
             Action::InitProjectHere => {
@@ -1085,6 +1127,7 @@ impl App {
                     title: "Open project at path".into(),
                     input: crate::components::line_input::LineInput::new(""),
                     kind: PromptKind::OpenProjectPath,
+                    revealed: false,
                 });
                 true
             }
@@ -1257,6 +1300,7 @@ impl App {
                     title: "New variable".into(),
                     input: LineInput::new(&prefill),
                     kind: PromptKind::NewVariableAndInsert { completing },
+                    revealed: false,
                 });
                 true
             }
@@ -1315,6 +1359,7 @@ impl App {
                     title: "New variable".into(),
                     input: LineInput::new(""),
                     kind: PromptKind::NewVariable,
+                    revealed: false,
                 });
                 true
             }
@@ -1323,6 +1368,7 @@ impl App {
                     title: "New group \u{2014} name, member, member, \u{2026}".into(),
                     input: LineInput::new(""),
                     kind: PromptKind::NewGroup,
+                    revealed: false,
                 });
                 true
             }
@@ -1351,6 +1397,7 @@ impl App {
                         owner,
                         member_names,
                     },
+                    revealed: false,
                 });
                 true
             }
@@ -1359,6 +1406,7 @@ impl App {
                     title: format!("Rename {from}"),
                     input: LineInput::new(&from),
                     kind: PromptKind::RenameVariable { from },
+                    revealed: false,
                 });
                 true
             }
@@ -1374,6 +1422,7 @@ impl App {
                     title: format!("Members of {group}"),
                     input: LineInput::new(&seed),
                     kind: PromptKind::GroupMembers { group },
+                    revealed: false,
                 });
                 true
             }

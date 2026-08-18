@@ -7,7 +7,7 @@ use crate::paint::{
 use crate::theme::Theme;
 use indexmap::IndexMap;
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::widgets::{Paragraph, Wrap};
@@ -57,6 +57,24 @@ pub enum PromptKind {
     GroupMembers {
         group: String,
     },
+    /// Send-time secret prompt (spec §3): `prepare()` reported `name`
+    /// missing for the active environment (`env`, display only — never a
+    /// secret value). Confirming dispatches `Action::SetSecret`. The
+    /// modal's `revealed` flag (not part of this enum — see
+    /// `Modal::Prompt`) controls whether the input renders masked.
+    SecretValue {
+        name: String,
+        env: String,
+    },
+}
+
+impl PromptKind {
+    /// Whether this prompt's input must render masked (`●` per char) and
+    /// accepts the reveal toggle — currently just the send-time secret
+    /// prompt (spec §3: masked everywhere by default).
+    fn is_secret(&self) -> bool {
+        matches!(self, PromptKind::SecretValue { .. })
+    }
 }
 
 /// Splits `text` on commas, trims each piece, and drops empty ones — the
@@ -136,6 +154,11 @@ pub enum Modal {
         title: String,
         input: LineInput,
         kind: PromptKind,
+        /// For a masked prompt (`kind.is_secret()`), whether the reveal
+        /// toggle (`ctrl+r`) currently shows the typed text in plaintext
+        /// instead of `●` per char. Ignored (and always effectively
+        /// false-masked) for every other kind.
+        revealed: bool,
     },
     Palette(crate::components::palette::PaletteState),
     Chooser(crate::components::chooser::ChooserState),
@@ -237,12 +260,33 @@ impl ModalStack {
                 }
                 _ => None, // swallowed: modals capture all input
             },
-            Modal::Prompt { input, kind, .. } => match key.code {
+            Modal::Prompt {
+                input,
+                kind,
+                revealed,
+                ..
+            } => match key.code {
                 KeyCode::Esc => Some(ModalResult {
-                    actions: vec![],
+                    // The send-time secret prompt (spec §3) cancels the
+                    // whole send, not just this one field — surfaced so the
+                    // user isn't left wondering whether anything happened.
+                    actions: if kind.is_secret() {
+                        vec![Action::ShowToast(
+                            "send canceled".to_string(),
+                            crate::components::toast::ToastKind::Warning,
+                        )]
+                    } else {
+                        vec![]
+                    },
                     close: true,
                     ..Default::default()
                 }),
+                KeyCode::Char('r' | 'R')
+                    if kind.is_secret() && key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    *revealed = !*revealed;
+                    None // swallowed: modals capture all input
+                }
                 KeyCode::Enter => {
                     let text = input.text().trim();
                     if text.is_empty() {
@@ -310,6 +354,10 @@ impl ModalStack {
                                 members: comma_tokens(text),
                             })])
                         }
+                        PromptKind::SecretValue { name, .. } => Some(vec![Action::SetSecret {
+                            name: name.clone(),
+                            value: text.to_string(),
+                        }]),
                     };
                     // A well-formed-but-incomplete comma prompt (e.g. a
                     // group option still missing a member) swallows Enter
@@ -583,7 +631,13 @@ impl ModalStack {
                     false,
                 );
             }
-            Modal::Prompt { title, input, .. } => {
+            Modal::Prompt {
+                title,
+                input,
+                kind,
+                revealed,
+            } => {
+                let masked = kind.is_secret() && !*revealed;
                 let area = centered_rect(screen, 60.min(screen.width), 14.min(screen.height));
                 hits.register(area, crate::hit::Hit::ModalBody);
                 paint::floating_panel(frame.buffer_mut(), area, screen, theme);
@@ -605,22 +659,32 @@ impl ModalStack {
                     width: area.width.saturating_sub(4),
                     height: FIELD_HEIGHT,
                 };
+                let content = if masked {
+                    input.draw_line_windowed_masked(true, theme, field_area.width.saturating_sub(2))
+                } else {
+                    input.draw_line_windowed(true, theme, field_area.width.saturating_sub(2))
+                };
                 TextField {
-                    content: input.draw_line_windowed(
-                        true,
-                        theme,
-                        field_area.width.saturating_sub(2),
-                    ),
+                    content,
                     state: ControlState::Focused,
                 }
                 .paint(frame.buffer_mut(), field_area, theme);
 
                 let hint_y = field_area.y + FIELD_HEIGHT + 1;
+                let hint = if kind.is_secret() {
+                    if *revealed {
+                        "enter confirm  esc cancel  ctrl+r hide"
+                    } else {
+                        "enter confirm  esc cancel  ctrl+r reveal"
+                    }
+                } else {
+                    "enter confirm  esc cancel"
+                };
                 paint::text(
                     frame.buffer_mut(),
                     area.x + 2,
                     hint_y,
-                    "enter confirm  esc cancel",
+                    hint,
                     theme.text_muted,
                     theme.panel,
                     false,

@@ -4548,3 +4548,185 @@ fn blocked_send_toast_names_first_needs_selection_var_with_a_ctrl_v_hint() {
     assert!(content.contains("need a selection"), "{content}");
     assert!(content.contains("press ctrl+v to select user"), "{content}");
 }
+
+// -- Task 16: send-time secret prompt chain (spec §3) --
+
+/// A project with two secrets (`api_key` < `api_secret` alphabetically —
+/// `BTreeMap` iteration order in `PrepareError::Unresolved`) wired into
+/// default headers, so a real send exercises the substituted value.
+fn two_secret_project(dir: &std::path::Path) {
+    postui_core::project::init_project(dir, Some("svc")).unwrap();
+    std::fs::write(
+        dir.join("project.toml"),
+        "name = \"svc\"\n[default_headers]\nx-api-key = \"{{api_key}}\"\nx-api-secret = \"{{api_secret}}\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("variables.toml"),
+        "[api_key]\nsecret = true\n[api_secret]\nsecret = true\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("environments/qa.toml"), "").unwrap();
+}
+
+async fn drain_until_settled(app: &mut App, rx: &mut tokio::sync::mpsc::UnboundedReceiver<Action>) {
+    let generation = app.session.send_generation;
+    loop {
+        let action = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timed out waiting for a send result")
+            .expect("channel closed before a result arrived");
+        let settled = matches!(
+            &action,
+            Action::ResponseArrived { generation: g, .. } | Action::RequestFailed { generation: g, .. }
+            if *g == generation
+        );
+        app.update(action);
+        if settled {
+            break;
+        }
+    }
+}
+
+fn type_and_confirm(app: &mut App, keymap: &Keymap, text: &str) {
+    for c in text.chars() {
+        app.handle_key(keymap, plain(c));
+    }
+    app.handle_key(keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+}
+
+#[tokio::test]
+async fn missing_secrets_prompt_sequentially_then_the_request_sends() {
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/x"))
+        .and(wiremock::matchers::header("x-api-key", "key-val"))
+        .and(wiremock::matchers::header("x-api-secret", "secret-val"))
+        .respond_with(wiremock::ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    two_secret_project(dir.path());
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::SwitchEnv(Some("qa".into())));
+    app.editor.url = LineInput::new(&format!("{}/x", server.uri()));
+    let keymap = Keymap::default_bindings();
+
+    // First send attempt: blocked, prompting for the alphabetically first
+    // missing secret — never api_secret first.
+    app.update(Action::ForceSend);
+    assert!(app.session.in_flight.is_none());
+    let Some(Modal::Prompt { title, kind, .. }) = app.modals.top() else {
+        panic!("expected a secret prompt");
+    };
+    assert!(title.contains("api_key"), "title: {title}");
+    assert!(title.contains("qa"), "title: {title}");
+    assert!(
+        !title.contains("key-val"),
+        "title must never carry a value: {title}"
+    );
+    assert!(
+        matches!(kind, PromptKind::SecretValue { name, env } if name == "api_key" && env == "qa")
+    );
+
+    type_and_confirm(&mut app, &keymap, "key-val");
+
+    // Still not sent — the second secret is missing too.
+    assert!(app.session.in_flight.is_none());
+    let Some(Modal::Prompt { title, kind, .. }) = app.modals.top() else {
+        panic!("expected the second secret prompt");
+    };
+    assert!(title.contains("api_secret"), "title: {title}");
+    assert!(matches!(kind, PromptKind::SecretValue { name, .. } if name == "api_secret"));
+
+    type_and_confirm(&mut app, &keymap, "secret-val");
+
+    // Both secrets resolved: the send actually goes out this time.
+    assert!(app.modals.is_empty());
+    assert!(app.session.in_flight.is_some());
+
+    drain_until_settled(&mut app, &mut rx).await;
+    match app.session.response.state() {
+        ResponseState::Ready(data) => assert_eq!(data.status, 200),
+        _ => panic!("expected a ready response"),
+    }
+
+    let secrets = postui_core::project::load_secrets(dir.path()).unwrap();
+    assert_eq!(secrets["qa"]["api_key"], "key-val");
+    assert_eq!(secrets["qa"]["api_secret"], "secret-val");
+}
+
+#[tokio::test]
+async fn esc_mid_chain_cancels_the_send_and_keeps_only_confirmed_secrets() {
+    let dir = tempfile::tempdir().unwrap();
+    two_secret_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::SwitchEnv(Some("qa".into())));
+    app.editor.url = LineInput::new("http://example.invalid/x");
+    let keymap = Keymap::default_bindings();
+
+    app.update(Action::ForceSend);
+    type_and_confirm(&mut app, &keymap, "key-val");
+
+    // Second prompt (api_secret) is open now; cancel it.
+    assert!(matches!(
+        app.modals.top(),
+        Some(Modal::Prompt {
+            kind: PromptKind::SecretValue { name, .. },
+            ..
+        }) if name == "api_secret"
+    ));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    assert!(app.modals.is_empty(), "esc closes the prompt");
+    assert!(app.session.in_flight.is_none(), "nothing was sent");
+    let content = rendered_text(&mut app);
+    assert!(content.contains("send canceled"), "{content}");
+
+    let secrets = postui_core::project::load_secrets(dir.path()).unwrap();
+    assert_eq!(secrets["qa"]["api_key"], "key-val");
+    assert!(
+        !secrets["qa"].contains_key("api_secret"),
+        "the cancelled secret must not be persisted: {:?}",
+        secrets["qa"]
+    );
+}
+
+#[test]
+fn secret_prompt_input_renders_masked_dots_not_the_typed_text() {
+    let dir = tempfile::tempdir().unwrap();
+    two_secret_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::SwitchEnv(Some("qa".into())));
+    app.editor.url = LineInput::new("http://example.invalid/x");
+    let keymap = Keymap::default_bindings();
+
+    app.update(Action::ForceSend);
+    let typed = "zqxvw9";
+    for c in typed.chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+
+    let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
+        panic!("expected a secret prompt");
+    };
+    assert_eq!(
+        input.text(),
+        typed,
+        "the buffer itself holds the typed text"
+    );
+
+    let content = rendered_text(&mut app);
+    assert!(
+        !content.contains(typed),
+        "typed text must never render: {content}"
+    );
+    assert!(
+        content.contains('\u{25cf}'),
+        "masked dots must render: {content}"
+    );
+}

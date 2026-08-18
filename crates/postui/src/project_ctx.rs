@@ -227,7 +227,12 @@ impl ProjectContext {
             .or_default()
             .insert(name.to_string(), key.to_string());
         self.persist_local_state_keep_open_request();
-        if self.active_env.as_deref() == Some(env) {
+        // `env_key()` (not `active_env.as_deref()` directly) so the no-env
+        // case matches too: `active_env` is `None` there, but every caller
+        // (including `Self::set_selection`) addresses it by its storage key
+        // `""` — comparing against `active_env` directly would never equal
+        // `Some("")` and silently skip the resolve.
+        if self.env_key() == env {
             self.refresh_resolved();
         }
     }
@@ -257,7 +262,13 @@ impl ProjectContext {
             postui_core::project::save_secrets(&self.root, &secrets).map_err(|e| e.to_string())?;
         }
         self.secrets = secrets;
-        if self.active_env.as_deref() == Some(env) {
+        // See the matching comment in `set_selection_for`: compare against
+        // `env_key()`, not `active_env` directly, so the no-env case (where
+        // `active_env` is `None` but everything is keyed under `""`) still
+        // re-resolves — otherwise the send-time secret prompt (spec §3)
+        // would loop forever with no active environment, since the just-
+        // confirmed secret would never actually resolve.
+        if self.env_key() == env {
             self.refresh_resolved();
         }
         Ok(())
@@ -646,6 +657,31 @@ mod tests {
 
         let secrets = postui_core::project::load_secrets(dir.path()).unwrap();
         assert_eq!(secrets["qa"]["api_key"], "sk-live");
+    }
+
+    /// Regression: `active_env.as_deref() == Some(env)` never matched with
+    /// no active environment (`active_env` is `None`, but everything is
+    /// keyed under `""`) — `resolved` silently kept the pre-secret
+    /// `MissingSecret` state, so the send-time secret prompt (Task 16,
+    /// spec §3) would loop forever on a fresh clone with no env selected.
+    #[test]
+    fn set_secret_resolves_immediately_with_no_active_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        postui_core::project::init_project(dir.path(), None).unwrap();
+        std::fs::write(
+            dir.path().join("variables.toml"),
+            "[api_key]\nsecret = true\n",
+        )
+        .unwrap();
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        assert!(ctx.active_env.is_none());
+        assert!(!ctx.resolved.values.contains_key("api_key"));
+
+        ctx.set_secret("api_key", "sk-live".into()).unwrap();
+        assert_eq!(ctx.resolved.values["api_key"], "sk-live");
+
+        let secrets = postui_core::project::load_secrets(dir.path()).unwrap();
+        assert_eq!(secrets[""]["api_key"], "sk-live");
     }
 
     #[test]

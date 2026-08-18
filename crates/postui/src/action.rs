@@ -94,6 +94,15 @@ pub enum Action {
     /// Cancel the in-flight request, if any: aborts its task and marks the
     /// response pane `Cancelled`.
     CancelSend,
+    /// Confirmed the send-time secret prompt (spec §3): writes `name`'s
+    /// value to `secrets.toml` under the active environment, then re-runs
+    /// `Action::ForceSend` on success (prompting for the next missing
+    /// secret, or proceeding). A write failure toasts (name only, never the
+    /// value) and stops the chain.
+    SetSecret {
+        name: String,
+        value: String,
+    },
     /// A background send task completed successfully. `generation` ties the
     /// result back to the send that produced it; stale generations (a newer
     /// send started before this one finished) are dropped.
