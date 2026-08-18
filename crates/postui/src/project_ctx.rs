@@ -1,21 +1,34 @@
 //! `ProjectContext`: the open project's metadata, variables, environments,
 //! and resolved environment values, plus the UI-owned bits of local state
-//! (active environment, expanded sidebar dirs) that persist across runs.
+//! (active environment, expanded sidebar dirs, per-env option selections)
+//! that persist across runs.
 
 use indexmap::IndexMap;
 use postui_core::project::ProjectMeta;
+use postui_core::varedit::EditError;
 use postui_core::varmodel::{self, VarModel};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 pub struct ProjectContext {
     pub root: PathBuf,
     pub meta: ProjectMeta,
-    pub variables: VarModel,
+    pub model: VarModel,
     pub environments: Vec<String>,
     pub active_env: Option<String>,
-    pub env_values: IndexMap<String, String>,
+    /// The active environment's data (empty when no env is active).
+    pub env_data: varmodel::EnvData,
+    /// env → name → secret value, loaded from `.local/secrets.toml`.
+    pub secrets: IndexMap<String, IndexMap<String, String>>,
+    /// `model` resolved against `env_data`, the active env's selections,
+    /// and the active env's secrets. Recomputed by `refresh_resolved`
+    /// whenever any of those inputs changes.
+    pub resolved: varmodel::Resolved,
     pub expanded: std::collections::BTreeSet<String>,
+    /// env → name → selected option key, loaded from `.local/state.toml`
+    /// and kept in sync in-memory (no more disk round-trip needed to avoid
+    /// clobbering it on persist — see `persist_local_state`).
+    selections: IndexMap<String, IndexMap<String, String>>,
     /// mtimes of the files this context was built from, used by
     /// `reload_if_changed` to detect on-disk edits between UI polls.
     stamps: Vec<(PathBuf, Option<SystemTime>)>,
@@ -25,19 +38,39 @@ pub struct ProjectContext {
     local_open_request: Option<String>,
 }
 
-/// Loads an environment's flat values, validating it against `model` (spec
-/// §1.2: a flat value for an enumerated/secret name, or an `[options.*]`
-/// table for an undeclared/secret name, is an error). Returns just the flat
-/// `values` map — option tables aren't consumed by `ProjectContext` yet
-/// (selections/secrets wiring lands with the full stage-6 integration).
+/// Loads an environment's data, validating it against `model` (spec §1.2: a
+/// flat value for an enumerated/secret name, or an `[options.*]` table for
+/// an undeclared/secret name, is an error).
 fn load_and_validate_env(
-    root: &std::path::Path,
+    root: &Path,
     name: &str,
     model: &VarModel,
-) -> Result<IndexMap<String, String>, String> {
+) -> Result<varmodel::EnvData, String> {
     let env = postui_core::project::load_environment(root, name).map_err(|e| e.to_string())?;
     varmodel::validate_env(model, &env).map_err(|e| e.to_string())?;
-    Ok(env.values)
+    Ok(env)
+}
+
+/// Reads `path`'s contents; a missing file is treated as empty (the file
+/// hasn't been created yet — e.g. a brand-new environment).
+fn read_or_empty(path: &Path) -> Result<String, String> {
+    match std::fs::read_to_string(path) {
+        Ok(s) => Ok(s),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Atomic write via temp file + rename in `path`'s own directory, matching
+/// `storage::save_request`'s pattern (spec §5: writes atomic + immediate).
+fn atomic_write(path: &Path, contents: &str) -> std::io::Result<()> {
+    let parent = path.parent().expect("path always has a parent");
+    std::fs::create_dir_all(parent)?;
+    use std::io::Write;
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+    tmp.write_all(contents.as_bytes())?;
+    tmp.persist(path).map_err(|e| e.error)?;
+    Ok(())
 }
 
 fn mtime(path: &PathBuf) -> Option<SystemTime> {
@@ -47,10 +80,7 @@ fn mtime(path: &PathBuf) -> Option<SystemTime> {
 /// Builds the stamp vector `reload_if_changed` compares against: mtimes of
 /// `project.toml`, `variables.toml`, the `environments/` dir, and the active
 /// env file (a sentinel path with `None` when there is no active env).
-fn stamp(
-    root: &std::path::Path,
-    active_env: &Option<String>,
-) -> Vec<(PathBuf, Option<SystemTime>)> {
+fn stamp(root: &Path, active_env: &Option<String>) -> Vec<(PathBuf, Option<SystemTime>)> {
     vec![
         (root.join("project.toml"), mtime(&root.join("project.toml"))),
         (
@@ -71,9 +101,9 @@ fn stamp(
 
 impl ProjectContext {
     /// Opens `root` as a project: loads meta/variables/environments/local
-    /// state and the active environment's values. Never fails outright —
-    /// any individual piece that can't be read degrades to a sane default
-    /// and its problem is appended to the returned warnings.
+    /// state/secrets and the active environment's data. Never fails
+    /// outright — any individual piece that can't be read degrades to a
+    /// sane default and its problem is appended to the returned warnings.
     pub fn open(root: PathBuf) -> (Self, Vec<String>) {
         let mut warnings = Vec::new();
 
@@ -81,7 +111,7 @@ impl ProjectContext {
             warnings.push(format!("could not read project.toml: {e}"));
             ProjectMeta::default()
         });
-        let variables = postui_core::project::load_variables(&root).unwrap_or_else(|e| {
+        let model = postui_core::project::load_variables(&root).unwrap_or_else(|e| {
             warnings.push(format!("could not read variables.toml: {e}"));
             VarModel::default()
         });
@@ -92,15 +122,20 @@ impl ProjectContext {
             postui_core::project::LocalState::default()
         });
 
+        let secrets = postui_core::project::load_secrets(&root).unwrap_or_else(|e| {
+            warnings.push(format!("could not read secrets: {e}"));
+            IndexMap::new()
+        });
+
         let mut active_env = None;
-        let mut env_values = IndexMap::new();
+        let mut env_data = varmodel::EnvData::default();
         if let Some(env) = local_state.environment {
             if !environments.contains(&env) {
                 warnings.push(format!("saved environment {env:?} no longer exists"));
             } else {
-                match load_and_validate_env(&root, &env, &variables) {
-                    Ok(values) => {
-                        env_values = values;
+                match load_and_validate_env(&root, &env, &model) {
+                    Ok(data) => {
+                        env_data = data;
                         active_env = Some(env);
                     }
                     Err(e) => {
@@ -115,17 +150,21 @@ impl ProjectContext {
 
         let stamps = stamp(&root, &active_env);
 
-        let ctx = ProjectContext {
+        let mut ctx = ProjectContext {
             root,
             meta,
-            variables,
+            model,
             environments,
             active_env,
-            env_values,
+            env_data,
+            secrets,
+            resolved: varmodel::Resolved::default(),
             expanded,
+            selections: local_state.selections,
             stamps,
             local_open_request: local_state.open_request,
         };
+        ctx.refresh_resolved();
         (ctx, warnings)
     }
 
@@ -140,46 +179,81 @@ impl ProjectContext {
         self.active_env.clone().unwrap_or_else(|| "no env".into())
     }
 
-    /// Builds the `PrepareContext` for sending: variables resolved (env
-    /// over declared defaults) plus the project's default headers.
-    ///
-    /// Temporary: resolves with empty selections/secrets until the full
-    /// stage-6 integration (task 8) wires `.local/` selections and secrets
-    /// through `ProjectContext`.
+    /// The key `selections`/`secrets` are keyed under for the active
+    /// environment — the empty string when no env is active (spec: no-env
+    /// selections/secrets live under that shared key).
+    fn env_key(&self) -> String {
+        self.active_env.clone().unwrap_or_default()
+    }
+
+    /// Recomputes `resolved` from `model`, `env_data`, and the active env's
+    /// selections/secrets. Call after anything that changes any of those.
+    pub fn refresh_resolved(&mut self) {
+        let key = self.env_key();
+        let empty_sel = IndexMap::new();
+        let empty_secrets = IndexMap::new();
+        let selections = self.selections.get(&key).unwrap_or(&empty_sel);
+        let secrets = self.secrets.get(&key).unwrap_or(&empty_secrets);
+        self.resolved = varmodel::resolve_env(&self.model, &self.env_data, selections, secrets);
+    }
+
+    /// The active env's `name → selected option key` map (or the
+    /// no-env slot's, keyed by the empty string), creating it if absent.
+    pub fn selections_mut(&mut self) -> &mut IndexMap<String, String> {
+        let key = self.env_key();
+        self.selections.entry(key).or_default()
+    }
+
+    /// Records `name`'s selection as `key` for the active env, persists
+    /// local state, and re-resolves.
+    pub fn set_selection(&mut self, name: &str, key: &str) {
+        self.selections_mut()
+            .insert(name.to_string(), key.to_string());
+        self.persist_local_state_keep_open_request();
+        self.refresh_resolved();
+    }
+
+    /// Records `name`'s secret value for the active env, writes
+    /// `.local/secrets.toml`, and re-resolves.
+    pub fn set_secret(&mut self, name: &str, value: String) {
+        let key = self.env_key();
+        self.secrets
+            .entry(key)
+            .or_default()
+            .insert(name.to_string(), value);
+        if self.can_persist() {
+            let _ = postui_core::project::save_secrets(&self.root, &self.secrets);
+        }
+        self.refresh_resolved();
+    }
+
+    /// Builds the `PrepareContext` for sending: fully resolved variables
+    /// (secret → selected option → env value → default, per spec §2) plus
+    /// resolution metadata and the project's default headers.
     pub fn prepare_context(&self) -> postui_core::prepare::PrepareContext {
-        let env = varmodel::EnvData {
-            values: self.env_values.clone(),
-            options: IndexMap::new(),
-        };
-        let resolved = varmodel::resolve_env(
-            &self.variables,
-            &env,
-            &varmodel::Selections::new(),
-            &varmodel::SecretValues::new(),
-        );
         postui_core::prepare::PrepareContext {
-            vars: resolved.values,
+            vars: self.resolved.values.clone(),
             default_headers: self.meta.default_headers.clone(),
-            meta: resolved.meta,
+            meta: self.resolved.meta.clone(),
         }
     }
 
-    /// Switches the active environment, re-reading its file and loading
-    /// its values (or clearing them for `None`). A missing or corrupt env
-    /// file keeps the previous environment active and returns a warning
-    /// instead of dropping to "no env". Does not persist — callers persist
-    /// separately (see `Action::SwitchEnv`).
+    /// Switches the active environment, re-reading its data (or clearing
+    /// it for `None`). A missing or corrupt env file keeps the previous
+    /// environment active and returns a warning instead of dropping to "no
+    /// env". Does not persist — callers persist separately (see
+    /// `Action::SwitchEnv`).
     pub fn set_env(&mut self, env: Option<String>) -> Vec<String> {
         let mut warnings = Vec::new();
         match env {
             None => {
                 self.active_env = None;
-                self.env_values = IndexMap::new();
+                self.env_data = varmodel::EnvData::default();
                 self.stamps = stamp(&self.root, &self.active_env);
             }
-            Some(name) => match load_and_validate_env(&self.root, &name, &self.variables) {
-                Ok(values) => {
-                    self.env_values = values;
+            Some(name) => match load_and_validate_env(&self.root, &name, &self.model) {
+                Ok(data) => {
+                    self.env_data = data;
                     self.active_env = Some(name);
                     self.stamps = stamp(&self.root, &self.active_env);
                 }
@@ -188,15 +262,17 @@ impl ProjectContext {
                 }
             },
         }
+        self.refresh_resolved();
         warnings
     }
 
     /// Compares fresh mtime stamps against those recorded at the last
     /// `open`/`set_env`/`reload_if_changed`; if anything differs, re-runs
-    /// the load path for the pieces that changed, keeping the current
-    /// `active_env` if it still exists (otherwise degrading to no env with
-    /// a warning). Parse failures keep the previous good value for that
-    /// file and are surfaced as warnings. Returns `(changed, warnings)`.
+    /// the load path for the pieces that changed (including secrets),
+    /// keeping the current `active_env` if it still exists (otherwise
+    /// degrading to no env with a warning). Parse/validation failures keep
+    /// the previous good value for that file and are surfaced as warnings.
+    /// Returns `(changed, warnings)`.
     pub fn reload_if_changed(&mut self) -> (bool, Vec<String>) {
         let fresh = stamp(&self.root, &self.active_env);
         if fresh == self.stamps {
@@ -210,43 +286,65 @@ impl ProjectContext {
             Err(e) => warnings.push(format!("could not read project.toml: {e}")),
         }
         match postui_core::project::load_variables(&self.root) {
-            Ok(vars) => self.variables = vars,
+            Ok(model) => self.model = model,
             Err(e) => warnings.push(format!("could not read variables.toml: {e}")),
         }
         self.environments = postui_core::project::list_environments(&self.root);
+
+        match postui_core::project::load_secrets(&self.root) {
+            Ok(secrets) => self.secrets = secrets,
+            Err(e) => warnings.push(format!("could not read secrets: {e}")),
+        }
 
         if let Some(env) = self.active_env.clone() {
             if !self.environments.contains(&env) {
                 warnings.push(format!("active environment {env:?} no longer exists"));
                 self.active_env = None;
-                self.env_values = IndexMap::new();
+                self.env_data = varmodel::EnvData::default();
             } else {
-                match load_and_validate_env(&self.root, &env, &self.variables) {
-                    Ok(values) => self.env_values = values,
+                match load_and_validate_env(&self.root, &env, &self.model) {
+                    Ok(data) => self.env_data = data,
                     Err(e) => warnings.push(format!("could not load environment {env:?}: {e}")),
                 }
             }
         }
 
         self.stamps = stamp(&self.root, &self.active_env);
+        self.refresh_resolved();
         (true, warnings)
     }
 
     /// Best-effort save of the UI-owned local state: active environment,
-    /// expanded sidebar dirs, and (when given) the currently-open request.
-    /// A failed save never breaks interaction, so errors are dropped.
+    /// expanded sidebar dirs, per-env option selections, and (when given)
+    /// the currently-open request. A failed save never breaks interaction,
+    /// so errors are dropped.
     pub fn persist_local_state(&self, open_request: Option<&str>) {
         if !self.can_persist() {
             return;
         }
-        // `selections` isn't tracked in-memory by `ProjectContext` yet (that
-        // lands with the full stage-6 integration in task 8), so start from
-        // whatever is on disk to avoid clobbering it here.
-        let mut state = postui_core::project::load_local_state(&self.root).unwrap_or_default();
-        state.environment = self.active_env.clone();
-        state.open_request = open_request.map(|s| s.to_string());
-        state.expanded = self.expanded.iter().cloned().collect();
+        let state = postui_core::project::LocalState {
+            environment: self.active_env.clone(),
+            open_request: open_request.map(|s| s.to_string()),
+            expanded: self.expanded.iter().cloned().collect(),
+            selections: self.selections.clone(),
+        };
         let _ = postui_core::project::save_local_state(&self.root, &state);
+    }
+
+    /// `persist_local_state`, but for callers (`set_selection`) that don't
+    /// track the currently-open request themselves: reads just that one
+    /// field back from disk first so it isn't clobbered, then writes
+    /// everything else (environment/expanded/selections) straight from
+    /// `self` — the authoritative in-memory copy, no need to round-trip it
+    /// through disk first.
+    fn persist_local_state_keep_open_request(&self) {
+        if !self.can_persist() {
+            return;
+        }
+        let open_request = postui_core::project::load_local_state(&self.root)
+            .ok()
+            .and_then(|s| s.open_request);
+        self.persist_local_state(open_request.as_deref());
     }
 
     /// Whether this context's root is persistable: a bare (empty) root —
@@ -259,6 +357,60 @@ impl ProjectContext {
     /// The `open_request` recorded in the local state read at `open()`.
     pub fn local_open_request(&self) -> Option<String> {
         self.local_open_request.clone()
+    }
+
+    /// Applies `f` to `variables.toml`'s current text (missing file =
+    /// empty), validates the result against the active env (if any) so a
+    /// bad edit is rejected instead of persisted, writes atomically, and
+    /// reloads `model` + re-resolves. `Err(msg)` — safe to toast, never a
+    /// secret value — leaves everything (including the on-disk file)
+    /// unchanged.
+    pub fn edit_variables(
+        &mut self,
+        f: impl FnOnce(&str) -> Result<String, EditError>,
+    ) -> Result<(), String> {
+        let path = self.root.join("variables.toml");
+        let contents = read_or_empty(&path)?;
+        let new_contents = f(&contents).map_err(|e| e.to_string())?;
+        let new_model = varmodel::parse_variables(&new_contents).map_err(|e| e.to_string())?;
+        if self.active_env.is_some() {
+            varmodel::validate_env(&new_model, &self.env_data).map_err(|e| e.to_string())?;
+        }
+        atomic_write(&path, &new_contents).map_err(|e| e.to_string())?;
+
+        self.model = new_model;
+        self.stamps = stamp(&self.root, &self.active_env);
+        self.refresh_resolved();
+        Ok(())
+    }
+
+    /// Applies `f` to `environments/<env>.toml`'s current text (missing
+    /// file = empty, e.g. a brand-new environment), validates the result
+    /// against `model`, writes atomically, and — when `env` is the active
+    /// environment — reloads `env_data` + re-resolves. `Err(msg)` leaves
+    /// everything (including the on-disk file) unchanged.
+    pub fn edit_env(
+        &mut self,
+        env: &str,
+        f: impl FnOnce(&str) -> Result<String, EditError>,
+    ) -> Result<(), String> {
+        if env.contains('/') || postui_core::storage::validate_slug(env).is_err() {
+            return Err(format!("invalid environment name: {env:?}"));
+        }
+        let path = self.root.join("environments").join(format!("{env}.toml"));
+        let contents = read_or_empty(&path)?;
+        let new_contents = f(&contents).map_err(|e| e.to_string())?;
+        let new_env = varmodel::parse_environment(&new_contents).map_err(|e| e.to_string())?;
+        varmodel::validate_env(&self.model, &new_env).map_err(|e| e.to_string())?;
+        atomic_write(&path, &new_contents).map_err(|e| e.to_string())?;
+
+        self.environments = postui_core::project::list_environments(&self.root);
+        if self.active_env.as_deref() == Some(env) {
+            self.env_data = new_env;
+        }
+        self.stamps = stamp(&self.root, &self.active_env);
+        self.refresh_resolved();
+        Ok(())
     }
 }
 
@@ -290,7 +442,7 @@ mod tests {
         assert!(warns.is_empty());
         assert_eq!(ctx.display_name(), "svc");
         assert_eq!(ctx.env_label(), "qa");
-        assert_eq!(ctx.env_values["tok"], "t");
+        assert_eq!(ctx.env_data.values["tok"], "t");
         assert!(ctx.expanded.contains("users"));
         assert_eq!(ctx.local_open_request().as_deref(), Some("ping"));
     }
@@ -340,7 +492,7 @@ mod tests {
         bump_mtime(&dir.path().join("environments/qa.toml"));
         let (changed, warns) = ctx.reload_if_changed();
         assert!(changed && warns.is_empty());
-        assert_eq!(ctx.env_values["tok"], "2");
+        assert_eq!(ctx.env_data.values["tok"], "2");
         assert_eq!(ctx.env_label(), "qa");
     }
 
@@ -350,13 +502,13 @@ mod tests {
         postui_core::project::init_project(dir.path(), None).unwrap();
         std::fs::write(dir.path().join("variables.toml"), "[a]\ndefault = \"1\"\n").unwrap();
         let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
-        assert_eq!(ctx.variables.vars["a"].default.as_deref(), Some("1"));
+        assert_eq!(ctx.model.vars["a"].default.as_deref(), Some("1"));
         std::fs::write(dir.path().join("variables.toml"), "not toml [").unwrap();
         bump_mtime(&dir.path().join("variables.toml"));
         let (_, warns) = ctx.reload_if_changed();
         assert!(!warns.is_empty(), "parse failure surfaced");
         assert_eq!(
-            ctx.variables.vars["a"].default.as_deref(),
+            ctx.model.vars["a"].default.as_deref(),
             Some("1"),
             "previous good state kept"
         );
@@ -375,5 +527,146 @@ mod tests {
         let (changed, warns) = ctx.reload_if_changed();
         assert!(changed && !warns.is_empty());
         assert_eq!(ctx.env_label(), "no env");
+    }
+
+    // -----------------------------------------------------------------
+    // stage-6 integration: model/env_data/secrets/resolved
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn open_loads_secrets_and_resolved_reflects_a_selection_from_state() {
+        let dir = tempfile::tempdir().unwrap();
+        postui_core::project::init_project(dir.path(), None).unwrap();
+        std::fs::write(
+            dir.path().join("variables.toml"),
+            "[user]\n[user.options.alice]\nvalue = \"1001\"\n[user.options.bob]\nvalue = \"2002\"\n\n[api_key]\nsecret = true\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("environments/qa.toml"), "").unwrap();
+
+        let mut selections = IndexMap::new();
+        let mut qa_sel = IndexMap::new();
+        qa_sel.insert("user".to_string(), "bob".to_string());
+        selections.insert("qa".to_string(), qa_sel);
+        postui_core::project::save_local_state(
+            dir.path(),
+            &postui_core::project::LocalState {
+                environment: Some("qa".into()),
+                selections,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let mut secrets = IndexMap::new();
+        let mut qa_secrets = IndexMap::new();
+        qa_secrets.insert("api_key".to_string(), "sk-test".to_string());
+        secrets.insert("qa".to_string(), qa_secrets);
+        postui_core::project::save_secrets(dir.path(), &secrets).unwrap();
+
+        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf());
+        assert!(warns.is_empty(), "{warns:?}");
+        assert_eq!(ctx.resolved.values["user"], "2002");
+        assert_eq!(ctx.resolved.values["api_key"], "sk-test");
+    }
+
+    #[test]
+    fn set_selection_persists_and_re_resolves() {
+        let dir = tempfile::tempdir().unwrap();
+        postui_core::project::init_project(dir.path(), None).unwrap();
+        std::fs::write(
+            dir.path().join("variables.toml"),
+            "[user]\n[user.options.alice]\nvalue = \"1001\"\n[user.options.bob]\nvalue = \"2002\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("environments/qa.toml"), "").unwrap();
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        ctx.set_env(Some("qa".into()));
+        assert!(!ctx.resolved.values.contains_key("user"));
+
+        ctx.set_selection("user", "alice");
+        assert_eq!(ctx.resolved.values["user"], "1001");
+
+        let state = postui_core::project::load_local_state(dir.path()).unwrap();
+        assert_eq!(state.selections["qa"]["user"], "alice");
+    }
+
+    #[test]
+    fn set_secret_writes_secrets_file_and_resolves() {
+        let dir = tempfile::tempdir().unwrap();
+        postui_core::project::init_project(dir.path(), None).unwrap();
+        std::fs::write(
+            dir.path().join("variables.toml"),
+            "[api_key]\nsecret = true\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("environments/qa.toml"), "").unwrap();
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        ctx.set_env(Some("qa".into()));
+        assert!(!ctx.resolved.values.contains_key("api_key"));
+
+        ctx.set_secret("api_key", "sk-live".into());
+        assert_eq!(ctx.resolved.values["api_key"], "sk-live");
+
+        let secrets = postui_core::project::load_secrets(dir.path()).unwrap();
+        assert_eq!(secrets["qa"]["api_key"], "sk-live");
+    }
+
+    #[test]
+    fn edit_variables_applies_upsert_var_and_preserves_comment() {
+        let dir = tempfile::tempdir().unwrap();
+        postui_core::project::init_project(dir.path(), None).unwrap();
+        std::fs::write(
+            dir.path().join("variables.toml"),
+            "# variables.toml\n\n[base_url]\ndescription = \"API root\"\ndefault = \"http://localhost:8080\"\n",
+        )
+        .unwrap();
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+
+        ctx.edit_variables(|doc| {
+            postui_core::varedit::upsert_var(doc, "base_url", None, Some("http://localhost:9090"))
+        })
+        .unwrap();
+
+        assert_eq!(
+            ctx.model.vars["base_url"].default.as_deref(),
+            Some("http://localhost:9090")
+        );
+        let on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+        assert!(on_disk.contains("# variables.toml"), "{on_disk}");
+        assert!(on_disk.contains("http://localhost:9090"), "{on_disk}");
+    }
+
+    #[test]
+    fn reload_with_broken_env_option_table_warns_and_keeps_previous() {
+        let dir = tempfile::tempdir().unwrap();
+        postui_core::project::init_project(dir.path(), None).unwrap();
+        std::fs::write(
+            dir.path().join("variables.toml"),
+            "[user]\n[user.options.alice]\nvalue = \"1001\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("environments/qa.toml"),
+            "[options.user.alice]\nvalue = \"9001\"\n",
+        )
+        .unwrap();
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        ctx.set_env(Some("qa".into()));
+        assert_eq!(ctx.env_data.options["user"]["alice"]["value"], "9001");
+
+        // break it: an [options.*] table for an undeclared name
+        std::fs::write(
+            dir.path().join("environments/qa.toml"),
+            "[options.nope.x]\nvalue = \"1\"\n",
+        )
+        .unwrap();
+        bump_mtime(&dir.path().join("environments/qa.toml"));
+        let (changed, warns) = ctx.reload_if_changed();
+        assert!(changed && !warns.is_empty());
+        assert_eq!(
+            ctx.env_data.options["user"]["alice"]["value"], "9001",
+            "previous good env data kept"
+        );
     }
 }

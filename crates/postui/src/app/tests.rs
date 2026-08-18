@@ -1790,7 +1790,7 @@ fn cycle_env_reloads_project_files_before_switching() {
 
     app.update(Action::CycleEnv);
     assert_eq!(
-        app.project.variables.vars["greeting"].default.as_deref(),
+        app.project.model.vars["greeting"].default.as_deref(),
         Some("hi"),
         "CycleEnv must reload project files (spec sec7 symmetry with OpenEnvChooser)"
     );
@@ -1942,7 +1942,7 @@ fn cycle_env_wraps_and_skips_no_env() {
         "prod",
         "wraps directly, never through no-env"
     );
-    assert_eq!(app.project.env_values["tok"], "p");
+    assert_eq!(app.project.env_data.values["tok"], "p");
     let st = postui_core::project::load_local_state(dir.path()).unwrap();
     assert_eq!(st.environment.as_deref(), Some("prod"), "persisted");
 }
