@@ -113,10 +113,10 @@ pub fn build_rows(
         }
         rows.push(RowKind::Var { name: name.clone() });
         if expanded.contains(name) {
-            for key in ctx.model.vars[name].options.keys() {
+            for key in union_var_option_keys(ctx, name) {
                 rows.push(RowKind::OptionRow {
                     owner: name.clone(),
-                    key: key.clone(),
+                    key,
                 });
             }
         }
@@ -127,10 +127,10 @@ pub fn build_rows(
             name: group_name.clone(),
         });
         if expanded.contains(group_name) {
-            for key in decl.options.keys() {
+            for key in union_group_option_keys(ctx, group_name) {
                 rows.push(RowKind::OptionRow {
                     owner: group_name.clone(),
-                    key: key.clone(),
+                    key,
                 });
             }
         }
@@ -146,6 +146,60 @@ pub fn build_rows(
     rows.push(RowKind::AddGroup);
 
     rows
+}
+
+/// `env`'s data: the active environment's is read straight off `ctx`
+/// (already loaded); any other environment is loaded fresh. A missing or
+/// unparseable file degrades to empty rather than erroring — the Manager
+/// is a read-only truth display, and a broken environment is surfaced
+/// elsewhere (toasts on load), not here.
+fn env_data_for(ctx: &ProjectContext, env: &str) -> postui_core::varmodel::EnvData {
+    if ctx.active_env.as_deref() == Some(env) {
+        ctx.env_data.clone()
+    } else {
+        postui_core::project::load_environment(&ctx.root, env).unwrap_or_default()
+    }
+}
+
+/// The union of `name`'s option keys across `variables.toml` and every
+/// environment's `[options.<name>.*]` overrides — a variable can be
+/// enumerated *only* in one environment (no options declared in
+/// `variables.toml` at all), and that environment's option keys must
+/// still make the variable expandable and show up as option rows.
+/// Declared keys come first (in their declared order), then any env-only
+/// keys in environment-list order — order doesn't matter for correctness
+/// (row content is looked up by key), only determinism.
+fn union_var_option_keys(ctx: &ProjectContext, name: &str) -> Vec<String> {
+    let mut seen: IndexMap<String, ()> = ctx
+        .model
+        .vars
+        .get(name)
+        .map(|d| d.options.keys().map(|k| (k.clone(), ())).collect())
+        .unwrap_or_default();
+    for env in &ctx.environments {
+        let env_data = env_data_for(ctx, env);
+        for key in postui_core::varmodel::merged_var_options(&ctx.model, &env_data, name).keys() {
+            seen.entry(key.clone()).or_insert(());
+        }
+    }
+    seen.into_keys().collect()
+}
+
+/// [`union_var_option_keys`], for a group's options.
+fn union_group_option_keys(ctx: &ProjectContext, name: &str) -> Vec<String> {
+    let mut seen: IndexMap<String, ()> = ctx
+        .model
+        .groups
+        .get(name)
+        .map(|g| g.options.keys().map(|k| (k.clone(), ())).collect())
+        .unwrap_or_default();
+    for env in &ctx.environments {
+        let env_data = env_data_for(ctx, env);
+        for key in postui_core::varmodel::merged_group_options(&ctx.model, &env_data, name).keys() {
+            seen.entry(key.clone()).or_insert(());
+        }
+    }
+    seen.into_keys().collect()
 }
 
 /// Fixed column widths (spec §5: "Fixed left columns: name, description;
@@ -180,7 +234,7 @@ fn env_column<'a>(ctx: &'a ProjectContext, name: &'a str) -> EnvColumn<'a> {
             selections,
         };
     }
-    let env_data = postui_core::project::load_environment(&ctx.root, name).unwrap_or_default();
+    let env_data = env_data_for(ctx, name);
     let empty_secrets = IndexMap::new();
     let secrets = ctx.secrets.get(name).unwrap_or(&empty_secrets);
     let resolved = postui_core::varmodel::resolve_env(&ctx.model, &env_data, selections, secrets);
@@ -387,18 +441,16 @@ fn expand_glyph(
     row: &RowKind,
     expanded: &BTreeSet<String>,
 ) -> Option<&'static str> {
+    let has_options = match row {
+        RowKind::Var { name } => !union_var_option_keys(ctx, name).is_empty(),
+        RowKind::GroupHeader { name } => !union_group_option_keys(ctx, name).is_empty(),
+        _ => return None,
+    };
     let name = match row {
         RowKind::Var { name } => name,
         RowKind::GroupHeader { name } => name,
-        _ => return None,
+        _ => unreachable!("returned above for any other row kind"),
     };
-    let has_options = ctx
-        .model
-        .vars
-        .get(name)
-        .map(|d| !d.options.is_empty())
-        .or_else(|| ctx.model.groups.get(name).map(|g| !g.options.is_empty()))
-        .unwrap_or(false);
     if !has_options {
         return None;
     }
@@ -788,6 +840,13 @@ customer_id = "c-77"
                 enabled: true,
             },
         );
+        req.variables.insert(
+            "disabled_flag".to_string(),
+            Entry {
+                value: "should-be-muted".to_string(),
+                enabled: false,
+            },
+        );
 
         (dir, ctx, req)
     }
@@ -806,6 +865,9 @@ customer_id = "c-77"
                 RowKind::SectionHeader("This request"),
                 RowKind::RequestVar {
                     name: "trace_id".into()
+                },
+                RowKind::RequestVar {
+                    name: "disabled_flag".into()
                 },
                 RowKind::SectionHeader("Project"),
                 RowKind::Var {
@@ -1042,6 +1104,331 @@ customer_id = "c-77"
         expanded.insert("creds".to_string());
         let (content, _term) = render(&ctx, Some(&req), expanded, 200, 0);
         assert!(!content.contains("sk-qa-secret-value"));
+    }
+
+    #[test]
+    fn disabled_request_var_cell_is_muted_enabled_one_is_normal() {
+        let (_dir, ctx, req) = fixture();
+        let theme = Theme::for_terminal();
+        let (_content, term) = render(&ctx, Some(&req), BTreeSet::new(), 120, 0);
+        let enabled_fgs = fgs_of(&term, "abc-123");
+        assert!(!enabled_fgs.is_empty());
+        assert!(
+            enabled_fgs.iter().all(|fg| *fg == theme.text),
+            "an enabled request var's value must render in normal fg: {enabled_fgs:?}"
+        );
+        let disabled_fgs = fgs_of(&term, "should-be-muted");
+        assert!(!disabled_fgs.is_empty());
+        assert!(
+            disabled_fgs.iter().all(|fg| *fg == theme.text_muted),
+            "a disabled request var's value must render muted: {disabled_fgs:?}"
+        );
+    }
+
+    #[test]
+    fn selected_var_option_row_shows_a_check_mark_the_unselected_one_does_not() {
+        // Base fixture already selects `user = "alice"` in `qa`.
+        let (_dir, ctx, req) = fixture();
+        let mut expanded = BTreeSet::new();
+        expanded.insert("user".to_string());
+        let (content, _term) = render(&ctx, Some(&req), expanded, 120, 0);
+        assert!(
+            content.contains("\u{2713} 1001"),
+            "the selected option's row must carry the check mark: {content}"
+        );
+        assert!(
+            !content.contains("\u{2713} 2002"),
+            "the unselected option's row must not: {content}"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Finding 1 (review): a variable/group enumerated ONLY via an
+    // environment's [options.*] table (nothing declared in
+    // variables.toml) must still be expandable and show its option row(s)
+    // — the row set is the union across every environment, not just
+    // variables.toml.
+    // -----------------------------------------------------------------
+
+    /// One var (`region`), declared with no options of its own; `qa`
+    /// declares an env-only option `east`, selected in `qa`; `dev` has
+    /// nothing for it at all.
+    fn fixture_env_only_enum() -> (tempfile::TempDir, ProjectContext) {
+        let dir = tempfile::tempdir().unwrap();
+        project::init_project(dir.path(), Some("env-only")).unwrap();
+        std::fs::write(
+            dir.path().join("variables.toml"),
+            "[region]\ndescription = \"deploy region\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("environments/dev.toml"), "").unwrap();
+        std::fs::write(
+            dir.path().join("environments/qa.toml"),
+            "[options.region.east]\ndescription = \"US East\"\nvalue = \"us-east-1\"\n",
+        )
+        .unwrap();
+
+        let mut selections = IndexMap::new();
+        let mut qa_sel = IndexMap::new();
+        qa_sel.insert("region".to_string(), "east".to_string());
+        selections.insert("qa".to_string(), qa_sel);
+        project::save_local_state(
+            dir.path(),
+            &project::LocalState {
+                environment: Some("qa".into()),
+                selections,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf());
+        assert!(warns.is_empty(), "{warns:?}");
+        (dir, ctx)
+    }
+
+    #[test]
+    fn var_enumerated_only_via_one_env_gets_an_expand_glyph() {
+        let (_dir, ctx) = fixture_env_only_enum();
+        let region_row = RowKind::Var {
+            name: "region".into(),
+        };
+        assert_eq!(
+            expand_glyph(&ctx, &region_row, &BTreeSet::new()),
+            Some(GLYPH_COLLAPSED),
+            "declared with zero options in variables.toml, but qa.toml \
+             declares one — must still be expandable"
+        );
+    }
+
+    #[test]
+    fn var_enumerated_only_via_one_env_expands_to_its_env_only_option_row() {
+        let (_dir, ctx) = fixture_env_only_enum();
+        let region_row = RowKind::Var {
+            name: "region".into(),
+        };
+        let mut expanded = BTreeSet::new();
+        expanded.insert("region".to_string());
+        let rows = build_rows(&ctx, None, &expanded);
+        let region_idx = rows.iter().position(|r| r == &region_row).unwrap();
+        assert_eq!(
+            rows[region_idx + 1],
+            RowKind::OptionRow {
+                owner: "region".into(),
+                key: "east".into()
+            }
+        );
+
+        // and collapsed, no option row appears anywhere:
+        let rows_collapsed = build_rows(&ctx, None, &BTreeSet::new());
+        assert!(
+            !rows_collapsed
+                .iter()
+                .any(|r| matches!(r, RowKind::OptionRow { owner, .. } if owner == "region"))
+        );
+    }
+
+    #[test]
+    fn var_enumerated_only_via_one_env_shows_selection_truth_in_that_env() {
+        let (_dir, ctx) = fixture_env_only_enum();
+        let mut expanded = BTreeSet::new();
+        expanded.insert("region".to_string());
+        let (content, _term) = render(&ctx, None, expanded, 120, 0);
+        // The Var row itself, resolved in qa (the active/selected env):
+        assert!(content.contains("east \u{b7} us-east-1"), "{content}");
+        // The spliced-in option row, check-marked as selected in qa:
+        assert!(content.contains("\u{2713} us-east-1"), "{content}");
+    }
+
+    // -----------------------------------------------------------------
+    // Finding 2 (review): group selected-state cell rules, asserted
+    // against actual buffer content (a group option genuinely selected
+    // in one environment, not selected in another).
+    // -----------------------------------------------------------------
+
+    /// Group `creds` (members `user_id`, `customer_id`), option `alice`
+    /// declared in `variables.toml`; `qa` overrides just `customer_id`
+    /// for that option and selects it; `dev` has neither an override nor
+    /// a selection.
+    fn fixture_group_selected() -> (tempfile::TempDir, ProjectContext) {
+        let dir = tempfile::tempdir().unwrap();
+        project::init_project(dir.path(), Some("group-selected")).unwrap();
+        std::fs::write(
+            dir.path().join("variables.toml"),
+            "[groups.creds]\ndescription = \"paired ids\"\nmembers = [\"user_id\", \"customer_id\"]\n[groups.creds.options.alice]\ncustomer_id = \"c-77\"\nuser_id = \"1001\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("environments/dev.toml"), "").unwrap();
+        std::fs::write(
+            dir.path().join("environments/qa.toml"),
+            "[options.creds.alice]\ncustomer_id = \"c-99\"\n",
+        )
+        .unwrap();
+
+        let mut selections = IndexMap::new();
+        let mut qa_sel = IndexMap::new();
+        qa_sel.insert("creds".to_string(), "alice".to_string());
+        selections.insert("qa".to_string(), qa_sel);
+        project::save_local_state(
+            dir.path(),
+            &project::LocalState {
+                environment: Some("qa".into()),
+                selections,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf());
+        assert!(warns.is_empty(), "{warns:?}");
+        (dir, ctx)
+    }
+
+    /// The list area's first data row's `y`, matching `draw`'s own
+    /// layout math (title bar, then a 1-line column-header strip).
+    const LIST_TOP: u16 = TITLE_HEIGHT + 1;
+
+    fn row_y(rows: &[RowKind], target: &RowKind) -> u16 {
+        let idx = rows
+            .iter()
+            .position(|r| r == target)
+            .unwrap_or_else(|| panic!("row not found: {target:?}"));
+        LIST_TOP + idx as u16
+    }
+
+    fn env_col_x(ctx: &ProjectContext, env: &str) -> u16 {
+        let ci = ctx
+            .environments
+            .iter()
+            .position(|e| e == env)
+            .unwrap_or_else(|| panic!("env not found: {env:?}"));
+        NAME_W + DESC_W + (ci as u16) * ENV_W
+    }
+
+    /// The text (trimmed of trailing padding) and fg of the first
+    /// non-blank cell in a `w`-wide run starting at `(x, y)`.
+    fn cell_at(
+        term: &ratatui::Terminal<ratatui::backend::TestBackend>,
+        x: u16,
+        y: u16,
+        w: u16,
+    ) -> (String, Color) {
+        let buf = term.backend().buffer();
+        let mut s = String::new();
+        let mut fg = Color::Reset;
+        let mut got_fg = false;
+        for dx in 0..w {
+            let cell = &buf[(x + dx, y)];
+            let sym = cell.symbol();
+            if !got_fg && sym != " " {
+                fg = cell.fg;
+                got_fg = true;
+            }
+            s.push_str(sym);
+        }
+        (s.trim_end().to_string(), fg)
+    }
+
+    #[test]
+    fn group_header_shows_selected_key_or_needs_selection_per_env() {
+        let (_dir, ctx) = fixture_group_selected();
+        let rows = build_rows(&ctx, None, &BTreeSet::new());
+        let header_row = RowKind::GroupHeader {
+            name: "creds".into(),
+        };
+        let y = row_y(&rows, &header_row);
+        let (_content, term) = render(&ctx, None, BTreeSet::new(), 120, 0);
+
+        let (qa_text, qa_fg) = cell_at(&term, env_col_x(&ctx, "qa"), y, ENV_W);
+        assert_eq!(qa_text, "alice", "selected key shown bare on the header");
+        assert_eq!(qa_fg, Theme::for_terminal().text);
+
+        let (dev_text, dev_fg) = cell_at(&term, env_col_x(&ctx, "dev"), y, ENV_W);
+        assert_eq!(dev_text, "\u{26a0} select");
+        assert_eq!(dev_fg, Theme::for_terminal().warning);
+    }
+
+    #[test]
+    fn group_members_show_key_dot_value_when_selected_needs_selection_otherwise() {
+        let (_dir, ctx) = fixture_group_selected();
+        let rows = build_rows(&ctx, None, &BTreeSet::new());
+        let member_row = RowKind::GroupMember {
+            group: "creds".into(),
+            name: "customer_id".into(),
+        };
+        let y = row_y(&rows, &member_row);
+        let (_content, term) = render(&ctx, None, BTreeSet::new(), 120, 0);
+
+        let (qa_text, _) = cell_at(&term, env_col_x(&ctx, "qa"), y, ENV_W);
+        assert_eq!(
+            qa_text, "alice \u{b7} c-99",
+            "qa's own override of customer_id must show through"
+        );
+        let (dev_text, _) = cell_at(&term, env_col_x(&ctx, "dev"), y, ENV_W);
+        assert_eq!(dev_text, "\u{26a0} select");
+    }
+
+    #[test]
+    fn group_option_row_check_marks_the_selected_env_and_distinguishes_overridden_vs_shared_fg() {
+        let (_dir, ctx) = fixture_group_selected();
+        let theme = Theme::for_terminal();
+        let mut expanded = BTreeSet::new();
+        expanded.insert("creds".to_string());
+        let rows = build_rows(&ctx, None, &expanded);
+        let option_row = RowKind::OptionRow {
+            owner: "creds".into(),
+            key: "alice".into(),
+        };
+        let y = row_y(&rows, &option_row);
+        let (_content, term) = render(&ctx, None, expanded, 120, 0);
+
+        // qa overrides customer_id for this option and has it selected:
+        // check-marked, and normal (not muted) fg since it's overridden.
+        let (qa_text, qa_fg) = cell_at(&term, env_col_x(&ctx, "qa"), y, ENV_W);
+        assert!(
+            qa_text.starts_with('\u{2713}'),
+            "qa's selected option row must show the check mark: {qa_text:?}"
+        );
+        assert!(qa_text.contains("customer_id=c-99"), "{qa_text:?}");
+        assert_eq!(
+            qa_fg, theme.text,
+            "an env-overridden option row must render in normal fg"
+        );
+
+        // dev has no override and no selection: shared (declared) values,
+        // muted, no check mark.
+        let (dev_text, dev_fg) = cell_at(&term, env_col_x(&ctx, "dev"), y, ENV_W);
+        assert!(
+            !dev_text.starts_with('\u{2713}'),
+            "dev has no selection, must not be check-marked: {dev_text:?}"
+        );
+        assert!(dev_text.contains("customer_id=c-77"), "{dev_text:?}");
+        assert_eq!(
+            dev_fg, theme.text_muted,
+            "an un-overridden (shared/declared) option row must render muted"
+        );
+    }
+
+    /// All occurrences of `needle` in the rendered buffer, as (row, fg) —
+    /// actually just `fg`, since these tests only care about the color a
+    /// given piece of text renders in, and a needle may legitimately
+    /// repeat across environment columns.
+    fn fgs_of(term: &ratatui::Terminal<ratatui::backend::TestBackend>, needle: &str) -> Vec<Color> {
+        let buf = term.backend().buffer();
+        let mut out = Vec::new();
+        for y in 0..buf.area.height {
+            let mut line = String::new();
+            for x in 0..buf.area.width {
+                line.push_str(buf[(x, y)].symbol());
+            }
+            let mut start = 0;
+            while let Some(pos) = line[start..].find(needle) {
+                let byte_idx = start + pos;
+                out.push(buf[(byte_idx as u16, y)].fg);
+                start = byte_idx + needle.len();
+            }
+        }
+        out
     }
 
     // -----------------------------------------------------------------
