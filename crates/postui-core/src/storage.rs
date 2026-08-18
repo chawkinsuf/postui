@@ -212,6 +212,7 @@ mod tests {
             substitute_body: false,
             params: Default::default(),
             headers: Default::default(),
+            variables: Default::default(),
             body: None,
         }
     }

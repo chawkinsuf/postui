@@ -13,6 +13,7 @@ fn req_to(url: String) -> HttpRequest {
         substitute_body: false,
         params: Default::default(),
         headers: Default::default(),
+        variables: Default::default(),
         body: Some(Body::Json {
             text: "{\"a\":1}".into(),
         }),
@@ -158,6 +159,7 @@ async fn connection_refused_yields_readable_error() {
             substitute_body: false,
             params: Default::default(),
             headers: Default::default(),
+            variables: Default::default(),
             body: None,
         },
         &PrepareContext::default(),

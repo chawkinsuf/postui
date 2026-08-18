@@ -77,6 +77,10 @@ pub struct Editor {
     pub substitute_body: bool,
     pub params: IndexMap<String, Entry>,
     pub headers: IndexMap<String, Entry>,
+    /// Request-scoped `[variables]`. No editing surface yet (stage-6 Vars
+    /// tab is a later task) — carried through load/save so a request's
+    /// variables round-trip untouched while other fields are edited.
+    pub variables: IndexMap<String, Entry>,
     /// Enabled default headers inherited from the project, synced by `App`
     /// on every `update()` alongside `open_slug`. Draw-only: rendered above
     /// the request headers table but never edited directly here.
@@ -134,6 +138,7 @@ impl Default for Editor {
             substitute_body: false,
             params: IndexMap::new(),
             headers: IndexMap::new(),
+            variables: IndexMap::new(),
             inherited_headers: IndexMap::new(),
             body: new_body_state(""),
             body_handler: EditorEventHandler::emacs_mode(),
@@ -160,6 +165,7 @@ impl Editor {
         self.substitute_body = req.substitute_body;
         self.params = req.params.clone();
         self.headers = req.headers.clone();
+        self.variables = req.variables.clone();
         self.set_body_text(match &req.body {
             Some(Body::Json { text }) => text,
             None => "",
@@ -175,6 +181,7 @@ impl Editor {
             substitute_body: self.substitute_body,
             params: self.params.clone(),
             headers: self.headers.clone(),
+            variables: self.variables.clone(),
             body: {
                 let text = self.body_text();
                 if text.is_empty() {

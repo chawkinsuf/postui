@@ -184,6 +184,8 @@ pub struct HttpRequest {
     pub params: IndexMap<String, Entry>,
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
     pub headers: IndexMap<String, Entry>,
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub variables: IndexMap<String, Entry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<Body>,
 }
@@ -223,6 +225,9 @@ impl HttpRequest {
         }
         if !self.headers.is_empty() {
             doc["headers"] = kv_table(&self.headers);
+        }
+        if !self.variables.is_empty() {
+            doc["variables"] = kv_table(&self.variables);
         }
         if let Some(Body::Json { text }) = &self.body {
             let mut t = Table::new();
@@ -269,6 +274,7 @@ mod tests {
             substitute_body: false,
             params,
             headers,
+            variables: IndexMap::new(),
             body: Some(Body::Json {
                 text: "{ \"broken\": ".into(),
             }), // invalid JSON must round-trip
@@ -394,6 +400,59 @@ mod tests {
         }
         assert_eq!(m, Method::Get);
         assert_eq!(Method::Delete.as_str(), "DELETE");
+    }
+
+    #[test]
+    fn variables_round_trip_with_disabled_inline_entry_after_headers_before_body() {
+        let mut req = sample();
+        req.variables.insert(
+            "base_url".into(),
+            Entry {
+                value: "http://override.test".into(),
+                enabled: true,
+            },
+        );
+        req.variables.insert(
+            "token".into(),
+            Entry {
+                value: "shh".into(),
+                enabled: false,
+            },
+        );
+        let out = req.to_toml_string();
+
+        assert!(
+            out.contains(r#"base_url = "http://override.test""#),
+            "enabled entry is a plain string:\n{out}"
+        );
+        assert!(
+            out.contains("token = {"),
+            "disabled entry is an inline table:\n{out}"
+        );
+        assert!(
+            !out.contains("[variables.token]"),
+            "no sub-table sections:\n{out}"
+        );
+
+        let headers_pos = out.find("[headers]").expect("headers section present");
+        let variables_pos = out.find("[variables]").expect("variables section present");
+        let body_pos = out.find("[body]").expect("body section present");
+        assert!(
+            headers_pos < variables_pos && variables_pos < body_pos,
+            "[variables] must come after [headers] and before [body]:\n{out}"
+        );
+
+        let back = HttpRequest::from_toml_str(&out).unwrap();
+        assert_eq!(back, req);
+    }
+
+    #[test]
+    fn empty_variables_table_is_omitted() {
+        let out = sample().to_toml_string();
+        assert!(
+            !out.contains("[variables]"),
+            "empty variables table is skipped:\n{out}"
+        );
     }
 
     #[test]

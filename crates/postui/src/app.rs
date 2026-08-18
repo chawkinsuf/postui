@@ -748,6 +748,7 @@ impl App {
                     substitute_body: false,
                     params: Default::default(),
                     headers: Default::default(),
+                    variables: Default::default(),
                     body: None,
                 });
                 true
@@ -827,13 +828,10 @@ impl App {
                     &self.project.prepare_context(),
                 ) {
                     Ok(x) => x,
-                    Err(postui_core::prepare::PrepareError::Unresolved(names)) => {
+                    Err(err @ postui_core::prepare::PrepareError::Unresolved(_)) => {
                         let label = self.project.env_label();
-                        let list = names.into_iter().collect::<Vec<_>>().join(", ");
-                        self.toasts.push(
-                            format!("unresolved variables ({label}): {list}"),
-                            ToastKind::Error,
-                        );
+                        self.toasts
+                            .push(format!("{err} ({label})"), ToastKind::Error);
                         return true;
                     }
                 };

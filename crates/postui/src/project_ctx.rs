@@ -160,6 +160,7 @@ impl ProjectContext {
         postui_core::prepare::PrepareContext {
             vars: resolved.values,
             default_headers: self.meta.default_headers.clone(),
+            meta: resolved.meta,
         }
     }
 

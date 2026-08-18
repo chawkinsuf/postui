@@ -1,6 +1,7 @@
 use crate::model::{Body, Entry, HttpRequest, Method};
+use crate::varmodel;
 use indexmap::IndexMap;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -40,22 +41,50 @@ impl fmt::Display for PrepareWarning {
 pub struct PrepareContext {
     pub vars: IndexMap<String, String>,
     pub default_headers: IndexMap<String, Entry>,
+    /// Per-name resolution metadata from `varmodel::resolve_env`, used to
+    /// distinguish *why* a name is unresolved (needs a selection, missing
+    /// secret, or simply undefined) when it doesn't appear in `vars`.
+    pub meta: IndexMap<String, varmodel::VarMeta>,
+}
+
+/// Why a `{{name}}` token failed to resolve, for `PrepareError::Unresolved`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnresolvedCause {
+    Undefined,
+    NeedsSelection,
+    MissingSecret,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PrepareError {
-    Unresolved(BTreeSet<String>),
+    Unresolved(BTreeMap<String, UnresolvedCause>),
 }
 
 impl fmt::Display for PrepareError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            PrepareError::Unresolved(names) => {
-                write!(
-                    f,
-                    "unresolved variables: {}",
-                    names.iter().cloned().collect::<Vec<_>>().join(", ")
-                )
+            PrepareError::Unresolved(causes) => {
+                let mut undefined = Vec::new();
+                let mut needs_selection = Vec::new();
+                let mut missing_secret = Vec::new();
+                for (name, cause) in causes {
+                    match cause {
+                        UnresolvedCause::Undefined => undefined.push(name.clone()),
+                        UnresolvedCause::NeedsSelection => needs_selection.push(name.clone()),
+                        UnresolvedCause::MissingSecret => missing_secret.push(name.clone()),
+                    }
+                }
+                let mut groups = Vec::new();
+                if !undefined.is_empty() {
+                    groups.push(format!("unresolved: {}", undefined.join(", ")));
+                }
+                if !needs_selection.is_empty() {
+                    groups.push(format!("need a selection: {}", needs_selection.join(", ")));
+                }
+                if !missing_secret.is_empty() {
+                    groups.push(format!("missing secret: {}", missing_secret.join(", ")));
+                }
+                write!(f, "{}", groups.join(" · "))
             }
         }
     }
@@ -67,8 +96,18 @@ pub fn prepare(
     req: &HttpRequest,
     ctx: &PrepareContext,
 ) -> Result<(PreparedRequest, Vec<PrepareWarning>), PrepareError> {
+    // Request `[variables]` overlays the context's resolved vars at highest
+    // precedence: enabled entries only, applied on a clone so the context
+    // itself is untouched.
+    let mut vars = ctx.vars.clone();
+    for (k, e) in &req.variables {
+        if e.enabled {
+            vars.insert(k.clone(), e.value.clone());
+        }
+    }
+
     let mut missing = BTreeSet::new();
-    let mut sub = |s: &str| crate::vars::substitute(s, &ctx.vars, &mut missing);
+    let mut sub = |s: &str| crate::vars::substitute(s, &vars, &mut missing);
 
     let mut warnings = Vec::new();
     let subbed_url = sub(&req.url);
@@ -144,7 +183,18 @@ pub fn prepare(
     }
 
     if !missing.is_empty() {
-        return Err(PrepareError::Unresolved(missing));
+        let causes = missing
+            .into_iter()
+            .map(|name| {
+                let cause = match ctx.meta.get(&name) {
+                    Some(varmodel::VarMeta::NeedsSelection) => UnresolvedCause::NeedsSelection,
+                    Some(varmodel::VarMeta::MissingSecret) => UnresolvedCause::MissingSecret,
+                    _ => UnresolvedCause::Undefined,
+                };
+                (name, cause)
+            })
+            .collect();
+        return Err(PrepareError::Unresolved(causes));
     }
 
     if body.is_some()
@@ -189,6 +239,7 @@ mod tests {
                     )
                 })
                 .collect(),
+            meta: IndexMap::new(),
         }
     }
 
@@ -237,15 +288,15 @@ mod tests {
             text: "{{also_gone}}".into(),
         });
         let err = prepare(&r, &PrepareContext::default()).unwrap_err();
-        let PrepareError::Unresolved(names) = err;
+        let PrepareError::Unresolved(causes) = err;
         assert_eq!(
-            names.into_iter().collect::<Vec<_>>(),
+            causes.into_keys().collect::<Vec<_>>(),
             vec!["gone".to_string()],
             "body ignored while flag off"
         );
         r.substitute_body = true;
-        let PrepareError::Unresolved(names) = prepare(&r, &PrepareContext::default()).unwrap_err();
-        assert_eq!(names.len(), 2);
+        let PrepareError::Unresolved(causes) = prepare(&r, &PrepareContext::default()).unwrap_err();
+        assert_eq!(causes.len(), 2);
     }
 
     #[test]
@@ -316,6 +367,7 @@ mod tests {
         let c = PrepareContext {
             vars: IndexMap::new(),
             default_headers: defaults,
+            meta: IndexMap::new(),
         };
         let (p, warns) = prepare(&base("http://x.test"), &c).unwrap();
         assert_eq!(
@@ -331,6 +383,60 @@ mod tests {
         );
     }
 
+    #[test]
+    fn request_variable_overlay_beats_context_vars() {
+        let mut r = base("http://x.test/{{name}}");
+        r.variables.insert("name".into(), on("request-scoped"));
+        let c = ctx(&[("name", "project-scoped")], &[]);
+        let (p, _) = prepare(&r, &c).unwrap();
+        assert_eq!(p.url, "http://x.test/request-scoped");
+    }
+
+    #[test]
+    fn disabled_request_variable_does_not_resolve() {
+        let mut r = base("http://x.test/{{name}}");
+        r.variables.insert("name".into(), off("request-scoped"));
+        let err = prepare(&r, &PrepareContext::default()).unwrap_err();
+        let PrepareError::Unresolved(causes) = err;
+        assert_eq!(causes.get("name"), Some(&UnresolvedCause::Undefined));
+    }
+
+    #[test]
+    fn unresolved_causes_mapped_from_context_meta() {
+        let r = base("http://x.test/{{gone}}/{{user}}/{{api_key}}");
+        let mut c = PrepareContext::default();
+        c.meta
+            .insert("user".into(), varmodel::VarMeta::NeedsSelection);
+        c.meta
+            .insert("api_key".into(), varmodel::VarMeta::MissingSecret);
+        let PrepareError::Unresolved(causes) = prepare(&r, &c).unwrap_err();
+        assert_eq!(causes.get("gone"), Some(&UnresolvedCause::Undefined));
+        assert_eq!(causes.get("user"), Some(&UnresolvedCause::NeedsSelection));
+        assert_eq!(causes.get("api_key"), Some(&UnresolvedCause::MissingSecret));
+    }
+
+    #[test]
+    fn display_groups_unresolved_by_cause() {
+        let mut causes = BTreeMap::new();
+        causes.insert("a".to_string(), UnresolvedCause::Undefined);
+        causes.insert("b".to_string(), UnresolvedCause::Undefined);
+        causes.insert("user".to_string(), UnresolvedCause::NeedsSelection);
+        causes.insert("api_key".to_string(), UnresolvedCause::MissingSecret);
+        let err = PrepareError::Unresolved(causes);
+        assert_eq!(
+            err.to_string(),
+            "unresolved: a, b · need a selection: user · missing secret: api_key"
+        );
+    }
+
+    #[test]
+    fn display_omits_empty_cause_groups() {
+        let mut causes = BTreeMap::new();
+        causes.insert("only".to_string(), UnresolvedCause::NeedsSelection);
+        let err = PrepareError::Unresolved(causes);
+        assert_eq!(err.to_string(), "need a selection: only");
+    }
+
     fn base(url: &str) -> HttpRequest {
         HttpRequest {
             method: Method::Get,
@@ -338,6 +444,7 @@ mod tests {
             substitute_body: false,
             params: IndexMap::new(),
             headers: IndexMap::new(),
+            variables: IndexMap::new(),
             body: None,
         }
     }
