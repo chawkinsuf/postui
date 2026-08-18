@@ -102,6 +102,32 @@ pub enum ModelError {
     },
     #[error("[options.{0}] must be a table (e.g. [options.{0}.<key>]); found a non-table value")]
     OptionsNotTable(String),
+    #[error(
+        "environment sets a flat value for \"{0}\", but \"{0}\" has options in this environment; remove the flat value or the options"
+    )]
+    EnvValueForEnumerated(String),
+    #[error(
+        "environment sets a flat value for secret variable \"{0}\"; secrets can't be committed to environments/<env>.toml"
+    )]
+    EnvValueForSecret(String),
+    #[error(
+        "[options.{0}] does not match a declared variable or group; declare it in variables.toml or fix the typo"
+    )]
+    EnvOptionsUndeclared(String),
+    #[error("[options.{0}] is secret = true; secrets can't have options set in an environment")]
+    EnvOptionsForSecret(String),
+    #[error(
+        "[options.{group}.{key}] sets \"{member}\", which is not a member of group \"{group}\"; fix the typo or add \"{member}\" to members"
+    )]
+    EnvGroupOptionNonMember {
+        group: String,
+        key: String,
+        member: String,
+    },
+    #[error(
+        "[options.{name}.{key}] is a new option not declared in variables.toml and is missing required field \"value\""
+    )]
+    EnvOptionMissingValue { name: String, key: String },
 }
 
 // ---------------------------------------------------------------------
@@ -399,6 +425,147 @@ pub fn parse_environment(s: &str) -> Result<EnvData, ModelError> {
     }
 
     Ok(EnvData { values, options })
+}
+
+// ---------------------------------------------------------------------
+// merging + env validation
+// ---------------------------------------------------------------------
+
+/// Env option tables merged by key onto the shared list; env-only lists
+/// come through wholesale. Empty map = simple in this env.
+pub fn merged_var_options(
+    model: &VarModel,
+    env: &EnvData,
+    name: &str,
+) -> IndexMap<String, OptionDecl> {
+    let mut out = model
+        .vars
+        .get(name)
+        .map(|decl| decl.options.clone())
+        .unwrap_or_default();
+
+    if let Some(env_opts) = env.options.get(name) {
+        for (key, fields) in env_opts {
+            match out.get_mut(key) {
+                Some(existing) => {
+                    if let Some(description) = fields.get("description") {
+                        existing.description = Some(description.clone());
+                    }
+                    if let Some(value) = fields.get("value") {
+                        existing.value = value.clone();
+                    }
+                }
+                None => {
+                    out.insert(
+                        key.clone(),
+                        OptionDecl {
+                            description: fields.get("description").cloned(),
+                            value: fields.get("value").cloned().unwrap_or_default(),
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    out
+}
+
+/// Env option tables merged by key onto the shared list; env-only lists
+/// come through wholesale. Empty map = simple in this env.
+pub fn merged_group_options(
+    model: &VarModel,
+    env: &EnvData,
+    group: &str,
+) -> IndexMap<String, GroupOption> {
+    let mut out = model
+        .groups
+        .get(group)
+        .map(|decl| decl.options.clone())
+        .unwrap_or_default();
+
+    if let Some(env_opts) = env.options.get(group) {
+        for (key, fields) in env_opts {
+            let description = fields.get("description").cloned();
+            let member_values = fields
+                .iter()
+                .filter(|(field, _)| field.as_str() != "description")
+                .map(|(field, value)| (field.clone(), value.clone()));
+
+            match out.get_mut(key) {
+                Some(existing) => {
+                    if description.is_some() {
+                        existing.description = description;
+                    }
+                    for (member, value) in member_values {
+                        existing.values.insert(member, value);
+                    }
+                }
+                None => {
+                    out.insert(
+                        key.clone(),
+                        GroupOption {
+                            description,
+                            values: member_values.collect(),
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    out
+}
+
+/// Friendly errors: flat value for a var enumerated *in this env*; flat
+/// value for a secret var; [options.<name>] where <name> is undeclared or
+/// secret; group option row naming a non-member.
+pub fn validate_env(model: &VarModel, env: &EnvData) -> Result<(), ModelError> {
+    for key in env.values.keys() {
+        if let Some(decl) = model.vars.get(key) {
+            if decl.secret {
+                return Err(ModelError::EnvValueForSecret(key.clone()));
+            }
+            if !merged_var_options(model, env, key).is_empty() {
+                return Err(ModelError::EnvValueForEnumerated(key.clone()));
+            }
+        }
+    }
+
+    for (name, entries) in &env.options {
+        if let Some(decl) = model.vars.get(name) {
+            if decl.secret {
+                return Err(ModelError::EnvOptionsForSecret(name.clone()));
+            }
+            for (key, fields) in entries {
+                if !decl.options.contains_key(key) && !fields.contains_key("value") {
+                    return Err(ModelError::EnvOptionMissingValue {
+                        name: name.clone(),
+                        key: key.clone(),
+                    });
+                }
+            }
+        } else if let Some(group_decl) = model.groups.get(name) {
+            for (key, fields) in entries {
+                for member in fields.keys() {
+                    if member == "description" {
+                        continue;
+                    }
+                    if !group_decl.members.contains(member) {
+                        return Err(ModelError::EnvGroupOptionNonMember {
+                            group: name.clone(),
+                            key: key.clone(),
+                            member: member.clone(),
+                        });
+                    }
+                }
+            }
+        } else {
+            return Err(ModelError::EnvOptionsUndeclared(name.clone()));
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -707,5 +874,284 @@ base_url = 123
             }
         );
         assert!(err.to_string().contains("base_url"));
+    }
+
+    // -------------------------------------------------------------
+    // merge + validate_env
+    // -------------------------------------------------------------
+
+    #[test]
+    fn merged_var_options_overrides_value_keeps_shared_description() {
+        let m = parse_variables(
+            r#"
+[user]
+[user.options.alice]
+description = "admin"
+value = "1001"
+[user.options.bob]
+value = "2002"
+"#,
+        )
+        .unwrap();
+        let e = parse_environment(
+            r#"
+[options.user.alice]
+value = "9001"
+[options.user.qa-only]
+description = "exists only in qa"
+value = "3003"
+"#,
+        )
+        .unwrap();
+        let merged = merged_var_options(&m, &e, "user");
+        assert_eq!(
+            merged.keys().collect::<Vec<_>>(),
+            ["alice", "bob", "qa-only"]
+        );
+        assert_eq!(merged["alice"].value, "9001");
+        assert_eq!(merged["alice"].description.as_deref(), Some("admin"));
+        assert_eq!(merged["bob"].value, "2002");
+        assert_eq!(merged["qa-only"].value, "3003");
+        assert_eq!(
+            merged["qa-only"].description.as_deref(),
+            Some("exists only in qa")
+        );
+    }
+
+    #[test]
+    fn merged_var_options_wholesale_when_no_shared_options() {
+        let m = parse_variables(
+            r#"
+[user]
+"#,
+        )
+        .unwrap();
+        let e = parse_environment(
+            r#"
+[options.user.alice]
+value = "9001"
+[options.user.qa-only]
+value = "3003"
+"#,
+        )
+        .unwrap();
+        let merged = merged_var_options(&m, &e, "user");
+        assert_eq!(merged.keys().collect::<Vec<_>>(), ["alice", "qa-only"]);
+        assert_eq!(merged["alice"].value, "9001");
+        assert!(merged["alice"].description.is_none());
+        assert_eq!(merged["qa-only"].value, "3003");
+    }
+
+    #[test]
+    fn merged_group_options_member_value_override() {
+        let m = parse_variables(
+            r#"
+[groups.test-user]
+members = ["user_id", "customer_id"]
+[groups.test-user.options.alice]
+user_id = "1001"
+customer_id = "c-77"
+"#,
+        )
+        .unwrap();
+        let e = parse_environment(
+            r#"
+[options.test-user.alice]
+user_id = "9001"
+"#,
+        )
+        .unwrap();
+        let merged = merged_group_options(&m, &e, "test-user");
+        assert_eq!(merged["alice"].values["user_id"], "9001");
+        assert_eq!(merged["alice"].values["customer_id"], "c-77");
+    }
+
+    #[test]
+    fn validate_env_flat_value_for_var_enumerated_in_this_env_errors() {
+        let m = parse_variables(
+            r#"
+[user]
+"#,
+        )
+        .unwrap();
+        let e = parse_environment(
+            r#"
+user = "alice"
+[options.user.alice]
+value = "9001"
+"#,
+        )
+        .unwrap();
+        let err = validate_env(&m, &e).unwrap_err();
+        assert_eq!(err, ModelError::EnvValueForEnumerated("user".into()));
+    }
+
+    #[test]
+    fn validate_env_flat_value_for_var_not_enumerated_in_other_env_is_ok() {
+        let m = parse_variables(
+            r#"
+[user]
+"#,
+        )
+        .unwrap();
+        let e = parse_environment(
+            r#"
+user = "alice"
+"#,
+        )
+        .unwrap();
+        validate_env(&m, &e).unwrap();
+    }
+
+    #[test]
+    fn validate_env_flat_value_for_secret_var_errors() {
+        let m = parse_variables(
+            r#"
+[api_key]
+secret = true
+"#,
+        )
+        .unwrap();
+        let e = parse_environment(
+            r#"
+api_key = "sekret"
+"#,
+        )
+        .unwrap();
+        let err = validate_env(&m, &e).unwrap_err();
+        assert_eq!(err, ModelError::EnvValueForSecret("api_key".into()));
+    }
+
+    #[test]
+    fn validate_env_options_table_for_undeclared_name_errors() {
+        let m = parse_variables(
+            r#"
+[base_url]
+default = "x"
+"#,
+        )
+        .unwrap();
+        let e = parse_environment(
+            r#"
+[options.nope.alice]
+value = "1"
+"#,
+        )
+        .unwrap();
+        let err = validate_env(&m, &e).unwrap_err();
+        assert_eq!(err, ModelError::EnvOptionsUndeclared("nope".into()));
+    }
+
+    #[test]
+    fn validate_env_options_table_for_secret_var_errors() {
+        let m = parse_variables(
+            r#"
+[api_key]
+secret = true
+"#,
+        )
+        .unwrap();
+        let e = parse_environment(
+            r#"
+[options.api_key.x]
+value = "1"
+"#,
+        )
+        .unwrap();
+        let err = validate_env(&m, &e).unwrap_err();
+        assert_eq!(err, ModelError::EnvOptionsForSecret("api_key".into()));
+    }
+
+    #[test]
+    fn validate_env_group_option_row_naming_non_member_errors() {
+        let m = parse_variables(
+            r#"
+[groups.test-user]
+members = ["user_id", "customer_id"]
+"#,
+        )
+        .unwrap();
+        let e = parse_environment(
+            r#"
+[options.test-user.alice]
+user_id = "1001"
+bogus_field = "x"
+"#,
+        )
+        .unwrap();
+        let err = validate_env(&m, &e).unwrap_err();
+        assert_eq!(
+            err,
+            ModelError::EnvGroupOptionNonMember {
+                group: "test-user".into(),
+                key: "alice".into(),
+                member: "bogus_field".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn validate_env_missing_value_for_new_var_option_key_errors() {
+        let m = parse_variables(
+            r#"
+[user]
+[user.options.alice]
+value = "1001"
+"#,
+        )
+        .unwrap();
+        let e = parse_environment(
+            r#"
+[options.user.qa-only]
+description = "no value here"
+"#,
+        )
+        .unwrap();
+        let err = validate_env(&m, &e).unwrap_err();
+        assert_eq!(
+            err,
+            ModelError::EnvOptionMissingValue {
+                name: "user".into(),
+                key: "qa-only".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn validate_env_ok_for_valid_env() {
+        let m = parse_variables(
+            r#"
+[base_url]
+default = "http://localhost"
+
+[api_key]
+secret = true
+
+[user]
+[user.options.alice]
+value = "1001"
+
+[groups.test-user]
+members = ["user_id", "customer_id"]
+[groups.test-user.options.alice]
+user_id = "1001"
+customer_id = "c-77"
+"#,
+        )
+        .unwrap();
+        let e = parse_environment(
+            r#"
+base_url = "https://qa.example.com"
+
+[options.user.alice]
+value = "9001"
+[options.user.qa-only]
+value = "3003"
+[options.test-user.alice]
+user_id = "9001"
+"#,
+        )
+        .unwrap();
+        validate_env(&m, &e).unwrap();
     }
 }
