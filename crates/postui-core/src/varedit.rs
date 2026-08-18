@@ -529,11 +529,21 @@ pub enum PromoteTarget {
 /// Promotes a request-scope `{{name}} = value` into the project:
 /// `Default` writes `value` as the declaration's `default`; `Env` writes a
 /// flat `name = value` pair into `env_doc` and a bare declaration (no
-/// fields) into `vars_doc`. `Conflict` if `name` already names an
-/// enumerated variable (one with an `options` table) — writing over it
-/// would either clobber its options or leave promote's meaning
-/// ambiguous; the caller should offer a rename instead. The caller is
-/// responsible for removing the request's own `[variables]` entry.
+/// fields) into `vars_doc`. `Conflict` if `name` collides with anything
+/// already occupying that name in `vars_doc`:
+/// - an enumerated variable (one with an `options` table) — writing over
+///   it would either clobber its options or leave promote's meaning
+///   ambiguous;
+/// - an existing group's own name — group and variable names share one
+///   namespace (spec §1), so `upsert_var` would otherwise create a
+///   colliding top-level variable table alongside `[groups.<name>]`;
+/// - an existing group's member — that name's value comes from the
+///   group's selected option, so writing a `default` onto it would be
+///   dead and misleading.
+///
+/// In every conflict case the caller should offer a rename instead. The
+/// caller is responsible for removing the request's own `[variables]`
+/// entry.
 pub fn promote_var(
     vars_doc: &str,
     env_doc: Option<&str>,
@@ -542,8 +552,9 @@ pub fn promote_var(
     target: PromoteTarget,
 ) -> Result<(String, Option<String>), EditError> {
     let existing = parse(vars_doc)?;
-    if existing
-        .as_table()
+    let root = existing.as_table();
+
+    if root
         .get(name)
         .and_then(Item::as_table)
         .is_some_and(|t| t.contains_key("options"))
@@ -551,6 +562,26 @@ pub fn promote_var(
         return Err(EditError::Conflict(format!(
             "variable \"{name}\" is enumerated; promoting would overwrite its options"
         )));
+    }
+
+    if let Some(groups_table) = root.get("groups").and_then(Item::as_table) {
+        if groups_table.contains_key(name) {
+            return Err(EditError::Conflict(format!(
+                "\"{name}\" is already a group name; group and variable names share one namespace"
+            )));
+        }
+        for (gname, gitem) in groups_table.iter() {
+            let is_member = gitem
+                .as_table()
+                .and_then(|t| t.get("members"))
+                .and_then(Item::as_array)
+                .is_some_and(|members| members.iter().any(|v| v.as_str() == Some(name)));
+            if is_member {
+                return Err(EditError::Conflict(format!(
+                    "variable \"{name}\" is a member of group \"{gname}\"; its value comes from the group's selected option"
+                )));
+            }
+        }
     }
 
     match target {
@@ -1707,6 +1738,37 @@ user_id = "9001"
     fn promote_var_onto_existing_enumerated_name_is_conflict() {
         let err =
             promote_var(VARS, Some(ENV), "user", "carol", PromoteTarget::Default).unwrap_err();
+        assert!(
+            matches!(err, EditError::Conflict(_)),
+            "expected Conflict, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn promote_var_onto_existing_group_name_is_conflict() {
+        // "test-user" is a group name (`[groups.test-user]`), not a
+        // variable — group and variable names share one namespace.
+        let err = promote_var(
+            VARS,
+            Some(ENV),
+            "test-user",
+            "whatever",
+            PromoteTarget::Default,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, EditError::Conflict(_)),
+            "expected Conflict, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn promote_var_onto_existing_group_member_is_conflict() {
+        // "user_id" is a member of the "test-user" group; its resolved
+        // value comes from the group's selected option, not a plain
+        // default.
+        let err =
+            promote_var(VARS, Some(ENV), "user_id", "1001", PromoteTarget::Default).unwrap_err();
         assert!(
             matches!(err, EditError::Conflict(_)),
             "expected Conflict, got {err:?}"
