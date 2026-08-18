@@ -250,12 +250,12 @@ fn focus_bar_stays_visible_over_the_new_request_button() {
 
 /// The sidebar reserves the same left column for the selected request's
 /// accent marker. The pane focus bar composes with the marker's `█` text
-/// row only — the pill's `▄`/`▀` cap rows are half-height glyphs that
-/// cannot coexist with a vertical bar in one cell, and letting them
-/// through reads as a gap in the bar — so with the pane focused the bar
-/// runs unbroken with exactly one full-block cell at the selected row.
+/// The row list shares the New-request button's 1-column inset, so column
+/// 0 is the pane focus bar's lane alone: with the pane focused the bar
+/// runs unbroken top to bottom, and the selected row's accent marker sits
+/// one column in, inside its own pill — the two never share a cell.
 #[test]
-fn selected_request_marker_survives_the_sidebar_focus_bar() {
+fn selected_request_marker_sits_beside_the_sidebar_focus_bar() {
     use postui::components::sidebar::Row;
     use postui_core::model::Method;
 
@@ -272,23 +272,25 @@ fn selected_request_marker_survives_the_sidebar_focus_bar() {
     let layout = postui::layout::compute_layout(term.backend().buffer().area, false);
     let r = layout.sidebar;
     let buf = term.backend().buffer();
-    let mut markers = 0;
     for y in r.y..r.y + r.height {
         let cell = &buf[(r.x, y)];
-        match cell.symbol() {
-            "█" => {
-                assert_eq!(cell.fg, app.theme.accent, "marker keeps its accent color");
-                markers += 1;
-            }
-            "▌" => assert_eq!(cell.fg, app.theme.focus_ring),
-            other => panic!(
-                "unexpected glyph {other:?} in the bar column at row {y} — the bar must run unbroken"
-            ),
+        assert_eq!(
+            cell.symbol(),
+            "▌",
+            "the bar column holds only the focus bar (row {y}) — the bar must run unbroken"
+        );
+        assert_eq!(cell.fg, app.theme.focus_ring);
+    }
+    let mut markers = 0;
+    for y in r.y..r.y + r.height {
+        let cell = &buf[(r.x + 1, y)];
+        if cell.symbol() == "█" && cell.fg == app.theme.accent {
+            markers += 1;
         }
     }
     assert_eq!(
         markers, 1,
-        "exactly the selected row's text line shows the full-block marker"
+        "the selected row's accent marker shows once, one column in from the bar"
     );
 }
 

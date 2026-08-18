@@ -366,11 +366,15 @@ impl Component for Sidebar {
         }
 
         // One blank spacer line below the button; the row list starts after it.
+        // Rows share the button's 1-column inset each side, so column
+        // `area.x` stays the pane focus bar's lane (no collision with the
+        // selected row's accent marker) and the right margin column hosts
+        // the scrollbar.
         let list_top = (button_top + button_height + 1).min(area.y + area.height);
-        let mut list_area = Rect {
-            x: area.x,
+        let list_area = Rect {
+            x: area.x + 1,
             y: list_top,
-            width: area.width,
+            width: area.width.saturating_sub(2),
             height: (area.y + area.height) - list_top,
         };
         self.last_list_height = list_area.height as usize;
@@ -399,17 +403,16 @@ impl Component for Sidebar {
         }
 
         // Drawn after the scroll offset has settled (so the thumb is never a
-        // frame behind) and before the rows, which give up the last column to
-        // it so no row text ever runs underneath the bar.
+        // frame behind). It lives in the pane's right margin column — the
+        // one the inset list already leaves free — so rows keep their width.
         if let Some(spec) = self.scrollbar_spec().filter(ScrollbarSpec::overflows)
-            && list_area.width > 1
+            && area.width > 1
         {
             let column = Rect {
-                x: list_area.x + list_area.width - 1,
+                x: area.x + area.width - 1,
                 width: 1,
                 ..list_area
             };
-            list_area.width -= 1;
             hit::draw_scrollbar(
                 frame,
                 hits,
@@ -449,17 +452,19 @@ impl Component for Sidebar {
                 RowHighlight::Selected => theme.control_hover,
             };
 
-            // Column 0 is the selection/focus lane: only the selected
-            // pill's accent marker may paint there. A hover pill starting
-            // at column 0 leaks its fill (and its pad caps' composition
-            // with a neighboring selected pill) under the pane focus bar,
-            // showing as half-covered fill chips beside it.
-            let (pill_x, pill_w) = if highlight == RowHighlight::Selected {
-                (list_area.x, list_area.width)
-            } else {
-                (list_area.x + 1, list_area.width.saturating_sub(1))
-            };
-            PillRow { highlight }.paint(buf, text_row, pill_x, pill_w, area, theme.panel, theme);
+            // The list's own inset keeps column `area.x` free for the pane
+            // focus bar, so every pill — selected or hover — spans the full
+            // list width and the selected pill's accent marker never needs
+            // to dodge it.
+            PillRow { highlight }.paint(
+                buf,
+                text_row,
+                list_area.x,
+                list_area.width,
+                area,
+                theme.panel,
+                theme,
+            );
 
             self.paint_row(buf, row, text_row, list_area, row_fill, is_selected, theme);
 
@@ -880,9 +885,10 @@ mod tests {
         let (_content, hits) = render_hits(&mut s);
         assert_eq!(hits.rect_of(&Hit::ScrollbarThumb(PaneId::Sidebar)), None);
         assert_eq!(hits.track_of(PaneId::Sidebar), None);
-        // The rows keep the full pane width when no bar is needed.
+        // Rows share the button's 1-column inset each side (the scrollbar,
+        // when one is needed, lives in the right margin column).
         let row = hits.rect_of(&Hit::SidebarRow(0)).unwrap();
-        assert_eq!(row.width, 30);
+        assert_eq!(row.width, 28);
     }
 
     #[test]
