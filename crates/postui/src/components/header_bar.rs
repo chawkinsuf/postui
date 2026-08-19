@@ -21,6 +21,7 @@ pub fn draw_header(
     theme: &Theme,
     project: &str,
     env: &str,
+    vars_active: bool,
     hits: &mut HitMap,
     hovered: Option<&Hit>,
 ) {
@@ -96,6 +97,36 @@ pub fn draw_header(
         false,
     );
     hits.register(env_rect, Hit::HeaderEnv);
+    x += env_w + 1;
+
+    // The Variable Manager toggle: painted like the two chooser chips,
+    // held in the pressed fill while the manager screen is open.
+    let vars_label = " vars ";
+    let vars_w = vars_label.chars().count() as u16;
+    let vars_rect = Rect {
+        x,
+        y: mid_y,
+        width: vars_w,
+        height: 1,
+    };
+    let vars_bg = if vars_active {
+        theme.control_pressed
+    } else if hovered == Some(&Hit::HeaderVars) {
+        theme.control_hover
+    } else {
+        theme.control
+    };
+    fill(buf, vars_rect, vars_bg);
+    text(
+        buf,
+        vars_rect.x,
+        mid_y,
+        vars_label,
+        theme.text_muted,
+        vars_bg,
+        false,
+    );
+    hits.register(vars_rect, Hit::HeaderVars);
 }
 
 #[cfg(test)]
@@ -116,7 +147,9 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = HitMap::default();
         terminal
-            .draw(|f: &mut Frame| draw_header(f, f.area(), theme, project, env, &mut hits, hovered))
+            .draw(|f: &mut Frame| {
+                draw_header(f, f.area(), theme, project, env, false, &mut hits, hovered)
+            })
             .unwrap();
         (terminal, hits)
     }
@@ -210,7 +243,9 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = HitMap::default();
         terminal
-            .draw(|f: &mut Frame| draw_header(f, f.area(), &theme, "alpha", "qa", &mut hits, None))
+            .draw(|f: &mut Frame| {
+                draw_header(f, f.area(), &theme, "alpha", "qa", false, &mut hits, None)
+            })
             .unwrap();
         let buf = terminal.backend().buffer();
         let far_right = buf.cell((198, 1)).unwrap();

@@ -765,6 +765,60 @@ fn header_buffer_shows_dropdown_glyph_for_project_and_env() {
 }
 
 #[test]
+fn clicking_the_add_variable_row_opens_the_prompt() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::OpenVarManager);
+    render_once(&mut app);
+    let add_var_row = app
+        .varmanager
+        .rows
+        .iter()
+        .position(|r| matches!(r, crate::components::varmanager::RowKind::AddVar))
+        .unwrap();
+    let r = app
+        .hits
+        .rect_of(&crate::hit::Hit::VarName(add_var_row))
+        .expect("add-variable row name region registered");
+    app.handle_mouse(left_down(r.x + 2, r.y));
+    assert!(
+        matches!(
+            app.modals.top(),
+            Some(Modal::Prompt {
+                kind: PromptKind::NewVariable,
+                ..
+            })
+        ),
+        "single click on + Add variable opens the prompt"
+    );
+}
+
+#[test]
+fn header_vars_button_toggles_the_variable_manager() {
+    let mut app = App::new_for_test();
+    render_once(&mut app);
+    let r = app
+        .hits
+        .rect_of(&crate::hit::Hit::HeaderVars)
+        .expect("vars button registered in the header");
+    app.handle_mouse(left_down(r.x, r.y));
+    assert_eq!(app.screen, crate::app::Screen::VarManager);
+    render_once(&mut app);
+    let r = app
+        .hits
+        .rect_of(&crate::hit::Hit::HeaderVars)
+        .expect("vars button still present on the manager screen");
+    app.handle_mouse(left_down(r.x, r.y));
+    assert_eq!(
+        app.screen,
+        crate::app::Screen::Main,
+        "second click toggles back"
+    );
+}
+
+#[test]
 fn click_header_env_opens_env_chooser() {
     let mut app = App::new_for_test();
     render_once(&mut app);
@@ -3624,7 +3678,7 @@ fn keyboard_driven_flow_navigate_edit_commit_via_the_grid() {
             matches!(r, crate::components::varmanager::RowKind::Var { name } if name == "base_url")
         })
         .unwrap();
-    app.varmanager.cursor = (base_url_row, 1); // dev is the first env column
+    app.varmanager.cursor = (base_url_row, 2); // dev is the first env column (after Default)
 
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.varmanager.editing.is_some());
@@ -3661,7 +3715,7 @@ fn keyboard_driven_failed_write_leaves_editing_open_and_toasts() {
             matches!(r, crate::components::varmanager::RowKind::Var { name } if name == "base_url")
         })
         .unwrap();
-    app.varmanager.cursor = (base_url_row, 1);
+    app.varmanager.cursor = (base_url_row, 2);
 
     use std::os::unix::fs::PermissionsExt;
     let env_dir = dir.path().join("environments");

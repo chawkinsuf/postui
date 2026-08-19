@@ -41,6 +41,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         &app.theme,
         &project_name,
         &env_label,
+        screen == Screen::VarManager,
         &mut hits,
         app.hovered.as_ref(),
     );

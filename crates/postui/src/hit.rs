@@ -13,6 +13,8 @@ pub enum Hit {
     Pane(PaneId),
     HeaderProject,
     HeaderEnv,
+    /// The header's "vars" chip: toggles the Variable Manager screen.
+    HeaderVars,
     /// A footer hint chip that dispatches its action on click.
     FooterChip(crate::action::Action),
     SidebarNewRequest,
@@ -56,6 +58,10 @@ pub enum Hit {
     /// A visible row of the Variable Manager grid (spec §5), background
     /// click target. Index into `VarManager::rows`.
     VarRow(usize),
+    /// The name region of a Variable Manager row (the first `NAME_W`
+    /// cells): double-click renames a variable (or expands an expandable
+    /// row), unlike the description region next to it (`VarCell` col 0).
+    VarName(usize),
     /// One visible cell of the Variable Manager grid: `row` indexes
     /// `VarManager::rows`; `col` 0 is the shared name/desc block, `col`
     /// 1.. are environment columns (relative to `env_scroll`).

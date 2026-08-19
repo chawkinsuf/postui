@@ -211,6 +211,13 @@ impl App {
             }
             Hit::HeaderProject => self.update(Action::OpenProjectChooser),
             Hit::HeaderEnv => self.update(Action::OpenEnvChooser),
+            Hit::HeaderVars => {
+                if self.screen == crate::app::Screen::VarManager {
+                    self.update(Action::CloseScreen)
+                } else {
+                    self.update(Action::OpenVarManager)
+                }
+            }
             Hit::FooterChip(action) => self.update(action),
             Hit::SidebarNewRequest => self.update(Action::PromptNewRequest),
             Hit::SidebarFolderArrow(i) => {
@@ -468,10 +475,14 @@ impl App {
             Hit::ScrollbarTrack(pane, delta) => {
                 self.update(Action::ScrollPane(pane, delta.clamp(-30, 30)))
             }
-            Hit::VarRow(i) => {
-                self.varmanager.click_row(i);
-                self.update(Action::Render)
-            }
+            Hit::VarRow(i) => match self.varmanager.click_row(i) {
+                Some(action) => self.update(action),
+                None => self.update(Action::Render),
+            },
+            Hit::VarName(i) => match self.varmanager.click_name(i, clicks == 2, &self.project) {
+                Some(action) => self.update(action),
+                None => self.update(Action::Render),
+            },
             Hit::VarCell { row, col } => {
                 let open_request = self
                     .editor
