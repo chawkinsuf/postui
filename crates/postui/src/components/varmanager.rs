@@ -484,9 +484,12 @@ fn env_cell(
         RowKind::SectionHeader(_) | RowKind::AddVar | RowKind::AddGroup => Cell::blank(),
 
         // A request var's single value renders in the Default column
-        // (`default_cell`); its env cells stay blank — it has no per-env
-        // variants.
-        RowKind::RequestVar { .. } => Cell::blank(),
+        // (`default_cell`); a muted dash in each env cell marks that it
+        // has no per-env variants to set.
+        RowKind::RequestVar { .. } => Cell {
+            text: "\u{2014}".into(),
+            fg: theme.text_muted,
+        },
 
         RowKind::Var { name } => {
             let Some(decl) = ctx.model.vars.get(name) else {
@@ -1468,15 +1471,23 @@ impl VarManager {
                     }
                 };
 
-                let name_col_rect = Rect {
-                    x: list_area.x,
-                    y,
-                    width: NAME_W + DESC_W,
-                    height: 1,
-                };
-                let name_fill = cell_fill(0);
-                if name_fill != row_fill {
-                    fill(buf, name_col_rect, name_fill);
+                // Col 0's cell highlight covers the description region
+                // only — that's what its edit targets; the name region
+                // stays on the row fill (its actions are rename/expand,
+                // not a cell edit).
+                let name_fill = row_fill;
+                let desc_fill = cell_fill(0);
+                if desc_fill != row_fill {
+                    fill(
+                        buf,
+                        Rect {
+                            x: list_area.x + NAME_W,
+                            y,
+                            width: DESC_W,
+                            height: 1,
+                        },
+                        desc_fill,
+                    );
                 }
                 // Two hit regions over one logical column: the name half
                 // (rename/expand on double-click) and the description half
@@ -1531,7 +1542,7 @@ impl VarManager {
                 let desc_w = DESC_W.saturating_sub(1);
                 if let Some(edit) = editing_here {
                     let mut line = edit.input.draw_line_windowed(true, theme, desc_w);
-                    line.style = Style::default().bg(name_fill).patch(line.style);
+                    line.style = Style::default().bg(desc_fill).patch(line.style);
                     buf.set_line(desc_x, y, &line, desc_w);
                 } else {
                     let desc = description_for(ctx, row);
@@ -1542,7 +1553,7 @@ impl VarManager {
                             y,
                             super::chooser::clip(&desc, desc_w),
                             theme.text_muted,
-                            name_fill,
+                            desc_fill,
                             false,
                         );
                     }
@@ -2783,8 +2794,50 @@ customer_id = "c-77"
         let (_content, term) = render(&ctx, Some(&req), BTreeSet::new(), 120, 0);
         let (value, _) = cell_at(&term, NAME_W + DESC_W, y, ENV_W);
         assert_eq!(value, "abc-123");
-        let (qa_cell, _) = cell_at(&term, env_col_x(&ctx, "qa"), y, ENV_W);
-        assert_eq!(qa_cell, "", "env columns are blank for a request var");
+        let theme = Theme::for_terminal();
+        for env in ["dev", "qa"] {
+            let (cell, fg) = cell_at(&term, env_col_x(&ctx, env), y, ENV_W);
+            assert_eq!(
+                cell, "\u{2014}",
+                "a muted dash marks that a request var can't be set per env"
+            );
+            assert_eq!(fg, theme.text_muted);
+        }
+    }
+
+    #[test]
+    fn selecting_col_zero_highlights_only_the_description_region() {
+        let (_dir, ctx, req) = fixture();
+        let theme = Theme::for_terminal();
+        let mut vm = VarManager {
+            rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
+            ..Default::default()
+        };
+        let row = idx(
+            &vm.rows,
+            &RowKind::Var {
+                name: "base_url".into(),
+            },
+        );
+        vm.cursor = (row, 0);
+        let backend = ratatui::backend::TestBackend::new(120, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut hits = HitMap::default();
+        terminal
+            .draw(|f| vm.draw(f, f.area(), &theme, &ctx, Some(&req), &mut hits, None))
+            .unwrap();
+        let y = row_y(&vm.rows, &vm.rows[row].clone());
+        let buf = terminal.backend().buffer();
+        assert_eq!(
+            buf[(2u16, y)].bg,
+            theme.control_hover,
+            "name region carries only the row highlight"
+        );
+        assert_eq!(
+            buf[(NAME_W + 2, y)].bg,
+            theme.control_pressed,
+            "description region carries the cell highlight"
+        );
     }
 
     #[test]
