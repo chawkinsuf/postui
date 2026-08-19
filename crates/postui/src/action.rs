@@ -274,6 +274,40 @@ pub enum Action {
     PromptEditGroupMembers {
         group: String,
     },
+    /// Enter or a single click on a group header's or enumerated
+    /// variable's env cell (or an unselected member cell): open a dropdown
+    /// of `owner`'s option keys for `env`, anchored at the cell
+    /// (`row`/`col` locate its rect in the last frame's `HitMap`);
+    /// confirming a row dispatches the `Select`.
+    OpenSelectDropdown {
+        owner: String,
+        env: String,
+        row: usize,
+        col: usize,
+    },
+    /// `a` on a group's rows: open the single-name add-member prompt.
+    PromptAddGroupMember {
+        group: String,
+    },
+    /// Confirmed add-member prompt: append `member` to `group`'s list.
+    /// Toasts (and changes nothing) when it's already a member.
+    AddGroupMember {
+        group: String,
+        member: String,
+    },
+    /// `d`/`Delete` on a `GroupMember` row: open the remove confirm.
+    ConfirmRemoveGroupMember {
+        group: String,
+        member: String,
+    },
+    /// Confirmed member removal: strip `member`'s per-option values from
+    /// every environment file first, then drop it from the group's list
+    /// and shared options in variables.toml (that order keeps each write
+    /// valid against the model it's checked with).
+    RemoveGroupMember {
+        group: String,
+        member: String,
+    },
     /// `d`/`Delete` on a `Var`/`GroupHeader` row: open the delete confirm,
     /// its body listing `varedit::scan_usage`'s referencing requests.
     ConfirmDeleteVar {

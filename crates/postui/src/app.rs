@@ -1396,11 +1396,151 @@ impl App {
             }
             Action::PromptNewGroup => {
                 self.modals.push(Modal::Prompt {
-                    title: "New group \u{2014} name, member, member, \u{2026}".into(),
+                    title: "New group".into(),
                     input: LineInput::new(""),
                     kind: PromptKind::NewGroup,
                     revealed: false,
                 });
+                true
+            }
+            Action::OpenSelectDropdown {
+                owner,
+                env,
+                row,
+                col,
+            } => {
+                let env_data = if self.project.active_env.as_deref() == Some(env.as_str()) {
+                    self.project.env_data.clone()
+                } else {
+                    postui_core::project::load_environment(&self.project.root, &env)
+                        .unwrap_or_default()
+                };
+                let selections = self.project.selections_for(&env).get(&owner).cloned();
+                let entries: Vec<(String, String)> = if self.project.model.vars.contains_key(&owner)
+                {
+                    postui_core::varmodel::merged_var_options(
+                        &self.project.model,
+                        &env_data,
+                        &owner,
+                    )
+                    .iter()
+                    .map(|(k, o)| (k.clone(), format!("{k} \u{b7} {}", o.value)))
+                    .collect()
+                } else {
+                    postui_core::varmodel::merged_group_options(
+                        &self.project.model,
+                        &env_data,
+                        &owner,
+                    )
+                    .keys()
+                    .map(|k| (k.clone(), k.clone()))
+                    .collect()
+                };
+                if entries.is_empty() {
+                    return true;
+                }
+                let current = entries
+                    .iter()
+                    .position(|(k, _)| Some(k) == selections.as_ref());
+                let items: Vec<(String, Action)> = entries
+                    .into_iter()
+                    .map(|(k, label)| {
+                        (
+                            label,
+                            Action::VarEdit(VarEditOp::Select {
+                                env: env.clone(),
+                                name: owner.clone(),
+                                key: k,
+                            }),
+                        )
+                    })
+                    .collect();
+                let anchor = self
+                    .hits
+                    .rect_of(&crate::hit::Hit::VarCell { row, col })
+                    .unwrap_or_else(|| ratatui::layout::Rect::new(0, 0, 0, 0));
+                use crate::components::modal::DropdownState;
+                self.modals.push(Modal::Dropdown(DropdownState {
+                    anchor,
+                    items,
+                    selected: current.unwrap_or(0),
+                    current,
+                }));
+                true
+            }
+            Action::PromptAddGroupMember { group } => {
+                self.modals.push(Modal::Prompt {
+                    title: format!("Add member to {group}"),
+                    input: LineInput::new(""),
+                    kind: PromptKind::AddGroupMember { group },
+                    revealed: false,
+                });
+                true
+            }
+            Action::AddGroupMember { group, member } => {
+                let current = self
+                    .project
+                    .model
+                    .groups
+                    .get(&group)
+                    .map(|g| g.members.clone())
+                    .unwrap_or_default();
+                if current.iter().any(|m| m == &member) {
+                    self.toasts.push(
+                        format!("\"{member}\" is already a member of {group}"),
+                        ToastKind::Warning,
+                    );
+                    return true;
+                }
+                let mut members = current;
+                members.push(member);
+                self.apply(Action::VarStruct(VarStructOp::SetMembers {
+                    group,
+                    members,
+                }));
+                true
+            }
+            Action::ConfirmRemoveGroupMember { group, member } => {
+                self.modals.push(Modal::Confirm {
+                    title: format!("Remove {member}"),
+                    body: format!(
+                        "Remove \"{member}\" from group \"{group}\"? Its values in the group's options are removed too."
+                    ),
+                    choices: vec![
+                        ('n', "Cancel".into(), vec![]),
+                        (
+                            'y',
+                            "Remove".into(),
+                            vec![Action::RemoveGroupMember { group, member }],
+                        ),
+                    ],
+                });
+                true
+            }
+            Action::RemoveGroupMember { group, member } => {
+                // Env files first: variables.toml's validation runs against
+                // the active env, which must no longer set the member by
+                // the time the membership itself changes.
+                let envs = postui_core::project::list_environments(&self.project.root);
+                let result = envs
+                    .iter()
+                    .try_for_each(|env| {
+                        self.project.edit_env(env, |doc| {
+                            postui_core::varedit::strip_env_group_member(doc, &group, &member)
+                        })
+                    })
+                    .and_then(|()| {
+                        self.project.edit_variables(|doc| {
+                            postui_core::varedit::remove_group_member(doc, &group, &member)
+                        })
+                    });
+                match result {
+                    Ok(()) => self.toasts.push(
+                        format!("removed \"{member}\" from {group}"),
+                        ToastKind::Info,
+                    ),
+                    Err(msg) => self.toasts.push(msg, ToastKind::Error),
+                }
                 true
             }
             Action::PromptNewOption { owner } => {

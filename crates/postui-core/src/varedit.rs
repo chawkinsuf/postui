@@ -443,6 +443,42 @@ pub fn upsert_group(
     Ok(doc.to_string())
 }
 
+/// Removes `member` from `group`'s member list and strips its value from
+/// every `[groups.<group>.options.*]` table — a member's per-option values
+/// must not outlive its membership (the model rejects options naming a
+/// non-member). `NotFound` if the group doesn't exist or `member` isn't in
+/// its list.
+pub fn remove_group_member(doc: &str, group: &str, member: &str) -> Result<String, EditError> {
+    let mut doc = parse(doc)?;
+    let root = doc.as_table_mut();
+    let g = root
+        .get_mut("groups")
+        .and_then(Item::as_table_mut)
+        .and_then(|groups| groups.get_mut(group))
+        .and_then(Item::as_table_mut)
+        .ok_or_else(|| not_found(format!("group \"{group}\" not found")))?;
+    let members = g
+        .get_mut("members")
+        .and_then(Item::as_value_mut)
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| not_found(format!("group \"{group}\" has no members list")))?;
+    let before = members.len();
+    members.retain(|v| v.as_str() != Some(member));
+    if members.len() == before {
+        return Err(not_found(format!(
+            "\"{member}\" is not a member of \"{group}\""
+        )));
+    }
+    if let Some(options) = g.get_mut("options").and_then(Item::as_table_mut) {
+        for (_, opt) in options.iter_mut() {
+            if let Some(t) = opt.as_table_mut() {
+                t.remove(member);
+            }
+        }
+    }
+    Ok(doc.to_string())
+}
+
 /// Deletes a group's table (and everything nested under it, including its
 /// options). `NotFound` if there is no such group.
 pub fn delete_group(doc: &str, name: &str) -> Result<String, EditError> {
@@ -697,6 +733,28 @@ pub fn delete_env_var(doc: &str, name: &str) -> Result<String, EditError> {
 }
 
 /// Removes `[options.owner.key]`. `NotFound` if it wasn't there.
+/// Strips `member`'s value from every `[options.<group>.*]` table in an
+/// environment doc — the env-file half of [`remove_group_member`]. A doc
+/// with nothing to strip passes through unchanged (never an error: most
+/// envs won't override the group at all).
+pub fn strip_env_group_member(doc: &str, group: &str, member: &str) -> Result<String, EditError> {
+    let mut doc = parse(doc)?;
+    let root = doc.as_table_mut();
+    if let Some(keys) = root
+        .get_mut("options")
+        .and_then(Item::as_table_mut)
+        .and_then(|o| o.get_mut(group))
+        .and_then(Item::as_table_mut)
+    {
+        for (_, opt) in keys.iter_mut() {
+            if let Some(t) = opt.as_table_mut() {
+                t.remove(member);
+            }
+        }
+    }
+    Ok(doc.to_string())
+}
+
 pub fn delete_env_option(doc: &str, owner: &str, key: &str) -> Result<String, EditError> {
     let mut doc = parse(doc)?;
     let root = doc.as_table_mut();
@@ -1314,6 +1372,71 @@ customer_id = "c-77"
         assert_eq!(
             err,
             EditError::NotFound("option \"nope\" not found on \"user\"".to_string())
+        );
+    }
+
+    #[test]
+    fn remove_group_member_strips_the_list_and_every_options_value() {
+        let out = remove_group_member(VARS, "test-user", "user_id").unwrap();
+        let model = crate::varmodel::parse_variables(&out).unwrap();
+        let g = model.groups.get("test-user").unwrap();
+        assert_eq!(g.members, vec!["customer_id".to_string()]);
+        assert!(
+            !g.options
+                .get("alice")
+                .unwrap()
+                .values
+                .contains_key("user_id"),
+            "the removed member's per-option values go too: {out}"
+        );
+        assert!(
+            g.options
+                .get("alice")
+                .unwrap()
+                .values
+                .contains_key("customer_id"),
+            "other members' values stay"
+        );
+        // the standalone [user_id] declaration is untouched
+        assert!(model.vars.contains_key("user_id"));
+
+        assert!(remove_group_member(VARS, "test-user", "nope").is_err());
+        assert!(remove_group_member(VARS, "no-such-group", "user_id").is_err());
+    }
+
+    #[test]
+    fn strip_env_group_member_removes_only_that_members_option_values() {
+        let out = strip_env_group_member(ENV, "test-user", "user_id").unwrap();
+        assert!(
+            !out.contains("[options.test-user.alice]") || !out.contains("user_id = \"9001\""),
+            "{out}"
+        );
+        // untouched: the plain var's options and the flat value
+        assert!(out.contains("[options.user.alice]"), "{out}");
+        assert!(out.contains("base_url = "), "{out}");
+        let parsed = crate::varmodel::parse_environment(&out).unwrap();
+        assert!(
+            parsed
+                .options
+                .get("test-user")
+                .and_then(|t| t.get("alice"))
+                .is_none_or(|o| !o.contains_key("user_id")),
+            "{out}"
+        );
+        // a doc with nothing to strip passes through unchanged
+        let untouched = strip_env_group_member("x = \"1\"\n", "test-user", "user_id").unwrap();
+        assert_eq!(untouched, "x = \"1\"\n");
+    }
+
+    #[test]
+    fn upsert_group_with_no_members_writes_an_empty_list_that_reparses() {
+        let out = upsert_group(VARS, "billing-pair", None, &[]).unwrap();
+        assert!(out.contains("[groups.billing-pair]"), "{out}");
+        assert!(out.contains("members = []"), "{out}");
+        let model = crate::varmodel::parse_variables(&out).unwrap();
+        assert!(
+            model.groups.get("billing-pair").unwrap().members.is_empty(),
+            "an empty group parses back"
         );
     }
 

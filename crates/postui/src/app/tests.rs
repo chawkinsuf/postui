@@ -4931,7 +4931,7 @@ fn clicking_the_new_var_chip_opens_the_new_variable_prompt() {
 }
 
 #[test]
-fn prompt_new_group_comma_syntax_parses_name_and_members() {
+fn prompt_new_group_takes_just_a_name_and_creates_an_empty_group() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -4939,7 +4939,7 @@ fn prompt_new_group_comma_syntax_parses_name_and_members() {
     let keymap = Keymap::default_bindings();
     app.update(Action::PromptNewGroup);
 
-    for c in "creds, user_id, customer_id".chars() {
+    for c in "creds".chars() {
         app.handle_key(&keymap, plain(c));
     }
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -4951,9 +4951,67 @@ fn prompt_new_group_comma_syntax_parses_name_and_members() {
         .groups
         .get("creds")
         .expect("group created");
+    assert!(g.members.is_empty(), "members are added one at a time");
+    // and the empty group survives a reload (parse accepts members = [])
+    app.update(Action::ReloadProjectFiles);
+    assert!(app.project.model.groups.contains_key("creds"));
+}
+
+#[test]
+fn add_and_remove_group_members_one_at_a_time() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let keymap = Keymap::default_bindings();
+    app.update(Action::VarStruct(VarStructOp::NewGroup {
+        name: "creds".into(),
+        members: vec![],
+    }));
+
+    // `a` flow: one member name per prompt, appended in order
+    for member in ["user_id", "customer_id"] {
+        app.update(Action::PromptAddGroupMember {
+            group: "creds".into(),
+        });
+        for c in member.chars() {
+            app.handle_key(&keymap, plain(c));
+        }
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    }
     assert_eq!(
-        g.members,
+        app.project.model.groups.get("creds").unwrap().members,
         vec!["user_id".to_string(), "customer_id".to_string()]
+    );
+
+    // duplicate append toasts and changes nothing
+    let toasts_before = app.toasts.messages().len();
+    app.update(Action::PromptAddGroupMember {
+        group: "creds".into(),
+    });
+    for c in "user_id".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.toasts.messages().len() > toasts_before);
+    assert_eq!(
+        app.project.model.groups.get("creds").unwrap().members.len(),
+        2
+    );
+
+    // `d` flow: confirm-remove one member
+    app.update(Action::ConfirmRemoveGroupMember {
+        group: "creds".into(),
+        member: "user_id".into(),
+    });
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Confirm { .. })),
+        "removal asks first"
+    );
+    app.handle_key(&keymap, plain('y'));
+    assert_eq!(
+        app.project.model.groups.get("creds").unwrap().members,
+        vec!["customer_id".to_string()]
     );
 }
 

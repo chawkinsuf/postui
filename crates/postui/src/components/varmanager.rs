@@ -184,8 +184,13 @@ enum StructKind {
     Delete,
     ToggleSecret,
     EditMembers,
+    AddMember,
     Promote,
     Demote,
+    /// `e` on an `OptionRow`: the multi-field value(s)/description prompt
+    /// (the same one the picker's `e` opens), prefilled from the ACTIVE
+    /// env's merged view of the option.
+    EditOptionPrompt,
 }
 
 /// The full-frame Variable Manager screen (spec §5): a title bar, the
@@ -691,8 +696,10 @@ fn action_chips(
     for (key, label, kind) in [
         ("o", "add option", StructKind::NewOption),
         ("e", "rename", StructKind::Rename),
+        ("e", "edit", StructKind::EditOptionPrompt),
         ("d", "delete", StructKind::Delete),
         ("s", "secret", StructKind::ToggleSecret),
+        ("a", "member", StructKind::AddMember),
         ("m", "members", StructKind::EditMembers),
         ("p", "promote", StructKind::Promote),
         ("P", "demote", StructKind::Demote),
@@ -852,12 +859,13 @@ impl VarManager {
             KeyCode::Char('n') => Some(Action::PromptNewVar),
             KeyCode::Char('g') => Some(Action::PromptNewGroup),
             KeyCode::Char('o') => self.struct_action(ctx, StructKind::NewOption),
-            KeyCode::Char('e') | KeyCode::F(2) | KeyCode::Char('=') => {
-                self.struct_action(ctx, StructKind::Rename)
-            }
+            KeyCode::Char('e') | KeyCode::F(2) | KeyCode::Char('=') => self
+                .struct_action(ctx, StructKind::Rename)
+                .or_else(|| self.struct_action(ctx, StructKind::EditOptionPrompt)),
             KeyCode::Char('d') | KeyCode::Delete => self.struct_action(ctx, StructKind::Delete),
             KeyCode::Char('s') => self.struct_action(ctx, StructKind::ToggleSecret),
             KeyCode::Char('m') => self.struct_action(ctx, StructKind::EditMembers),
+            KeyCode::Char('a') => self.struct_action(ctx, StructKind::AddMember),
             KeyCode::Char('p') => self.struct_action(ctx, StructKind::Promote),
             KeyCode::Char('P') => self.struct_action(ctx, StructKind::Demote),
             _ => None,
@@ -954,7 +962,11 @@ impl VarManager {
         let row = self.rows.get(self.cursor.0)?.clone();
         let col = self.cursor.1;
 
-        if let Some(name) = expandable_name(ctx, &row) {
+        // Expand/collapse is the *name column's* activation; an env cell
+        // of the same expandable row offers the selection dropdown below.
+        if col == 0
+            && let Some(name) = expandable_name(ctx, &row)
+        {
             self.toggle_expand(name);
             return None;
         }
@@ -979,6 +991,17 @@ impl VarManager {
                 }
                 let env = self.env_at(ctx, col)?;
                 let column = env_column(ctx, &env);
+                if !postui_core::varmodel::merged_var_options(&ctx.model, &column.env_data, name)
+                    .is_empty()
+                {
+                    // An enumerated cell holds a *choice*, not free text.
+                    return Some(Action::OpenSelectDropdown {
+                        owner: name.clone(),
+                        env,
+                        row: self.cursor.0,
+                        col,
+                    });
+                }
                 let seed = column
                     .resolved
                     .values
@@ -989,21 +1012,69 @@ impl VarManager {
                 None
             }
             RowKind::GroupHeader { name } => {
-                // Reached only for a group with no options at all
-                // (`expandable_name` already claimed every other
-                // `GroupHeader` for expand/collapse) — its env columns
-                // have nothing to show or edit, only its shared
-                // description.
-                if col != 0 {
+                if col == 0 {
+                    // Only a group with no options reaches here (expand
+                    // claimed the rest): edit its shared description.
+                    let seed = ctx
+                        .model
+                        .groups
+                        .get(name)
+                        .and_then(|g| g.description.clone())
+                        .unwrap_or_default();
+                    self.begin_edit(0, &seed, false);
                     return None;
                 }
-                let seed = ctx
-                    .model
-                    .groups
-                    .get(name)
-                    .and_then(|g| g.description.clone())
+                if col == 1 {
+                    return None;
+                }
+                let env = self.env_at(ctx, col)?;
+                let column = env_column(ctx, &env);
+                if postui_core::varmodel::merged_group_options(&ctx.model, &column.env_data, name)
+                    .is_empty()
+                {
+                    return None;
+                }
+                Some(Action::OpenSelectDropdown {
+                    owner: name.clone(),
+                    env,
+                    row: self.cursor.0,
+                    col,
+                })
+            }
+            RowKind::GroupMember { group, name } => {
+                if col <= 1 {
+                    return None;
+                }
+                let env = self.env_at(ctx, col)?;
+                let column = env_column(ctx, &env);
+                let merged = postui_core::varmodel::merged_group_options(
+                    &ctx.model,
+                    &column.env_data,
+                    group,
+                );
+                if merged.is_empty() {
+                    return None;
+                }
+                let Some(selected) = column
+                    .selections
+                    .get(group)
+                    .filter(|k| merged.contains_key(*k))
+                else {
+                    // No option chosen for this env yet — offer the choice
+                    // instead of an edit that has no target.
+                    return Some(Action::OpenSelectDropdown {
+                        owner: group.clone(),
+                        env,
+                        row: self.cursor.0,
+                        col,
+                    });
+                };
+                let seed = merged
+                    .get(selected)
+                    .and_then(|o| o.values.get(name))
+                    .cloned()
                     .unwrap_or_default();
-                self.begin_edit(0, &seed, false);
+                self.begin_edit(col, &seed, false);
                 None
             }
             RowKind::RequestVar { name } => {
@@ -1084,6 +1155,18 @@ impl VarManager {
             (StructKind::Delete, RowKind::Var { name } | RowKind::GroupHeader { name }) => {
                 Some(Action::ConfirmDeleteVar { name: name.clone() })
             }
+            (StructKind::Delete, RowKind::GroupMember { group, name }) => {
+                Some(Action::ConfirmRemoveGroupMember {
+                    group: group.clone(),
+                    member: name.clone(),
+                })
+            }
+            (
+                StructKind::AddMember,
+                RowKind::GroupHeader { name: group } | RowKind::GroupMember { group, .. },
+            ) => Some(Action::PromptAddGroupMember {
+                group: group.clone(),
+            }),
             (StructKind::Delete, RowKind::OptionRow { owner, key }) => {
                 Some(Action::ConfirmDeleteOption {
                     owner: owner.clone(),
@@ -1094,6 +1177,30 @@ impl VarManager {
                 if union_var_option_keys(ctx, name).is_empty() =>
             {
                 Some(Action::ToggleSecretVar { name: name.clone() })
+            }
+            (StructKind::EditOptionPrompt, RowKind::OptionRow { owner, key }) => {
+                if ctx.model.vars.contains_key(owner)
+                    && let Some(opt) =
+                        postui_core::varmodel::merged_var_options(&ctx.model, &ctx.env_data, owner)
+                            .get(key)
+                {
+                    let mut values = IndexMap::new();
+                    values.insert("value".to_string(), opt.value.clone());
+                    return Some(Action::OpenEditOptionPrompt {
+                        owner: owner.clone(),
+                        key: key.clone(),
+                        description: opt.description.clone(),
+                        values,
+                    });
+                }
+                postui_core::varmodel::merged_group_options(&ctx.model, &ctx.env_data, owner)
+                    .get(key)
+                    .map(|opt| Action::OpenEditOptionPrompt {
+                        owner: owner.clone(),
+                        key: key.clone(),
+                        description: opt.description.clone(),
+                        values: opt.values.clone(),
+                    })
             }
             (StructKind::EditMembers, RowKind::GroupHeader { name }) => {
                 Some(Action::PromptEditGroupMembers {
@@ -1184,6 +1291,18 @@ impl VarManager {
                 owner: name.clone(),
                 value,
             },
+            RowKind::GroupMember { group, name } => {
+                let env = self.env_at(ctx, col)?;
+                let column = env_column(ctx, &env);
+                let selected = column.selections.get(group)?.clone();
+                VarEditOp::SetOptionValue {
+                    env,
+                    owner: group.clone(),
+                    key: selected,
+                    member: Some(name.clone()),
+                    value,
+                }
+            }
             RowKind::RequestVar { name } => VarEditOp::SetRequestVar {
                 name: name.clone(),
                 value,
@@ -1229,12 +1348,31 @@ impl VarManager {
         }
         self.cursor = (row, col);
         self.ensure_visible = false;
-        match self.rows.get(row) {
+        match self.rows.get(row).cloned() {
             // The ghost action rows render like buttons; a single click
             // anywhere on them acts immediately.
             Some(RowKind::AddVar) => return Some(Action::PromptNewVar),
             Some(RowKind::AddGroup) => return Some(Action::PromptNewGroup),
             Some(RowKind::OptionRow { .. }) => return self.select_cursor(ctx),
+            // A choice cell acts on the first click too — it opens a
+            // dropdown, like the method selector.
+            Some(RowKind::GroupHeader { .. }) if col >= 2 => {
+                return self.activate_cursor(ctx, open_request);
+            }
+            Some(RowKind::Var { name }) if col >= 2 => {
+                if let Some(env) = self.env_at(ctx, col) {
+                    let column = env_column(ctx, &env);
+                    if !postui_core::varmodel::merged_var_options(
+                        &ctx.model,
+                        &column.env_data,
+                        &name,
+                    )
+                    .is_empty()
+                    {
+                        return self.activate_cursor(ctx, open_request);
+                    }
+                }
+            }
             _ => {}
         }
         if double {
@@ -2500,6 +2638,250 @@ customer_id = "c-77"
     }
 
     #[test]
+    fn member_env_cell_edits_the_selected_options_value() {
+        let (_dir, ctx) = fixture_group_selected();
+        let mut vm = VarManager {
+            rows: build_rows(&ctx, None, &BTreeSet::new()),
+            ..Default::default()
+        };
+        let row = idx(
+            &vm.rows,
+            &RowKind::GroupMember {
+                group: "creds".into(),
+                name: "customer_id".into(),
+            },
+        );
+        vm.cursor = (row, env_col(&ctx, "qa"));
+        assert_eq!(vm.activate_cursor(&ctx, None), None);
+        assert_eq!(
+            vm.editing.as_ref().expect("edit began").input.text(),
+            "c-99",
+            "seeded with the selected option's value for this member+env"
+        );
+        vm.editing.as_mut().unwrap().input = LineInput::new("c-100");
+        assert_eq!(
+            vm.commit_edit(&ctx),
+            Some(Action::VarEdit(VarEditOp::SetOptionValue {
+                env: "qa".into(),
+                owner: "creds".into(),
+                key: "alice".into(),
+                member: Some("customer_id".into()),
+                value: "c-100".into(),
+            }))
+        );
+    }
+
+    #[test]
+    fn unselected_cells_open_the_selection_dropdown() {
+        let (_dir, ctx) = fixture_group_selected();
+        let mut vm = VarManager {
+            rows: build_rows(&ctx, None, &BTreeSet::new()),
+            ..Default::default()
+        };
+        let header = idx(
+            &vm.rows,
+            &RowKind::GroupHeader {
+                name: "creds".into(),
+            },
+        );
+        let member = idx(
+            &vm.rows,
+            &RowKind::GroupMember {
+                group: "creds".into(),
+                name: "user_id".into(),
+            },
+        );
+        // Enter on the header's env cell — selected or not — offers the
+        // choice, and expand stays on the name column
+        for (row, env) in [(header, "dev"), (header, "qa"), (member, "dev")] {
+            vm.cursor = (row, env_col(&ctx, env));
+            assert_eq!(
+                vm.activate_cursor(&ctx, None),
+                Some(Action::OpenSelectDropdown {
+                    owner: "creds".into(),
+                    env: env.to_string(),
+                    row,
+                    col: env_col(&ctx, env),
+                }),
+                "row {row} env {env}"
+            );
+            assert!(vm.expanded.is_empty(), "no expand from an env cell");
+        }
+        vm.cursor = (header, 0);
+        assert_eq!(vm.activate_cursor(&ctx, None), None);
+        assert!(vm.expanded.contains("creds"), "col 0 still expands");
+    }
+
+    #[test]
+    fn single_click_on_a_group_headers_env_cell_opens_the_dropdown() {
+        let (_dir, ctx) = fixture_group_selected();
+        let mut vm = VarManager {
+            rows: build_rows(&ctx, None, &BTreeSet::new()),
+            ..Default::default()
+        };
+        let header = idx(
+            &vm.rows,
+            &RowKind::GroupHeader {
+                name: "creds".into(),
+            },
+        );
+        let col = env_col(&ctx, "dev");
+        assert_eq!(
+            vm.click_cell(header, col, false, &ctx, None),
+            Some(Action::OpenSelectDropdown {
+                owner: "creds".into(),
+                env: "dev".into(),
+                row: header,
+                col,
+            })
+        );
+    }
+
+    #[test]
+    fn enumerated_var_env_cell_opens_the_dropdown_too() {
+        let (_dir, ctx, req) = fixture();
+        let mut vm = VarManager {
+            rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
+            ..Default::default()
+        };
+        let row = idx(
+            &vm.rows,
+            &RowKind::Var {
+                name: "user".into(),
+            },
+        );
+        let col = env_col(&ctx, "dev");
+        vm.cursor = (row, col);
+        assert_eq!(
+            vm.activate_cursor(&ctx, Some(&req)),
+            Some(Action::OpenSelectDropdown {
+                owner: "user".into(),
+                env: "dev".into(),
+                row,
+                col,
+            })
+        );
+        assert_eq!(
+            vm.click_cell(row, col, false, &ctx, Some(&req)),
+            Some(Action::OpenSelectDropdown {
+                owner: "user".into(),
+                env: "dev".into(),
+                row,
+                col,
+            })
+        );
+    }
+
+    #[test]
+    fn e_on_an_option_row_opens_the_edit_option_prompt_prefilled() {
+        let (_dir, ctx) = fixture_group_selected();
+        let mut vm = VarManager {
+            rows: build_rows(&ctx, None, &BTreeSet::from(["creds".to_string()])),
+            ..Default::default()
+        };
+        vm.cursor = (
+            idx(
+                &vm.rows,
+                &RowKind::OptionRow {
+                    owner: "creds".into(),
+                    key: "alice".into(),
+                },
+            ),
+            0,
+        );
+        let action = vm.handle_key(
+            KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE),
+            &ctx,
+            None,
+        );
+        let Some(Action::OpenEditOptionPrompt {
+            owner, key, values, ..
+        }) = action
+        else {
+            panic!("expected the edit-option prompt, got {action:?}");
+        };
+        assert_eq!(owner, "creds");
+        assert_eq!(key, "alice");
+        // active env (qa) merge: shared user_id, qa-overridden customer_id
+        assert_eq!(values.get("user_id").map(String::as_str), Some("1001"));
+        assert_eq!(values.get("customer_id").map(String::as_str), Some("c-99"));
+    }
+
+    #[test]
+    fn a_key_adds_a_member_from_any_of_the_groups_rows() {
+        let (_dir, ctx, req) = fixture();
+        let mut vm = VarManager {
+            rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
+            ..Default::default()
+        };
+        let expected = Some(Action::PromptAddGroupMember {
+            group: "creds".into(),
+        });
+        for target in [
+            RowKind::GroupHeader {
+                name: "creds".into(),
+            },
+            RowKind::GroupMember {
+                group: "creds".into(),
+                name: "user_id".into(),
+            },
+        ] {
+            vm.cursor = (idx(&vm.rows, &target), 0);
+            let action = vm.handle_key(
+                KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+                &ctx,
+                Some(&req),
+            );
+            assert_eq!(action, expected, "from {target:?}");
+        }
+        let chips = action_chips(
+            &ctx,
+            vm.rows.get(idx(
+                &vm.rows,
+                &RowKind::GroupHeader {
+                    name: "creds".into(),
+                },
+            )),
+        );
+        assert!(
+            chips
+                .iter()
+                .any(|(key, label, _)| *key == "a" && *label == "member"),
+        );
+    }
+
+    #[test]
+    fn d_on_a_member_row_asks_to_remove_it_from_the_group() {
+        let (_dir, ctx, req) = fixture();
+        let mut vm = VarManager {
+            rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
+            ..Default::default()
+        };
+        vm.cursor = (
+            idx(
+                &vm.rows,
+                &RowKind::GroupMember {
+                    group: "creds".into(),
+                    name: "user_id".into(),
+                },
+            ),
+            0,
+        );
+        let action = vm.handle_key(
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+            &ctx,
+            Some(&req),
+        );
+        assert_eq!(
+            action,
+            Some(Action::ConfirmRemoveGroupMember {
+                group: "creds".into(),
+                member: "user_id".into(),
+            })
+        );
+    }
+
+    #[test]
     fn e_key_renames_and_the_chip_advertises_it() {
         let (_dir, ctx, req) = fixture();
         let mut vm = VarManager {
@@ -2989,7 +3371,7 @@ customer_id = "c-77"
                     name: "user".into(),
                 },
             ),
-            env_col(&ctx, "qa"),
+            0,
         );
         let action = vm.activate_cursor(&ctx, Some(&req));
         assert_eq!(action, None);

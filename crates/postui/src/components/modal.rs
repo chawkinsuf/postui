@@ -39,10 +39,13 @@ pub enum PromptKind {
     NewVariableAndInsert {
         completing: bool,
     },
-    /// `g`: comma-separated `name, member, member, ...` — the group's own
-    /// name is the first token (see the module-level format note on
-    /// `parse_group_prompt`).
+    /// `g`: the new group's bare name — members are added one at a time
+    /// afterward (`AddGroupMember`).
     NewGroup,
+    /// `a` on a group's rows: one member name, appended to `group`'s list.
+    AddGroupMember {
+        group: String,
+    },
     /// `o` on an enumerated/group row: comma-separated `key, value` for a
     /// plain variable's option, or `key, member=value, member=value, ...`
     /// for a group's — `member_names` (the group's declared members, empty
@@ -160,18 +163,6 @@ fn comma_tokens(text: &str) -> Vec<String> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect()
-}
-
-/// `PromptKind::NewGroup`'s text -> `(name, members)`: the first
-/// comma-separated token is the group's name, the rest are its members.
-/// `None` when the field has no first token at all (nothing typed yet).
-fn parse_group_prompt(text: &str) -> Option<(String, Vec<String>)> {
-    let mut tokens = comma_tokens(text);
-    if tokens.is_empty() {
-        return None;
-    }
-    let name = tokens.remove(0);
-    Some((name, tokens))
 }
 
 /// `PromptKind::NewOption`'s text -> `(key, values)`. For a plain variable
@@ -419,9 +410,18 @@ impl ModalStack {
                                 Action::InsertVarText(insert_text),
                             ])
                         }
-                        PromptKind::NewGroup => parse_group_prompt(text).map(|(name, members)| {
-                            vec![Action::VarStruct(VarStructOp::NewGroup { name, members })]
-                        }),
+                        PromptKind::NewGroup => {
+                            Some(vec![Action::VarStruct(VarStructOp::NewGroup {
+                                name: text.to_string(),
+                                members: vec![],
+                            })])
+                        }
+                        PromptKind::AddGroupMember { group } => {
+                            Some(vec![Action::AddGroupMember {
+                                group: group.clone(),
+                                member: text.to_string(),
+                            }])
+                        }
                         PromptKind::NewOption {
                             owner,
                             member_names,
