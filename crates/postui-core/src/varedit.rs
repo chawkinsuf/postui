@@ -385,6 +385,40 @@ pub fn upsert_group(
     Ok(doc.to_string())
 }
 
+/// Renames a group's `[groups.<from>]` table header, decor and position
+/// preserved. `NotFound` if there is no such group; `Conflict` if `to`
+/// isn't a valid name, or already occupies either namespace a declaration
+/// can collide with (a top-level variable table or another group) — a
+/// rename that merged two declarations would silently lose one.
+///
+/// The environment-side half — each environment's `[entries.<from>]`
+/// subtree — is [`rename_group_entries`], which the caller loops across
+/// every environment. Both halves have to land together: an environment
+/// holding entries for a group the model no longer declares (and a group
+/// whose entries are still filed under the old name) both fail
+/// `validate_env`.
+pub fn rename_group(doc: &str, from: &str, to: &str) -> Result<String, EditError> {
+    if !crate::vars::is_valid_var_name(to) {
+        return Err(EditError::Conflict(format!(
+            "\"{to}\" is not a valid group name"
+        )));
+    }
+    let mut doc = parse(doc)?;
+    let root = doc.as_table_mut();
+    if from != to && name_exists(root, to) {
+        return Err(EditError::Conflict(format!(
+            "\"{to}\" already exists; rename would merge two declarations into one"
+        )));
+    }
+    let groups = root
+        .get_mut("groups")
+        .and_then(Item::as_table_mut)
+        .filter(|g| g.contains_key(from))
+        .ok_or_else(|| not_found(format!("group \"{from}\" not found")))?;
+    rename_key(groups, from, to);
+    Ok(doc.to_string())
+}
+
 /// Deletes a group's table. `NotFound` if there is no such group. The
 /// environment-side half — the group's `[entries.<name>]` subtree — is
 /// [`delete_group_entries`], which the caller loops across every
@@ -521,6 +555,52 @@ pub fn delete_group_entries(doc: &str, group: &str) -> Result<String, EditError>
     let root = doc.as_table_mut();
     if let Some(entries) = root.get_mut("entries").and_then(Item::as_table_mut) {
         remove_transferring_header(entries, group);
+    }
+    Ok(doc.to_string())
+}
+
+/// Renames this environment's `[entries.<from>]` subtree to
+/// `[entries.<to>]` — the environment-side half of [`rename_group`]. A
+/// no-op (never an error) when this environment has no entries for the
+/// group, since the caller loops it across every environment. `Conflict`
+/// when `to` already has its own entries table here: the rename would
+/// merge two groups' records into one.
+pub fn rename_group_entries(doc: &str, from: &str, to: &str) -> Result<String, EditError> {
+    let mut doc = parse(doc)?;
+    let root = doc.as_table_mut();
+    let Some(entries) = root.get_mut("entries").and_then(Item::as_table_mut) else {
+        return Ok(doc.to_string());
+    };
+    if !entries.contains_key(from) {
+        return Ok(doc.to_string());
+    }
+    if from != to && entries.contains_key(to) {
+        return Err(EditError::Conflict(format!(
+            "\"{to}\" already has entries in this environment; rename would merge two groups into one"
+        )));
+    }
+    rename_key(entries, from, to);
+    Ok(doc.to_string())
+}
+
+/// Gives every entry of `group` that lacks `field` an empty value for it —
+/// what a field *joining* its group does to the records already written
+/// for it, and the mirror image of [`strip_entry_field`]. Every entry of a
+/// group must supply every declared field (`validate_env`), so a field
+/// addition has to land in the environment files in the same breath as the
+/// declaration. Entries that already set the field keep their value;
+/// environments without the group pass through untouched.
+pub fn ensure_entry_field(doc: &str, group: &str, field: &str) -> Result<String, EditError> {
+    let mut doc = parse(doc)?;
+    let root = doc.as_table_mut();
+    if let Some(g) = entries_group_mut(root, group) {
+        for (_, entry) in g.iter_mut() {
+            if let Some(t) = entry.as_table_mut()
+                && !t.contains_key(field)
+            {
+                t[field] = value("");
+            }
+        }
     }
     Ok(doc.to_string())
 }
@@ -1322,6 +1402,99 @@ tier = "g-1"
     fn strip_entry_field_is_a_no_op_when_the_group_or_field_is_absent() {
         assert_eq!(strip_entry_field(ENV, "ghost", "a").unwrap(), ENV);
         assert_eq!(strip_entry_field(ENV, "tier", "ghost").unwrap(), ENV);
+    }
+
+    #[test]
+    fn ensure_entry_field_fills_only_the_entries_that_lack_it() {
+        let out = ensure_entry_field(ENV, "test-user", "region").unwrap();
+        let env = reparses_env(&out);
+        let entries = &env.entries["test-user"];
+        assert_eq!(entries["user 1"].values["region"], "");
+        assert_eq!(entries["user 2"].values["region"], "");
+        // Existing values are never overwritten…
+        assert_eq!(entries["user 1"].values["user_id"], "1001");
+        let again = ensure_entry_field(&out, "test-user", "user_id").unwrap();
+        assert_eq!(
+            reparses_env(&again).entries["test-user"]["user 1"].values["user_id"],
+            "1001"
+        );
+        // …and another group's entries are untouched.
+        assert!(!env.entries["tier"]["gold"].values.contains_key("region"));
+    }
+
+    #[test]
+    fn ensure_entry_field_is_a_no_op_when_the_group_has_no_entries_here() {
+        assert_eq!(ensure_entry_field(ENV, "ghost", "a").unwrap(), ENV);
+        assert_eq!(ensure_entry_field("", "test-user", "a").unwrap(), "");
+    }
+
+    // -------------------------------------------------------------
+    // group rename: both halves
+    // -------------------------------------------------------------
+
+    #[test]
+    fn rename_group_moves_the_header_and_keeps_its_decor() {
+        let out = rename_group(VARS, "test-user", "customer").unwrap();
+        assert!(out.contains("[groups.customer]"), "{out}");
+        assert!(!out.contains("[groups.test-user]"), "{out}");
+        assert!(
+            out.contains(
+                "[groups.customer]\ndescription = \"user with linked customer\"\nfields = [\"user_id\", \"customer_id\"]\n"
+            ),
+            "description, fields and their formatting survive: {out}"
+        );
+        // Everything else in the file is byte-identical.
+        assert!(out.starts_with("# variables.toml\n"), "{out}");
+        assert!(out.contains("[groups.tier]"), "{out}");
+        let m = reparses_vars(&out);
+        assert_eq!(m.groups["customer"].fields, vec!["user_id", "customer_id"]);
+        assert!(!m.groups.contains_key("test-user"));
+    }
+
+    #[test]
+    fn rename_group_refuses_a_missing_group_a_taken_name_and_a_bad_name() {
+        assert_eq!(
+            rename_group(VARS, "ghost", "x").unwrap_err(),
+            EditError::NotFound("group \"ghost\" not found".to_string())
+        );
+        // A variable already holds the name…
+        assert!(matches!(
+            rename_group(VARS, "test-user", "base_url").unwrap_err(),
+            EditError::Conflict(_)
+        ));
+        // …and so does another group.
+        assert!(matches!(
+            rename_group(VARS, "test-user", "tier").unwrap_err(),
+            EditError::Conflict(_)
+        ));
+        assert!(matches!(
+            rename_group(VARS, "test-user", "not a name").unwrap_err(),
+            EditError::Conflict(_)
+        ));
+        // Renaming to itself is allowed (and inert).
+        assert_eq!(rename_group(VARS, "tier", "tier").unwrap(), VARS);
+    }
+
+    #[test]
+    fn rename_group_entries_moves_the_whole_subtree() {
+        let out = rename_group_entries(ENV, "test-user", "customer").unwrap();
+        assert!(out.contains("[entries.customer.\"user 1\"]"), "{out}");
+        assert!(out.contains("[entries.customer.\"user 2\"]"), "{out}");
+        assert!(!out.contains("test-user"), "{out}");
+        let env = reparses_env(&out);
+        assert_eq!(env.entries["customer"]["user 1"].values["user_id"], "1001");
+        assert!(env.entries.contains_key("tier"), "other groups stay put");
+        assert_eq!(env.values["base_url"], "https://qa.example.com");
+    }
+
+    #[test]
+    fn rename_group_entries_no_ops_without_the_group_and_refuses_a_merge() {
+        assert_eq!(rename_group_entries(ENV, "ghost", "x").unwrap(), ENV);
+        assert_eq!(rename_group_entries("", "test-user", "x").unwrap(), "");
+        assert!(matches!(
+            rename_group_entries(ENV, "test-user", "tier").unwrap_err(),
+            EditError::Conflict(_)
+        ));
     }
 
     #[test]
