@@ -4,6 +4,7 @@ use crate::layout::PaneId;
 use crate::paint::{fill, text};
 use crate::theme::Theme;
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 /// The footer is always exactly this many rows tall: a blank panel row on
@@ -85,8 +86,42 @@ pub fn draw_footer(
 
     // Chips stop one column shy of the quit hint so the two never collide.
     let right_limit = quit_x.saturating_sub(1);
-    let mut x = area.x + 1;
-    for (key, label, action) in footer_chips(focus) {
+    let chips = footer_chips(focus);
+    paint_chip_row(
+        buf,
+        mid_y,
+        area.x + 1,
+        right_limit,
+        &chips,
+        theme,
+        hits,
+        hovered,
+    );
+}
+
+/// Paints a left-to-right row of `(key, label, action)` chips starting at
+/// `start_x` on row `y`, stopping before drawing one that would cross
+/// `right_limit`. Each chip with `Some(action)` is a `theme.control`-filled
+/// pill (lifting to `theme.control_hover` under the mouse per `hovered`)
+/// registering `Hit::FooterChip(action)`; a `None` action renders as plain
+/// (unregistered, muted) text directly on the caller's background instead —
+/// the fill IS the clickability signal, so a hint with no single
+/// dispatchable action never visually promises a click it can't honor.
+/// Shared by the footer's own hint row and the editor toolbar. Returns the
+/// x position just past the last chip painted.
+#[allow(clippy::too_many_arguments)]
+pub fn paint_chip_row(
+    buf: &mut Buffer,
+    y: u16,
+    start_x: u16,
+    right_limit: u16,
+    chips: &[(&str, &str, Option<Action>)],
+    theme: &Theme,
+    hits: &mut HitMap,
+    hovered: Option<&Hit>,
+) -> u16 {
+    let mut x = start_x;
+    for (key, label, action) in chips {
         let key_text = format!(" {key}");
         let label_text = format!(" {label} ");
         let width = key_text.chars().count() as u16 + label_text.chars().count() as u16;
@@ -95,15 +130,11 @@ pub fn draw_footer(
         }
         let chip_area = Rect {
             x,
-            y: mid_y,
+            y,
             width,
             height: 1,
         };
-        // The chip fill IS the clickability signal: a binding with no
-        // dispatchable `Action` renders as plain text directly on the
-        // panel (no fill, no hover response), never a `control`-filled
-        // chip that would visually promise a click it can't honor.
-        let chip_bg = match &action {
+        let chip_bg = match action {
             Some(a) if hovered == Some(&Hit::FooterChip(a.clone())) => {
                 fill(buf, chip_area, theme.control_hover);
                 theme.control_hover
@@ -114,21 +145,22 @@ pub fn draw_footer(
             }
             None => theme.panel,
         };
-        text(buf, x, mid_y, &key_text, theme.accent, chip_bg, true);
+        text(buf, x, y, &key_text, theme.accent, chip_bg, true);
         text(
             buf,
             x + key_text.chars().count() as u16,
-            mid_y,
+            y,
             &label_text,
             theme.text_muted,
             chip_bg,
             false,
         );
         if let Some(action) = action {
-            hits.register(chip_area, Hit::FooterChip(action));
+            hits.register(chip_area, Hit::FooterChip(action.clone()));
         }
         x += width + 2;
     }
+    x
 }
 
 #[cfg(test)]

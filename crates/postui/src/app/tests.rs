@@ -765,6 +765,47 @@ fn ctrl_s_commits_the_cell_under_edit_into_the_saved_file() {
     assert!(app.editor.table.editing.is_none());
 }
 
+#[test]
+fn clicking_the_toolbar_save_chip_commits_the_cell_under_edit_and_saves() {
+    let mut app = App::new_for_test();
+    postui_core::storage::save_request(&app.project.root, "ping", &req("https://x/ping")).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::OpenRequest("ping".into()));
+    app.focus = PaneId::Editor;
+    app.editor.active_tab = EditorTab::Params;
+
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 0 }); // the ghost row
+    type_chars(&mut app, "page");
+    click_hit(&mut app, Hit::FooterChip(Action::SaveRequest));
+
+    let saved = postui_core::storage::load_request(&app.project.root, "ping").unwrap();
+    assert!(
+        saved.params.contains_key("page"),
+        "the in-progress cell rides along with a mouse-only save: {:?}",
+        saved.params
+    );
+    assert!(
+        !app.editor.is_dirty(),
+        "a successful save clears the dirty flag"
+    );
+}
+
+#[test]
+fn clicking_the_toolbar_format_chip_formats_the_body() {
+    let mut app = App::new_for_test();
+    app.focus = PaneId::Editor;
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.set_body_text("{\"a\":1}");
+
+    click_hit(&mut app, Hit::FooterChip(Action::FormatBody));
+
+    assert!(
+        app.editor.body_text().contains('\n'),
+        "the format chip pretty-prints the body: {:?}",
+        app.editor.body_text()
+    );
+}
+
 #[tokio::test]
 async fn sending_commits_the_cell_under_edit_into_the_request() {
     let mut app = app_with_one_param();

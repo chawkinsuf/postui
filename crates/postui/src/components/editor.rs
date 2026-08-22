@@ -597,7 +597,7 @@ impl Component for Editor {
                 // height than the pane has.
                 let available = inner
                     .height
-                    .saturating_sub(ADDRESS_BAR_HEIGHT + TAB_BAR_HEIGHT);
+                    .saturating_sub(ADDRESS_BAR_HEIGHT + TAB_BAR_HEIGHT + TOOLBAR_HEIGHT);
                 Constraint::Length(
                     (inherited + table_height(rows, active, active_hint)).min(available),
                 )
@@ -609,13 +609,15 @@ impl Component for Editor {
             .constraints([
                 Constraint::Length(ADDRESS_BAR_HEIGHT), // fused address bar + its ring margins
                 Constraint::Length(TAB_BAR_HEIGHT),     // tab bar
+                Constraint::Length(TOOLBAR_HEIGHT),     // save/vars/body-tools chip row
                 content_constraint,                     // active tab content
             ])
             .split(inner);
 
         self.draw_address_bar(frame, rows[0], ctx, hits);
         self.draw_tab_bar(frame, rows[1], ctx, hits);
-        self.draw_tab_content(frame, rows[2], ctx, hits);
+        self.draw_toolbar(frame, rows[2], ctx, hits);
+        self.draw_tab_content(frame, rows[3], ctx, hits);
     }
 }
 
@@ -633,14 +635,18 @@ pub const ADDRESS_BAR_HEIGHT: u16 = 5;
 const URL_PAD: u16 = 2;
 /// Height of the tab bar row — the second row of that split.
 pub const TAB_BAR_HEIGHT: u16 = 2;
+/// Height of the toolbar chip row — the third row of that split, holding
+/// the always-clickable save/vars chips (plus, on the Body tab, the
+/// format/minify/substitute/`$EDITOR` chips).
+pub const TOOLBAR_HEIGHT: u16 = 1;
 /// The Editor pane's total on-screen height when its params/headers table is
-/// collapsed: just the two fixed content rows above (address bar, tab bar),
-/// with nothing left for a table. Panes no longer draw a border, so this is
-/// exactly their combined height — no border-row inset to add.
-/// `layout::compute_layout` sizes the Editor pane down to exactly this so
-/// the Response pane can reclaim every row the table would otherwise have
-/// used.
-pub const CHROME_HEIGHT: u16 = ADDRESS_BAR_HEIGHT + TAB_BAR_HEIGHT;
+/// collapsed: just the three fixed content rows above (address bar, tab
+/// bar, toolbar), with nothing left for a table. Panes no longer draw a
+/// border, so this is exactly their combined height — no border-row inset
+/// to add. `layout::compute_layout` sizes the Editor pane down to exactly
+/// this so the Response pane can reclaim every row the table would
+/// otherwise have used.
+pub const CHROME_HEIGHT: u16 = ADDRESS_BAR_HEIGHT + TAB_BAR_HEIGHT + TOOLBAR_HEIGHT;
 
 /// Cycled through (one glyph per `Action::Tick`) at the start of the Send
 /// cap's label while a request is in flight.
@@ -1063,6 +1069,63 @@ impl Editor {
             .collect()
     }
 
+    /// Paints the toolbar chip row: `save` (dirty-marked) and `vars` are
+    /// always present; the Body tab adds `format`/`minify`/`substitute`/
+    /// `$EDITOR` chips for the body-only actions that alt+f/alt+g/alt+b/
+    /// ctrl+e already bind, but had no mouse-reachable equivalent before —
+    /// this row is the whole point of the toolbar (spec §5: "Save gets a
+    /// visible button next to what it saves"). Chips reuse
+    /// `Hit::FooterChip(Action)` and `footer::paint_chip_row`'s painting so
+    /// hover/click behave exactly like the footer's own chips; `on_hit`
+    /// already dispatches `FooterChip`'s action with no new `Hit` variant.
+    fn draw_toolbar(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        ctx: &DrawCtx,
+        hits: &mut crate::hit::HitMap,
+    ) {
+        let theme = ctx.theme;
+        let buf = frame.buffer_mut();
+        crate::paint::fill(buf, area, theme.panel);
+        if area.height == 0 {
+            return;
+        }
+
+        let save_label = if self.is_dirty() { "save •" } else { "save" };
+        let mut chips: Vec<(&str, &str, Option<Action>)> = vec![
+            ("⭳", save_label, Some(Action::SaveRequest)),
+            (
+                "{{ }}",
+                "vars",
+                Some(Action::OpenVarPicker { completing: false }),
+            ),
+        ];
+        if self.active_tab == EditorTab::Body {
+            let sub_label = if self.substitute_body {
+                "{{on}}"
+            } else {
+                "{{off}}"
+            };
+            chips.push(("align", "format", Some(Action::FormatBody)));
+            chips.push(("min", "minify", Some(Action::MinifyBody)));
+            chips.push(("sub", sub_label, Some(Action::ToggleBodyVars)));
+            chips.push(("ed", "$EDITOR", Some(Action::OpenBodyInEditor)));
+        }
+
+        let right_limit = area.x + area.width;
+        crate::components::footer::paint_chip_row(
+            buf,
+            area.y,
+            area.x + 1,
+            right_limit,
+            &chips,
+            theme,
+            hits,
+            ctx.hovered,
+        );
+    }
+
     fn draw_tab_content(
         &mut self,
         frame: &mut Frame,
@@ -1223,6 +1286,7 @@ fn json_highlighter(theme: &Theme) -> Option<SyntaxHighlighter> {
 mod tests {
     use super::*;
     use crate::app::App;
+    use crate::hit::Hit;
     use postui_core::model::{HttpRequest, Method};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -1653,6 +1717,134 @@ mod tests {
             app.pending_terminal_action.take(),
             Some(Action::OpenBodyInEditor),
             "App::update must not touch the terminal itself"
+        );
+    }
+
+    /// Draws `e` at 120x14 (wide enough for every toolbar chip, Body tab
+    /// included) and returns (buffer content, hits) — shared by the
+    /// toolbar tests below.
+    fn draw_editor(e: &mut Editor) -> (String, crate::hit::HitMap) {
+        let theme = Theme::dark();
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: None,
+            dragging: false,
+        };
+        let backend = TestBackend::new(120, 14);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+        (format!("{:?}", terminal.backend().buffer()), hits)
+    }
+
+    #[test]
+    fn toolbar_row_sits_between_tab_bar_and_content_and_always_shows_save_and_vars() {
+        let mut e = Editor::default();
+        let (content, hits) = draw_editor(&mut e);
+        assert!(content.contains("save"), "save chip label: {content}");
+        assert!(content.contains("vars"), "vars chip label: {content}");
+
+        let save_rect = hits
+            .rect_of(&Hit::FooterChip(Action::SaveRequest))
+            .expect("save chip must be a registered hit");
+        let vars_rect = hits
+            .rect_of(&Hit::FooterChip(Action::OpenVarPicker {
+                completing: false,
+            }))
+            .expect("vars chip must be a registered hit");
+        // Toolbar row is the third fixed row: address bar (5) + tab bar (2).
+        assert_eq!(save_rect.y, ADDRESS_BAR_HEIGHT + TAB_BAR_HEIGHT);
+        assert_eq!(vars_rect.y, ADDRESS_BAR_HEIGHT + TAB_BAR_HEIGHT);
+        assert!(
+            vars_rect.x > save_rect.x,
+            "vars chip sits right of save, left to right"
+        );
+    }
+
+    #[test]
+    fn save_chip_label_gains_a_dirty_dot_only_while_the_editor_is_dirty() {
+        let mut e = Editor::default();
+        e.load(
+            Some("a".into()),
+            HttpRequest::from_toml_str("url = \"https://x\"\n").unwrap(),
+        );
+        let (clean, _) = draw_editor(&mut e);
+        assert!(clean.contains("save "), "clean editor: {clean}");
+        assert!(!clean.contains("save •"), "clean editor: {clean}");
+
+        e.url = LineInput::new("https://x/changed");
+        assert!(e.is_dirty());
+        let (dirty, _) = draw_editor(&mut e);
+        assert!(
+            dirty.contains("save •"),
+            "dirty editor shows the dot: {dirty}"
+        );
+    }
+
+    #[test]
+    fn body_only_toolbar_chips_are_absent_on_the_params_tab() {
+        let mut e = Editor {
+            active_tab: EditorTab::Params,
+            ..Editor::default()
+        };
+        let (_, hits) = draw_editor(&mut e);
+        assert!(hits.rect_of(&Hit::FooterChip(Action::FormatBody)).is_none());
+        assert!(hits.rect_of(&Hit::FooterChip(Action::MinifyBody)).is_none());
+        assert!(
+            hits.rect_of(&Hit::FooterChip(Action::ToggleBodyVars))
+                .is_none()
+        );
+        assert!(
+            hits.rect_of(&Hit::FooterChip(Action::OpenBodyInEditor))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn body_only_toolbar_chips_appear_on_the_body_tab() {
+        let mut e = Editor {
+            active_tab: EditorTab::Body,
+            ..Editor::default()
+        };
+        let (content, hits) = draw_editor(&mut e);
+        assert!(content.contains("format"), "{content}");
+        assert!(content.contains("minify"), "{content}");
+        assert!(content.contains("$EDITOR"), "{content}");
+        assert!(hits.rect_of(&Hit::FooterChip(Action::FormatBody)).is_some());
+        assert!(hits.rect_of(&Hit::FooterChip(Action::MinifyBody)).is_some());
+        assert!(
+            hits.rect_of(&Hit::FooterChip(Action::ToggleBodyVars))
+                .is_some()
+        );
+        assert!(
+            hits.rect_of(&Hit::FooterChip(Action::OpenBodyInEditor))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn substitute_chip_label_reflects_substitute_body_state() {
+        let mut e = Editor {
+            active_tab: EditorTab::Body,
+            substitute_body: false,
+            ..Editor::default()
+        };
+        let (off, _) = draw_editor(&mut e);
+        assert!(off.contains("{{off}}"), "{off}");
+
+        e.substitute_body = true;
+        let (on, _) = draw_editor(&mut e);
+        assert!(on.contains("{{on}}"), "{on}");
+    }
+
+    #[test]
+    fn chrome_height_accounts_for_the_toolbar_row() {
+        assert_eq!(
+            CHROME_HEIGHT,
+            ADDRESS_BAR_HEIGHT + TAB_BAR_HEIGHT + TOOLBAR_HEIGHT
         );
     }
 
