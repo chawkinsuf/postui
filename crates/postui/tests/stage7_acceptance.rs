@@ -16,6 +16,7 @@ use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{
     KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
+use tokio::sync::mpsc::UnboundedReceiver;
 
 fn render(app: &mut App) -> String {
     let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
@@ -341,4 +342,441 @@ fn duplicate_request_action_acts_on_the_selected_row() {
         &app.project.root,
         "users/list-copy-2"
     ));
+}
+
+// --- shared helpers for the goal-by-goal scenarios below -----------------
+
+/// Re-renders (so `app.hits` is fresh) and clicks the centre of `hit` —
+/// the plain mouse-only "click this control" the scenarios below are made
+/// of. `press` above aims at a row's left edge instead, which is what the
+/// menu tests want; here the centre is what a user hits.
+fn click(app: &mut App, hit: Hit) {
+    render(app);
+    let r = app
+        .hits
+        .rect_of(&hit)
+        .unwrap_or_else(|| panic!("no rect registered for {hit:?}"));
+    app.handle_mouse(left_down(r.x + r.width / 2, r.y + r.height / 2));
+}
+
+/// A project with the given files written *before* it is opened, so
+/// declarations that only load at open time (project.toml, variables.toml)
+/// are in force. The `TempDir` and the receiver must outlive the `App`.
+type TestApp = (App, tempfile::TempDir, UnboundedReceiver<Action>);
+
+fn app_in_project(files: &[(&str, &str)]) -> TestApp {
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::project::init_project(dir.path(), Some("svc")).unwrap();
+    for (name, body) in files {
+        let path = dir.path().join(name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    }
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    (App::with_root(tx, dir.path().to_path_buf()), dir, rx)
+}
+
+/// Clicks a request's sidebar row, which is how a mouse-only user opens it.
+fn open_request(app: &mut App, slug: &str) {
+    let row = row_index_of(app, slug);
+    press(app, Hit::SidebarRow(row), left_down);
+}
+
+fn type_text(app: &mut App, keymap: &Keymap, text: &str) {
+    for c in text.chars() {
+        app.handle_key(keymap, KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+}
+
+fn key(app: &mut App, keymap: &Keymap, code: KeyCode) {
+    app.handle_key(keymap, KeyEvent::new(code, KeyModifiers::NONE));
+}
+
+// --- goal 2: saving is mouse-reachable -----------------------------------
+
+#[test]
+fn a_request_is_opened_edited_and_saved_with_nothing_but_clicks() {
+    let mut app = App::new_for_test();
+    seed(&mut app, &["ping"]);
+    let row = row_index_of(&app, "ping");
+
+    // Open it: one click on its sidebar row.
+    press(&mut app, Hit::SidebarRow(row), left_down);
+    assert_eq!(app.editor.slug.as_deref(), Some("ping"));
+    assert!(!app.editor.is_dirty());
+
+    // Dirty it without touching the keyboard: the method chip's dropdown.
+    click(&mut app, Hit::MethodSelector);
+    let post = postui_core::model::Method::ALL
+        .iter()
+        .position(|m| *m == postui_core::model::Method::Post)
+        .unwrap();
+    click(&mut app, Hit::DropdownRow(post));
+    assert_eq!(app.editor.method, postui_core::model::Method::Post);
+    assert!(app.editor.is_dirty(), "the change is unsaved");
+
+    // The toolbar's Save chip is on screen...
+    let frame = render(&mut app);
+    assert!(
+        frame.contains("save \u{2022}"),
+        "the toolbar's save chip carries the dirty dot"
+    );
+
+    // ...and clicking it writes the file.
+    click(&mut app, Hit::FooterChip(Action::SaveRequest));
+    assert!(!app.editor.is_dirty(), "the click saved");
+    let on_disk = postui_core::storage::load_request(&app.project.root, "ping").unwrap();
+    assert_eq!(on_disk.method, postui_core::model::Method::Post);
+}
+
+// --- goal 3: body clicks land where they were aimed ----------------------
+
+#[test]
+fn clicking_a_body_line_puts_the_caret_at_that_lines_end() {
+    let mut app = App::new_for_test();
+    seed(&mut app, &["ping"]);
+    open_request(&mut app, "ping");
+
+    // Draw position 3 is the Body tab (Params, Headers, Vars, Body).
+    click(&mut app, Hit::EditorTab(3));
+    app.editor.set_body_text("{\n  \"aa\": 1,\n}\n");
+
+    render(&mut app);
+    let body = app.hits.rect_of(&Hit::BodyEditor).expect("the body editor");
+    // Far past the end of the second line (`  "aa": 1,`, 10 characters).
+    app.handle_mouse(left_down(body.right() - 2, body.y + 1));
+    assert_eq!(
+        (app.editor.body.cursor.row, app.editor.body.cursor.col),
+        (1, 10),
+        "the caret lands at the end of the clicked line, not the document"
+    );
+
+    // Below the last line: the end of the last line.
+    app.handle_mouse(left_down(body.x + 4, body.bottom() - 1));
+    assert_eq!(
+        (app.editor.body.cursor.row, app.editor.body.cursor.col),
+        (3, 0),
+        "a click in the void lands at the end of the last line"
+    );
+}
+
+// --- goal 4: the headers actually sent are visible -----------------------
+
+#[test]
+fn the_headers_tab_shows_defaults_auto_content_type_and_host_resolved() {
+    // Written before the project opens: the computed section must show what
+    // the project's own config contributes, not just the request's rows.
+    let (mut app, _dir, _rx) = app_in_project(&[
+        (
+            "project.toml",
+            "name = \"svc\"\n[default_headers]\nx-team = \"{{team}}\"\n",
+        ),
+        ("variables.toml", "[team]\ndefault = \"payments\"\n"),
+    ]);
+
+    seed(&mut app, &["ping"]);
+    open_request(&mut app, "ping");
+    app.editor.url = postui::components::line_input::LineInput::new("https://api.example.test/v1");
+    app.editor.set_body_text("{\"a\": 1}");
+    click(&mut app, Hit::EditorTab(1));
+
+    let frame = render(&mut app);
+    for want in ["x-team", "payments", "Content-Type", "application/json"] {
+        assert!(
+            frame.contains(want),
+            "the Headers tab shows {want}: {frame}"
+        );
+    }
+    assert!(
+        frame.contains("Host: api.example.test"),
+        "and the client-generated Host with the real host: {frame}"
+    );
+}
+
+// --- goal 5: a variable's value is visible from inside the request -------
+
+#[test]
+fn hovering_a_url_token_pops_its_value_and_scope() {
+    let mut app = App::new_for_test();
+    app.project
+        .edit_variables(|_| Ok("[base_url]\ndefault = \"http://fallback\"\n".to_string()))
+        .unwrap();
+    app.project
+        .edit_env("qa", |_| Ok("base_url = \"http://qa.test\"\n".to_string()))
+        .unwrap();
+    app.project.set_env(Some("qa".into()));
+    app.editor.url = postui::components::line_input::LineInput::new("{{base_url}}/x");
+    app.update(Action::Render);
+
+    render(&mut app);
+    let token = app
+        .hits
+        .rect_of(&Hit::VarToken("base_url".into()))
+        .expect("the URL's token is a hit target");
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Moved,
+        column: token.x + 1,
+        row: token.y,
+        modifiers: KeyModifiers::NONE,
+    });
+
+    let frame = render(&mut app);
+    assert!(
+        frame.contains("base_url = http://qa.test"),
+        "the tooltip names the value: {frame}"
+    );
+    assert!(frame.contains("env qa"), "and its scope: {frame}");
+}
+
+// --- goal 6: in-place table editing --------------------------------------
+
+#[test]
+fn a_param_cell_commits_on_click_away_reverts_on_esc_and_the_ghost_row_creates() {
+    let mut app = App::new_for_test();
+    seed(&mut app, &["ping"]);
+    open_request(&mut app, "ping");
+    let keymap = Keymap::default_bindings();
+    assert!(app.editor.params.is_empty());
+
+    // The ghost row is row 0 of an empty table: click into its key cell and
+    // type — no select-then-edit dance.
+    click(&mut app, Hit::TableCell { row: 0, col: 0 });
+    type_text(&mut app, &keymap, "page");
+    click(&mut app, Hit::TableCell { row: 0, col: 1 });
+    type_text(&mut app, &keymap, "2");
+
+    // Clicking outside the table commits rather than discarding.
+    click(&mut app, Hit::Pane(PaneId::Response));
+    assert_eq!(
+        app.editor.params.get("page").map(|e| e.value.as_str()),
+        Some("2"),
+        "the ghost row became a real param"
+    );
+
+    // Esc reverts the active cell to its pre-edit value.
+    click(&mut app, Hit::TableCell { row: 0, col: 1 });
+    type_text(&mut app, &keymap, "99");
+    key(&mut app, &keymap, KeyCode::Esc);
+    assert_eq!(
+        app.editor.params.get("page").map(|e| e.value.as_str()),
+        Some("2"),
+        "Esc put the old value back"
+    );
+}
+
+// --- goal 7: the whole variables story -----------------------------------
+
+/// A project written in the stage-6 variable format — the shape the user's
+/// real project had before this stage.
+fn legacy_files() -> Vec<(&'static str, &'static str)> {
+    vec![
+        (
+            "variables.toml",
+            "[base_url]\ndefault = \"http://localhost:8080\"\n\n\
+             [tier]\ndescription = \"pricing tier\"\n[tier.options.gold]\nvalue = \"g-1\"\n\n\
+             [groups.user]\nmembers = [\"user_id\", \"customer_id\"]\n\
+             [groups.user.options.alice]\nuser_id = \"1001\"\ncustomer_id = \"c-77\"\n",
+        ),
+        (
+            "environments/qa.toml",
+            "[options.tier.gold]\nvalue = \"g-qa\"\n",
+        ),
+    ]
+}
+
+#[test]
+fn a_legacy_project_migrates_then_grows_a_group_whose_selection_drives_resolution() {
+    let (mut app, _dir, _rx) = app_in_project(&legacy_files());
+
+    // --- the migration confirm, answered with the mouse ---
+    let Some(Modal::Confirm { title, .. }) = app.modals.top() else {
+        panic!("a legacy project offers the migration on open");
+    };
+    assert_eq!(title, "Migrate variables");
+    click(&mut app, Hit::ConfirmChoice('y'));
+    assert!(app.modals.is_empty(), "answering closes the prompt");
+    assert!(app.project.pending_migration().is_none());
+    assert_eq!(
+        app.project.model.groups["user"].fields,
+        ["user_id", "customer_id"],
+        "`members` became `fields`"
+    );
+    assert!(
+        app.project.model.groups.contains_key("tier"),
+        "the enumerated variable became a one-field group"
+    );
+
+    // --- into the Manager, from the header chip ---
+    click(&mut app, Hit::HeaderVars);
+    assert_eq!(app.screen, postui::app::Screen::VarManager);
+    // Entries belong to an environment, so pick one — from the Manager's
+    // own `Environment: … \u{25be}` switcher. `qa` is the only one.
+    assert_eq!(app.project.active_env, None);
+    click(&mut app, Hit::VmEnvSwitch);
+    click(&mut app, Hit::ChooserRow(0));
+    assert_eq!(app.project.active_env.as_deref(), Some("qa"));
+    let keymap = Keymap::default_bindings();
+
+    // --- create a group: the [+ Group] button, then its prompt ---
+    click(&mut app, Hit::VmNewGroup);
+    type_text(&mut app, &keymap, "region");
+    key(&mut app, &keymap, KeyCode::Tab);
+    type_text(&mut app, &keymap, "zone,dc");
+    key(&mut app, &keymap, KeyCode::Enter);
+    assert_eq!(
+        app.project.model.groups["region"].fields,
+        ["zone", "dc"],
+        "the group is declared with its fields"
+    );
+
+    // --- open it in the detail pane ---
+    let row = left_row_of(&app, "region");
+    click(&mut app, Hit::VmLeftRow(row));
+
+    // --- two entries, typed into the ghost row ---
+    add_entry(&mut app, &keymap, &["eu", "eu-west-1", "dub"]);
+    add_entry(&mut app, &keymap, &["us", "us-east-1", "iad"]);
+    let entries = postui_core::varmodel::group_entries(&app.project.env_data, "region")
+        .expect("the group has entries in qa");
+    assert_eq!(entries.keys().collect::<Vec<_>>(), ["eu", "us"]);
+    assert_eq!(entries["us"].values["dc"], "iad");
+
+    // Until one is picked, the group's fields do not resolve at all.
+    assert!(
+        !app.project.resolved.values.contains_key("zone"),
+        "no selection means no value — that is the point of the model"
+    );
+
+    // --- flip the selection with the radio column ---
+    click(&mut app, Hit::VmEntryRadio(0));
+    assert_eq!(app.project.resolved.values["zone"], "eu-west-1");
+    assert_eq!(app.project.resolved.values["dc"], "dub");
+    click(&mut app, Hit::VmEntryRadio(1));
+    assert_eq!(
+        app.project.resolved.values["zone"], "us-east-1",
+        "flipping the radio re-resolves every field of the group at once"
+    );
+    assert_eq!(app.project.resolved.values["dc"], "iad");
+
+    // ...and the request sees it: a `{{zone}}` token in the URL resolves.
+    click(&mut app, Hit::FooterChip(Action::CloseScreen));
+    app.editor.url = postui::components::line_input::LineInput::new("http://{{zone}}/x");
+    app.update(Action::Render);
+    render(&mut app);
+    let token = app.hits.rect_of(&Hit::VarToken("zone".into())).unwrap();
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Moved,
+        column: token.x + 1,
+        row: token.y,
+        modifiers: KeyModifiers::NONE,
+    });
+    let frame = render(&mut app);
+    assert!(
+        frame.contains("zone = us-east-1"),
+        "the request shows the selected entry's value: {frame}"
+    );
+    assert!(
+        frame.contains("group region \u{2192} \"us\""),
+        "...and names the group and entry it came from: {frame}"
+    );
+}
+
+/// Index of the Manager left-list row declaring `name`.
+fn left_row_of(app: &App, name: &str) -> usize {
+    app.varmanager
+        .left_rows
+        .iter()
+        .position(|r| r.name() == Some(name))
+        .unwrap_or_else(|| panic!("no left-list row for {name}"))
+}
+
+/// Types one whole entry into the group grid's ghost row: `cells[0]` is the
+/// entry name, the rest are its field values, `Tab` between them.
+fn add_entry(app: &mut App, keymap: &Keymap, cells: &[&str]) {
+    click(app, Hit::VmNewEntry);
+    for (i, cell) in cells.iter().enumerate() {
+        type_text(app, keymap, cell);
+        if i + 1 < cells.len() {
+            key(app, keymap, KeyCode::Tab);
+        }
+    }
+    key(app, keymap, KeyCode::Enter);
+}
+
+// --- goal 8: no pretty-print cap -----------------------------------------
+
+/// Three megabytes of JSON: Raw is readable the moment the response lands,
+/// the tree arrives later over the action channel, and nothing anywhere
+/// says the body was too big to format.
+#[tokio::test]
+async fn a_three_megabyte_json_body_shows_raw_at_once_and_pretty_when_it_parses() {
+    use postui::components::response::ViewMode;
+
+    let big = format!("{{\"blob\": \"{}\"}}", "x".repeat(3 * 1024 * 1024));
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/big"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(big.clone()))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::project::init_project(dir.path(), Some("svc")).unwrap();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.editor.url =
+        postui::components::line_input::LineInput::new(&format!("{}/big", server.uri()));
+
+    app.update(Action::ForceSend);
+    let generation = app.session.send_generation;
+    loop {
+        let action = recv(&mut rx).await;
+        let settled = matches!(
+            &action,
+            Action::ResponseArrived { generation: g, .. } | Action::RequestFailed { generation: g, .. }
+                if *g == generation
+        );
+        app.update(action);
+        if settled {
+            break;
+        }
+    }
+
+    // Raw, immediately — no cap, no forced-Raw-forever gate.
+    let view = app.session.response.view().expect("a response");
+    assert_eq!(view.mode, ViewMode::Raw);
+    assert!(
+        view.parsing && view.tree.is_none(),
+        "the parse is off-thread"
+    );
+    let frame = render(&mut app);
+    assert!(
+        !frame.to_lowercase().contains("too large"),
+        "nothing tells the user the body was too big: {frame}"
+    );
+
+    // ...then the parse reports in over the same channel a send does.
+    loop {
+        let action = recv(&mut rx).await;
+        let parsed = matches!(action, Action::PrettyParsed { .. });
+        app.update(action);
+        if parsed {
+            break;
+        }
+    }
+    let view = app.session.response.view().unwrap();
+    assert!(!view.parsing && view.tree.is_some(), "the tree is ready");
+
+    // And the Pretty tab now shows it — reached by clicking the tab.
+    click(&mut app, Hit::ResponseTab(ViewMode::Pretty));
+    let view = app.session.response.view().unwrap();
+    assert_eq!(view.mode, ViewMode::Pretty);
+    assert!(view.visible_len() > 1, "with the parsed lines under it");
+}
+
+async fn recv(rx: &mut UnboundedReceiver<Action>) -> Action {
+    tokio::time::timeout(std::time::Duration::from_secs(60), rx.recv())
+        .await
+        .expect("timed out waiting for a background result")
+        .expect("the action channel closed early")
 }
