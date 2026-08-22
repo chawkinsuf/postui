@@ -1,5 +1,5 @@
 use super::line_input::LineInput;
-use super::table_editor::{TableEditorState, table_height};
+use super::table_editor::{Col, TableEditorState, TableOutcome, table_height};
 use super::toast::ToastKind;
 use super::{Component, DrawCtx, pane_surface};
 use crate::action::Action;
@@ -843,6 +843,29 @@ impl Editor {
         }
     }
 
+    /// Commits any in-progress table cell edit into the active tab's map —
+    /// the click-away / focus-loss path. Its warning is the caller's to
+    /// surface.
+    pub fn commit_table(&mut self) -> TableOutcome {
+        match self.active_tab {
+            EditorTab::Params => self.table.commit(&mut self.params),
+            EditorTab::Headers => self.table.commit(&mut self.headers),
+            EditorTab::Vars => self.table.commit(&mut self.variables),
+            EditorTab::Body => TableOutcome::default(),
+        }
+    }
+
+    /// Begins editing one cell of the active tab's table in place,
+    /// committing whatever was being edited before it.
+    pub fn click_table_cell(&mut self, row: usize, col: Col) -> TableOutcome {
+        match self.active_tab {
+            EditorTab::Params => self.table.click_cell(row, col, &mut self.params),
+            EditorTab::Headers => self.table.click_cell(row, col, &mut self.headers),
+            EditorTab::Vars => self.table.click_cell(row, col, &mut self.variables),
+            EditorTab::Body => TableOutcome::default(),
+        }
+    }
+
     /// `(total row-lines, active-row presence, active row carries a shadow
     /// hint)` for the active tab's table (Params/Headers/Vars), fed to
     /// [`table_height`] both by `draw`'s layout pass and
@@ -855,16 +878,14 @@ impl Editor {
             EditorTab::Body => return (0, None, false),
         };
         let map_len = map.len();
-        let new_row_pending = self
-            .table
-            .editing
-            .as_ref()
-            .is_some_and(|e| e.original_key.is_none());
-        let rows = map_len + usize::from(new_row_pending);
+        // The ghost row is always drawn (it is `table_height`'s constant
+        // `+ 1`); it only affects the geometry when it is the expanded row,
+        // i.e. while it is being typed into.
+        let rows = map_len;
         let active = self
             .table
             .active_index(map_len)
-            .or(new_row_pending.then_some(map_len));
+            .or_else(|| self.table.editing_ghost(map_len).then_some(map_len));
         let active_hint = active.is_some_and(|_| {
             self.active_tab == EditorTab::Vars
                 && self
@@ -1441,26 +1462,40 @@ mod tests {
     #[test]
     fn duplicate_key_commit_in_params_tab_shows_warning_toast() {
         let mut e = Editor::default();
-        e.params.insert(
-            "a".into(),
-            Entry {
-                value: "1".into(),
-                enabled: true,
-            },
-        );
+        for (k, v) in [("a", "1"), ("b", "2")] {
+            e.params.insert(
+                k.into(),
+                Entry {
+                    value: v.into(),
+                    enabled: true,
+                },
+            );
+        }
         e.sub_focus = SubFocus::Content;
-        // Append a new row keyed "a", which duplicates the existing entry.
-        e.handle_key(key(KeyCode::Char('a')));
-        e.handle_key(key(KeyCode::Char('a')));
-        e.handle_key(key(KeyCode::Tab));
-        e.handle_key(key(KeyCode::Char('9')));
+        // Rename "a" onto "b": the two rows collapse, with a warning.
+        e.table.selected = Some(0);
+        e.handle_key(key(KeyCode::Enter));
+        e.handle_key(key(KeyCode::Backspace));
+        e.handle_key(key(KeyCode::Char('b')));
         let action = e.handle_key(key(KeyCode::Enter));
         assert!(
             matches!(action, Some(Action::ShowToast(_, ToastKind::Warning))),
             "expected a warning toast, got {action:?}"
         );
         assert_eq!(e.params.len(), 1);
-        assert_eq!(e.params["a"].value, "9");
+        assert_eq!(e.params["b"].value, "1");
+
+        // Typing an existing key into the ghost row warns too, rather than
+        // silently overwriting the row that already owns the key.
+        e.handle_key(key(KeyCode::Char('a'))); // opens the ghost row
+        e.handle_key(key(KeyCode::Char('b')));
+        let action = e.handle_key(key(KeyCode::Tab));
+        assert!(
+            matches!(action, Some(Action::ShowToast(_, ToastKind::Warning))),
+            "expected a warning toast, got {action:?}"
+        );
+        assert_eq!(e.params.len(), 1, "no second 'b' row");
+        assert_eq!(e.params["b"].value, "1", "the existing value is untouched");
     }
 
     #[test]
@@ -2173,8 +2208,12 @@ url = "https://api.example.com/users""#,
         assert!(content.contains("token"), "key text: {content}");
         assert!(content.contains("us-east"), "value text: {content}");
         assert!(
-            hits.rect_of(&crate::hit::Hit::TableAdd).is_some(),
-            "ghost + Add row must be registered on the Vars tab"
+            hits.rect_of(&crate::hit::Hit::TableCell {
+                row: e.variables.len(),
+                col: 0
+            })
+            .is_some(),
+            "the ghost row's cells must be registered on the Vars tab"
         );
     }
 

@@ -82,7 +82,10 @@ impl App {
                         changed |= self.sidebar.selected != Some(*i);
                         self.sidebar.selected = Some(*i);
                     }
-                    Hit::TableRow(i) | Hit::TableCheckbox(i) | Hit::TableDelete(i)
+                    Hit::TableRow(i)
+                    | Hit::TableCheckbox(i)
+                    | Hit::TableDelete(i)
+                    | Hit::TableCell { row: i, .. }
                         if self.editor.table.editing.is_none() =>
                     {
                         changed |= self.update(Action::FocusPane(PaneId::Editor));
@@ -196,15 +199,15 @@ impl App {
     /// tasks extend this match as more hit kinds gain behavior.
     fn on_hit(&mut self, hit: Hit, clicks: u8, m: ratatui::crossterm::event::MouseEvent) -> bool {
         // A click anywhere that isn't the params/headers table itself (and
-        // isn't inside a modal — e.g. this row's own delete confirm) clears
-        // the table selection, so clicking around the app deselects.
-        // Suppressed mid-edit: an in-progress cell edit owns the selection.
+        // isn't inside a modal — e.g. this row's own delete confirm) is a
+        // click away: it commits whatever cell was being edited (typing is
+        // never silently thrown away) and clears the table selection.
         let keeps_table_selection = matches!(
             hit,
             Hit::TableRow(_)
                 | Hit::TableCheckbox(_)
                 | Hit::TableDelete(_)
-                | Hit::TableAdd
+                | Hit::TableCell { .. }
                 | Hit::TableCollapse
                 | Hit::ModalCancel
                 | Hit::ModalConfirm
@@ -218,19 +221,22 @@ impl App {
                 | Hit::ScrollbarThumb(_)
                 | Hit::ScrollbarTrack(..)
         );
-        if !keeps_table_selection && self.editor.table.editing.is_none() {
+        if !keeps_table_selection {
+            if self.editor.table.editing.is_some()
+                && let Some(w) = self.editor.commit_table().warning
+            {
+                self.toasts.push(w, ToastKind::Warning);
+            }
             self.editor.table.selected = None;
         }
-        // Likewise, clicking away deselects whichever editor input is
-        // active (URL line / table / body). Hits that themselves place the
+        // Likewise, clicking away blurs whichever editor input is active
+        // (URL line / table / body). Hits that themselves place the
         // sub-focus (UrlBar, BodyEditor, the table hits) re-set it right
         // after; modal and scrollbar hits are excluded above so an open
-        // popup or a scroll never blurs the input under it. Suppressed
-        // mid-edit for the same reason as the selection: an in-progress
-        // cell edit owns the focus.
+        // popup or a scroll never blurs the input under it.
         let keeps_editor_input =
             keeps_table_selection || matches!(hit, Hit::UrlBar | Hit::BodyEditor);
-        if !keeps_editor_input && self.editor.table.editing.is_none() {
+        if !keeps_editor_input {
             self.editor.sub_focus = SubFocus::None;
         }
         match hit {
@@ -298,6 +304,11 @@ impl App {
             Hit::TableCheckbox(i) => {
                 self.update(Action::FocusPane(PaneId::Editor));
                 self.editor.sub_focus = SubFocus::Content;
+                // A checkbox click during another row's edit commits that
+                // edit first, so the toggle never lands on a stale map.
+                if let Some(w) = self.editor.commit_table().warning {
+                    self.toasts.push(w, ToastKind::Warning);
+                }
                 self.editor.table.selected = Some(i);
                 let map = match self.editor.active_tab {
                     EditorTab::Params => &mut self.editor.params,
@@ -312,46 +323,51 @@ impl App {
                 }
                 self.update(Action::Render)
             }
+            // The row background is only reachable at the slivers its cells
+            // don't cover (the accent-bar column, the key/value divider):
+            // it selects the row, nothing more — editing is the cells' job.
             Hit::TableRow(i) => {
                 self.update(Action::FocusPane(PaneId::Editor));
                 self.editor.sub_focus = SubFocus::Content;
-                if clicks == 2 {
-                    self.editor.table.selected = Some(i);
-                    let map = match self.editor.active_tab {
-                        EditorTab::Params => &mut self.editor.params,
-                        EditorTab::Headers => &mut self.editor.headers,
-                        EditorTab::Vars => &mut self.editor.variables,
-                        EditorTab::Body => {
-                            unreachable!("TableRow only fires on Params/Headers/Vars")
-                        }
-                    };
-                    self.editor.table.begin_edit_selected(map);
-                } else if self.editor.table.editing.is_none()
-                    && self.editor.table.selected == Some(i)
+                // The background of the row being edited is that row's own
+                // chrome (the pad lines its expansion added): clicking it
+                // is inert, so the second click of a double click can't
+                // cancel the edit the first one started.
+                if self
+                    .editor
+                    .table
+                    .editing
+                    .as_ref()
+                    .is_some_and(|e| e.row == i)
                 {
-                    // Clicking the already-selected row again deselects it.
-                    self.editor.table.selected = None;
-                } else {
-                    self.editor.table.selected = Some(i);
+                    return self.update(Action::Render);
+                }
+                if let Some(w) = self.editor.commit_table().warning {
+                    self.toasts.push(w, ToastKind::Warning);
+                }
+                self.editor.table.selected = Some(i);
+                self.update(Action::Render)
+            }
+            // A cell click edits that cell in place, committing whatever
+            // was being edited before it.
+            Hit::TableCell { row, col } => {
+                self.update(Action::FocusPane(PaneId::Editor));
+                self.editor.sub_focus = SubFocus::Content;
+                let outcome = self
+                    .editor
+                    .click_table_cell(row, crate::components::table_editor::Col::from_index(col));
+                if let Some(w) = outcome.warning {
+                    self.toasts.push(w, ToastKind::Warning);
                 }
                 self.update(Action::Render)
             }
             Hit::TableDelete(i) => {
                 self.update(Action::FocusPane(PaneId::Editor));
                 self.editor.sub_focus = SubFocus::Content;
+                if let Some(w) = self.editor.commit_table().warning {
+                    self.toasts.push(w, ToastKind::Warning);
+                }
                 self.update(Action::ConfirmDeleteTableRow(i))
-            }
-            Hit::TableAdd => {
-                self.update(Action::FocusPane(PaneId::Editor));
-                self.editor.sub_focus = SubFocus::Content;
-                let map = match self.editor.active_tab {
-                    EditorTab::Params => &self.editor.params,
-                    EditorTab::Headers => &self.editor.headers,
-                    EditorTab::Vars => &self.editor.variables,
-                    EditorTab::Body => unreachable!("TableAdd only fires on Params/Headers/Vars"),
-                };
-                self.editor.table.begin_add(map);
-                self.update(Action::Render)
             }
             Hit::TableCollapse => self.update(Action::ToggleTableCollapse),
             Hit::UrlBar => {

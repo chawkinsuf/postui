@@ -513,30 +513,170 @@ fn clicking_the_row_delete_affordance_opens_the_confirm_modal() {
     assert_eq!(app.editor.params.len(), 1);
 }
 
-#[test]
-fn clicking_the_selected_row_again_deselects_it() {
+/// Seeds the Params tab with `page = 1` and puts the editor in front.
+fn app_with_one_param() -> App {
     let mut app = App::new_for_test();
     app.editor.params.insert(
         "page".into(),
         postui_core::model::Entry {
-            value: "2".into(),
+            value: "1".into(),
             enabled: true,
         },
     );
-    render_once(&mut app);
-    let row = app.hits.rect_of(&Hit::TableRow(0)).unwrap();
-    assert!(app.handle_mouse(left_down(row.x + 4, row.y)));
-    assert_eq!(app.editor.table.selected, Some(0), "first click selects");
+    app.editor.active_tab = EditorTab::Params;
+    app.focus = PaneId::Editor;
+    app
+}
 
+/// Re-renders and clicks just inside `hit`'s rect.
+fn click_hit(app: &mut App, hit: Hit) {
+    render_once(app);
+    let r = app
+        .hits
+        .rect_of(&hit)
+        .unwrap_or_else(|| panic!("no rect registered for {hit:?}"));
+    let x = if r.width > 1 { r.x + 1 } else { r.x };
+    app.handle_mouse(left_down(x, r.y));
+}
+
+fn type_chars(app: &mut App, s: &str) {
+    let keymap = Keymap::default_bindings();
+    for c in s.chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+}
+
+#[test]
+fn click_cell_edits_in_place_and_click_away_commits() {
+    let mut app = app_with_one_param();
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    assert!(
+        app.editor.table.editing.is_some(),
+        "one click into a cell edits it — no select-then-edit dance"
+    );
+    assert_eq!(app.editor.sub_focus, SubFocus::Content);
+    type_chars(&mut app, "2");
+
+    // Clicking the URL bar is a click away: it commits, it doesn't discard.
+    render_once(&mut app);
+    let url = app.editor.last_url_text_area.unwrap();
+    app.handle_mouse(left_down(url.x + 1, url.y));
+    assert!(app.editor.table.editing.is_none());
+    assert_eq!(app.editor.params["page"].value, "12");
+    assert_eq!(app.editor.sub_focus, SubFocus::Url);
+}
+
+#[test]
+fn two_fast_clicks_on_a_cell_leave_exactly_one_edit_session() {
+    let mut app = app_with_one_param();
+    render_once(&mut app);
+    let cell = app
+        .hits
+        .rect_of(&Hit::TableCell { row: 0, col: 1 })
+        .unwrap();
+    app.handle_mouse(left_down(cell.x + 1, cell.y));
+    type_chars(&mut app, "2");
+    // The second click of a double click lands on the same cell; it must
+    // do nothing beyond what the first did.
+    render_once(&mut app);
+    let cell = app
+        .hits
+        .rect_of(&Hit::TableCell { row: 0, col: 1 })
+        .unwrap();
+    app.handle_mouse(left_down(cell.x + 1, cell.y));
+    let edit = app.editor.table.editing.as_ref().expect("still editing");
+    assert_eq!(edit.input.text(), "12", "the typing survives");
+    assert_eq!(app.editor.params["page"].value, "1", "not committed yet");
+
+    // The first click expands the row, so the second click of a real
+    // double click often lands on one of the pad lines the expansion added
+    // (the row background) rather than the cell. That must be inert too.
     render_once(&mut app);
     let row = app.hits.rect_of(&Hit::TableRow(0)).unwrap();
-    // Well past double-click time, so this registers as a fresh click.
-    std::thread::sleep(std::time::Duration::from_millis(450));
-    assert!(app.handle_mouse(left_down(row.x + 4, row.y)));
+    assert_eq!(row.height, 3, "the edited row is expanded");
+    app.handle_mouse(left_down(row.x, row.y));
+    let edit = app
+        .editor
+        .table
+        .editing
+        .as_ref()
+        .expect("a click on the edited row's own chrome keeps the edit");
+    assert_eq!(edit.input.text(), "12");
+}
+
+#[test]
+fn clicking_the_ghost_row_and_typing_creates_the_row_when_it_commits() {
+    let mut app = app_with_one_param();
+    click_hit(&mut app, Hit::TableCell { row: 1, col: 0 });
+    type_chars(&mut app, "limit");
+    assert_eq!(app.editor.params.len(), 1, "nothing inserted while typing");
+    render_once(&mut app);
+    let url = app.editor.last_url_text_area.unwrap();
+    app.handle_mouse(left_down(url.x + 1, url.y));
     assert_eq!(
-        app.editor.table.selected, None,
-        "clicking the selected row again deselects it"
+        app.editor.params.get("limit").map(|e| e.value.as_str()),
+        Some(""),
+        "the ghost row became a real row on commit"
     );
+}
+
+#[test]
+fn a_ghost_row_left_empty_creates_nothing() {
+    let mut app = app_with_one_param();
+    click_hit(&mut app, Hit::TableCell { row: 1, col: 0 });
+    render_once(&mut app);
+    let url = app.editor.last_url_text_area.unwrap();
+    app.handle_mouse(left_down(url.x + 1, url.y));
+    assert_eq!(app.editor.params.len(), 1, "no empty row was added");
+    assert!(app.editor.table.editing.is_none());
+}
+
+#[test]
+fn esc_mid_edit_puts_the_original_cell_text_back() {
+    let mut app = app_with_one_param();
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    type_chars(&mut app, "999");
+    app.handle_key(
+        &Keymap::default_bindings(),
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+    );
+    assert!(app.editor.table.editing.is_none());
+    assert_eq!(app.editor.params["page"].value, "1", "the edit reverted");
+    assert_eq!(app.editor.params.len(), 1, "the row survives");
+}
+
+#[test]
+fn checkbox_and_delete_clicks_during_an_edit_commit_it_first() {
+    let mut app = App::new_for_test();
+    for (k, v) in [("a", "1"), ("b", "2")] {
+        app.editor.params.insert(
+            k.into(),
+            postui_core::model::Entry {
+                value: v.into(),
+                enabled: true,
+            },
+        );
+    }
+    app.focus = PaneId::Editor;
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    type_chars(&mut app, "9");
+    click_hit(&mut app, Hit::TableCheckbox(1));
+    assert_eq!(app.editor.params["a"].value, "19", "the edit committed");
+    assert!(!app.editor.params["b"].enabled, "and the toggle landed");
+    assert!(app.editor.table.editing.is_none());
+
+    // Same for the ✕ affordance on another row.
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 0 });
+    type_chars(&mut app, "x");
+    render_once(&mut app);
+    let del = app.hits.rect_of(&Hit::TableDelete(0)).unwrap();
+    app.handle_mouse(left_down(del.x, del.y));
+    assert_eq!(
+        app.editor.params.get_index(0).unwrap().0,
+        "ax",
+        "the rename committed before the delete confirm opened"
+    );
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
 }
 
 #[test]
@@ -2592,41 +2732,6 @@ fn click_table_checkbox_toggles_enabled() {
     assert!(!app.editor.params["page"].enabled);
     assert_eq!(app.editor.table.selected, Some(0));
     assert_eq!(app.focus, PaneId::Editor);
-}
-
-#[test]
-fn double_click_table_row_begins_editing_the_key_cell() {
-    let mut app = App::new_for_test();
-    app.editor.params.insert(
-        "page".into(),
-        postui_core::model::Entry {
-            value: "2".into(),
-            enabled: true,
-        },
-    );
-    render_once(&mut app);
-    let r = app.hits.rect_of(&Hit::TableRow(0)).unwrap();
-    // Clicks past the leading checkbox cell so the row hit (not the
-    // checkbox registered on top of it) wins.
-    let click_x = r.x + r.width - 1;
-    app.handle_mouse(left_down(click_x, r.y));
-    assert!(
-        app.editor.table.editing.is_none(),
-        "single click only selects"
-    );
-    assert_eq!(
-        app.editor.table.selected,
-        Some(0),
-        "single click selects the row"
-    );
-    app.handle_mouse(left_down(click_x, r.y));
-    let edit = app
-        .editor
-        .table
-        .editing
-        .as_ref()
-        .expect("double click begins editing");
-    assert_eq!(edit.input.text(), "page", "key cell seeded");
 }
 
 fn three_params(app: &mut App) {

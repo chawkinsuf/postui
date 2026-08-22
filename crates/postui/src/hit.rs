@@ -29,12 +29,20 @@ pub enum Hit {
     UrlBar,
     /// 0 = Params, 1 = Headers, 2 = Body.
     EditorTab(usize),
+    /// A table row's background: hover and right-click target. The row's
+    /// own cells are registered on top of it, so an ordinary left click
+    /// lands in a cell (`TableCell`) rather than here.
     TableRow(usize),
     TableCheckbox(usize),
     /// The `✕` delete affordance on the active (expanded) row.
     TableDelete(usize),
-    /// The ghost `+ Add …` row at the bottom of the table.
-    TableAdd,
+    /// One editable cell of a key/value table: `col` 0 is the key, 1 the
+    /// value. `row == map.len()` is the ghost row — the always-present
+    /// empty row that becomes a real entry once its key is typed.
+    TableCell {
+        row: usize,
+        col: u8,
+    },
     /// The `⌄ hide` / `› show` toggle at the tab strip's right edge.
     TableCollapse,
     /// Raw mouse event forwarded to edtui (click-to-place, wheel).
