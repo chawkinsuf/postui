@@ -411,12 +411,26 @@ impl Response {
 
     /// Steps to the next (`1`) or previous (`-1`) match, exactly as `n`/`N`
     /// do (the `▼`/`▲` buttons).
+    ///
+    /// A still-live input is committed first, exactly as `Enter` does, and
+    /// that commit *is* the step: matches only highlight once the query is
+    /// committed, so a click on `▼` straight after typing must land on the
+    /// first match rather than silently skipping it. Without this the whole
+    /// mouse route into search dead-ended — nothing highlighted, and the
+    /// buttons looked broken (found by the stage-7 tmux sweep).
     pub fn step_search(&mut self, delta: i32) -> bool {
         let Some(view) = self.view.as_mut() else {
             return false;
         };
-        if view.search.is_none() {
+        let Some(search) = view.search.as_mut() else {
             return false;
+        };
+        if search.active {
+            search.active = false;
+            search.query = search.input.text().to_string();
+            view.recompute_matches();
+            view.jump_to_match();
+            return true;
         }
         view.step_match(delta);
         true
@@ -1598,6 +1612,35 @@ mod tests {
         assert!(render(&mut r).contains("2/2"), "N wraps backwards");
         r.handle_key(key(KeyCode::Esc));
         assert!(r.view().unwrap().search.is_none(), "esc closes search");
+    }
+
+    /// The mouse route: `\u{2315}` opens the search, the query is typed, and
+    /// the `\u{25bc}` button both commits it and lands on the first match —
+    /// there is no click that means "Enter", so a button that only stepped
+    /// a never-committed query left the whole flow inert.
+    #[test]
+    fn the_next_match_button_commits_a_live_query_and_lands_on_the_first_match() {
+        let mut r = ready(r#"{"aa": "zz", "bb": "zz"}"#);
+        r.open_search();
+        for c in "zz".chars() {
+            r.handle_key(ch(c));
+        }
+        assert!(r.view().unwrap().search.as_ref().unwrap().active);
+
+        assert!(r.step_search(1));
+        let search = r.view().unwrap().search.as_ref().unwrap();
+        assert!(!search.active, "the click committed the query");
+        assert_eq!(search.query, "zz");
+        assert_eq!(search.matches.len(), 2);
+        let out = render(&mut r);
+        assert!(
+            out.contains("1/2"),
+            "on the first match, not the second: {out}"
+        );
+
+        // A second click steps, as `n` does.
+        assert!(r.step_search(1));
+        assert!(render(&mut r).contains("2/2"));
     }
 
     #[test]
