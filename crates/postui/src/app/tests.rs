@@ -1050,16 +1050,17 @@ fn scrollbar_track_click_below_the_thumb_pages_the_response() {
         .map(|i| format!("line {i}"))
         .collect::<Vec<_>>()
         .join("\n");
-    app.session
-        .response
-        .set_state(ResponseState::Ready(Box::new(crate::http::ResponseData {
+    app.session.response.set_state(
+        ResponseState::Ready(Box::new(crate::http::ResponseData {
             status: 200,
             headers: vec![],
             size: body.len(),
             body,
             elapsed: std::time::Duration::from_millis(1),
             content_type: Some("text/plain".into()),
-        })));
+        })),
+        0,
+    );
     render_once(&mut app);
 
     let track = app.hits.track_of(PaneId::Response).expect("response track");
@@ -1396,7 +1397,7 @@ fn opening_another_request_swaps_the_response_panel() {
     app.update(Action::ForceOpenRequest("a".into()));
     app.session
         .response
-        .set_state(ResponseState::Failed("a's result".into()));
+        .set_state(ResponseState::Failed("a's result".into()), 0);
 
     app.update(Action::ForceOpenRequest("b".into()));
     assert!(
@@ -2017,9 +2018,12 @@ async fn response_arrived_with_current_generation_clears_in_flight() {
 #[test]
 fn esc_on_in_flight_response_pane_requests_cancel() {
     let mut app = App::new_for_test();
-    app.session.response.set_state(ResponseState::InFlight {
-        started: std::time::Instant::now(),
-    });
+    app.session.response.set_state(
+        ResponseState::InFlight {
+            started: std::time::Instant::now(),
+        },
+        0,
+    );
     let action = app
         .session
         .response
@@ -2030,16 +2034,17 @@ fn esc_on_in_flight_response_pane_requests_cancel() {
 #[test]
 fn plain_keys_reach_the_focused_response_pane() {
     let mut app = App::new_for_test();
-    app.session
-        .response
-        .set_state(ResponseState::Ready(Box::new(crate::http::ResponseData {
+    app.session.response.set_state(
+        ResponseState::Ready(Box::new(crate::http::ResponseData {
             status: 200,
             headers: vec![],
             body: r#"{"a": 1}"#.into(),
             elapsed: std::time::Duration::from_millis(5),
             size: 8,
             content_type: None,
-        })));
+        })),
+        0,
+    );
     app.focus = PaneId::Response;
     let keymap = Keymap::default_bindings();
     app.handle_key(&keymap, plain('j'));
@@ -2827,16 +2832,17 @@ fn click_editor_tab_selects_it() {
 }
 
 fn ready_response(app: &mut App, body: &str) {
-    app.session
-        .response
-        .set_state(ResponseState::Ready(Box::new(crate::http::ResponseData {
+    app.session.response.set_state(
+        ResponseState::Ready(Box::new(crate::http::ResponseData {
             status: 200,
             headers: vec![("content-type".into(), "application/json".into())],
             body: body.to_string(),
             elapsed: std::time::Duration::from_millis(1),
             size: body.len(),
             content_type: Some("application/json".into()),
-        })));
+        })),
+        app.session.send_generation,
+    );
 }
 
 #[test]
@@ -2881,13 +2887,103 @@ fn click_json_row_moves_the_cursor_without_collapsing() {
 }
 
 #[test]
-fn oversize_response_does_not_register_the_tree_tab() {
-    use crate::components::response::{MAX_PRETTY_BYTES, ViewMode};
+fn a_big_body_offers_the_tree_tab_while_its_parse_runs() {
+    use crate::components::response::{SYNC_PRETTY_BYTES, ViewMode};
     let mut app = App::new_for_test();
-    let body = format!("{{\"a\": \"{}\"}}", "x".repeat(MAX_PRETTY_BYTES));
+    let body = format!("{{\"a\": \"{}\"}}", "x".repeat(SYNC_PRETTY_BYTES));
     ready_response(&mut app, &body);
     render_once(&mut app);
+    assert!(app.session.response.view().unwrap().parsing);
+    let tab = app
+        .hits
+        .rect_of(&Hit::ResponseTab(ViewMode::Pretty))
+        .expect("the Tree tab is clickable while parsing");
+    app.handle_mouse(left_down(tab.x, tab.y));
+    assert_eq!(app.session.response.view().unwrap().mode, ViewMode::Pretty);
+}
+
+#[test]
+fn a_non_json_body_never_offers_the_tree_tab() {
+    use crate::components::response::ViewMode;
+    let mut app = App::new_for_test();
+    ready_response(&mut app, "<html>hi</html>");
+    render_once(&mut app);
     assert_eq!(app.hits.rect_of(&Hit::ResponseTab(ViewMode::Pretty)), None);
+}
+
+#[test]
+fn the_search_button_opens_the_response_search() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, r#"{"a": 1}"#);
+    render_once(&mut app);
+    let r = app
+        .hits
+        .rect_of(&Hit::ResponseSearchButton)
+        .expect("⌕ button");
+    app.handle_mouse(left_down(r.x, r.y));
+    let search = app
+        .session
+        .response
+        .view()
+        .unwrap()
+        .search
+        .as_ref()
+        .expect("search opened");
+    assert!(search.active, "and it is taking typing, exactly as / does");
+    assert_eq!(app.focus, PaneId::Response);
+}
+
+#[test]
+fn the_search_step_buttons_cycle_the_matches() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, r#"{"a": 1, "b": 1, "c": 1}"#);
+    app.focus = PaneId::Response;
+    let keymap = Keymap::default_bindings();
+    for k in ['/', '1'] {
+        app.handle_key(&keymap, plain(k));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    render_once(&mut app);
+    let matches = app
+        .session
+        .response
+        .view()
+        .unwrap()
+        .search
+        .as_ref()
+        .unwrap();
+    assert_eq!(matches.matches.len(), 3, "one per value");
+    assert_eq!(matches.current, 0);
+
+    let next = app.hits.rect_of(&Hit::ResponseSearchNext).expect("▼");
+    app.handle_mouse(left_down(next.x, next.y));
+    assert_eq!(
+        app.session
+            .response
+            .view()
+            .unwrap()
+            .search
+            .as_ref()
+            .unwrap()
+            .current,
+        1
+    );
+
+    let prev = app.hits.rect_of(&Hit::ResponseSearchPrev).expect("▲");
+    app.handle_mouse(left_down(prev.x, prev.y));
+    app.handle_mouse(left_down(prev.x, prev.y));
+    assert_eq!(
+        app.session
+            .response
+            .view()
+            .unwrap()
+            .search
+            .as_ref()
+            .unwrap()
+            .current,
+        2,
+        "▲ wraps backwards past the first match"
+    );
 }
 
 #[test]

@@ -81,13 +81,17 @@ impl Session {
     pub fn begin_send(&mut self) -> u64 {
         if let Some(prev) = self.in_flight.take() {
             prev.task.abort();
+            let generation = self.send_generation;
             self.response_for(&prev.slug)
-                .set_state(ResponseState::Cancelled);
+                .set_state(ResponseState::Cancelled, generation);
         }
         self.send_generation += 1;
-        self.response.set_state(ResponseState::InFlight {
-            started: Instant::now(),
-        });
+        self.response.set_state(
+            ResponseState::InFlight {
+                started: Instant::now(),
+            },
+            self.send_generation,
+        );
         self.send_generation
     }
 
@@ -103,8 +107,9 @@ impl Session {
                 // that stale result would still pass the staleness check
                 // and silently overwrite Cancelled.
                 self.send_generation += 1;
+                let generation = self.send_generation;
                 self.response_for(&inflight.slug)
-                    .set_state(ResponseState::Cancelled);
+                    .set_state(ResponseState::Cancelled, generation);
                 true
             }
             None => false,
@@ -131,8 +136,28 @@ impl Session {
             Some(inflight) => inflight.slug,
             None => self.open_slug.clone(),
         };
-        self.response_for(&slug).set_state(state);
+        self.response_for(&slug).set_state(state, generation);
         true
+    }
+
+    /// Delivers a finished background pretty-print to whichever response is
+    /// still waiting on it: the one on screen, or — when the user has
+    /// navigated away since the send — the cache slot it moved into. `false`
+    /// when nothing is waiting (superseded, or the response was replaced).
+    pub fn tree_arrived(
+        &mut self,
+        generation: u64,
+        tree: Option<crate::components::json_tree::JsonTree>,
+    ) -> bool {
+        if self.response.awaits_tree(generation) {
+            return self.response.attach_tree(generation, tree);
+        }
+        for cached in self.cache.values_mut() {
+            if cached.awaits_tree(generation) {
+                return cached.attach_tree(generation, tree);
+            }
+        }
+        false
     }
 
     /// Forgets everything — cache, screen, in-flight — for a project
@@ -189,14 +214,16 @@ mod tests {
     fn switching_open_request_swaps_to_cached_or_empty_response() {
         let mut s = Session::default();
         open(&mut s, "a");
-        s.response.set_state(ResponseState::Ready(data("from a")));
+        s.response
+            .set_state(ResponseState::Ready(data("from a")), 0);
 
         open(&mut s, "b");
         assert!(
             matches!(s.response.state(), ResponseState::Empty),
             "a request never sent shows an empty response, not a's leftovers"
         );
-        s.response.set_state(ResponseState::Ready(data("from b")));
+        s.response
+            .set_state(ResponseState::Ready(data("from b")), 0);
 
         open(&mut s, "a");
         assert_eq!(body_of(&s.response), Some("from a"));
@@ -299,12 +326,44 @@ mod tests {
         assert!(matches!(s.response.state(), ResponseState::Failed(e) if e == "boom"));
     }
 
+    #[tokio::test]
+    async fn a_background_parse_lands_in_its_requests_cache_slot() {
+        let big = format!(
+            "{{\"a\": \"{}\"}}",
+            "x".repeat(crate::components::response::SYNC_PRETTY_BYTES)
+        );
+        let tree = crate::components::json_tree::JsonTree::parse(&big).unwrap();
+
+        let mut s = Session::default();
+        open(&mut s, "a");
+        let generation = s.begin_send();
+        s.in_flight = Some(in_flight(generation, "a").await);
+        assert!(s.arrived(generation, data(&big)));
+        assert!(s.response.view().unwrap().parsing);
+
+        // The user moves on while the parse is still running.
+        open(&mut s, "b");
+        assert!(
+            s.tree_arrived(generation, Some(tree)),
+            "the parse finds a's cached slot"
+        );
+        assert!(
+            !s.tree_arrived(generation, None),
+            "and nothing is left waiting for it"
+        );
+
+        open(&mut s, "a");
+        let view = s.response.view().unwrap();
+        assert!(!view.parsing, "a's response has its tree");
+        assert!(view.tree.is_some());
+    }
+
     #[test]
     fn reset_forgets_cached_responses() {
         let mut s = Session::default();
         open(&mut s, "a");
         s.response
-            .set_state(ResponseState::Ready(data("old project")));
+            .set_state(ResponseState::Ready(data("old project")), 0);
         open(&mut s, "b");
 
         s.reset();

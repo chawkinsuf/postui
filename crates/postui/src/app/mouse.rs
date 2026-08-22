@@ -257,6 +257,14 @@ impl App {
         }
     }
 
+    /// The `▼`/`▲` search buttons: focus the response pane and step the
+    /// match cycle, exactly as `n`/`N` do.
+    fn step_response_search(&mut self, delta: i32) -> bool {
+        self.update(Action::FocusPane(PaneId::Response));
+        self.session.response.step_search(delta);
+        self.update(Action::Render)
+    }
+
     /// The central click dispatch: maps a resolved `Hit` (plus click count
     /// and the raw event, for hits that need to forward it) to app state
     /// changes. Only `Pane` and `BodyEditor` are wired up so far; later
@@ -572,6 +580,13 @@ impl App {
                     toggle: true,
                 })
             }
+            Hit::ResponseSearchButton => {
+                self.update(Action::FocusPane(PaneId::Response));
+                self.session.response.open_search();
+                self.update(Action::Render)
+            }
+            Hit::ResponseSearchNext => self.step_response_search(1),
+            Hit::ResponseSearchPrev => self.step_response_search(-1),
             Hit::CopyBodyButton => self.update(Action::CopyToClipboard(CopyTarget::ResponseBody)),
             Hit::SaveBodyButton => self.update(Action::PromptSaveBody),
             Hit::HeaderCopy(i) => {

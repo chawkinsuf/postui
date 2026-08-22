@@ -2,7 +2,7 @@ use crate::action::{Action, CopyTarget};
 use crate::components::editor::{Editor, EditorTab, SubFocus};
 use crate::components::line_input::LineInput;
 use crate::components::modal::{Modal, ModalResult, ModalStack, PromptKind};
-use crate::components::response::ResponseState;
+use crate::components::response::{ResponseState, SYNC_PRETTY_BYTES};
 use crate::components::sidebar::Row;
 use crate::components::toast::{ToastKind, Toasts};
 use crate::components::varmanager::{self, VarEditOp, VarManager, VarStructOp};
@@ -1180,7 +1180,33 @@ impl App {
                     true
                 }
             },
-            Action::ResponseArrived { generation, data } => self.session.arrived(generation, data),
+            Action::ResponseArrived { generation, data } => {
+                // A body too big to parse on the UI thread is handed to a
+                // blocking worker, whose result comes back as
+                // `PrettyParsed`. The clone happens before delivery so the
+                // response itself still moves into the session.
+                let big = (data.body.len() > SYNC_PRETTY_BYTES).then(|| data.body.clone());
+                let delivered = self.session.arrived(generation, data);
+                if delivered && let Some(body) = big {
+                    let tx = self.tx.clone();
+                    tokio::spawn(async move {
+                        let tree = tokio::task::spawn_blocking(move || {
+                            crate::components::json_tree::JsonTree::parse(&body)
+                        })
+                        .await
+                        .ok()
+                        .flatten();
+                        let _ = tx.send(Action::PrettyParsed {
+                            generation,
+                            tree: tree.map(Box::new),
+                        });
+                    });
+                }
+                delivered
+            }
+            Action::PrettyParsed { generation, tree } => {
+                self.session.tree_arrived(generation, tree.map(|t| *t))
+            }
             Action::RequestFailed { generation, error } => self.session.failed(generation, error),
             Action::InitProjectHere => {
                 match postui_core::project::init_project(&self.project.root, None) {
@@ -3200,6 +3226,9 @@ impl App {
     /// a spinner) and therefore needs a redraw.
     fn in_flight_ticking(&self) -> bool {
         self.session.in_flight.is_some()
+            // A background pretty-print animates its own spinner, so ticks
+            // must keep coming while one is running.
+            || self.session.response.view().is_some_and(|v| v.parsing)
     }
 
     /// Central key router. Order (each step tested):

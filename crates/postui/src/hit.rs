@@ -50,6 +50,14 @@ pub enum Hit {
     ResponseTab(crate::components::response::ViewMode),
     CopyBodyButton,
     SaveBodyButton,
+    /// The `⌕` button on the response header strip: opens the in-pane
+    /// search, exactly as `/` does.
+    ResponseSearchButton,
+    /// The `▼`/`▲` buttons beside the search footer: step to the next /
+    /// previous match, exactly as `n`/`N` do. Registered only while a
+    /// search is open.
+    ResponseSearchNext,
+    ResponseSearchPrev,
     /// Copy icon on row `i` of the response Headers view.
     HeaderCopy(usize),
     /// Copy icon on row `i` (index into the computed-headers section's own

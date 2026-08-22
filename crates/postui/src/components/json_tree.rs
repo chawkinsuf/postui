@@ -52,7 +52,7 @@ pub struct Container {
     pub end_line: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TreeLine {
     pub indent: usize,
     /// The fully-expanded rendering of this line.
@@ -100,6 +100,7 @@ impl TreeLine {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JsonTree {
     lines: Vec<TreeLine>,
     /// Container id -> index of the line that opens it.
@@ -108,8 +109,9 @@ pub struct JsonTree {
 
 impl JsonTree {
     /// Parses `text` as JSON and flattens it. Returns `None` when the text
-    /// is not JSON at all. Callers apply their own size guard *before*
-    /// calling this — parsing a huge body is exactly what the guard avoids.
+    /// is not JSON at all. Synchronous and potentially slow on a large
+    /// document: past `response::SYNC_PRETTY_BYTES` its caller runs it on a
+    /// blocking worker rather than on the UI thread.
     pub fn parse(text: &str) -> Option<JsonTree> {
         let value: serde_json::Value = serde_json::from_str(text).ok()?;
         let mut tree = JsonTree {

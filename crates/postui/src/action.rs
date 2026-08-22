@@ -138,6 +138,14 @@ pub enum Action {
         generation: u64,
         error: String,
     },
+    /// A background pretty-print finished: the parsed tree for the response
+    /// of `generation`, or `None` when that body turned out not to be JSON.
+    /// Delivered to whichever response slot is still waiting on it (on
+    /// screen or cached); a superseded generation is dropped.
+    PrettyParsed {
+        generation: u64,
+        tree: Option<Box<crate::components::json_tree::JsonTree>>,
+    },
     /// The opened root has no `project.toml`; user chose to create one here
     /// (from the "Not a postui project" confirm modal).
     InitProjectHere,

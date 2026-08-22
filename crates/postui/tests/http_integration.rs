@@ -150,6 +150,62 @@ async fn large_body_is_handled() {
     assert_eq!(data.size, big.len());
 }
 
+/// A body far past the inline-parse threshold is still pretty-printed —
+/// the parse just happens off the UI thread and arrives as its own action.
+#[tokio::test]
+async fn a_multi_megabyte_json_body_is_pretty_printed_in_the_background() {
+    use postui::components::response::ViewMode;
+
+    let server = MockServer::start().await;
+    let big = format!("{{\"a\": \"{}\"}}", "x".repeat(2 * 1024 * 1024 + 17));
+    Mock::given(method("GET"))
+        .and(path("/big"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(big.clone()))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::project::init_project(dir.path(), Some("svc")).unwrap();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = postui::app::App::with_root(tx, dir.path().to_path_buf());
+    app.editor.url =
+        postui::components::line_input::LineInput::new(&format!("{}/big", server.uri()));
+    app.update(Action::ForceSend);
+
+    drain_until_settled(&mut app, &mut rx).await;
+    let view = app.session.response.view().expect("a ready response");
+    assert!(
+        view.parsing && view.tree.is_none(),
+        "a body this big is not parsed on the UI thread"
+    );
+    assert_eq!(view.mode, ViewMode::Raw, "the raw body is readable at once");
+
+    // Pump on until the background parse reports in.
+    loop {
+        let action = tokio::time::timeout(Duration::from_secs(30), rx.recv())
+            .await
+            .expect("timed out waiting for the background parse")
+            .expect("channel closed before the parse arrived");
+        let parsed = matches!(action, Action::PrettyParsed { .. });
+        app.update(action);
+        if parsed {
+            break;
+        }
+    }
+
+    let view = app.session.response.view().unwrap();
+    assert!(!view.parsing, "the parse is done");
+    assert!(view.tree.is_some(), "and it produced a tree");
+    app.update(Action::ResponseViewMode(ViewMode::Pretty));
+    let view = app.session.response.view().unwrap();
+    assert_eq!(
+        view.mode,
+        ViewMode::Pretty,
+        "the Tree view is now available"
+    );
+    assert!(view.visible_len() > 1, "and it has the parsed lines");
+}
+
 #[tokio::test]
 async fn connection_refused_yields_readable_error() {
     let (prepared, _) = prepare(
