@@ -193,6 +193,49 @@ impl App {
         }
     }
 
+    /// Commits any in-progress table cell edit, surfacing its warning as a
+    /// toast. The one place typing is turned into map data outside the
+    /// table's own key handling — click-away, focus loss, tab switch, save
+    /// and send all go through here so a typed cell is never dropped.
+    pub(crate) fn commit_table_edit(&mut self) {
+        if self.editor.table.editing.is_none() {
+            return;
+        }
+        if let Some(w) = self.editor.commit_table().warning {
+            self.toasts.push(w, ToastKind::Warning);
+        }
+    }
+
+    /// Commits the in-progress edit and re-resolves row `i` — an index from
+    /// the last frame's hit map — afterwards. A duplicate-key commit
+    /// `shift_remove`s a row, shifting every later index down, so acting on
+    /// the raw `i` would hit the neighbour. `None` when the row the user
+    /// clicked no longer exists (it was the one collapsed away).
+    fn resolve_table_row_across_commit(&mut self, i: usize) -> Option<usize> {
+        let edited_row = self.editor.table.editing.as_ref().map(|e| e.row);
+        let key = self.editor.table_key_at(i);
+        self.commit_table_edit();
+        match edited_row {
+            // Nothing was being edited: the index is still good.
+            None => Some(i),
+            // The clicked row is the one that just committed — its key may
+            // have changed under us, so take the row the commit resolved to
+            // (a discarded ghost row resolves to nothing to act on).
+            Some(r) if r == i => self
+                .editor
+                .table
+                .selected
+                .filter(|s| *s < self.editor.table_len()),
+            // Another row committed; that commit may have collapsed rows,
+            // so re-resolve by the key `i` named before it ran.
+            Some(_) => match key {
+                Some(k) => self.editor.table_index_of(&k),
+                // The ghost row has no key; it sits at the new length.
+                None => Some(self.editor.table_len()),
+            },
+        }
+    }
+
     /// The central click dispatch: maps a resolved `Hit` (plus click count
     /// and the raw event, for hits that need to forward it) to app state
     /// changes. Only `Pane` and `BodyEditor` are wired up so far; later
@@ -222,11 +265,7 @@ impl App {
                 | Hit::ScrollbarTrack(..)
         );
         if !keeps_table_selection {
-            if self.editor.table.editing.is_some()
-                && let Some(w) = self.editor.commit_table().warning
-            {
-                self.toasts.push(w, ToastKind::Warning);
-            }
+            self.commit_table_edit();
             self.editor.table.selected = None;
         }
         // Likewise, clicking away blurs whichever editor input is active
@@ -305,10 +344,12 @@ impl App {
                 self.update(Action::FocusPane(PaneId::Editor));
                 self.editor.sub_focus = SubFocus::Content;
                 // A checkbox click during another row's edit commits that
-                // edit first, so the toggle never lands on a stale map.
-                if let Some(w) = self.editor.commit_table().warning {
-                    self.toasts.push(w, ToastKind::Warning);
-                }
+                // edit first — and that commit can collapse rows, so `i`
+                // (baked into the last frame's hit map) is re-resolved by
+                // the key it named before the toggle lands.
+                let Some(i) = self.resolve_table_row_across_commit(i) else {
+                    return self.update(Action::Render);
+                };
                 self.editor.table.selected = Some(i);
                 let map = match self.editor.active_tab {
                     EditorTab::Params => &mut self.editor.params,
@@ -342,9 +383,9 @@ impl App {
                 {
                     return self.update(Action::Render);
                 }
-                if let Some(w) = self.editor.commit_table().warning {
-                    self.toasts.push(w, ToastKind::Warning);
-                }
+                let Some(i) = self.resolve_table_row_across_commit(i) else {
+                    return self.update(Action::Render);
+                };
                 self.editor.table.selected = Some(i);
                 self.update(Action::Render)
             }
@@ -364,9 +405,11 @@ impl App {
             Hit::TableDelete(i) => {
                 self.update(Action::FocusPane(PaneId::Editor));
                 self.editor.sub_focus = SubFocus::Content;
-                if let Some(w) = self.editor.commit_table().warning {
-                    self.toasts.push(w, ToastKind::Warning);
-                }
+                // Same as the checkbox: commit first, then re-resolve the
+                // row so the confirm never names the wrong one.
+                let Some(i) = self.resolve_table_row_across_commit(i) else {
+                    return self.update(Action::Render);
+                };
                 self.update(Action::ConfirmDeleteTableRow(i))
             }
             Hit::TableCollapse => self.update(Action::ToggleTableCollapse),

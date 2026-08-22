@@ -843,6 +843,41 @@ impl Editor {
         }
     }
 
+    /// The key of the active tab's table row `i`, if it has one. Paired
+    /// with [`Self::table_index_of`] to re-resolve a row across a commit
+    /// that may have collapsed rows (and shifted every later index down).
+    pub fn table_key_at(&self, i: usize) -> Option<String> {
+        let map = match self.active_tab {
+            EditorTab::Params => &self.params,
+            EditorTab::Headers => &self.headers,
+            EditorTab::Vars => &self.variables,
+            EditorTab::Body => return None,
+        };
+        map.get_index(i).map(|(k, _)| k.clone())
+    }
+
+    /// How many rows the active tab's table has (the ghost row's index).
+    pub fn table_len(&self) -> usize {
+        match self.active_tab {
+            EditorTab::Params => self.params.len(),
+            EditorTab::Headers => self.headers.len(),
+            EditorTab::Vars => self.variables.len(),
+            EditorTab::Body => 0,
+        }
+    }
+
+    /// Where `key` sits in the active tab's table now. `None` once the row
+    /// is gone (a duplicate-key commit collapsed it away).
+    pub fn table_index_of(&self, key: &str) -> Option<usize> {
+        let map = match self.active_tab {
+            EditorTab::Params => &self.params,
+            EditorTab::Headers => &self.headers,
+            EditorTab::Vars => &self.variables,
+            EditorTab::Body => return None,
+        };
+        map.get_index_of(key)
+    }
+
     /// Commits any in-progress table cell edit into the active tab's map —
     /// the click-away / focus-loss path. Its warning is the caller's to
     /// surface.

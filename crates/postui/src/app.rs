@@ -653,6 +653,9 @@ impl App {
                 true
             }
             Action::EditorTabSelect(i) => {
+                // Leaving a tab commits whatever cell was being typed — the
+                // reset that follows would otherwise drop it silently.
+                self.commit_table_edit();
                 self.editor.active_tab = EditorTab::from_index(i);
                 self.editor.table.reset();
                 true
@@ -660,6 +663,7 @@ impl App {
             Action::EditorTabCycle(delta) => {
                 // Cycles the on-screen order (Params → Headers → Vars →
                 // Body), not `EditorTab::index()`'s alt+1/2/3 slot numbers.
+                self.commit_table_edit();
                 let cur = self.editor.active_tab.draw_position() as i8;
                 let next = (cur + delta).rem_euclid(4);
                 self.editor.active_tab = EditorTab::from_draw_position(next as usize);
@@ -745,6 +749,9 @@ impl App {
                 true
             }
             Action::SaveRequest => {
+                // A cell still under the caret is part of the request the
+                // user means to save.
+                self.commit_table_edit();
                 match self.editor.slug.clone() {
                     Some(slug) => {
                         let req = self.editor.current_request();
@@ -938,11 +945,15 @@ impl App {
                 true
             }
             Action::SaveRequestAs(name) => {
+                self.commit_table_edit();
                 let req = self.editor.current_request();
                 self.create_or_save_as(&name, move |_| req.clone());
                 true
             }
             Action::Send => {
+                // Same for sending: the typed cell is part of the request
+                // that goes out, not something to discard.
+                self.commit_table_edit();
                 if self.editor.url.text().trim().is_empty() {
                     self.toasts
                         .push("cannot send: URL is empty", ToastKind::Error);

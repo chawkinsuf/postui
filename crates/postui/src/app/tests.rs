@@ -679,6 +679,139 @@ fn checkbox_and_delete_clicks_during_an_edit_commit_it_first() {
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
 }
 
+/// Params `a=1, b=2, c=3`, editor focused.
+fn app_with_three_params() -> App {
+    let mut app = App::new_for_test();
+    for (k, v) in [("a", "1"), ("b", "2"), ("c", "3")] {
+        app.editor.params.insert(
+            k.into(),
+            postui_core::model::Entry {
+                value: v.into(),
+                enabled: true,
+            },
+        );
+    }
+    app.focus = PaneId::Editor;
+    app
+}
+
+/// Puts row 0's key cell under edit with "c" typed into it — committing it
+/// collapses row "a" into row "c" and shifts every later row down one.
+fn stage_a_collapsing_rename(app: &mut App) {
+    let keymap = Keymap::default_bindings();
+    click_hit(app, Hit::TableCell { row: 0, col: 0 });
+    app.handle_key(
+        &keymap,
+        KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+    );
+    type_chars(app, "c");
+}
+
+#[test]
+fn a_collapsing_commit_reresolves_the_row_a_checkbox_click_named() {
+    let mut app = app_with_three_params();
+    stage_a_collapsing_rename(&mut app);
+    // Row 1 is "b" in the frame the user clicked; after the commit collapses
+    // "a" into "c" it is row 0. The toggle must follow the row, not the
+    // index.
+    click_hit(&mut app, Hit::TableCheckbox(1));
+    assert_eq!(app.editor.params.len(), 2, "a collapsed into c");
+    assert!(!app.editor.params["b"].enabled, "the clicked row toggled");
+    assert!(app.editor.params["c"].enabled, "no neighbour was toggled");
+}
+
+#[test]
+fn a_collapsing_commit_reresolves_the_row_a_delete_click_named() {
+    let mut app = app_with_three_params();
+    stage_a_collapsing_rename(&mut app);
+    // The ✕ sits on the row being edited; after the collapse that row *is*
+    // the surviving "c", so the confirm must name "c" — not whatever now
+    // occupies index 0 ("b").
+    render_once(&mut app);
+    let del = app.hits.rect_of(&Hit::TableDelete(0)).unwrap();
+    app.handle_mouse(left_down(del.x, del.y));
+    let Some(Modal::Confirm { body, .. }) = app.modals.top() else {
+        panic!("expected the delete confirm");
+    };
+    assert!(
+        body.contains('c'),
+        "the confirm names the clicked row: {body}"
+    );
+    assert!(
+        !body.contains('b'),
+        "and never the row that shifted into its index: {body}"
+    );
+}
+
+#[test]
+fn ctrl_s_commits_the_cell_under_edit_into_the_saved_file() {
+    let mut app = App::new_for_test();
+    postui_core::storage::save_request(&app.project.root, "ping", &req("https://x/ping")).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::OpenRequest("ping".into()));
+    app.focus = PaneId::Editor;
+    app.editor.active_tab = EditorTab::Params;
+
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 0 }); // the ghost row
+    type_chars(&mut app, "page");
+    app.handle_key(&Keymap::default_bindings(), ctrl('s'));
+
+    let saved = postui_core::storage::load_request(&app.project.root, "ping").unwrap();
+    assert!(
+        saved.params.contains_key("page"),
+        "the cell under the caret is part of what ctrl+s saves: {:?}",
+        saved.params
+    );
+    assert!(app.editor.table.editing.is_none());
+}
+
+#[tokio::test]
+async fn sending_commits_the_cell_under_edit_into_the_request() {
+    let mut app = app_with_one_param();
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    type_chars(&mut app, "2");
+    app.editor.url = crate::components::line_input::LineInput::new("https://x/y");
+    app.update(Action::Send);
+    assert_eq!(
+        app.editor.params["page"].value, "12",
+        "the typed cell rides along with the request"
+    );
+}
+
+#[test]
+fn switching_editor_tabs_commits_the_cell_under_edit() {
+    let mut app = app_with_one_param();
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    type_chars(&mut app, "2");
+    app.handle_key(&Keymap::default_bindings(), alt('2'));
+    assert_eq!(app.editor.active_tab, EditorTab::Headers);
+    assert_eq!(
+        app.editor.params["page"].value, "12",
+        "the tab switch commits instead of resetting the edit away"
+    );
+    assert!(app.editor.table.editing.is_none());
+}
+
+#[test]
+fn up_from_a_cell_under_edit_commits_and_never_desyncs_the_focus() {
+    let mut app = app_with_one_param();
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    type_chars(&mut app, "2");
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert!(app.editor.table.editing.is_none(), "the edit committed");
+    assert_eq!(app.editor.params["page"].value, "12");
+    assert_eq!(
+        app.editor.sub_focus,
+        SubFocus::Content,
+        "the first Up stays in the table"
+    );
+    // Only then does Up climb out — with no edit left open behind it.
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(app.editor.sub_focus, SubFocus::Tabs);
+    assert!(app.editor.table.editing.is_none());
+}
+
 #[test]
 fn clicking_elsewhere_in_the_app_clears_the_table_selection() {
     let mut app = App::new_for_test();

@@ -454,6 +454,22 @@ impl TableEditorState {
                 self.editing = Some(edit);
                 self.commit(map)
             }
+            // Up/Down leave the cell rather than falling through to
+            // `LineInput` (which ignores them): they commit it and move the
+            // cursor one row. Without this the pane's own "Up climbs out to
+            // the tab strip" fallback could fire with an edit still open,
+            // leaving `editing` set while the keyboard is elsewhere.
+            KeyCode::Up | KeyCode::Down => {
+                let (row, warning) = self.commit_cell(map, &edit);
+                let here = row.unwrap_or(edit.row).min(map.len());
+                let target = if ev.code == KeyCode::Up {
+                    here.saturating_sub(1)
+                } else {
+                    here + 1
+                };
+                self.exit_editing(target, map);
+                TableOutcome::maybe_warn(warning)
+            }
             KeyCode::BackTab => self.walk_cell(map, &edit, false),
             KeyCode::Tab if shift => self.walk_cell(map, &edit, false),
             KeyCode::Tab => self.walk_cell(map, &edit, true),
@@ -1205,6 +1221,25 @@ mod tests {
         let edit = t.editing.as_ref().unwrap();
         assert_eq!((edit.row, edit.col), (0, Col::Value));
         assert_eq!(map.len(), 1, "the empty ghost added nothing");
+    }
+
+    #[test]
+    fn up_and_down_while_editing_commit_the_cell_and_move_the_cursor() {
+        let mut map = map_of(&[("a", "1"), ("b", "2")]);
+        let mut t = TableEditorState::default();
+        t.click_cell(0, Col::Value, &mut map);
+        type_str(&mut t, &mut map, "9");
+        assert!(t.handle_key(key(KeyCode::Down), &mut map).consumed);
+        assert!(t.editing.is_none(), "Down leaves the cell");
+        assert_eq!(map["a"].value, "19", "and commits it");
+        assert_eq!(t.selected, Some(1));
+
+        t.click_cell(1, Col::Value, &mut map);
+        type_str(&mut t, &mut map, "9");
+        assert!(t.handle_key(key(KeyCode::Up), &mut map).consumed);
+        assert!(t.editing.is_none());
+        assert_eq!(map["b"].value, "29");
+        assert_eq!(t.selected, Some(0));
     }
 
     #[test]
