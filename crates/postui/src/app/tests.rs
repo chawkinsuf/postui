@@ -179,11 +179,35 @@ fn running_a_palette_command_via_enter_records_usage() {
     for c in "quit".chars() {
         app.handle_key(&Keymap::default_bindings(), plain(c));
     }
+    select_palette_command(&mut app, "quit");
     app.handle_key(
         &Keymap::default_bindings(),
         KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
     );
     assert!(app.usage.score("quit", crate::usage::now()) > 0.0);
+}
+
+/// The filtered-list index of command `id` in the open palette. A typed
+/// query is a subsequence match, so several commands can survive it (e.g.
+/// "quit" also matches "Request: duplicate"); tests that mean one specific
+/// command name it by id rather than assuming it lands on row 0.
+fn palette_row_of(app: &App, id: &str) -> usize {
+    let Some(Modal::Palette(p)) = app.modals.top() else {
+        panic!("expected the palette to be open");
+    };
+    p.filtered()
+        .iter()
+        .position(|c| c.id == id)
+        .unwrap_or_else(|| panic!("{id} was filtered out"))
+}
+
+/// Moves the open palette's cursor onto command `id`.
+fn select_palette_command(app: &mut App, id: &str) {
+    let i = palette_row_of(app, id);
+    let Some(Modal::Palette(p)) = app.modals.top_mut() else {
+        unreachable!()
+    };
+    p.select(i);
 }
 
 fn ctrl(c: char) -> KeyEvent {
@@ -2713,8 +2737,8 @@ fn open_method_dropdown_has_all_seven_methods_selected_at_current() {
     assert_eq!(state.items.len(), 7);
     assert_eq!(state.selected, 2, "Put is index 2 in Method::ALL");
     assert_eq!(
-        state.items[2].1,
-        Action::SetMethod(postui_core::model::Method::Put)
+        state.items[2].action,
+        Some(Action::SetMethod(postui_core::model::Method::Put))
     );
 }
 
@@ -2772,8 +2796,9 @@ fn click_palette_row_runs_immediately() {
     for c in "quit".chars() {
         app.handle_key(&Keymap::default_bindings(), plain(c));
     }
+    let i = palette_row_of(&app, "quit");
     render_once(&mut app);
-    let row = app.hits.rect_of(&Hit::PaletteRow(0)).unwrap();
+    let row = app.hits.rect_of(&Hit::PaletteRow(i)).unwrap();
     assert!(app.handle_mouse(left_down(row.x, row.y)));
     assert!(app.should_quit, "single click on the Quit row runs it");
     assert!(app.modals.is_empty());

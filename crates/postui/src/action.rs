@@ -79,6 +79,10 @@ pub enum Action {
     RefreshSidebar,
     /// Open the "New request" name prompt.
     PromptNewRequest,
+    /// Open the "New request" name prompt prefilled with `folder` + `/` —
+    /// the folder context menu's "New request here…", so the typed name
+    /// lands inside the folder that was right-clicked.
+    PromptNewRequestIn(String),
     /// Create a fresh request at `name` (a slug), then open it.
     CreateRequest(String),
     /// Open the rename prompt, prefilled with the selected sidebar slug.
@@ -88,6 +92,9 @@ pub enum Action {
         from: String,
         to: String,
     },
+    /// Copy the selected sidebar request to the next free `<slug>-copy…`
+    /// name and open the copy.
+    DuplicateRequest,
     /// Open the delete confirmation for the selected sidebar slug.
     ConfirmDeleteRequest,
     /// Delete the request at `slug` from disk.

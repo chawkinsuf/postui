@@ -61,6 +61,11 @@ pub fn all_commands() -> Vec<Command> {
             action: Action::PromptRenameRequest,
         },
         Command {
+            id: "request-duplicate",
+            name: "Request: duplicate",
+            action: Action::DuplicateRequest,
+        },
+        Command {
             id: "request-delete",
             name: "Request: delete",
             action: Action::ConfirmDeleteRequest,
@@ -442,6 +447,18 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
+    /// Puts the cursor on command `id`. A query is a subsequence match, so
+    /// more than one command can survive it (e.g. "quit" also matches
+    /// "Request: duplicate") — a test that means one command names it.
+    fn select_id(p: &mut PaletteState, id: &str) {
+        let i = p
+            .filtered()
+            .iter()
+            .position(|c| c.id == id)
+            .unwrap_or_else(|| panic!("{id} was filtered out"));
+        p.select(i);
+    }
+
     #[test]
     fn fuzzy_match_is_case_insensitive_subsequence() {
         assert!(fuzzy_match("fre", "Focus: request editor"));
@@ -457,8 +474,12 @@ mod tests {
         for c in "quit".chars() {
             p.handle_key(key(KeyCode::Char(c)));
         }
-        assert_eq!(p.filtered().len(), 1);
-        assert_eq!(p.filtered()[0].name, "Quit");
+        assert!(p.filtered().len() < total, "the query narrowed the list");
+        assert!(p.filtered().iter().any(|c| c.name == "Quit"));
+        assert!(
+            p.filtered().iter().all(|c| fuzzy_match("quit", c.name)),
+            "every surviving row matches the query"
+        );
         p.handle_key(key(KeyCode::Backspace));
         p.handle_key(key(KeyCode::Backspace));
         p.handle_key(key(KeyCode::Backspace));
@@ -482,6 +503,7 @@ mod tests {
         for c in "quit".chars() {
             p.handle_key(key(KeyCode::Char(c)));
         }
+        select_id(&mut p, "quit");
         let res = p.handle_key(key(KeyCode::Enter)).unwrap();
         assert!(res.close);
         assert_eq!(res.actions, vec![Action::Quit]);

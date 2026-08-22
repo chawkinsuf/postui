@@ -66,6 +66,37 @@ impl App {
                 };
                 self.on_hit(hit, clicks, m)
             }
+            // A right click targets the row under the pointer: it moves the
+            // selection there first (so the menu's flows, which all read the
+            // selection, act on what was clicked), then opens whatever menu
+            // that hit offers. Hits with no menu still get the selection
+            // move — right-clicking a row selects it, menu or not.
+            MouseEventKind::Down(MouseButton::Right) => {
+                let Some(hit) = self.hits.hit_at(m.column, m.row).cloned() else {
+                    return false;
+                };
+                let mut changed = false;
+                match &hit {
+                    Hit::SidebarRow(i) | Hit::SidebarFolderArrow(i) => {
+                        changed |= self.update(Action::FocusPane(PaneId::Sidebar));
+                        changed |= self.sidebar.selected != Some(*i);
+                        self.sidebar.selected = Some(*i);
+                    }
+                    Hit::TableRow(i) | Hit::TableCheckbox(i) | Hit::TableDelete(i)
+                        if self.editor.table.editing.is_none() =>
+                    {
+                        changed |= self.update(Action::FocusPane(PaneId::Editor));
+                        changed |= self.editor.table.selected != Some(*i);
+                        self.editor.sub_focus = SubFocus::Content;
+                        self.editor.table.selected = Some(*i);
+                    }
+                    _ => {}
+                }
+                match self.context_menu_for(&hit) {
+                    Some(items) => self.open_context_menu(m.column, m.row, items) || changed,
+                    None => changed,
+                }
+            }
             MouseEventKind::Up(MouseButton::Left) => self.drag.take().is_some(),
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 if !self.modals.is_empty() {
@@ -350,7 +381,9 @@ impl App {
                 let Some(Modal::Dropdown(state)) = self.modals.top_mut() else {
                     return false;
                 };
-                let Some((_, action)) = state.items.get(i).cloned() else {
+                // A disabled row swallows its click: nothing runs, and the
+                // menu stays open rather than closing on a dead press.
+                let Some(action) = state.items.get(i).and_then(|it| it.action.clone()) else {
                     return false;
                 };
                 self.modals.pop();

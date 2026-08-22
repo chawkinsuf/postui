@@ -671,11 +671,11 @@ impl App {
                 true
             }
             Action::OpenMethodDropdown => {
-                use crate::components::modal::DropdownState;
+                use crate::components::modal::{DropdownState, MenuItem};
                 use postui_core::model::Method;
-                let items: Vec<(String, Action)> = Method::ALL
+                let items: Vec<MenuItem> = Method::ALL
                     .iter()
-                    .map(|&m| (m.as_str().to_string(), Action::SetMethod(m)))
+                    .map(|&m| MenuItem::new(m.as_str(), Action::SetMethod(m)))
                     .collect();
                 let current = Method::ALL.iter().position(|&m| m == self.editor.method);
                 let anchor = self
@@ -804,6 +804,35 @@ impl App {
                     revealed: false,
                 });
                 true
+            }
+            Action::PromptNewRequestIn(folder) => {
+                self.modals.push(Modal::Prompt {
+                    title: "New request".into(),
+                    input: crate::components::line_input::LineInput::new(&format!("{folder}/")),
+                    kind: PromptKind::NewRequest,
+                    revealed: false,
+                });
+                true
+            }
+            Action::DuplicateRequest => {
+                let Some(slug) = self.sidebar.selected_slug() else {
+                    return true;
+                };
+                match postui_core::storage::duplicate_request(&self.project.root, &slug) {
+                    Ok(new_slug) => {
+                        self.refresh_sidebar();
+                        self.toasts
+                            .push(format!("Duplicated to {new_slug}"), ToastKind::Success);
+                        // Copies land next to the original and open, so the
+                        // edit that motivated the duplicate can start at once.
+                        self.apply(Action::OpenRequest(new_slug))
+                    }
+                    Err(e) => {
+                        self.toasts
+                            .push(format!("could not duplicate {slug}: {e}"), ToastKind::Error);
+                        true
+                    }
+                }
             }
             Action::PromptRenameRequest => {
                 if let Some(slug) = self.sidebar.selected_slug() {
@@ -1511,10 +1540,11 @@ impl App {
                 let current = entries
                     .iter()
                     .position(|(k, _)| Some(k) == selections.as_ref());
-                let items: Vec<(String, Action)> = entries
+                use crate::components::modal::MenuItem;
+                let items: Vec<MenuItem> = entries
                     .into_iter()
                     .map(|(k, label)| {
-                        (
+                        MenuItem::new(
                             label,
                             Action::VarEdit(VarEditOp::Select {
                                 env: env.clone(),
@@ -2854,6 +2884,81 @@ impl App {
             .append(&mut self.sidebar.pending_expand);
         let expanded = self.project.expanded.clone();
         self.sidebar.refresh(listing, &expanded);
+    }
+
+    /// Pushes a context menu anchored at the pointer: a `Modal::Dropdown`
+    /// over a 1x1 anchor at `(x, y)`, so `draw_dropdown`'s existing
+    /// flip-near-the-bottom and clamp-to-screen logic places it. Returns
+    /// `false` (opening nothing) for an empty item list, so callers can
+    /// hand over whatever they built without a guard of their own.
+    pub fn open_context_menu(
+        &mut self,
+        x: u16,
+        y: u16,
+        items: Vec<crate::components::modal::MenuItem>,
+    ) -> bool {
+        use crate::components::modal::DropdownState;
+        if items.is_empty() {
+            return false;
+        }
+        let selected = DropdownState::first_enabled(&items);
+        self.modals.push(Modal::Dropdown(DropdownState {
+            anchor: ratatui::layout::Rect::new(x, y, 1, 1),
+            items,
+            selected,
+            // Context menus are lists of commands, not of values, so no row
+            // is "the current one" and nothing gets the ✓ marker.
+            current: None,
+        }));
+        true
+    }
+
+    /// The context menu for a right-clicked `hit`, or `None` where a right
+    /// click has nothing to offer (pane backgrounds, chrome, an already-open
+    /// modal). The row-targeting flows the items dispatch
+    /// (`PromptRenameRequest`, `ConfirmDeleteRequest`, `DuplicateRequest`,
+    /// `ToggleSelectedFolder`) read `sidebar.selected`, which the right-click
+    /// handler has already moved onto the clicked row.
+    fn context_menu_for(&mut self, hit: &Hit) -> Option<Vec<crate::components::modal::MenuItem>> {
+        use crate::components::modal::MenuItem;
+        let row = match hit {
+            Hit::SidebarRow(i) | Hit::SidebarFolderArrow(i) => self.sidebar.rows.get(*i)?,
+            _ => return None,
+        };
+        Some(match row {
+            Row::Request {
+                slug, broken: None, ..
+            } => vec![
+                MenuItem::new("Open", Action::OpenRequest(slug.clone())),
+                MenuItem::new("Duplicate", Action::DuplicateRequest),
+                MenuItem::new("Rename…", Action::PromptRenameRequest),
+                MenuItem::new("Delete…", Action::ConfirmDeleteRequest),
+            ],
+            // A request whose file doesn't parse can't be loaded into the
+            // editor, so "Open" is shown disabled rather than hidden — the
+            // menu keeps its shape and the reason is one row away.
+            Row::Request {
+                slug,
+                broken: Some(_),
+                ..
+            } => vec![
+                MenuItem::disabled("Open"),
+                MenuItem::new("Show error…", Action::ShowRequestError(slug.clone())),
+                MenuItem::new("Duplicate", Action::DuplicateRequest),
+                MenuItem::new("Rename…", Action::PromptRenameRequest),
+                MenuItem::new("Delete…", Action::ConfirmDeleteRequest),
+            ],
+            Row::Folder { path, expanded, .. } => vec![
+                MenuItem::new(
+                    "New request here…",
+                    Action::PromptNewRequestIn(path.clone()),
+                ),
+                MenuItem::new(
+                    if *expanded { "Collapse" } else { "Expand" },
+                    Action::ToggleSelectedFolder,
+                ),
+            ],
+        })
     }
 
     /// Push the standard unsaved-changes confirm whose "save" path relies on

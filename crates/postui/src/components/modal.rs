@@ -260,18 +260,74 @@ pub enum Modal {
     },
 }
 
-/// State for `Modal::Dropdown`: the cell it opens from, its `(label,
-/// action)` rows, which row the keyboard cursor is on, and (separately)
-/// which row reflects the value already in effect (e.g. the method that
-/// was active when the dropdown opened). `selected` moves as the user
-/// arrows through the list; `current` does not — it stays put so the `✓`
-/// marker keeps pointing at the actual current value even while the
+/// One row of a `Modal::Dropdown` — a value in a select popup, or an entry
+/// in a right-click context menu. `action: None` marks the row *disabled*:
+/// it still paints (so the menu's shape doesn't shift with context) but in
+/// the muted text color, takes no hover fill, and neither a click nor Enter
+/// activates it or closes the menu.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuItem {
+    pub label: String,
+    pub action: Option<Action>,
+}
+
+impl MenuItem {
+    pub fn new(label: impl Into<String>, action: Action) -> Self {
+        Self {
+            label: label.into(),
+            action: Some(action),
+        }
+    }
+
+    /// A row that is shown but cannot be chosen — e.g. "Open" on a request
+    /// whose file doesn't parse.
+    pub fn disabled(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            action: None,
+        }
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.action.is_some()
+    }
+}
+
+/// State for `Modal::Dropdown`: the cell (or pointer position) it opens
+/// from, its [`MenuItem`] rows, which row the keyboard cursor is on, and
+/// (separately) which row reflects the value already in effect (e.g. the
+/// method that was active when the dropdown opened). `selected` moves as
+/// the user arrows through the list; `current` does not — it stays put so
+/// the `✓` marker keeps pointing at the actual current value even while the
 /// highlight is elsewhere.
 pub struct DropdownState {
     pub anchor: Rect,
-    pub items: Vec<(String, Action)>,
+    pub items: Vec<MenuItem>,
     pub selected: usize,
     pub current: Option<usize>,
+}
+
+impl DropdownState {
+    /// The next enabled row `delta` steps from `selected` in that direction,
+    /// or `None` when there is none (edge of the list, or nothing but
+    /// disabled rows beyond it) — in which case the cursor stays put.
+    fn step(&self, delta: isize) -> Option<usize> {
+        let mut i = self.selected as isize;
+        loop {
+            i += delta;
+            if i < 0 || i as usize >= self.items.len() {
+                return None;
+            }
+            if self.items[i as usize].is_enabled() {
+                return Some(i as usize);
+            }
+        }
+    }
+
+    /// The first row a keyboard cursor may usefully land on.
+    pub fn first_enabled(items: &[MenuItem]) -> usize {
+        items.iter().position(MenuItem::is_enabled).unwrap_or(0)
+    }
 }
 
 /// The outcome of a modal handling a key event: any actions the caller
@@ -533,21 +589,31 @@ impl ModalStack {
                 }
             },
             Modal::Dropdown(state) => match key.code {
+                // Arrows step over disabled rows rather than parking the
+                // cursor on a dead end, so Enter always has something to do.
                 KeyCode::Up => {
-                    state.selected = state.selected.saturating_sub(1);
-                    None // swallowed: modals capture all input
-                }
-                KeyCode::Down => {
-                    if state.selected + 1 < state.items.len() {
-                        state.selected += 1;
+                    if let Some(i) = state.step(-1) {
+                        state.selected = i;
                     }
                     None // swallowed: modals capture all input
                 }
-                KeyCode::Enter => Some(ModalResult {
-                    actions: vec![state.items[state.selected].1.clone()],
-                    close: true,
-                    ..Default::default()
-                }),
+                KeyCode::Down => {
+                    if let Some(i) = state.step(1) {
+                        state.selected = i;
+                    }
+                    None // swallowed: modals capture all input
+                }
+                // A disabled row has no action: swallowed, menu stays open.
+                KeyCode::Enter => state
+                    .items
+                    .get(state.selected)?
+                    .action
+                    .clone()
+                    .map(|action| ModalResult {
+                        actions: vec![action],
+                        close: true,
+                        ..Default::default()
+                    }),
                 KeyCode::Esc => Some(ModalResult {
                     actions: vec![],
                     close: true,
@@ -1092,7 +1158,7 @@ fn draw_dropdown(
     let max_label = state
         .items
         .iter()
-        .map(|(label, _)| label.chars().count() as u16)
+        .map(|item| item.label.chars().count() as u16)
         .max()
         .unwrap_or(0);
     // The popup floats over undimmed live content, so it needs real
@@ -1137,18 +1203,22 @@ fn draw_dropdown(
         height: area.height.saturating_sub(4),
     };
 
-    for (i, (label, _)) in state.items.iter().enumerate() {
+    for (i, item) in state.items.iter().enumerate() {
         if i as u16 >= inner.height {
             break;
         }
+        let label = &item.label;
         let row_area = Rect {
             x: inner.x,
             y: inner.y + i as u16,
             width: inner.width,
             height: 1,
         };
-        let selected = i == state.selected;
-        let row_hovered = hovered == Some(&crate::hit::Hit::DropdownRow(i));
+        let enabled = item.is_enabled();
+        let selected = enabled && i == state.selected;
+        let row_hovered = enabled && hovered == Some(&crate::hit::Hit::DropdownRow(i));
+        // A disabled row takes no fill at all: no cursor highlight, no hover
+        // response — the only affordance it has is looking muted.
         let row_fill = if selected {
             theme.control_hover
         } else if row_hovered {
@@ -1167,7 +1237,13 @@ fn draw_dropdown(
         } else {
             "  "
         };
-        let fg = if selected { theme.accent } else { theme.text };
+        let fg = if !enabled {
+            theme.text_muted
+        } else if selected {
+            theme.accent
+        } else {
+            theme.text
+        };
         paint::text(
             frame.buffer_mut(),
             row_area.x,
@@ -1322,6 +1398,12 @@ mod tests {
         ));
         for c in "quit".chars() {
             assert!(m.handle_key(key(KeyCode::Char(c))).is_none());
+        }
+        // The query is a subsequence match and survives on more than one
+        // command, so put the cursor on Quit itself.
+        if let Some(Modal::Palette(p)) = m.top_mut() {
+            let i = p.filtered().iter().position(|c| c.id == "quit").unwrap();
+            p.select(i);
         }
         let res = m.handle_key(key(KeyCode::Enter)).unwrap();
         assert!(res.close);
@@ -1481,11 +1563,11 @@ mod tests {
         assert_eq!(slugify("Weird!! Na@me_1"), "weird-name_1");
     }
 
-    fn dropdown_items() -> Vec<(String, Action)> {
+    fn dropdown_items() -> Vec<MenuItem> {
         vec![
-            ("GET".into(), Action::Render),
-            ("POST".into(), Action::Render),
-            ("PUT".into(), Action::Render),
+            MenuItem::new("GET", Action::Render),
+            MenuItem::new("POST", Action::Render),
+            MenuItem::new("PUT", Action::Render),
         ]
     }
 
