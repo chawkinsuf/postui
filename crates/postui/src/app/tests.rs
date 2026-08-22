@@ -297,6 +297,17 @@ fn left_down(x: u16, y: u16) -> ratatui::crossterm::event::MouseEvent {
     }
 }
 
+fn right_down(x: u16, y: u16) -> ratatui::crossterm::event::MouseEvent {
+    ratatui::crossterm::event::MouseEvent {
+        kind: ratatui::crossterm::event::MouseEventKind::Down(
+            ratatui::crossterm::event::MouseButton::Right,
+        ),
+        column: x,
+        row: y,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
 fn moved(x: u16, y: u16) -> ratatui::crossterm::event::MouseEvent {
     ratatui::crossterm::event::MouseEvent {
         kind: ratatui::crossterm::event::MouseEventKind::Moved,
@@ -1104,34 +1115,147 @@ fn header_buffer_shows_dropdown_glyph_for_project_and_env() {
 }
 
 #[test]
-fn clicking_the_add_variable_row_opens_the_prompt() {
+fn clicking_the_manager_env_switcher_opens_the_environment_chooser() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.update(Action::OpenVarManager);
     render_once(&mut app);
-    let add_var_row = app
-        .varmanager
-        .rows
-        .iter()
-        .position(|r| matches!(r, crate::components::varmanager::RowKind::AddVar))
-        .unwrap();
+    assert!(rendered_text(&mut app).contains("Environment: qa"));
+
     let r = app
         .hits
-        .rect_of(&crate::hit::Hit::VarName(add_var_row))
-        .expect("add-variable row name region registered");
-    app.handle_mouse(left_down(r.x + 2, r.y));
+        .rect_of(&crate::hit::Hit::VmEnvSwitch)
+        .expect("env switcher registered");
+    app.handle_mouse(left_down(r.x + 2, r.y + 1));
     assert!(
-        matches!(
-            app.modals.top(),
-            Some(Modal::Prompt {
-                kind: PromptKind::NewVariable,
-                ..
-            })
-        ),
-        "single click on + Add variable opens the prompt"
+        matches!(app.modals.top(), Some(Modal::Chooser(_))),
+        "the switcher opens the same chooser the header env chip does"
     );
+
+    // Switching relabels the bar and the group's inline selection with it.
+    app.update(Action::Close);
+    app.update(Action::SwitchEnv(Some("dev".into())));
+    let content = rendered_text(&mut app);
+    assert!(content.contains("Environment: dev"), "{content}");
+    assert!(
+        content.contains("user (needs selection)"),
+        "dev has no entries for the group: {content}"
+    );
+}
+
+#[test]
+fn the_manager_left_list_lists_variables_then_groups() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::OpenVarManager);
+    let content = rendered_text(&mut app);
+    assert!(
+        content.contains("VARIABLES") && content.contains("GROUPS"),
+        "{content}"
+    );
+    assert!(content.contains("base_url"), "{content}");
+
+    use crate::components::varmanager::{VmDetail, VmRow};
+    let group_row = app
+        .varmanager
+        .left_rows
+        .iter()
+        .position(|r| r == &VmRow::Group("user".into()))
+        .expect("the group has a row");
+    let r = app
+        .hits
+        .rect_of(&crate::hit::Hit::VmLeftRow(group_row))
+        .expect("left row registered");
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    assert_eq!(app.varmanager.detail, VmDetail::Group("user".into()));
+}
+
+#[test]
+fn right_clicking_a_left_row_opens_its_rename_duplicate_delete_menu() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::OpenVarManager);
+    rendered_text(&mut app);
+
+    use crate::components::varmanager::VmRow;
+    let row = app
+        .varmanager
+        .left_rows
+        .iter()
+        .position(|r| r == &VmRow::Var("base_url".into()))
+        .unwrap();
+    let r = app.hits.rect_of(&crate::hit::Hit::VmLeftRow(row)).unwrap();
+    app.handle_mouse(right_down(r.x + 1, r.y + 1));
+
+    let Some(Modal::Dropdown(menu)) = app.modals.top() else {
+        panic!("expected a context menu");
+    };
+    let labels: Vec<String> = menu.items.iter().map(|i| i.label.clone()).collect();
+    assert_eq!(
+        labels,
+        vec!["Rename\u{2026}", "Duplicate", "Delete\u{2026}"]
+    );
+    assert_eq!(
+        menu.items[2].action,
+        Some(Action::ConfirmDeleteVar {
+            name: "base_url".into()
+        })
+    );
+}
+
+#[test]
+fn duplicating_a_variable_copies_its_description_and_default() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    app.update(Action::DuplicateVar {
+        name: "base_url".into(),
+    });
+    let copy = app
+        .project
+        .model
+        .vars
+        .get("base_url-copy")
+        .expect("copy declared");
+    assert_eq!(copy.default.as_deref(), Some("http://localhost:8080"));
+    assert_eq!(copy.description.as_deref(), Some("API root"));
+
+    // A second duplicate steps the suffix rather than colliding.
+    app.update(Action::DuplicateVar {
+        name: "base_url".into(),
+    });
+    assert!(app.project.model.vars.contains_key("base_url-copy-2"));
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+}
+
+/// A group's fields belong to exactly one group (`ModelError::
+/// FieldInTwoGroups`), so a duplicate carrying the same field list could
+/// never load: the menu shows "Duplicate" disabled for a group instead of
+/// writing a `variables.toml` that no longer parses.
+#[test]
+fn duplicating_a_group_is_offered_but_disabled() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Group("user".into())
+    });
+
+    let menu = app
+        .varmanager
+        .context_menu(app.varmanager.left_cursor)
+        .expect("menu for a group row");
+    assert_eq!(menu[1].label, "Duplicate");
+    assert_eq!(menu[1].action, None);
 }
 
 #[test]
@@ -3574,7 +3698,8 @@ fn alt_v_opens_the_manager_and_renders_its_title() {
     app.handle_key(&keymap, alt('v'));
     assert_eq!(app.screen, crate::app::Screen::VarManager);
     let content = rendered_text(&mut app);
-    assert!(content.contains("Variables"));
+    assert!(content.contains("VARIABLES"), "the left list's own heading");
+    assert!(content.contains("Environment:"), "{content}");
 }
 
 #[test]
@@ -3971,18 +4096,11 @@ fn var_edit_select_records_the_choice_for_the_targeted_env_even_when_not_active(
 }
 
 #[test]
-fn var_edit_a_failed_write_toasts_and_leaves_the_cell_in_edit() {
+fn var_edit_a_failed_write_toasts_and_writes_nothing() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.varmanager.editing = Some(crate::components::varmanager::CellEdit {
-        row: 3,
-        col: 1,
-        input: crate::components::line_input::LineInput::new("attempted-value"),
-        masked: false,
-    });
-
     use std::os::unix::fs::PermissionsExt;
     let env_dir = dir.path().join("environments");
     let original_mode = std::fs::metadata(&env_dir).unwrap().permissions().mode();
@@ -4006,125 +4124,26 @@ fn var_edit_a_failed_write_toasts_and_leaves_the_cell_in_edit() {
         !app.toasts.is_empty(),
         "a failed write must toast, not silently drop the edit"
     );
-    assert!(
-        app.varmanager.editing.is_some(),
-        "the cell must stay in edit so the typed text survives a retry"
-    );
-    assert_eq!(
-        app.varmanager.editing.as_ref().unwrap().input.text(),
-        "attempted-value"
-    );
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(!on_disk.contains("blocked"), "{on_disk}");
-}
-
-#[test]
-fn keyboard_driven_flow_navigate_edit_commit_via_the_grid() {
-    let dir = tempfile::tempdir().unwrap();
-    var_project(dir.path());
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, dir.path().to_path_buf());
-    let keymap = Keymap::default_bindings();
-
-    app.handle_key(&keymap, alt('v'));
-    assert_eq!(app.screen, crate::app::Screen::VarManager);
-    rendered_text(&mut app); // a draw populates `varmanager.rows`
-
-    // Land the cursor on `base_url`'s row (skipping the "Project" header),
-    // then move right onto its `dev` column.
-    let base_url_row = app
-        .varmanager
-        .rows
-        .iter()
-        .position(|r| {
-            matches!(r, crate::components::varmanager::RowKind::Var { name } if name == "base_url")
-        })
-        .unwrap();
-    app.varmanager.cursor = (base_url_row, 2); // dev is the first env column (after Default)
-
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(app.varmanager.editing.is_some());
-    for c in "http://dev.local".chars() {
-        app.handle_key(&keymap, plain(c));
-    }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-
-    assert!(app.varmanager.editing.is_none(), "the write succeeded");
-    let on_disk = std::fs::read_to_string(dir.path().join("environments/dev.toml")).unwrap();
-    assert!(on_disk.contains("http://dev.local"), "{on_disk}");
-}
-
-/// Same failure contract as `var_edit_a_failed_write_toasts_and_leaves_the_cell_in_edit`,
-/// but driven through the real keyboard path (navigate → Enter → type →
-/// Enter) rather than dispatching `Action::VarEdit` directly, so the whole
-/// `VarManager::handle_key`/`commit_edit`/`App::apply_var_edit` chain is
-/// exercised end to end against a genuinely read-only directory.
-#[test]
-fn keyboard_driven_failed_write_leaves_editing_open_and_toasts() {
-    let dir = tempfile::tempdir().unwrap();
-    var_project(dir.path());
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, dir.path().to_path_buf());
-    let keymap = Keymap::default_bindings();
-
-    app.handle_key(&keymap, alt('v'));
-    rendered_text(&mut app);
-    let base_url_row = app
-        .varmanager
-        .rows
-        .iter()
-        .position(|r| {
-            matches!(r, crate::components::varmanager::RowKind::Var { name } if name == "base_url")
-        })
-        .unwrap();
-    app.varmanager.cursor = (base_url_row, 2);
-
-    use std::os::unix::fs::PermissionsExt;
-    let env_dir = dir.path().join("environments");
-    let original_mode = std::fs::metadata(&env_dir).unwrap().permissions().mode();
-    std::fs::set_permissions(&env_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
-
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    app.handle_key(&keymap, plain('X'));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-
-    std::fs::set_permissions(&env_dir, std::fs::Permissions::from_mode(original_mode)).unwrap();
-
-    assert!(
-        !app.toasts.is_empty(),
-        "expected a toast from the failed write"
-    );
-    assert!(
-        app.varmanager.editing.is_some(),
-        "expected editing to stay open after a failed write"
-    );
-    assert!(
-        app.varmanager
-            .editing
-            .as_ref()
-            .unwrap()
-            .input
-            .text()
-            .ends_with('X')
-    );
 }
 
 // --- Task 12: Manager structural actions (spec §5 action list; §4
 // promote/demote; §3 secret-flag transitions) --------------------------
 
-/// Opens the Manager and moves the cursor to whichever row matches
-/// `pred`, panicking if none does — `rendered_text` first so
-/// `varmanager.rows` is populated (rows only rebuild inside `draw`).
-fn goto_row(app: &mut App, pred: impl Fn(&crate::components::varmanager::RowKind) -> bool) {
+/// Opens the Manager and selects whichever left-list row matches `pred`,
+/// panicking if none does — `rendered_text` first so `left_rows` is
+/// populated (the list only rebuilds inside `draw`).
+fn goto_row(app: &mut App, pred: impl Fn(&crate::components::varmanager::VmRow) -> bool) {
     app.update(Action::OpenVarManager);
     rendered_text(app);
     let i = app
         .varmanager
-        .rows
+        .left_rows
         .iter()
         .position(pred)
         .expect("no row matched");
-    app.varmanager.cursor = (i, 0);
+    app.varmanager.select_row(i);
 }
 
 #[test]
@@ -4169,7 +4188,7 @@ fn var_struct_new_group_creates_group_with_members() {
 
     app.update(Action::VarStruct(VarStructOp::NewGroup {
         name: "creds".into(),
-        members: vec!["user_id".into(), "customer_id".into()],
+        fields: vec!["user_id".into(), "customer_id".into()],
     }));
 
     assert!(app.toasts.is_empty());
@@ -4193,15 +4212,16 @@ fn var_struct_new_entry_writes_every_field_into_the_active_env() {
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.update(Action::VarStruct(VarStructOp::NewGroup {
         name: "creds".into(),
-        members: vec!["user_id".into(), "customer_id".into()],
+        fields: vec!["user_id".into(), "customer_id".into()],
     }));
 
     let mut values = indexmap::IndexMap::new();
     values.insert("user_id".to_string(), "1001".to_string());
     values.insert("customer_id".to_string(), "c-77".to_string());
-    app.update(Action::VarStruct(VarStructOp::NewOption {
-        owner: "creds".into(),
-        key: "alice".into(),
+    app.update(Action::VarStruct(VarStructOp::NewEntry {
+        env: "qa".into(),
+        group: "creds".into(),
+        name: "alice".into(),
         description: None,
         values,
     }));
@@ -4306,11 +4326,9 @@ fn var_struct_delete_var_removes_the_declaration_and_clamps_the_cursor() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    goto_row(&mut app, |r| {
-        matches!(r, crate::components::varmanager::RowKind::AddGroup)
-    });
-    let past_end = app.varmanager.rows.len() + 5;
-    app.varmanager.cursor.0 = past_end;
+    app.update(Action::OpenVarManager);
+    rendered_text(&mut app);
+    app.varmanager.left_cursor = app.varmanager.left_rows.len() + 5;
 
     app.update(Action::VarStruct(VarStructOp::Delete {
         name: "base_url".into(),
@@ -4319,7 +4337,7 @@ fn var_struct_delete_var_removes_the_declaration_and_clamps_the_cursor() {
     assert!(app.toasts.is_empty());
     assert!(!app.project.model.vars.contains_key("base_url"));
     assert!(
-        app.varmanager.cursor.0 < app.varmanager.rows.len().max(1),
+        app.varmanager.left_cursor < app.varmanager.left_rows.len(),
         "cursor must clamp back inside the (now shorter) row list"
     );
 }
@@ -4423,19 +4441,19 @@ fn app_new_group(dir: &std::path::Path, name: &str, members: &[&str]) {
 }
 
 #[test]
-fn var_struct_set_members_replaces_the_group_list() {
+fn var_struct_set_fields_replaces_the_group_list() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.update(Action::VarStruct(VarStructOp::NewGroup {
         name: "creds".into(),
-        members: vec!["user_id".into()],
+        fields: vec!["user_id".into()],
     }));
 
-    app.update(Action::VarStruct(VarStructOp::SetMembers {
+    app.update(Action::VarStruct(VarStructOp::SetFields {
         group: "creds".into(),
-        members: vec!["user_id".into(), "customer_id".into()],
+        fields: vec!["user_id".into(), "customer_id".into()],
     }));
 
     assert_eq!(
@@ -4681,9 +4699,10 @@ fn delete_entry_removes_it_from_the_active_env() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
-    app.update(Action::VarStruct(VarStructOp::DeleteOption {
-        owner: "user".into(),
-        key: "bob".into(),
+    app.update(Action::VarStruct(VarStructOp::DeleteEntry {
+        env: "qa".into(),
+        group: "user".into(),
+        name: "bob".into(),
     }));
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
@@ -4702,16 +4721,17 @@ fn delete_entry_that_is_already_gone_is_a_quiet_no_op() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
-    app.update(Action::VarStruct(VarStructOp::DeleteOption {
-        owner: "user".into(),
-        key: "carol".into(),
+    app.update(Action::VarStruct(VarStructOp::DeleteEntry {
+        env: "qa".into(),
+        group: "user".into(),
+        name: "carol".into(),
     }));
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
 }
 
 #[test]
-fn delete_option_clears_the_selection_when_the_deleted_key_was_selected() {
+fn delete_entry_clears_the_selection_when_the_deleted_entry_was_selected() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -4719,64 +4739,15 @@ fn delete_option_clears_the_selection_when_the_deleted_key_was_selected() {
     app.project.set_selection("user", "alice");
     assert_eq!(app.project.resolved.values["user"], "1001");
 
-    app.update(Action::VarStruct(VarStructOp::DeleteOption {
-        owner: "user".into(),
-        key: "alice".into(),
+    app.update(Action::VarStruct(VarStructOp::DeleteEntry {
+        env: "qa".into(),
+        group: "user".into(),
+        name: "alice".into(),
     }));
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
     assert!(!app.project.selections_for("qa").contains_key("user"));
     assert!(!app.project.resolved.values.contains_key("user"));
-}
-
-#[test]
-fn confirm_delete_entry_body_names_the_entry_and_the_environment_it_lives_in() {
-    let dir = tempfile::tempdir().unwrap();
-    var_project(dir.path());
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, dir.path().to_path_buf());
-
-    app.update(Action::ConfirmDeleteOption {
-        owner: "user".into(),
-        key: "alice".into(),
-    });
-
-    let Some(Modal::Confirm { body, .. }) = app.modals.top() else {
-        panic!("expected a Confirm modal");
-    };
-    assert!(
-        body.contains("qa") && body.contains("alice") && body.contains("user"),
-        "{body}"
-    );
-}
-
-/// The footer chip / `d`-key parity check (spec §5), for an `EntryRow`
-/// this time — finding 3 explicitly calls out keyboard + click parity via
-/// the shared `struct_action_target` gate.
-#[test]
-fn clicking_the_delete_chip_on_an_entry_row_opens_the_same_confirm_as_the_d_key() {
-    let dir = tempfile::tempdir().unwrap();
-    var_project(dir.path());
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.varmanager.expanded.insert("user".to_string());
-    goto_row(
-        &mut app,
-        |r| matches!(r, crate::components::varmanager::RowKind::EntryRow { group, entry } if group == "user" && entry == "bob"),
-    );
-    rendered_text(&mut app);
-
-    let hit = crate::hit::Hit::FooterChip(Action::ConfirmDeleteOption {
-        owner: "user".into(),
-        key: "bob".into(),
-    });
-    let rect = app
-        .hits
-        .rect_of(&hit)
-        .expect("delete chip must be painted and hit-mapped for an entry row");
-
-    assert!(app.handle_mouse(left_down(rect.x, rect.y)));
-    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
 }
 
 // -------------------------------------------------------------
@@ -5029,7 +5000,7 @@ fn keyboard_n_and_g_open_the_new_var_and_new_group_prompts() {
     app.handle_key(&keymap, plain('g'));
     assert!(matches!(
         app.modals.top(),
-        Some(Modal::Prompt {
+        Some(Modal::MultiPrompt {
             kind: PromptKind::NewGroup,
             ..
         })
@@ -5043,10 +5014,9 @@ fn keyboard_f2_d_s_open_the_matching_var_row_actions() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     let keymap = Keymap::default_bindings();
-    goto_row(
-        &mut app,
-        |r| matches!(r, crate::components::varmanager::RowKind::Var { name } if name == "base_url"),
-    );
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
+    });
 
     app.handle_key(&keymap, KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE));
     assert!(matches!(
@@ -5068,90 +5038,34 @@ fn keyboard_f2_d_s_open_the_matching_var_row_actions() {
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 }
 
+/// Mouse/keyboard parity (spec §5: "every mutation ... has a keyboard
+/// action and a painted button"): the left list's context-menu "Delete…"
+/// opens the exact same confirm the `d` key does.
 #[test]
-fn keyboard_o_and_m_open_the_option_and_members_prompts_on_a_group() {
+fn the_context_menu_delete_opens_the_same_confirm_as_the_d_key() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.update(Action::VarStruct(VarStructOp::NewGroup {
-        name: "creds".into(),
-        members: vec!["user_id".into()],
-    }));
-    let keymap = Keymap::default_bindings();
-    goto_row(
-        &mut app,
-        |r| matches!(r, crate::components::varmanager::RowKind::GroupHeader { name } if name == "creds"),
-    );
-
-    app.handle_key(&keymap, plain('m'));
-    assert!(matches!(
-        app.modals.top(),
-        Some(Modal::Prompt {
-            kind: PromptKind::GroupMembers { .. },
-            ..
-        })
-    ));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-
-    app.handle_key(&keymap, plain('o'));
-    assert!(matches!(
-        app.modals.top(),
-        Some(Modal::Prompt {
-            kind: PromptKind::NewOption { .. },
-            ..
-        })
-    ));
-}
-
-#[test]
-fn keyboard_p_on_a_request_var_opens_the_promote_choice() {
-    let dir = tempfile::tempdir().unwrap();
-    var_project(dir.path());
-    request_with_var(dir.path(), "ping", "trace_id", "abc-123");
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.update(Action::ForceOpenRequest("ping".into()));
-    let keymap = Keymap::default_bindings();
-    goto_row(
-        &mut app,
-        |r| matches!(r, crate::components::varmanager::RowKind::RequestVar { name } if name == "trace_id"),
-    );
-
-    app.handle_key(&keymap, plain('p'));
-    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
-}
-
-/// The footer chip parity check (spec §5: "every mutation ... has a
-/// keyboard action and a painted button"): clicking the `d` chip on
-/// `base_url`'s row must open the exact same delete confirm the `d` key
-/// does.
-#[test]
-fn clicking_the_delete_chip_opens_the_same_confirm_as_the_d_key() {
-    let dir = tempfile::tempdir().unwrap();
-    var_project(dir.path());
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, dir.path().to_path_buf());
-    goto_row(
-        &mut app,
-        |r| matches!(r, crate::components::varmanager::RowKind::Var { name } if name == "base_url"),
-    );
-    rendered_text(&mut app);
-
-    let hit = crate::hit::Hit::FooterChip(Action::ConfirmDeleteVar {
-        name: "base_url".into(),
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
     });
-    let rect = app
-        .hits
-        .rect_of(&hit)
-        .expect("delete chip must be painted and hit-mapped");
 
-    assert!(app.handle_mouse(left_down(rect.x, rect.y)));
+    let via_menu = app
+        .varmanager
+        .context_menu(app.varmanager.left_cursor)
+        .expect("menu for a variable row");
+    app.update(via_menu[2].action.clone().unwrap());
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+    app.update(Action::Close);
+
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, plain('d'));
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
 }
 
 #[test]
-fn clicking_the_new_var_chip_opens_the_new_variable_prompt() {
+fn clicking_the_new_variable_button_opens_the_new_variable_prompt() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -5159,13 +5073,11 @@ fn clicking_the_new_var_chip_opens_the_new_variable_prompt() {
     app.update(Action::OpenVarManager);
     rendered_text(&mut app);
 
-    let hit = crate::hit::Hit::FooterChip(Action::PromptNewVar);
     let rect = app
         .hits
-        .rect_of(&hit)
-        .expect("new-var chip must be painted");
-    assert!(app.handle_mouse(left_down(rect.x, rect.y)));
-
+        .rect_of(&crate::hit::Hit::VmNewVar)
+        .expect("+ Variable button must be painted");
+    assert!(app.handle_mouse(left_down(rect.x + 1, rect.y + 1)));
     assert!(matches!(
         app.modals.top(),
         Some(Modal::Prompt {
@@ -5173,10 +5085,26 @@ fn clicking_the_new_var_chip_opens_the_new_variable_prompt() {
             ..
         })
     ));
+
+    // …and the `+ Group` button opens the group prompt.
+    app.update(Action::Close);
+    rendered_text(&mut app);
+    let rect = app
+        .hits
+        .rect_of(&crate::hit::Hit::VmNewGroup)
+        .expect("+ Group button must be painted");
+    assert!(app.handle_mouse(left_down(rect.x + 1, rect.y + 1)));
+    assert!(matches!(
+        app.modals.top(),
+        Some(Modal::MultiPrompt {
+            kind: PromptKind::NewGroup,
+            ..
+        })
+    ));
 }
 
 #[test]
-fn prompt_new_group_takes_just_a_name_and_creates_an_empty_group() {
+fn prompt_new_group_takes_a_name_and_a_field_list() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -5185,6 +5113,10 @@ fn prompt_new_group_takes_just_a_name_and_creates_an_empty_group() {
     app.update(Action::PromptNewGroup);
 
     for c in "creds".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    for c in "user_id, customer_id".chars() {
         app.handle_key(&keymap, plain(c));
     }
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -5196,7 +5128,10 @@ fn prompt_new_group_takes_just_a_name_and_creates_an_empty_group() {
         .groups
         .get("creds")
         .expect("group created");
-    assert!(g.fields.is_empty(), "fields are added one at a time");
+    assert_eq!(
+        g.fields,
+        vec!["user_id".to_string(), "customer_id".to_string()]
+    );
     // and the empty group survives a reload (parse accepts fields = [])
     app.update(Action::ReloadProjectFiles);
     assert!(app.project.model.groups.contains_key("creds"));
@@ -5211,7 +5146,7 @@ fn add_and_remove_group_members_one_at_a_time() {
     let keymap = Keymap::default_bindings();
     app.update(Action::VarStruct(VarStructOp::NewGroup {
         name: "creds".into(),
-        members: vec![],
+        fields: vec![],
     }));
 
     // `a` flow: one member name per prompt, appended in order

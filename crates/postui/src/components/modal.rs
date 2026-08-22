@@ -27,8 +27,8 @@ pub enum PromptKind {
     /// The env chooser's "new environment…" row: the text is the new
     /// environment's name (slug rules).
     NewEnvironment,
-    /// `n` (spec §5): a bare variable name — the grid's own cell edit sets
-    /// its default/description afterward.
+    /// `n` / the `+ Variable` button: a bare variable name — the detail
+    /// pane's form sets its default/description afterward.
     NewVariable,
     /// The Insert-mode picker's "new variable…" row (Task 15, spec §6): the
     /// text is the new variable's name, pre-filled with what was typed in
@@ -39,27 +39,20 @@ pub enum PromptKind {
     NewVariableAndInsert {
         completing: bool,
     },
-    /// `g`: the new group's bare name — members are added one at a time
-    /// afterward (`AddGroupMember`).
+    /// `g` / the `+ Group` button (spec 3.4): a `Modal::MultiPrompt` with
+    /// a `name` field and a comma-separated `fields` field. Confirming
+    /// declares the group and its field list in one write
+    /// (`VarStructOp::NewGroup`).
     NewGroup,
-    /// `a` on a group's rows: one member name, appended to `group`'s list.
+    /// One field name, appended to `group`'s list.
     AddGroupMember {
         group: String,
     },
-    /// `o` on a group/entry row: comma-separated `key, value`, or
-    /// `key, field=value, field=value, ...` — `member_names` (the group's
-    /// declared fields) tells `parse_option_prompt` which form to
-    /// expect.
-    NewOption {
-        owner: String,
-        member_names: Vec<String>,
-    },
-    /// `F2`/`=` on a `Var` row.
+    /// `e`/`F2` on a variable row.
     RenameVariable {
         from: String,
     },
-    /// `m` on a `GroupHeader` row: comma-separated member names, replacing
-    /// the group's current list.
+    /// Comma-separated field names, replacing the group's current list.
     GroupMembers {
         group: String,
     },
@@ -162,41 +155,6 @@ fn comma_tokens(text: &str) -> Vec<String> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect()
-}
-
-/// `PromptKind::NewOption`'s text -> `(key, values)`. For a plain variable
-/// (`member_names` empty), the second token is the option's `value`. For a
-/// group, every remaining token must be `member=value`; a member outside
-/// `member_names`, or fewer members than the group declares, means "not
-/// finished typing yet" (`None`) rather than a hard error — the field
-/// simply doesn't confirm until it parses.
-fn parse_option_prompt(
-    text: &str,
-    member_names: &[String],
-) -> Option<(String, IndexMap<String, String>)> {
-    let mut tokens = comma_tokens(text);
-    if tokens.is_empty() {
-        return None;
-    }
-    let key = tokens.remove(0);
-    let mut values = IndexMap::new();
-    if member_names.is_empty() {
-        let value = tokens.into_iter().next()?;
-        values.insert("value".to_string(), value);
-    } else {
-        for token in &tokens {
-            let (member, value) = token.split_once('=')?;
-            let member = member.trim();
-            if !member_names.iter().any(|m| m == member) {
-                return None;
-            }
-            values.insert(member.to_string(), value.trim().to_string());
-        }
-        if values.len() != member_names.len() {
-            return None;
-        }
-    }
-    Some((key, values))
 }
 
 pub enum Modal {
@@ -471,29 +429,12 @@ impl ModalStack {
                                 Action::InsertVarText(insert_text),
                             ])
                         }
-                        PromptKind::NewGroup => {
-                            Some(vec![Action::VarStruct(VarStructOp::NewGroup {
-                                name: text.to_string(),
-                                members: vec![],
-                            })])
-                        }
                         PromptKind::AddGroupMember { group } => {
                             Some(vec![Action::AddGroupMember {
                                 group: group.clone(),
                                 member: text.to_string(),
                             }])
                         }
-                        PromptKind::NewOption {
-                            owner,
-                            member_names,
-                        } => parse_option_prompt(text, member_names).map(|(key, values)| {
-                            vec![Action::VarStruct(VarStructOp::NewOption {
-                                owner: owner.clone(),
-                                key,
-                                description: None,
-                                values,
-                            })]
-                        }),
                         PromptKind::RenameVariable { from } => {
                             Some(vec![Action::VarStruct(VarStructOp::Rename {
                                 from: from.clone(),
@@ -501,21 +442,24 @@ impl ModalStack {
                             })])
                         }
                         PromptKind::GroupMembers { group } => {
-                            Some(vec![Action::VarStruct(VarStructOp::SetMembers {
+                            Some(vec![Action::VarStruct(VarStructOp::SetFields {
                                 group: group.clone(),
-                                members: comma_tokens(text),
+                                fields: comma_tokens(text),
                             })])
                         }
                         PromptKind::SecretValue { name, .. } => Some(vec![Action::SetSecret {
                             name: name.clone(),
                             value: text.to_string(),
                         }]),
-                        // Task 17's three kinds are `Modal::MultiPrompt`
-                        // only — never a single-input `Modal::Prompt`.
-                        PromptKind::NewOptionInline { .. }
+                        // These kinds are `Modal::MultiPrompt` only — never a
+                        // single-input `Modal::Prompt`.
+                        PromptKind::NewGroup
+                        | PromptKind::NewOptionInline { .. }
                         | PromptKind::EditOption { .. }
                         | PromptKind::ExtractVariable => {
-                            unreachable!("Task 17 prompt kinds only ever back Modal::MultiPrompt")
+                            unreachable!(
+                                "multi-field prompt kinds only ever back Modal::MultiPrompt"
+                            )
                         }
                     };
                     // A well-formed-but-incomplete comma prompt (e.g. a
@@ -685,6 +629,11 @@ impl ModalStack {
                                 values,
                                 description,
                             }]
+                        }
+                        PromptKind::NewGroup => {
+                            let name = get("name").filter(|s| !s.is_empty())?.to_string();
+                            let fields = comma_tokens(get("fields").unwrap_or(""));
+                            vec![Action::VarStruct(VarStructOp::NewGroup { name, fields })]
                         }
                         PromptKind::ExtractVariable => {
                             let name = get("name").filter(|s| !s.is_empty())?.to_string();

@@ -5,7 +5,7 @@ use crate::components::modal::{Modal, ModalResult, ModalStack, PromptKind};
 use crate::components::response::{ResponseState, SYNC_PRETTY_BYTES};
 use crate::components::sidebar::Row;
 use crate::components::toast::{ToastKind, Toasts};
-use crate::components::varmanager::{self, VarEditOp, VarManager, VarStructOp};
+use crate::components::varmanager::{VarEditOp, VarManager, VarStructOp};
 use crate::components::{Component, sidebar::Sidebar};
 use crate::hit::{Hit, HitMap, ScrollbarSpec};
 use crate::keys::{KeyCombo, Keymap};
@@ -643,6 +643,13 @@ impl App {
                 true
             }
             Action::ScrollPane(pane, delta) => {
+                // While the Manager screen is up its left list owns the
+                // sidebar's pane slot (see `App::scrollbar_spec`), so a
+                // click on the drawn scrollbar's track pages that list.
+                if self.screen == Screen::VarManager {
+                    self.varmanager.handle_scroll(delta);
+                    return true;
+                }
                 match pane {
                     PaneId::Sidebar => self.sidebar.handle_scroll(delta),
                     PaneId::Editor => self.editor.handle_scroll(delta),
@@ -1631,9 +1638,8 @@ impl App {
                 true
             }
             Action::VarEdit(op) => {
-                match self.apply_var_edit(&op) {
-                    Ok(()) => self.varmanager.editing = None,
-                    Err(msg) => self.toasts.push(msg, ToastKind::Error),
+                if let Err(msg) = self.apply_var_edit(&op) {
+                    self.toasts.push(msg, ToastKind::Error);
                 }
                 true
             }
@@ -1647,67 +1653,16 @@ impl App {
                 true
             }
             Action::PromptNewGroup => {
-                self.modals.push(Modal::Prompt {
+                use crate::components::modal::PromptField;
+                self.modals.push(Modal::MultiPrompt {
                     title: "New group".into(),
-                    input: LineInput::new(""),
+                    fields: vec![
+                        PromptField::text("name", "Name", ""),
+                        PromptField::text("fields", "Fields (comma separated)", ""),
+                    ],
+                    focus: 0,
                     kind: PromptKind::NewGroup,
-                    revealed: false,
                 });
-                true
-            }
-            Action::OpenSelectDropdown {
-                owner,
-                env,
-                row,
-                col,
-            } => {
-                let env_data = if self.project.active_env.as_deref() == Some(env.as_str()) {
-                    self.project.env_data.clone()
-                } else {
-                    postui_core::project::load_environment(&self.project.root, &env)
-                        .unwrap_or_default()
-                };
-                let selections = self.project.selections_for(&env).get(&owner).cloned();
-                let entries: Vec<(String, String)> =
-                    postui_core::varmodel::group_entries(&env_data, &owner)
-                        .map(|entries| {
-                            entries
-                                .keys()
-                                .map(|name| (name.clone(), name.clone()))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                if entries.is_empty() {
-                    return true;
-                }
-                let current = entries
-                    .iter()
-                    .position(|(k, _)| Some(k) == selections.as_ref());
-                use crate::components::modal::MenuItem;
-                let items: Vec<MenuItem> = entries
-                    .into_iter()
-                    .map(|(k, label)| {
-                        MenuItem::new(
-                            label,
-                            Action::VarEdit(VarEditOp::Select {
-                                env: env.clone(),
-                                name: owner.clone(),
-                                key: k,
-                            }),
-                        )
-                    })
-                    .collect();
-                let anchor = self
-                    .hits
-                    .rect_of(&crate::hit::Hit::VarCell { row, col })
-                    .unwrap_or_else(|| ratatui::layout::Rect::new(0, 0, 0, 0));
-                use crate::components::modal::DropdownState;
-                self.modals.push(Modal::Dropdown(DropdownState {
-                    anchor,
-                    items,
-                    selected: current.unwrap_or(0),
-                    current,
-                }));
                 true
             }
             Action::PromptAddGroupMember { group } => {
@@ -1734,12 +1689,9 @@ impl App {
                     );
                     return true;
                 }
-                let mut members = current;
-                members.push(member);
-                self.apply(Action::VarStruct(VarStructOp::SetMembers {
-                    group,
-                    members,
-                }));
+                let mut fields = current;
+                fields.push(member);
+                self.apply(Action::VarStruct(VarStructOp::SetFields { group, fields }));
                 true
             }
             Action::ConfirmRemoveGroupMember { group, member } => {
@@ -1797,35 +1749,6 @@ impl App {
                 }
                 true
             }
-            Action::PromptNewOption { owner } => {
-                let member_names = self
-                    .project
-                    .model
-                    .groups
-                    .get(&owner)
-                    .map(|g| g.fields.clone())
-                    .unwrap_or_default();
-                let title = if member_names.is_empty() {
-                    format!("New option on {owner} \u{2014} key, value")
-                } else {
-                    let fields = member_names
-                        .iter()
-                        .map(|m| format!("{m}=value"))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    format!("New option on {owner} \u{2014} key, {fields}")
-                };
-                self.modals.push(Modal::Prompt {
-                    title,
-                    input: LineInput::new(""),
-                    kind: PromptKind::NewOption {
-                        owner,
-                        member_names,
-                    },
-                    revealed: false,
-                });
-                true
-            }
             Action::PromptRenameVar { from } => {
                 // Finding 7: surface `scan_usage`'s count the same way
                 // `ConfirmDeleteVar` already does — renaming doesn't break
@@ -1866,6 +1789,15 @@ impl App {
                 });
                 true
             }
+            Action::DuplicateVar { name } => {
+                if let Err(msg) = self.apply_duplicate_var(&name) {
+                    self.toasts.push(msg, ToastKind::Error);
+                    self.last_action_failed = true;
+                } else {
+                    self.varmanager.sync(&self.project);
+                }
+                true
+            }
             Action::ConfirmDeleteVar { name } => {
                 let usage = postui_core::varedit::scan_usage(&self.project.root, &name);
                 let body = if usage.is_empty() {
@@ -1886,28 +1818,6 @@ impl App {
                             'y',
                             "Delete".into(),
                             vec![Action::VarStruct(VarStructOp::Delete { name })],
-                        ),
-                    ],
-                });
-                true
-            }
-            Action::ConfirmDeleteOption { owner, key } => {
-                // Entries live in one environment each (spec §3.1), so
-                // there is nothing "shared" to fall back to: the delete
-                // removes this environment's entry.
-                let env_label = self.project.env_label();
-                let body = format!(
-                    "Delete entry \"{key}\" of \"{owner}\" in {env_label}? This cannot be undone."
-                );
-                self.modals.push(Modal::Confirm {
-                    title: format!("Delete {key}"),
-                    body,
-                    choices: vec![
-                        ('n', "Cancel".into(), vec![]),
-                        (
-                            'y',
-                            "Delete".into(),
-                            vec![Action::VarStruct(VarStructOp::DeleteOption { owner, key })],
                         ),
                     ],
                 });
@@ -1967,26 +1877,7 @@ impl App {
             }
             Action::VarStruct(op) => {
                 match self.apply_var_struct(&op) {
-                    Ok(()) => {
-                        let open_request = self
-                            .editor
-                            .slug
-                            .is_some()
-                            .then(|| self.editor.current_request());
-                        let rows = varmanager::build_rows(
-                            &self.project,
-                            open_request.as_ref(),
-                            &self.varmanager.expanded,
-                        );
-                        self.varmanager.cursor.0 =
-                            self.varmanager.cursor.0.min(rows.len().saturating_sub(1));
-                        self.varmanager.cursor.1 = self
-                            .varmanager
-                            .cursor
-                            .1
-                            .min(self.project.environments.len());
-                        self.varmanager.ensure_visible = true;
-                    }
+                    Ok(()) => self.varmanager.sync(&self.project),
                     Err(msg) => {
                         self.toasts.push(msg, ToastKind::Error);
                         self.last_action_failed = true;
@@ -2430,9 +2321,9 @@ impl App {
 
     /// Applies one committed Variable Manager op (spec §5), writing
     /// through to whichever file owns it. `Err(msg)` is always safe to
-    /// toast (never a secret value) and, per the caller
-    /// (`Action::VarEdit`), leaves `varmanager.editing` untouched so the
-    /// typed text survives a retry.
+    /// toast (never a secret value); the caller (`Action::VarEdit`) toasts
+    /// it and leaves the originating field untouched, so the typed text
+    /// survives a retry.
     fn apply_var_edit(&mut self, op: &VarEditOp) -> Result<(), String> {
         match op {
             VarEditOp::SetEnvValue { env, name, value } => self.project.edit_env(env, |doc| {
@@ -2674,40 +2565,20 @@ impl App {
                     varedit::upsert_var(doc, name, description.as_deref(), None)
                 })
             }
-            VarStructOp::NewGroup { name, members } => {
+            VarStructOp::NewGroup { name, fields } => {
                 if !is_valid_var_name(name) {
                     return Err(format!("\"{name}\" is not a valid group name"));
                 }
                 if name_taken(&self.project, name) {
                     return Err(format!("\"{name}\" already exists"));
                 }
-                for m in members {
-                    if !is_valid_var_name(m) {
-                        return Err(format!("\"{m}\" is not a valid member name"));
+                for f in fields {
+                    if !is_valid_var_name(f) {
+                        return Err(format!("\"{f}\" is not a valid field name"));
                     }
                 }
                 self.project
-                    .edit_variables(|doc| varedit::upsert_group(doc, name, None, members))
-            }
-            VarStructOp::NewOption {
-                owner,
-                key,
-                description,
-                values,
-            } => {
-                if !is_valid_var_name(key) {
-                    return Err(format!("\"{key}\" is not a valid entry name"));
-                }
-                // Entries belong to one environment (spec §3.1).
-                let Some(env) = self.project.active_env.clone() else {
-                    return Err(
-                        "no active environment \u{2014} switch to one before adding an entry"
-                            .to_string(),
-                    );
-                };
-                self.project.edit_env(&env, |doc| {
-                    varedit::upsert_entry(doc, owner, key, description.as_deref(), values)
-                })
+                    .edit_variables(|doc| varedit::upsert_group(doc, name, None, fields))
             }
             VarStructOp::Rename { from, to } => {
                 if !is_valid_var_name(to) {
@@ -2768,8 +2639,17 @@ impl App {
                 // parse-style toast" this fix removes. `delete_env_var`
                 // no-ops for an environment with nothing to remove.
                 for env in self.project.environments.clone() {
-                    self.project
-                        .edit_env(&env, |doc| varedit::delete_env_var(doc, name))?;
+                    if is_group {
+                        // The declaration's environment-side half: the whole
+                        // `[entries.<name>]` subtree, plus the recorded
+                        // selection that named one of those entries.
+                        self.project
+                            .edit_env(&env, |doc| varedit::delete_group_entries(doc, name))?;
+                        self.project.clear_selection_for(&env, name);
+                    } else {
+                        self.project
+                            .edit_env(&env, |doc| varedit::delete_env_var(doc, name))?;
+                    }
                 }
                 if is_group {
                     self.project
@@ -2780,48 +2660,159 @@ impl App {
                 }
             }
             VarStructOp::ToggleSecret { name } => self.apply_toggle_secret(name),
-            VarStructOp::SetMembers { group, members } => {
-                for m in members {
-                    if !is_valid_var_name(m) {
-                        return Err(format!("\"{m}\" is not a valid member name"));
+            VarStructOp::SetFields { group, fields } => {
+                for f in fields {
+                    if !is_valid_var_name(f) {
+                        return Err(format!("\"{f}\" is not a valid field name"));
                     }
                 }
                 self.project
-                    .edit_variables(|doc| varedit::upsert_group(doc, group, None, members))
+                    .edit_variables(|doc| varedit::upsert_group(doc, group, None, fields))
             }
             VarStructOp::Promote { name, target } => self.apply_promote(name, *target),
             VarStructOp::Demote { name } => self.apply_demote(name),
-            VarStructOp::DeleteOption { owner, key } => self.apply_delete_option(owner, key),
+            VarStructOp::NewEntry {
+                env,
+                group,
+                name,
+                description,
+                values,
+            } => self.project.edit_env(env, |doc| {
+                varedit::upsert_entry(doc, group, name, description.as_deref(), values)
+            }),
+            VarStructOp::RenameEntry {
+                env,
+                group,
+                from,
+                to,
+            } => {
+                self.project
+                    .edit_env(env, |doc| varedit::rename_entry(doc, group, from, to))?;
+                // A selection names an entry by key: carry it across the
+                // rename rather than leaving a dangling one behind.
+                if self
+                    .project
+                    .selections_for(env)
+                    .get(group)
+                    .map(String::as_str)
+                    == Some(from)
+                {
+                    self.project.set_selection_for(env, group, to);
+                }
+                Ok(())
+            }
+            VarStructOp::DeleteEntry { env, group, name } => {
+                self.apply_delete_entry(env, group, name)
+            }
+            VarStructOp::DuplicateEntry { env, group, name } => {
+                self.apply_duplicate_entry(env, group, name)
+            }
         }
     }
 
-    /// [`VarStructOp::DeleteOption`]: deletes one entry of `owner` from
-    /// the active environment (entries belong to one environment each —
-    /// spec §3.1). No active environment, or no such entry, is a quiet
-    /// no-op success (a stale row — nothing left to do). Also clears any
-    /// per-env selection naming the deleted entry, in every environment,
-    /// so local state doesn't accumulate dead selections (`resolve_env`
-    /// already degrades a stale selection harmlessly, but there's no
-    /// reason to leave it).
-    fn apply_delete_option(&mut self, owner: &str, key: &str) -> Result<(), String> {
-        let present = self.project.active_env.clone().filter(|_| {
-            postui_core::varmodel::group_entries(&self.project.env_data, owner)
-                .is_some_and(|entries| entries.contains_key(key))
-        });
-        if let Some(env) = present {
-            self.project.edit_env(&env, |doc| {
-                postui_core::varedit::delete_entry(doc, owner, key)
+    /// [`VarStructOp::DuplicateEntry`]: copies one entry's description and
+    /// values to a fresh name in the same environment — `"<name> copy"`,
+    /// then `"<name> copy-2"`, … while that is taken. Nothing else moves:
+    /// the copy is unselected, and no other environment is touched.
+    fn apply_duplicate_entry(&mut self, env: &str, group: &str, name: &str) -> Result<(), String> {
+        let env_data = self.env_data_for(env);
+        let entries = postui_core::varmodel::group_entries(&env_data, group)
+            .ok_or_else(|| format!("group \"{group}\" has no entries in {env}"))?;
+        let source = entries
+            .get(name)
+            .ok_or_else(|| format!("no entry \"{name}\" in {group}"))?
+            .clone();
+        let mut copy = format!("{name} copy");
+        let mut n = 2;
+        while entries.contains_key(&copy) {
+            copy = format!("{name} copy-{n}");
+            n += 1;
+        }
+        self.project.edit_env(env, |doc| {
+            postui_core::varedit::upsert_entry(
+                doc,
+                group,
+                &copy,
+                source.description.as_deref(),
+                &source.values,
+            )
+        })
+    }
+
+    /// [`Action::DuplicateVar`]: copies a declaration under `<name>-copy`
+    /// (then `-copy-2`, …). A variable keeps its description, its default
+    /// and its secret flag; a group copies its field list only — entries
+    /// live in an environment, not in the declaration, and are left alone.
+    fn apply_duplicate_var(&mut self, name: &str) -> Result<(), String> {
+        use postui_core::varedit;
+        let mut copy = format!("{name}-copy");
+        let mut n = 2;
+        while self.project.model.vars.contains_key(&copy)
+            || self.project.model.groups.contains_key(&copy)
+        {
+            copy = format!("{name}-copy-{n}");
+            n += 1;
+        }
+        if let Some(group) = self.project.model.groups.get(name) {
+            let (fields, description) = (group.fields.clone(), group.description.clone());
+            return self.project.edit_variables(|doc| {
+                varedit::upsert_group(doc, &copy, description.as_deref(), &fields)
+            });
+        }
+        let decl = self
+            .project
+            .model
+            .vars
+            .get(name)
+            .ok_or_else(|| format!("no variable \"{name}\""))?;
+        let (description, default, secret) =
+            (decl.description.clone(), decl.default.clone(), decl.secret);
+        self.project.edit_variables(|doc| {
+            varedit::upsert_var(doc, &copy, description.as_deref(), default.as_deref())
+        })?;
+        if secret {
+            // Safe on a just-created declaration: it has no value in any
+            // environment for the flag flip to have to move.
+            self.project
+                .edit_variables(|doc| varedit::set_secret_flag(doc, &copy, true))?;
+        }
+        Ok(())
+    }
+
+    /// `env`'s data: the active environment's is already loaded on `ctx`;
+    /// any other is read fresh, degrading to empty rather than erroring.
+    fn env_data_for(&self, env: &str) -> postui_core::varmodel::EnvData {
+        if self.project.active_env.as_deref() == Some(env) {
+            self.project.env_data.clone()
+        } else {
+            postui_core::project::load_environment(&self.project.root, env).unwrap_or_default()
+        }
+    }
+
+    /// [`VarStructOp::DeleteEntry`]: deletes one entry of `group` from
+    /// `env` (entries belong to one environment each — spec §3.1). An entry
+    /// that is already gone is a quiet no-op success (a stale row — nothing
+    /// left to do). Also clears any per-env selection naming the deleted
+    /// entry, in every environment, so local state doesn't accumulate dead
+    /// selections (`resolve_env` already degrades a stale selection
+    /// harmlessly, but there's no reason to leave it).
+    fn apply_delete_entry(&mut self, env: &str, group: &str, name: &str) -> Result<(), String> {
+        let present = postui_core::varmodel::group_entries(&self.env_data_for(env), group)
+            .is_some_and(|entries| entries.contains_key(name));
+        if present {
+            self.project.edit_env(env, |doc| {
+                postui_core::varedit::delete_entry(doc, group, name)
             })?;
         }
-        for env in self.project.environments.clone() {
+        for other in self.project.environments.clone() {
             if self
                 .project
-                .selections_for(&env)
-                .get(owner)
+                .selections_for(&other)
+                .get(group)
                 .map(String::as_str)
-                == Some(key)
+                == Some(name)
             {
-                self.project.clear_selection_for(&env, owner);
+                self.project.clear_selection_for(&other, group);
             }
         }
         Ok(())
@@ -3066,6 +3057,7 @@ impl App {
         use crate::components::modal::MenuItem;
         let row = match hit {
             Hit::SidebarRow(i) | Hit::SidebarFolderArrow(i) => self.sidebar.rows.get(*i)?,
+            Hit::VmLeftRow(i) => return self.varmanager.context_menu(*i),
             _ => return None,
         };
         Some(match row {
@@ -3289,15 +3281,7 @@ impl App {
             {
                 return self.update(a);
             }
-            let open_request = self
-                .editor
-                .slug
-                .is_some()
-                .then(|| self.editor.current_request());
-            if let Some(a) = self
-                .varmanager
-                .handle_key(ev, &self.project, open_request.as_ref())
-            {
+            if let Some(a) = self.varmanager.handle_key(ev, &self.project) {
                 return self.update(a);
             }
             return true; // swallowed: no fallback to the global keymap

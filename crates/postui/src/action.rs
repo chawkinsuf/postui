@@ -276,41 +276,36 @@ pub enum Action {
     /// Leave the current non-`Main` screen and return to `Screen::Main`,
     /// restoring the focus that was active when the screen was opened.
     CloseScreen,
-    /// A committed Variable Manager cell edit or ✓ selection (spec §5).
+    /// A committed Variable Manager value edit or ✓ selection (spec §5).
     /// `App::update` writes it through to whichever file owns it; a write
-    /// failure toasts and leaves `VarManager::editing` open with the typed
-    /// text rather than clearing it.
+    /// failure toasts and leaves the field it came from untouched, so the
+    /// typed text survives a retry.
     VarEdit(VarEditOp),
 
-    // -- Variable Manager structural actions (spec §5 action list; Task 12) --
-    /// `n`: open the new-variable name prompt.
+    // -- Variable Manager structural actions (spec §3.4/§5 action list) --
+    /// `n` / the `+ Variable` button: open the new-variable name prompt.
     PromptNewVar,
-    /// `g`: open the new-group prompt (comma-separated name + members).
+    /// `g` / the `+ Group` button: open the new-group prompt (name + a
+    /// comma-separated field list).
     PromptNewGroup,
-    /// `o` on a group/entry row: open the new-entry prompt.
-    PromptNewOption {
-        owner: String,
-    },
-    /// `F2`/`=` on a `Var` row: open the rename prompt, prefilled.
+    /// `e`/`F2` on a variable row, or its context menu's "Rename…": open
+    /// the rename prompt, prefilled.
     PromptRenameVar {
         from: String,
     },
-    /// `m` on a `GroupHeader` row: open the member-list prompt, prefilled.
+    /// The left list's context-menu "Duplicate": copies `name`'s
+    /// declaration under `<name>-copy` (then `-copy-2`, …). A variable
+    /// keeps its description and default; a group copies its field list
+    /// only — entries belong to an environment, not to the declaration, and
+    /// are not duplicated with it.
+    DuplicateVar {
+        name: String,
+    },
+    /// Open the group's field-list prompt, prefilled.
     PromptEditGroupMembers {
         group: String,
     },
-    /// Enter or a single click on a group header's env cell (or an
-    /// unselected field cell): open a dropdown of `owner`'s entry names
-    /// for `env`, anchored at the cell
-    /// (`row`/`col` locate its rect in the last frame's `HitMap`);
-    /// confirming a row dispatches the `Select`.
-    OpenSelectDropdown {
-        owner: String,
-        env: String,
-        row: usize,
-        col: usize,
-    },
-    /// `a` on a group's rows: open the single-name add-member prompt.
+    /// Open the single-name add-field prompt for a group.
     PromptAddGroupMember {
         group: String,
     },
@@ -333,29 +328,23 @@ pub enum Action {
         group: String,
         member: String,
     },
-    /// `d`/`Delete` on a `Var`/`GroupHeader` row: open the delete confirm,
-    /// its body listing `varedit::scan_usage`'s referencing requests.
+    /// `d`/`Delete` on a left-list row: open the delete confirm, its body
+    /// listing `varedit::scan_usage`'s referencing requests.
     ConfirmDeleteVar {
         name: String,
     },
-    /// `d`/`Delete` on an `EntryRow`: open the delete confirm for that
-    /// entry, naming the environment it lives in.
-    ConfirmDeleteOption {
-        owner: String,
-        key: String,
-    },
-    /// `s` on a `Var` row: open the secret-flag transition
+    /// `s` on a variable row: open the secret-flag transition
     /// confirm (spec §3) — its wording and the value(s) it offers for copy
     /// depend on which direction the flip goes.
     ToggleSecretVar {
         name: String,
     },
-    /// `p` on a `RequestVar` row: open the promote-target choice (spec
+    /// Open the promote-target choice (spec
     /// §4) — declaration default, or the active environment.
     PromptPromoteVar {
         name: String,
     },
-    /// `P` on a `Var` row: open the demote confirm (spec §4), or a
+    /// Open the demote confirm (spec §4), or a
     /// message modal refusing it (a secret or a group).
     ConfirmDemoteVar {
         name: String,

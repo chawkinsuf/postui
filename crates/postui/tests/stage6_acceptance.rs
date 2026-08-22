@@ -114,13 +114,13 @@ async fn stage6_acceptance_flow() {
     // A one-field group — what an enumerated variable is in stage 7.
     app.update(Action::VarStruct(VarStructOp::NewGroup {
         name: "region".into(),
-        members: vec!["region".into()],
+        fields: vec!["region".into()],
     }));
 
     // A group whose entries carry both fields at once.
     app.update(Action::VarStruct(VarStructOp::NewGroup {
         name: "creds".into(),
-        members: vec!["user_id".into(), "customer_id".into()],
+        fields: vec!["user_id".into(), "customer_id".into()],
     }));
 
     // A secret variable — declared plain, then flipped (spec §3's
@@ -171,9 +171,10 @@ async fn stage6_acceptance_flow() {
     app.update(Action::SwitchEnv(Some("prod".into())));
     let mut west = IndexMap::new();
     west.insert("region".to_string(), "west-9".to_string());
-    app.update(Action::VarStruct(VarStructOp::NewOption {
-        owner: "region".into(),
-        key: "west".into(),
+    app.update(Action::VarStruct(VarStructOp::NewEntry {
+        env: "prod".into(),
+        group: "region".into(),
+        name: "west".into(),
         description: None,
         values: west,
     }));
@@ -182,18 +183,20 @@ async fn stage6_acceptance_flow() {
     assert_eq!(app.project.active_env.as_deref(), Some("qa"));
     let mut east = IndexMap::new();
     east.insert("region".to_string(), "east-1".to_string());
-    app.update(Action::VarStruct(VarStructOp::NewOption {
-        owner: "region".into(),
-        key: "east".into(),
+    app.update(Action::VarStruct(VarStructOp::NewEntry {
+        env: "qa".into(),
+        group: "region".into(),
+        name: "east".into(),
         description: None,
         values: east,
     }));
     let mut alice = IndexMap::new();
     alice.insert("user_id".to_string(), "1001".to_string());
     alice.insert("customer_id".to_string(), "c-77".to_string());
-    app.update(Action::VarStruct(VarStructOp::NewOption {
-        owner: "creds".into(),
-        key: "alice".into(),
+    app.update(Action::VarStruct(VarStructOp::NewEntry {
+        env: "qa".into(),
+        group: "creds".into(),
+        name: "alice".into(),
         description: None,
         values: alice,
     }));

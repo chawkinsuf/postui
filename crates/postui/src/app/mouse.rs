@@ -103,6 +103,10 @@ impl App {
                         changed |= self.sidebar.selected != Some(*i);
                         self.sidebar.selected = Some(*i);
                     }
+                    Hit::VmLeftRow(i) => {
+                        changed |= self.varmanager.left_cursor != *i;
+                        self.varmanager.select_row(*i);
+                    }
                     Hit::TableRow(i)
                     | Hit::TableCheckbox(i)
                     | Hit::TableDelete(i)
@@ -164,6 +168,12 @@ impl App {
     /// thumb can never disagree. `None` when the pane has nothing scrollable
     /// (or has not been drawn yet).
     pub fn scrollbar_spec(&self, pane: PaneId) -> Option<ScrollbarSpec> {
+        // The Variable Manager screen replaces the whole body, sidebar
+        // included: while it is up, the sidebar's pane slot belongs to its
+        // left list (see `VarManager::scrollbar_spec`).
+        if self.screen == Screen::VarManager {
+            return self.varmanager.scrollbar_spec().filter(|s| s.pane == pane);
+        }
         match pane {
             PaneId::Sidebar => self.sidebar.scrollbar_spec(),
             PaneId::Editor => self.editor.scrollbar_spec(),
@@ -192,6 +202,10 @@ impl App {
         let offset = crate::hit::offset_for_thumb_top(&spec, track.height, top);
         if offset == spec.offset {
             return false;
+        }
+        if self.screen == Screen::VarManager {
+            self.varmanager.set_scroll(offset);
+            return true;
         }
         match pane {
             PaneId::Sidebar => {
@@ -614,31 +628,15 @@ impl App {
             // filtered to that name (spec §7) — the shortest path from
             // "what is this?" to the variable itself.
             Hit::VarToken(name) => self.update(Action::OpenVarPickerFor(name)),
-            Hit::VarRow(i) => match self.varmanager.click_row(i) {
-                Some(action) => self.update(action),
-                None => self.update(Action::Render),
-            },
-            Hit::VarName(i) => match self.varmanager.click_name(i, clicks == 2, &self.project) {
-                Some(action) => self.update(action),
-                None => self.update(Action::Render),
-            },
-            Hit::VarCell { row, col } => {
-                let open_request = self
-                    .editor
-                    .slug
-                    .is_some()
-                    .then(|| self.editor.current_request());
-                match self.varmanager.click_cell(
-                    row,
-                    col,
-                    clicks == 2,
-                    &self.project,
-                    open_request.as_ref(),
-                ) {
-                    Some(action) => self.update(action),
-                    None => self.update(Action::Render),
-                }
+            Hit::VmLeftRow(i) => {
+                self.varmanager.select_row(i);
+                self.update(Action::Render)
             }
+            // The Manager's environment switcher is the header env chip's
+            // chooser, reached from the screen that replaced the header.
+            Hit::VmEnvSwitch => self.update(Action::OpenEnvChooser),
+            Hit::VmNewVar => self.update(Action::PromptNewVar),
+            Hit::VmNewGroup => self.update(Action::PromptNewGroup),
         }
     }
 }

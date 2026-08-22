@@ -78,20 +78,16 @@ pub enum Hit {
     ChooserRow(usize),
     PaletteRow(usize),
     VarPickerRow(usize),
-    /// A visible row of the Variable Manager grid (spec §5), background
-    /// click target. Index into `VarManager::rows`.
-    VarRow(usize),
-    /// The name region of a Variable Manager row (the first `NAME_W`
-    /// cells): double-click renames a variable (or expands an expandable
-    /// row), unlike the description region next to it (`VarCell` col 0).
-    VarName(usize),
-    /// One visible cell of the Variable Manager grid: `row` indexes
-    /// `VarManager::rows`; `col` 0 is the shared name/desc block, `col`
-    /// 1.. are environment columns (relative to `env_scroll`).
-    VarCell {
-        row: usize,
-        col: usize,
-    },
+    /// A visible row of the Variable Manager's left list (spec §3.4).
+    /// Index into `VarManager::left_rows`; a left click opens it in the
+    /// detail pane, a right click opens its Rename/Duplicate/Delete menu.
+    VmLeftRow(usize),
+    /// The Manager top bar's `Environment: <name> ▾` button: opens the same
+    /// environment chooser the header's env chip does.
+    VmEnvSwitch,
+    /// The Manager top bar's `+ Variable` / `+ Group` buttons.
+    VmNewVar,
+    VmNewGroup,
     /// One drawn `{{name}}` token, carrying the variable's name (spec §7).
     /// Registered *over* whatever control the token sits on (URL bar, table
     /// cell, computed-header row, body editor), so a left click opens the
