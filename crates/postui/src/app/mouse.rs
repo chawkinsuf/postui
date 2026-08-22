@@ -22,6 +22,14 @@ impl App {
     pub fn handle_mouse(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
         use ratatui::crossterm::event::{MouseButton, MouseEventKind};
 
+        // Every event carries the pointer's position, motion reports or
+        // not: a press moves the pointer just as truly as a `Moved` does.
+        // Recording it here keeps the `{{token}}` tooltip (which is drawn
+        // from `pointer`) honest in terminals that report no motion, where
+        // a tip opened by one hover would otherwise hang over the UI
+        // through every later click — including the clicks it covers.
+        self.pointer = Some((m.column, m.row));
+
         match m.kind {
             // Terminals report pointer motion with a button held as `Drag`,
             // not `Moved`, so a thumb drag arrives as either depending on
@@ -48,13 +56,12 @@ impl App {
                     .hits
                     .var_token_at(m.column, m.row)
                     .map(|(name, _)| name.to_string());
-                // The pointer's exact position is recorded but not part of
-                // "changed": the tooltip is anchored at the token's own
+                // The pointer's exact position (recorded above) is not part
+                // of "changed": the tooltip is anchored at the token's own
                 // drawn rect, so moving within one token changes nothing.
                 let changed = hit != self.hovered || token != self.hovered_token;
                 self.hovered = hit;
                 self.hovered_token = token;
-                self.pointer = Some((m.column, m.row));
                 changed
             }
             MouseEventKind::Down(MouseButton::Left) => {

@@ -171,6 +171,31 @@ fn hovering_a_token_shows_its_value_and_scope_and_leaving_drops_the_tooltip() {
     assert!(!frame.contains("env qa"), "tooltip is gone: {frame}");
 }
 
+/// A press moves the pointer too. Without that, a terminal that reports no
+/// motion (or a click that arrives with no `Moved` before it) left the last
+/// hover's tooltip floating over the UI — covering the very controls the
+/// next click aims at. Found by the stage-7 tmux sweep.
+#[test]
+fn a_click_elsewhere_drops_a_tooltip_even_with_no_motion_event() {
+    let mut app = app_with_vars();
+    set_url(&mut app, "{{base_url}}/x");
+    hover_token(&mut app, "base_url");
+    assert!(app.var_token_tip().is_some());
+
+    // No `Moved` in between: the press itself is the pointer's new home.
+    let away = app.hits.rect_of(&Hit::EditorTab(0)).unwrap();
+    app.handle_mouse(left_down(away.x + 1, away.y));
+    assert!(
+        app.var_token_tip().is_none(),
+        "the tip belongs to where the pointer is now"
+    );
+    let frame = dump(&mut app);
+    assert!(
+        !frame.contains("env qa"),
+        "and it is off the screen: {frame}"
+    );
+}
+
 #[test]
 fn the_scope_line_names_default_group_request_and_missing_secret() {
     let mut app = app_with_vars();
