@@ -196,6 +196,30 @@ impl LineInput {
         self.render_windowed(focused, theme, width, true)
     }
 
+    /// The first char index [`Self::draw_line_windowed`] would render at a
+    /// `width`-column window: 0 unless the input is focused and the caret
+    /// has scrolled the window right. Callers that need to paint *over* the
+    /// drawn text (inline `{{token}}` highlighting, spec §7) use this to
+    /// slice the same visible window the draw used.
+    pub fn window_start(&self, focused: bool, width: u16) -> usize {
+        if !focused {
+            return 0;
+        }
+        (self.cursor + 1).saturating_sub(width.max(1) as usize)
+    }
+
+    /// The exact text [`Self::draw_line_windowed`] puts on screen for a
+    /// `width`-column window (unmasked; a masked field shows no tokens to
+    /// highlight).
+    pub fn visible_window(&self, focused: bool, width: u16) -> String {
+        let start = self.window_start(focused, width);
+        self.text
+            .chars()
+            .skip(start)
+            .take(width.max(1) as usize)
+            .collect()
+    }
+
     fn render_windowed(
         &self,
         focused: bool,
@@ -216,7 +240,7 @@ impl LineInput {
         }
         // Smallest `start` that keeps `cursor` within the last column of the
         // window; 0 when the cursor already fits without scrolling.
-        let start = (self.cursor + 1).saturating_sub(width);
+        let start = self.window_start(true, width as u16);
         let cursor_style = base.add_modifier(Modifier::REVERSED);
         let mut spans = Vec::new();
         if self.cursor > start {

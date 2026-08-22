@@ -84,6 +84,13 @@ pub enum Hit {
         row: usize,
         col: usize,
     },
+    /// One drawn `{{name}}` token, carrying the variable's name (spec §7).
+    /// Registered *over* whatever control the token sits on (URL bar, table
+    /// cell, computed-header row, body editor), so a left click opens the
+    /// var picker prefiltered to that name. Deliberately invisible to
+    /// hover styling and to right-click menus — see
+    /// [`HitMap::hit_at_ignoring_var_tokens`].
+    VarToken(String),
     /// A clickable `[y] Label` chip in a Confirm modal.
     ConfirmChoice(char),
     /// The top modal's painted Cancel button (Message has none; Prompt and
@@ -150,6 +157,32 @@ impl HitMap {
             .rev()
             .find(|(rect, _)| rect.contains(ratatui::layout::Position { x, y }))
             .map(|(_, hit)| hit)
+    }
+
+    /// Topmost hit containing the point, skipping [`Hit::VarToken`]
+    /// overlays: a token sits *on* a control, and hover styling and
+    /// right-click menus belong to the control under it (a hovered row must
+    /// not lose its highlight because the pointer crossed a `{{token}}` in
+    /// its value). Token hovering is tracked separately, by
+    /// [`HitMap::var_token_at`].
+    pub fn hit_at_ignoring_var_tokens(&self, x: u16, y: u16) -> Option<&Hit> {
+        self.regions
+            .iter()
+            .rev()
+            .filter(|(_, hit)| !matches!(hit, Hit::VarToken(_)))
+            .find(|(rect, _)| rect.contains(ratatui::layout::Position { x, y }))
+            .map(|(_, hit)| hit)
+    }
+
+    /// The topmost drawn `{{token}}` under the point: its name and the rect
+    /// it was drawn into (the tooltip's anchor).
+    pub fn var_token_at(&self, x: u16, y: u16) -> Option<(&str, Rect)> {
+        self.regions.iter().rev().find_map(|(rect, hit)| match hit {
+            Hit::VarToken(name) if rect.contains(ratatui::layout::Position { x, y }) => {
+                Some((name.as_str(), *rect))
+            }
+            _ => None,
+        })
     }
 
     /// Topmost `Hit::Pane` containing the point (for wheel routing).

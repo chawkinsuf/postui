@@ -173,6 +173,12 @@ pub struct Editor {
     /// small N) so an env switch or a body edit shows up live; never
     /// itself edited here.
     pub computed: ComputedHeadersView,
+    /// The variable snapshot inline `{{token}}` highlighting and the hover
+    /// tooltip resolve against (spec §7), synced by `App::update` on every
+    /// action alongside `shadowed`. Draw-only: every surface that can show a
+    /// token (URL bar, table cells, computed-header rows, the body editor)
+    /// tints and registers its spans from this.
+    pub vars: crate::components::var_tokens::VarView,
 }
 
 /// State for [`Editor::draw_computed_headers`]. `rows` is the full result
@@ -204,6 +210,7 @@ impl Default for Editor {
             headers: IndexMap::new(),
             variables: IndexMap::new(),
             shadowed: IndexMap::new(),
+            vars: Default::default(),
             inherited_headers: IndexMap::new(),
             body: new_body_state(""),
             body_handler: EditorEventHandler::emacs_mode(),
@@ -294,6 +301,35 @@ impl Editor {
 
     pub fn mark_saved(&mut self) {
         self.saved = Some(self.current_request());
+    }
+
+    /// The name of the `{{token}}` the keyboard caret is currently sitting
+    /// in, for the caret-resting tooltip (spec §7 — a keyboard user gets the
+    /// same value readout a hover gives). Covers the two fields a caret can
+    /// rest in: the URL line, and the body editor's current line. `None`
+    /// anywhere else, and whenever the caret is outside every token.
+    pub fn caret_token(&self) -> Option<String> {
+        let (text, byte_off) = match self.sub_focus {
+            SubFocus::Url => {
+                let text = self.url.text().to_string();
+                let off = char_byte_offset(&text, self.url.cursor());
+                (text, off)
+            }
+            SubFocus::Content if self.active_tab == EditorTab::Body => {
+                let cursor = self.body.cursor;
+                let line: String = self.body.lines.iter_row().nth(cursor.row)?.iter().collect();
+                let off = char_byte_offset(&line, cursor.col);
+                (line, off)
+            }
+            _ => return None,
+        };
+        // Strictly inside the span: a caret parked immediately *after* a
+        // token (the natural resting place right after typing one) would
+        // otherwise hold a tooltip open over the pane indefinitely.
+        postui_core::vars::find_tokens(&text)
+            .into_iter()
+            .find(|t| byte_off >= t.start && byte_off < t.end)
+            .map(|t| t.name)
     }
 
     /// The body buffer's text, with lines joined by `\n`.
@@ -463,6 +499,16 @@ impl Editor {
             self.body.lines.len_col(last).unwrap_or(0),
         ))
     }
+}
+
+/// Byte offset of char index `idx` in `text` (the end offset when `idx` is
+/// past the last char) — `find_tokens`'s spans are byte ranges, while both
+/// caret positions postui tracks are char indices.
+fn char_byte_offset(text: &str, idx: usize) -> usize {
+    text.char_indices()
+        .nth(idx)
+        .map(|(b, _)| b)
+        .unwrap_or(text.len())
 }
 
 /// The tab width edtui renders the body with: its `ViewState` default, which
@@ -976,6 +1022,17 @@ impl Editor {
         url_line.style = Style::default().bg(url_fill).patch(url_line.style);
         buf.set_line(url_text_area.x, text_y, &url_line, url_text_area.width);
         hits.register(url_area, crate::hit::Hit::UrlBar);
+        // Token tinting paints over the text just drawn, and registers its
+        // spans on top of `UrlBar` so a click lands on the token.
+        crate::components::var_tokens::paint_var_tokens(
+            buf,
+            Rect::new(url_text_area.x, text_y, url_text_area.width, 1),
+            &self.url.visible_window(url_focused, url_text_area.width),
+            url_text_area.x,
+            &self.vars,
+            theme,
+            hits,
+        );
         self.last_url_text_area = Some(Rect {
             y: text_y,
             height: 1,
@@ -1363,6 +1420,7 @@ impl Editor {
                     "+ Add param",
                     hits,
                     None,
+                    &self.vars,
                 );
             }
             EditorTab::Vars => {
@@ -1383,6 +1441,7 @@ impl Editor {
                     "+ Add variable",
                     hits,
                     Some(&self.shadowed),
+                    &self.vars,
                 );
             }
             EditorTab::Headers => {
@@ -1439,6 +1498,7 @@ impl Editor {
                     "+ Add header",
                     hits,
                     None,
+                    &self.vars,
                 );
                 if let Some(computed_area) = computed_area {
                     self.draw_computed_headers(frame, computed_area, ctx, hits);
@@ -1491,6 +1551,22 @@ impl Editor {
                     .line_numbers(LineNumbers::Absolute)
                     .syntax_highlighter(highlighter);
                 frame.render_widget(view, area);
+                // Body coverage (spec §7): edtui paints the text itself, so
+                // its tokens are found by reading the rendered rows back out
+                // of the buffer. A token wrapped across two visual rows is
+                // not `{{name}}` on either of them and is therefore skipped
+                // — the documented limitation of this approach.
+                let buf = frame.buffer_mut();
+                for y in area.y..area.bottom() {
+                    let row = Rect::new(area.x, y, area.width, 1);
+                    let text = crate::components::var_tokens::row_text(buf, row);
+                    if !text.contains("{{") {
+                        continue;
+                    }
+                    crate::components::var_tokens::paint_var_tokens(
+                        buf, row, &text, area.x, &self.vars, theme, hits,
+                    );
+                }
             }
         }
     }
@@ -1576,18 +1652,18 @@ impl Editor {
                 break;
             }
             let suppressed = matches!(row.origin, HeaderOrigin::DefaultHeader { suppressed: true });
-            let has_error = !row.unresolved.is_empty();
             let mut name_style = dim;
-            let mut value_style = if has_error {
-                Style::default().fg(theme.error)
-            } else {
-                dim
-            };
+            // The value draws dim throughout; an unresolved `{{token}}` in
+            // it is tinted span-level by `paint_var_tokens` below (Task 12
+            // replaces Task 10's whole-value error tint, which coloured the
+            // resolved parts of the value red too).
+            let mut value_style = dim;
             if suppressed {
                 name_style = name_style.add_modifier(Modifier::CROSSED_OUT);
                 value_style = value_style.add_modifier(Modifier::CROSSED_OUT);
             }
             let name_piece = format!("  {}: ", row.name);
+            let value_x = area.x.saturating_add(name_piece.chars().count() as u16);
             let value_piece = row.value.clone();
             let text_len = name_piece.chars().count() + value_piece.chars().count();
             let glyph_hovered = ctx.hovered == Some(&crate::hit::Hit::AutoHeaderCopy(i));
@@ -1602,6 +1678,15 @@ impl Editor {
                 Span::styled(" \u{29c9} ", glyph_style),
             ]);
             frame.render_widget(Paragraph::new(line), Rect::new(area.x, y, area.width, 1));
+            crate::components::var_tokens::paint_var_tokens(
+                frame.buffer_mut(),
+                Rect::new(value_x, y, area.right().saturating_sub(value_x), 1),
+                &row.value,
+                value_x,
+                &self.vars,
+                theme,
+                hits,
+            );
             let glyph_x = area.x.saturating_add(text_len as u16);
             let glyph_w = area.width.saturating_sub(text_len as u16).min(3);
             if glyph_w > 0 {

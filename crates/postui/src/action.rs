@@ -222,6 +222,10 @@ pub enum Action {
     OpenVarPicker {
         completing: bool,
     },
+    /// Opens the same insert picker with its filter pre-seeded to a
+    /// variable name — what clicking an inline `{{token}}` does (spec §7),
+    /// so the picker comes up already narrowed to the token clicked.
+    OpenVarPickerFor(String),
     /// Insert `text` at the currently focused text field: the URL line, an
     /// in-progress table cell edit, or the body buffer (Body tab +
     /// content focus). Toasts "nowhere to insert" when focus isn't on a

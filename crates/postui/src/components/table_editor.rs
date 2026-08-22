@@ -1,5 +1,6 @@
 use super::DrawCtx;
 use super::line_input::LineInput;
+use super::var_tokens::{VarView, paint_var_tokens};
 use crate::hit::{Hit, HitMap};
 use crate::paint::{PillRow, RowHighlight, fill, text};
 use crate::theme::Theme;
@@ -540,6 +541,8 @@ impl TableEditorState {
     /// <value>"`, already formatted (masked for secrets) by the caller. A
     /// row whose key is present shows that line, dim, under its expanded
     /// form. `None` on Params/Headers, which have no shadowing concept.
+    /// `vars` is the variable snapshot every drawn cell's `{{tokens}}` are
+    /// tinted and registered against (spec §7).
     #[allow(clippy::too_many_arguments)] // signature is the produced interface, verbatim
     pub fn draw(
         &self,
@@ -550,6 +553,7 @@ impl TableEditorState {
         add_label: &str,
         hits: &mut HitMap,
         shadow: Option<&IndexMap<String, String>>,
+        vars: &VarView,
     ) {
         let theme = ctx.theme;
         let map_len = map.len();
@@ -616,10 +620,11 @@ impl TableEditorState {
                     true,
                     ctx,
                     hint.as_deref(),
+                    vars,
                 );
             } else {
                 let hovered = hovered_row(ctx) == Some(i);
-                self.draw_plain_row(buf, hits, area, y, i, k, e, hovered, theme);
+                self.draw_plain_row(buf, hits, area, y, i, k, e, hovered, theme, vars);
                 y += 1;
             }
         }
@@ -635,9 +640,10 @@ impl TableEditorState {
                     enabled: true,
                 };
                 y = self.draw_active_row(
-                    buf, hits, area, y, bottom, map_len, "", &entry,
-                    false, // a row that doesn't exist yet has nothing to delete
+                    buf, hits, area, y, bottom, map_len, "", &entry, false,
+                    // a row that doesn't exist yet has nothing to delete
                     ctx, None, // no shadow hint until the row has a real key
+                    vars,
                 );
             } else {
                 self.draw_ghost_row(buf, hits, area, y, map_len, add_label, ctx);
@@ -708,6 +714,7 @@ impl TableEditorState {
         entry: &Entry,
         hovered: bool,
         theme: &Theme,
+        vars: &VarView,
     ) {
         let cols = columns(area.x, area.width);
         let bg = if hovered {
@@ -745,6 +752,7 @@ impl TableEditorState {
             hits.register(Rect::new(cols.check_x, y, 1, 1), Hit::TableCheckbox(i));
         }
         Self::register_cells(hits, cols_span(&cols, area), y, i);
+        paint_cell_tokens(buf, hits, &cols, area, y, key, &entry.value, vars, theme);
     }
 
     /// Registers the key/value halves of one drawn row line. Called after
@@ -795,6 +803,7 @@ impl TableEditorState {
         show_delete: bool,
         ctx: &DrawCtx,
         hint: Option<&str>,
+        vars: &VarView,
     ) -> u16 {
         let theme = ctx.theme;
         let text_row = y + 1;
@@ -879,6 +888,29 @@ impl TableEditorState {
             );
         }
         Self::register_cells(hits, cols_span(&cols, area), text_row, i);
+        // Only the cells drawn as plain text get token treatment: a cell
+        // under edit is showing a live `LineInput` (caret and all), and
+        // registering a `VarToken` over it would turn the next click into a
+        // picker instead of a caret move.
+        paint_cell_tokens(
+            buf,
+            hits,
+            &cols,
+            area,
+            text_row,
+            if editing_col == Some(Col::Key) {
+                ""
+            } else {
+                key
+            },
+            if editing_col == Some(Col::Value) {
+                ""
+            } else {
+                entry.value.as_str()
+            },
+            vars,
+            theme,
+        );
         if show_delete && area.width >= 2 {
             let del_x = area.x + area.width - 1;
             text(
@@ -911,6 +943,46 @@ impl TableEditorState {
         }
 
         (y + 3).min(bottom)
+    }
+}
+
+/// Tints the `{{tokens}}` in one drawn row's key and value cells (spec §7),
+/// registering each span over the `TableCell` hit beneath it. Both texts are
+/// whatever that row actually drew, so an empty string paints nothing.
+#[allow(clippy::too_many_arguments)]
+fn paint_cell_tokens(
+    buf: &mut ratatui::buffer::Buffer,
+    hits: &mut HitMap,
+    cols: &Columns,
+    area: Rect,
+    y: u16,
+    key: &str,
+    value: &str,
+    vars: &VarView,
+    theme: &Theme,
+) {
+    let (name_x, name_w, value_x, value_w) = cols_span(cols, area);
+    if name_w > 0 {
+        paint_var_tokens(
+            buf,
+            Rect::new(name_x, y, name_w, 1),
+            key,
+            name_x,
+            vars,
+            theme,
+            hits,
+        );
+    }
+    if value_w > 0 {
+        paint_var_tokens(
+            buf,
+            Rect::new(value_x, y, value_w, 1),
+            value,
+            value_x,
+            vars,
+            theme,
+            hits,
+        );
     }
 }
 
@@ -1399,7 +1471,18 @@ mod tests {
     ) -> Terminal<TestBackend> {
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
         terminal
-            .draw(|f| t.draw(f, f.area(), map, ctx, "+ Add param", hits, None))
+            .draw(|f| {
+                t.draw(
+                    f,
+                    f.area(),
+                    map,
+                    ctx,
+                    "+ Add param",
+                    hits,
+                    None,
+                    &VarView::default(),
+                )
+            })
             .unwrap();
         terminal
     }

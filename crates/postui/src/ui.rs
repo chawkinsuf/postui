@@ -128,6 +128,88 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         app.hovered.as_ref(),
     );
     app.hits = hits;
+
+    // The variable tooltip is painted last of all, over every pane — after
+    // the hit map is back on `app`, because a caret-raised tip is anchored
+    // at the `VarToken` rect this very frame registered. It never covers a
+    // dialog: `var_token_tip` yields nothing while a modal is up.
+    if let Some(tip) = app.var_token_tip() {
+        draw_var_tooltip(frame, frame.area(), &app.theme, &tip, &app.editor.vars);
+    }
+}
+
+/// Height of the variable tooltip: a padding row, the `name = value` line,
+/// the source line, and a closing padding row.
+const TOOLTIP_HEIGHT: u16 = 4;
+
+/// Draws the hover/caret tooltip for one `{{token}}` (spec §7): line 1 is
+/// `name = value` — always `SECRET_MASK` for a secret, with no reveal
+/// anywhere — and line 2 names the scope the value came from (`request var`,
+/// `env qa`, `default`, `group user → "user 2"`, `needs selection`, `missing
+/// secret`). It sits under the token it belongs to, flipping above when
+/// there is no room below, and is clamped to stay inside `screen`.
+fn draw_var_tooltip(
+    frame: &mut Frame,
+    screen: ratatui::layout::Rect,
+    theme: &crate::theme::Theme,
+    tip: &crate::app::TokenTip,
+    vars: &crate::components::var_tokens::VarView,
+) {
+    use ratatui::layout::Rect;
+    let info = vars.describe(&tip.name);
+    // A long value would otherwise stretch the tooltip past the terminal;
+    // the full value is always available in the Variable Manager.
+    let line1 = ellipsize(&format!("{} = {}", tip.name, info.display_value()), 56);
+    let line2 = info.source.label();
+    let text_w = line1.chars().count().max(line2.chars().count()) as u16;
+    // 2 columns of padding each side, plus a column for the drop shadow.
+    let width = (text_w + 4).min(screen.width.saturating_sub(1));
+    if width < 5 || screen.height < TOOLTIP_HEIGHT {
+        return;
+    }
+    let below = tip.anchor.bottom();
+    let y = if below + TOOLTIP_HEIGHT <= screen.bottom() {
+        below
+    } else {
+        tip.anchor.y.saturating_sub(TOOLTIP_HEIGHT)
+    };
+    let x = tip
+        .anchor
+        .x
+        .min(screen.right().saturating_sub(width + 1))
+        .max(screen.x);
+    let area = Rect::new(x, y, width, TOOLTIP_HEIGHT);
+    let buf = frame.buffer_mut();
+    crate::paint::floating_panel(buf, area, screen, theme);
+    let inner = width.saturating_sub(4) as usize;
+    crate::paint::text(
+        buf,
+        x + 2,
+        y + 1,
+        &ellipsize(&line1, inner),
+        theme.text,
+        theme.panel,
+        true,
+    );
+    crate::paint::text(
+        buf,
+        x + 2,
+        y + 2,
+        &ellipsize(&line2, inner),
+        theme.text_muted,
+        theme.panel,
+        false,
+    );
+}
+
+/// `s` cut to at most `max` characters, the last of which becomes `…`.
+fn ellipsize(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+    out.push('\u{2026}');
+    out
 }
 
 /// Marks the focused pane with a half-block accent bar down its left

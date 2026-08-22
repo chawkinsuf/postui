@@ -35,12 +35,27 @@ impl App {
                     // (e.g. a text selection sweep) is not a hover update.
                     return false;
                 }
-                let hit = self.hits.hit_at(m.column, m.row).cloned();
-                if hit != self.hovered {
-                    self.hovered = hit;
-                    return true;
-                }
-                false
+                // Two independent hover tracks: the control under the
+                // pointer (styling), and any `{{token}}` drawn on top of it
+                // (the value tooltip). A token must not steal its control's
+                // hover styling, and leaving one must drop the tooltip on
+                // the very next motion event.
+                let hit = self
+                    .hits
+                    .hit_at_ignoring_var_tokens(m.column, m.row)
+                    .cloned();
+                let token = self
+                    .hits
+                    .var_token_at(m.column, m.row)
+                    .map(|(name, _)| name.to_string());
+                // The pointer's exact position is recorded but not part of
+                // "changed": the tooltip is anchored at the token's own
+                // drawn rect, so moving within one token changes nothing.
+                let changed = hit != self.hovered || token != self.hovered_token;
+                self.hovered = hit;
+                self.hovered_token = token;
+                self.pointer = Some((m.column, m.row));
+                changed
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 let Some(hit) = self.hits.hit_at(m.column, m.row).cloned() else {
@@ -72,7 +87,13 @@ impl App {
             // that hit offers. Hits with no menu still get the selection
             // move — right-clicking a row selects it, menu or not.
             MouseEventKind::Down(MouseButton::Right) => {
-                let Some(hit) = self.hits.hit_at(m.column, m.row).cloned() else {
+                // Tokens are a left-click affordance only: a right click
+                // belongs to the row/cell under them and its context menu.
+                let Some(hit) = self
+                    .hits
+                    .hit_at_ignoring_var_tokens(m.column, m.row)
+                    .cloned()
+                else {
                     return false;
                 };
                 let mut changed = false;
@@ -263,6 +284,9 @@ impl App {
                 | Hit::VarPickerRow(_)
                 | Hit::ScrollbarThumb(_)
                 | Hit::ScrollbarTrack(..)
+                // A token sits *on* a cell: hovering or clicking one must
+                // neither commit the cell under edit nor drop the selection.
+                | Hit::VarToken(_)
         );
         if !keeps_table_selection {
             self.commit_table_edit();
@@ -273,8 +297,8 @@ impl App {
         // sub-focus (UrlBar, BodyEditor, the table hits) re-set it right
         // after; modal and scrollbar hits are excluded above so an open
         // popup or a scroll never blurs the input under it.
-        let keeps_editor_input =
-            keeps_table_selection || matches!(hit, Hit::UrlBar | Hit::BodyEditor);
+        let keeps_editor_input = keeps_table_selection
+            || matches!(hit, Hit::UrlBar | Hit::BodyEditor | Hit::VarToken(_));
         if !keeps_editor_input {
             self.editor.sub_focus = SubFocus::None;
         }
@@ -571,6 +595,10 @@ impl App {
             Hit::ScrollbarTrack(pane, delta) => {
                 self.update(Action::ScrollPane(pane, delta.clamp(-30, 30)))
             }
+            // Clicking a drawn `{{token}}` opens the var picker already
+            // filtered to that name (spec §7) — the shortest path from
+            // "what is this?" to the variable itself.
+            Hit::VarToken(name) => self.update(Action::OpenVarPickerFor(name)),
             Hit::VarRow(i) => match self.varmanager.click_row(i) {
                 Some(action) => self.update(action),
                 None => self.update(Action::Render),

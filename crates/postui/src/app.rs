@@ -22,6 +22,18 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 /// stack.
 const MIGRATION_TITLE: &str = "Migrate variables";
 
+/// Consecutive `Action::Tick`s (100ms apiece) the caret must rest inside a
+/// `{{token}}` before its tooltip appears.
+const CARET_TIP_TICKS: u8 = 2;
+
+/// A variable tooltip to draw: which name, and the on-screen span of the
+/// token it belongs to (the tooltip is placed against it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenTip {
+    pub name: String,
+    pub anchor: ratatui::layout::Rect,
+}
+
 /// An in-progress scrollbar drag: which pane's thumb is held, and how far
 /// down the thumb the pointer grabbed it, so the thumb keeps its position
 /// under the cursor instead of jumping its top to the pointer.
@@ -100,8 +112,25 @@ pub struct App {
     pub hits: HitMap,
     /// The `Hit` currently under the pointer, if any, updated by
     /// `handle_mouse` on `Moved`. Read by `ui::draw` to style hovered
-    /// buttons/chips.
+    /// buttons/chips. `Hit::VarToken` overlays are deliberately skipped
+    /// here (see `HitMap::hit_at_ignoring_var_tokens`) — they are tracked
+    /// by `hovered_token` instead, so crossing a `{{token}}` never takes a
+    /// row's or a button's hover styling away from it.
     pub hovered: Option<Hit>,
+    /// The drawn `{{token}}` under the pointer as of the last motion event.
+    /// Only a redraw trigger: the tooltip itself re-resolves `pointer`
+    /// against the *current* frame's hit map, so a token that scrolled or
+    /// tabbed out from under a resting pointer takes its tooltip with it.
+    hovered_token: Option<String>,
+    /// Where the pointer last was, so the tooltip can be re-resolved every
+    /// frame rather than trusting a rect captured at motion time.
+    pointer: Option<(u16, u16)>,
+    /// The token the keyboard caret is resting in, and how many consecutive
+    /// `Action::Tick`s it has rested there. The tooltip appears at
+    /// [`CARET_TIP_TICKS`], so a caret merely passing through a token on its
+    /// way somewhere else never flashes one up.
+    caret_token: Option<String>,
+    caret_token_ticks: u8,
     /// An in-progress drag (e.g. a scrollbar thumb), if any.
     pub drag: Option<Drag>,
     /// Whether the active tab's params/headers table body is collapsed
@@ -416,6 +445,10 @@ impl App {
             pending_terminal_action: None,
             hits: HitMap::default(),
             hovered: None,
+            hovered_token: None,
+            pointer: None,
+            caret_token: None,
+            caret_token_ticks: 0,
             drag: None,
             table_collapsed: false,
             last_click: None,
@@ -465,6 +498,14 @@ impl App {
         self.sidebar.open_dirty = self.editor.is_dirty();
         self.editor.inherited_headers = self.project.meta.default_headers.clone();
         self.editor.shadowed = self.compute_shadowed();
+        // The token-highlighting/tooltip snapshot, kept in lockstep with the
+        // project's resolved values and the open request's own `[variables]`
+        // the same way `shadowed` is.
+        let vars = crate::components::var_tokens::VarView::from_context(
+            &self.project,
+            &self.editor.variables,
+        );
+        self.editor.vars = vars;
         // The response pane always shows the open request's response;
         // whenever an action changed which request is open (any route),
         // swap in that request's cached response — or an empty one.
@@ -506,6 +547,69 @@ impl App {
             .collect()
     }
 
+    /// Opens the insert var picker, optionally with its fuzzy filter
+    /// pre-seeded (clicking an inline `{{token}}` opens the picker already
+    /// narrowed to that name — spec §7). Shared by `Action::OpenVarPicker`'s
+    /// plain path and `Action::OpenVarPickerFor`.
+    fn open_insert_var_picker(&mut self, completing: bool, seed: Option<&str>) -> bool {
+        use crate::components::modal::Modal;
+        use crate::components::var_picker::{VarPickerState, insert_entries};
+        let resolved = self.project.prepare_context().vars;
+        let entries = insert_entries(&self.project.model, &resolved, &self.editor.variables);
+        let mut state = VarPickerState::new(entries, completing);
+        if let Some(seed) = seed {
+            state.seed_filter(seed);
+        }
+        self.modals.push(Modal::VarPicker(state));
+        true
+    }
+
+    /// Per-`Tick` bookkeeping for the caret-resting tooltip: counts how long
+    /// the caret has sat inside one `{{token}}`, resetting whenever it moves
+    /// to a different token (or out of every token). Returns whether the
+    /// tooltip's visibility could have changed, so the tick redraws.
+    fn track_caret_token(&mut self) -> bool {
+        let token = self.editor.caret_token();
+        if token != self.caret_token {
+            // This tick is the first one that saw the new token, so it
+            // counts as one rest tick already.
+            let was_showing = self.caret_token_ticks >= CARET_TIP_TICKS;
+            self.caret_token_ticks = u8::from(token.is_some());
+            self.caret_token = token;
+            return was_showing;
+        }
+        if self.caret_token.is_none() || self.caret_token_ticks >= CARET_TIP_TICKS {
+            return false;
+        }
+        self.caret_token_ticks += 1;
+        self.caret_token_ticks == CARET_TIP_TICKS
+    }
+
+    /// The variable tooltip to draw this frame, if any: the token under the
+    /// pointer, or — with no hover — the one the caret has been resting in
+    /// for [`CARET_TIP_TICKS`] ticks, anchored at the span the last frame
+    /// drew for it. Suppressed while a modal is up: the tooltip draws above
+    /// everything else, and must not float over a dialog.
+    pub fn var_token_tip(&self) -> Option<TokenTip> {
+        if !self.modals.is_empty() {
+            return None;
+        }
+        if let Some((x, y)) = self.pointer
+            && let Some((name, anchor)) = self.hits.var_token_at(x, y)
+        {
+            return Some(TokenTip {
+                name: name.to_string(),
+                anchor,
+            });
+        }
+        if self.caret_token_ticks < CARET_TIP_TICKS {
+            return None;
+        }
+        let name = self.caret_token.clone()?;
+        let anchor = self.hits.rect_of(&Hit::VarToken(name.clone()))?;
+        Some(TokenTip { name, anchor })
+    }
+
     fn apply(&mut self, action: Action) -> bool {
         match action {
             Action::Quit => {
@@ -519,7 +623,8 @@ impl App {
             }
             Action::Tick => {
                 self.editor.on_tick();
-                self.toasts.on_tick() || self.in_flight_ticking()
+                let tip_changed = self.track_caret_token();
+                self.toasts.on_tick() || self.in_flight_ticking() || tip_changed
             }
             // No state change; forces a redraw. Background tasks use this
             // to wake the main loop when they've mutated state directly
@@ -1438,14 +1543,11 @@ impl App {
                 {
                     return self.open_select_picker(name, group);
                 }
-                let resolved = self.project.prepare_context().vars;
-                use crate::components::modal::Modal;
-                use crate::components::var_picker::{VarPickerState, insert_entries};
-                let entries =
-                    insert_entries(&self.project.model, &resolved, &self.editor.variables);
-                self.modals
-                    .push(Modal::VarPicker(VarPickerState::new(entries, completing)));
-                true
+                self.open_insert_var_picker(completing, None)
+            }
+            Action::OpenVarPickerFor(name) => {
+                self.apply(Action::ReloadProjectFiles);
+                self.open_insert_var_picker(false, Some(&name))
             }
             Action::OpenNewVariablePrompt {
                 prefill,

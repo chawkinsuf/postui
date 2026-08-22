@@ -202,6 +202,20 @@ impl VarPickerState {
     /// active environment (`name` is the token that led here — see
     /// [`PickerMode`]), with the env's current selection already marked.
     /// `env` is the active environment, captured for the `Enter` action.
+    /// The current filter text (test-visible: the click-a-token flow seeds
+    /// it, spec §7).
+    pub fn input(&self) -> &str {
+        &self.input
+    }
+
+    /// Pre-seeds the fuzzy filter (and re-filters), so the picker opens
+    /// already narrowed — clicking an inline `{{token}}` seeds it with that
+    /// token's name (spec §7).
+    pub fn seed_filter(&mut self, text: &str) {
+        self.input = text.to_string();
+        self.refilter();
+    }
+
     pub fn new_select(entries: Vec<SelectEntry>, name: String, group: String, env: String) -> Self {
         let filtered = (0..entries.len()).collect();
         Self {
