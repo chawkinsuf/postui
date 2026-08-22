@@ -5848,3 +5848,92 @@ fn migrating_a_project_with_no_environments_creates_default_toml_for_the_entries
         "a brand-new file has nothing to back up"
     );
 }
+
+/// Review finding: `open` used to prune "stale" selections against the
+/// *empty* model a legacy project leaves behind, wiping (and persisting
+/// the loss of) every selection before the user had even answered the
+/// prompt — so declining lost local state despite the untouched promise,
+/// and applying came up all-needs-selection even though the migration
+/// keeps the group names.
+#[test]
+fn a_legacy_projects_saved_selections_survive_the_prompt_and_resolve_after_applying() {
+    let dir = tempfile::tempdir().unwrap();
+    legacy_project(dir.path());
+    let mut selections = indexmap::IndexMap::new();
+    let mut qa = indexmap::IndexMap::new();
+    qa.insert("tier".to_string(), "gold".to_string());
+    qa.insert("user".to_string(), "alice".to_string());
+    selections.insert("qa".to_string(), qa);
+    postui_core::project::save_local_state(
+        dir.path(),
+        &postui_core::project::LocalState {
+            environment: Some("qa".into()),
+            selections,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    // Nothing was cleared while the prompt is still up...
+    assert!(
+        !app.toasts
+            .messages()
+            .iter()
+            .any(|m| m.contains("no longer exists")),
+        "no bogus stale-selection warnings: {:?}",
+        app.toasts.messages()
+    );
+    assert_eq!(app.project.selections_for("qa")["tier"], "gold");
+    assert_eq!(app.project.selections_for("qa")["user"], "alice");
+    let on_disk = postui_core::project::load_local_state(dir.path()).unwrap();
+    assert_eq!(on_disk.selections["qa"]["tier"], "gold");
+    assert_eq!(on_disk.selections["qa"]["user"], "alice");
+
+    // ...and once migrated, they select the migrated entries.
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, plain('y'));
+
+    assert_eq!(app.project.selections_for("qa")["tier"], "gold");
+    assert_eq!(
+        app.project.resolved.values["tier"], "g-qa",
+        "the carried-over selection resolves: {:?}",
+        app.project.resolved.values
+    );
+    assert_eq!(app.project.resolved.values["user_id"], "1001");
+    assert_eq!(app.project.resolved.values["customer_id"], "c-77");
+}
+
+/// The decline half of the same finding: refusing the migration must leave
+/// `.local/state.toml` exactly as it was, not just the shareable files.
+#[test]
+fn declining_the_migration_leaves_saved_selections_on_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    legacy_project(dir.path());
+    let mut selections = indexmap::IndexMap::new();
+    let mut qa = indexmap::IndexMap::new();
+    qa.insert("tier".to_string(), "gold".to_string());
+    selections.insert("qa".to_string(), qa);
+    postui_core::project::save_local_state(
+        dir.path(),
+        &postui_core::project::LocalState {
+            environment: Some("qa".into()),
+            selections,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, plain('n'));
+
+    let on_disk = postui_core::project::load_local_state(dir.path()).unwrap();
+    assert_eq!(
+        on_disk.selections["qa"]["tier"], "gold",
+        "declining must not touch local state either"
+    );
+}

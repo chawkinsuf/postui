@@ -269,7 +269,11 @@ impl ProjectContext {
             pending_migration,
             migration_declined: false,
         };
-        if let Some(env) = ctx.active_env.clone() {
+        // `legacy` leaves `model`/`env_data` empty, which would make
+        // every recorded selection look stale: pruning there would wipe
+        // (and persist the loss of) selections the migration is about to
+        // carry over, and toast a bogus warning for each one.
+        if let Some(env) = ctx.active_env.clone().filter(|_| !legacy) {
             let stale = prune_stale_selections(
                 &ctx.model,
                 &ctx.env_data,
@@ -507,7 +511,8 @@ impl ProjectContext {
             }
         }
 
-        if let Some(env) = self.active_env.clone() {
+        // See `open`: an unparsed legacy model must never prune.
+        if let Some(env) = self.active_env.clone().filter(|_| !legacy) {
             let stale = prune_stale_selections(
                 &self.model,
                 &self.env_data,
@@ -545,8 +550,11 @@ impl ProjectContext {
             return Err("no migration is pending".to_string());
         };
         let write = |path: &Path, text: &str| -> Result<(), String> {
-            if path.exists() {
-                let backup = path.with_extension("toml.bak");
+            let backup = path.with_extension("toml.bak");
+            // Only ever back up once: retrying after a partly-applied
+            // attempt would otherwise copy the already-migrated text over
+            // the only surviving copy of the original.
+            if path.exists() && !backup.exists() {
                 let existing = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
                 std::fs::write(&backup, existing).map_err(|e| e.to_string())?;
             }
@@ -1088,6 +1096,47 @@ mod tests {
         let on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
         assert!(on_disk.contains("# variables.toml"), "{on_disk}");
         assert!(on_disk.contains("http://localhost:9090"), "{on_disk}");
+    }
+
+    /// Review finding: a retry after a partly-applied migration used to
+    /// re-back-up whatever was on disk — by then the already-migrated
+    /// text — overwriting the only copy of the original.
+    #[test]
+    fn retrying_a_partly_applied_migration_keeps_the_original_bak() {
+        let dir = tempfile::tempdir().unwrap();
+        postui_core::project::init_project(dir.path(), None).unwrap();
+        let legacy_vars = "[tier]\n[tier.options.gold]\nvalue = \"g-1\"\n";
+        std::fs::write(dir.path().join("variables.toml"), legacy_vars).unwrap();
+        // A directory where `environments/qa.toml` should be: the env
+        // write fails after `variables.toml` has already been rewritten.
+        std::fs::create_dir(dir.path().join("environments/qa.toml")).unwrap();
+
+        let (mut ctx, _warns) = ProjectContext::open(dir.path().to_path_buf());
+        assert!(ctx.pending_migration().is_some());
+        assert!(ctx.apply_migration().is_err(), "the env write must fail");
+
+        let bak = dir.path().join("variables.toml.bak");
+        assert_eq!(
+            std::fs::read_to_string(&bak).unwrap(),
+            legacy_vars,
+            "the first attempt saved the original"
+        );
+        assert_ne!(
+            std::fs::read_to_string(dir.path().join("variables.toml")).unwrap(),
+            legacy_vars,
+            "...and rewrote the live file before failing"
+        );
+
+        // Clear the obstruction and retry.
+        std::fs::remove_dir(dir.path().join("environments/qa.toml")).unwrap();
+        assert!(ctx.pending_migration().is_some(), "still retryable");
+        ctx.apply_migration().unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&bak).unwrap(),
+            legacy_vars,
+            "the retry must not overwrite the original with migrated text"
+        );
     }
 
     #[test]
