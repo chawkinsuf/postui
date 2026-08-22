@@ -5812,6 +5812,68 @@ fn add_new_entry_writes_to_the_active_envs_entries_table_selects_it_and_restores
     assert_eq!(app.project.selections_for("qa")["user"], "carol");
 }
 
+/// Review finding 1: entry names are free-form strings (spec §3.2), unlike
+/// variable names — the inline-create path must not run them through
+/// `is_valid_var_name`'s charset check.
+#[test]
+fn inline_create_accepts_a_free_form_entry_name_with_a_space() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let keymap = Keymap::default_bindings();
+
+    focus_url_with_cursor_on(&mut app, "https://x/{{user}}", "{{user}}");
+    app.update(Action::OpenVarPicker { completing: false });
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(&keymap, enter_key());
+
+    type_into_field(&mut app, &keymap, "user 1");
+    app.handle_key(&keymap, tab_key());
+    type_into_field(&mut app, &keymap, "9009");
+    app.handle_key(&keymap, enter_key());
+
+    assert!(
+        app.modals.is_empty(),
+        "a free-form name must not be rejected: {:?}",
+        app.toasts.messages()
+    );
+    let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(env_doc.contains("[entries.user.\"user 1\"]"), "{env_doc}");
+    assert!(env_doc.contains("9009"), "{env_doc}");
+}
+
+/// Review finding 4: an inline-created entry on a multi-field group only
+/// fills the first field — the rest start empty — so a hint toast must
+/// point the user at the Manager to fill them in.
+#[test]
+fn inline_create_on_a_multi_field_group_hints_at_the_empty_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    group_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let keymap = Keymap::default_bindings();
+
+    focus_url_with_cursor_on(&mut app, "https://x/{{user_id}}", "{{user_id}}");
+    app.update(Action::OpenVarPicker { completing: false });
+    // "identity" has two entries (alice, bob); the ghost row sits one past
+    // them.
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(&keymap, enter_key());
+
+    type_into_field(&mut app, &keymap, "carol");
+    app.handle_key(&keymap, enter_key());
+
+    assert!(app.modals.is_empty());
+    let msgs = app.toasts.messages();
+    assert!(
+        msgs.iter().any(|m| m.contains("empty")),
+        "expected a hint about the unfilled fields: {msgs:?}"
+    );
+}
+
 #[test]
 fn e_on_an_entry_edits_it_in_the_environment_that_holds_it() {
     let dir = tempfile::tempdir().unwrap();
@@ -6872,6 +6934,56 @@ fn clicking_into_another_field_after_a_failed_commit_keeps_the_original_edit_liv
     for msg in app.toasts.messages() {
         assert!(!msg.contains("sk-typed-secret"), "{msg}");
     }
+}
+
+/// Review finding 2: clicking a DIFFERENT left-list row after a failed
+/// form commit must not reset `form` (which would discard the typed text
+/// the failure left live) — the click is absorbed instead.
+#[test]
+fn clicking_a_different_left_row_after_a_failed_commit_keeps_the_original_edit_live() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::SwitchEnv(None));
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("api_key".into())
+    });
+    rendered_text_tall(&mut app);
+
+    let r = field_rect(&mut app, VmField::EnvValue);
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    let keymap = Keymap::default_bindings();
+    for c in "sk-typed-secret".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+
+    let other = app
+        .varmanager
+        .left_rows
+        .iter()
+        .position(|r| r == &crate::components::varmanager::VmRow::Var("base_url".into()))
+        .expect("base_url row present");
+    let left_rect = app
+        .hits
+        .rect_of(&crate::hit::Hit::VmLeftRow(other))
+        .unwrap();
+    app.handle_mouse(left_down(left_rect.x + 1, left_rect.y + 1));
+
+    assert_eq!(
+        app.varmanager.detail,
+        crate::components::varmanager::VmDetail::Var("api_key".into()),
+        "the click must not move the detail pane off the failed edit"
+    );
+    assert_eq!(
+        app.varmanager
+            .form
+            .editing
+            .as_ref()
+            .map(|(_, i)| i.text().to_string()),
+        Some("sk-typed-secret".to_string()),
+        "the typed text must survive the click on another row"
+    );
 }
 
 /// A secret var with no active environment: the value field falls back to

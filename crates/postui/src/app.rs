@@ -2005,9 +2005,9 @@ impl App {
             Action::OpenNewOptionInlinePrompt { owner } => {
                 use crate::components::modal::PromptField;
                 self.modals.push(Modal::MultiPrompt {
-                    title: format!("Add option on {owner}"),
+                    title: format!("Add entry on {owner}"),
                     fields: vec![
-                        PromptField::text("key", "Key", ""),
+                        PromptField::text("key", "Name", ""),
                         PromptField::text("value", "Value", ""),
                         PromptField::text("description", "Description", ""),
                     ],
@@ -2049,9 +2049,16 @@ impl App {
                 value,
                 description,
             } => {
-                if !postui_core::vars::is_valid_var_name(&key) {
+                if key.is_empty() {
+                    self.toasts
+                        .push("entry name can't be empty", ToastKind::Error);
+                    return true;
+                }
+                if key == postui_core::varmodel::ENTRY_DESCRIPTION {
                     self.toasts.push(
-                        format!("\"{key}\" is not a valid option key"),
+                        format!(
+                            "\"{key}\" is reserved for an entry's own description and can't be used as an entry name"
+                        ),
                         ToastKind::Error,
                     );
                     return true;
@@ -2074,6 +2081,7 @@ impl App {
                     .get(&owner)
                     .map(|g| g.fields.clone())
                     .unwrap_or_default();
+                let field_count = fields.len();
                 let mut values = indexmap::IndexMap::new();
                 for (i, field) in fields.into_iter().enumerate() {
                     values.insert(field, if i == 0 { value.clone() } else { String::new() });
@@ -2093,6 +2101,12 @@ impl App {
                             format!("{owner} \u{2192} {key} ({env})"),
                             ToastKind::Success,
                         );
+                        if field_count > 1 {
+                            self.toasts.push(
+                                "other fields left empty \u{2014} fill them in the Manager",
+                                ToastKind::Info,
+                            );
+                        }
                     }
                     Err(msg) => self.toasts.push(msg, ToastKind::Error),
                 }
@@ -2744,9 +2758,9 @@ impl App {
                 // active env override for `from` would otherwise silently
                 // degrade to the default post-rename (no error, no
                 // warning, just a wrong-looking resolved value). Cascade
-                // into every environment's flat pair and `[options.*]`
-                // table too; `rename_env_var` no-ops for an environment
-                // with nothing to rename.
+                // into every environment's flat pair and its
+                // `[entries.<from>]` table too; `rename_env_var` no-ops
+                // for an environment with nothing to rename.
                 for env in self.project.environments.clone() {
                     self.project
                         .edit_env(&env, |doc| varedit::rename_env_var(doc, from, to))?;

@@ -124,6 +124,15 @@ impl App {
                 {
                     return self.update(Action::Render);
                 }
+                // Same rule for the left list: selecting a different row
+                // after a failed form/grid commit would reset `form`/`grid`
+                // and discard the typed text the failure left live.
+                if (self.varmanager.form.editing.is_some()
+                    || self.varmanager.grid.editing.is_some())
+                    && matches!(hit, Hit::VmLeftRow(_))
+                {
+                    return self.update(Action::Render);
+                }
                 // A table hit is normalized to `TableRow(resolved)` for the
                 // menu lookup below: right-clicking any part of the row (a
                 // cell, the checkbox, the ✕) opens the same row menu, and
@@ -737,7 +746,17 @@ impl App {
             // filtered to that name (spec §7) — the shortest path from
             // "what is this?" to the variable itself.
             Hit::VarToken(name) => self.update(Action::OpenVarPickerFor(name)),
+            // Like `VmFormField`/`VmEntryCell` above: the commit attempts at
+            // the top of this function just ran, and a write failure
+            // restores the original edit (still live) with its typed text.
+            // Selecting a different row would reset `form`/`grid` and throw
+            // that text away, so the click is absorbed instead — render
+            // only, edit and detail stay put.
             Hit::VmLeftRow(i) => {
+                if self.varmanager.form.editing.is_some() || self.varmanager.grid.editing.is_some()
+                {
+                    return self.update(Action::Render);
+                }
                 self.varmanager.select_row(i);
                 self.update(Action::Render)
             }
