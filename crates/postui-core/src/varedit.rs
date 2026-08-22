@@ -40,11 +40,11 @@ fn not_found(msg: impl Into<String>) -> EditError {
 
 /// Gets-or-creates a nested table at `key` inside `parent`, as a real
 /// (non-inline) `Table`. Brand-new *container* tables should pass
-/// `implicit_if_new = true` so an empty ancestor (e.g. `options`) never
-/// prints its own header — only its leaves do, matching spec §1.1's
-/// `[user.options.alice]` style. A table that is itself the addressed
-/// target (e.g. `[base_url]`, `[groups.g.options.alice]`) should pass
-/// `false` so it always renders, even with no fields yet.
+/// `implicit_if_new = true` so an empty ancestor (e.g. `entries` or
+/// `entries.<group>`) never prints its own header — only its leaves do,
+/// matching the `[entries.user."user 1"]` style. A table that is itself
+/// the addressed target (e.g. `[base_url]`, `[entries.user."user 1"]`)
+/// should pass `false` so it always renders, even with no fields yet.
 fn table_mut<'a>(
     parent: &'a mut Table,
     key: &str,
@@ -62,13 +62,13 @@ fn table_mut<'a>(
 }
 
 /// Order- and decor-preserving rename of a key within `parent`. Works both
-/// for a top-level table header (variable/group rename — table header
+/// for a top-level table header (variable/group/entry rename — table header
 /// *print* order in toml_edit follows each table's own recorded
 /// `doc_position`, not map order, so this is a no-op risk there) and for a
-/// flat `key = value` field inside a table (member key rename inside a
-/// group option row — flat field print order *is* map order, so this
-/// matters there). Rebuilding unconditionally keeps both cases correct
-/// without needing to special-case which situation we're in.
+/// flat `key = value` field inside a table (field key rename inside an
+/// entry row — flat field print order *is* map order, so this matters
+/// there). Rebuilding unconditionally keeps both cases correct without
+/// needing to special-case which situation we're in.
 fn rename_key(parent: &mut Table, from: &str, to: &str) {
     let implicit = parent.is_implicit();
     let decor = parent.decor().clone();
@@ -96,6 +96,35 @@ fn rename_key(parent: &mut Table, from: &str, to: &str) {
     *parent = rebuilt;
 }
 
+/// Moves an existing `key` to the front of `parent`'s map order, keeping
+/// every key's decor. Flat `key = value` pairs print in map order, so this
+/// is what puts an entry's `description` above its field values even when
+/// the description is added to an entry that already has values.
+fn move_key_first(parent: &mut Table, key: &str) {
+    let already_first = parent.iter().next().is_some_and(|(k, _)| k == key);
+    if already_first || !parent.contains_key(key) {
+        return;
+    }
+    let implicit = parent.is_implicit();
+    let decor = parent.decor().clone();
+    let position = parent.position();
+    let mut order: Vec<String> = parent.iter().map(|(k, _)| k.to_string()).collect();
+    order.retain(|k| k != key);
+    order.insert(0, key.to_string());
+
+    let mut rebuilt = Table::new();
+    rebuilt.set_implicit(implicit);
+    *rebuilt.decor_mut() = decor;
+    if let Some(pos) = position {
+        rebuilt.set_position(pos);
+    }
+    for k in order {
+        let (key, item) = parent.remove_entry(&k).expect("key came from iter");
+        rebuilt.insert_formatted(&key, item);
+    }
+    *parent = rebuilt;
+}
+
 /// Whether `name` already occupies either namespace a variable/group
 /// declaration could collide with: a top-level key, or a `[groups.<name>]`
 /// entry — variable and group names share one namespace (spec §1), so a
@@ -106,28 +135,6 @@ fn name_exists(root: &Table, name: &str) -> bool {
             .get("groups")
             .and_then(Item::as_table)
             .is_some_and(|g| g.contains_key(name))
-}
-
-/// Finds the table that owns shared options: either a top-level variable
-/// table `[owner]`, or a group table `[groups.owner]`.
-fn locate_owner_table<'a>(root: &'a mut Table, owner: &str) -> Result<&'a mut Table, EditError> {
-    if root.contains_key(owner) {
-        return root
-            .get_mut(owner)
-            .and_then(Item::as_table_mut)
-            .ok_or_else(|| EditError::Parse(format!("\"{owner}\" exists but is not a table")));
-    }
-    if let Some(groups_table) = root.get_mut("groups").and_then(Item::as_table_mut)
-        && groups_table.contains_key(owner)
-    {
-        return groups_table
-            .get_mut(owner)
-            .and_then(Item::as_table_mut)
-            .ok_or_else(|| EditError::Parse(format!("\"{owner}\" exists but is not a table")));
-    }
-    Err(not_found(format!(
-        "\"{owner}\" is not a declared variable or group"
-    )))
 }
 
 /// Splits a leading-decor prefix at its LAST blank line into `(file_header,
@@ -172,10 +179,10 @@ fn join_decor_prefix(header: &str, existing: &str) -> String {
 /// *print first* in `parent` after a deletion. Table headers keep their
 /// leading decor on the `Table` itself; flat `key = value` pairs keep it on
 /// their `Key`'s `leaf_decor`. An implicit ancestor table with no flat
-/// children of its own (e.g. `options`, kept invisible on purpose per spec
-/// §1.1 so only its leaves like `[user.options.alice]` print) never prints
-/// its own decor, so this recurses into such a table's first child to find
-/// the entry that will actually be first on the page.
+/// children of its own (e.g. `entries`, kept invisible on purpose so only
+/// its leaves like `[entries.user."user 1"]` print) never prints its own
+/// decor, so this recurses into such a table's first child to find the
+/// entry that will actually be first on the page.
 fn attach_header_to_new_first(parent: &mut Table, header: &str) {
     let Some(key) = parent.iter().next().map(|(k, _)| k.to_string()) else {
         return;
@@ -269,8 +276,7 @@ pub fn upsert_var(
 }
 
 /// Sets/clears `secret = true` on a variable. Turning secret on removes any
-/// `default` (a default would commit a secret value into the shared file)
-/// and is a `Conflict` if the variable declares `options`.
+/// `default` (a default would commit a secret value into the shared file).
 pub fn set_secret_flag(doc: &str, name: &str, secret: bool) -> Result<String, EditError> {
     let mut doc = parse(doc)?;
     let root = doc.as_table_mut();
@@ -279,11 +285,6 @@ pub fn set_secret_flag(doc: &str, name: &str, secret: bool) -> Result<String, Ed
         .and_then(Item::as_table_mut)
         .ok_or_else(|| not_found(format!("variable \"{name}\" not found")))?;
     if secret {
-        if t.get("options").is_some() {
-            return Err(EditError::Conflict(format!(
-                "variable \"{name}\" has options; remove them before marking it secret"
-            )));
-        }
         t.remove("default");
         t["secret"] = value(true);
     } else {
@@ -293,9 +294,10 @@ pub fn set_secret_flag(doc: &str, name: &str, secret: bool) -> Result<String, Ed
 }
 
 /// Renames a variable's table header, cascading into every group's
-/// `members` array and, for groups the variable belongs to, the
-/// corresponding member field key inside each `[groups.<g>.options.<key>]`
-/// row.
+/// `fields` array. The environment-side half of a field rename — the key
+/// inside each `[entries.<group>."<entry>"]` row — is
+/// [`rename_entry_field`], which the caller loops across every
+/// environment.
 pub fn rename_var(doc: &str, from: &str, to: &str) -> Result<String, EditError> {
     let mut doc = parse(doc)?;
     let root = doc.as_table_mut();
@@ -317,30 +319,12 @@ pub fn rename_var(doc: &str, from: &str, to: &str) -> Result<String, EditError> 
                 continue;
             };
 
-            let mut is_member = false;
-            if let Some(arr) = group_table.get_mut("members").and_then(Item::as_array_mut) {
+            if let Some(arr) = group_table.get_mut("fields").and_then(Item::as_array_mut) {
                 for v in arr.iter_mut() {
                     if v.as_str() == Some(from) {
                         let decor = v.decor().clone();
                         *v = Value::from(to);
                         *v.decor_mut() = decor;
-                        is_member = true;
-                    }
-                }
-            }
-
-            if is_member
-                && let Some(options_table) =
-                    group_table.get_mut("options").and_then(Item::as_table_mut)
-            {
-                let option_keys: Vec<String> =
-                    options_table.iter().map(|(k, _)| k.to_string()).collect();
-                for okey in option_keys {
-                    if let Some(opt_table) =
-                        options_table.get_mut(&okey).and_then(Item::as_table_mut)
-                        && opt_table.contains_key(from)
-                    {
-                        rename_key(opt_table, from, to);
                     }
                 }
             }
@@ -350,7 +334,7 @@ pub fn rename_var(doc: &str, from: &str, to: &str) -> Result<String, EditError> 
     Ok(doc.to_string())
 }
 
-/// Deletes a variable's table. `Conflict` if it's still a member of any
+/// Deletes a variable's table. `Conflict` if it's still a field of any
 /// group (remove it from the group first).
 pub fn delete_var(doc: &str, name: &str) -> Result<String, EditError> {
     let mut doc = parse(doc)?;
@@ -360,16 +344,16 @@ pub fn delete_var(doc: &str, name: &str) -> Result<String, EditError> {
     }
     if let Some(groups_table) = root.get("groups").and_then(Item::as_table) {
         for (gname, gitem) in groups_table.iter() {
-            let Some(members) = gitem
+            let Some(fields) = gitem
                 .as_table()
-                .and_then(|t| t.get("members"))
+                .and_then(|t| t.get("fields"))
                 .and_then(Item::as_array)
             else {
                 continue;
             };
-            if members.iter().any(|v| v.as_str() == Some(name)) {
+            if fields.iter().any(|v| v.as_str() == Some(name)) {
                 return Err(EditError::Conflict(format!(
-                    "variable \"{name}\" is a member of group \"{gname}\"; remove it from the group first"
+                    "variable \"{name}\" is a field of group \"{gname}\"; remove it from the group first"
                 )));
             }
         }
@@ -378,55 +362,13 @@ pub fn delete_var(doc: &str, name: &str) -> Result<String, EditError> {
     Ok(doc.to_string())
 }
 
-/// Creates or updates a keyed shared option under a variable or group:
-/// `[owner.options.key]` for a variable (`value_or_members` is `{"value":
-/// v}`), `[groups.owner.options.key]` for a group (`value_or_members` is
-/// the member-name -> value map).
-pub fn upsert_shared_option(
-    doc: &str,
-    owner: &str,
-    key: &str,
-    description: Option<&str>,
-    value_or_members: &IndexMap<String, String>,
-) -> Result<String, EditError> {
-    let mut doc = parse(doc)?;
-    let root = doc.as_table_mut();
-    let owner_table = locate_owner_table(root, owner)?;
-    let options = table_mut(owner_table, "options", true)?;
-    let opt = table_mut(options, key, false)?;
-    if let Some(d) = description {
-        opt["description"] = value(d);
-    }
-    for (k, v) in value_or_members {
-        opt[k.as_str()] = value(v.as_str());
-    }
-    Ok(doc.to_string())
-}
-
-/// Removes a keyed shared option from a variable or group.
-pub fn delete_shared_option(doc: &str, owner: &str, key: &str) -> Result<String, EditError> {
-    let mut doc = parse(doc)?;
-    let root = doc.as_table_mut();
-    let owner_table = locate_owner_table(root, owner)?;
-    let removed = owner_table
-        .get_mut("options")
-        .and_then(Item::as_table_mut)
-        .and_then(|t| remove_transferring_header(t, key));
-    if removed.is_none() {
-        return Err(not_found(format!(
-            "option \"{key}\" not found on \"{owner}\""
-        )));
-    }
-    Ok(doc.to_string())
-}
-
 /// Creates the group's table if absent, sets `description` when given, and
-/// always sets `members` to the given list.
+/// always sets `fields` to the given list.
 pub fn upsert_group(
     doc: &str,
     name: &str,
     description: Option<&str>,
-    members: &[String],
+    fields: &[String],
 ) -> Result<String, EditError> {
     let mut doc = parse(doc)?;
     let root = doc.as_table_mut();
@@ -436,51 +378,17 @@ pub fn upsert_group(
         g["description"] = value(d);
     }
     let mut arr = Array::new();
-    for m in members {
-        arr.push(m.as_str());
+    for f in fields {
+        arr.push(f.as_str());
     }
-    g["members"] = Item::Value(Value::Array(arr));
+    g["fields"] = Item::Value(Value::Array(arr));
     Ok(doc.to_string())
 }
 
-/// Removes `member` from `group`'s member list and strips its value from
-/// every `[groups.<group>.options.*]` table — a member's per-option values
-/// must not outlive its membership (the model rejects options naming a
-/// non-member). `NotFound` if the group doesn't exist or `member` isn't in
-/// its list.
-pub fn remove_group_member(doc: &str, group: &str, member: &str) -> Result<String, EditError> {
-    let mut doc = parse(doc)?;
-    let root = doc.as_table_mut();
-    let g = root
-        .get_mut("groups")
-        .and_then(Item::as_table_mut)
-        .and_then(|groups| groups.get_mut(group))
-        .and_then(Item::as_table_mut)
-        .ok_or_else(|| not_found(format!("group \"{group}\" not found")))?;
-    let members = g
-        .get_mut("members")
-        .and_then(Item::as_value_mut)
-        .and_then(Value::as_array_mut)
-        .ok_or_else(|| not_found(format!("group \"{group}\" has no members list")))?;
-    let before = members.len();
-    members.retain(|v| v.as_str() != Some(member));
-    if members.len() == before {
-        return Err(not_found(format!(
-            "\"{member}\" is not a member of \"{group}\""
-        )));
-    }
-    if let Some(options) = g.get_mut("options").and_then(Item::as_table_mut) {
-        for (_, opt) in options.iter_mut() {
-            if let Some(t) = opt.as_table_mut() {
-                t.remove(member);
-            }
-        }
-    }
-    Ok(doc.to_string())
-}
-
-/// Deletes a group's table (and everything nested under it, including its
-/// options). `NotFound` if there is no such group.
+/// Deletes a group's table. `NotFound` if there is no such group. The
+/// environment-side half — the group's `[entries.<name>]` subtree — is
+/// [`delete_group_entries`], which the caller loops across every
+/// environment.
 pub fn delete_group(doc: &str, name: &str) -> Result<String, EditError> {
     let mut doc = parse(doc)?;
     let root = doc.as_table_mut();
@@ -521,29 +429,147 @@ pub fn set_env_value(doc: &str, name: &str, val: Option<&str>) -> Result<String,
     Ok(doc.to_string())
 }
 
-/// Creates or updates `[options.owner.key]`, setting every field given in
-/// `fields` (e.g. `description`, `value`, or per-member values for a
-/// group's option row).
-pub fn upsert_env_option(
+/// `description` inside an entries table is an entry's own description, so
+/// no entry may be named that — the model would read the entry back as a
+/// malformed description rather than a record.
+fn check_entry_name(name: &str) -> Result<(), EditError> {
+    if name == crate::varmodel::ENTRY_DESCRIPTION {
+        return Err(EditError::Conflict(format!(
+            "\"{name}\" is reserved for an entry's own description and can't be used as an entry name"
+        )));
+    }
+    Ok(())
+}
+
+/// This environment's `[entries.<group>]` table, if it has one.
+fn entries_group_mut<'a>(root: &'a mut Table, group: &str) -> Option<&'a mut Table> {
+    root.get_mut("entries")
+        .and_then(Item::as_table_mut)
+        .and_then(|entries| entries.get_mut(group))
+        .and_then(Item::as_table_mut)
+}
+
+/// Creates or updates `[entries.<group>."<entry>"]`, setting `description`
+/// (written above the field values) when given plus every field in
+/// `values`. Fields already in the entry but absent from `values` are left
+/// alone — [`strip_entry_field`] is how a field leaves an entry.
+pub fn upsert_entry(
     doc: &str,
-    owner: &str,
-    key: &str,
-    fields: &IndexMap<String, String>,
+    group: &str,
+    entry: &str,
+    description: Option<&str>,
+    values: &IndexMap<String, String>,
+) -> Result<String, EditError> {
+    check_entry_name(entry)?;
+    let mut doc = parse(doc)?;
+    let root = doc.as_table_mut();
+    let entries = table_mut(root, "entries", true)?;
+    let group_table = table_mut(entries, group, true)?;
+    let t = table_mut(group_table, entry, false)?;
+    if let Some(d) = description {
+        t["description"] = value(d);
+        move_key_first(t, "description");
+    }
+    for (k, v) in values {
+        t[k.as_str()] = value(v.as_str());
+    }
+    Ok(doc.to_string())
+}
+
+/// Renames one entry of `group`. `NotFound` if the group or the entry
+/// isn't in this environment; `Conflict` if `to` already exists (the
+/// rename would merge two records into one).
+pub fn rename_entry(doc: &str, group: &str, from: &str, to: &str) -> Result<String, EditError> {
+    check_entry_name(to)?;
+    let mut doc = parse(doc)?;
+    let root = doc.as_table_mut();
+    let g = entries_group_mut(root, group)
+        .ok_or_else(|| not_found(format!("group \"{group}\" has no entries here")))?;
+    if !g.contains_key(from) {
+        return Err(not_found(format!(
+            "entry \"{from}\" not found in group \"{group}\""
+        )));
+    }
+    if from != to && g.contains_key(to) {
+        return Err(EditError::Conflict(format!(
+            "entry \"{to}\" already exists in group \"{group}\"; rename would merge two entries into one"
+        )));
+    }
+    rename_key(g, from, to);
+    Ok(doc.to_string())
+}
+
+/// Removes one entry of `group`. `NotFound` if it isn't there.
+pub fn delete_entry(doc: &str, group: &str, entry: &str) -> Result<String, EditError> {
+    let mut doc = parse(doc)?;
+    let root = doc.as_table_mut();
+    let removed = entries_group_mut(root, group).and_then(|g| remove_transferring_header(g, entry));
+    if removed.is_none() {
+        return Err(not_found(format!(
+            "entry \"{entry}\" not found in group \"{group}\""
+        )));
+    }
+    Ok(doc.to_string())
+}
+
+/// Removes the whole `[entries.<group>]` subtree — the environment-side
+/// half of [`delete_group`]. No-op (never an error) when this environment
+/// has no entries for the group, since the caller loops it across every
+/// environment.
+pub fn delete_group_entries(doc: &str, group: &str) -> Result<String, EditError> {
+    let mut doc = parse(doc)?;
+    let root = doc.as_table_mut();
+    if let Some(entries) = root.get_mut("entries").and_then(Item::as_table_mut) {
+        remove_transferring_header(entries, group);
+    }
+    Ok(doc.to_string())
+}
+
+/// Renames a field key inside every entry of `group` — the
+/// environment-side half of [`rename_var`] for a group field. Entries
+/// without the field (and environments without the group) pass through
+/// untouched.
+pub fn rename_entry_field(
+    doc: &str,
+    group: &str,
+    from: &str,
+    to: &str,
 ) -> Result<String, EditError> {
     let mut doc = parse(doc)?;
     let root = doc.as_table_mut();
-    let options = table_mut(root, "options", true)?;
-    let owner_table = table_mut(options, owner, true)?;
-    let opt = table_mut(owner_table, key, false)?;
-    for (k, v) in fields {
-        opt[k.as_str()] = value(v.as_str());
+    if let Some(g) = entries_group_mut(root, group) {
+        let entry_names: Vec<String> = g.iter().map(|(k, _)| k.to_string()).collect();
+        for name in entry_names {
+            if let Some(entry) = g.get_mut(&name).and_then(Item::as_table_mut)
+                && entry.contains_key(from)
+            {
+                rename_key(entry, from, to);
+            }
+        }
+    }
+    Ok(doc.to_string())
+}
+
+/// Removes a field key from every entry of `group` — what a field leaving
+/// its group does to the values already recorded for it. Entries without
+/// the field (and environments without the group) pass through untouched.
+pub fn strip_entry_field(doc: &str, group: &str, field: &str) -> Result<String, EditError> {
+    let mut doc = parse(doc)?;
+    let root = doc.as_table_mut();
+    if let Some(g) = entries_group_mut(root, group) {
+        for (_, entry) in g.iter_mut() {
+            if let Some(t) = entry.as_table_mut() {
+                t.remove(field);
+            }
+        }
     }
     Ok(doc.to_string())
 }
 
 /// Renames `from` to `to` wherever `from` appears in an environment file:
-/// its flat `from = "value"` pair (if any) and its `[options.from.*]`
-/// table (if any) — the cascade `rename_var` itself doesn't (and can't;
+/// its flat `from = "value"` pair (if any) and its `[entries.from]`
+/// table (if any, i.e. when `from` is a group) — the cascade `rename_var`
+/// itself doesn't (and can't;
 /// `rename_var` only ever sees `variables.toml`) do, so the Manager's
 /// rename op loops this across every environment after `rename_var`
 /// succeeds. Neither being present is a no-op (returns `doc` unchanged,
@@ -555,11 +581,11 @@ pub fn rename_env_var(doc: &str, from: &str, to: &str) -> Result<String, EditErr
     let mut doc = parse(doc)?;
     let root = doc.as_table_mut();
     let has_flat = root.contains_key(from);
-    let has_options = root
-        .get("options")
+    let has_entries = root
+        .get("entries")
         .and_then(Item::as_table)
-        .is_some_and(|o| o.contains_key(from));
-    if !has_flat && !has_options {
+        .is_some_and(|e| e.contains_key(from));
+    if !has_flat && !has_entries {
         return Ok(doc.to_string());
     }
     // Conflict check up front, before any mutation: a `to` that already
@@ -568,12 +594,12 @@ pub fn rename_env_var(doc: &str, from: &str, to: &str) -> Result<String, EditErr
     // encounter `to` twice and the second insert wins, dropping the first).
     if from != to {
         let flat_conflict = has_flat && root.contains_key(to);
-        let options_conflict = has_options
+        let entries_conflict = has_entries
             && root
-                .get("options")
+                .get("entries")
                 .and_then(Item::as_table)
-                .is_some_and(|o| o.contains_key(to));
-        if flat_conflict || options_conflict {
+                .is_some_and(|e| e.contains_key(to));
+        if flat_conflict || entries_conflict {
             return Err(EditError::Conflict(format!(
                 "\"{to}\" already exists in this environment; rename would merge two entries into one"
             )));
@@ -582,12 +608,12 @@ pub fn rename_env_var(doc: &str, from: &str, to: &str) -> Result<String, EditErr
     if has_flat {
         rename_key(root, from, to);
     }
-    if has_options {
-        let options = root
-            .get_mut("options")
+    if has_entries {
+        let entries = root
+            .get_mut("entries")
             .and_then(Item::as_table_mut)
-            .expect("has_options confirmed the table exists above");
-        rename_key(options, from, to);
+            .expect("has_entries confirmed the table exists above");
+        rename_key(entries, from, to);
     }
     Ok(doc.to_string())
 }
@@ -635,15 +661,14 @@ pub enum PromoteTarget {
 /// flat `name = value` pair into `env_doc` and a bare declaration (no
 /// fields) into `vars_doc`. `Conflict` if `name` collides with anything
 /// already occupying that name in `vars_doc`:
-/// - an enumerated variable (one with an `options` table) — writing over
-///   it would either clobber its options or leave promote's meaning
-///   ambiguous;
+/// - a secret variable — promoting a plain value onto it would either
+///   commit a secret or make the declaration invalid;
 /// - an existing group's own name — group and variable names share one
 ///   namespace (spec §1), so `upsert_var` would otherwise create a
 ///   colliding top-level variable table alongside `[groups.<name>]`;
-/// - an existing group's member — that name's value comes from the
-///   group's selected option, so writing a `default` onto it would be
-///   dead and misleading.
+/// - an existing group's field — that name's value comes from the group's
+///   selected entry, so writing a `default` onto it would be dead and
+///   misleading.
 ///
 /// In every conflict case the caller should offer a rename instead. The
 /// caller is responsible for removing the request's own `[variables]`
@@ -657,16 +682,6 @@ pub fn promote_var(
 ) -> Result<(String, Option<String>), EditError> {
     let existing = parse(vars_doc)?;
     let root = existing.as_table();
-
-    if root
-        .get(name)
-        .and_then(Item::as_table)
-        .is_some_and(|t| t.contains_key("options"))
-    {
-        return Err(EditError::Conflict(format!(
-            "variable \"{name}\" is enumerated; promoting would overwrite its options"
-        )));
-    }
 
     if root
         .get(name)
@@ -687,14 +702,14 @@ pub fn promote_var(
             )));
         }
         for (gname, gitem) in groups_table.iter() {
-            let is_member = gitem
+            let is_field = gitem
                 .as_table()
-                .and_then(|t| t.get("members"))
+                .and_then(|t| t.get("fields"))
                 .and_then(Item::as_array)
-                .is_some_and(|members| members.iter().any(|v| v.as_str() == Some(name)));
-            if is_member {
+                .is_some_and(|fields| fields.iter().any(|v| v.as_str() == Some(name)));
+            if is_field {
                 return Err(EditError::Conflict(format!(
-                    "variable \"{name}\" is a member of group \"{gname}\"; its value comes from the group's selected option"
+                    "variable \"{name}\" is a field of group \"{gname}\"; its value comes from the group's selected entry"
                 )));
             }
         }
@@ -717,55 +732,18 @@ pub fn promote_var(
 }
 
 /// Removes every environment-level trace of `name`: its flat `name =
-/// "value"` pair (if any) and its whole `[options.name.*]` table (if any).
-/// No-op (returns `doc` unchanged) when neither exists — mirrors
-/// `rename_env_var`'s per-env-loop-friendly behavior, since the caller
-/// (the Manager's delete cascade) loops this across every environment
-/// unconditionally, most of which won't have anything for a given name.
+/// "value"` pair (if any) and its whole `[entries.name]` subtree (if any,
+/// i.e. when `name` is a group). No-op (returns `doc` unchanged) when
+/// neither exists — mirrors `rename_env_var`'s per-env-loop-friendly
+/// behavior, since the caller (the Manager's delete cascade) loops this
+/// across every environment unconditionally, most of which won't have
+/// anything for a given name.
 pub fn delete_env_var(doc: &str, name: &str) -> Result<String, EditError> {
     let mut doc = parse(doc)?;
     let root = doc.as_table_mut();
     remove_transferring_header(root, name);
-    if let Some(options) = root.get_mut("options").and_then(Item::as_table_mut) {
-        remove_transferring_header(options, name);
-    }
-    Ok(doc.to_string())
-}
-
-/// Removes `[options.owner.key]`. `NotFound` if it wasn't there.
-/// Strips `member`'s value from every `[options.<group>.*]` table in an
-/// environment doc — the env-file half of [`remove_group_member`]. A doc
-/// with nothing to strip passes through unchanged (never an error: most
-/// envs won't override the group at all).
-pub fn strip_env_group_member(doc: &str, group: &str, member: &str) -> Result<String, EditError> {
-    let mut doc = parse(doc)?;
-    let root = doc.as_table_mut();
-    if let Some(keys) = root
-        .get_mut("options")
-        .and_then(Item::as_table_mut)
-        .and_then(|o| o.get_mut(group))
-        .and_then(Item::as_table_mut)
-    {
-        for (_, opt) in keys.iter_mut() {
-            if let Some(t) = opt.as_table_mut() {
-                t.remove(member);
-            }
-        }
-    }
-    Ok(doc.to_string())
-}
-
-pub fn delete_env_option(doc: &str, owner: &str, key: &str) -> Result<String, EditError> {
-    let mut doc = parse(doc)?;
-    let root = doc.as_table_mut();
-    let removed = root
-        .get_mut("options")
-        .and_then(Item::as_table_mut)
-        .and_then(|o| o.get_mut(owner))
-        .and_then(Item::as_table_mut)
-        .and_then(|t| remove_transferring_header(t, key));
-    if removed.is_none() {
-        return Err(not_found(format!("[options.{owner}.{key}] not found")));
+    if let Some(entries) = root.get_mut("entries").and_then(Item::as_table_mut) {
+        remove_transferring_header(entries, name);
     }
     Ok(doc.to_string())
 }
@@ -774,9 +752,9 @@ pub fn delete_env_option(doc: &str, owner: &str, key: &str) -> Result<String, Ed
 mod tests {
     use super::*;
 
-    /// Fixture mirrors spec §1.1's example almost verbatim, plus a
-    /// `[user_id]` top-level table so a group member has both a shared
-    /// declaration *and* group membership to exercise the rename cascade.
+    /// Fixture mirrors spec §3.2's `variables.toml` example, plus a
+    /// one-field group (what a migrated enumerated variable becomes) so
+    /// both group shapes are exercised.
     const VARS: &str = r#"# variables.toml
 
 [base_url]
@@ -787,40 +765,55 @@ default = "http://localhost:8080"
 description = "service API key"
 secret = true
 
-[user]
-description = "seeded test user"
-[user.options.alice]
-description = "admin, active sub"
-value = "1001"
-[user.options.bob]
-description = "expired trial"
-value = "2002"
-
-[user_id]
-description = "linked user id"
+[groups.tier]
+description = "pricing tier"
+fields = ["tier"]
 
 [groups.test-user]
 description = "user with linked customer"
-members = ["user_id", "customer_id"]
-[groups.test-user.options.alice]
-description = "admin, active sub"
-user_id = "1001"
-customer_id = "c-77"
+fields = ["user_id", "customer_id"]
 "#;
 
-    /// Fixture mirrors spec §1.2's example.
+    /// Fixture mirrors spec §3.2's `environments/<env>.toml` example.
     const ENV: &str = r#"# environments/qa.toml
 
 base_url = "https://qa.example.com"
 
-[options.user.alice]
-value = "9001"
-[options.user.qa-only]
-description = "exists only in qa"
-value = "3003"
-[options.test-user.alice]
-user_id = "9001"
+[entries.tier.gold]
+description = "the good one"
+tier = "g-1"
+
+[entries.test-user."user 1"]
+user_id = "1001"
+customer_id = "c-77"
+
+[entries.test-user."user 2"]
+user_id = "1002"
+customer_id = "c-91"
 "#;
+
+    /// Every environment verb's output must still parse as an environment
+    /// document; returns the parsed data so callers can assert on it.
+    fn reparses_env(s: &str) -> crate::varmodel::EnvData {
+        crate::varmodel::parse_environment(s)
+            .unwrap_or_else(|e| panic!("output must reparse as an environment: {e}\n---\n{s}"))
+    }
+
+    fn reparses_vars(s: &str) -> crate::varmodel::VarModel {
+        crate::varmodel::parse_variables(s)
+            .unwrap_or_else(|e| panic!("output must reparse as variables: {e}\n---\n{s}"))
+    }
+
+    fn vals(pairs: &[(&str, &str)]) -> IndexMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    // -------------------------------------------------------------
+    // variables.toml verbs
+    // -------------------------------------------------------------
 
     #[test]
     fn upsert_var_updates_only_the_given_field_on_an_existing_var() {
@@ -837,25 +830,13 @@ default = "http://localhost:9090"
 description = "service API key"
 secret = true
 
-[user]
-description = "seeded test user"
-[user.options.alice]
-description = "admin, active sub"
-value = "1001"
-[user.options.bob]
-description = "expired trial"
-value = "2002"
-
-[user_id]
-description = "linked user id"
+[groups.tier]
+description = "pricing tier"
+fields = ["tier"]
 
 [groups.test-user]
 description = "user with linked customer"
-members = ["user_id", "customer_id"]
-[groups.test-user.options.alice]
-description = "admin, active sub"
-user_id = "1001"
-customer_id = "c-77"
+fields = ["user_id", "customer_id"]
 "#
         );
     }
@@ -863,129 +844,29 @@ customer_id = "c-77"
     #[test]
     fn upsert_var_creates_a_new_var_table_at_the_end() {
         let out = upsert_var(VARS, "timeout", Some("request timeout, ms"), Some("30000")).unwrap();
-        assert_eq!(
-            out,
-            r#"# variables.toml
-
-[base_url]
-description = "API root"
-default = "http://localhost:8080"
-
-[api_key]
-description = "service API key"
-secret = true
-
-[user]
-description = "seeded test user"
-[user.options.alice]
-description = "admin, active sub"
-value = "1001"
-[user.options.bob]
-description = "expired trial"
-value = "2002"
-
-[user_id]
-description = "linked user id"
-
-[groups.test-user]
-description = "user with linked customer"
-members = ["user_id", "customer_id"]
-[groups.test-user.options.alice]
-description = "admin, active sub"
-user_id = "1001"
-customer_id = "c-77"
-
-[timeout]
-description = "request timeout, ms"
-default = "30000"
-"#
+        assert!(out.starts_with("# variables.toml\n"));
+        assert!(
+            out.ends_with(
+                "[timeout]\ndescription = \"request timeout, ms\"\ndefault = \"30000\"\n"
+            )
         );
+        let m = reparses_vars(&out);
+        assert_eq!(m.vars["timeout"].default.as_deref(), Some("30000"));
     }
 
     #[test]
     fn set_secret_flag_true_strips_default_and_sets_secret() {
         let out = set_secret_flag(VARS, "base_url", true).unwrap();
-        assert_eq!(
-            out,
-            r#"# variables.toml
-
-[base_url]
-description = "API root"
-secret = true
-
-[api_key]
-description = "service API key"
-secret = true
-
-[user]
-description = "seeded test user"
-[user.options.alice]
-description = "admin, active sub"
-value = "1001"
-[user.options.bob]
-description = "expired trial"
-value = "2002"
-
-[user_id]
-description = "linked user id"
-
-[groups.test-user]
-description = "user with linked customer"
-members = ["user_id", "customer_id"]
-[groups.test-user.options.alice]
-description = "admin, active sub"
-user_id = "1001"
-customer_id = "c-77"
-"#
-        );
-    }
-
-    #[test]
-    fn set_secret_flag_true_is_conflict_when_var_has_options() {
-        let err = set_secret_flag(VARS, "user", true).unwrap_err();
-        assert_eq!(
-            err,
-            EditError::Conflict(
-                "variable \"user\" has options; remove them before marking it secret".to_string()
-            )
-        );
+        assert!(out.contains("[base_url]\ndescription = \"API root\"\nsecret = true\n"));
+        assert!(!out.contains("localhost:8080"), "the default is gone");
+        assert!(reparses_vars(&out).vars["base_url"].secret);
     }
 
     #[test]
     fn set_secret_flag_false_removes_the_secret_line() {
         let out = set_secret_flag(VARS, "api_key", false).unwrap();
-        assert_eq!(
-            out,
-            r#"# variables.toml
-
-[base_url]
-description = "API root"
-default = "http://localhost:8080"
-
-[api_key]
-description = "service API key"
-
-[user]
-description = "seeded test user"
-[user.options.alice]
-description = "admin, active sub"
-value = "1001"
-[user.options.bob]
-description = "expired trial"
-value = "2002"
-
-[user_id]
-description = "linked user id"
-
-[groups.test-user]
-description = "user with linked customer"
-members = ["user_id", "customer_id"]
-[groups.test-user.options.alice]
-description = "admin, active sub"
-user_id = "1001"
-customer_id = "c-77"
-"#
-        );
+        assert!(out.contains("[api_key]\ndescription = \"service API key\"\n\n"));
+        assert!(!reparses_vars(&out).vars["api_key"].secret);
     }
 
     #[test]
@@ -1000,91 +881,28 @@ customer_id = "c-77"
     #[test]
     fn rename_var_renames_the_header_in_place_no_other_lines_move() {
         let out = rename_var(VARS, "base_url", "root_url").unwrap();
-        assert_eq!(
-            out,
-            r#"# variables.toml
-
-[root_url]
-description = "API root"
-default = "http://localhost:8080"
-
-[api_key]
-description = "service API key"
-secret = true
-
-[user]
-description = "seeded test user"
-[user.options.alice]
-description = "admin, active sub"
-value = "1001"
-[user.options.bob]
-description = "expired trial"
-value = "2002"
-
-[user_id]
-description = "linked user id"
-
-[groups.test-user]
-description = "user with linked customer"
-members = ["user_id", "customer_id"]
-[groups.test-user.options.alice]
-description = "admin, active sub"
-user_id = "1001"
-customer_id = "c-77"
-"#
-        );
+        assert_eq!(out, VARS.replace("[base_url]", "[root_url]"));
+        assert!(reparses_vars(&out).vars.contains_key("root_url"));
     }
 
     #[test]
-    fn rename_var_cascades_into_group_members_and_group_option_keys() {
-        let out = rename_var(VARS, "user_id", "account_id").unwrap();
-        assert_eq!(
-            out,
-            r#"# variables.toml
-
-[base_url]
-description = "API root"
-default = "http://localhost:8080"
-
-[api_key]
-description = "service API key"
-secret = true
-
-[user]
-description = "seeded test user"
-[user.options.alice]
-description = "admin, active sub"
-value = "1001"
-[user.options.bob]
-description = "expired trial"
-value = "2002"
-
-[account_id]
-description = "linked user id"
-
-[groups.test-user]
-description = "user with linked customer"
-members = ["account_id", "customer_id"]
-[groups.test-user.options.alice]
-description = "admin, active sub"
-account_id = "1001"
-customer_id = "c-77"
-"#
+    fn rename_var_cascades_into_group_fields() {
+        // The model forbids a field from also being a declared variable,
+        // but `varedit` is text -> text and never parses the model, so a
+        // hand-edited file carrying both must not come back half-renamed.
+        let vars = "[user_id]\ndescription = \"x\"\n\n[groups.test-user]\nfields = [\"user_id\", \"customer_id\"]\n";
+        let out = rename_var(vars, "user_id", "uid").unwrap();
+        assert!(out.contains("[uid]"), "{out}");
+        assert!(
+            out.contains("fields = [\"uid\", \"customer_id\"]"),
+            "the group's field list follows the rename:\n{out}"
         );
     }
 
     #[test]
     fn rename_var_conflict_when_to_already_exists_as_a_variable() {
         let err = rename_var(VARS, "base_url", "api_key").unwrap_err();
-        assert_eq!(
-            err,
-            EditError::Conflict(
-                "\"api_key\" already exists; rename would merge two declarations into one"
-                    .to_string()
-            )
-        );
-        // Nothing changed on a rejected rename.
-        assert!(rename_var(VARS, "base_url", "api_key").is_err());
+        assert!(matches!(err, EditError::Conflict(_)));
     }
 
     #[test]
@@ -1104,36 +922,9 @@ customer_id = "c-77"
 
     #[test]
     fn delete_var_removes_the_table() {
-        let out = delete_var(VARS, "base_url").unwrap();
-        assert_eq!(
-            out,
-            r#"# variables.toml
-
-[api_key]
-description = "service API key"
-secret = true
-
-[user]
-description = "seeded test user"
-[user.options.alice]
-description = "admin, active sub"
-value = "1001"
-[user.options.bob]
-description = "expired trial"
-value = "2002"
-
-[user_id]
-description = "linked user id"
-
-[groups.test-user]
-description = "user with linked customer"
-members = ["user_id", "customer_id"]
-[groups.test-user.options.alice]
-description = "admin, active sub"
-user_id = "1001"
-customer_id = "c-77"
-"#
-        );
+        let out = delete_var(VARS, "api_key").unwrap();
+        assert!(!out.contains("[api_key]"));
+        assert!(!reparses_vars(&out).vars.contains_key("api_key"));
     }
 
     #[test]
@@ -1169,12 +960,13 @@ secret = true
     }
 
     #[test]
-    fn delete_var_conflict_when_still_a_group_member() {
-        let err = delete_var(VARS, "user_id").unwrap_err();
+    fn delete_var_conflict_when_still_a_group_field() {
+        let vars = "[user_id]\ndescription = \"x\"\n\n[groups.test-user]\nfields = [\"user_id\"]\n";
+        let err = delete_var(vars, "user_id").unwrap_err();
         assert_eq!(
             err,
             EditError::Conflict(
-                "variable \"user_id\" is a member of group \"test-user\"; remove it from the group first"
+                "variable \"user_id\" is a field of group \"test-user\"; remove it from the group first"
                     .to_string()
             )
         );
@@ -1190,370 +982,49 @@ secret = true
     }
 
     #[test]
-    fn upsert_shared_option_adds_a_new_keyed_option_on_a_var() {
-        let mut fields = IndexMap::new();
-        fields.insert("value".to_string(), "3003".to_string());
-        let out = upsert_shared_option(VARS, "user", "carol", Some("qa only"), &fields).unwrap();
-        assert_eq!(
-            out,
-            r#"# variables.toml
-
-[base_url]
-description = "API root"
-default = "http://localhost:8080"
-
-[api_key]
-description = "service API key"
-secret = true
-
-[user]
-description = "seeded test user"
-[user.options.alice]
-description = "admin, active sub"
-value = "1001"
-[user.options.bob]
-description = "expired trial"
-value = "2002"
-
-[user.options.carol]
-description = "qa only"
-value = "3003"
-
-[user_id]
-description = "linked user id"
-
-[groups.test-user]
-description = "user with linked customer"
-members = ["user_id", "customer_id"]
-[groups.test-user.options.alice]
-description = "admin, active sub"
-user_id = "1001"
-customer_id = "c-77"
-"#
-        );
-    }
-
-    #[test]
-    fn upsert_shared_option_updates_an_existing_option_value() {
-        let mut fields = IndexMap::new();
-        fields.insert("value".to_string(), "9999".to_string());
-        let out = upsert_shared_option(VARS, "user", "alice", None, &fields).unwrap();
-        assert_eq!(
-            out,
-            r#"# variables.toml
-
-[base_url]
-description = "API root"
-default = "http://localhost:8080"
-
-[api_key]
-description = "service API key"
-secret = true
-
-[user]
-description = "seeded test user"
-[user.options.alice]
-description = "admin, active sub"
-value = "9999"
-[user.options.bob]
-description = "expired trial"
-value = "2002"
-
-[user_id]
-description = "linked user id"
-
-[groups.test-user]
-description = "user with linked customer"
-members = ["user_id", "customer_id"]
-[groups.test-user.options.alice]
-description = "admin, active sub"
-user_id = "1001"
-customer_id = "c-77"
-"#
-        );
-    }
-
-    #[test]
-    fn upsert_shared_option_adds_a_new_option_row_on_a_group() {
-        let mut members = IndexMap::new();
-        members.insert("user_id".to_string(), "3003".to_string());
-        members.insert("customer_id".to_string(), "c-99".to_string());
-        let out =
-            upsert_shared_option(VARS, "test-user", "carol", Some("qa only"), &members).unwrap();
-        assert_eq!(
-            out,
-            r#"# variables.toml
-
-[base_url]
-description = "API root"
-default = "http://localhost:8080"
-
-[api_key]
-description = "service API key"
-secret = true
-
-[user]
-description = "seeded test user"
-[user.options.alice]
-description = "admin, active sub"
-value = "1001"
-[user.options.bob]
-description = "expired trial"
-value = "2002"
-
-[user_id]
-description = "linked user id"
-
-[groups.test-user]
-description = "user with linked customer"
-members = ["user_id", "customer_id"]
-[groups.test-user.options.alice]
-description = "admin, active sub"
-user_id = "1001"
-customer_id = "c-77"
-
-[groups.test-user.options.carol]
-description = "qa only"
-user_id = "3003"
-customer_id = "c-99"
-"#
-        );
-    }
-
-    #[test]
-    fn upsert_shared_option_not_found_on_missing_owner() {
-        let mut fields = IndexMap::new();
-        fields.insert("value".to_string(), "1".to_string());
-        let err = upsert_shared_option(VARS, "nope", "k", None, &fields).unwrap_err();
-        assert_eq!(
-            err,
-            EditError::NotFound("\"nope\" is not a declared variable or group".to_string())
-        );
-    }
-
-    #[test]
-    fn delete_shared_option_removes_the_keyed_option() {
-        let out = delete_shared_option(VARS, "user", "bob").unwrap();
-        assert_eq!(
-            out,
-            r#"# variables.toml
-
-[base_url]
-description = "API root"
-default = "http://localhost:8080"
-
-[api_key]
-description = "service API key"
-secret = true
-
-[user]
-description = "seeded test user"
-[user.options.alice]
-description = "admin, active sub"
-value = "1001"
-
-[user_id]
-description = "linked user id"
-
-[groups.test-user]
-description = "user with linked customer"
-members = ["user_id", "customer_id"]
-[groups.test-user.options.alice]
-description = "admin, active sub"
-user_id = "1001"
-customer_id = "c-77"
-"#
-        );
-    }
-
-    #[test]
-    fn delete_shared_option_not_found_on_missing_key() {
-        let err = delete_shared_option(VARS, "user", "nope").unwrap_err();
-        assert_eq!(
-            err,
-            EditError::NotFound("option \"nope\" not found on \"user\"".to_string())
-        );
-    }
-
-    #[test]
-    fn remove_group_member_strips_the_list_and_every_options_value() {
-        let out = remove_group_member(VARS, "test-user", "user_id").unwrap();
-        let model = crate::varmodel::parse_variables(&out).unwrap();
-        let g = model.groups.get("test-user").unwrap();
-        assert_eq!(g.members, vec!["customer_id".to_string()]);
+    fn upsert_group_writes_fields_and_round_trips() {
+        let out = upsert_group(
+            "[base_url]\ndefault = \"x\"\n",
+            "user",
+            Some("linked pair"),
+            &["user_id".to_string(), "customer_id".to_string()],
+        )
+        .unwrap();
         assert!(
-            !g.options
-                .get("alice")
-                .unwrap()
-                .values
-                .contains_key("user_id"),
-            "the removed member's per-option values go too: {out}"
-        );
-        assert!(
-            g.options
-                .get("alice")
-                .unwrap()
-                .values
-                .contains_key("customer_id"),
-            "other members' values stay"
-        );
-        // the standalone [user_id] declaration is untouched
-        assert!(model.vars.contains_key("user_id"));
-
-        assert!(remove_group_member(VARS, "test-user", "nope").is_err());
-        assert!(remove_group_member(VARS, "no-such-group", "user_id").is_err());
-    }
-
-    #[test]
-    fn strip_env_group_member_removes_only_that_members_option_values() {
-        let out = strip_env_group_member(ENV, "test-user", "user_id").unwrap();
-        assert!(
-            !out.contains("[options.test-user.alice]") || !out.contains("user_id = \"9001\""),
+            out.contains("fields = [\"user_id\", \"customer_id\"]"),
             "{out}"
         );
-        // untouched: the plain var's options and the flat value
-        assert!(out.contains("[options.user.alice]"), "{out}");
-        assert!(out.contains("base_url = "), "{out}");
-        let parsed = crate::varmodel::parse_environment(&out).unwrap();
-        assert!(
-            parsed
-                .options
-                .get("test-user")
-                .and_then(|t| t.get("alice"))
-                .is_none_or(|o| !o.contains_key("user_id")),
-            "{out}"
-        );
-        // a doc with nothing to strip passes through unchanged
-        let untouched = strip_env_group_member("x = \"1\"\n", "test-user", "user_id").unwrap();
-        assert_eq!(untouched, "x = \"1\"\n");
+        let m = reparses_vars(&out);
+        assert_eq!(m.groups["user"].fields, ["user_id", "customer_id"]);
+        assert_eq!(m.groups["user"].description.as_deref(), Some("linked pair"));
     }
 
     #[test]
-    fn upsert_group_with_no_members_writes_an_empty_list_that_reparses() {
-        let out = upsert_group(VARS, "billing-pair", None, &[]).unwrap();
-        assert!(out.contains("[groups.billing-pair]"), "{out}");
-        assert!(out.contains("members = []"), "{out}");
-        let model = crate::varmodel::parse_variables(&out).unwrap();
-        assert!(
-            model.groups.get("billing-pair").unwrap().members.is_empty(),
-            "an empty group parses back"
-        );
+    fn upsert_group_with_no_fields_writes_an_empty_list_that_reparses() {
+        let out = upsert_group(VARS, "empty", None, &[]).unwrap();
+        assert!(out.contains("fields = []"), "{out}");
+        assert!(reparses_vars(&out).groups["empty"].fields.is_empty());
     }
 
     #[test]
-    fn upsert_group_creates_a_new_group_table() {
-        let members = vec!["order_id".to_string(), "invoice_id".to_string()];
-        let out = upsert_group(VARS, "billing-pair", Some("billing linkage"), &members).unwrap();
+    fn upsert_group_replaces_fields_on_an_existing_group() {
+        let out = upsert_group(VARS, "test-user", None, &["user_id".to_string()]).unwrap();
+        assert_eq!(reparses_vars(&out).groups["test-user"].fields, ["user_id"]);
         assert_eq!(
-            out,
-            r#"# variables.toml
-
-[base_url]
-description = "API root"
-default = "http://localhost:8080"
-
-[api_key]
-description = "service API key"
-secret = true
-
-[user]
-description = "seeded test user"
-[user.options.alice]
-description = "admin, active sub"
-value = "1001"
-[user.options.bob]
-description = "expired trial"
-value = "2002"
-
-[user_id]
-description = "linked user id"
-
-[groups.test-user]
-description = "user with linked customer"
-members = ["user_id", "customer_id"]
-[groups.test-user.options.alice]
-description = "admin, active sub"
-user_id = "1001"
-customer_id = "c-77"
-
-[groups.billing-pair]
-description = "billing linkage"
-members = ["order_id", "invoice_id"]
-"#
+            reparses_vars(&out).groups["test-user"]
+                .description
+                .as_deref(),
+            Some("user with linked customer"),
+            "a description left as None is untouched"
         );
     }
 
     #[test]
-    fn upsert_group_replaces_members_on_an_existing_group() {
-        let members = vec![
-            "user_id".to_string(),
-            "customer_id".to_string(),
-            "region".to_string(),
-        ];
-        let out = upsert_group(VARS, "test-user", None, &members).unwrap();
-        assert_eq!(
-            out,
-            r#"# variables.toml
-
-[base_url]
-description = "API root"
-default = "http://localhost:8080"
-
-[api_key]
-description = "service API key"
-secret = true
-
-[user]
-description = "seeded test user"
-[user.options.alice]
-description = "admin, active sub"
-value = "1001"
-[user.options.bob]
-description = "expired trial"
-value = "2002"
-
-[user_id]
-description = "linked user id"
-
-[groups.test-user]
-description = "user with linked customer"
-members = ["user_id", "customer_id", "region"]
-[groups.test-user.options.alice]
-description = "admin, active sub"
-user_id = "1001"
-customer_id = "c-77"
-"#
-        );
-    }
-
-    #[test]
-    fn delete_group_removes_the_group_and_its_options() {
+    fn delete_group_removes_the_group() {
         let out = delete_group(VARS, "test-user").unwrap();
-        assert_eq!(
-            out,
-            r#"# variables.toml
-
-[base_url]
-description = "API root"
-default = "http://localhost:8080"
-
-[api_key]
-description = "service API key"
-secret = true
-
-[user]
-description = "seeded test user"
-[user.options.alice]
-description = "admin, active sub"
-value = "1001"
-[user.options.bob]
-description = "expired trial"
-value = "2002"
-
-[user_id]
-description = "linked user id"
-"#
-        );
+        assert!(!out.contains("test-user"));
+        assert!(!reparses_vars(&out).groups.contains_key("test-user"));
+        assert!(reparses_vars(&out).groups.contains_key("tier"));
     }
 
     #[test]
@@ -1565,25 +1036,15 @@ description = "linked user id"
         );
     }
 
+    // -------------------------------------------------------------
+    // environments/<env>.toml verbs
+    // -------------------------------------------------------------
+
     #[test]
     fn set_env_value_adds_a_new_flat_pair() {
         let out = set_env_value(ENV, "region", Some("us-east")).unwrap();
-        assert_eq!(
-            out,
-            r#"# environments/qa.toml
-
-base_url = "https://qa.example.com"
-region = "us-east"
-
-[options.user.alice]
-value = "9001"
-[options.user.qa-only]
-description = "exists only in qa"
-value = "3003"
-[options.test-user.alice]
-user_id = "9001"
-"#
-        );
+        assert!(out.contains("base_url = \"https://qa.example.com\"\nregion = \"us-east\"\n"));
+        assert_eq!(reparses_env(&out).values["region"], "us-east");
     }
 
     #[test]
@@ -1591,18 +1052,11 @@ user_id = "9001"
         let out = set_env_value(ENV, "base_url", Some("https://qa2.example.com")).unwrap();
         assert_eq!(
             out,
-            r#"# environments/qa.toml
-
-base_url = "https://qa2.example.com"
-
-[options.user.alice]
-value = "9001"
-[options.user.qa-only]
-description = "exists only in qa"
-value = "3003"
-[options.test-user.alice]
-user_id = "9001"
-"#
+            ENV.replace("https://qa.example.com", "https://qa2.example.com")
+        );
+        assert_eq!(
+            reparses_env(&out).values["base_url"],
+            "https://qa2.example.com"
         );
     }
 
@@ -1618,8 +1072,8 @@ base_url = "https://qa.example.com"
 # staging region override, remove once qa2 is retired
 region = "eu-west"
 
-[options.user.alice]
-value = "9001"
+[entries.tier.gold]
+tier = "g-1"
 "#;
         let out = set_env_value(env, "region", Some("us-east")).unwrap();
         assert_eq!(
@@ -1630,8 +1084,8 @@ base_url = "https://qa.example.com"
 # staging region override, remove once qa2 is retired
 region = "us-east"
 
-[options.user.alice]
-value = "9001"
+[entries.tier.gold]
+tier = "g-1"
 "#
         );
     }
@@ -1639,25 +1093,235 @@ value = "9001"
     #[test]
     fn set_env_value_none_removes_the_flat_pair() {
         let out = set_env_value(ENV, "base_url", None).unwrap();
-        assert_eq!(
-            out,
-            r#"# environments/qa.toml
-
-[options.user.alice]
-value = "9001"
-[options.user.qa-only]
-description = "exists only in qa"
-value = "3003"
-[options.test-user.alice]
-user_id = "9001"
-"#
-        );
+        assert!(!out.contains("base_url"));
+        assert!(reparses_env(&out).values.is_empty());
     }
 
     #[test]
     fn set_env_value_none_not_found_when_pair_absent() {
         let err = set_env_value(ENV, "nope", None).unwrap_err();
         assert_eq!(err, EditError::NotFound("\"nope\" not found".to_string()));
+    }
+
+    #[test]
+    fn upsert_entry_creates_and_updates_preserving_other_entries() {
+        let doc = "base_url = \"x\"\n";
+        let mut vals = IndexMap::new();
+        vals.insert("user_id".to_string(), "1001".to_string());
+        vals.insert("customer_id".to_string(), "cust-77".to_string());
+        let out = upsert_entry(doc, "user", "user 1", None, &vals).unwrap();
+        assert!(out.contains("[entries.user.\"user 1\"]"));
+        let mut vals2 = vals.clone();
+        vals2.insert("user_id".to_string(), "9999".to_string());
+        let out2 = upsert_entry(&out, "user", "user 1", Some("admin"), &vals2).unwrap();
+        assert!(out2.contains("9999") && out2.contains("description = \"admin\""));
+        assert_eq!(out2.matches("[entries.user.").count(), 1);
+        let e = reparses_env(&out2);
+        assert_eq!(e.entries["user"]["user 1"].values["user_id"], "9999");
+        assert_eq!(
+            e.entries["user"]["user 1"].description.as_deref(),
+            Some("admin")
+        );
+        assert_eq!(e.values["base_url"], "x");
+    }
+
+    #[test]
+    fn upsert_entry_leaves_sibling_entries_alone() {
+        let out = upsert_entry(
+            ENV,
+            "test-user",
+            "user 3",
+            None,
+            &vals(&[("user_id", "1003"), ("customer_id", "c-03")]),
+        )
+        .unwrap();
+        let e = reparses_env(&out);
+        assert_eq!(e.entries["test-user"].len(), 3);
+        assert_eq!(e.entries["test-user"]["user 1"].values["user_id"], "1001");
+        assert_eq!(
+            e.entries["test-user"]["user 3"].values["customer_id"],
+            "c-03"
+        );
+        assert_eq!(e.entries["tier"]["gold"].values["tier"], "g-1");
+    }
+
+    #[test]
+    fn upsert_entry_quotes_awkward_entry_names() {
+        let out = upsert_entry(
+            "",
+            "user",
+            "the \"big\" one, v2",
+            None,
+            &vals(&[("user_id", "1")]),
+        )
+        .unwrap();
+        let e = reparses_env(&out);
+        assert_eq!(
+            e.entries["user"]["the \"big\" one, v2"].values["user_id"],
+            "1"
+        );
+    }
+
+    #[test]
+    fn upsert_entry_writes_description_above_the_field_values() {
+        let out = upsert_entry("", "user", "u1", None, &vals(&[("user_id", "1")])).unwrap();
+        let out = upsert_entry(&out, "user", "u1", Some("later"), &vals(&[])).unwrap();
+        assert!(
+            out.contains("description = \"later\"\nuser_id = \"1\""),
+            "description goes first even when added after the values:\n{out}"
+        );
+        reparses_env(&out);
+    }
+
+    #[test]
+    fn an_entry_may_not_be_named_description() {
+        // `description` inside an entries table is an entry's own
+        // description, so writing one under that name would produce a
+        // document the model rejects.
+        let err = upsert_entry(
+            ENV,
+            "test-user",
+            "description",
+            None,
+            &vals(&[("user_id", "1")]),
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            EditError::Conflict(
+                "\"description\" is reserved for an entry's own description and can't be used as an entry name"
+                    .to_string()
+            )
+        );
+        assert!(matches!(
+            rename_entry(ENV, "test-user", "user 1", "description"),
+            Err(EditError::Conflict(_))
+        ));
+    }
+
+    #[test]
+    fn rename_entry_preserves_value_order_and_unrelated_comments() {
+        let out = rename_entry(ENV, "test-user", "user 1", "the first user").unwrap();
+        assert!(out.starts_with("# environments/qa.toml\n"));
+        assert!(out.contains(
+            "[entries.test-user.\"the first user\"]\nuser_id = \"1001\"\ncustomer_id = \"c-77\"\n"
+        ));
+        let e = reparses_env(&out);
+        assert_eq!(
+            e.entries["test-user"].keys().collect::<Vec<_>>(),
+            ["the first user", "user 2"]
+        );
+    }
+
+    #[test]
+    fn rename_entry_conflict_when_target_exists() {
+        let err = rename_entry(ENV, "test-user", "user 1", "user 2").unwrap_err();
+        assert_eq!(
+            err,
+            EditError::Conflict(
+                "entry \"user 2\" already exists in group \"test-user\"; rename would merge two entries into one"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn rename_entry_not_found_for_missing_entry_or_group() {
+        assert_eq!(
+            rename_entry(ENV, "test-user", "nope", "x").unwrap_err(),
+            EditError::NotFound("entry \"nope\" not found in group \"test-user\"".to_string())
+        );
+        assert_eq!(
+            rename_entry(ENV, "ghost", "a", "b").unwrap_err(),
+            EditError::NotFound("group \"ghost\" has no entries here".to_string())
+        );
+    }
+
+    #[test]
+    fn delete_entry_removes_only_that_entry() {
+        let out = delete_entry(ENV, "test-user", "user 1").unwrap();
+        let e = reparses_env(&out);
+        assert_eq!(
+            e.entries["test-user"].keys().collect::<Vec<_>>(),
+            ["user 2"]
+        );
+        assert!(e.entries.contains_key("tier"));
+    }
+
+    #[test]
+    fn delete_entry_not_found_when_absent() {
+        assert_eq!(
+            delete_entry(ENV, "test-user", "nope").unwrap_err(),
+            EditError::NotFound("entry \"nope\" not found in group \"test-user\"".to_string())
+        );
+        assert_eq!(
+            delete_entry(ENV, "ghost", "nope").unwrap_err(),
+            EditError::NotFound("entry \"nope\" not found in group \"ghost\"".to_string())
+        );
+    }
+
+    #[test]
+    fn delete_group_entries_removes_the_whole_subtree() {
+        let out = delete_group_entries(ENV, "test-user").unwrap();
+        assert!(!out.contains("test-user"));
+        let e = reparses_env(&out);
+        assert!(!e.entries.contains_key("test-user"));
+        assert_eq!(e.entries["tier"]["gold"].values["tier"], "g-1");
+    }
+
+    #[test]
+    fn delete_group_entries_is_a_no_op_when_absent() {
+        assert_eq!(delete_group_entries(ENV, "ghost").unwrap(), ENV);
+        assert_eq!(
+            delete_group_entries("base_url = \"x\"\n", "ghost").unwrap(),
+            "base_url = \"x\"\n"
+        );
+    }
+
+    #[test]
+    fn rename_entry_field_touches_every_entry_of_the_group() {
+        let out = rename_entry_field(ENV, "test-user", "user_id", "uid").unwrap();
+        let e = reparses_env(&out);
+        assert_eq!(e.entries["test-user"]["user 1"].values["uid"], "1001");
+        assert_eq!(e.entries["test-user"]["user 2"].values["uid"], "1002");
+        assert_eq!(
+            e.entries["test-user"]["user 1"]
+                .values
+                .keys()
+                .collect::<Vec<_>>(),
+            ["uid", "customer_id"],
+            "the renamed key keeps its position"
+        );
+        assert_eq!(e.entries["tier"]["gold"].values["tier"], "g-1");
+    }
+
+    #[test]
+    fn rename_entry_field_is_a_no_op_when_the_group_or_field_is_absent() {
+        assert_eq!(rename_entry_field(ENV, "ghost", "a", "b").unwrap(), ENV);
+        assert_eq!(rename_entry_field(ENV, "tier", "ghost", "b").unwrap(), ENV);
+    }
+
+    #[test]
+    fn strip_entry_field_removes_it_from_every_entry() {
+        let out = strip_entry_field(ENV, "test-user", "customer_id").unwrap();
+        let e = reparses_env(&out);
+        assert!(
+            !e.entries["test-user"]["user 1"]
+                .values
+                .contains_key("customer_id")
+        );
+        assert!(
+            !e.entries["test-user"]["user 2"]
+                .values
+                .contains_key("customer_id")
+        );
+        assert_eq!(e.entries["test-user"]["user 1"].values["user_id"], "1001");
+    }
+
+    #[test]
+    fn strip_entry_field_is_a_no_op_when_the_group_or_field_is_absent() {
+        assert_eq!(strip_entry_field(ENV, "ghost", "a").unwrap(), ENV);
+        assert_eq!(strip_entry_field(ENV, "tier", "ghost").unwrap(), ENV);
     }
 
     #[test]
@@ -1668,8 +1332,8 @@ base_url = "https://qa.example.com"
 # staging region override, remove once qa2 is retired
 region = "eu-west"
 
-[options.user.alice]
-value = "9001"
+[entries.tier.gold]
+tier = "g-1"
 "#;
         let out = rename_env_var(env, "region", "aws_region").unwrap();
         assert_eq!(
@@ -1680,66 +1344,45 @@ base_url = "https://qa.example.com"
 # staging region override, remove once qa2 is retired
 aws_region = "eu-west"
 
-[options.user.alice]
-value = "9001"
+[entries.tier.gold]
+tier = "g-1"
 "#
         );
     }
 
     #[test]
-    fn rename_env_var_renames_the_options_table_key() {
-        let out = rename_env_var(ENV, "user", "person").unwrap();
-        assert_eq!(
-            out,
-            r#"# environments/qa.toml
-
-base_url = "https://qa.example.com"
-
-[options.person.alice]
-value = "9001"
-[options.person.qa-only]
-description = "exists only in qa"
-value = "3003"
-[options.test-user.alice]
-user_id = "9001"
-"#
-        );
+    fn rename_env_var_renames_the_entries_table_key() {
+        let out = rename_env_var(ENV, "test-user", "person").unwrap();
+        let e = reparses_env(&out);
+        assert!(!e.entries.contains_key("test-user"));
+        assert_eq!(e.entries["person"]["user 1"].values["user_id"], "1001");
     }
 
     #[test]
-    fn rename_env_var_renames_both_the_flat_pair_and_its_options_table() {
-        // A variable can be simple in one env and enumerated in another
-        // (spec §1.2), so a single env file can legitimately carry both a
-        // flat pair AND an `[options.<name>]` table for two DIFFERENT
-        // names — but this fixture exercises the same name appearing as
-        // both in one file (the `Rename` op doesn't know which shape each
-        // environment uses ahead of time, so it must handle either, or
-        // both, without erroring).
-        let env = r#"base_url = "https://qa.example.com"
+    fn rename_env_var_renames_both_the_flat_pair_and_its_entries_table() {
+        // The Rename op doesn't know which shape each environment uses
+        // ahead of time (a name can have a flat pair here and entries
+        // there), so it must handle either — or, as here, both — without
+        // erroring.
+        let env = r#"shard = "d-1"
 
-[options.base_url.primary]
-value = "https://qa2.example.com"
+[entries.shard.east]
+shard = "e-1"
 "#;
-        let out = rename_env_var(env, "base_url", "root_url").unwrap();
+        let out = rename_env_var(env, "shard", "region").unwrap();
         assert_eq!(
             out,
-            r#"root_url = "https://qa.example.com"
+            r#"region = "d-1"
 
-[options.root_url.primary]
-value = "https://qa2.example.com"
+[entries.region.east]
+shard = "e-1"
 "#
         );
     }
 
     #[test]
     fn rename_env_var_conflict_when_to_flat_pair_already_exists() {
-        // ENV has both a flat "base_url" pair and options for "user"/
-        // "test-user"; renaming "base_url" onto the existing flat-pair-less
-        // but options-bearing "user" is fine (no flat "user" pair), so use
-        // a fixture where the target name already has a flat pair too.
-        let env = r#"base_url = "https://qa.example.com"
-region = "us-east"
-"#;
+        let env = "base_url = \"https://qa.example.com\"\nregion = \"us-east\"\n";
         let err = rename_env_var(env, "base_url", "region").unwrap_err();
         assert_eq!(
             err,
@@ -1751,8 +1394,8 @@ region = "us-east"
     }
 
     #[test]
-    fn rename_env_var_conflict_when_to_options_table_already_exists() {
-        let err = rename_env_var(ENV, "user", "test-user").unwrap_err();
+    fn rename_env_var_conflict_when_to_entries_table_already_exists() {
+        let err = rename_env_var(ENV, "tier", "test-user").unwrap_err();
         assert!(matches!(err, EditError::Conflict(_)));
     }
 
@@ -1766,130 +1409,37 @@ region = "us-east"
     }
 
     #[test]
-    fn upsert_env_option_updates_an_existing_option_field() {
-        let mut fields = IndexMap::new();
-        fields.insert("value".to_string(), "5005".to_string());
-        let out = upsert_env_option(ENV, "user", "alice", &fields).unwrap();
-        assert_eq!(
-            out,
-            r#"# environments/qa.toml
-
-base_url = "https://qa.example.com"
-
-[options.user.alice]
-value = "5005"
-[options.user.qa-only]
-description = "exists only in qa"
-value = "3003"
-[options.test-user.alice]
-user_id = "9001"
-"#
-        );
-    }
-
-    #[test]
-    fn upsert_env_option_creates_a_new_owner_and_key() {
-        let mut fields = IndexMap::new();
-        fields.insert("description".to_string(), "new option".to_string());
-        fields.insert("value".to_string(), "7007".to_string());
-        let out = upsert_env_option(ENV, "test-user", "bob", &fields).unwrap();
-        assert_eq!(
-            out,
-            r#"# environments/qa.toml
-
-base_url = "https://qa.example.com"
-
-[options.user.alice]
-value = "9001"
-[options.user.qa-only]
-description = "exists only in qa"
-value = "3003"
-[options.test-user.alice]
-user_id = "9001"
-
-[options.test-user.bob]
-description = "new option"
-value = "7007"
-"#
-        );
-    }
-
-    #[test]
-    fn delete_env_option_removes_the_keyed_option() {
-        let out = delete_env_option(ENV, "user", "alice").unwrap();
-        assert_eq!(
-            out,
-            r#"# environments/qa.toml
-
-base_url = "https://qa.example.com"
-[options.user.qa-only]
-description = "exists only in qa"
-value = "3003"
-[options.test-user.alice]
-user_id = "9001"
-"#
-        );
-    }
-
-    #[test]
-    fn delete_env_option_not_found_on_missing_key() {
-        let err = delete_env_option(ENV, "user", "nope").unwrap_err();
-        assert_eq!(
-            err,
-            EditError::NotFound("[options.user.nope] not found".to_string())
-        );
-    }
-
-    #[test]
-    fn delete_env_var_removes_the_flat_pair_and_the_options_table() {
+    fn delete_env_var_removes_the_flat_pair_and_the_entries_table() {
         let env = r#"base_url = "https://qa.example.com"
 shard = "d-1"
 
-[options.shard.east]
-value = "e-1"
-[options.user.alice]
-value = "9001"
+[entries.shard.east]
+shard = "e-1"
+
+[entries.tier.gold]
+tier = "g-1"
 "#;
         let out = delete_env_var(env, "shard").unwrap();
-        assert_eq!(
-            out,
-            r#"base_url = "https://qa.example.com"
-[options.user.alice]
-value = "9001"
-"#
-        );
+        let e = reparses_env(&out);
+        assert!(!e.values.contains_key("shard"));
+        assert!(!e.entries.contains_key("shard"));
+        assert_eq!(e.entries["tier"]["gold"].values["tier"], "g-1");
     }
 
     #[test]
     fn delete_env_var_flat_pair_only() {
         let out = delete_env_var(ENV, "base_url").unwrap();
-        assert_eq!(
-            out,
-            r#"# environments/qa.toml
-
-[options.user.alice]
-value = "9001"
-[options.user.qa-only]
-description = "exists only in qa"
-value = "3003"
-[options.test-user.alice]
-user_id = "9001"
-"#
-        );
+        let e = reparses_env(&out);
+        assert!(e.values.is_empty());
+        assert_eq!(e.entries.len(), 2);
     }
 
     #[test]
-    fn delete_env_var_options_table_only() {
-        let out = delete_env_var(ENV, "user").unwrap();
-        assert_eq!(
-            out,
-            r#"# environments/qa.toml
-
-base_url = "https://qa.example.com"
-[options.test-user.alice]
-user_id = "9001"
-"#
-        );
+    fn delete_env_var_entries_table_only() {
+        let out = delete_env_var(ENV, "tier").unwrap();
+        let e = reparses_env(&out);
+        assert!(!e.entries.contains_key("tier"));
+        assert_eq!(e.values["base_url"], "https://qa.example.com");
     }
 
     #[test]
@@ -2041,41 +1591,10 @@ user_id = "9001"
         let (vars_out, env_out) =
             promote_var(VARS, Some(ENV), "new_var", "hello", PromoteTarget::Default).unwrap();
         assert!(env_out.is_none());
+        assert!(vars_out.ends_with("[new_var]\ndefault = \"hello\"\n"));
         assert_eq!(
-            vars_out,
-            r#"# variables.toml
-
-[base_url]
-description = "API root"
-default = "http://localhost:8080"
-
-[api_key]
-description = "service API key"
-secret = true
-
-[user]
-description = "seeded test user"
-[user.options.alice]
-description = "admin, active sub"
-value = "1001"
-[user.options.bob]
-description = "expired trial"
-value = "2002"
-
-[user_id]
-description = "linked user id"
-
-[groups.test-user]
-description = "user with linked customer"
-members = ["user_id", "customer_id"]
-[groups.test-user.options.alice]
-description = "admin, active sub"
-user_id = "1001"
-customer_id = "c-77"
-
-[new_var]
-default = "hello"
-"#
+            reparses_vars(&vars_out).vars["new_var"].default.as_deref(),
+            Some("hello")
         );
     }
 
@@ -2083,118 +1602,34 @@ default = "hello"
     fn promote_var_to_env_writes_flat_pair_and_bare_declaration() {
         let (vars_out, env_out) =
             promote_var(VARS, Some(ENV), "new_var", "hello", PromoteTarget::Env).unwrap();
-        assert_eq!(
-            vars_out,
-            r#"# variables.toml
-
-[base_url]
-description = "API root"
-default = "http://localhost:8080"
-
-[api_key]
-description = "service API key"
-secret = true
-
-[user]
-description = "seeded test user"
-[user.options.alice]
-description = "admin, active sub"
-value = "1001"
-[user.options.bob]
-description = "expired trial"
-value = "2002"
-
-[user_id]
-description = "linked user id"
-
-[groups.test-user]
-description = "user with linked customer"
-members = ["user_id", "customer_id"]
-[groups.test-user.options.alice]
-description = "admin, active sub"
-user_id = "1001"
-customer_id = "c-77"
-
-[new_var]
-"#
-        );
-        assert_eq!(
-            env_out.unwrap(),
-            r#"# environments/qa.toml
-
-base_url = "https://qa.example.com"
-new_var = "hello"
-
-[options.user.alice]
-value = "9001"
-[options.user.qa-only]
-description = "exists only in qa"
-value = "3003"
-[options.test-user.alice]
-user_id = "9001"
-"#
-        );
-    }
-
-    #[test]
-    fn promote_var_onto_existing_enumerated_name_is_conflict() {
-        let err =
-            promote_var(VARS, Some(ENV), "user", "carol", PromoteTarget::Default).unwrap_err();
-        assert!(
-            matches!(err, EditError::Conflict(_)),
-            "expected Conflict, got {err:?}"
-        );
+        let m = reparses_vars(&vars_out);
+        assert_eq!(m.vars["new_var"], crate::varmodel::VarDecl::default());
+        let e = reparses_env(&env_out.unwrap());
+        assert_eq!(e.values["new_var"], "hello");
     }
 
     #[test]
     fn promote_var_onto_existing_group_name_is_conflict() {
-        // "test-user" is a group name (`[groups.test-user]`), not a
-        // variable — group and variable names share one namespace.
-        let err = promote_var(
-            VARS,
-            Some(ENV),
-            "test-user",
-            "whatever",
-            PromoteTarget::Default,
-        )
-        .unwrap_err();
-        assert!(
-            matches!(err, EditError::Conflict(_)),
-            "expected Conflict, got {err:?}"
-        );
+        let err =
+            promote_var(VARS, Some(ENV), "test-user", "x", PromoteTarget::Default).unwrap_err();
+        assert!(matches!(err, EditError::Conflict(_)));
     }
 
     #[test]
     fn promote_var_onto_existing_secret_name_is_conflict() {
-        // "api_key" is `secret = true` with no options — the enumerated
-        // check above doesn't catch it, so this exercises the dedicated
-        // secret guard (review finding: this used to fall through to
-        // `upsert_var` writing a `default` alongside `secret = true`,
-        // producing a `variables.toml` that fails to parse on next load).
-        let err = promote_var(
-            VARS,
-            Some(ENV),
-            "api_key",
-            "whatever",
-            PromoteTarget::Default,
-        )
-        .unwrap_err();
-        assert!(
-            matches!(err, EditError::Conflict(_)),
-            "expected Conflict, got {err:?}"
-        );
+        let err = promote_var(VARS, Some(ENV), "api_key", "x", PromoteTarget::Default).unwrap_err();
+        assert!(matches!(err, EditError::Conflict(_)));
     }
 
     #[test]
-    fn promote_var_onto_existing_group_member_is_conflict() {
-        // "user_id" is a member of the "test-user" group; its resolved
-        // value comes from the group's selected option, not a plain
-        // default.
-        let err =
-            promote_var(VARS, Some(ENV), "user_id", "1001", PromoteTarget::Default).unwrap_err();
-        assert!(
-            matches!(err, EditError::Conflict(_)),
-            "expected Conflict, got {err:?}"
+    fn promote_var_onto_existing_group_field_is_conflict() {
+        let err = promote_var(VARS, Some(ENV), "user_id", "x", PromoteTarget::Default).unwrap_err();
+        assert_eq!(
+            err,
+            EditError::Conflict(
+                "variable \"user_id\" is a field of group \"test-user\"; its value comes from the group's selected entry"
+                    .to_string()
+            )
         );
     }
 }

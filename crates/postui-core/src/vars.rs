@@ -2,7 +2,7 @@ use indexmap::IndexMap;
 use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Token {
+pub struct TokenSpan {
     pub name: String,
     /// Byte offset of the opening `{{`.
     pub start: usize,
@@ -20,7 +20,7 @@ pub fn is_valid_var_name(name: &str) -> bool {
 /// Scans for well-formed `{{ name }}` tokens (optional inner whitespace).
 /// Anything malformed is left for the caller to treat as literal text; a
 /// failed match advances by one byte so `{{{a}}` still finds `{{a}}`.
-pub fn find_tokens(text: &str) -> Vec<Token> {
+pub fn find_tokens(text: &str) -> Vec<TokenSpan> {
     let bytes = text.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
@@ -36,7 +36,7 @@ pub fn find_tokens(text: &str) -> Vec<Token> {
         };
         let name = text[inner_start..close].trim();
         if is_valid_var_name(name) {
-            out.push(Token {
+            out.push(TokenSpan {
                 name: name.to_string(),
                 start: i,
                 end: close + 2,
@@ -120,6 +120,25 @@ mod tests {
         assert_eq!(t.len(), 1, "{{ + {{a}} : the trailing {{a}} parses");
         assert_eq!(t[0].name, "a");
         assert_eq!((t[0].start, t[0].end), (1, 6));
+    }
+
+    #[test]
+    fn adjacent_tokens_get_exact_touching_spans() {
+        let t = find_tokens("{{a}}{{b}}");
+        assert_eq!(t.len(), 2);
+        assert_eq!((t[0].start, t[0].end), (0, 5));
+        assert_eq!((t[1].start, t[1].end), (5, 10));
+        assert_eq!(t[1].name, "b");
+    }
+
+    #[test]
+    fn spans_are_byte_offsets_past_multi_byte_text() {
+        // "héllo " is 7 bytes (é is two), so the token starts at 7 — a
+        // char-index would say 6 and slice the wrong bytes.
+        let text = "héllo {{id}}";
+        let t = find_tokens(text);
+        assert_eq!((t[0].start, t[0].end), (7, 13));
+        assert_eq!(&text[t[0].start..t[0].end], "{{id}}");
     }
 
     #[test]
