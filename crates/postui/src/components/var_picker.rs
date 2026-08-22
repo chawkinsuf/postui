@@ -172,7 +172,7 @@ pub struct VarPickerState {
     pub completing: bool,
     pub mode: PickerMode,
     /// The active environment's name, captured at open — `SelectOption`
-    /// mode's target for `VarEditOp::Select` and its toast. Unused (empty)
+    /// mode's target for `VarEditOp::SelectEntry` and its toast. Unused (empty)
     /// in `Insert` mode.
     env: String,
     /// First visible row's index into `filtered`. See `ChooserState` for the
@@ -308,10 +308,10 @@ impl VarPickerState {
                 let toast = format!("{owner} \u{2192} {key} ({})", self.env);
                 Some(super::modal::ModalResult {
                     actions: vec![
-                        Action::VarEdit(VarEditOp::Select {
+                        Action::VarEdit(VarEditOp::SelectEntry {
                             env: self.env.clone(),
-                            name: owner,
-                            key,
+                            group: owner,
+                            entry: key,
                         }),
                         Action::ShowToast(toast, ToastKind::Success),
                     ],
@@ -1007,10 +1007,10 @@ mod tests {
         assert_eq!(
             res.actions,
             vec![
-                Action::VarEdit(VarEditOp::Select {
+                Action::VarEdit(VarEditOp::SelectEntry {
                     env: "qa".into(),
-                    name: "user".into(),
-                    key: "alice".into(),
+                    group: "user".into(),
+                    entry: "alice".into(),
                 }),
                 Action::ShowToast("user \u{2192} alice (qa)".into(), ToastKind::Success),
             ]
@@ -1034,10 +1034,10 @@ mod tests {
         assert_eq!(
             res.actions,
             vec![
-                Action::VarEdit(VarEditOp::Select {
+                Action::VarEdit(VarEditOp::SelectEntry {
                     env: "qa".into(),
-                    name: "identity".into(),
-                    key: "alice".into(),
+                    group: "identity".into(),
+                    entry: "alice".into(),
                 }),
                 Action::ShowToast("identity \u{2192} alice (qa)".into(), ToastKind::Success),
             ]
@@ -1086,10 +1086,10 @@ mod tests {
         let res = p.handle_key(key(KeyCode::Enter)).unwrap();
         assert_eq!(
             res.actions[0],
-            Action::VarEdit(VarEditOp::Select {
+            Action::VarEdit(VarEditOp::SelectEntry {
                 env: "qa".into(),
-                name: "user".into(),
-                key: "bob".into(),
+                group: "user".into(),
+                entry: "bob".into(),
             })
         );
     }

@@ -57,26 +57,28 @@ pub enum VarEditOp {
         value: String,
     },
     /// One field of one entry: the edit lands in `env`'s
-    /// `[entries.owner.key]` table (`varedit::upsert_entry`), the only
-    /// place an entry's values live (spec §3.1). `member` names the field;
-    /// `None` has nothing to write and is refused.
-    SetOptionValue {
+    /// `[entries.<group>.<entry>]` table (`varedit::upsert_entry`), the
+    /// only place an entry's values live (spec §3.1). Every group grid
+    /// cell but the name column commits through this.
+    SetEntryValue {
         env: String,
-        owner: String,
-        key: String,
-        member: Option<String>,
+        group: String,
+        entry: String,
+        field: String,
         value: String,
     },
     /// A request-scoped `[variables]` entry's value on the open request —
     /// mutates `Editor::variables` directly and rides the editor's existing
     /// dirty/save path (no immediate write of its own).
     SetRequestVar { name: String, value: String },
-    /// Records `name`'s selection as `key` for `env` — `ctx.set_selection`
-    /// (the ✓ action; also the var picker's confirm).
-    Select {
+    /// Records `entry` as `group`'s selection in `env` — `ctx.set_selection`
+    /// (the group grid's radio column; also the var picker's confirm and
+    /// the ✓ action). Picking an entry is what makes every one of the
+    /// group's fields resolve, together, to that record's values.
+    SelectEntry {
         env: String,
-        name: String,
-        key: String,
+        group: String,
+        entry: String,
     },
 }
 
@@ -99,7 +101,11 @@ pub enum VarStructOp {
     /// A new group and its field list (`+ Group` / `g`). Create-or-update:
     /// `varedit::upsert_group` is the same verb either way.
     NewGroup { name: String, fields: Vec<String> },
-    /// Rename a variable (groups have no core rename verb yet).
+    /// Rename a variable or a group. A group renames in both halves at
+    /// once (`varedit::rename_group` + `rename_group_entries` per
+    /// environment): an environment's `[entries.<old>]` table names a
+    /// group the renamed model no longer declares, so neither half is
+    /// valid without the other. Any recorded selection follows the name.
     Rename { from: String, to: String },
     /// Delete a variable or a group. A group cascades: every environment's
     /// `[entries.<name>]` subtree goes with the declaration, and every
@@ -154,6 +160,17 @@ pub enum VmDetail {
     None,
     Var(String),
     Group(String),
+}
+
+impl VmDetail {
+    /// The declared name the pane has open, whichever face it is showing —
+    /// what the shared `[Rename]`/`[Delete]` buttons act on.
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            VmDetail::Var(n) | VmDetail::Group(n) => Some(n),
+            VmDetail::None => None,
+        }
+    }
 }
 
 /// One row of the left list, rebuilt from `&ProjectContext` at the top of
@@ -318,12 +335,37 @@ pub fn promote_demote_action(
     }
 }
 
-/// The detail pane's entries table (Task 16). Same placeholder shape as
-/// [`VarFormState`].
+/// One grid cell's in-progress edit (Task 8's `CellEdit`, for the group
+/// grid): which cell, the live buffer, and the text it started from so
+/// `Esc` can put it back.
+#[derive(Debug)]
+pub struct GridEdit {
+    /// Index into the group's entries — or `entries.len()`, the ghost row
+    /// that becomes a real entry the moment its name cell commits
+    /// non-empty.
+    pub row: usize,
+    /// `0` is the entry-name column; `n` is the group's `n-1`th field.
+    pub col: usize,
+    pub input: LineInput,
+    /// The cell's pre-edit text, for `Esc`-revert.
+    pub original: String,
+}
+
+/// The detail pane's entries grid (spec §3.4): one row per entry of the
+/// selected group in the active environment, one column per group field,
+/// plus the radio column that says which entry the environment has
+/// selected. Editing is Task 8's in-place model, exactly — see
+/// [`VarFormState`] for the same contract on the variable form.
 #[derive(Debug, Default)]
 pub struct EntryGridState {
-    /// True while a grid cell has an in-progress edit.
-    pub editing: bool,
+    /// The keyboard cursor's `(row, col)`; `space`/`o`/`m` act here.
+    pub cursor: (usize, usize),
+    /// The cell under edit, or `None` when nothing in the grid owns the
+    /// keyboard — consulted by the command-key gate in
+    /// [`VarManager::handle_key`].
+    pub editing: Option<GridEdit>,
+    /// First visible entry row.
+    pub scroll: usize,
 }
 
 /// The full-frame Variable Manager screen.
@@ -340,6 +382,12 @@ pub struct VarManager {
     pub left_scroll: usize,
     pub form: VarFormState,
     pub grid: EntryGridState,
+    /// The group grid's entry-row region as of the last `draw` — the wheel
+    /// scrolls the grid when the pointer is inside it, the left list
+    /// otherwise. Empty when no grid is on screen.
+    grid_area: Rect,
+    /// How many entry rows that region showed, for the wheel's clamp.
+    grid_visible: usize,
     /// Set by a keyboard move so the next `draw` snaps `left_scroll` to
     /// keep `left_cursor` visible; a wheel/drag gesture clears it (those
     /// place the viewport explicitly). Mirrors `Sidebar::ensure_visible`.
@@ -359,6 +407,97 @@ const GLYPH_GROUP: &str = "\u{25b6}"; // ▶
 const GLYPH_LOCK: &str = "\u{1f512}"; // 🔒
 const GLYPH_UNRESOLVED: &str = "\u{25cf}"; // ●
 const GLYPH_CARET: &str = "\u{25be}"; // ▾
+const GLYPH_RADIO_ON: &str = "\u{25c9}"; // ◉
+const GLYPH_RADIO_OFF: &str = "\u{25cb}"; // ○
+
+/// The hint the group pane shows instead of a grid when no environment is
+/// active: entries belong to one environment each (spec §3.1), so there is
+/// nowhere for them to live until one is picked.
+pub const NO_ENV_HINT: &str = "entries live in environments \u{2014} pick or create one";
+
+/// The ghost row's resting label.
+const GHOST_LABEL: &str = "+ entry";
+
+/// Width of the grid's radio column (glyph + one column of gutter).
+const RADIO_W: u16 = 3;
+
+/// Where each grid column starts and how wide it is: `x[0]`/`w[0]` is the
+/// entry-name column, `x[n]` the group's `n-1`th field. Columns that would
+/// start past the pane's right edge are dropped, so a narrow pane simply
+/// shows fewer columns rather than painting over its own border.
+struct GridCols {
+    radio_x: u16,
+    x: Vec<u16>,
+    w: Vec<u16>,
+}
+
+fn grid_columns(x0: u16, width: u16, ncols: usize) -> GridCols {
+    let mut cols = GridCols {
+        radio_x: x0,
+        x: Vec::new(),
+        w: Vec::new(),
+    };
+    let right = x0 + width;
+    let avail = width.saturating_sub(RADIO_W);
+    let n = ncols.max(1) as u16;
+    let each = (avail / n).max(6);
+    let mut cx = x0 + RADIO_W;
+    for _ in 0..n {
+        if cx + 4 > right {
+            break;
+        }
+        let w = each.saturating_sub(1).min(right - cx);
+        cols.x.push(cx);
+        cols.w.push(w);
+        cx += each;
+    }
+    cols
+}
+
+/// One group's entries in `ctx`'s active environment, as `(name, values)`
+/// pairs in file order. Empty when the group has no entries here (or there
+/// is no active environment).
+fn entry_rows(ctx: &ProjectContext, group: &str) -> Vec<(String, IndexMap<String, String>)> {
+    if ctx.active_env.is_none() {
+        return Vec::new();
+    }
+    postui_core::varmodel::group_entries(&ctx.env_data, group)
+        .map(|entries| {
+            entries
+                .iter()
+                .map(|(name, e)| (name.clone(), e.values.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The text grid cell `(row, col)` currently shows — the seed a click
+/// starts editing from. Empty for the ghost row and for a field an entry
+/// doesn't set.
+fn grid_cell_text(ctx: &ProjectContext, group: &str, row: usize, col: usize) -> String {
+    let rows = entry_rows(ctx, group);
+    let Some((name, values)) = rows.get(row) else {
+        return String::new();
+    };
+    if col == 0 {
+        return name.clone();
+    }
+    let fields = group_fields(ctx, group);
+    fields
+        .get(col - 1)
+        .and_then(|f| values.get(f))
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// `group`'s declared field list (empty for an undeclared name).
+fn group_fields(ctx: &ProjectContext, group: &str) -> Vec<String> {
+    ctx.model
+        .groups
+        .get(group)
+        .map(|g| g.fields.clone())
+        .unwrap_or_default()
+}
 
 /// The left list's rows: the VARIABLES section (every declared variable
 /// that isn't a group field — fields live inside their group's entries),
@@ -447,6 +586,39 @@ impl VarManager {
         self.form.editing = Some((field, LineInput::new(&seed)));
     }
 
+    /// Click entry point for a grid cell (`Hit::VmEntryCell`): seeds
+    /// `(row, col)` with its current text and a caret at the end, and puts
+    /// the grid cursor there. Like [`Self::start_field_edit`], a second
+    /// click on the cell already under edit is the caller's job to no-op.
+    /// A no-op with no group selected, and on a ghost-row cell other than
+    /// the name column (there is no entry yet for a value to belong to —
+    /// the click is redirected to the name cell by the caller).
+    pub fn start_cell_edit(&mut self, ctx: &ProjectContext, row: usize, col: usize) {
+        let VmDetail::Group(group) = &self.detail else {
+            return;
+        };
+        let group = group.clone();
+        let rows = entry_rows(ctx, &group);
+        let row = row.min(rows.len());
+        let col = if row == rows.len() { 0 } else { col };
+        let original = grid_cell_text(ctx, &group, row, col);
+        self.grid.cursor = (row, col);
+        self.grid.editing = Some(GridEdit {
+            row,
+            col,
+            input: LineInput::new(&original),
+            original,
+        });
+    }
+
+    /// The entry `row` names, or `None` for the ghost row / no group.
+    pub fn entry_at(&self, ctx: &ProjectContext, row: usize) -> Option<String> {
+        let VmDetail::Group(group) = &self.detail else {
+            return None;
+        };
+        entry_rows(ctx, group).get(row).map(|(n, _)| n.clone())
+    }
+
     /// The row the commands act on — the left list's current selection.
     fn selected_row(&self) -> Option<&VmRow> {
         self.left_rows.get(self.left_cursor).filter(|r| r.is_stop())
@@ -468,6 +640,7 @@ impl VarManager {
         if gone {
             self.detail = VmDetail::None;
             self.form = VarFormState::default();
+            self.grid = EntryGridState::default();
         }
         self.ensure_visible = true;
     }
@@ -519,8 +692,32 @@ impl VarManager {
             }
             _ => {}
         }
-        if self.form.editing.is_some() || self.grid.editing {
+        if self.form.editing.is_some() || self.grid.editing.is_some() {
             return None;
+        }
+        // The group grid's own commands, on the group the detail pane has
+        // open (spec §3.4's "old keys"). They come first so `o`/`m`/`space`
+        // never fall through to a left-list command that would act on a
+        // different row than the grid the user is looking at.
+        if let VmDetail::Group(group) = self.detail.clone() {
+            match ev.code {
+                KeyCode::Char('o') => {
+                    let row = entry_rows(ctx, &group).len();
+                    self.start_cell_edit(ctx, row, 0);
+                    return None;
+                }
+                KeyCode::Char('m') => return Some(Action::PromptGroupFields { group }),
+                KeyCode::Char(' ') => {
+                    let env = ctx.active_env.clone()?;
+                    let entry = self.entry_at(ctx, self.grid.cursor.0)?;
+                    return Some(Action::VarEdit(VarEditOp::SelectEntry {
+                        env,
+                        group,
+                        entry,
+                    }));
+                }
+                _ => {}
+            }
         }
         match ev.code {
             KeyCode::Char('n') => Some(Action::PromptNewVar),
@@ -539,15 +736,13 @@ impl VarManager {
         }
     }
 
-    /// `e`/`F2` and the context menu's "Rename…": variables only — a group
-    /// rename has no core verb behind it (`varedit` renames variables and
-    /// entries, not group declarations), so the menu shows it disabled
-    /// rather than offering a no-op.
+    /// `e`/`F2` and the context menu's "Rename…". Both a variable and a
+    /// group rename through the same prompt: `VarStructOp::Rename` picks
+    /// the right pair of core verbs from what the name is declared as.
     fn rename_action(&self) -> Option<Action> {
-        match self.selected_row()? {
-            VmRow::Var(name) => Some(Action::PromptRenameVar { from: name.clone() }),
-            _ => None,
-        }
+        Some(Action::PromptRenameVar {
+            from: self.selected_row()?.name()?.to_string(),
+        })
     }
 
     /// The right-click menu for left-list row `i` (spec §3.4: Rename /
@@ -564,15 +759,17 @@ impl VarManager {
                 ),
                 MenuItem::new("Duplicate", Action::DuplicateVar { name: name.clone() }),
             ),
-            // Both are shown disabled rather than hidden, so the menu keeps
-            // its shape. Rename: no core verb renames a group declaration
-            // (`varedit` renames variables and entries). Duplicate: a field
-            // belongs to exactly one group (`ModelError::FieldInTwoGroups`),
-            // so a copy carrying the same field list can never be a valid
-            // model — there is nothing to duplicate a group *into* until
-            // fields can be renamed as part of the copy.
+            // Duplicate is shown disabled rather than hidden, so the menu
+            // keeps its shape: a field belongs to exactly one group
+            // (`ModelError::FieldInTwoGroups`), so a copy carrying the same
+            // field list can never be a valid model — there is nothing to
+            // duplicate a group *into* until fields can be renamed as part
+            // of the copy.
             _ => (
-                MenuItem::disabled("Rename\u{2026}"),
+                MenuItem::new(
+                    "Rename\u{2026}",
+                    Action::PromptRenameVar { from: name.clone() },
+                ),
                 MenuItem::disabled("Duplicate"),
             ),
         };
@@ -583,12 +780,64 @@ impl VarManager {
         ])
     }
 
+    /// The right-click menu for entry row `i` of the open group (spec
+    /// §3.4). `None` for the ghost row (nothing to act on yet) and when no
+    /// environment is active (there are no entries at all then).
+    pub fn entry_context_menu(
+        &self,
+        ctx: &ProjectContext,
+        i: usize,
+    ) -> Option<Vec<crate::components::modal::MenuItem>> {
+        use crate::components::modal::MenuItem;
+        let VmDetail::Group(group) = &self.detail else {
+            return None;
+        };
+        let env = ctx.active_env.clone()?;
+        let name = self.entry_at(ctx, i)?;
+        let (group, n) = (group.clone(), name.clone());
+        Some(vec![
+            MenuItem::new(
+                "Duplicate entry",
+                Action::VarStruct(VarStructOp::DuplicateEntry {
+                    env: env.clone(),
+                    group: group.clone(),
+                    name: n.clone(),
+                }),
+            ),
+            MenuItem::new(
+                "Rename\u{2026}",
+                Action::PromptRenameEntry {
+                    env: env.clone(),
+                    group: group.clone(),
+                    from: n,
+                },
+            ),
+            MenuItem::new(
+                "Delete\u{2026}",
+                Action::ConfirmDeleteEntry { env, group, name },
+            ),
+        ])
+    }
+
     /// Free (unsnapped) wheel scroll over the left list — mirrors
     /// `Sidebar::handle_scroll`: moves the viewport without touching the
     /// cursor, and cancels any pending snap so the gesture isn't overridden
     /// on the next draw.
     pub fn handle_scroll(&mut self, delta: i16) {
         self.set_scroll((self.left_scroll as i32 + delta as i32).max(0) as usize);
+    }
+
+    /// A wheel gesture at `(col, row)`: the group grid when the pointer is
+    /// over its entry rows, the left list everywhere else on the screen.
+    /// (The grid is the only other scrollable region the Manager draws, and
+    /// it has no scrollbar of its own — a grid tall enough to overflow is
+    /// reached by wheeling over it.)
+    pub fn handle_scroll_at(&mut self, col: u16, row: u16, delta: i16) {
+        if self.grid_area.width > 0 && self.grid_area.contains((col, row).into()) {
+            self.grid.scroll = (self.grid.scroll as i32 + delta as i32).max(0) as usize;
+            return;
+        }
+        self.handle_scroll(delta);
     }
 
     /// Places the left list's viewport (the scrollbar drag's entry point).
@@ -674,17 +923,237 @@ impl VarManager {
             ..body
         };
         self.draw_left(frame, left, theme, ctx, hits, hovered);
-        let name = match self.detail.clone() {
-            VmDetail::Var(name) if ctx.model.vars.contains_key(&name) => Some(name),
-            _ => None,
-        };
-        match name {
-            Some(name) => {
+        self.grid_area = Rect::default();
+        self.grid_visible = 0;
+        match self.detail.clone() {
+            VmDetail::Var(name) if ctx.model.vars.contains_key(&name) => {
                 let buf = frame.buffer_mut();
                 fill(buf, right, theme.page);
                 self.draw_var_form(buf, right, theme, ctx, open_request, hits, hovered, &name);
             }
-            None => draw_detail_placeholder(frame, right, theme),
+            VmDetail::Group(name) if ctx.model.groups.contains_key(&name) => {
+                let buf = frame.buffer_mut();
+                fill(buf, right, theme.page);
+                self.draw_entry_grid(buf, right, theme, ctx, hits, hovered, &name);
+            }
+            _ => draw_detail_placeholder(frame, right, theme),
+        }
+    }
+
+    /// The right pane for `VmDetail::Group(name)` (spec §3.4): a title row
+    /// (`Group: name  [+ Entry] [Edit fields] [Rename] [Delete]`), then the
+    /// entries grid for the active environment — a radio column saying
+    /// which entry this environment has selected, the entry-name column,
+    /// and one column per declared field — closed by the legend line. With
+    /// no active environment there is nowhere for entries to live, so the
+    /// grid is replaced by [`NO_ENV_HINT`] (the top bar's environment
+    /// switcher, drawn either way, is the way out of that state).
+    #[allow(clippy::too_many_arguments)]
+    fn draw_entry_grid(
+        &mut self,
+        buf: &mut Buffer,
+        right: Rect,
+        theme: &Theme,
+        ctx: &ProjectContext,
+        hits: &mut HitMap,
+        hovered: Option<&Hit>,
+        group: &str,
+    ) {
+        if right.width < 8 || right.height < 3 {
+            return;
+        }
+        let state_of = |hit: &Hit| {
+            if hovered == Some(hit) {
+                ControlState::Hover
+            } else {
+                ControlState::Normal
+            }
+        };
+        let x0 = right.x + 2;
+        let inner_w = right.width.saturating_sub(4).max(1);
+        let bottom = right.y + right.height;
+        let mut y = right.y + 1;
+
+        // --- title row: name + the pane's four buttons ------------------
+        if y + BUTTON_HEIGHT <= bottom {
+            let label = format!("Group: {group}");
+            text(buf, x0, y + 1, &label, theme.text, theme.page, true);
+            let mut bx = right.x + right.width;
+            for (lbl, kind, hit) in [
+                ("Delete", ButtonKind::Secondary, Hit::VmDelete),
+                ("Rename", ButtonKind::Secondary, Hit::VmRename),
+                ("Edit fields", ButtonKind::Secondary, Hit::VmEditFields),
+                ("+ Entry", ButtonKind::Primary, Hit::VmNewEntry),
+            ] {
+                let w = button_min_width(lbl);
+                if bx < x0 + label.chars().count() as u16 + w + 3 {
+                    break;
+                }
+                bx -= w + 1;
+                let rect = Rect {
+                    x: bx,
+                    y,
+                    width: w,
+                    height: BUTTON_HEIGHT,
+                };
+                let state = state_of(&hit);
+                Button {
+                    label: lbl,
+                    kind,
+                    state,
+                }
+                .paint(buf, rect, theme.page, theme);
+                hits.register(rect, hit);
+            }
+            y += BUTTON_HEIGHT + 1;
+        }
+
+        let Some(env) = ctx.active_env.clone() else {
+            if y < bottom {
+                text(
+                    buf,
+                    x0,
+                    y,
+                    super::chooser::clip(NO_ENV_HINT, inner_w),
+                    theme.text_muted,
+                    theme.page,
+                    false,
+                );
+            }
+            return;
+        };
+
+        // --- column headers ---------------------------------------------
+        let fields = group_fields(ctx, group);
+        let cols = grid_columns(x0, inner_w, 1 + fields.len());
+        if y >= bottom || cols.x.is_empty() {
+            return;
+        }
+        fill(buf, Rect::new(right.x, y, right.width, 1), theme.panel);
+        for (i, label) in std::iter::once("ENTRY".to_string())
+            .chain(fields.iter().map(|f| f.to_uppercase()))
+            .enumerate()
+        {
+            let (Some(cx), Some(cw)) = (cols.x.get(i), cols.w.get(i)) else {
+                break;
+            };
+            text(
+                buf,
+                *cx,
+                y,
+                super::chooser::clip(&label, *cw),
+                theme.text_muted,
+                theme.panel,
+                true,
+            );
+        }
+        y += 1;
+
+        // --- entry rows (+ the always-present ghost row) ------------------
+        let rows = entry_rows(ctx, group);
+        let selected = ctx.selections_for(&env).get(group).cloned();
+        // The last line of the pane belongs to the legend.
+        let rows_bottom = bottom.saturating_sub(1).max(y);
+        let visible = (rows_bottom - y) as usize;
+        let total = rows.len() + 1;
+        self.grid_visible = visible;
+        self.grid_area = Rect::new(right.x, y, right.width, (rows_bottom - y).max(1));
+        // Keep whatever the keyboard is on (the cell under edit, else the
+        // cursor) in view, then clamp — the wheel places the viewport
+        // freely, but never past the last row.
+        let focus_row = self
+            .grid
+            .editing
+            .as_ref()
+            .map_or(self.grid.cursor.0, |e| e.row);
+        if visible > 0 {
+            if focus_row < self.grid.scroll {
+                self.grid.scroll = focus_row;
+            } else if focus_row >= self.grid.scroll + visible {
+                self.grid.scroll = focus_row + 1 - visible;
+            }
+            self.grid.scroll = self.grid.scroll.min(total.saturating_sub(visible));
+        }
+
+        for (pos, i) in (self.grid.scroll..total).enumerate() {
+            let ry = y + pos as u16;
+            if ry >= rows_bottom {
+                break;
+            }
+            let ghost = i == rows.len();
+            let hovered_row = match hovered {
+                Some(Hit::VmEntryCell { row, .. }) | Some(Hit::VmEntryRadio(row)) => *row == i,
+                _ => false,
+            };
+            let bg = if hovered_row || self.grid.cursor.0 == i {
+                theme.control_hover
+            } else {
+                theme.control
+            };
+            fill(buf, Rect::new(x0, ry, inner_w, 1), bg);
+
+            if !ghost {
+                let name = &rows[i].0;
+                let on = selected.as_deref() == Some(name.as_str());
+                let glyph = if on { GLYPH_RADIO_ON } else { GLYPH_RADIO_OFF };
+                let fg = if on { theme.accent } else { theme.text_muted };
+                text(buf, cols.radio_x, ry, glyph, fg, bg, false);
+                hits.register(
+                    Rect::new(cols.radio_x, ry, RADIO_W, 1),
+                    Hit::VmEntryRadio(i),
+                );
+            }
+
+            for col in 0..cols.x.len() {
+                let (cx, cw) = (cols.x[col], cols.w[col]);
+                let editing = self
+                    .grid
+                    .editing
+                    .as_ref()
+                    .filter(|e| e.row == i && e.col == col);
+                if let Some(edit) = editing {
+                    let line = edit.input.draw_line_windowed(true, theme, cw);
+                    fill(buf, Rect::new(cx, ry, cw, 1), theme.control_hover);
+                    buf.set_line(cx, ry, &line, cw);
+                } else if ghost {
+                    if col == 0 {
+                        text(
+                            buf,
+                            cx,
+                            ry,
+                            super::chooser::clip(GHOST_LABEL, cw),
+                            theme.text_muted,
+                            bg,
+                            false,
+                        );
+                    }
+                } else {
+                    let (name, values) = &rows[i];
+                    let value = match col {
+                        0 => Some(name),
+                        n => fields.get(n - 1).and_then(|f| values.get(f)),
+                    };
+                    let (shown, fg) = match value {
+                        Some(v) if !v.is_empty() => (v.as_str(), theme.text),
+                        _ => ("(empty)", theme.text_muted),
+                    };
+                    text(buf, cx, ry, super::chooser::clip(shown, cw), fg, bg, false);
+                }
+                hits.register(Rect::new(cx, ry, cw, 1), Hit::VmEntryCell { row: i, col });
+            }
+        }
+
+        // --- legend --------------------------------------------------------
+        if rows_bottom < bottom {
+            text(
+                buf,
+                x0,
+                rows_bottom,
+                super::chooser::clip(&format!("{GLYPH_RADIO_ON} = selected for {env}"), inner_w),
+                theme.text_muted,
+                theme.page,
+                false,
+            );
         }
     }
 
@@ -1505,8 +1974,10 @@ fields = ["user_id", "customer_id"]
         );
         assert_eq!(
             vm.handle_key(key(KeyCode::Char('e')), &ctx),
-            None,
-            "no core verb renames a group"
+            Some(Action::PromptRenameVar {
+                from: "creds".into()
+            }),
+            "a group renames through the same prompt a variable does"
         );
         assert_eq!(
             vm.handle_key(key(KeyCode::Char('s')), &ctx),
@@ -1521,7 +1992,12 @@ fields = ["user_id", "customer_id"]
         let mut vm = VarManager::default();
         render(&mut vm, &ctx);
         vm.select_row(1);
-        vm.grid.editing = true;
+        vm.grid.editing = Some(GridEdit {
+            row: 0,
+            col: 0,
+            input: LineInput::new(""),
+            original: String::new(),
+        });
 
         assert_eq!(vm.handle_key(key(KeyCode::Char('n')), &ctx), None);
         assert_eq!(vm.handle_key(key(KeyCode::Char('d')), &ctx), None);
@@ -1565,7 +2041,13 @@ fields = ["user_id", "customer_id"]
         );
 
         let group = vm.context_menu(vm.left_rows.len() - 1).expect("group menu");
-        assert_eq!(group[0].action, None, "group rename is shown disabled");
+        assert_eq!(
+            group[0].action,
+            Some(Action::PromptRenameVar {
+                from: "creds".into()
+            }),
+            "a group's rename is live"
+        );
         assert_eq!(
             group[1].action, None,
             "so is duplicate: a field can only belong to one group"
@@ -1861,5 +2343,203 @@ fields = ["user_id", "customer_id"]
         let (content, hits) = render_with_request(&mut vm, &ctx, Some(&plain_req));
         assert!(content.contains("Demote"), "{content}");
         assert!(hits.rect_of(&Hit::VmPromoteBtn).is_some());
+    }
+
+    // --- Task 16: the group entries grid ---------------------------------
+
+    fn select_group(vm: &mut VarManager, ctx: &ProjectContext, name: &str) {
+        render(vm, ctx); // populates left_rows
+        let i = vm
+            .left_rows
+            .iter()
+            .position(|r| r == &VmRow::Group(name.into()))
+            .unwrap();
+        vm.select_row(i);
+    }
+
+    #[test]
+    fn selecting_a_group_renders_its_entries_against_the_active_envs_fields() {
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        let (content, hits) = render(&mut vm, &ctx);
+
+        assert!(content.contains("Group: creds"), "{content}");
+        // One column per declared field, one row per entry of the active
+        // environment, each cell holding that entry's value.
+        assert!(content.contains("USER_ID"), "{content}");
+        assert!(content.contains("CUSTOMER_ID"), "{content}");
+        for cell in ["alice", "1001", "c-77", "bob", "2002", "c-91"] {
+            assert!(content.contains(cell), "missing {cell}: {content}");
+        }
+        assert!(content.contains(GHOST_LABEL), "ghost row: {content}");
+        assert!(
+            content.contains(&format!("{GLYPH_RADIO_ON} = selected for qa")),
+            "legend: {content}"
+        );
+
+        for row in 0..2 {
+            assert!(
+                hits.rect_of(&Hit::VmEntryRadio(row)).is_some(),
+                "row {row} has no radio"
+            );
+            for col in 0..3 {
+                assert!(
+                    hits.rect_of(&Hit::VmEntryCell { row, col }).is_some(),
+                    "no hit for cell {row}/{col}"
+                );
+            }
+        }
+        // The ghost row's own name cell is clickable — that is the "start a
+        // new entry" gesture.
+        assert!(
+            hits.rect_of(&Hit::VmEntryCell { row: 2, col: 0 }).is_some(),
+            "ghost row cell"
+        );
+        for hit in [
+            Hit::VmNewEntry,
+            Hit::VmEditFields,
+            Hit::VmRename,
+            Hit::VmDelete,
+        ] {
+            assert!(hits.rect_of(&hit).is_some(), "{hit:?} has no button");
+        }
+    }
+
+    #[test]
+    fn the_selected_entrys_radio_is_the_filled_one() {
+        let (_dir, mut ctx) = fixture();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        let (content, _) = render(&mut vm, &ctx);
+        assert!(
+            content.contains(GLYPH_RADIO_ON),
+            "alice is selected: {content}"
+        );
+        assert!(content.contains(GLYPH_RADIO_OFF), "bob is not: {content}");
+
+        // With nothing selected every radio is empty — the only filled
+        // glyph left on screen is the legend's own.
+        assert_eq!(content.matches(GLYPH_RADIO_ON).count(), 2, "{content}");
+        ctx.clear_selection_for("qa", "creds");
+        let (content, _) = render(&mut vm, &ctx);
+        assert_eq!(content.matches(GLYPH_RADIO_ON).count(), 1, "{content}");
+    }
+
+    #[test]
+    fn a_group_with_no_active_environment_shows_the_hint_instead_of_a_grid() {
+        let (_dir, mut ctx) = fixture();
+        ctx.active_env = None;
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        let (content, hits) = render(&mut vm, &ctx);
+        assert!(
+            content.contains("entries live in environments"),
+            "{content}"
+        );
+        assert!(
+            hits.rect_of(&Hit::VmEntryCell { row: 0, col: 0 }).is_none(),
+            "no grid without an environment"
+        );
+        assert!(
+            hits.rect_of(&Hit::VmEnvSwitch).is_some(),
+            "the way out of that state is still on screen"
+        );
+    }
+
+    #[test]
+    fn grid_commands_act_on_the_open_group() {
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        render(&mut vm, &ctx);
+
+        // `space` selects the entry the grid cursor is on.
+        vm.grid.cursor = (1, 0);
+        assert_eq!(
+            vm.handle_key(key(KeyCode::Char(' ')), &ctx),
+            Some(Action::VarEdit(VarEditOp::SelectEntry {
+                env: "qa".into(),
+                group: "creds".into(),
+                entry: "bob".into(),
+            }))
+        );
+        // `m` opens the field-list editor.
+        assert_eq!(
+            vm.handle_key(key(KeyCode::Char('m')), &ctx),
+            Some(Action::PromptGroupFields {
+                group: "creds".into()
+            })
+        );
+        // `o` starts a new entry in the ghost row, in place.
+        assert!(vm.handle_key(key(KeyCode::Char('o')), &ctx).is_none());
+        let edit = vm.grid.editing.as_ref().expect("ghost row is live");
+        assert_eq!((edit.row, edit.col), (2, 0));
+        assert_eq!(edit.input.text(), "");
+
+        // …and every one of them yields to a cell edit in progress.
+        assert_eq!(vm.handle_key(key(KeyCode::Char('o')), &ctx), None);
+        assert_eq!(vm.handle_key(key(KeyCode::Char('m')), &ctx), None);
+        assert_eq!(vm.handle_key(key(KeyCode::Char(' ')), &ctx), None);
+    }
+
+    #[test]
+    fn start_cell_edit_seeds_the_cells_current_text() {
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        vm.start_cell_edit(&ctx, 0, 2);
+        let edit = vm.grid.editing.as_ref().unwrap();
+        assert_eq!(edit.input.text(), "c-77");
+        assert_eq!(edit.original, "c-77");
+        assert_eq!(vm.grid.cursor, (0, 2));
+
+        // A ghost-row click always lands in the name cell: there is no
+        // entry yet for a value to belong to.
+        vm.start_cell_edit(&ctx, 2, 2);
+        let edit = vm.grid.editing.as_ref().unwrap();
+        assert_eq!((edit.row, edit.col), (2, 0));
+        assert_eq!(edit.input.text(), "");
+    }
+
+    #[test]
+    fn the_entry_row_menu_offers_duplicate_rename_delete() {
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        let items = vm.entry_context_menu(&ctx, 1).expect("entry menu");
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            vec!["Duplicate entry", "Rename\u{2026}", "Delete\u{2026}"]
+        );
+        assert_eq!(
+            items[0].action,
+            Some(Action::VarStruct(VarStructOp::DuplicateEntry {
+                env: "qa".into(),
+                group: "creds".into(),
+                name: "bob".into(),
+            }))
+        );
+        assert_eq!(
+            items[1].action,
+            Some(Action::PromptRenameEntry {
+                env: "qa".into(),
+                group: "creds".into(),
+                from: "bob".into(),
+            })
+        );
+        assert_eq!(
+            items[2].action,
+            Some(Action::ConfirmDeleteEntry {
+                env: "qa".into(),
+                group: "creds".into(),
+                name: "bob".into(),
+            })
+        );
+        assert!(
+            vm.entry_context_menu(&ctx, 2).is_none(),
+            "the ghost row has nothing to act on yet"
+        );
     }
 }

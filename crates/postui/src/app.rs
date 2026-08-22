@@ -1879,12 +1879,98 @@ impl App {
             }
             Action::VarStruct(op) => {
                 match self.apply_var_struct(&op) {
-                    Ok(()) => self.varmanager.sync(&self.project),
+                    Ok(()) => {
+                        // A rename carries the detail pane's selection over
+                        // rather than emptying it: the user is still
+                        // looking at the same declaration, under its new
+                        // name (`sync` would otherwise drop it as gone).
+                        if let VarStructOp::Rename { from, to } = &op {
+                            let vm = &mut self.varmanager;
+                            if vm.detail == VmDetail::Var(from.clone()) {
+                                vm.detail = VmDetail::Var(to.clone());
+                            } else if vm.detail == VmDetail::Group(from.clone()) {
+                                vm.detail = VmDetail::Group(to.clone());
+                            }
+                        }
+                        self.varmanager.sync(&self.project)
+                    }
                     Err(msg) => {
                         self.toasts.push(msg, ToastKind::Error);
                         self.last_action_failed = true;
                     }
                 }
+                true
+            }
+
+            // -- Task 16: the group entries grid (spec §3.4) --
+            Action::PromptGroupFields { group } => {
+                use crate::components::modal::PromptField;
+                let current = self
+                    .project
+                    .model
+                    .groups
+                    .get(&group)
+                    .map(|g| g.fields.clone())
+                    .unwrap_or_default();
+                // One slot per current field, in order — position is the
+                // identity, so an edited slot reads as a rename — plus one
+                // empty slot to add a field with.
+                let mut fields: Vec<PromptField> = current
+                    .iter()
+                    .enumerate()
+                    .map(|(i, f)| {
+                        PromptField::text(&format!("f{i}"), &format!("Field {}", i + 1), f)
+                    })
+                    .collect();
+                fields.push(PromptField::text(
+                    &format!("f{}", current.len()),
+                    "Add field",
+                    "",
+                ));
+                self.modals.push(Modal::MultiPrompt {
+                    title: format!("Fields of {group}"),
+                    fields,
+                    focus: 0,
+                    kind: PromptKind::GroupFields { group },
+                });
+                true
+            }
+            Action::ApplyGroupFields {
+                group,
+                slots,
+                confirmed,
+            } => {
+                self.apply_group_fields(group, slots, confirmed);
+                true
+            }
+            Action::PromptRenameEntry { env, group, from } => {
+                self.modals.push(Modal::Prompt {
+                    title: format!("Rename {from}"),
+                    input: LineInput::new(&from),
+                    kind: PromptKind::RenameEntry { env, group, from },
+                    revealed: false,
+                });
+                true
+            }
+            Action::ConfirmDeleteEntry { env, group, name } => {
+                self.modals.push(Modal::Confirm {
+                    title: format!("Delete {name}"),
+                    body: format!(
+                        "Delete entry \"{name}\" of \"{group}\" from {env}? Its values are removed with it."
+                    ),
+                    choices: vec![
+                        ('n', "Cancel".into(), vec![]),
+                        (
+                            'y',
+                            "Delete".into(),
+                            vec![Action::VarStruct(VarStructOp::DeleteEntry {
+                                env,
+                                group,
+                                name,
+                            })],
+                        ),
+                    ],
+                });
                 true
             }
 
@@ -2378,24 +2464,19 @@ impl App {
             VarEditOp::SetSecretValue { env, name, value } => {
                 self.project.set_secret_for(env, name, value.clone())
             }
-            VarEditOp::SetOptionValue {
+            VarEditOp::SetEntryValue {
                 env,
-                owner,
-                key,
-                member,
+                group,
+                entry,
+                field,
                 value,
             } => {
                 // An entry's values live in one environment's file; the
                 // cell being edited is one field of that entry.
-                let Some(field) = member.clone() else {
-                    return Err(format!(
-                        "entry \"{key}\" of \"{owner}\" has no single value to edit"
-                    ));
-                };
                 let mut values = indexmap::IndexMap::new();
-                values.insert(field, value.clone());
+                values.insert(field.clone(), value.clone());
                 self.project.edit_env(env, |doc| {
-                    postui_core::varedit::upsert_entry(doc, owner, key, None, &values)
+                    postui_core::varedit::upsert_entry(doc, group, entry, None, &values)
                 })
             }
             VarEditOp::SetRequestVar { name, value } => {
@@ -2413,8 +2494,8 @@ impl App {
                 }
                 Ok(())
             }
-            VarEditOp::Select { env, name, key } => {
-                self.project.set_selection_for(env, name, key);
+            VarEditOp::SelectEntry { env, group, entry } => {
+                self.project.set_selection_for(env, group, entry);
                 Ok(())
             }
         }
@@ -2611,6 +2692,9 @@ impl App {
                 if name_taken(&self.project, to) {
                     return Err(format!("\"{to}\" already exists"));
                 }
+                if self.project.model.groups.contains_key(from) {
+                    return self.apply_rename_group(from, to);
+                }
                 self.project
                     .edit_variables(|doc| varedit::rename_var(doc, from, to))?;
                 // `rename_var` only ever touches `variables.toml` — an
@@ -2730,6 +2814,296 @@ impl App {
             }
             VarStructOp::DuplicateEntry { env, group, name } => {
                 self.apply_duplicate_entry(env, group, name)
+            }
+        }
+    }
+
+    /// [`VarStructOp::Rename`] for a group. Both halves of the declaration
+    /// have to move at once: an environment's `[entries.<old>]` table names
+    /// a group the renamed model no longer declares, and the new name has
+    /// no entries yet — so `validate_env` refuses whichever half lands
+    /// first, in either order. `edit_variables_and_envs` builds and
+    /// validates them together, then writes.
+    ///
+    /// Selections name a group by key, so each environment's recorded
+    /// selection is carried across the rename (the same repair
+    /// [`VarStructOp::RenameEntry`] makes for an entry key) — otherwise a
+    /// renamed group would silently lose its "pick user 2" state
+    /// everywhere.
+    fn apply_rename_group(&mut self, from: &str, to: &str) -> Result<(), String> {
+        use postui_core::varedit;
+        self.project.edit_variables_and_envs(
+            |doc| varedit::rename_group(doc, from, to),
+            |doc| varedit::rename_group_entries(doc, from, to),
+        )?;
+        for env in self.project.environments.clone() {
+            if let Some(key) = self.project.selections_for(&env).get(from).cloned() {
+                self.project.clear_selection_for(&env, from);
+                self.project.set_selection_for(&env, to, &key);
+            }
+        }
+        Ok(())
+    }
+
+    /// [`Action::ApplyGroupFields`]: turns the field editor's per-slot text
+    /// into renames, additions and removals, and applies all three in one
+    /// transaction across `variables.toml` and every environment.
+    ///
+    /// **Position is the identity.** Slot `i` *is* the group's current
+    /// `i`th field: changed text renames it, cleared text removes it, and a
+    /// slot past the current list adds a field. Rows are therefore never
+    /// reordered — swapping two names reads as two renames (and is refused
+    /// as a collision), which is the price of being able to rename a field
+    /// at all through a plain list of text boxes.
+    ///
+    /// Every one of the three needs both files at once: an entry must
+    /// supply exactly its group's declared fields (`validate_env`), so a
+    /// declaration whose new field list has landed alone is invalid until
+    /// the entries carry the same change.
+    fn apply_group_fields(&mut self, group: String, slots: Vec<String>, confirmed: bool) {
+        use postui_core::varedit;
+        use postui_core::vars::is_valid_var_name;
+
+        let Some(current) = self
+            .project
+            .model
+            .groups
+            .get(&group)
+            .map(|g| g.fields.clone())
+        else {
+            self.toasts.push(
+                format!("\"{group}\" is not a declared group"),
+                ToastKind::Error,
+            );
+            return;
+        };
+
+        let mut renames: Vec<(String, String)> = Vec::new();
+        let mut removals: Vec<String> = Vec::new();
+        let mut additions: Vec<String> = Vec::new();
+        let mut fields: Vec<String> = Vec::new();
+        for (i, slot) in slots.iter().enumerate() {
+            match current.get(i) {
+                Some(old) if slot.is_empty() => removals.push(old.clone()),
+                Some(old) => {
+                    if slot != old {
+                        renames.push((old.clone(), slot.clone()));
+                    }
+                    fields.push(slot.clone());
+                }
+                None if slot.is_empty() => {}
+                None => {
+                    additions.push(slot.clone());
+                    fields.push(slot.clone());
+                }
+            }
+        }
+        // A prompt with fewer slots than the group has fields drops the
+        // trailing ones (today only reachable if the field list grew
+        // between opening and confirming the modal).
+        for old in current.iter().skip(slots.len()) {
+            removals.push(old.clone());
+        }
+        if renames.is_empty() && removals.is_empty() && additions.is_empty() {
+            return;
+        }
+
+        for name in additions.iter().chain(renames.iter().map(|(_, t)| t)) {
+            if !is_valid_var_name(name) {
+                self.toasts.push(
+                    format!("\"{name}\" is not a valid field name"),
+                    ToastKind::Error,
+                );
+                return;
+            }
+            // A field belongs to exactly one group, and shares the
+            // declaration namespace with variables and groups.
+            let clash = self.project.model.groups.iter().any(|(g, decl)| {
+                g == name || (g != &group && decl.fields.iter().any(|f| f == name))
+            });
+            if clash {
+                self.toasts
+                    .push(format!("\"{name}\" already exists"), ToastKind::Error);
+                return;
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        if let Some(dup) = fields.iter().find(|f| !seen.insert((*f).clone())) {
+            self.toasts
+                .push(format!("\"{dup}\" is listed twice"), ToastKind::Error);
+            return;
+        }
+
+        // Removing a field deletes that column's values everywhere — spec
+        // §5's "destructive edits confirm first".
+        if !removals.is_empty() && !confirmed {
+            let envs: Vec<String> = self
+                .project
+                .environments
+                .clone()
+                .into_iter()
+                .filter(|env| {
+                    postui_core::varmodel::group_entries(&self.env_data_for(env), &group)
+                        .is_some_and(|e| !e.is_empty())
+                })
+                .collect();
+            let where_ = if envs.is_empty() {
+                "no environment has entries for it yet".to_string()
+            } else {
+                format!("every entry in {}", envs.join(", "))
+            };
+            self.modals.push(Modal::Confirm {
+                title: format!("Remove {} from {group}", removals.join(", ")),
+                body: format!(
+                    "Values in this column will be deleted from {where_}. This cannot be undone."
+                ),
+                choices: vec![
+                    ('n', "Cancel".into(), vec![]),
+                    (
+                        'y',
+                        "Remove".into(),
+                        vec![Action::ApplyGroupFields {
+                            group: group.clone(),
+                            slots,
+                            confirmed: true,
+                        }],
+                    ),
+                ],
+            });
+            return;
+        }
+
+        // A renamed field that has its own `[name]` declaration renames
+        // through `rename_var` (which also rewrites the group's `fields`
+        // array); one that doesn't exist as a declaration only lives in
+        // that array, which the closing `upsert_group` rewrites wholesale
+        // either way.
+        let declared: Vec<bool> = renames
+            .iter()
+            .map(|(from, _)| self.project.model.vars.contains_key(from))
+            .collect();
+        let result = self.project.edit_variables_and_envs(
+            |doc| {
+                let mut out = doc.to_string();
+                for ((from, to), declared) in renames.iter().zip(&declared) {
+                    if *declared {
+                        out = varedit::rename_var(&out, from, to)?;
+                    }
+                }
+                varedit::upsert_group(&out, &group, None, &fields)
+            },
+            |doc| {
+                let mut out = doc.to_string();
+                for (from, to) in &renames {
+                    out = varedit::rename_entry_field(&out, &group, from, to)?;
+                }
+                for field in &removals {
+                    out = varedit::strip_entry_field(&out, &group, field)?;
+                }
+                for field in &additions {
+                    out = varedit::ensure_entry_field(&out, &group, field)?;
+                }
+                Ok(out)
+            },
+        );
+        match result {
+            Ok(()) => self.varmanager.sync(&self.project),
+            Err(msg) => self.toasts.push(msg, ToastKind::Error),
+        }
+    }
+
+    /// Commits whatever cell the group grid's [`EntryGridState::editing`]
+    /// holds (click-away, click-another-cell, or `Enter`) — Task 8's rules,
+    /// on the three kinds of cell the grid has: the ghost row's name cell
+    /// creates an entry (with an empty value for every field, so the new
+    /// record validates) and continues into its first field cell, a real
+    /// entry's name cell renames it, and a field cell writes that one
+    /// value. Text that didn't change writes nothing.
+    ///
+    /// A write failure toasts and puts the edit back exactly as it was, so
+    /// the typed text survives a retry (spec §5) — including the reserved
+    /// entry name `description`, which core refuses.
+    pub(crate) fn commit_grid_edit(&mut self) {
+        let Some(edit) = self.varmanager.grid.editing.take() else {
+            return;
+        };
+        let VmDetail::Group(group) = self.varmanager.detail.clone() else {
+            return;
+        };
+        let Some(env) = self.project.active_env.clone() else {
+            return;
+        };
+        let value = edit.input.text().to_string();
+        if value == edit.original {
+            return;
+        }
+        let entries: Vec<String> =
+            postui_core::varmodel::group_entries(&self.project.env_data, &group)
+                .map(|e| e.keys().cloned().collect())
+                .unwrap_or_default();
+        let fields = self
+            .project
+            .model
+            .groups
+            .get(&group)
+            .map(|g| g.fields.clone())
+            .unwrap_or_default();
+        let ghost = edit.row >= entries.len();
+
+        let result = if ghost {
+            // Only the ghost's name cell creates anything; an emptied name
+            // creates nothing (and neither does a value typed into a row
+            // that doesn't exist yet — the caller never starts one).
+            if edit.col != 0 || value.is_empty() {
+                return;
+            }
+            let values = fields
+                .iter()
+                .map(|f| (f.clone(), String::new()))
+                .collect::<indexmap::IndexMap<_, _>>();
+            self.apply_var_struct(&VarStructOp::NewEntry {
+                env,
+                group,
+                name: value.clone(),
+                description: None,
+                values,
+            })
+        } else if edit.col == 0 {
+            // Clearing a name is not a delete: leave the entry as it was.
+            if value.is_empty() {
+                return;
+            }
+            self.apply_var_struct(&VarStructOp::RenameEntry {
+                env,
+                group,
+                from: entries[edit.row].clone(),
+                to: value,
+            })
+        } else {
+            let Some(field) = fields.get(edit.col - 1).cloned() else {
+                return;
+            };
+            self.apply_var_edit(&VarEditOp::SetEntryValue {
+                env,
+                group,
+                entry: entries[edit.row].clone(),
+                field,
+                value,
+            })
+        };
+        match result {
+            Ok(()) => {
+                self.varmanager.sync(&self.project);
+                // The ghost flow keeps going left-to-right: the row that
+                // was the ghost is now a real entry (appended, so it keeps
+                // its index) with its first field cell live.
+                if ghost && !fields.is_empty() {
+                    self.varmanager.start_cell_edit(&self.project, edit.row, 1);
+                }
+            }
+            Err(msg) => {
+                self.varmanager.grid.editing = Some(edit);
+                self.toasts.push(msg, ToastKind::Error);
             }
         }
     }
@@ -3082,6 +3456,11 @@ impl App {
         let row = match hit {
             Hit::SidebarRow(i) | Hit::SidebarFolderArrow(i) => self.sidebar.rows.get(*i)?,
             Hit::VmLeftRow(i) => return self.varmanager.context_menu(*i),
+            // An entry row (either half of it — the radio and the cells all
+            // belong to the same record).
+            Hit::VmEntryRadio(row) | Hit::VmEntryCell { row, .. } => {
+                return self.varmanager.entry_context_menu(&self.project, *row);
+            }
             _ => return None,
         };
         Some(match row {
@@ -3313,6 +3692,9 @@ impl App {
             if self.screen == Screen::VarManager && self.varmanager.form.editing.is_some() {
                 return self.handle_var_form_key(ev);
             }
+            if self.screen == Screen::VarManager && self.varmanager.grid.editing.is_some() {
+                return self.handle_grid_key(ev);
+            }
             if let Some(a) = self.varmanager.handle_key(ev, &self.project) {
                 return self.update(a);
             }
@@ -3353,6 +3735,51 @@ impl App {
             _ => {
                 if let Some((_, input)) = self.varmanager.form.editing.as_mut() {
                     input.handle_key(ev);
+                }
+            }
+        }
+        self.update(Action::Render)
+    }
+
+    /// Keys while a group-grid cell owns the keyboard — the same contract
+    /// as [`Self::handle_var_form_key`]: `Esc` reverts (nothing is written,
+    /// and the cell's resting text is read live from the project either
+    /// way), `Enter` commits, anything else goes to the cell's own
+    /// `LineInput`. `Tab` commits and steps one column right on the same
+    /// row, so a freshly created entry can be filled in without reaching
+    /// for the mouse; a commit that failed keeps its edit and stays put.
+    fn handle_grid_key(&mut self, ev: KeyEvent) -> bool {
+        match ev.code {
+            KeyCode::Esc => {
+                self.varmanager.grid.editing = None;
+            }
+            KeyCode::Enter => self.commit_grid_edit(),
+            KeyCode::Tab => {
+                let at = self
+                    .varmanager
+                    .grid
+                    .editing
+                    .as_ref()
+                    .map(|e| (e.row, e.col));
+                self.commit_grid_edit();
+                if let Some((row, col)) = at
+                    && self.varmanager.grid.editing.is_none()
+                    && let VmDetail::Group(group) = self.varmanager.detail.clone()
+                {
+                    let ncols = 1 + self
+                        .project
+                        .model
+                        .groups
+                        .get(&group)
+                        .map_or(0, |g| g.fields.len());
+                    if col + 1 < ncols {
+                        self.varmanager.start_cell_edit(&self.project, row, col + 1);
+                    }
+                }
+            }
+            _ => {
+                if let Some(edit) = self.varmanager.grid.editing.as_mut() {
+                    edit.input.handle_key(ev);
                 }
             }
         }

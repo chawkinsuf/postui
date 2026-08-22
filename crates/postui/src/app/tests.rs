@@ -4015,17 +4015,17 @@ fn var_edit_set_secret_value_lands_only_in_secrets_toml() {
 }
 
 #[test]
-fn var_edit_set_option_value_writes_one_field_of_the_entry_in_that_env() {
+fn var_edit_set_entry_value_writes_one_field_of_the_entry_in_that_env() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
-    app.update(Action::VarEdit(VarEditOp::SetOptionValue {
+    app.update(Action::VarEdit(VarEditOp::SetEntryValue {
         env: "qa".into(),
-        owner: "user".into(),
-        key: "alice".into(),
-        member: Some("user".into()),
+        group: "user".into(),
+        entry: "alice".into(),
+        field: "user".into(),
         value: "9999".into(),
     }));
 
@@ -4079,10 +4079,10 @@ fn var_edit_select_records_the_choice_for_the_targeted_env_even_when_not_active(
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     assert_eq!(app.project.env_label(), "qa");
 
-    app.update(Action::VarEdit(VarEditOp::Select {
+    app.update(Action::VarEdit(VarEditOp::SelectEntry {
         env: "dev".into(),
-        name: "user".into(),
-        key: "bob".into(),
+        group: "user".into(),
+        entry: "bob".into(),
     }));
 
     assert_eq!(app.project.selections_for("dev")["user"], "bob");
@@ -6882,4 +6882,369 @@ fn keyboard_e_and_s_still_work_with_the_form_on_screen() {
 
     app.handle_key(&keymap, plain('s'));
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+}
+
+// --- Task 16: the group entries grid (spec §3.4) -------------------------
+
+fn goto_group(app: &mut App, name: &str) {
+    goto_row(app, |r| {
+        r == &crate::components::varmanager::VmRow::Group(name.into())
+    });
+}
+
+fn cell_rect(app: &mut App, row: usize, col: usize) -> ratatui::layout::Rect {
+    rendered_text_tall(app);
+    app.hits
+        .rect_of(&crate::hit::Hit::VmEntryCell { row, col })
+        .unwrap_or_else(|| panic!("no rect for cell {row}/{col}"))
+}
+
+#[test]
+fn clicking_an_entrys_radio_records_the_selection_and_re_resolves_every_field() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    assert!(
+        !app.project.resolved.values.contains_key("user"),
+        "no selection yet: the group's field doesn't resolve"
+    );
+
+    rendered_text_tall(&mut app);
+    let r = app
+        .hits
+        .rect_of(&crate::hit::Hit::VmEntryRadio(1))
+        .expect("bob's radio");
+    app.handle_mouse(left_down(r.x, r.y));
+
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    assert_eq!(app.project.selections_for("qa")["user"], "bob");
+    assert_eq!(
+        app.project.resolved.values["user"], "2002",
+        "{{user}} now resolves through the selected entry"
+    );
+    let state = postui_core::project::load_local_state(dir.path()).unwrap();
+    assert_eq!(state.selections["qa"]["user"], "bob");
+
+    // …and clicking the other radio moves it, rather than adding a second.
+    let r = app.hits.rect_of(&crate::hit::Hit::VmEntryRadio(0)).unwrap();
+    app.handle_mouse(left_down(r.x, r.y));
+    assert_eq!(app.project.selections_for("qa")["user"], "alice");
+    assert_eq!(app.project.resolved.values["user"], "1001");
+}
+
+#[test]
+fn editing_a_field_cell_and_clicking_away_rewrites_the_env_file() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+
+    let r = cell_rect(&mut app, 0, 1);
+    app.handle_mouse(left_down(r.x, r.y));
+    assert!(app.varmanager.grid.editing.is_some(), "the cell is live");
+
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, plain('9'));
+
+    // Clicking a *different* cell commits the first one (Task 8's
+    // commit-first rule) and starts editing the one clicked.
+    let other = cell_rect(&mut app, 1, 1);
+    app.handle_mouse(left_down(other.x, other.y));
+
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(on_disk.contains("10019"), "{on_disk}");
+    let edit = app.varmanager.grid.editing.as_ref().expect("second cell");
+    assert_eq!((edit.row, edit.col), (1, 1));
+    assert_eq!(edit.input.text(), "2002");
+
+    // Esc puts the second cell back with nothing written.
+    app.handle_key(&keymap, plain('x'));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.varmanager.grid.editing.is_none());
+    let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(!on_disk.contains("2002x"), "esc reverted: {on_disk}");
+}
+
+#[test]
+fn the_ghost_row_creates_an_entry_and_keeps_going_into_its_first_field() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    let keymap = Keymap::default_bindings();
+
+    // Row 2 is the ghost row (alice, bob, then the ghost).
+    let r = cell_rect(&mut app, 2, 0);
+    app.handle_mouse(left_down(r.x, r.y));
+    for c in "carol".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(on_disk.contains("[entries.user.carol]"), "{on_disk}");
+    // The new entry is created with an empty value for every field, so it
+    // validates — and the edit walks on into that first field cell.
+    let edit = app
+        .varmanager
+        .grid
+        .editing
+        .as_ref()
+        .expect("editing continues left-to-right");
+    assert_eq!((edit.row, edit.col), (2, 1));
+
+    for c in "3003".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let env = postui_core::project::load_environment(dir.path(), "qa").unwrap();
+    assert_eq!(env.entries["user"]["carol"].values["user"], "3003");
+}
+
+#[test]
+fn a_refused_entry_name_toasts_and_keeps_the_typed_text() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    let keymap = Keymap::default_bindings();
+
+    let r = cell_rect(&mut app, 2, 0);
+    app.handle_mouse(left_down(r.x, r.y));
+    // `description` inside an entries table is an entry's own description,
+    // so core refuses it as an entry name.
+    for c in "description".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(!app.toasts.is_empty(), "the refusal is surfaced");
+    let edit = app
+        .varmanager
+        .grid
+        .editing
+        .as_ref()
+        .expect("the failed write left the edit in place");
+    assert_eq!(edit.input.text(), "description");
+    let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(!on_disk.contains("description"), "{on_disk}");
+}
+
+#[test]
+fn the_field_editor_renames_adds_and_removes_across_variables_and_every_env() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    std::fs::write(
+        dir.path().join("environments/dev.toml"),
+        "[entries.user.dave]\nuser = \"7\"\n",
+    )
+    .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+
+    // --- rename: slot 0 is the group's current field, retyped -----------
+    app.update(Action::ApplyGroupFields {
+        group: "user".into(),
+        slots: vec!["user_id".into()],
+        confirmed: false,
+    });
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    assert_eq!(app.project.model.groups["user"].fields, vec!["user_id"]);
+    let qa = postui_core::project::load_environment(dir.path(), "qa").unwrap();
+    assert_eq!(qa.entries["user"]["alice"].values["user_id"], "1001");
+    let dev = postui_core::project::load_environment(dir.path(), "dev").unwrap();
+    assert_eq!(
+        dev.entries["user"]["dave"].values["user_id"], "7",
+        "a non-active environment renames too"
+    );
+
+    // --- add: a slot past the current list -------------------------------
+    app.update(Action::ApplyGroupFields {
+        group: "user".into(),
+        slots: vec!["user_id".into(), "customer_id".into()],
+        confirmed: false,
+    });
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    assert_eq!(
+        app.project.model.groups["user"].fields,
+        vec!["user_id", "customer_id"]
+    );
+    let qa = postui_core::project::load_environment(dir.path(), "qa").unwrap();
+    assert_eq!(
+        qa.entries["user"]["alice"].values["customer_id"], "",
+        "every existing entry gains the column, empty"
+    );
+
+    // --- remove: a cleared slot warns before deleting the column ---------
+    app.update(Action::ApplyGroupFields {
+        group: "user".into(),
+        slots: vec!["user_id".into(), String::new()],
+        confirmed: false,
+    });
+    let Some(Modal::Confirm { body, .. }) = app.modals.top() else {
+        panic!("a removal must confirm first");
+    };
+    assert!(body.contains("deleted from"), "{body}");
+    assert!(body.contains("qa") && body.contains("dev"), "{body}");
+    assert_eq!(
+        app.project.model.groups["user"].fields,
+        vec!["user_id", "customer_id"],
+        "nothing has changed yet"
+    );
+
+    app.handle_key(&Keymap::default_bindings(), plain('y'));
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    assert_eq!(app.project.model.groups["user"].fields, vec!["user_id"]);
+    let qa = postui_core::project::load_environment(dir.path(), "qa").unwrap();
+    assert!(
+        !qa.entries["user"]["alice"]
+            .values
+            .contains_key("customer_id"),
+        "the column is gone from every entry"
+    );
+}
+
+#[test]
+fn renaming_a_group_moves_its_declaration_its_entries_and_its_selections() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    std::fs::write(
+        dir.path().join("environments/dev.toml"),
+        "[entries.user.dave]\nuser = \"7\"\n",
+    )
+    .unwrap();
+    postui_core::project::save_local_state(
+        dir.path(),
+        &postui_core::project::LocalState {
+            environment: Some("qa".into()),
+            selections: [
+                (
+                    "qa".to_string(),
+                    [("user".to_string(), "bob".to_string())].into(),
+                ),
+                (
+                    "dev".to_string(),
+                    [("user".to_string(), "dave".to_string())].into(),
+                ),
+            ]
+            .into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    assert_eq!(app.project.resolved.values["user"], "2002");
+
+    app.update(Action::VarStruct(VarStructOp::Rename {
+        from: "user".into(),
+        to: "account".into(),
+    }));
+
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    let vars = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    assert!(vars.contains("[groups.account]"), "{vars}");
+    assert!(!vars.contains("[groups.user]"), "{vars}");
+    for env in ["qa", "dev"] {
+        let text =
+            std::fs::read_to_string(dir.path().join(format!("environments/{env}.toml"))).unwrap();
+        assert!(
+            text.contains("[entries.account."),
+            "{env} entries moved: {text}"
+        );
+        assert!(!text.contains("[entries.user."), "{env}: {text}");
+    }
+    // The selection follows the name in every environment…
+    assert_eq!(app.project.selections_for("qa")["account"], "bob");
+    assert_eq!(app.project.selections_for("dev")["account"], "dave");
+    assert!(!app.project.selections_for("qa").contains_key("user"));
+    let state = postui_core::project::load_local_state(dir.path()).unwrap();
+    assert_eq!(state.selections["dev"]["account"], "dave");
+    // …so the group's field still resolves to the same value it did.
+    assert_eq!(app.project.resolved.values["user"], "2002");
+    // …and the detail pane is still looking at the group it was on.
+    assert_eq!(
+        app.varmanager.detail,
+        crate::components::varmanager::VmDetail::Group("account".into())
+    );
+}
+
+#[test]
+fn a_group_rename_onto_a_taken_name_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    app.update(Action::VarStruct(VarStructOp::Rename {
+        from: "user".into(),
+        to: "base_url".into(),
+    }));
+
+    assert!(!app.toasts.is_empty(), "the refusal is surfaced");
+    assert!(app.project.model.groups.contains_key("user"));
+    let qa = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(qa.contains("[entries.user.alice]"), "{qa}");
+}
+
+#[test]
+fn right_clicking_an_entry_row_opens_its_own_menu() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+
+    let r = cell_rect(&mut app, 0, 0);
+    app.handle_mouse(right_down(r.x, r.y));
+    let Some(Modal::Dropdown(state)) = app.modals.top() else {
+        panic!("no entry menu");
+    };
+    let labels: Vec<&str> = state.items.iter().map(|i| i.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        vec!["Duplicate entry", "Rename\u{2026}", "Delete\u{2026}"]
+    );
+}
+
+#[test]
+fn the_new_entry_button_starts_the_ghost_row_and_edit_fields_opens_the_editor() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+
+    rendered_text_tall(&mut app);
+    let r = app.hits.rect_of(&crate::hit::Hit::VmNewEntry).unwrap();
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    let edit = app.varmanager.grid.editing.as_ref().expect("ghost is live");
+    assert_eq!((edit.row, edit.col), (2, 0));
+
+    rendered_text_tall(&mut app);
+    let r = app.hits.rect_of(&crate::hit::Hit::VmEditFields).unwrap();
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    assert!(matches!(
+        app.modals.top(),
+        Some(Modal::MultiPrompt {
+            kind: PromptKind::GroupFields { .. },
+            ..
+        })
+    ));
+    // One slot per current field, plus the empty "add field" slot.
+    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
+        unreachable!()
+    };
+    assert_eq!(fields.len(), 2);
+    assert_eq!(fields[0].input.text(), "user");
+    assert_eq!(fields[1].input.text(), "");
 }

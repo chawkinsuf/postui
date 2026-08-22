@@ -102,6 +102,23 @@ pub enum Hit {
     VmRename,
     /// The variable form's title-row `[Delete]` button.
     VmDelete,
+    /// The group grid's `◉`/`○` radio on entry row `i` (spec §3.4): a
+    /// click selects that entry for the active environment, which is what
+    /// makes every one of the group's fields resolve to its values.
+    VmEntryRadio(usize),
+    /// One cell of the group grid: `col == 0` is the entry-name cell, `col
+    /// n` is the group's `n-1`th field. `row == entries.len()` is the ghost
+    /// row — the always-present empty row that becomes a real entry the
+    /// moment its name cell commits non-empty (Task 8's table model).
+    VmEntryCell {
+        row: usize,
+        col: usize,
+    },
+    /// The group pane's `[+ Entry]` button.
+    VmNewEntry,
+    /// The group pane's `[Edit fields]` button: opens the field-list
+    /// editor (one text slot per current field plus an empty one).
+    VmEditFields,
     /// The variable form's promote/demote button — whichever of the two
     /// applies right now (`VarManager`'s own precondition check decides
     /// which, and which `Action` a click fires).

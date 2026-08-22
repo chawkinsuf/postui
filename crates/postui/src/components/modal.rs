@@ -56,6 +56,21 @@ pub enum PromptKind {
     GroupMembers {
         group: String,
     },
+    /// The group pane's `[Edit fields]` (Task 16, spec §3.4): a
+    /// `Modal::MultiPrompt` with one text slot per current field (keys
+    /// `f0`, `f1`, … — position *is* the identity, which is how a changed
+    /// text reads as a rename) plus a trailing empty slot for adding one.
+    /// Confirming emits `Action::ApplyGroupFields`.
+    GroupFields {
+        group: String,
+    },
+    /// The entry-row context menu's "Rename…" (Task 16): the text is the
+    /// entry's new name within `group` in `env`.
+    RenameEntry {
+        env: String,
+        group: String,
+        from: String,
+    },
     /// Send-time secret prompt (spec §3): `prepare()` reported `name`
     /// missing for the active environment (`env`, display only — never a
     /// secret value). Confirming dispatches `Action::SetSecret`. The
@@ -447,6 +462,14 @@ impl ModalStack {
                                 fields: comma_tokens(text),
                             })])
                         }
+                        PromptKind::RenameEntry { env, group, from } => {
+                            Some(vec![Action::VarStruct(VarStructOp::RenameEntry {
+                                env: env.clone(),
+                                group: group.clone(),
+                                from: from.clone(),
+                                to: text.to_string(),
+                            })])
+                        }
                         PromptKind::SecretValue { name, .. } => Some(vec![Action::SetSecret {
                             name: name.clone(),
                             value: text.to_string(),
@@ -454,6 +477,7 @@ impl ModalStack {
                         // These kinds are `Modal::MultiPrompt` only — never a
                         // single-input `Modal::Prompt`.
                         PromptKind::NewGroup
+                        | PromptKind::GroupFields { .. }
                         | PromptKind::NewOptionInline { .. }
                         | PromptKind::EditOption { .. }
                         | PromptKind::ExtractVariable => {
@@ -634,6 +658,22 @@ impl ModalStack {
                             let name = get("name").filter(|s| !s.is_empty())?.to_string();
                             let fields = comma_tokens(get("fields").unwrap_or(""));
                             vec![Action::VarStruct(VarStructOp::NewGroup { name, fields })]
+                        }
+                        // Position is the identity here: slot `i` stands
+                        // for the group's current `i`th field, so the raw
+                        // per-slot text (empties included — an emptied slot
+                        // is how a field is removed) is what the app needs
+                        // to tell renames from additions and removals.
+                        PromptKind::GroupFields { group } => {
+                            let slots = fields
+                                .iter()
+                                .map(|f| f.input.text().trim().to_string())
+                                .collect();
+                            vec![Action::ApplyGroupFields {
+                                group: group.clone(),
+                                slots,
+                                confirmed: false,
+                            }]
                         }
                         PromptKind::ExtractVariable => {
                             let name = get("name").filter(|s| !s.is_empty())?.to_string();

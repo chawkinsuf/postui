@@ -252,12 +252,12 @@ async fn stage6_acceptance_flow() {
         "picker confirm recorded the selection"
     );
 
-    // --- select the group's entry directly (VarEdit::Select is the
+    // --- select the group's entry directly (VarEdit::SelectEntry is the
     // same wire type the picker itself dispatches on confirm) ----------
-    app.update(Action::VarEdit(VarEditOp::Select {
+    app.update(Action::VarEdit(VarEditOp::SelectEntry {
         env: "qa".into(),
-        name: "creds".into(),
-        key: "alice".into(),
+        group: "creds".into(),
+        entry: "alice".into(),
     }));
 
     // --- request-scope override: `trace_id` shadows the project default
@@ -283,10 +283,10 @@ async fn stage6_acceptance_flow() {
         "prod has no region selection yet: {:?}",
         app.project.resolved.values.get("region")
     );
-    app.update(Action::VarEdit(VarEditOp::Select {
+    app.update(Action::VarEdit(VarEditOp::SelectEntry {
         env: "prod".into(),
-        name: "region".into(),
-        key: "west".into(),
+        group: "region".into(),
+        entry: "west".into(),
     }));
     assert_eq!(app.project.resolved.values["region"], "west-9");
 

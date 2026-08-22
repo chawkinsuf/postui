@@ -695,6 +695,55 @@ impl ProjectContext {
         self.refresh_resolved();
         Ok(())
     }
+
+    /// One edit that has to change `variables.toml` *and* every environment
+    /// file together, because neither half validates without the other:
+    /// renaming a group (an environment's `[entries.<old>]` names a group
+    /// the new model no longer declares — and the new name's entries don't
+    /// exist yet) and reshaping a group's field list (every entry must
+    /// supply exactly the declared fields, so a rename/add/remove is
+    /// invalid the moment one side lands alone). Doing it as two
+    /// [`Self::edit_variables`]/[`Self::edit_env`] calls fails whichever
+    /// goes first, in either order.
+    ///
+    /// So both halves are built in memory, and the *new* model is validated
+    /// against every *new* environment before anything is written. A
+    /// refusal leaves every file untouched, exactly like the single-file
+    /// verbs. (The writes themselves are per-file atomic and sequential —
+    /// an I/O failure part-way can still leave the project half-written,
+    /// the same exposure the existing per-env cascades in
+    /// `App::apply_var_struct` already carry.)
+    pub fn edit_variables_and_envs(
+        &mut self,
+        vf: impl FnOnce(&str) -> Result<String, EditError>,
+        ef: impl Fn(&str) -> Result<String, EditError>,
+    ) -> Result<(), String> {
+        let vars_path = self.root.join("variables.toml");
+        let new_vars_text = vf(&read_or_empty(&vars_path)?).map_err(|e| e.to_string())?;
+        let new_model = varmodel::parse_variables(&new_vars_text).map_err(|e| e.to_string())?;
+
+        let mut envs: Vec<(String, PathBuf, String, varmodel::EnvData)> = Vec::new();
+        for env in &self.environments {
+            let path = self.root.join("environments").join(format!("{env}.toml"));
+            let new_text = ef(&read_or_empty(&path)?).map_err(|e| e.to_string())?;
+            let new_data = varmodel::parse_environment(&new_text).map_err(|e| e.to_string())?;
+            varmodel::validate_env(&new_model, &new_data).map_err(|e| e.to_string())?;
+            envs.push((env.clone(), path, new_text, new_data));
+        }
+
+        atomic_write(&vars_path, &new_vars_text).map_err(|e| e.to_string())?;
+        for (env, path, text, data) in envs {
+            atomic_write(&path, &text).map_err(|e| e.to_string())?;
+            if self.active_env.as_deref() == Some(env.as_str()) {
+                self.env_data = data;
+            }
+        }
+
+        self.model = new_model;
+        self.stamps = stamp(&self.root, &self.active_env);
+        self.refresh_resolved();
+        Ok(())
+    }
 }
 
 #[cfg(test)]

@@ -352,6 +352,38 @@ pub enum Action {
     /// A confirmed structural mutation; `App::apply_var_struct` applies it.
     VarStruct(VarStructOp),
 
+    // -- Task 16: the group entries grid (spec §3.4) --
+    /// The group pane's `[Edit fields]` button / `m`: opens the field-list
+    /// editor — a `Modal::MultiPrompt` with one text slot per current
+    /// field, in order, plus a trailing empty "add field" slot.
+    PromptGroupFields {
+        group: String,
+    },
+    /// The field-list editor's confirmed slots, positionally: slot `i` is
+    /// `group`'s current `i`th field (renamed when its text changed,
+    /// removed when it was cleared), and any slot past the current list is
+    /// a new field. `confirmed` is false on the way in; a removal bounces
+    /// through a confirm modal that re-dispatches this with it set, since
+    /// dropping a field deletes that column's values from every entry.
+    ApplyGroupFields {
+        group: String,
+        slots: Vec<String>,
+        confirmed: bool,
+    },
+    /// The entry-row context menu's "Rename…": opens a prompt seeded with
+    /// the entry's current name.
+    PromptRenameEntry {
+        env: String,
+        group: String,
+        from: String,
+    },
+    /// The entry-row context menu's "Delete…": opens the delete confirm.
+    ConfirmDeleteEntry {
+        env: String,
+        group: String,
+        name: String,
+    },
+
     // -- Task 17: in-context flows (spec §6) --
     /// The `SelectOption` picker's "add new option…" ghost row: opens the
     /// key/value/description prompt for a new option on `owner`, closing
