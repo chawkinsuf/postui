@@ -1040,10 +1040,16 @@ impl ModalStack {
                 focus,
                 ..
             } => {
-                // 2 rows per field (label + input), plus the title/hint/
-                // button chrome — mirrors `NewProject`'s fixed two-field
-                // layout, generalized to N.
-                let height = (6 + fields.len() as u16 * 2 + 2).min(screen.height);
+                // Each field costs a label row plus a `FIELD_HEIGHT` box;
+                // around them sit the top pad, the title, a blank row, the
+                // hint row, the button row and the bottom pad. Counting the
+                // boxes (not just 2 rows per field) is what keeps the
+                // bottom-anchored buttons off the last field — with two
+                // fields the old estimate had them painting straight
+                // through it.
+                let per_field = 1 + FIELD_HEIGHT;
+                let height = (3 + fields.len() as u16 * per_field + 1 + BUTTON_HEIGHT + 1)
+                    .min(screen.height);
                 let area = centered_rect(screen, 60.min(screen.width), height);
                 hits.register(area, crate::hit::Hit::ModalBody);
                 paint::floating_panel(frame.buffer_mut(), area, screen, theme);
@@ -1346,6 +1352,48 @@ mod tests {
         let clamped = centered_rect(screen, 200, 90);
         assert_eq!(clamped.width, 100);
         assert_eq!(clamped.height, 40);
+    }
+
+    /// A two-field `MultiPrompt` (extract-to-variable, new group, …) must
+    /// leave room for its bottom-anchored buttons: the old height estimate
+    /// counted 2 rows per field instead of the label + `FIELD_HEIGHT` box
+    /// it actually paints, so Cancel/Confirm landed *inside* the second
+    /// field. Found by the stage-7 tmux sweep.
+    #[test]
+    fn multi_prompt_buttons_sit_below_the_last_field() {
+        let screen = Rect::new(0, 0, 120, 40);
+        let mut m = ModalStack::default();
+        m.push(Modal::MultiPrompt {
+            title: "Extract to variable".into(),
+            fields: vec![
+                PromptField::text("name", "Name", ""),
+                PromptField::text("dest", "Destination", "here"),
+            ],
+            focus: 0,
+            kind: PromptKind::NewGroup,
+        });
+
+        let theme = Theme::for_terminal();
+        let mut hits = crate::hit::HitMap::default();
+        let mut terminal = Terminal::new(TestBackend::new(screen.width, screen.height)).unwrap();
+        terminal
+            .draw(|f| m.draw(f, screen, &theme, &mut hits, None))
+            .unwrap();
+
+        let body = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
+        let confirm = hits.rect_of(&crate::hit::Hit::ModalConfirm).unwrap();
+        // Two fields, each a label row plus a FIELD_HEIGHT box, starting
+        // two rows under the title.
+        let fields_end = body.y + 3 + 2 * (1 + FIELD_HEIGHT);
+        assert!(
+            confirm.y >= fields_end,
+            "buttons at {} overlap the fields, which end at {fields_end}",
+            confirm.y
+        );
+        assert!(
+            confirm.y + confirm.height <= body.y + body.height,
+            "...and they stay inside the panel"
+        );
     }
 
     #[test]
