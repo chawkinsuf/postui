@@ -391,8 +391,149 @@ impl Editor {
             self.sub_focus = SubFocus::Content;
         }
         self.body_handler.on_mouse_event(m, &mut self.body);
+        // edtui 0.11.6 gets the caret wrong on a plain click: its own
+        // click→cursor mapping clamps the column to `len - 1` (so a click
+        // past the end of a line lands *on* its last character instead of
+        // after it) and, when the click is below the last line, its wrapped
+        // walk falls through without ever setting a column, leaving the
+        // clamp to snap the caret to the last character of the whole
+        // buffer. Both are wrong for a desktop-style editor, so the click's
+        // caret is recomputed here. Only `Down` is corrected: a drag that
+        // reaches this far still rides on edtui's own mapping, where a
+        // selection endpoint wants the clamped, on-a-character semantics.
+        // (`App::handle_mouse` does not currently route drags here at all.)
+        if m.kind == MouseEventKind::Down(MouseButton::Left)
+            && let Some(cursor) = self.body_cursor_for_click(m.column, m.row)
+        {
+            self.body.cursor = cursor;
+        }
         true
     }
+
+    /// Maps a screen click inside `last_body_area` to a body-buffer cursor,
+    /// honouring `wrap(true)`, the line-number gutter and the vertical
+    /// viewport offset — a port of edtui 0.11.6's
+    /// `mouse_position_to_cursor_position` with the two corrections postui
+    /// needs: the column clamps to the line's length (the caret sits AFTER
+    /// the last character, which insert mode allows), and a click below the
+    /// last rendered line resolves to the end of the LAST line rather than
+    /// falling through.
+    ///
+    /// Returns `None` when the click cannot be resolved to a position —
+    /// notably a click in the line-number gutter, which edtui ignores too
+    /// (its recorded screen area starts after the gutter), so the caret
+    /// stays put.
+    fn body_cursor_for_click(&self, x: u16, y: u16) -> Option<edtui::Index2> {
+        let area = self.last_body_area?;
+        if area.height == 0 || y < area.y {
+            return None;
+        }
+        // edtui records the post-gutter content rect in its `view.screen_area`,
+        // but that field is crate-private, so the gutter width is recomputed
+        // here the way edtui's `EditorView::line_number_width` does.
+        let gutter = line_number_gutter_width(self.body.lines.len());
+        let content_x = area.x.saturating_add(gutter);
+        let width = usize::from(area.width.saturating_sub(gutter));
+        if width == 0 || x < content_x {
+            return None;
+        }
+        let mouse_row = usize::from(y - area.y);
+        let mouse_col = usize::from(x - content_x);
+
+        // Walk the visible logical lines, each occupying as many screen rows
+        // as it wraps into, until the one covering `mouse_row` is found.
+        let top = self.body.viewport_offset().1;
+        let mut screen_row = 0usize;
+        for (row, line) in (top..).zip(self.body.lines.iter_row().skip(top)) {
+            let segments = wrap_segments(line, width);
+            let rows = segments.len().max(1);
+            if screen_row + rows > mouse_row {
+                let col =
+                    column_in_wrapped_line(line, &segments, mouse_row - screen_row, mouse_col);
+                return Some(edtui::Index2::new(row, col));
+            }
+            screen_row += rows;
+        }
+
+        // Below the last line: the end of the last line, like every desktop
+        // editor (edtui instead snapped to the last char of the buffer).
+        let last = self.body.lines.len().checked_sub(1)?;
+        Some(edtui::Index2::new(
+            last,
+            self.body.lines.len_col(last).unwrap_or(0),
+        ))
+    }
+}
+
+/// The tab width edtui renders the body with: its `ViewState` default, which
+/// postui never overrides (there is no public getter to read it back).
+const BODY_TAB_WIDTH: usize = 2;
+
+/// The rendered width of `ch` in the body editor, matching edtui's own
+/// `helper::char_width`.
+fn body_char_width(ch: char) -> usize {
+    use unicode_width::UnicodeWidthChar;
+    if ch == '\t' {
+        return BODY_TAB_WIDTH;
+    }
+    ch.width().unwrap_or(0)
+}
+
+/// The width of the line-number gutter edtui splits off the left of the body
+/// area: one column per digit of the line count, plus a separating space.
+/// Duplicates edtui 0.11.6's private `EditorView::line_number_width` (postui
+/// always renders the body with `LineNumbers::Absolute`).
+fn line_number_gutter_width(line_count: usize) -> u16 {
+    let digits = line_count.max(1).to_string().len();
+    u16::try_from(digits + 1).unwrap_or(u16::MAX)
+}
+
+/// Splits `line` into the character ranges edtui's `LineWrapper::wrap_line`
+/// would render as successive screen rows in a `max_width`-wide content area.
+fn wrap_segments(line: &[char], max_width: usize) -> Vec<std::ops::Range<usize>> {
+    let mut segments = Vec::new();
+    let mut start = 0usize;
+    let mut line_width = 0usize;
+    for (i, &ch) in line.iter().enumerate() {
+        let char_width = body_char_width(ch);
+        if line_width + char_width > max_width {
+            segments.push(start..i);
+            start = i;
+            line_width = 0;
+        }
+        line_width += char_width;
+    }
+    if start < line.len() {
+        segments.push(start..line.len());
+    }
+    segments
+}
+
+/// The buffer column a click at `mouse_col` on wrapped row `sub_row` of
+/// `line` addresses. A click past the end of the row's text yields the
+/// column *after* its last character — for the final wrapped row that is the
+/// line's length, which is where a desktop editor puts the caret.
+fn column_in_wrapped_line(
+    line: &[char],
+    segments: &[std::ops::Range<usize>],
+    sub_row: usize,
+    mouse_col: usize,
+) -> usize {
+    let Some(segment) = segments.get(sub_row) else {
+        // Only reachable for an empty line, which renders as one blank row.
+        return line.len();
+    };
+    let mut width = 0usize;
+    let mut col = segment.start;
+    for &ch in &line[segment.clone()] {
+        let char_width = body_char_width(ch);
+        if width + char_width > mouse_col {
+            break;
+        }
+        width += char_width;
+        col += 1;
+    }
+    col
 }
 
 /// edtui's emacs keybindings are all registered against `EditorMode::Insert`,
@@ -2900,5 +3041,146 @@ url = "https://api.example.com/users""#,
         );
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("Host"), "{content}");
+    }
+}
+
+#[cfg(test)]
+mod body_click_tests {
+    use super::*;
+    use edtui::Index2;
+    use ratatui::buffer::Buffer;
+    use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::widgets::Widget;
+
+    /// The synthetic area the body editor is "rendered" into by the helper.
+    const AREA: Rect = Rect {
+        x: 0,
+        y: 0,
+        width: 40,
+        height: 10,
+    };
+
+    /// Builds a Body-tab editor with `text` in the buffer, then renders the
+    /// body view once into a synthetic 40x10 area with exactly the same
+    /// builder options the real `draw` uses, so edtui records its own
+    /// (post-gutter) screen area and viewport just as it would on screen.
+    fn editor_with_body(text: &str) -> Editor {
+        let mut e = Editor {
+            active_tab: EditorTab::Body,
+            sub_focus: SubFocus::Content,
+            ..Editor::default()
+        };
+        e.set_body_text(text);
+        render_body(&mut e);
+        e
+    }
+
+    fn render_body(e: &mut Editor) {
+        e.last_body_area = Some(AREA);
+        let mut buf = Buffer::empty(AREA);
+        EditorView::new(&mut e.body)
+            .theme(EditorTheme::default().hide_status_line())
+            .wrap(true)
+            .line_numbers(LineNumbers::Absolute)
+            .render(AREA, &mut buf);
+    }
+
+    fn left_down(x: u16, y: u16) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn click_past_line_end_places_caret_at_line_end() {
+        let mut e = editor_with_body("{\n  \"a\": 1,\n  \"bb\": 2\n}\n");
+        e.handle_mouse(left_down(35, 1));
+        // Line 1 is `  "a": 1,` - 9 chars. The caret belongs AFTER the
+        // trailing comma (insert mode allows col == len), not on it.
+        assert_eq!(e.body.cursor, Index2::new(1, 9));
+    }
+
+    #[test]
+    fn click_below_last_line_goes_to_end_of_last_line() {
+        // No trailing newline: the last row has text, so the "end of the
+        // last line" is a column edtui's own clamp could not produce.
+        let mut e = editor_with_body("{\n  \"a\": 1\n}");
+        e.handle_mouse(left_down(5, 8));
+        assert_eq!(e.body.cursor, Index2::new(2, 1));
+
+        // With a trailing newline the last row is empty, and that is where a
+        // click in the void below belongs.
+        let mut e = editor_with_body("{\n  \"a\": 1\n}\n");
+        e.handle_mouse(left_down(5, 8));
+        assert_eq!(e.body.cursor, Index2::new(3, 0));
+    }
+
+    #[test]
+    fn click_on_a_character_lands_on_that_character() {
+        let mut e = editor_with_body("{\n  \"a\": 1,\n}\n");
+        // The gutter is 2 cells wide (3 rows -> 1 digit + 1 space), so
+        // content column 3 (the `a`) sits at screen x = 5.
+        e.handle_mouse(left_down(5, 1));
+        assert_eq!(e.body.cursor, Index2::new(1, 3));
+    }
+
+    #[test]
+    fn click_at_content_column_zero_is_the_start_of_the_line() {
+        let mut e = editor_with_body("{\n  \"a\": 1,\n}\n");
+        e.handle_mouse(left_down(2, 1));
+        assert_eq!(e.body.cursor, Index2::new(1, 0));
+    }
+
+    #[test]
+    fn click_in_the_gutter_leaves_the_cursor_alone() {
+        let mut e = editor_with_body("{\n  \"a\": 1,\n}\n");
+        e.body.cursor = Index2::new(0, 1);
+        e.handle_mouse(left_down(0, 1));
+        assert_eq!(e.body.cursor, Index2::new(0, 1));
+    }
+
+    #[test]
+    fn click_on_the_second_visual_row_of_a_wrapped_line() {
+        // Content width is 40 - 2 (gutter) = 38, so a 50-char line wraps
+        // after 38 chars and its second visual row is screen row 1.
+        let long: String = std::iter::repeat_n('x', 50).collect();
+        let mut e = editor_with_body(&format!("{long}\nend\n"));
+        e.handle_mouse(left_down(2 + 5, 1));
+        assert_eq!(e.body.cursor, Index2::new(0, 38 + 5));
+        // Past the end of the wrapped line's tail: caret after the last char.
+        e.handle_mouse(left_down(35, 1));
+        assert_eq!(e.body.cursor, Index2::new(0, 50));
+        // The next logical line starts on the third visual row.
+        e.handle_mouse(left_down(2 + 1, 2));
+        assert_eq!(e.body.cursor, Index2::new(1, 1));
+    }
+
+    #[test]
+    fn click_maps_through_a_scrolled_viewport() {
+        let text: String = (0..30).map(|i| format!("line {i}\n")).collect();
+        let mut e = editor_with_body(&text);
+        // Put the cursor deep in the buffer and re-render so edtui scrolls
+        // the viewport down to follow it.
+        e.body.cursor = Index2::new(25, 0);
+        render_body(&mut e);
+        let top = e.body.viewport_offset().1;
+        assert!(top > 0, "viewport should have scrolled, got {top}");
+        // 31 rows -> a 3-cell gutter, so content column 1 sits at x = 4.
+        e.handle_mouse(left_down(4, 0));
+        assert_eq!(e.body.cursor, Index2::new(top, 1));
+        // Past the end of the top visible line: caret after its last char.
+        e.handle_mouse(left_down(35, 0));
+        let len = e.body.lines.len_col(top).unwrap();
+        assert_eq!(e.body.cursor, Index2::new(top, len));
+    }
+
+    #[test]
+    fn click_in_an_empty_body_stays_at_the_origin() {
+        let mut e = editor_with_body("");
+        e.handle_mouse(left_down(20, 5));
+        assert_eq!(e.body.cursor, Index2::new(0, 0));
     }
 }
