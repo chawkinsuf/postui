@@ -382,6 +382,11 @@ impl App {
                 // A token sits *on* a cell: hovering or clicking one must
                 // neither commit the cell under edit nor drop the selection.
                 | Hit::VarToken(_)
+                // The `{{ }} vars` chip inserts into whatever text field is
+                // live, so it must not be treated as a click away: blurring
+                // the URL line (or committing the cell) first would leave
+                // the picker it opens with nowhere to insert.
+                | Hit::FooterChip(Action::OpenVarPicker { .. })
         );
         if !keeps_table_selection {
             self.commit_table_edit();

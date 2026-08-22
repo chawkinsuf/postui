@@ -2867,6 +2867,56 @@ fn body_insert_autoenables_substitution() {
     assert!(!app.toasts.is_empty());
 }
 
+/// The toolbar's `{{ }} vars` chip is the *mouse* route into the picker
+/// (spec §5), so clicking it must not blur the field it is going to insert
+/// into — found by the stage-7 tmux sweep, where the chip could only ever
+/// answer "nowhere to insert".
+#[test]
+fn the_vars_chip_keeps_the_url_focused_so_the_picker_can_insert() {
+    let mut app = app_with_vars();
+    app.update(Action::FocusUrl);
+    assert_eq!(app.editor.sub_focus, SubFocus::Url);
+
+    click_hit(
+        &mut app,
+        Hit::FooterChip(Action::OpenVarPicker { completing: false }),
+    );
+    assert!(matches!(app.modals.top(), Some(Modal::VarPicker(_))));
+    assert_eq!(
+        app.editor.sub_focus,
+        SubFocus::Url,
+        "the chip is not a click-away from the line it inserts into"
+    );
+
+    click_hit(&mut app, Hit::VarPickerRow(0));
+    assert_eq!(app.editor.url.text(), "{{base}}");
+    assert!(
+        app.toasts.is_empty(),
+        "no \"nowhere to insert\" — the caret was still there"
+    );
+}
+
+/// Same rule for a live table cell: the chip inserts into what is being
+/// typed rather than committing it away first.
+#[test]
+fn the_vars_chip_inserts_into_a_table_cell_under_edit() {
+    let mut app = app_with_vars();
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    type_chars(&mut app, "x");
+    click_hit(
+        &mut app,
+        Hit::FooterChip(Action::OpenVarPicker { completing: false }),
+    );
+    click_hit(&mut app, Hit::VarPickerRow(0));
+    let edit = app
+        .editor
+        .table
+        .editing
+        .as_ref()
+        .expect("the cell is still under edit");
+    assert_eq!(edit.input.text(), "x{{base}}");
+}
+
 #[test]
 fn picker_with_no_declared_vars_still_offers_the_new_variable_row() {
     // Task 15: the picker no longer needs anything declared — the "new
