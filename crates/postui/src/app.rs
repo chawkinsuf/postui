@@ -17,6 +17,11 @@ use std::path::PathBuf;
 use std::time::Instant;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
+/// The migration confirm modal's title (spec §3.3) — also how
+/// `prompt_migration_if_pending` recognizes its own modal already on the
+/// stack.
+const MIGRATION_TITLE: &str = "Migrate variables";
+
 /// An in-progress scrollbar drag: which pane's thumb is held, and how far
 /// down the thumb the pointer grabbed it, so the thumb keeps its position
 /// under the cursor instead of jumping its top to the pointer.
@@ -339,13 +344,55 @@ impl App {
         app
     }
 
+    /// Offers the stage-6 → stage-7 conversion (spec §3.3) when the
+    /// project that was just opened or reloaded is still in the old
+    /// format. Idempotent: a confirm already on the stack isn't stacked
+    /// on top of, so a reload while the modal is up doesn't duplicate it.
+    fn prompt_migration_if_pending(&mut self) {
+        let Some(outcome) = self.project.pending_migration() else {
+            return;
+        };
+        if self
+            .modals
+            .iter()
+            .any(|m| matches!(m, Modal::Confirm { title, .. } if title == MIGRATION_TITLE))
+        {
+            return;
+        }
+        let mut lines = vec![
+            "This project's variables still use the old format. Convert them now? A .bak copy of each rewritten file is left beside it.".to_string(),
+        ];
+        // The confirm modal is a fixed, small box: list the first few
+        // notes and count the rest rather than overflowing it silently
+        // (every note is repeated in the toast once the migration runs).
+        const SHOWN: usize = 4;
+        lines.extend(
+            outcome
+                .notes
+                .iter()
+                .take(SHOWN)
+                .map(|n| format!("\u{2022} {n}")),
+        );
+        if let Some(rest) = outcome.notes.len().checked_sub(SHOWN).filter(|n| *n > 0) {
+            lines.push(format!("\u{2022} \u{2026} and {rest} more"));
+        }
+        self.modals.push(Modal::Confirm {
+            title: MIGRATION_TITLE.into(),
+            body: lines.join("\n"),
+            choices: vec![
+                ('n', "Not now".into(), vec![Action::DeclineMigration]),
+                ('y', "Migrate".into(), vec![Action::ApplyMigration]),
+            ],
+        });
+    }
+
     fn bare(tx: UnboundedSender<Action>, root: PathBuf) -> Self {
         let (project, warnings) = ProjectContext::open(root);
         let mut toasts = Toasts::default();
         for w in warnings {
             toasts.push(w, ToastKind::Warning);
         }
-        Self {
+        let mut app = Self {
             should_quit: false,
             focus: PaneId::Sidebar,
             screen: Screen::default(),
@@ -375,7 +422,9 @@ impl App {
             last_action_failed: false,
             _test_rx: None,
             _test_dir: None,
-        }
+        };
+        app.prompt_migration_if_pending();
+        app
     }
 
     /// Constructs an `App` for tests, with its own channel so `tx` is
@@ -1096,6 +1145,7 @@ impl App {
                 for w in warnings {
                     self.toasts.push(w, ToastKind::Warning);
                 }
+                self.prompt_migration_if_pending();
                 match postui_core::storage::ensure_project(&self.project.root) {
                     Ok(()) => self.refresh_sidebar(),
                     Err(e) => {
@@ -1294,6 +1344,35 @@ impl App {
                     .push(format!("env: {label}"), ToastKind::Success);
                 true
             }
+            Action::ApplyMigration => {
+                match self.project.apply_migration() {
+                    Ok(notes) => {
+                        self.refresh_sidebar();
+                        let summary = if notes.is_empty() {
+                            "variables migrated \u{2014} a .bak of each rewritten file is beside it"
+                                .to_string()
+                        } else {
+                            format!(
+                                "variables migrated ({}) \u{2014} a .bak of each rewritten file is beside it",
+                                notes.join("; ")
+                            )
+                        };
+                        self.toasts.push(summary, ToastKind::Success);
+                    }
+                    Err(msg) => self
+                        .toasts
+                        .push(format!("could not migrate: {msg}"), ToastKind::Error),
+                }
+                true
+            }
+            Action::DeclineMigration => {
+                self.project.decline_migration();
+                self.toasts.push(
+                    "left the old variable files alone \u{2014} variables stay unavailable until they're migrated",
+                    ToastKind::Warning,
+                );
+                true
+            }
             Action::ReloadProjectFiles => {
                 let (changed, warnings) = self.project.reload_if_changed();
                 if changed {
@@ -1302,6 +1381,7 @@ impl App {
                 for w in warnings {
                     self.toasts.push(w, ToastKind::Warning);
                 }
+                self.prompt_migration_if_pending();
                 changed
             }
             Action::OpenVarPicker { completing } => {
@@ -1416,26 +1496,15 @@ impl App {
                         .unwrap_or_default()
                 };
                 let selections = self.project.selections_for(&env).get(&owner).cloned();
-                let entries: Vec<(String, String)> = if self.project.model.vars.contains_key(&owner)
-                {
-                    postui_core::varmodel::merged_var_options(
-                        &self.project.model,
-                        &env_data,
-                        &owner,
-                    )
-                    .iter()
-                    .map(|(k, o)| (k.clone(), format!("{k} \u{b7} {}", o.value)))
-                    .collect()
-                } else {
-                    postui_core::varmodel::merged_group_options(
-                        &self.project.model,
-                        &env_data,
-                        &owner,
-                    )
-                    .keys()
-                    .map(|k| (k.clone(), k.clone()))
-                    .collect()
-                };
+                let entries: Vec<(String, String)> =
+                    postui_core::varmodel::group_entries(&env_data, &owner)
+                        .map(|entries| {
+                            entries
+                                .keys()
+                                .map(|name| (name.clone(), name.clone()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
                 if entries.is_empty() {
                     return true;
                 }
@@ -1483,7 +1552,7 @@ impl App {
                     .model
                     .groups
                     .get(&group)
-                    .map(|g| g.members.clone())
+                    .map(|g| g.fields.clone())
                     .unwrap_or_default();
                 if current.iter().any(|m| m == &member) {
                     self.toasts.push(
@@ -1519,19 +1588,31 @@ impl App {
             }
             Action::RemoveGroupMember { group, member } => {
                 // Env files first: variables.toml's validation runs against
-                // the active env, which must no longer set the member by
-                // the time the membership itself changes.
+                // the active env, whose entries must no longer carry the
+                // field by the time the group's field list changes.
+                let Some(fields) = self
+                    .project
+                    .model
+                    .groups
+                    .get(&group)
+                    .map(|g| g.fields.clone())
+                else {
+                    self.toasts
+                        .push(format!("no group \"{group}\""), ToastKind::Error);
+                    return true;
+                };
+                let remaining: Vec<String> = fields.into_iter().filter(|f| f != &member).collect();
                 let envs = postui_core::project::list_environments(&self.project.root);
                 let result = envs
                     .iter()
                     .try_for_each(|env| {
                         self.project.edit_env(env, |doc| {
-                            postui_core::varedit::strip_env_group_member(doc, &group, &member)
+                            postui_core::varedit::strip_entry_field(doc, &group, &member)
                         })
                     })
                     .and_then(|()| {
                         self.project.edit_variables(|doc| {
-                            postui_core::varedit::remove_group_member(doc, &group, &member)
+                            postui_core::varedit::upsert_group(doc, &group, None, &remaining)
                         })
                     });
                 match result {
@@ -1549,7 +1630,7 @@ impl App {
                     .model
                     .groups
                     .get(&owner)
-                    .map(|g| g.members.clone())
+                    .map(|g| g.fields.clone())
                     .unwrap_or_default();
                 let title = if member_names.is_empty() {
                     format!("New option on {owner} \u{2014} key, value")
@@ -1602,7 +1683,7 @@ impl App {
                     .model
                     .groups
                     .get(&group)
-                    .map(|g| g.members.join(", "))
+                    .map(|g| g.fields.join(", "))
                     .unwrap_or_default();
                 self.modals.push(Modal::Prompt {
                     title: format!("Members of {group}"),
@@ -1638,38 +1719,13 @@ impl App {
                 true
             }
             Action::ConfirmDeleteOption { owner, key } => {
-                let env_override = self.project.active_env.as_deref().is_some_and(|_| {
-                    self.project
-                        .env_data
-                        .options
-                        .get(&owner)
-                        .and_then(|m| m.get(&key))
-                        .is_some()
-                });
-                let shared_exists = self
-                    .project
-                    .model
-                    .vars
-                    .get(&owner)
-                    .is_some_and(|d| d.options.contains_key(&key))
-                    || self
-                        .project
-                        .model
-                        .groups
-                        .get(&owner)
-                        .is_some_and(|g| g.options.contains_key(&key));
-                let env_label = self.project.active_env.clone().unwrap_or_default();
-                let body = if env_override && shared_exists {
-                    format!(
-                        "Delete \"{key}\" on \"{owner}\"? This removes the {env_label} override first \u{2014} the shared option stays; delete again to remove that too. This cannot be undone."
-                    )
-                } else if env_override {
-                    format!(
-                        "Delete \"{key}\" on \"{owner}\"? Removes the {env_label} override. This cannot be undone."
-                    )
-                } else {
-                    format!("Delete \"{key}\" on \"{owner}\"? This cannot be undone.")
-                };
+                // Entries live in one environment each (spec §3.1), so
+                // there is nothing "shared" to fall back to: the delete
+                // removes this environment's entry.
+                let env_label = self.project.env_label();
+                let body = format!(
+                    "Delete entry \"{key}\" of \"{owner}\" in {env_label}? This cannot be undone."
+                );
                 self.modals.push(Modal::Confirm {
                     title: format!("Delete {key}"),
                     body,
@@ -1828,13 +1884,29 @@ impl App {
                     );
                     return true;
                 };
-                let mut fields = indexmap::IndexMap::new();
-                fields.insert("value".to_string(), value);
-                if let Some(d) = &description {
-                    fields.insert("description".to_string(), d.clone());
+                // The inline prompt collects one value, but an entry has
+                // to supply every field of its group or `validate_env`
+                // rejects it: the typed value fills the first field and
+                // the rest start empty, for the Manager to fill in.
+                let fields = self
+                    .project
+                    .model
+                    .groups
+                    .get(&owner)
+                    .map(|g| g.fields.clone())
+                    .unwrap_or_default();
+                let mut values = indexmap::IndexMap::new();
+                for (i, field) in fields.into_iter().enumerate() {
+                    values.insert(field, if i == 0 { value.clone() } else { String::new() });
                 }
                 match self.project.edit_env(&env, |doc| {
-                    postui_core::varedit::upsert_env_option(doc, &owner, &key, &fields)
+                    postui_core::varedit::upsert_entry(
+                        doc,
+                        &owner,
+                        &key,
+                        description.as_deref(),
+                        &values,
+                    )
                 }) {
                     Ok(()) => {
                         self.project.set_selection_for(&env, &owner, &key);
@@ -1853,41 +1925,24 @@ impl App {
                 values,
                 description,
             } => {
-                let is_var = self.project.model.vars.contains_key(&owner);
-                let probe: Option<String> = if is_var {
-                    None
-                } else {
-                    values.keys().next().cloned()
+                // An entry belongs to exactly one environment, so the
+                // edit always lands in the active env's file.
+                let Some(env) = self.project.active_env.clone() else {
+                    self.toasts.push(
+                        "no active environment \u{2014} switch to one first",
+                        ToastKind::Warning,
+                    );
+                    return true;
                 };
-                let target_env = self.project.active_env.clone().filter(|env| {
-                    varmanager::option_value_is_env_override(
-                        &self.project,
-                        env,
+                let result = self.project.edit_env(&env, |doc| {
+                    postui_core::varedit::upsert_entry(
+                        doc,
                         &owner,
                         &key,
-                        probe.as_deref(),
+                        description.as_deref(),
+                        &values,
                     )
                 });
-                let result = match target_env {
-                    Some(env) => {
-                        let mut fields = values.clone();
-                        if let Some(d) = &description {
-                            fields.insert("description".to_string(), d.clone());
-                        }
-                        self.project.edit_env(&env, |doc| {
-                            postui_core::varedit::upsert_env_option(doc, &owner, &key, &fields)
-                        })
-                    }
-                    None => self.project.edit_variables(|doc| {
-                        postui_core::varedit::upsert_shared_option(
-                            doc,
-                            &owner,
-                            &key,
-                            description.as_deref(),
-                            &values,
-                        )
-                    }),
-                };
                 match result {
                     Ok(()) => self
                         .toasts
@@ -1970,14 +2025,12 @@ impl App {
                         // Same namespace-collision guard as `ProjectDefault`
                         // (a group of this name would otherwise sit
                         // alongside a same-named plain variable), plus the
-                        // two `validate_env` would reject outright if we
+                        // one `validate_env` would reject outright if we
                         // wrote a flat env value anyway: a secret variable
                         // (env values for secrets are forbidden —
-                        // `ModelError::EnvValueForSecret`) and an
-                        // already-enumerated one in this env
-                        // (`ModelError::EnvValueForEnumerated`). Catching
-                        // both here — rather than letting `edit_env` fail
-                        // after the fact — keeps the refusal a clean toast
+                        // `ModelError::EnvValueForSecret`). Catching it
+                        // here — rather than letting `edit_env` fail after
+                        // the fact — keeps the refusal a clean toast
                         // instead of a write attempt against a doc that
                         // `validate_env` would then reject.
                         if self.project.model.groups.contains_key(&name) {
@@ -1990,21 +2043,6 @@ impl App {
                                 self.toasts.push(
                                     format!(
                                         "\"{name}\" is a secret variable \u{2014} can't set a plain env value for it"
-                                    ),
-                                    ToastKind::Error,
-                                );
-                                return true;
-                            }
-                            if !postui_core::varmodel::merged_var_options(
-                                &self.project.model,
-                                &self.project.env_data,
-                                &name,
-                            )
-                            .is_empty()
-                            {
-                                self.toasts.push(
-                                    format!(
-                                        "\"{name}\" is enumerated in {env} \u{2014} pick an option instead of a flat value"
                                     ),
                                     ToastKind::Error,
                                 );
@@ -2096,19 +2134,18 @@ impl App {
     }
 
     /// Whether `cursor` (a char index into `text`) sits on a `{{name}}`
-    /// token whose name is enumerated-or-group-member in the active env
+    /// token whose name is a group field in the active env
     /// (spec §6's cursor-on-token rule) — and if so, the `(name, group)`
     /// pair `PickerMode::SelectOption` wants: `name` is the token's own
-    /// name; `group` is the owning group's name for a group member,
-    /// `None` for a plain enumerated variable. `None` when the cursor
-    /// isn't on a token, or the token's name doesn't resolve to either
-    /// shape (a simple/secret/undeclared name — `ctrl+v` there falls back
-    /// to ordinary `Insert` autocomplete).
+    /// name and `group` is the owning group's. `None` when the cursor
+    /// isn't on a token, or the token's name isn't a group field (a
+    /// simple/secret/undeclared name — `ctrl+v` there falls back to
+    /// ordinary `Insert` autocomplete).
     fn selection_picker_target(
         ctx: &ProjectContext,
         text: &str,
         cursor: usize,
-    ) -> Option<(String, Option<String>)> {
+    ) -> Option<(String, String)> {
         let byte_off = text
             .char_indices()
             .nth(cursor)
@@ -2119,20 +2156,15 @@ impl App {
             .find(|t| byte_off >= t.start && byte_off <= t.end)?;
         use postui_core::varmodel::VarMeta;
         match ctx.resolved.meta.get(&token.name) {
-            Some(VarMeta::Enumerated { .. }) => Some((token.name, None)),
-            Some(VarMeta::GroupMember { group, .. }) => Some((token.name, Some(group.clone()))),
+            Some(VarMeta::GroupMember { group, .. }) => Some((token.name, group.clone())),
             Some(VarMeta::NeedsSelection) => {
-                if ctx.model.vars.contains_key(&token.name) {
-                    Some((token.name, None))
-                } else {
-                    let group = ctx
-                        .model
-                        .groups
-                        .iter()
-                        .find(|(_, g)| g.members.contains(&token.name))
-                        .map(|(n, _)| n.clone())?;
-                    Some((token.name, Some(group)))
-                }
+                let group = ctx
+                    .model
+                    .groups
+                    .iter()
+                    .find(|(_, g)| g.fields.contains(&token.name))
+                    .map(|(n, _)| n.clone())?;
+                Some((token.name, group))
             }
             _ => None,
         }
@@ -2177,78 +2209,43 @@ impl App {
     }
 
     /// Builds and opens the `SelectOption` picker (spec §6's first
-    /// context) for `name` (a group member when `group` is `Some`): rows
-    /// are the merged options for the active env, `key  description
-    /// value` for a plain variable or a full per-member preview line for
-    /// a group, current selection marked with a ✓.
-    fn open_select_picker(&mut self, name: String, group: Option<String>) -> bool {
+    /// context) for `name`, a field of `group`: rows are `group`'s entries
+    /// in the active environment, each previewed as its per-field values,
+    /// with the current selection marked with a ✓.
+    fn open_select_picker(&mut self, name: String, group: String) -> bool {
         use crate::components::modal::Modal;
         use crate::components::var_picker::{SelectEntry, VarPickerState};
         use postui_core::varmodel;
 
-        let owner = group.clone().unwrap_or_else(|| name.clone());
         let env_key = self.project.active_env.clone().unwrap_or_default();
-        let entries: Vec<SelectEntry> = if let Some(group_name) = &group {
-            let opts = varmodel::merged_group_options(
-                &self.project.model,
-                &self.project.env_data,
-                group_name,
-            );
-            let members: Vec<String> = self
-                .project
-                .model
-                .groups
-                .get(group_name)
-                .map(|g| g.members.clone())
-                .unwrap_or_default();
-            let selected_key = self
-                .project
-                .selections_for(&env_key)
-                .get(group_name)
-                .cloned();
-            opts.into_iter()
-                .map(|(key, opt)| {
-                    let mut parts: Vec<String> = Vec::new();
-                    if let Some(desc) = &opt.description {
-                        parts.push(desc.clone());
-                    }
-                    for m in &members {
-                        if let Some(v) = opt.values.get(m) {
-                            parts.push(format!("{m} {v}"));
+        let selected_key = self.project.selections_for(&env_key).get(&group).cloned();
+        let entries: Vec<SelectEntry> = varmodel::group_entries(&self.project.env_data, &group)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .map(|(key, decl)| {
+                        let mut parts: Vec<String> = Vec::new();
+                        if let Some(desc) = &decl.description {
+                            parts.push(desc.clone());
                         }
-                    }
-                    let selected = selected_key.as_deref() == Some(key.as_str());
-                    SelectEntry {
-                        key,
-                        description: opt.description.clone(),
-                        value: None,
-                        preview: Some(parts.join(" \u{b7} ")),
-                        selected,
-                        values: Some(opt.values.clone()),
-                    }
-                })
-                .collect()
-        } else {
-            let opts =
-                varmodel::merged_var_options(&self.project.model, &self.project.env_data, &name);
-            let selected_key = self.project.selections_for(&env_key).get(&name).cloned();
-            opts.into_iter()
-                .map(|(key, opt)| {
-                    let selected = selected_key.as_deref() == Some(key.as_str());
-                    SelectEntry {
-                        key,
-                        description: opt.description.clone(),
-                        value: Some(opt.value.clone()),
-                        preview: None,
-                        selected,
-                        values: None,
-                    }
-                })
-                .collect()
-        };
+                        for (field, value) in &decl.values {
+                            parts.push(format!("{field} {value}"));
+                        }
+                        SelectEntry {
+                            key: key.clone(),
+                            description: decl.description.clone(),
+                            value: None,
+                            preview: Some(parts.join(" \u{b7} ")),
+                            selected: selected_key.as_deref() == Some(key.as_str()),
+                            values: Some(decl.values.clone()),
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         if entries.is_empty() {
             self.toasts
-                .push(format!("{owner} has no options"), ToastKind::Warning);
+                .push(format!("{group} has no entries here"), ToastKind::Warning);
             return true;
         }
         self.modals
@@ -2276,15 +2273,15 @@ impl App {
                     self.project.edit_variables(|doc| {
                         postui_core::varedit::upsert_var(doc, owner, Some(value), None)
                     })
-                } else if let Some(members) = self
+                } else if let Some(fields) = self
                     .project
                     .model
                     .groups
                     .get(owner)
-                    .map(|g| g.members.clone())
+                    .map(|g| g.fields.clone())
                 {
                     self.project.edit_variables(|doc| {
-                        postui_core::varedit::upsert_group(doc, owner, Some(value), &members)
+                        postui_core::varedit::upsert_group(doc, owner, Some(value), &fields)
                     })
                 } else {
                     Err(format!("\"{owner}\" is not a declared variable or group"))
@@ -2300,24 +2297,18 @@ impl App {
                 member,
                 value,
             } => {
-                let field = member.clone().unwrap_or_else(|| "value".to_string());
-                let mut fields = indexmap::IndexMap::new();
-                fields.insert(field, value.clone());
-                if varmanager::option_value_is_env_override(
-                    &self.project,
-                    env,
-                    owner,
-                    key,
-                    member.as_deref(),
-                ) {
-                    self.project.edit_env(env, |doc| {
-                        postui_core::varedit::upsert_env_option(doc, owner, key, &fields)
-                    })
-                } else {
-                    self.project.edit_variables(|doc| {
-                        postui_core::varedit::upsert_shared_option(doc, owner, key, None, &fields)
-                    })
-                }
+                // An entry's values live in one environment's file; the
+                // cell being edited is one field of that entry.
+                let Some(field) = member.clone() else {
+                    return Err(format!(
+                        "entry \"{key}\" of \"{owner}\" has no single value to edit"
+                    ));
+                };
+                let mut values = indexmap::IndexMap::new();
+                values.insert(field, value.clone());
+                self.project.edit_env(env, |doc| {
+                    postui_core::varedit::upsert_entry(doc, owner, key, None, &values)
+                })
             }
             VarEditOp::SetRequestVar { name, value } => {
                 match self.editor.variables.get_mut(name) {
@@ -2341,7 +2332,7 @@ impl App {
         }
     }
 
-    /// `s` on a non-enumerated `Var` row (spec §3's two transitions): opens
+    /// `s` on a `Var` row (spec §3's two transitions): opens
     /// the direction-appropriate confirm. Un-marking secret shows the
     /// current value(s) for the user to copy — deliberately, per spec, the
     /// one place a secret value is displayed outside substituted request
@@ -2349,7 +2340,16 @@ impl App {
     /// values will move into `.local/secrets.toml` and be stripped from
     /// their env files.
     fn open_toggle_secret_confirm(&mut self, name: String) {
-        let is_secret = self.project.model.vars.get(&name).is_some_and(|d| d.secret);
+        let Some(decl) = self.project.model.vars.get(&name) else {
+            // A group (or a name that is not declared at all) has no
+            // secret flag to flip: only a variable declaration carries one.
+            self.toasts.push(
+                format!("\"{name}\" is not a variable; only a variable can be secret"),
+                ToastKind::Error,
+            );
+            return;
+        };
+        let is_secret = decl.secret;
         if is_secret {
             let mut lines: Vec<String> = Vec::new();
             for env in &self.project.environments {
@@ -2378,13 +2378,6 @@ impl App {
                 ],
             });
         } else {
-            if !varmanager::union_var_option_keys(&self.project, &name).is_empty() {
-                self.toasts.push(
-                    format!("\"{name}\" has options; remove them before marking it secret"),
-                    ToastKind::Error,
-                );
-                return;
-            }
             let mut envs_with_values: Vec<String> = Vec::new();
             for env in self.project.environments.clone() {
                 let env_data = if self.project.active_env.as_deref() == Some(env.as_str()) {
@@ -2422,8 +2415,8 @@ impl App {
 
     /// `P` on a `Var` row (spec §4): refuses (with a message modal, no
     /// mutation) a secret name — its resolved value would otherwise land in
-    /// a git-tracked request file — or an enumerated/group name (request
-    /// scope is simple-only per spec); otherwise opens the demote confirm,
+    /// a git-tracked request file — or a group (request scope is
+    /// simple-only per spec); otherwise opens the demote confirm,
     /// its body naming any *other* requests already referencing it.
     fn open_demote_confirm(&mut self, name: String) {
         if self.editor.slug.is_none() {
@@ -2441,14 +2434,10 @@ impl App {
             });
             return;
         }
-        let enumerated = !varmanager::union_var_option_keys(&self.project, &name).is_empty();
-        let is_group = self.project.model.groups.contains_key(&name);
-        if enumerated || is_group {
+        if self.project.model.groups.contains_key(&name) {
             self.modals.push(Modal::Message {
                 title: "Can't demote".into(),
-                body: format!(
-                    "\"{name}\" is enumerated or a group; request scope is simple values only."
-                ),
+                body: format!("\"{name}\" is a group; request scope is simple values only."),
             });
             return;
         }
@@ -2534,10 +2523,17 @@ impl App {
                 values,
             } => {
                 if !is_valid_var_name(key) {
-                    return Err(format!("\"{key}\" is not a valid option key"));
+                    return Err(format!("\"{key}\" is not a valid entry name"));
                 }
-                self.project.edit_variables(|doc| {
-                    varedit::upsert_shared_option(doc, owner, key, description.as_deref(), values)
+                // Entries belong to one environment (spec §3.1).
+                let Some(env) = self.project.active_env.clone() else {
+                    return Err(
+                        "no active environment \u{2014} switch to one before adding an entry"
+                            .to_string(),
+                    );
+                };
+                self.project.edit_env(&env, |doc| {
+                    varedit::upsert_entry(doc, owner, key, description.as_deref(), values)
                 })
             }
             VarStructOp::Rename { from, to } => {
@@ -2576,10 +2572,10 @@ impl App {
                         .model
                         .groups
                         .iter()
-                        .find_map(|(gname, g)| g.members.contains(name).then(|| gname.clone()))
+                        .find_map(|(gname, g)| g.fields.contains(name).then(|| gname.clone()))
                     {
                         return Err(format!(
-                            "variable \"{name}\" is a member of group \"{gname}\"; remove it from the group first"
+                            "variable \"{name}\" is a field of group \"{gname}\"; remove it from the group first"
                         ));
                     }
                 }
@@ -2626,48 +2622,23 @@ impl App {
         }
     }
 
-    /// [`VarStructOp::DeleteOption`] (finding 3): location-aware option
-    /// delete. If `key` is overridden in the active environment, that
-    /// override is stripped first — leaving a shared option of the same
-    /// name (if any) intact, so a second delete then removes it. Otherwise,
-    /// if `key` is a shared option (on the variable's or group's own
-    /// table), it's removed from `variables.toml`. Neither existing is a
-    /// quiet no-op success (a stale row — nothing left to do). Also clears
-    /// any per-env selection naming the deleted key, in every environment,
+    /// [`VarStructOp::DeleteOption`]: deletes one entry of `owner` from
+    /// the active environment (entries belong to one environment each —
+    /// spec §3.1). No active environment, or no such entry, is a quiet
+    /// no-op success (a stale row — nothing left to do). Also clears any
+    /// per-env selection naming the deleted entry, in every environment,
     /// so local state doesn't accumulate dead selections (`resolve_env`
     /// already degrades a stale selection harmlessly, but there's no
     /// reason to leave it).
     fn apply_delete_option(&mut self, owner: &str, key: &str) -> Result<(), String> {
-        let env_override = self.project.active_env.clone().filter(|_| {
-            self.project
-                .env_data
-                .options
-                .get(owner)
-                .and_then(|m| m.get(key))
-                .is_some()
+        let present = self.project.active_env.clone().filter(|_| {
+            postui_core::varmodel::group_entries(&self.project.env_data, owner)
+                .is_some_and(|entries| entries.contains_key(key))
         });
-        if let Some(env) = env_override {
+        if let Some(env) = present {
             self.project.edit_env(&env, |doc| {
-                postui_core::varedit::delete_env_option(doc, owner, key)
+                postui_core::varedit::delete_entry(doc, owner, key)
             })?;
-        } else {
-            let shared_exists = self
-                .project
-                .model
-                .vars
-                .get(owner)
-                .is_some_and(|d| d.options.contains_key(key))
-                || self
-                    .project
-                    .model
-                    .groups
-                    .get(owner)
-                    .is_some_and(|g| g.options.contains_key(key));
-            if shared_exists {
-                self.project.edit_variables(|doc| {
-                    postui_core::varedit::delete_shared_option(doc, owner, key)
-                })?;
-            }
         }
         for env in self.project.environments.clone() {
             if self
@@ -2794,7 +2765,7 @@ impl App {
     /// declaration, and strips any flat value left behind in every
     /// environment (best-effort — an environment with nothing to strip is
     /// not an error). The caller (`open_demote_confirm`) has already
-    /// refused a secret/enumerated/group name before this ever runs.
+    /// refused a secret name or a group before this ever runs.
     fn apply_demote(&mut self, name: &str) -> Result<(), String> {
         let value = self
             .project

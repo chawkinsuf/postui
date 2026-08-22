@@ -46,10 +46,9 @@ pub enum PromptKind {
     AddGroupMember {
         group: String,
     },
-    /// `o` on an enumerated/group row: comma-separated `key, value` for a
-    /// plain variable's option, or `key, member=value, member=value, ...`
-    /// for a group's — `member_names` (the group's declared members, empty
-    /// for a plain variable) tells `parse_option_prompt` which form to
+    /// `o` on a group/entry row: comma-separated `key, value`, or
+    /// `key, field=value, field=value, ...` — `member_names` (the group's
+    /// declared fields) tells `parse_option_prompt` which form to
     /// expect.
     NewOption {
         owner: String,
@@ -307,6 +306,12 @@ impl ModalStack {
 
     pub fn top(&self) -> Option<&Modal> {
         self.stack.last()
+    }
+
+    /// Every modal on the stack, bottom first — for asking "is one of
+    /// these already open?" before pushing another.
+    pub fn iter(&self) -> impl Iterator<Item = &Modal> {
+        self.stack.iter()
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<ModalResult> {

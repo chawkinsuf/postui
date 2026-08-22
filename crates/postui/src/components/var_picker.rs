@@ -51,9 +51,9 @@ pub struct VarEntry {
 
 /// Builds the Insert-mode picker's entries (spec §6: "autocomplete over
 /// all defined names") from every source that declares one: project
-/// variables (`model.vars`, minus names that are actually group members —
-/// a member may carry its own top-level table for a description, but it's
-/// listed once, as `Group`), group members (`model.groups`), and the open
+/// variables (`model.vars`, minus names that are actually group fields —
+/// a field may carry its own top-level table for a description, but it's
+/// listed once, as `Group`), group fields (`model.groups`), and the open
 /// request's own `[variables]` (`request_vars`; `None`/disabled entries
 /// show as unset rather than being dropped). A name defined at more than
 /// one scope (a request entry shadowing a project variable) appears once,
@@ -63,16 +63,16 @@ pub fn insert_entries(
     resolved: &indexmap::IndexMap<String, String>,
     request_vars: &indexmap::IndexMap<String, postui_core::model::Entry>,
 ) -> Vec<VarEntry> {
-    let group_members: std::collections::HashSet<&str> = model
+    let group_fields: std::collections::HashSet<&str> = model
         .groups
         .values()
-        .flat_map(|g| g.members.iter().map(String::as_str))
+        .flat_map(|g| g.fields.iter().map(String::as_str))
         .collect();
 
     let mut entries: Vec<VarEntry> = Vec::new();
 
     for (name, decl) in &model.vars {
-        if group_members.contains(name.as_str()) {
+        if group_fields.contains(name.as_str()) {
             continue;
         }
         entries.push(VarEntry {
@@ -85,12 +85,12 @@ pub fn insert_entries(
     }
 
     for group in model.groups.values() {
-        for member in &group.members {
-            let description = model.vars.get(member).and_then(|d| d.description.clone());
+        for field in &group.fields {
+            let description = model.vars.get(field).and_then(|d| d.description.clone());
             entries.push(VarEntry {
-                name: member.clone(),
+                name: field.clone(),
                 description,
-                value: resolved.get(member).cloned(),
+                value: resolved.get(field).cloned(),
                 scope: VarScope::Group,
                 secret: false,
             });
@@ -122,23 +122,22 @@ pub fn insert_entries(
 /// contexts). `Insert` is today's autocomplete-over-all-names behavior
 /// (Task 15 upgrades its entries with scope badges). `SelectOption` is
 /// Task 14's second context: the cursor sat on an existing `{{name}}`
-/// token whose name resolves to an enumerated variable or a group member
-/// — `name` is that token's own name; `group` is the owning group's name
-/// for a group member (`None` for a plain enumerated variable). Either
-/// way the rows shown are the *options*, not the declared names, and
-/// `Enter` never touches the token text — it records a selection.
+/// token whose name is a group field — `name` is that token's own name
+/// and `group` is the owning group's. The rows shown are the group's
+/// *entries*, not the declared names, and `Enter` never touches the token
+/// text — it records a selection.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PickerMode {
     Insert,
-    SelectOption { name: String, group: Option<String> },
+    SelectOption { name: String, group: String },
 }
 
-/// One option row, as offered by the `SelectOption` picker: its key,
-/// optional description, and either a single resolved `value` (a plain
-/// enumerated variable's option) or a pre-formatted `preview` line (a
-/// group option's per-member preview, e.g. "admin · user_id 1001 ·
-/// customer_id c-77") — never both. `selected` marks the env's current
-/// selection for this name/group with a ✓.
+/// One entry row, as offered by the `SelectOption` picker: its name,
+/// optional description, and a pre-formatted `preview` line (the entry's
+/// per-field values, e.g. "admin · user_id 1001 · customer_id c-77").
+/// `value` is the single-value form kept for a one-field preview — never
+/// set alongside `preview`. `selected` marks the env's current selection
+/// for this group with a ✓.
 #[derive(Clone)]
 pub struct SelectEntry {
     pub key: String,
@@ -199,16 +198,11 @@ impl VarPickerState {
         }
     }
 
-    /// Opens `SelectOption` mode: `entries` are the merged options for
-    /// `name` (or, for a group member, its group — see [`PickerMode`]),
-    /// with the env's current selection already marked. `env` is the
-    /// active environment, captured for the `Enter` action.
-    pub fn new_select(
-        entries: Vec<SelectEntry>,
-        name: String,
-        group: Option<String>,
-        env: String,
-    ) -> Self {
+    /// Opens `SelectOption` mode: `entries` are `group`'s entries in the
+    /// active environment (`name` is the token that led here — see
+    /// [`PickerMode`]), with the env's current selection already marked.
+    /// `env` is the active environment, captured for the `Enter` action.
+    pub fn new_select(entries: Vec<SelectEntry>, name: String, group: String, env: String) -> Self {
         let filtered = (0..entries.len()).collect();
         Self {
             input: String::new(),
@@ -265,8 +259,8 @@ impl VarPickerState {
                     close: true,
                     ..Default::default()
                 }),
-                PickerMode::SelectOption { name, group } => {
-                    let owner = group.clone().unwrap_or_else(|| name.clone());
+                PickerMode::SelectOption { group, .. } => {
+                    let owner = group.clone();
                     Some(super::modal::ModalResult {
                         actions: vec![Action::OpenNewOptionInlinePrompt { owner }],
                         close: true,
@@ -290,12 +284,12 @@ impl VarPickerState {
                     ..Default::default()
                 })
             }
-            PickerMode::SelectOption { name, group } => {
-                // A group member's selection is recorded under the
-                // *group's* name (spec §1.2: one selection per group,
-                // shared by every member) — the token's own name is only
-                // for display (the picker's title).
-                let owner = group.clone().unwrap_or_else(|| name.clone());
+            PickerMode::SelectOption { group, .. } => {
+                // The selection is recorded under the *group's* name
+                // (spec §3.1: one selected entry per group, shared by
+                // every field) — the token's own name is only for display
+                // (the picker's title).
+                let owner = group.clone();
                 let key = self.select_entries[idx].key.clone();
                 let toast = format!("{owner} \u{2192} {key} ({})", self.env);
                 Some(super::modal::ModalResult {
@@ -402,10 +396,10 @@ impl VarPickerState {
                     return None; // the ghost row itself has nothing to edit
                 }
                 let &idx = self.filtered.get(self.selected)?;
-                let PickerMode::SelectOption { name, group } = &self.mode else {
+                let PickerMode::SelectOption { group, .. } = &self.mode else {
                     unreachable!("guarded above")
                 };
-                let owner = group.clone().unwrap_or_else(|| name.clone());
+                let owner = group.clone();
                 let entry = &self.select_entries[idx];
                 let values = entry.values.clone().unwrap_or_else(|| {
                     let mut m = IndexMap::new();
@@ -451,8 +445,8 @@ impl VarPickerState {
         let title_y = area.y + 1;
         let title = match &self.mode {
             PickerMode::Insert => "Variables".to_string(),
-            PickerMode::SelectOption { name, group } => {
-                format!("Select \u{2014} {}", group.as_deref().unwrap_or(name))
+            PickerMode::SelectOption { group, .. } => {
+                format!("Select \u{2014} {group}")
             }
         };
         paint::text(
@@ -782,7 +776,6 @@ mod tests {
                 description: Some("project-level default".to_string()),
                 default: Some("proj-value".to_string()),
                 secret: false,
-                options: indexmap::IndexMap::new(),
             },
         );
         let mut resolved = indexmap::IndexMap::new();
@@ -995,7 +988,7 @@ mod tests {
                 values: None,
             },
         ];
-        let mut p = VarPickerState::new_select(entries, "user".into(), None, "qa".into());
+        let mut p = VarPickerState::new_select(entries, "user".into(), "user".into(), "qa".into());
         let res = p.handle_key(key(KeyCode::Enter)).unwrap();
         assert_eq!(
             res.actions,
@@ -1021,12 +1014,8 @@ mod tests {
             selected: false,
             values: None,
         }];
-        let mut p = VarPickerState::new_select(
-            entries,
-            "user_id".into(),
-            Some("identity".into()),
-            "qa".into(),
-        );
+        let mut p =
+            VarPickerState::new_select(entries, "user_id".into(), "identity".into(), "qa".into());
         let res = p.handle_key(key(KeyCode::Enter)).unwrap();
         assert_eq!(
             res.actions,
@@ -1051,7 +1040,7 @@ mod tests {
             selected: false,
             values: None,
         }];
-        let mut p = VarPickerState::new_select(entries, "user".into(), None, "qa".into());
+        let mut p = VarPickerState::new_select(entries, "user".into(), "user".into(), "qa".into());
         let res = p.handle_key(key(KeyCode::Esc)).unwrap();
         assert!(res.close && res.actions.is_empty());
     }
@@ -1076,7 +1065,7 @@ mod tests {
                 values: None,
             },
         ];
-        let mut p = VarPickerState::new_select(entries, "user".into(), None, "qa".into());
+        let mut p = VarPickerState::new_select(entries, "user".into(), "user".into(), "qa".into());
         for c in "bob".chars() {
             p.handle_key(key(KeyCode::Char(c)));
         }
@@ -1114,12 +1103,8 @@ mod tests {
                 values: None,
             },
         ];
-        let mut p = VarPickerState::new_select(
-            entries,
-            "user_id".into(),
-            Some("identity".into()),
-            "qa".into(),
-        );
+        let mut p =
+            VarPickerState::new_select(entries, "user_id".into(), "identity".into(), "qa".into());
         let theme = Theme::dark();
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -1169,7 +1154,7 @@ mod tests {
             selected: false,
             values: None,
         }];
-        let mut p = VarPickerState::new_select(entries, "user".into(), None, "qa".into());
+        let mut p = VarPickerState::new_select(entries, "user".into(), "user".into(), "qa".into());
         // Down once lands on the ghost row (row 1, one past the one entry).
         p.handle_key(key(KeyCode::Down));
         let res = p.handle_key(key(KeyCode::Enter)).unwrap();
@@ -1192,12 +1177,8 @@ mod tests {
             selected: false,
             values: Some(IndexMap::new()),
         }];
-        let mut p = VarPickerState::new_select(
-            entries,
-            "user_id".into(),
-            Some("identity".into()),
-            "qa".into(),
-        );
+        let mut p =
+            VarPickerState::new_select(entries, "user_id".into(), "identity".into(), "qa".into());
         p.handle_key(key(KeyCode::Down));
         let res = p.handle_key(key(KeyCode::Enter)).unwrap();
         assert_eq!(
@@ -1221,7 +1202,7 @@ mod tests {
             selected: false,
             values: None,
         }];
-        let mut p = VarPickerState::new_select(entries, "user".into(), None, "qa".into());
+        let mut p = VarPickerState::new_select(entries, "user".into(), "user".into(), "qa".into());
         let theme = Theme::dark();
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -1243,7 +1224,7 @@ mod tests {
             selected: false,
             values: None,
         }];
-        let mut p = VarPickerState::new_select(entries, "user".into(), None, "qa".into());
+        let mut p = VarPickerState::new_select(entries, "user".into(), "user".into(), "qa".into());
         let res = p
             .handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE))
             .unwrap();
@@ -1274,12 +1255,8 @@ mod tests {
             selected: false,
             values: Some(values.clone()),
         }];
-        let mut p = VarPickerState::new_select(
-            entries,
-            "user_id".into(),
-            Some("identity".into()),
-            "qa".into(),
-        );
+        let mut p =
+            VarPickerState::new_select(entries, "user_id".into(), "identity".into(), "qa".into());
         let res = p
             .handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE))
             .unwrap();
@@ -1304,7 +1281,7 @@ mod tests {
             selected: false,
             values: None,
         }];
-        let mut p = VarPickerState::new_select(entries, "user".into(), None, "qa".into());
+        let mut p = VarPickerState::new_select(entries, "user".into(), "user".into(), "qa".into());
         p.handle_key(key(KeyCode::Down));
         assert!(
             p.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE))

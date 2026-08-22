@@ -262,7 +262,7 @@ pub enum Action {
     PromptNewVar,
     /// `g`: open the new-group prompt (comma-separated name + members).
     PromptNewGroup,
-    /// `o` on an enumerated/group row: open the new-option prompt.
+    /// `o` on a group/entry row: open the new-entry prompt.
     PromptNewOption {
         owner: String,
     },
@@ -274,9 +274,9 @@ pub enum Action {
     PromptEditGroupMembers {
         group: String,
     },
-    /// Enter or a single click on a group header's or enumerated
-    /// variable's env cell (or an unselected member cell): open a dropdown
-    /// of `owner`'s option keys for `env`, anchored at the cell
+    /// Enter or a single click on a group header's env cell (or an
+    /// unselected field cell): open a dropdown of `owner`'s entry names
+    /// for `env`, anchored at the cell
     /// (`row`/`col` locate its rect in the last frame's `HitMap`);
     /// confirming a row dispatches the `Select`.
     OpenSelectDropdown {
@@ -313,14 +313,13 @@ pub enum Action {
     ConfirmDeleteVar {
         name: String,
     },
-    /// `d`/`Delete` on an `OptionRow` (finding 3): open the delete confirm,
-    /// its body naming whether this removes the active env's override, the
-    /// shared option, or (when both exist) just the override first.
+    /// `d`/`Delete` on an `EntryRow`: open the delete confirm for that
+    /// entry, naming the environment it lives in.
     ConfirmDeleteOption {
         owner: String,
         key: String,
     },
-    /// `s` on a non-enumerated `Var` row: open the secret-flag transition
+    /// `s` on a `Var` row: open the secret-flag transition
     /// confirm (spec §3) — its wording and the value(s) it offers for copy
     /// depend on which direction the flip goes.
     ToggleSecretVar {
@@ -332,7 +331,7 @@ pub enum Action {
         name: String,
     },
     /// `P` on a `Var` row: open the demote confirm (spec §4), or a
-    /// message modal refusing it (secret, enumerated, or a group member).
+    /// message modal refusing it (a secret or a group).
     ConfirmDemoteVar {
         name: String,
     },
@@ -394,4 +393,13 @@ pub enum Action {
         name: String,
         destination: ExtractDestination,
     },
+
+    // -- Stage 7: variable-format migration (spec §3.3) --
+    /// The migration confirm modal's "Migrate": rewrites `variables.toml`
+    /// and the environment files into the new format, leaving a `.bak`
+    /// beside each one, then reloads the project.
+    ApplyMigration,
+    /// The migration confirm modal's "Not now": leaves the files as they
+    /// are; the project stays open with its variables inert.
+    DeclineMigration,
 }

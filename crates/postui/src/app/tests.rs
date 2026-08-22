@@ -2309,12 +2309,7 @@ default = "http://localhost:8080"
 
 [groups.identity]
 description = "identity"
-members = ["user_id", "customer_id"]
-
-[groups.identity.options.alice]
-description = "admin"
-user_id = "1001"
-customer_id = "c-77"
+fields = ["user_id", "customer_id"]
 "#,
     )
     .unwrap();
@@ -3380,12 +3375,9 @@ fn var_project(dir: &std::path::Path) {
 description = "API root"
 default = "http://localhost:8080"
 
-[user]
+[groups.user]
 description = "acting user"
-[user.options.alice]
-value = "1001"
-[user.options.bob]
-value = "2002"
+fields = ["user"]
 
 [api_key]
 description = "service key"
@@ -3396,7 +3388,7 @@ secret = true
     std::fs::write(dir.join("environments/dev.toml"), "").unwrap();
     std::fs::write(
         dir.join("environments/qa.toml"),
-        "base_url = \"https://qa.example.com\"\n",
+        "base_url = \"https://qa.example.com\"\n\n[entries.user.alice]\nuser = \"1001\"\n\n[entries.user.bob]\nuser = \"2002\"\n",
     )
     .unwrap();
     postui_core::project::save_local_state(
@@ -3498,14 +3490,9 @@ fn var_edit_set_secret_value_lands_only_in_secrets_toml() {
 }
 
 #[test]
-fn var_edit_set_option_value_lands_in_the_env_file_when_that_env_already_overrides_it() {
+fn var_edit_set_option_value_writes_one_field_of_the_entry_in_that_env() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
-    std::fs::write(
-        dir.path().join("environments/qa.toml"),
-        "base_url = \"https://qa.example.com\"\n\n[options.user.alice]\nvalue = \"9001\"\n",
-    )
-    .unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
@@ -3513,42 +3500,17 @@ fn var_edit_set_option_value_lands_in_the_env_file_when_that_env_already_overrid
         env: "qa".into(),
         owner: "user".into(),
         key: "alice".into(),
-        member: None,
+        member: Some("user".into()),
         value: "9999".into(),
     }));
 
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
     let env_on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(env_on_disk.contains("9999"), "{env_on_disk}");
     let vars_on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     assert!(
-        vars_on_disk.contains("1001"),
-        "the shared declared value must be untouched: {vars_on_disk}"
-    );
-}
-
-#[test]
-fn var_edit_set_option_value_lands_in_variables_toml_when_the_cell_shows_the_shared_value() {
-    let dir = tempfile::tempdir().unwrap();
-    var_project(dir.path());
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, dir.path().to_path_buf());
-
-    // qa has no [options.user.alice] override in this fixture: the cell
-    // shown is the shared/declared value, so the edit must land there.
-    app.update(Action::VarEdit(VarEditOp::SetOptionValue {
-        env: "qa".into(),
-        owner: "user".into(),
-        key: "alice".into(),
-        member: None,
-        value: "8888".into(),
-    }));
-
-    let vars_on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
-    assert!(vars_on_disk.contains("8888"), "{vars_on_disk}");
-    let env_on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
-    assert!(
-        !env_on_disk.contains("8888"),
-        "must not write an env override: {env_on_disk}"
+        !vars_on_disk.contains("9999"),
+        "an entry value must never land in variables.toml: {vars_on_disk}"
     );
 }
 
@@ -3818,45 +3780,13 @@ fn var_struct_new_group_creates_group_with_members() {
         .get("creds")
         .expect("group created");
     assert_eq!(
-        g.members,
+        g.fields,
         vec!["user_id".to_string(), "customer_id".to_string()]
     );
 }
 
 #[test]
-fn var_struct_new_option_on_a_variable_writes_the_shared_option() {
-    let dir = tempfile::tempdir().unwrap();
-    var_project(dir.path());
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, dir.path().to_path_buf());
-    // A fresh variable, not `base_url` — `base_url` already has a flat `qa`
-    // env value, and a flat value for a variable enumerated *in that env*
-    // is a §1.2 error, which is the right behavior but not what this test
-    // is about.
-    app.update(Action::VarStruct(VarStructOp::NewVar {
-        name: "region".into(),
-        description: None,
-    }));
-
-    let mut values = indexmap::IndexMap::new();
-    values.insert("value".to_string(), "us-east".to_string());
-    app.update(Action::VarStruct(VarStructOp::NewOption {
-        owner: "region".into(),
-        key: "east".into(),
-        description: None,
-        values,
-    }));
-
-    assert!(app.toasts.is_empty());
-    let opt = app.project.model.vars["region"]
-        .options
-        .get("east")
-        .expect("option created");
-    assert_eq!(opt.value, "us-east");
-}
-
-#[test]
-fn var_struct_new_option_on_a_group_writes_every_member_value() {
+fn var_struct_new_entry_writes_every_field_into_the_active_env() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -3876,13 +3806,14 @@ fn var_struct_new_option_on_a_group_writes_every_member_value() {
         values,
     }));
 
-    assert!(app.toasts.is_empty());
-    let opt = app.project.model.groups["creds"]
-        .options
-        .get("alice")
-        .expect("option created");
-    assert_eq!(opt.values["user_id"], "1001");
-    assert_eq!(opt.values["customer_id"], "c-77");
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    let entry = postui_core::varmodel::group_entries(&app.project.env_data, "creds")
+        .and_then(|entries| entries.get("alice"))
+        .expect("entry created in the active env");
+    assert_eq!(entry.values["user_id"], "1001");
+    assert_eq!(entry.values["customer_id"], "c-77");
+    let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(on_disk.contains("[entries.creds.alice]"), "{on_disk}");
 }
 
 #[test]
@@ -3906,11 +3837,11 @@ fn var_struct_rename_updates_the_declaration() {
 /// rename used to leave every environment's flat value/`[options.*]`
 /// table under the OLD name — silently degrading to the declaration's
 /// default post-rename, with no error and no warning. `shard` is simple
-/// (a flat value) in `dev` and enumerated (an env-only options table) in
-/// `qa` — spec §1.2's "enumerated in one env, simple in another" case —
-/// so this one rename exercises both cascades `rename_env_var` handles.
+/// (a flat value) in `dev` and unset in `qa`, where an unrelated group's
+/// entries table lives — the rename must follow the flat value across and
+/// leave everything else alone.
 #[test]
-fn var_struct_rename_cascades_into_every_environments_flat_value_and_options_table() {
+fn var_struct_rename_cascades_into_every_environments_flat_value() {
     let dir = tempfile::tempdir().unwrap();
     postui_core::project::init_project(dir.path(), Some("demo")).unwrap();
     std::fs::write(
@@ -3918,6 +3849,9 @@ fn var_struct_rename_cascades_into_every_environments_flat_value_and_options_tab
         r#"
 [shard]
 description = "shard id"
+
+[groups.tier]
+fields = ["tier"]
 "#,
     )
     .unwrap();
@@ -3928,7 +3862,7 @@ description = "shard id"
     .unwrap();
     std::fs::write(
         dir.path().join("environments/qa.toml"),
-        "[options.shard.east]\nvalue = \"e-1\"\n",
+        "[entries.tier.gold]\ntier = \"g-1\"\n",
     )
     .unwrap();
     postui_core::project::save_local_state(
@@ -3948,7 +3882,7 @@ description = "shard id"
         to: "node".into(),
     }));
 
-    assert!(app.toasts.is_empty());
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
     assert!(app.project.model.vars.contains_key("node"));
     assert!(!app.project.model.vars.contains_key("shard"));
     // Resolution follows the rename — still "d-1" in dev, now under "node".
@@ -3960,8 +3894,10 @@ description = "shard id"
     assert!(!dev_on_disk.contains("shard"), "{dev_on_disk}");
 
     let qa_on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
-    assert!(qa_on_disk.contains("[options.node.east]"), "{qa_on_disk}");
-    assert!(!qa_on_disk.contains("shard"), "{qa_on_disk}");
+    assert!(
+        qa_on_disk.contains("[entries.tier.gold]"),
+        "an unrelated group's entries stay untouched: {qa_on_disk}"
+    );
 }
 
 #[test]
@@ -3989,30 +3925,30 @@ fn var_struct_delete_var_removes_the_declaration_and_clamps_the_cursor() {
 }
 
 /// Finding 1: `VarStructOp::Delete` used to only edit `variables.toml`,
-/// stranding any environment's `[options.<name>]` table for the deleted
-/// name. This drives the cascade for a var whose ACTIVE env has an
-/// options table for it (the confusing-parse-toast case) and a NON-active
-/// env too (the silently-stranded-file case).
+/// stranding any environment's entries table for the deleted name. This
+/// drives the cascade for a group whose ACTIVE env has entries for it
+/// (the confusing-parse-toast case) and a NON-active env too (the
+/// silently-stranded-file case).
 #[test]
-fn var_struct_delete_cascades_into_every_environments_options_table() {
+fn var_struct_delete_cascades_into_every_environments_entries_table() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     std::fs::write(
         dir.path().join("variables.toml"),
         std::fs::read_to_string(dir.path().join("variables.toml")).unwrap()
-            + "\n[region]\ndescription = \"deploy region\"\n",
+            + "\n[groups.region]\ndescription = \"deploy region\"\nfields = [\"region\"]\n",
     )
     .unwrap();
-    // qa is the active env (see var_project); env-only enumerated list for
-    // "region", plus the same shape in the non-active "dev" env.
+    // qa is the active env (see var_project); entries for "region" there,
+    // plus the same shape in the non-active "dev" env.
     std::fs::write(
         dir.path().join("environments/qa.toml"),
-        "base_url = \"https://qa.example.com\"\n[options.region.east]\nvalue = \"us-east-1\"\n",
+        "base_url = \"https://qa.example.com\"\n[entries.region.east]\nregion = \"us-east-1\"\n",
     )
     .unwrap();
     std::fs::write(
         dir.path().join("environments/dev.toml"),
-        "[options.region.west]\nvalue = \"us-west-1\"\n",
+        "[entries.region.west]\nregion = \"us-west-1\"\n",
     )
     .unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -4027,7 +3963,7 @@ fn var_struct_delete_cascades_into_every_environments_options_table() {
     }));
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert!(!app.project.model.vars.contains_key("region"));
+    assert!(!app.project.model.groups.contains_key("region"));
     let qa_on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(
         !qa_on_disk.contains("region"),
@@ -4045,15 +3981,15 @@ fn var_struct_delete_cascades_into_every_environments_options_table() {
 }
 
 /// Finding 1, the group half: deleting a group must also strip every
-/// environment's `[options.<group>]` table.
+/// environment's `[entries.<group>]` table.
 #[test]
-fn var_struct_delete_group_cascades_into_every_environments_options_table() {
+fn var_struct_delete_group_cascades_into_every_environments_entries_table() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     app_new_group(dir.path(), "creds", &["user_id", "customer_id"]);
     std::fs::write(
         dir.path().join("environments/qa.toml"),
-        "base_url = \"https://qa.example.com\"\n[options.creds.alice]\nuser_id = \"1001\"\ncustomer_id = \"c-1\"\n",
+        "base_url = \"https://qa.example.com\"\n\n[entries.user.alice]\nuser = \"1001\"\n\n[entries.creds.alice]\nuser_id = \"1001\"\ncustomer_id = \"c-1\"\n",
     )
     .unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -4063,7 +3999,7 @@ fn var_struct_delete_group_cascades_into_every_environments_options_table() {
         name: "creds".into(),
     }));
 
-    assert!(app.toasts.is_empty());
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
     assert!(!app.project.model.groups.contains_key("creds"));
     let qa_on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(!qa_on_disk.contains("creds"), "{qa_on_disk}");
@@ -4074,11 +4010,6 @@ fn var_struct_delete_group_cascades_into_every_environments_options_table() {
 /// `VarStructOp::NewGroup` round trip through a running `App`.
 fn app_new_group(dir: &std::path::Path, name: &str, members: &[&str]) {
     let existing = std::fs::read_to_string(dir.join("variables.toml")).unwrap();
-    let member_decls: String = members
-        .iter()
-        .map(|m| format!("\n[{m}]\n"))
-        .collect::<Vec<_>>()
-        .join("");
     let members_list = members
         .iter()
         .map(|m| format!("\"{m}\""))
@@ -4086,7 +4017,7 @@ fn app_new_group(dir: &std::path::Path, name: &str, members: &[&str]) {
         .join(", ");
     std::fs::write(
         dir.join("variables.toml"),
-        format!("{existing}{member_decls}\n[groups.{name}]\nmembers = [{members_list}]\n"),
+        format!("{existing}\n[groups.{name}]\nfields = [{members_list}]\n"),
     )
     .unwrap();
 }
@@ -4108,7 +4039,7 @@ fn var_struct_set_members_replaces_the_group_list() {
     }));
 
     assert_eq!(
-        app.project.model.groups["creds"].members,
+        app.project.model.groups["creds"].fields,
         vec!["user_id".to_string(), "customer_id".to_string()]
     );
 }
@@ -4288,38 +4219,26 @@ fn extract_to_request_saves_the_request_file_to_disk() {
 
 /// Review finding: `apply_demote` used to insert the demoted entry into
 /// `editor.variables` BEFORE the fallible `delete_var` write, so a
-/// `delete_var` failure (e.g. the variable is still a group member —
-/// `varedit::delete_var`'s own `Conflict`) left a demoted entry live in
-/// the editor while the project still held the declaration, violating
-/// `apply_var_struct`'s documented "Err leaves everything unchanged"
-/// contract. This drives exactly that failure path.
+/// `delete_var` failure left a demoted entry live in the editor while the
+/// project still held the declaration, violating `apply_var_struct`'s
+/// documented "Err leaves everything unchanged" contract. This drives
+/// exactly that failure path, with a name that resolves (an undeclared
+/// environment value passes through — spec §3.2's leniency) but has no
+/// declaration for `delete_var` to remove.
 #[test]
 fn demote_leaves_the_editor_untouched_when_the_project_write_fails() {
     let dir = tempfile::tempdir().unwrap();
     postui_core::project::init_project(dir.path(), Some("demo")).unwrap();
+    std::fs::write(dir.path().join("variables.toml"), "").unwrap();
     std::fs::write(
-        dir.path().join("variables.toml"),
-        r#"
-[shard]
-default = "member-default"
-
-[groups.g]
-members = ["shard"]
-[groups.g.options.pick]
-shard = "picked-value"
-"#,
+        dir.path().join("environments/dev.toml"),
+        "shard = \"picked-value\"\n",
     )
     .unwrap();
-    std::fs::write(dir.path().join("environments/dev.toml"), "").unwrap();
-    let mut selections = indexmap::IndexMap::new();
-    let mut dev_sel = indexmap::IndexMap::new();
-    dev_sel.insert("g".to_string(), "pick".to_string());
-    selections.insert("dev".to_string(), dev_sel);
     postui_core::project::save_local_state(
         dir.path(),
         &postui_core::project::LocalState {
             environment: Some("dev".into()),
-            selections,
             ..Default::default()
         },
     )
@@ -4332,30 +4251,22 @@ shard = "picked-value"
     assert_eq!(
         app.project.resolved.values.get("shard"),
         Some(&"picked-value".to_string()),
-        "shard must resolve (via the group's selected option) so apply_demote reaches delete_var"
+        "shard must resolve so apply_demote reaches delete_var"
     );
 
     app.update(Action::VarStruct(VarStructOp::Demote {
         name: "shard".into(),
     }));
 
-    assert!(
-        !app.toasts.is_empty(),
-        "delete_var's Conflict (still a group member) must toast"
-    );
+    assert!(!app.toasts.is_empty(), "delete_var's failure must toast");
     assert!(
         !app.editor.variables.contains_key("shard"),
         "the editor must NOT gain a demoted entry when the project write failed"
     );
+    let dev_on_disk = std::fs::read_to_string(dir.path().join("environments/dev.toml")).unwrap();
     assert!(
-        app.project.model.vars.contains_key("shard"),
-        "the declaration must be untouched"
-    );
-    assert!(
-        app.project.model.groups["g"]
-            .members
-            .contains(&"shard".to_string()),
-        "the group membership must be untouched too"
+        dev_on_disk.contains("picked-value"),
+        "the env value must be untouched: {dev_on_disk}"
     );
 }
 
@@ -4364,7 +4275,7 @@ shard = "picked-value"
 // -------------------------------------------------------------
 
 #[test]
-fn delete_option_removes_a_shared_only_option() {
+fn delete_entry_removes_it_from_the_active_env() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -4376,27 +4287,20 @@ fn delete_option_removes_a_shared_only_option() {
     }));
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert!(!app.project.model.vars["user"].options.contains_key("bob"));
+    let entries = postui_core::varmodel::group_entries(&app.project.env_data, "user")
+        .expect("the group still has entries here");
+    assert!(!entries.contains_key("bob"));
+    assert!(entries.contains_key("alice"), "the others are untouched");
+    let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(!on_disk.contains("[entries.user.bob]"), "{on_disk}");
 }
 
 #[test]
-fn delete_option_removes_an_env_only_override() {
+fn delete_entry_that_is_already_gone_is_a_quiet_no_op() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
-    std::fs::write(
-        dir.path().join("environments/qa.toml"),
-        "base_url = \"https://qa.example.com\"\n[options.user.carol]\nvalue = \"3003\"\n",
-    )
-    .unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    assert!(
-        app.project
-            .env_data
-            .options
-            .get("user")
-            .is_some_and(|m| m.contains_key("carol"))
-    );
 
     app.update(Action::VarStruct(VarStructOp::DeleteOption {
         owner: "user".into(),
@@ -4404,60 +4308,6 @@ fn delete_option_removes_an_env_only_override() {
     }));
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert!(
-        !app.project
-            .env_data
-            .options
-            .get("user")
-            .is_some_and(|m| m.contains_key("carol"))
-    );
-    // "carol" was never a shared option, so there's nothing left to remove
-    // on a second delete either.
-    assert!(!app.project.model.vars["user"].options.contains_key("carol"));
-}
-
-/// A key that's both a shared option AND env-overridden: the first delete
-/// removes only the env override, leaving the shared option intact; a
-/// second delete then removes the shared option too.
-#[test]
-fn delete_option_present_in_both_removes_the_env_override_first_then_the_shared_option() {
-    let dir = tempfile::tempdir().unwrap();
-    var_project(dir.path());
-    std::fs::write(
-        dir.path().join("environments/qa.toml"),
-        "base_url = \"https://qa.example.com\"\n[options.user.alice]\nvalue = \"9001\"\n",
-    )
-    .unwrap();
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, dir.path().to_path_buf());
-
-    app.update(Action::VarStruct(VarStructOp::DeleteOption {
-        owner: "user".into(),
-        key: "alice".into(),
-    }));
-    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert!(
-        !app.project
-            .env_data
-            .options
-            .get("user")
-            .is_some_and(|m| m.contains_key("alice")),
-        "the first delete must strip only the env override"
-    );
-    assert!(
-        app.project.model.vars["user"].options.contains_key("alice"),
-        "the shared option must survive the first delete"
-    );
-
-    app.update(Action::VarStruct(VarStructOp::DeleteOption {
-        owner: "user".into(),
-        key: "alice".into(),
-    }));
-    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert!(
-        !app.project.model.vars["user"].options.contains_key("alice"),
-        "the second delete must remove the now env-override-free shared option"
-    );
 }
 
 #[test]
@@ -4480,14 +4330,9 @@ fn delete_option_clears_the_selection_when_the_deleted_key_was_selected() {
 }
 
 #[test]
-fn confirm_delete_option_body_names_the_env_override_when_shared_and_env_both_exist() {
+fn confirm_delete_entry_body_names_the_entry_and_the_environment_it_lives_in() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
-    std::fs::write(
-        dir.path().join("environments/qa.toml"),
-        "base_url = \"https://qa.example.com\"\n[options.user.alice]\nvalue = \"9001\"\n",
-    )
-    .unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
@@ -4500,16 +4345,16 @@ fn confirm_delete_option_body_names_the_env_override_when_shared_and_env_both_ex
         panic!("expected a Confirm modal");
     };
     assert!(
-        body.contains("qa") && body.to_lowercase().contains("override"),
+        body.contains("qa") && body.contains("alice") && body.contains("user"),
         "{body}"
     );
 }
 
-/// The footer chip / `d`-key parity check (spec §5), for an `OptionRow`
+/// The footer chip / `d`-key parity check (spec §5), for an `EntryRow`
 /// this time — finding 3 explicitly calls out keyboard + click parity via
 /// the shared `struct_action_target` gate.
 #[test]
-fn clicking_the_delete_chip_on_an_option_row_opens_the_same_confirm_as_the_d_key() {
+fn clicking_the_delete_chip_on_an_entry_row_opens_the_same_confirm_as_the_d_key() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -4517,7 +4362,7 @@ fn clicking_the_delete_chip_on_an_option_row_opens_the_same_confirm_as_the_d_key
     app.varmanager.expanded.insert("user".to_string());
     goto_row(
         &mut app,
-        |r| matches!(r, crate::components::varmanager::RowKind::OptionRow { owner, key } if owner == "user" && key == "bob"),
+        |r| matches!(r, crate::components::varmanager::RowKind::EntryRow { group, entry } if group == "user" && entry == "bob"),
     );
     rendered_text(&mut app);
 
@@ -4528,7 +4373,7 @@ fn clicking_the_delete_chip_on_an_option_row_opens_the_same_confirm_as_the_d_key
     let rect = app
         .hits
         .rect_of(&hit)
-        .expect("delete chip must be painted and hit-mapped for an option row");
+        .expect("delete chip must be painted and hit-mapped for an entry row");
 
     assert!(app.handle_mouse(left_down(rect.x, rect.y)));
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
@@ -4632,7 +4477,7 @@ fn confirm_delete_var_lists_referencing_requests_from_scan_usage() {
 }
 
 #[test]
-fn confirm_demote_var_on_an_enumerated_variable_refuses_and_changes_nothing() {
+fn confirm_demote_var_on_a_group_refuses_and_changes_nothing() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     postui_core::storage::save_request(dir.path(), "ping", &req("https://x/ping")).unwrap();
@@ -4646,10 +4491,10 @@ fn confirm_demote_var_on_an_enumerated_variable_refuses_and_changes_nothing() {
 
     assert!(
         matches!(app.modals.top(), Some(Modal::Message { .. })),
-        "an enumerated variable must be refused with a message modal"
+        "a group must be refused with a message modal"
     );
     assert!(
-        app.project.model.vars.contains_key("user"),
+        app.project.model.groups.contains_key("user"),
         "the declaration must be untouched"
     );
     assert!(!app.editor.variables.contains_key("user"));
@@ -4745,7 +4590,7 @@ fn toggle_secret_var_nonsecret_to_secret_moves_env_values_and_strips_env_files()
 }
 
 #[test]
-fn toggle_secret_is_refused_for_an_enumerated_variable() {
+fn toggle_secret_is_refused_for_a_group() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -4951,8 +4796,8 @@ fn prompt_new_group_takes_just_a_name_and_creates_an_empty_group() {
         .groups
         .get("creds")
         .expect("group created");
-    assert!(g.members.is_empty(), "members are added one at a time");
-    // and the empty group survives a reload (parse accepts members = [])
+    assert!(g.fields.is_empty(), "fields are added one at a time");
+    // and the empty group survives a reload (parse accepts fields = [])
     app.update(Action::ReloadProjectFiles);
     assert!(app.project.model.groups.contains_key("creds"));
 }
@@ -4980,7 +4825,7 @@ fn add_and_remove_group_members_one_at_a_time() {
         app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     }
     assert_eq!(
-        app.project.model.groups.get("creds").unwrap().members,
+        app.project.model.groups.get("creds").unwrap().fields,
         vec!["user_id".to_string(), "customer_id".to_string()]
     );
 
@@ -4995,7 +4840,7 @@ fn add_and_remove_group_members_one_at_a_time() {
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.toasts.messages().len() > toasts_before);
     assert_eq!(
-        app.project.model.groups.get("creds").unwrap().members.len(),
+        app.project.model.groups.get("creds").unwrap().fields.len(),
         2
     );
 
@@ -5010,7 +4855,7 @@ fn add_and_remove_group_members_one_at_a_time() {
     );
     app.handle_key(&keymap, plain('y'));
     assert_eq!(
-        app.project.model.groups.get("creds").unwrap().members,
+        app.project.model.groups.get("creds").unwrap().fields,
         vec!["customer_id".to_string()]
     );
 }
@@ -5024,21 +4869,25 @@ fn group_project(dir: &std::path::Path) {
         r#"
 [groups.identity]
 description = "identity"
-members = ["user_id", "customer_id"]
-
-[groups.identity.options.alice]
+fields = ["user_id", "customer_id"]
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("environments/qa.toml"),
+        r#"
+[entries.identity.alice]
 description = "admin"
 user_id = "1001"
 customer_id = "c-77"
 
-[groups.identity.options.bob]
+[entries.identity.bob]
 description = "reader"
 user_id = "1002"
 customer_id = "c-78"
 "#,
     )
     .unwrap();
-    std::fs::write(dir.join("environments/qa.toml"), "").unwrap();
     postui_core::project::save_local_state(
         dir,
         &postui_core::project::LocalState {
@@ -5062,7 +4911,7 @@ fn focus_url_with_cursor_on(app: &mut App, url: &str, token: &str) {
 }
 
 #[test]
-fn ctrl_v_on_enumerated_token_opens_select_option_with_checkmark() {
+fn ctrl_v_on_a_one_field_groups_token_opens_select_option_with_checkmark() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -5079,7 +4928,7 @@ fn ctrl_v_on_enumerated_token_opens_select_option_with_checkmark() {
         p.mode,
         crate::components::var_picker::PickerMode::SelectOption {
             name: "user".into(),
-            group: None,
+            group: "user".into(),
         }
     );
 
@@ -5110,7 +4959,7 @@ fn ctrl_v_on_group_member_token_shows_the_group_s_options_with_full_preview() {
         p.mode,
         crate::components::var_picker::PickerMode::SelectOption {
             name: "user_id".into(),
-            group: Some("identity".into()),
+            group: "identity".into(),
         }
     );
 
@@ -5383,7 +5232,7 @@ fn type_into_field(app: &mut App, keymap: &Keymap, text: &str) {
 }
 
 #[test]
-fn add_new_option_writes_to_the_active_envs_options_table_selects_it_and_restores_focus() {
+fn add_new_entry_writes_to_the_active_envs_entries_table_selects_it_and_restores_focus() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -5394,7 +5243,7 @@ fn add_new_option_writes_to_the_active_envs_options_table_selects_it_and_restore
     focus_url_with_cursor_on(&mut app, url, "{{user}}");
     app.update(Action::OpenVarPicker { completing: false });
 
-    // "user" has two options (alice, bob); the ghost "add new option…" row
+    // "user" has two entries (alice, bob); the ghost "add new option…" row
     // sits one past them.
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
@@ -5417,23 +5266,24 @@ fn add_new_option_writes_to_the_active_envs_options_table_selects_it_and_restore
     assert_eq!(app.editor.sub_focus, SubFocus::Url);
     assert_eq!(app.editor.url.text(), url, "the token text is untouched");
 
-    // Written to the ACTIVE ENV's options table, not the shared file.
+    // Written to the ACTIVE ENV's entries table — entries only ever live
+    // in an environment file (spec §3.1).
     let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
-    assert!(env_doc.contains("[options.user.carol]"), "{env_doc}");
+    assert!(env_doc.contains("[entries.user.carol]"), "{env_doc}");
     assert!(env_doc.contains("3003"), "{env_doc}");
     assert!(env_doc.contains("temp hire"), "{env_doc}");
 
     let shared_doc = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     assert!(
         !shared_doc.contains("carol"),
-        "must not land in the shared declaration: {shared_doc}"
+        "must not land in variables.toml: {shared_doc}"
     );
 
     assert_eq!(app.project.selections_for("qa")["user"], "carol");
 }
 
 #[test]
-fn e_on_a_shared_option_edits_it_in_variables_toml() {
+fn e_on_an_entry_edits_it_in_the_environment_that_holds_it() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -5442,7 +5292,7 @@ fn e_on_a_shared_option_edits_it_in_variables_toml() {
 
     focus_url_with_cursor_on(&mut app, "https://x/{{user}}", "{{user}}");
     app.update(Action::OpenVarPicker { completing: false });
-    // Row 0 is "alice" (first option, current default order).
+    // Row 0 is "alice" (first entry, file order).
     app.handle_key(
         &keymap,
         KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE),
@@ -5470,60 +5320,12 @@ fn e_on_a_shared_option_edits_it_in_variables_toml() {
     app.handle_key(&keymap, enter_key());
 
     assert!(app.modals.is_empty());
-    let shared_doc = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
-    assert!(shared_doc.contains("9999"), "{shared_doc}");
     let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
-    assert!(
-        !env_doc.contains("9999"),
-        "a shared option's edit must not create an env override: {env_doc}"
-    );
-}
-
-#[test]
-fn e_on_an_env_overridden_option_edits_the_env_file_not_the_shared_one() {
-    let dir = tempfile::tempdir().unwrap();
-    var_project(dir.path());
-    // Give qa its own override of "alice" on top of the shared declaration.
-    std::fs::write(
-        dir.path().join("environments/qa.toml"),
-        "base_url = \"https://qa.example.com\"\n[options.user.alice]\nvalue = \"9001\"\n",
-    )
-    .unwrap();
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, dir.path().to_path_buf());
-    let keymap = Keymap::default_bindings();
-
-    focus_url_with_cursor_on(&mut app, "https://x/{{user}}", "{{user}}");
-    app.update(Action::OpenVarPicker { completing: false });
-    app.handle_key(
-        &keymap,
-        KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE),
-    );
-
-    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
-        panic!("expected the edit-option multi-prompt");
-    };
-    assert_eq!(
-        fields[0].input.text(),
-        "9001",
-        "prefilled with the env's overriding value"
-    );
-
-    for _ in 0..4 {
-        app.handle_key(
-            &keymap,
-            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
-        );
-    }
-    type_into_field(&mut app, &keymap, "9002");
-    app.handle_key(&keymap, enter_key());
-
-    let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
-    assert!(env_doc.contains("9002"), "{env_doc}");
+    assert!(env_doc.contains("9999"), "{env_doc}");
     let shared_doc = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     assert!(
-        shared_doc.contains("1001") && !shared_doc.contains("9002"),
-        "an env override's edit must not touch the shared declaration: {shared_doc}"
+        !shared_doc.contains("9999"),
+        "an entry's edit must never touch variables.toml: {shared_doc}"
     );
 }
 
@@ -5824,42 +5626,9 @@ fn extract_to_active_env_refuses_a_name_colliding_with_an_existing_secret() {
 }
 
 #[test]
-fn confirm_edit_option_on_a_shared_group_option_writes_variables_toml() {
+fn confirm_edit_option_writes_every_field_into_the_active_envs_entry() {
     let dir = tempfile::tempdir().unwrap();
     group_project(dir.path());
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, dir.path().to_path_buf());
-
-    let mut values = indexmap::IndexMap::new();
-    values.insert("user_id".to_string(), "9999".to_string());
-    values.insert("customer_id".to_string(), "c-99".to_string());
-    app.update(Action::ConfirmEditOption {
-        owner: "identity".into(),
-        key: "alice".into(),
-        values,
-        description: Some("admin".into()),
-    });
-
-    let shared_doc = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
-    assert!(shared_doc.contains("9999"), "{shared_doc}");
-    assert!(shared_doc.contains("c-99"), "{shared_doc}");
-
-    let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
-    assert!(
-        !env_doc.contains("9999"),
-        "a shared group option's edit must not create an env override: {env_doc}"
-    );
-}
-
-#[test]
-fn confirm_edit_option_on_an_env_overridden_group_option_writes_the_env_file() {
-    let dir = tempfile::tempdir().unwrap();
-    group_project(dir.path());
-    std::fs::write(
-        dir.path().join("environments/qa.toml"),
-        "[options.identity.alice]\nuser_id = \"5000\"\n",
-    )
-    .unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
@@ -5876,10 +5645,206 @@ fn confirm_edit_option_on_an_env_overridden_group_option_writes_the_env_file() {
     let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(env_doc.contains("9001"), "{env_doc}");
     assert!(env_doc.contains("c-101"), "{env_doc}");
+    assert!(env_doc.contains("admin updated"), "{env_doc}");
 
     let shared_doc = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     assert!(
-        shared_doc.contains("1001") && !shared_doc.contains("9001"),
-        "an env override's edit must not touch the shared declaration: {shared_doc}"
+        !shared_doc.contains("9001"),
+        "an entry edit must never touch variables.toml: {shared_doc}"
+    );
+}
+
+// -- Stage 7: the variable-format migration prompt (spec §3.3) ----------
+
+/// A project written with stage-6 syntax: an enumerated variable, a group
+/// with `members`, and one environment carrying a keyed `[options.*]`
+/// override.
+fn legacy_project(dir: &std::path::Path) {
+    postui_core::project::init_project(dir, Some("legacy")).unwrap();
+    std::fs::write(
+        dir.join("variables.toml"),
+        r#"
+[base_url]
+default = "http://localhost:8080"
+
+[tier]
+description = "pricing tier"
+[tier.options.gold]
+value = "g-1"
+
+[groups.user]
+members = ["user_id", "customer_id"]
+[groups.user.options.alice]
+user_id = "1001"
+customer_id = "c-77"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("environments/qa.toml"),
+        "[options.tier.gold]\nvalue = \"g-qa\"\n",
+    )
+    .unwrap();
+    postui_core::project::save_local_state(
+        dir,
+        &postui_core::project::LocalState {
+            environment: Some("qa".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+}
+
+#[test]
+fn opening_a_legacy_project_offers_the_migration_and_lists_its_notes() {
+    let dir = tempfile::tempdir().unwrap();
+    legacy_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let app = App::with_root(tx, dir.path().to_path_buf());
+
+    let Some(Modal::Confirm {
+        title,
+        body,
+        choices,
+    }) = app.modals.top()
+    else {
+        panic!("a legacy project must offer the migration");
+    };
+    assert_eq!(title, "Migrate variables");
+    assert!(
+        body.contains("tier"),
+        "the conversion's notes are listed: {body}"
+    );
+    assert!(body.contains(".bak"), "the safety copy is promised: {body}");
+    let keys: Vec<char> = choices.iter().map(|(k, _, _)| *k).collect();
+    assert_eq!(keys, vec!['n', 'y']);
+
+    // Until the user answers, the variables are inert rather than
+    // half-parsed from a format the model doesn't speak.
+    assert!(app.project.model.vars.is_empty());
+    assert!(app.project.model.groups.is_empty());
+}
+
+#[test]
+fn confirming_the_migration_rewrites_the_files_leaves_baks_and_reloads() {
+    let dir = tempfile::tempdir().unwrap();
+    legacy_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let keymap = Keymap::default_bindings();
+    let vars_before = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    let qa_before = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+
+    app.handle_key(&keymap, plain('y'));
+
+    assert!(app.modals.is_empty(), "answering closes the prompt");
+    assert!(
+        app.project.pending_migration().is_none(),
+        "nothing left to migrate"
+    );
+
+    // The safety copies hold exactly what was there before.
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("variables.toml.bak")).unwrap(),
+        vars_before
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("environments/qa.toml.bak")).unwrap(),
+        qa_before
+    );
+
+    // ...and the live files are the new format, loaded into the model.
+    let vars_after = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    assert!(!vars_after.contains("options"), "{vars_after}");
+    let parsed = postui_core::varmodel::parse_variables(&vars_after).expect("new text parses");
+    assert_eq!(parsed.groups["tier"].fields, ["tier"]);
+    assert_eq!(parsed.groups["user"].fields, ["user_id", "customer_id"]);
+    assert_eq!(
+        app.project.model.groups["user"].fields,
+        ["user_id", "customer_id"]
+    );
+    assert_eq!(
+        app.project.model.vars["base_url"].default.as_deref(),
+        Some("http://localhost:8080"),
+        "the plain variable came through untouched"
+    );
+
+    let qa_after = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    let env = postui_core::varmodel::parse_environment(&qa_after).expect("new env text parses");
+    assert_eq!(env.entries["tier"]["gold"].values["tier"], "g-qa");
+    assert_eq!(
+        app.project.env_data.entries["user"]["alice"].values["customer_id"],
+        "c-77"
+    );
+
+    let content = rendered_text(&mut app);
+    assert!(
+        content.contains("migrated"),
+        "the result is toasted: {content}"
+    );
+}
+
+#[test]
+fn declining_the_migration_leaves_the_files_alone_and_the_project_open() {
+    let dir = tempfile::tempdir().unwrap();
+    legacy_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let keymap = Keymap::default_bindings();
+    let vars_before = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+
+    app.handle_key(&keymap, plain('n'));
+
+    assert!(app.modals.is_empty());
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("variables.toml")).unwrap(),
+        vars_before,
+        "declining must not touch a single file"
+    );
+    assert!(!dir.path().join("variables.toml.bak").exists());
+    assert!(app.project.model.vars.is_empty(), "variables stay inert");
+    assert!(app.project.resolved.values.is_empty());
+
+    // The project itself is still perfectly usable, and the prompt does
+    // not come back on the next reload.
+    app.update(Action::ReloadProjectFiles);
+    assert!(app.modals.is_empty(), "declined once, not re-offered");
+    assert!(app.project.pending_migration().is_none());
+    app.update(Action::CreateRequest("ping".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("ping"));
+}
+
+#[test]
+fn migrating_a_project_with_no_environments_creates_default_toml_for_the_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::project::init_project(dir.path(), Some("legacy")).unwrap();
+    std::fs::write(
+        dir.path().join("variables.toml"),
+        "[tier]\n[tier.options.gold]\nvalue = \"g-1\"\n",
+    )
+    .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    assert!(app.project.environments.is_empty());
+
+    let Some(Modal::Confirm { body, .. }) = app.modals.top() else {
+        panic!("a legacy project must offer the migration");
+    };
+    assert!(
+        body.contains("environments/default.toml"),
+        "the new environment is announced up front: {body}"
+    );
+
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, plain('y'));
+
+    let default_toml =
+        std::fs::read_to_string(dir.path().join("environments/default.toml")).unwrap();
+    let env = postui_core::varmodel::parse_environment(&default_toml).unwrap();
+    assert_eq!(env.entries["tier"]["gold"].values["tier"], "g-1");
+    assert_eq!(app.project.environments, vec!["default".to_string()]);
+    assert!(
+        !dir.path().join("environments/default.toml.bak").exists(),
+        "a brand-new file has nothing to back up"
     );
 }

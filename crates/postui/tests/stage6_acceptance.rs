@@ -1,6 +1,7 @@
-//! Stage-6 acceptance sweep (spec §7 tier 3): builds a project's entire
-//! variable system — declarations, options, a group, a secret, environment
-//! values, a picker selection, and a request-scope override — purely
+//! Stage-6 acceptance sweep (spec §7 tier 3), carried onto the stage-7
+//! variable model: builds a project's entire variable system —
+//! declarations, groups with their per-environment entries, a secret,
+//! environment values, a picker selection, and a request-scope override — purely
 //! through the same `Action`s the painted UI dispatches (no hand-written
 //! `variables.toml`; the one exception, per the task brief, is the
 //! `variables_toml_comments_survive_one_manager_edit` fixture proving
@@ -71,11 +72,11 @@ async fn drain_until(
     }
 }
 
-/// End-to-end stage-6 sweep: declares a simple variable, an enumerated
-/// variable with two options, a group with one option, and a secret — all
-/// through `Action::VarStruct`/`Action::VarEdit`, exactly as the Manager
-/// and in-context flows dispatch them. Selects the enumerated variable's
-/// option through the real `{{`-token → `ctrl+v` picker path, switches
+/// End-to-end sweep: declares a simple variable, a one-field group with
+/// an entry per environment, a two-field group with one entry, and a
+/// secret — all through `Action::VarStruct`/`Action::VarEdit`, exactly as
+/// the Manager and in-context flows dispatch them. Selects the one-field
+/// group's entry through the real `{{`-token → `ctrl+v` picker path, switches
 /// environments and checks the resolved values follow, overrides one
 /// variable at request scope, and sends — hitting the send-time secret
 /// prompt chain — to a wiremock server that only accepts the fully
@@ -110,41 +111,16 @@ async fn stage6_acceptance_flow() {
         description: Some("API root".into()),
     }));
 
-    // An enumerated variable with two keyed options.
-    app.update(Action::VarStruct(VarStructOp::NewVar {
+    // A one-field group — what an enumerated variable is in stage 7.
+    app.update(Action::VarStruct(VarStructOp::NewGroup {
         name: "region".into(),
-        description: Some("deployment region".into()),
-    }));
-    let mut east = IndexMap::new();
-    east.insert("value".to_string(), "east-1".to_string());
-    app.update(Action::VarStruct(VarStructOp::NewOption {
-        owner: "region".into(),
-        key: "east".into(),
-        description: None,
-        values: east,
-    }));
-    let mut west = IndexMap::new();
-    west.insert("value".to_string(), "west-9".to_string());
-    app.update(Action::VarStruct(VarStructOp::NewOption {
-        owner: "region".into(),
-        key: "west".into(),
-        description: None,
-        values: west,
+        members: vec!["region".into()],
     }));
 
-    // A group with one option covering both members.
+    // A group whose entries carry both fields at once.
     app.update(Action::VarStruct(VarStructOp::NewGroup {
         name: "creds".into(),
         members: vec!["user_id".into(), "customer_id".into()],
-    }));
-    let mut alice = IndexMap::new();
-    alice.insert("user_id".to_string(), "1001".to_string());
-    alice.insert("customer_id".to_string(), "c-77".to_string());
-    app.update(Action::VarStruct(VarStructOp::NewOption {
-        owner: "creds".into(),
-        key: "alice".into(),
-        description: None,
-        values: alice,
     }));
 
     // A secret variable — declared plain, then flipped (spec §3's
@@ -190,8 +166,47 @@ async fn stage6_acceptance_flow() {
         value: server.uri(),
     }));
 
+    // Entries belong to one environment each (spec §3.1), so each one is
+    // written while its environment is the active one.
+    app.update(Action::SwitchEnv(Some("prod".into())));
+    let mut west = IndexMap::new();
+    west.insert("region".to_string(), "west-9".to_string());
+    app.update(Action::VarStruct(VarStructOp::NewOption {
+        owner: "region".into(),
+        key: "west".into(),
+        description: None,
+        values: west,
+    }));
+
     app.update(Action::SwitchEnv(Some("qa".into())));
     assert_eq!(app.project.active_env.as_deref(), Some("qa"));
+    let mut east = IndexMap::new();
+    east.insert("region".to_string(), "east-1".to_string());
+    app.update(Action::VarStruct(VarStructOp::NewOption {
+        owner: "region".into(),
+        key: "east".into(),
+        description: None,
+        values: east,
+    }));
+    let mut alice = IndexMap::new();
+    alice.insert("user_id".to_string(), "1001".to_string());
+    alice.insert("customer_id".to_string(), "c-77".to_string());
+    app.update(Action::VarStruct(VarStructOp::NewOption {
+        owner: "creds".into(),
+        key: "alice".into(),
+        description: None,
+        values: alice,
+    }));
+    assert!(
+        postui_core::varmodel::group_entries(&app.project.env_data, "region")
+            .is_some_and(|e| e.contains_key("east")),
+        "qa's own entry landed"
+    );
+    assert!(
+        postui_core::varmodel::group_entries(&app.project.env_data, "creds")
+            .is_some_and(|e| e.contains_key("alice")),
+        "the two-field group's entry landed too"
+    );
 
     // ------------------------------------------------------------------
     // Create the request and wire up its URL/headers with every kind of
@@ -223,10 +238,10 @@ async fn stage6_acceptance_flow() {
     app.update(Action::OpenVarPicker { completing: false });
     assert!(
         matches!(app.modals.top(), Some(Modal::VarPicker(_))),
-        "cursor on an enumerated token opens the selection-context picker"
+        "cursor on a group field's token opens the selection-context picker"
     );
     let keymap = postui::keys::Keymap::default_bindings();
-    app.handle_key(&keymap, enter()); // declared order: east, then west
+    app.handle_key(&keymap, enter()); // qa declares one entry: east
     assert!(app.modals.is_empty(), "confirming closes the picker");
     assert_eq!(
         app.project.selections_for("qa")["region"],
@@ -234,7 +249,7 @@ async fn stage6_acceptance_flow() {
         "picker confirm recorded the selection"
     );
 
-    // --- select the group's option directly (VarEdit::Select is the
+    // --- select the group's entry directly (VarEdit::Select is the
     // same wire type the picker itself dispatches on confirm) ----------
     app.update(Action::VarEdit(VarEditOp::Select {
         env: "qa".into(),
@@ -332,21 +347,11 @@ async fn stage6_acceptance_flow() {
         "[base_url]\n\
 description = \"API root\"\n\
 \n\
-[region]\n\
-description = \"deployment region\"\n\
-\n\
-[region.options.east]\n\
-value = \"east-1\"\n\
-\n\
-[region.options.west]\n\
-value = \"west-9\"\n\
+[groups.region]\n\
+fields = [\"region\"]\n\
 \n\
 [groups.creds]\n\
-members = [\"user_id\", \"customer_id\"]\n\
-\n\
-[groups.creds.options.alice]\n\
-user_id = \"1001\"\n\
-customer_id = \"c-77\"\n\
+fields = [\"user_id\", \"customer_id\"]\n\
 \n\
 [api_key]\n\
 description = \"service key\"\n\
@@ -359,10 +364,32 @@ default = \"proj-trace\"\n\
     );
 
     let qa_toml = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
-    assert_eq!(qa_toml, format!("base_url = \"{}\"\n", server.uri()));
+    assert_eq!(
+        qa_toml,
+        format!(
+            "base_url = \"{}\"\n\
+\n\
+[entries.region.east]\n\
+region = \"east-1\"\n\
+\n\
+[entries.creds.alice]\n\
+user_id = \"1001\"\n\
+customer_id = \"c-77\"\n",
+            server.uri()
+        )
+    );
 
     let prod_toml = std::fs::read_to_string(dir.path().join("environments/prod.toml")).unwrap();
-    assert_eq!(prod_toml, format!("base_url = \"{}\"\n", server.uri()));
+    assert_eq!(
+        prod_toml,
+        format!(
+            "base_url = \"{}\"\n\
+\n\
+[entries.region.west]\n\
+region = \"west-9\"\n",
+            server.uri()
+        )
+    );
 
     // The secret and selections live only under `.local/`, never in the
     // shareable files above.

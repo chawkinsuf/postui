@@ -33,7 +33,7 @@ pub struct CellEdit {
 /// edit rather than losing the typed text).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VarEditOp {
-    /// A simple (non-secret, non-enumerated) variable's flat value in
+    /// A simple (non-secret) variable's flat value in
     /// `env` — `varedit::set_env_value` via `ctx.edit_env`.
     SetEnvValue {
         env: String,
@@ -52,13 +52,10 @@ pub enum VarEditOp {
         name: String,
         value: String,
     },
-    /// An option row's stored value: when the cell currently shows `env`'s
-    /// own override (the row's `overridden` truth), the edit lands in that
-    /// env's `[options.owner.key]` (`varedit::upsert_env_option`); when it
-    /// shows the shared/declared value, the edit lands in the shared
-    /// `[owner.options.key]` (`varedit::upsert_shared_option`) instead.
-    /// `member` is `Some(member_name)` for a group option's per-member
-    /// value; `None` for a variable option's single `value` field.
+    /// One field of one entry: the edit lands in `env`'s
+    /// `[entries.owner.key]` table (`varedit::upsert_entry`), the only
+    /// place an entry's values live (spec §3.1). `member` names the field;
+    /// `None` has nothing to write and is refused.
     SetOptionValue {
         env: String,
         owner: String,
@@ -98,7 +95,7 @@ pub enum RowKind {
     RequestVar {
         name: String,
     },
-    /// A declared variable: simple, enumerated, or secret alike.
+    /// A declared variable: simple or secret alike.
     Var {
         name: String,
     },
@@ -110,10 +107,12 @@ pub enum RowKind {
         group: String,
         name: String,
     },
-    /// An option sub-row, indented under an expanded `Var` or `GroupHeader`.
-    OptionRow {
-        owner: String,
-        key: String,
+    /// An entry sub-row, indented under an expanded `GroupHeader`.
+    /// Temporary shape for the stage-7 model — the whole Manager is
+    /// replaced by the master-detail layout (spec §3.4) shortly.
+    EntryRow {
+        group: String,
+        entry: String,
     },
     /// Ghost action rows at the end of the project section.
     AddVar,
@@ -137,8 +136,8 @@ pub enum VarStructOp {
     /// existing one — `varedit::upsert_group` is create-or-update either
     /// way).
     NewGroup { name: String, members: Vec<String> },
-    /// `o` on an enumerated/group row: a new keyed option, written to the
-    /// shared declaration (`varedit::upsert_shared_option`).
+    /// `o` on a group/entry row: a new entry, written to the active
+    /// environment (`varedit::upsert_entry`).
     NewOption {
         owner: String,
         key: String,
@@ -151,24 +150,22 @@ pub enum VarStructOp {
     Rename { from: String, to: String },
     /// `d`/`Delete` on a `Var` or `GroupHeader` row.
     Delete { name: String },
-    /// `d`/`Delete` on an `OptionRow` (finding 3): location-aware — the
-    /// active env's override if it has one (leaving a shared option, if
-    /// any, intact — a second delete then removes it), the shared option
-    /// otherwise. `App::apply_delete_option` recomputes which at apply
-    /// time, matching `Delete`'s own var-vs-group recompute above.
+    /// `d`/`Delete` on an `EntryRow`: removes that entry from the active
+    /// environment (`App::apply_delete_option`), the only environment it
+    /// lives in.
     DeleteOption { owner: String, key: String },
-    /// `s` on a non-enumerated `Var` row: flips `secret` (spec §3's two
-    /// transitions — `App::apply_var_struct` does the value-moving work).
+    /// `s` on a `Var` row: flips `secret` (spec §3's two transitions —
+    /// `App::apply_var_struct` does the value-moving work).
     ToggleSecret { name: String },
-    /// `m` on a `GroupHeader` row: replaces the group's member list.
+    /// `m` on a `GroupHeader` row: replaces the group's field list.
     SetMembers { group: String, members: Vec<String> },
     /// `p` on a `RequestVar` row (spec §4).
     Promote {
         name: String,
         target: postui_core::varedit::PromoteTarget,
     },
-    /// `P` on a `Var` row (spec §4); refused for secret/enumerated/group
-    /// names before this is ever dispatched.
+    /// `P` on a `Var` row (spec §4); refused for secret names and groups
+    /// before this is ever dispatched.
     Demote { name: String },
 }
 
@@ -187,9 +184,9 @@ enum StructKind {
     AddMember,
     Promote,
     Demote,
-    /// `e` on an `OptionRow`: the multi-field value(s)/description prompt
+    /// `e` on an `EntryRow`: the multi-field value(s)/description prompt
     /// (the same one the picker's `e` opens), prefilled from the ACTIVE
-    /// env's merged view of the option.
+    /// env's entry.
     EditOptionPrompt,
 }
 
@@ -259,29 +256,21 @@ pub fn build_rows(
 
     rows.push(RowKind::SectionHeader("Project"));
 
-    // Group members are rendered under their `GroupHeader`, not as their
-    // own top-level `Var` row, even though a member may also have its own
-    // (option-less) entry in `model.vars`.
-    let group_members: std::collections::HashSet<&str> = ctx
+    // Group fields are rendered under their `GroupHeader`, not as their
+    // own top-level `Var` row, even though a field may also have its own
+    // (value-less) table in `model.vars`.
+    let group_fields: std::collections::HashSet<&str> = ctx
         .model
         .groups
         .values()
-        .flat_map(|g| g.members.iter().map(String::as_str))
+        .flat_map(|g| g.fields.iter().map(String::as_str))
         .collect();
 
     for name in ctx.model.vars.keys() {
-        if group_members.contains(name.as_str()) {
+        if group_fields.contains(name.as_str()) {
             continue;
         }
         rows.push(RowKind::Var { name: name.clone() });
-        if expanded.contains(name) {
-            for key in union_var_option_keys(ctx, name) {
-                rows.push(RowKind::OptionRow {
-                    owner: name.clone(),
-                    key,
-                });
-            }
-        }
     }
 
     for (group_name, decl) in &ctx.model.groups {
@@ -289,17 +278,17 @@ pub fn build_rows(
             name: group_name.clone(),
         });
         if expanded.contains(group_name) {
-            for key in union_group_option_keys(ctx, group_name) {
-                rows.push(RowKind::OptionRow {
-                    owner: group_name.clone(),
-                    key,
+            for entry in union_entry_names(ctx, group_name) {
+                rows.push(RowKind::EntryRow {
+                    group: group_name.clone(),
+                    entry,
                 });
             }
         }
-        for member in &decl.members {
+        for field in &decl.fields {
             rows.push(RowKind::GroupMember {
                 group: group_name.clone(),
-                name: member.clone(),
+                name: field.clone(),
             });
         }
     }
@@ -323,42 +312,19 @@ fn env_data_for(ctx: &ProjectContext, env: &str) -> postui_core::varmodel::EnvDa
     }
 }
 
-/// The union of `name`'s option keys across `variables.toml` and every
-/// environment's `[options.<name>.*]` overrides — a variable can be
-/// enumerated *only* in one environment (no options declared in
-/// `variables.toml` at all), and that environment's option keys must
-/// still make the variable expandable and show up as option rows.
-/// Declared keys come first (in their declared order), then any env-only
-/// keys in environment-list order — order doesn't matter for correctness
-/// (row content is looked up by key), only determinism.
-pub(crate) fn union_var_option_keys(ctx: &ProjectContext, name: &str) -> Vec<String> {
-    let mut seen: IndexMap<String, ()> = ctx
-        .model
-        .vars
-        .get(name)
-        .map(|d| d.options.keys().map(|k| (k.clone(), ())).collect())
-        .unwrap_or_default();
+/// The union of `group`'s entry names across every environment — entries
+/// belong to one environment each (spec §3.1), so a group's rows are the
+/// union of what every environment declares for it. Environment-list
+/// order; order doesn't matter for correctness (row content is looked up
+/// by name), only determinism.
+pub(crate) fn union_entry_names(ctx: &ProjectContext, group: &str) -> Vec<String> {
+    let mut seen: IndexMap<String, ()> = IndexMap::new();
     for env in &ctx.environments {
         let env_data = env_data_for(ctx, env);
-        for key in postui_core::varmodel::merged_var_options(&ctx.model, &env_data, name).keys() {
-            seen.entry(key.clone()).or_insert(());
-        }
-    }
-    seen.into_keys().collect()
-}
-
-/// [`union_var_option_keys`], for a group's options.
-fn union_group_option_keys(ctx: &ProjectContext, name: &str) -> Vec<String> {
-    let mut seen: IndexMap<String, ()> = ctx
-        .model
-        .groups
-        .get(name)
-        .map(|g| g.options.keys().map(|k| (k.clone(), ())).collect())
-        .unwrap_or_default();
-    for env in &ctx.environments {
-        let env_data = env_data_for(ctx, env);
-        for key in postui_core::varmodel::merged_group_options(&ctx.model, &env_data, name).keys() {
-            seen.entry(key.clone()).or_insert(());
+        if let Some(entries) = postui_core::varmodel::group_entries(&env_data, group) {
+            for name in entries.keys() {
+                seen.entry(name.clone()).or_insert(());
+            }
         }
     }
     seen.into_keys().collect()
@@ -522,22 +488,6 @@ fn env_cell(
                     },
                 };
             }
-            let merged = postui_core::varmodel::merged_var_options(&ctx.model, &col.env_data, name);
-            if !merged.is_empty() {
-                return match col.resolved.meta.get(name) {
-                    Some(VarMeta::Enumerated { selected }) => {
-                        let value = col.resolved.values.get(name).cloned().unwrap_or_default();
-                        Cell {
-                            text: format!("{selected} \u{b7} {value}"),
-                            fg: theme.text,
-                        }
-                    }
-                    _ => Cell {
-                        text: "\u{26a0} select".into(),
-                        fg: theme.warning,
-                    },
-                };
-            }
             match col.resolved.values.get(name) {
                 Some(v) => {
                     let is_default = !col.env_data.values.contains_key(name);
@@ -558,14 +508,15 @@ fn env_cell(
         }
 
         RowKind::GroupHeader { name } => {
-            let merged =
-                postui_core::varmodel::merged_group_options(&ctx.model, &col.env_data, name);
-            if merged.is_empty() {
+            let Some(entries) = postui_core::varmodel::group_entries(&col.env_data, name) else {
+                return Cell::blank();
+            };
+            if entries.is_empty() {
                 return Cell::blank();
             }
             match col.selections.get(name) {
-                Some(key) if merged.contains_key(key) => Cell {
-                    text: key.clone(),
+                Some(entry) if entries.contains_key(entry) => Cell {
+                    text: entry.clone(),
                     fg: theme.text,
                 },
                 _ => Cell {
@@ -589,62 +540,24 @@ fn env_cell(
             },
         },
 
-        RowKind::OptionRow { owner, key } => {
-            if ctx.model.vars.contains_key(owner) {
-                let merged =
-                    postui_core::varmodel::merged_var_options(&ctx.model, &col.env_data, owner);
-                let Some(opt) = merged.get(key) else {
-                    return Cell::blank();
-                };
-                let overridden = col
-                    .env_data
-                    .options
-                    .get(owner)
-                    .and_then(|m| m.get(key))
-                    .is_some_and(|fields| fields.contains_key("value"));
-                let mut text = opt.value.clone();
-                if col.selections.get(owner) == Some(key) {
-                    text = format!("\u{2713} {text}");
-                }
-                Cell {
-                    text,
-                    fg: if overridden {
-                        theme.text
-                    } else {
-                        theme.text_muted
-                    },
-                }
-            } else if ctx.model.groups.contains_key(owner) {
-                let merged =
-                    postui_core::varmodel::merged_group_options(&ctx.model, &col.env_data, owner);
-                let Some(opt) = merged.get(key) else {
-                    return Cell::blank();
-                };
-                let overridden = col
-                    .env_data
-                    .options
-                    .get(owner)
-                    .and_then(|m| m.get(key))
-                    .is_some_and(|fields| fields.keys().any(|f| f != "description"));
-                let mut text = opt
-                    .values
-                    .iter()
-                    .map(|(m, v)| format!("{m}={v}"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                if col.selections.get(owner) == Some(key) {
-                    text = format!("\u{2713} {text}");
-                }
-                Cell {
-                    text,
-                    fg: if overridden {
-                        theme.text
-                    } else {
-                        theme.text_muted
-                    },
-                }
-            } else {
-                Cell::blank()
+        RowKind::EntryRow { group, entry } => {
+            let Some(decl) = postui_core::varmodel::group_entries(&col.env_data, group)
+                .and_then(|entries| entries.get(entry))
+            else {
+                return Cell::blank();
+            };
+            let mut text = decl
+                .values
+                .iter()
+                .map(|(f, v)| format!("{f}={v}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            if col.selections.get(group) == Some(entry) {
+                text = format!("\u{2713} {text}");
+            }
+            Cell {
+                text,
+                fg: theme.text,
             }
         }
     }
@@ -657,17 +570,10 @@ fn expand_glyph(
     row: &RowKind,
     expanded: &BTreeSet<String>,
 ) -> Option<&'static str> {
-    let has_options = match row {
-        RowKind::Var { name } => !union_var_option_keys(ctx, name).is_empty(),
-        RowKind::GroupHeader { name } => !union_group_option_keys(ctx, name).is_empty(),
-        _ => return None,
+    let RowKind::GroupHeader { name } = row else {
+        return None;
     };
-    let name = match row {
-        RowKind::Var { name } => name,
-        RowKind::GroupHeader { name } => name,
-        _ => unreachable!("returned above for any other row kind"),
-    };
-    if !has_options {
+    if union_entry_names(ctx, name).is_empty() {
         return None;
     }
     Some(if expanded.contains(name) {
@@ -719,7 +625,7 @@ fn name_and_indent(row: &RowKind) -> (u16, String) {
         RowKind::Var { name } => (0, name.clone()),
         RowKind::GroupHeader { name } => (0, name.clone()),
         RowKind::GroupMember { name, .. } => (2, name.clone()),
-        RowKind::OptionRow { key, .. } => (4, key.clone()),
+        RowKind::EntryRow { entry, .. } => (4, entry.clone()),
         RowKind::AddVar => (0, "+ Add variable".to_string()),
         RowKind::AddGroup => (0, "+ Add group".to_string()),
     }
@@ -740,16 +646,12 @@ fn description_for(ctx: &ProjectContext, row: &RowKind) -> String {
             .get(name)
             .and_then(|g| g.description.clone())
             .unwrap_or_default(),
-        RowKind::OptionRow { owner, key } => if let Some(decl) = ctx.model.vars.get(owner) {
-            decl.options.get(key).and_then(|o| o.description.clone())
-        } else {
-            ctx.model
-                .groups
-                .get(owner)
-                .and_then(|g| g.options.get(key))
-                .and_then(|o| o.description.clone())
+        RowKind::EntryRow { group, entry } => {
+            postui_core::varmodel::group_entries(&ctx.env_data, group)
+                .and_then(|entries| entries.get(entry))
+                .and_then(|e| e.description.clone())
+                .unwrap_or_default()
         }
-        .unwrap_or_default(),
         _ => String::new(),
     }
 }
@@ -758,38 +660,14 @@ fn description_for(ctx: &ProjectContext, row: &RowKind) -> String {
 /// toggle expand rather than edit a cell — a `Var`/`GroupHeader` that owns
 /// option sub-rows ([`union_var_option_keys`]/[`union_group_option_keys`]
 /// non-empty), matching [`expand_glyph`]'s own "has options" test.
+/// `row`'s name, when clicking/Entering it (on any column) should toggle
+/// expand rather than edit a cell — a `GroupHeader` that owns entry
+/// sub-rows ([`union_entry_names`] non-empty), matching [`expand_glyph`]'s
+/// own test.
 fn expandable_name<'a>(ctx: &ProjectContext, row: &'a RowKind) -> Option<&'a str> {
     match row {
-        RowKind::Var { name } if !union_var_option_keys(ctx, name).is_empty() => Some(name),
-        RowKind::GroupHeader { name } if !union_group_option_keys(ctx, name).is_empty() => {
-            Some(name)
-        }
+        RowKind::GroupHeader { name } if !union_entry_names(ctx, name).is_empty() => Some(name),
         _ => None,
-    }
-}
-
-/// Whether an option row's `key`/`member` value, as currently shown in
-/// `env`'s column, is that env's own override (`true`) or the
-/// shared/declared value falling through from `variables.toml` (`false`)
-/// — the same "resolution truth" `env_cell` already renders (overridden =
-/// normal fg, shared = muted), reused here to route a committed
-/// `VarEditOp::SetOptionValue` to the right document: `member: None` for a
-/// variable option's `value` field, `member: Some(m)` for one member of a
-/// group option row.
-pub fn option_value_is_env_override(
-    ctx: &ProjectContext,
-    env: &str,
-    owner: &str,
-    key: &str,
-    member: Option<&str>,
-) -> bool {
-    let env_data = env_data_for(ctx, env);
-    let Some(fields) = env_data.options.get(owner).and_then(|m| m.get(key)) else {
-        return false;
-    };
-    match member {
-        None => fields.contains_key("value"),
-        Some(m) => fields.contains_key(m),
     }
 }
 
@@ -949,7 +827,7 @@ impl VarManager {
     }
 
     /// `Enter` (or a click-selected-again) on the cursor's current cell:
-    /// toggles expand for an enumerated `Var`/`GroupHeader`, else begins
+    /// toggles expand for a `GroupHeader` with entries, else begins
     /// editing whichever value that cell shows (masked for a secret), else
     /// (a cell with nothing to edit — `GroupMember`, ghost rows, an
     /// `OptionRow`'s shared name column, a group `OptionRow`'s per-member
@@ -991,17 +869,6 @@ impl VarManager {
                 }
                 let env = self.env_at(ctx, col)?;
                 let column = env_column(ctx, &env);
-                if !postui_core::varmodel::merged_var_options(&ctx.model, &column.env_data, name)
-                    .is_empty()
-                {
-                    // An enumerated cell holds a *choice*, not free text.
-                    return Some(Action::OpenSelectDropdown {
-                        owner: name.clone(),
-                        env,
-                        row: self.cursor.0,
-                        col,
-                    });
-                }
                 let seed = column
                     .resolved
                     .values
@@ -1013,7 +880,7 @@ impl VarManager {
             }
             RowKind::GroupHeader { name } => {
                 if col == 0 {
-                    // Only a group with no options reaches here (expand
+                    // Only a group with no entries reaches here (expand
                     // claimed the rest): edit its shared description.
                     let seed = ctx
                         .model
@@ -1029,8 +896,8 @@ impl VarManager {
                 }
                 let env = self.env_at(ctx, col)?;
                 let column = env_column(ctx, &env);
-                if postui_core::varmodel::merged_group_options(&ctx.model, &column.env_data, name)
-                    .is_empty()
+                if postui_core::varmodel::group_entries(&column.env_data, name)
+                    .is_none_or(indexmap::IndexMap::is_empty)
                 {
                     return None;
                 }
@@ -1047,18 +914,13 @@ impl VarManager {
                 }
                 let env = self.env_at(ctx, col)?;
                 let column = env_column(ctx, &env);
-                let merged = postui_core::varmodel::merged_group_options(
-                    &ctx.model,
-                    &column.env_data,
-                    group,
-                );
-                if merged.is_empty() {
-                    return None;
-                }
+                let entries =
+                    postui_core::varmodel::group_entries(&column.env_data, group).cloned();
+                let entries = entries.filter(|e| !e.is_empty())?;
                 let Some(selected) = column
                     .selections
                     .get(group)
-                    .filter(|k| merged.contains_key(*k))
+                    .filter(|k| entries.contains_key(*k))
                 else {
                     // No option chosen for this env yet — offer the choice
                     // instead of an edit that has no target.
@@ -1069,9 +931,9 @@ impl VarManager {
                         col,
                     });
                 };
-                let seed = merged
+                let seed = entries
                     .get(selected)
-                    .and_then(|o| o.values.get(name))
+                    .and_then(|e| e.values.get(name))
                     .cloned()
                     .unwrap_or_default();
                 self.begin_edit(col, &seed, false);
@@ -1090,40 +952,30 @@ impl VarManager {
                 self.begin_edit(1, &seed, false);
                 None
             }
-            RowKind::OptionRow { owner, key } => {
-                // Group option rows carry one value per member (spec §5,
-                // `SetOptionValue.member`) rather than one flat value the
-                // grid's single-line cell could edit as free text; picking
-                // a group option is still reachable via `Space`/click
-                // (`select_cursor`), just not free-text edit here.
-                if col == 0 || !ctx.model.vars.contains_key(owner) {
-                    return None;
-                }
-                let env = self.env_at(ctx, col)?;
-                let column = env_column(ctx, &env);
-                let merged =
-                    postui_core::varmodel::merged_var_options(&ctx.model, &column.env_data, owner);
-                let seed = merged.get(key).map(|o| o.value.clone()).unwrap_or_default();
-                self.begin_edit(col, &seed, false);
-                None
-            }
+            // An entry row carries one value per group field rather than
+            // one flat value the grid's single-line cell could edit as
+            // free text; selecting the entry is still reachable via
+            // `Space`/click (`select_cursor`). The entries table (spec
+            // §3.4) replaces this row shortly.
+            RowKind::EntryRow { .. } => None,
             _ => None,
         }
     }
 
-    /// `Space` (or a click) on an option row's cell: the ✓ action —
-    /// records `key` as `owner`'s selection for that column's environment.
-    /// A no-op anywhere else (col 0, or a row that isn't an `OptionRow`).
+    /// `Space` (or a click) on an entry row's cell: the ✓ action —
+    /// records `entry` as `group`'s selection for that column's
+    /// environment. A no-op anywhere else (col 0, or a row that isn't an
+    /// `EntryRow`).
     pub fn select_cursor(&mut self, ctx: &ProjectContext) -> Option<Action> {
         let row = self.rows.get(self.cursor.0)?;
-        let RowKind::OptionRow { owner, key } = row else {
+        let RowKind::EntryRow { group, entry } = row else {
             return None;
         };
         let env = self.env_at(ctx, self.cursor.1)?;
         Some(Action::VarEdit(VarEditOp::Select {
             env,
-            name: owner.clone(),
-            key: key.clone(),
+            name: group.clone(),
+            key: entry.clone(),
         }))
     }
 
@@ -1137,18 +989,12 @@ impl VarManager {
         ctx: &ProjectContext,
     ) -> Option<Action> {
         match (kind, row) {
-            (StructKind::NewOption, RowKind::Var { name })
-                if !ctx.model.vars.get(name).is_some_and(|d| d.secret) =>
-            {
-                Some(Action::PromptNewOption {
-                    owner: name.clone(),
-                })
-            }
-            (StructKind::NewOption, RowKind::GroupHeader { name }) => {
-                Some(Action::PromptNewOption {
-                    owner: name.clone(),
-                })
-            }
+            (
+                StructKind::NewOption,
+                RowKind::GroupHeader { name } | RowKind::EntryRow { group: name, .. },
+            ) => Some(Action::PromptNewOption {
+                owner: name.clone(),
+            }),
             (StructKind::Rename, RowKind::Var { name }) => {
                 Some(Action::PromptRenameVar { from: name.clone() })
             }
@@ -1167,39 +1013,23 @@ impl VarManager {
             ) => Some(Action::PromptAddGroupMember {
                 group: group.clone(),
             }),
-            (StructKind::Delete, RowKind::OptionRow { owner, key }) => {
+            (StructKind::Delete, RowKind::EntryRow { group, entry }) => {
                 Some(Action::ConfirmDeleteOption {
-                    owner: owner.clone(),
-                    key: key.clone(),
+                    owner: group.clone(),
+                    key: entry.clone(),
                 })
             }
-            (StructKind::ToggleSecret, RowKind::Var { name })
-                if union_var_option_keys(ctx, name).is_empty() =>
-            {
+            (StructKind::ToggleSecret, RowKind::Var { name }) => {
                 Some(Action::ToggleSecretVar { name: name.clone() })
             }
-            (StructKind::EditOptionPrompt, RowKind::OptionRow { owner, key }) => {
-                if ctx.model.vars.contains_key(owner)
-                    && let Some(opt) =
-                        postui_core::varmodel::merged_var_options(&ctx.model, &ctx.env_data, owner)
-                            .get(key)
-                {
-                    let mut values = IndexMap::new();
-                    values.insert("value".to_string(), opt.value.clone());
-                    return Some(Action::OpenEditOptionPrompt {
-                        owner: owner.clone(),
-                        key: key.clone(),
-                        description: opt.description.clone(),
-                        values,
-                    });
-                }
-                postui_core::varmodel::merged_group_options(&ctx.model, &ctx.env_data, owner)
-                    .get(key)
-                    .map(|opt| Action::OpenEditOptionPrompt {
-                        owner: owner.clone(),
-                        key: key.clone(),
-                        description: opt.description.clone(),
-                        values: opt.values.clone(),
+            (StructKind::EditOptionPrompt, RowKind::EntryRow { group, entry }) => {
+                postui_core::varmodel::group_entries(&ctx.env_data, group)
+                    .and_then(|entries| entries.get(entry))
+                    .map(|decl| Action::OpenEditOptionPrompt {
+                        owner: group.clone(),
+                        key: entry.clone(),
+                        description: decl.description.clone(),
+                        values: decl.values.clone(),
                     })
             }
             (StructKind::EditMembers, RowKind::GroupHeader { name }) => {
@@ -1307,16 +1137,6 @@ impl VarManager {
                 name: name.clone(),
                 value,
             },
-            RowKind::OptionRow { owner, key } => {
-                let env = self.env_at(ctx, col)?;
-                VarEditOp::SetOptionValue {
-                    env,
-                    owner: owner.clone(),
-                    key: key.clone(),
-                    member: None,
-                    value,
-                }
-            }
             _ => return None,
         };
         Some(Action::VarEdit(op))
@@ -1353,25 +1173,11 @@ impl VarManager {
             // anywhere on them acts immediately.
             Some(RowKind::AddVar) => return Some(Action::PromptNewVar),
             Some(RowKind::AddGroup) => return Some(Action::PromptNewGroup),
-            Some(RowKind::OptionRow { .. }) => return self.select_cursor(ctx),
+            Some(RowKind::EntryRow { .. }) => return self.select_cursor(ctx),
             // A choice cell acts on the first click too — it opens a
             // dropdown, like the method selector.
             Some(RowKind::GroupHeader { .. }) if col >= 2 => {
                 return self.activate_cursor(ctx, open_request);
-            }
-            Some(RowKind::Var { name }) if col >= 2 => {
-                if let Some(env) = self.env_at(ctx, col) {
-                    let column = env_column(ctx, &env);
-                    if !postui_core::varmodel::merged_var_options(
-                        &ctx.model,
-                        &column.env_data,
-                        &name,
-                    )
-                    .is_empty()
-                    {
-                        return self.activate_cursor(ctx, open_request);
-                    }
-                }
             }
             _ => {}
         }
@@ -1866,10 +1672,10 @@ mod tests {
 
     /// A project with: two envs (dev, qa); `base_url` simple with a
     /// default (no env value in dev → falls back; qa sets its own);
-    /// `user` enumerated, selected in qa only; `api_key` secret, with a
-    /// value in qa only; group `creds` with two members, unselected in
-    /// both envs. Plus a `trace_id` request-scope override on the
-    /// returned `HttpRequest`.
+    /// `user` simple with a default; `api_key` secret, with a value in qa
+    /// only; group `creds` with two fields and two entries in qa, the
+    /// first selected there and nothing selected in dev. Plus a
+    /// `trace_id` request-scope override on the returned `HttpRequest`.
     fn fixture() -> (tempfile::TempDir, ProjectContext, HttpRequest) {
         let dir = tempfile::tempdir().unwrap();
         project::init_project(dir.path(), Some("demo")).unwrap();
@@ -1882,11 +1688,7 @@ default = "http://localhost:8080"
 
 [user]
 description = "acting user"
-[user.options.alice]
-description = "admin"
-value = "1001"
-[user.options.bob]
-value = "2002"
+default = "1001"
 
 [api_key]
 description = "service key"
@@ -1894,23 +1696,20 @@ secret = true
 
 [groups.creds]
 description = "paired ids"
-members = ["user_id", "customer_id"]
-[groups.creds.options.alice]
-user_id = "1001"
-customer_id = "c-77"
+fields = ["user_id", "customer_id"]
 "#,
         )
         .unwrap();
         std::fs::write(dir.path().join("environments/dev.toml"), "").unwrap();
         std::fs::write(
             dir.path().join("environments/qa.toml"),
-            "base_url = \"https://qa.example.com\"\n",
+            "base_url = \"https://qa.example.com\"\n\n[entries.creds.alice]\ndescription = \"admin\"\nuser_id = \"1001\"\ncustomer_id = \"c-77\"\n\n[entries.creds.bob]\nuser_id = \"2002\"\ncustomer_id = \"c-91\"\n",
         )
         .unwrap();
 
         let mut selections = IndexMap::new();
         let mut qa_sel = IndexMap::new();
-        qa_sel.insert("user".to_string(), "alice".to_string());
+        qa_sel.insert("creds".to_string(), "alice".to_string());
         selections.insert("qa".to_string(), qa_sel);
         project::save_local_state(
             dir.path(),
@@ -2022,44 +1821,7 @@ customer_id = "c-77"
     }
 
     #[test]
-    fn expanding_a_variable_splices_its_option_rows_right_after_it() {
-        let (_dir, ctx, _req) = fixture();
-        let mut expanded = BTreeSet::new();
-        expanded.insert("user".to_string());
-        let rows = build_rows(&ctx, None, &expanded);
-        let user_idx = rows
-            .iter()
-            .position(|r| {
-                r == &RowKind::Var {
-                    name: "user".into(),
-                }
-            })
-            .unwrap();
-        assert_eq!(
-            rows[user_idx + 1],
-            RowKind::OptionRow {
-                owner: "user".into(),
-                key: "alice".into()
-            }
-        );
-        assert_eq!(
-            rows[user_idx + 2],
-            RowKind::OptionRow {
-                owner: "user".into(),
-                key: "bob".into()
-            }
-        );
-        // and NOT expanded when not in `expanded`:
-        let rows2 = build_rows(&ctx, None, &BTreeSet::new());
-        assert!(
-            !rows2
-                .iter()
-                .any(|r| matches!(r, RowKind::OptionRow { owner, .. } if owner == "user"))
-        );
-    }
-
-    #[test]
-    fn expanding_a_group_splices_its_option_rows_after_the_header() {
+    fn expanding_a_group_splices_its_entry_rows_after_the_header() {
         let (_dir, ctx, _req) = fixture();
         let mut expanded = BTreeSet::new();
         expanded.insert("creds".to_string());
@@ -2074,14 +1836,21 @@ customer_id = "c-77"
             .unwrap();
         assert_eq!(
             rows[header_idx + 1],
-            RowKind::OptionRow {
-                owner: "creds".into(),
-                key: "alice".into()
+            RowKind::EntryRow {
+                group: "creds".into(),
+                entry: "alice".into()
             }
         );
-        // members still follow, after the option row(s):
         assert_eq!(
             rows[header_idx + 2],
+            RowKind::EntryRow {
+                group: "creds".into(),
+                entry: "bob".into()
+            }
+        );
+        // fields still follow, after the entry rows:
+        assert_eq!(
+            rows[header_idx + 3],
             RowKind::GroupMember {
                 group: "creds".into(),
                 name: "user_id".into()
@@ -2146,14 +1915,6 @@ customer_id = "c-77"
     }
 
     #[test]
-    fn enumerated_var_shows_key_dot_value_when_selected_and_warns_when_not() {
-        let (_dir, ctx, req) = fixture();
-        let (content, _term) = render(&ctx, Some(&req), BTreeSet::new(), 120, 0);
-        assert!(content.contains("alice \u{b7} 1001"), "{content}");
-        assert!(content.contains("\u{26a0} select"), "{content}");
-    }
-
-    #[test]
     fn secret_is_masked_never_shows_value_and_warns_when_missing() {
         let (_dir, ctx, req) = fixture();
         let (content, _term) = render(&ctx, Some(&req), BTreeSet::new(), 120, 0);
@@ -2169,15 +1930,15 @@ customer_id = "c-77"
     }
 
     #[test]
-    fn expanded_option_row_shows_key_and_value_never_the_secret() {
+    fn expanded_entry_row_shows_name_and_values_never_the_secret() {
         let (_dir, ctx, req) = fixture();
         let mut expanded = BTreeSet::new();
-        expanded.insert("user".to_string());
-        let (content, _term) = render(&ctx, Some(&req), expanded, 120, 0);
-        assert!(content.contains("alice"));
-        assert!(content.contains("bob"));
-        assert!(content.contains("1001"));
-        assert!(content.contains("2002"));
+        expanded.insert("creds".to_string());
+        let (content, _term) = render(&ctx, Some(&req), expanded, 160, 0);
+        assert!(content.contains("alice"), "{content}");
+        assert!(content.contains("bob"), "{content}");
+        assert!(content.contains("user_id=1001"), "{content}");
+        assert!(content.contains("user_id=2002"), "{content}");
         assert!(
             !content.contains("sk-qa-secret-value"),
             "secret value must never render: {content}"
@@ -2202,7 +1963,6 @@ customer_id = "c-77"
     fn masked_secret_buffer_never_contains_the_value_anywhere() {
         let (_dir, ctx, req) = fixture();
         let mut expanded = BTreeSet::new();
-        expanded.insert("user".to_string());
         expanded.insert("creds".to_string());
         let (content, _term) = render(&ctx, Some(&req), expanded, 200, 0);
         assert!(!content.contains("sk-qa-secret-value"));
@@ -2228,45 +1988,42 @@ customer_id = "c-77"
     }
 
     #[test]
-    fn selected_var_option_row_shows_a_check_mark_the_unselected_one_does_not() {
-        // Base fixture already selects `user = "alice"` in `qa`.
+    fn selected_entry_row_shows_a_check_mark_the_unselected_one_does_not() {
+        // Base fixture already selects `creds = "alice"` in `qa`.
         let (_dir, ctx, req) = fixture();
         let mut expanded = BTreeSet::new();
-        expanded.insert("user".to_string());
-        let (content, _term) = render(&ctx, Some(&req), expanded, 120, 0);
+        expanded.insert("creds".to_string());
+        let (content, _term) = render(&ctx, Some(&req), expanded, 160, 0);
         assert!(
-            content.contains("\u{2713} 1001"),
-            "the selected option's row must carry the check mark: {content}"
+            content.contains("\u{2713} user_id=1001"),
+            "the selected entry's row must carry the check mark: {content}"
         );
         assert!(
-            !content.contains("\u{2713} 2002"),
-            "the unselected option's row must not: {content}"
+            !content.contains("\u{2713} user_id=2002"),
+            "the unselected entry's row must not: {content}"
         );
     }
 
     // -----------------------------------------------------------------
-    // Finding 1 (review): a variable/group enumerated ONLY via an
-    // environment's [options.*] table (nothing declared in
-    // variables.toml) must still be expandable and show its option row(s)
-    // — the row set is the union across every environment, not just
-    // variables.toml.
+    // A group whose entries exist in only ONE environment must still be
+    // expandable and show its entry row(s) — the row set is the union
+    // across every environment (spec §3.1: entries belong to one env).
     // -----------------------------------------------------------------
 
-    /// One var (`region`), declared with no options of its own; `qa`
-    /// declares an env-only option `east`, selected in `qa`; `dev` has
-    /// nothing for it at all.
-    fn fixture_env_only_enum() -> (tempfile::TempDir, ProjectContext) {
+    /// Group `region` (one field), with entries declared only by `qa`,
+    /// selected there; `dev` has nothing for it at all.
+    fn fixture_env_only_entries() -> (tempfile::TempDir, ProjectContext) {
         let dir = tempfile::tempdir().unwrap();
         project::init_project(dir.path(), Some("env-only")).unwrap();
         std::fs::write(
             dir.path().join("variables.toml"),
-            "[region]\ndescription = \"deploy region\"\n",
+            "[groups.region]\ndescription = \"deploy region\"\nfields = [\"region\"]\n",
         )
         .unwrap();
         std::fs::write(dir.path().join("environments/dev.toml"), "").unwrap();
         std::fs::write(
             dir.path().join("environments/qa.toml"),
-            "[options.region.east]\ndescription = \"US East\"\nvalue = \"us-east-1\"\n",
+            "[entries.region.east]\ndescription = \"US East\"\nregion = \"us-east-1\"\n",
         )
         .unwrap();
 
@@ -2290,56 +2047,55 @@ customer_id = "c-77"
     }
 
     #[test]
-    fn var_enumerated_only_via_one_env_gets_an_expand_glyph() {
-        let (_dir, ctx) = fixture_env_only_enum();
-        let region_row = RowKind::Var {
+    fn group_with_entries_in_one_env_only_gets_an_expand_glyph() {
+        let (_dir, ctx) = fixture_env_only_entries();
+        let header = RowKind::GroupHeader {
             name: "region".into(),
         };
         assert_eq!(
-            expand_glyph(&ctx, &region_row, &BTreeSet::new()),
+            expand_glyph(&ctx, &header, &BTreeSet::new()),
             Some(GLYPH_COLLAPSED),
-            "declared with zero options in variables.toml, but qa.toml \
-             declares one — must still be expandable"
+            "only qa.toml declares entries for it — must still be expandable"
         );
     }
 
     #[test]
-    fn var_enumerated_only_via_one_env_expands_to_its_env_only_option_row() {
-        let (_dir, ctx) = fixture_env_only_enum();
-        let region_row = RowKind::Var {
+    fn group_with_entries_in_one_env_only_expands_to_that_env_s_entry_row() {
+        let (_dir, ctx) = fixture_env_only_entries();
+        let header = RowKind::GroupHeader {
             name: "region".into(),
         };
         let mut expanded = BTreeSet::new();
         expanded.insert("region".to_string());
         let rows = build_rows(&ctx, None, &expanded);
-        let region_idx = rows.iter().position(|r| r == &region_row).unwrap();
+        let idx = rows.iter().position(|r| r == &header).unwrap();
         assert_eq!(
-            rows[region_idx + 1],
-            RowKind::OptionRow {
-                owner: "region".into(),
-                key: "east".into()
+            rows[idx + 1],
+            RowKind::EntryRow {
+                group: "region".into(),
+                entry: "east".into()
             }
         );
 
-        // and collapsed, no option row appears anywhere:
+        // and collapsed, no entry row appears anywhere:
         let rows_collapsed = build_rows(&ctx, None, &BTreeSet::new());
         assert!(
             !rows_collapsed
                 .iter()
-                .any(|r| matches!(r, RowKind::OptionRow { owner, .. } if owner == "region"))
+                .any(|r| matches!(r, RowKind::EntryRow { group, .. } if group == "region"))
         );
     }
 
     #[test]
-    fn var_enumerated_only_via_one_env_shows_selection_truth_in_that_env() {
-        let (_dir, ctx) = fixture_env_only_enum();
+    fn group_with_entries_in_one_env_only_shows_selection_truth_in_that_env() {
+        let (_dir, ctx) = fixture_env_only_entries();
         let mut expanded = BTreeSet::new();
         expanded.insert("region".to_string());
         let (content, _term) = render(&ctx, None, expanded, 120, 0);
-        // The Var row itself, resolved in qa (the active/selected env):
+        // The field row, resolved in qa (the active/selected env):
         assert!(content.contains("east \u{b7} us-east-1"), "{content}");
-        // The spliced-in option row, check-marked as selected in qa:
-        assert!(content.contains("\u{2713} us-east-1"), "{content}");
+        // The spliced-in entry row, check-marked as selected in qa:
+        assert!(content.contains("\u{2713} region=us-east-1"), "{content}");
     }
 
     // -----------------------------------------------------------------
@@ -2348,22 +2104,25 @@ customer_id = "c-77"
     // in one environment, not selected in another).
     // -----------------------------------------------------------------
 
-    /// Group `creds` (members `user_id`, `customer_id`), option `alice`
-    /// declared in `variables.toml`; `qa` overrides just `customer_id`
-    /// for that option and selects it; `dev` has neither an override nor
-    /// a selection.
+    /// Group `creds` (fields `user_id`, `customer_id`) with entry `alice`
+    /// in `qa`, selected there; `dev` declares the same entry but has no
+    /// selection.
     fn fixture_group_selected() -> (tempfile::TempDir, ProjectContext) {
         let dir = tempfile::tempdir().unwrap();
         project::init_project(dir.path(), Some("group-selected")).unwrap();
         std::fs::write(
             dir.path().join("variables.toml"),
-            "[groups.creds]\ndescription = \"paired ids\"\nmembers = [\"user_id\", \"customer_id\"]\n[groups.creds.options.alice]\ncustomer_id = \"c-77\"\nuser_id = \"1001\"\n",
+            "[groups.creds]\ndescription = \"paired ids\"\nfields = [\"user_id\", \"customer_id\"]\n",
         )
         .unwrap();
-        std::fs::write(dir.path().join("environments/dev.toml"), "").unwrap();
+        std::fs::write(
+            dir.path().join("environments/dev.toml"),
+            "[entries.creds.alice]\nuser_id = \"1001\"\ncustomer_id = \"c-77\"\n",
+        )
+        .unwrap();
         std::fs::write(
             dir.path().join("environments/qa.toml"),
-            "[options.creds.alice]\ncustomer_id = \"c-99\"\n",
+            "[entries.creds.alice]\nuser_id = \"1001\"\ncustomer_id = \"c-99\"\n",
         )
         .unwrap();
 
@@ -2464,51 +2223,40 @@ customer_id = "c-77"
         let (qa_text, _) = cell_at(&term, env_col_x(&ctx, "qa"), y, ENV_W);
         assert_eq!(
             qa_text, "alice \u{b7} c-99",
-            "qa's own override of customer_id must show through"
+            "qa's own entry value for customer_id must show through"
         );
         let (dev_text, _) = cell_at(&term, env_col_x(&ctx, "dev"), y, ENV_W);
         assert_eq!(dev_text, "\u{26a0} select");
     }
 
     #[test]
-    fn group_option_row_check_marks_the_selected_env_and_distinguishes_overridden_vs_shared_fg() {
+    fn group_entry_row_check_marks_only_the_env_that_selects_it() {
         let (_dir, ctx) = fixture_group_selected();
-        let theme = Theme::for_terminal();
         let mut expanded = BTreeSet::new();
         expanded.insert("creds".to_string());
         let rows = build_rows(&ctx, None, &expanded);
-        let option_row = RowKind::OptionRow {
-            owner: "creds".into(),
-            key: "alice".into(),
+        let entry_row = RowKind::EntryRow {
+            group: "creds".into(),
+            entry: "alice".into(),
         };
-        let y = row_y(&rows, &option_row);
-        let (_content, term) = render(&ctx, None, expanded, 120, 0);
+        let y = row_y(&rows, &entry_row);
+        // wide enough that neither env column's values are clipped
+        let (_content, term) = render(&ctx, None, expanded, 200, 0);
 
-        // qa overrides customer_id for this option and has it selected:
-        // check-marked, and normal (not muted) fg since it's overridden.
-        let (qa_text, qa_fg) = cell_at(&term, env_col_x(&ctx, "qa"), y, ENV_W);
+        // qa has this entry selected: check-marked, showing qa's values.
+        let (qa_text, _qa_fg) = cell_at(&term, env_col_x(&ctx, "qa"), y, ENV_W);
         assert!(
             qa_text.starts_with('\u{2713}'),
-            "qa's selected option row must show the check mark: {qa_text:?}"
-        );
-        assert!(qa_text.contains("customer_id=c-99"), "{qa_text:?}");
-        assert_eq!(
-            qa_fg, theme.text,
-            "an env-overridden option row must render in normal fg"
+            "qa's selected entry row must show the check mark: {qa_text:?}"
         );
 
-        // dev has no override and no selection: shared (declared) values,
-        // muted, no check mark.
-        let (dev_text, dev_fg) = cell_at(&term, env_col_x(&ctx, "dev"), y, ENV_W);
+        // dev declares the same entry but selects nothing: no check mark.
+        let (dev_text, _dev_fg) = cell_at(&term, env_col_x(&ctx, "dev"), y, ENV_W);
         assert!(
             !dev_text.starts_with('\u{2713}'),
             "dev has no selection, must not be check-marked: {dev_text:?}"
         );
-        assert!(dev_text.contains("customer_id=c-77"), "{dev_text:?}");
-        assert_eq!(
-            dev_fg, theme.text_muted,
-            "an un-overridden (shared/declared) option row must render muted"
-        );
+        assert!(dev_text.starts_with("user_id=1001"), "{dev_text:?}");
     }
 
     /// All occurrences of `needle` in the rendered buffer, as (row, fg) —
@@ -2738,42 +2486,7 @@ customer_id = "c-77"
     }
 
     #[test]
-    fn enumerated_var_env_cell_opens_the_dropdown_too() {
-        let (_dir, ctx, req) = fixture();
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
-            ..Default::default()
-        };
-        let row = idx(
-            &vm.rows,
-            &RowKind::Var {
-                name: "user".into(),
-            },
-        );
-        let col = env_col(&ctx, "dev");
-        vm.cursor = (row, col);
-        assert_eq!(
-            vm.activate_cursor(&ctx, Some(&req)),
-            Some(Action::OpenSelectDropdown {
-                owner: "user".into(),
-                env: "dev".into(),
-                row,
-                col,
-            })
-        );
-        assert_eq!(
-            vm.click_cell(row, col, false, &ctx, Some(&req)),
-            Some(Action::OpenSelectDropdown {
-                owner: "user".into(),
-                env: "dev".into(),
-                row,
-                col,
-            })
-        );
-    }
-
-    #[test]
-    fn e_on_an_option_row_opens_the_edit_option_prompt_prefilled() {
+    fn e_on_an_entry_row_opens_the_edit_entry_prompt_prefilled() {
         let (_dir, ctx) = fixture_group_selected();
         let mut vm = VarManager {
             rows: build_rows(&ctx, None, &BTreeSet::from(["creds".to_string()])),
@@ -2782,9 +2495,9 @@ customer_id = "c-77"
         vm.cursor = (
             idx(
                 &vm.rows,
-                &RowKind::OptionRow {
-                    owner: "creds".into(),
-                    key: "alice".into(),
+                &RowKind::EntryRow {
+                    group: "creds".into(),
+                    entry: "alice".into(),
                 },
             ),
             0,
@@ -2947,15 +2660,15 @@ customer_id = "c-77"
             rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
             ..Default::default()
         };
-        // `user` has options, so its name activation expands, not renames
+        // `creds` has entries, so its name activation expands, not renames
         let row = idx(
             &vm.rows,
-            &RowKind::Var {
-                name: "user".into(),
+            &RowKind::GroupHeader {
+                name: "creds".into(),
             },
         );
         assert_eq!(vm.click_name(row, true, &ctx), None);
-        assert!(vm.expanded.contains("user"));
+        assert!(vm.expanded.contains("creds"));
     }
 
     #[test]
@@ -3358,7 +3071,7 @@ customer_id = "c-77"
     }
 
     #[test]
-    fn enter_on_an_enumerated_var_toggles_expand_instead_of_editing() {
+    fn enter_on_a_group_with_entries_toggles_expand_instead_of_editing() {
         let (_dir, ctx, req) = fixture();
         let mut vm = VarManager {
             rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
@@ -3367,8 +3080,8 @@ customer_id = "c-77"
         vm.cursor = (
             idx(
                 &vm.rows,
-                &RowKind::Var {
-                    name: "user".into(),
+                &RowKind::GroupHeader {
+                    name: "creds".into(),
                 },
             ),
             0,
@@ -3376,10 +3089,10 @@ customer_id = "c-77"
         let action = vm.activate_cursor(&ctx, Some(&req));
         assert_eq!(action, None);
         assert!(vm.editing.is_none());
-        assert!(vm.expanded.contains("user"));
+        assert!(vm.expanded.contains("creds"));
         // and Enter again collapses it:
         vm.activate_cursor(&ctx, Some(&req));
-        assert!(!vm.expanded.contains("user"));
+        assert!(!vm.expanded.contains("creds"));
     }
 
     #[test]
@@ -3435,10 +3148,10 @@ customer_id = "c-77"
     }
 
     #[test]
-    fn enter_on_a_variable_option_row_seeds_and_commits_set_option_value() {
+    fn space_on_an_entry_row_dispatches_select() {
         let (_dir, ctx, req) = fixture();
         let mut expanded = BTreeSet::new();
-        expanded.insert("user".to_string());
+        expanded.insert("creds".to_string());
         let mut vm = VarManager {
             rows: build_rows(&ctx, Some(&req), &expanded),
             expanded,
@@ -3447,50 +3160,9 @@ customer_id = "c-77"
         vm.cursor = (
             idx(
                 &vm.rows,
-                &RowKind::OptionRow {
-                    owner: "user".into(),
-                    key: "alice".into(),
-                },
-            ),
-            env_col(&ctx, "qa"),
-        );
-        vm.activate_cursor(&ctx, Some(&req));
-        let edit = vm.editing.as_ref().expect("edit began");
-        assert_eq!(
-            edit.input.text(),
-            "1001",
-            "seeded with the shared declared value"
-        );
-        vm.editing.as_mut().unwrap().input = LineInput::new("9999");
-        let action = vm.commit_edit(&ctx);
-        assert_eq!(
-            action,
-            Some(Action::VarEdit(VarEditOp::SetOptionValue {
-                env: "qa".into(),
-                owner: "user".into(),
-                key: "alice".into(),
-                member: None,
-                value: "9999".into(),
-            }))
-        );
-    }
-
-    #[test]
-    fn space_on_an_option_row_dispatches_select() {
-        let (_dir, ctx, req) = fixture();
-        let mut expanded = BTreeSet::new();
-        expanded.insert("user".to_string());
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, Some(&req), &expanded),
-            expanded,
-            ..Default::default()
-        };
-        vm.cursor = (
-            idx(
-                &vm.rows,
-                &RowKind::OptionRow {
-                    owner: "user".into(),
-                    key: "bob".into(),
+                &RowKind::EntryRow {
+                    group: "creds".into(),
+                    entry: "bob".into(),
                 },
             ),
             env_col(&ctx, "qa"),
@@ -3501,7 +3173,7 @@ customer_id = "c-77"
             action,
             Some(Action::VarEdit(VarEditOp::Select {
                 env: "qa".into(),
-                name: "user".into(),
+                name: "creds".into(),
                 key: "bob".into(),
             }))
         );
@@ -3509,7 +3181,7 @@ customer_id = "c-77"
     }
 
     #[test]
-    fn space_on_col0_or_a_non_option_row_is_a_no_op() {
+    fn space_on_col0_or_a_non_entry_row_is_a_no_op() {
         let (_dir, ctx, req) = fixture();
         let mut vm = VarManager {
             rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
@@ -3561,10 +3233,10 @@ customer_id = "c-77"
     }
 
     #[test]
-    fn click_cell_on_an_option_row_selects_immediately_on_a_single_click() {
+    fn click_cell_on_an_entry_row_selects_immediately_on_a_single_click() {
         let (_dir, ctx, req) = fixture();
         let mut expanded = BTreeSet::new();
-        expanded.insert("user".to_string());
+        expanded.insert("creds".to_string());
         let mut vm = VarManager {
             rows: build_rows(&ctx, Some(&req), &expanded),
             expanded,
@@ -3572,9 +3244,9 @@ customer_id = "c-77"
         };
         let row = idx(
             &vm.rows,
-            &RowKind::OptionRow {
-                owner: "user".into(),
-                key: "alice".into(),
+            &RowKind::EntryRow {
+                group: "creds".into(),
+                entry: "alice".into(),
             },
         );
         let col = env_col(&ctx, "qa");
@@ -3583,7 +3255,7 @@ customer_id = "c-77"
             action,
             Some(Action::VarEdit(VarEditOp::Select {
                 env: "qa".into(),
-                name: "user".into(),
+                name: "creds".into(),
                 key: "alice".into(),
             }))
         );
