@@ -6241,3 +6241,208 @@ fn declining_the_migration_leaves_saved_selections_on_disk() {
         "declining must not touch local state either"
     );
 }
+
+// --- computed request-headers section: copy/reveal/env-switch (Task 10) ---
+
+#[test]
+fn auto_header_copy_icon_puts_the_resolved_value_on_the_clipboard() {
+    let mut app = App::new_for_test();
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
+        None, 65536, false,
+    ));
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor.url = LineInput::new("https://example.com/foo");
+    app.update(Action::Render);
+
+    let backend = ratatui::backend::TestBackend::new(100, 70);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    // The scratch request has no default headers and no body, so the Host
+    // row (from the URL) is the only computed row, at index 0.
+    let rect = app
+        .hits
+        .rect_of(&Hit::AutoHeaderCopy(0))
+        .expect("the Host row's copy icon is registered");
+
+    app.handle_mouse(left_down(rect.x, rect.y));
+
+    assert!(
+        rendered_text(&mut app).contains("Copied Host"),
+        "toast confirms the copy"
+    );
+}
+
+#[test]
+fn computed_headers_mask_a_secret_by_default_and_the_reveal_toggle_unmasks() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::VarEdit(VarEditOp::SetSecretValue {
+        env: "qa".into(),
+        name: "api_key".into(),
+        value: "sk-live-abc123".into(),
+    }));
+    // A project default header, not a request-table row: the computed
+    // section only shows non-`Request`-origin rows, so this is what
+    // exercises it (see `computed_headers_recompute_reflects_an_env_switch`
+    // for the same reasoning).
+    app.project.meta.default_headers.insert(
+        "Authorization".into(),
+        postui_core::model::Entry {
+            value: "Bearer {{api_key}}".into(),
+            enabled: true,
+        },
+    );
+    app.editor.active_tab = EditorTab::Headers;
+    app.update(Action::Render);
+
+    let backend = ratatui::backend::TestBackend::new(100, 70);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let masked = format!("{:?}", terminal.backend().buffer());
+    assert!(
+        !masked.contains("sk-live-abc123"),
+        "the secret must not render in the clear by default: {masked}"
+    );
+    assert!(
+        masked.contains("\u{25cf}"),
+        "the masked value renders as the dot mask: {masked}"
+    );
+    let reveal_rect = app
+        .hits
+        .rect_of(&Hit::AutoHeaderReveal)
+        .expect("the reveal toggle shows because a secret is in play");
+
+    app.handle_mouse(left_down(reveal_rect.x, reveal_rect.y));
+    assert!(app.editor.computed.revealed);
+
+    let mut terminal2 =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 70)).unwrap();
+    terminal2.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let revealed = format!("{:?}", terminal2.backend().buffer());
+    assert!(
+        revealed.contains("sk-live-abc123"),
+        "revealing shows the real value: {revealed}"
+    );
+
+    // The toggle itself must survive the round trip (still present, now
+    // reading "hide") rather than vanishing once nothing is masked.
+    assert!(app.hits.rect_of(&Hit::AutoHeaderReveal).is_some());
+}
+
+#[test]
+fn computed_headers_recompute_reflects_an_env_switch() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    // A project default header, not a request-table row: the computed
+    // section only shows non-`Request`-origin rows (the editable table
+    // above already shows the request's own rows, literal text and all),
+    // so this is what actually exercises the env-driven recompute.
+    app.project.meta.default_headers.insert(
+        "X-Base".into(),
+        postui_core::model::Entry {
+            value: "{{base_url}}".into(),
+            enabled: true,
+        },
+    );
+    app.editor.active_tab = EditorTab::Headers;
+    app.update(Action::Render);
+
+    let backend = ratatui::backend::TestBackend::new(100, 70);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let qa_view = format!("{:?}", terminal.backend().buffer());
+    assert!(
+        qa_view.contains("https://qa.example.com"),
+        "qa's own value resolves: {qa_view}"
+    );
+
+    app.update(Action::SwitchEnv(Some("dev".into())));
+    let mut terminal2 =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 70)).unwrap();
+    terminal2.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let dev_view = format!("{:?}", terminal2.backend().buffer());
+    assert!(
+        dev_view.contains("http://localhost:8080"),
+        "dev has no override, so the declared default resolves instead: {dev_view}"
+    );
+    assert!(
+        !dev_view.contains("https://qa.example.com"),
+        "the stale qa value must not linger: {dev_view}"
+    );
+}
+
+#[test]
+fn computed_headers_reveal_resets_when_switching_to_a_different_request() {
+    // Reveal is a per-request gesture (spec §3: secrets masked by default);
+    // it must not leak from request A into request B just because both
+    // happen to render the same project default header.
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::VarEdit(VarEditOp::SetSecretValue {
+        env: "qa".into(),
+        name: "api_key".into(),
+        value: "sk-live-abc123".into(),
+    }));
+    app.project.meta.default_headers.insert(
+        "Authorization".into(),
+        postui_core::model::Entry {
+            value: "Bearer {{api_key}}".into(),
+            enabled: true,
+        },
+    );
+    postui_core::storage::save_request(&app.project.root, "a", &req("https://x/a")).unwrap();
+    postui_core::storage::save_request(&app.project.root, "b", &req("https://x/b")).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::OpenRequest("a".into()));
+    app.editor.active_tab = EditorTab::Headers;
+    app.update(Action::Render);
+
+    let backend = ratatui::backend::TestBackend::new(100, 70);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let reveal_rect = app
+        .hits
+        .rect_of(&Hit::AutoHeaderReveal)
+        .expect("A shows the reveal toggle");
+    app.handle_mouse(left_down(reveal_rect.x, reveal_rect.y));
+    assert!(app.editor.computed.revealed, "A is now revealed");
+
+    let mut terminal_a =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 70)).unwrap();
+    terminal_a.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let a_view = format!("{:?}", terminal_a.backend().buffer());
+    assert!(
+        a_view.contains("sk-live-abc123"),
+        "sanity: A really is showing the secret in the clear: {a_view}"
+    );
+
+    app.update(Action::OpenRequest("b".into()));
+    assert!(
+        !app.editor.computed.revealed,
+        "opening a different request must re-mask"
+    );
+
+    let mut terminal_b =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 70)).unwrap();
+    terminal_b.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let b_view = format!("{:?}", terminal_b.backend().buffer());
+    assert!(
+        !b_view.contains("sk-live-abc123"),
+        "B must render masked, not inherit A's reveal: {b_view}"
+    );
+    assert!(
+        b_view.contains("\u{25cf}"),
+        "B shows the dot mask: {b_view}"
+    );
+    assert!(
+        b_view.contains("\u{1F441} reveal") && !b_view.contains("\u{1F441} hide"),
+        "B's own toggle reads \"reveal\", not \"hide\" (the collapse toggle's unrelated \
+         \"⌄ hide\" label is a substring trap here, so this checks the 👁 glyph too): {b_view}"
+    );
+}

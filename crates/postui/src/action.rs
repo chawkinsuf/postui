@@ -21,6 +21,9 @@ pub enum CopyTarget {
     ResponseBody,
     ResponseHeader(usize),
     Url,
+    /// One row of the request Headers tab's computed-headers section, by
+    /// index into its own display order (see `Hit::AutoHeaderCopy`).
+    ComputedHeader(usize),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -203,6 +206,9 @@ pub enum Action {
     /// Flip `editor.substitute_body` — whether `{{var}}` tokens in the body
     /// are substituted at send time.
     ToggleBodyVars,
+    /// Flip whether the Headers tab's computed-headers section shows
+    /// secrets in the clear (`editor.computed.revealed`).
+    ToggleHeaderReveal,
     /// Open the variable picker: reload project files, then (barring the
     /// selection-context redirect — see `open_select_picker`) list every
     /// defined name — project variables, group members, and the open

@@ -16,7 +16,7 @@ use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 /// Which editor tab is active.
@@ -165,6 +165,31 @@ pub struct Editor {
     /// params/headers table body (header/rows/ghost/edge) is skipped and the
     /// tab strip's `⌄ hide`/`› show` toggle flips to `› show`.
     pub table_collapsed: bool,
+    /// The Headers tab's read-only computed-headers section (spec §6):
+    /// everything that will actually be sent beyond the editable request
+    /// rows above — default headers (struck through when overridden), the
+    /// auto Content-Type, and the client-generated Host/Content-Length
+    /// rows. Recomputed every draw by `recompute_computed_headers` (cheap,
+    /// small N) so an env switch or a body edit shows up live; never
+    /// itself edited here.
+    pub computed: ComputedHeadersView,
+}
+
+/// State for [`Editor::draw_computed_headers`]. `rows` is the full result
+/// of `postui_core::prepare::computed_headers` (request-origin rows
+/// included, so `Hit::AutoHeaderCopy`'s index can be mapped back to the
+/// same non-`Request` subsequence the draw filtered); `revealed` is
+/// whether secrets currently show in the clear; `has_secret` is whether
+/// any row *would* be masked at the current values, independent of
+/// `revealed` — this is what keeps the reveal/hide toggle visible after
+/// revealing (a masked probe recomputed alongside `rows`, since `rows`
+/// itself no longer carries [`postui_core::prepare::SECRET_MASK`] once
+/// revealed).
+#[derive(Debug, Default)]
+pub struct ComputedHeadersView {
+    pub rows: Vec<postui_core::prepare::ComputedHeader>,
+    pub revealed: bool,
+    pub has_secret: bool,
 }
 
 impl Default for Editor {
@@ -191,13 +216,19 @@ impl Default for Editor {
             last_url_text_area: None,
             spinner_frame: 0,
             table_collapsed: false,
+            computed: ComputedHeadersView::default(),
         }
     }
 }
 
 impl Editor {
     /// Loads `req` into the editor for editing, and records it as the
-    /// last-saved state so `is_dirty` starts out `false`.
+    /// last-saved state so `is_dirty` starts out `false`. Also re-masks the
+    /// computed-headers section (`computed.revealed = false`): reveal is a
+    /// per-request gesture (spec §3: secrets masked by default), so opening
+    /// a different request must not carry an earlier reveal along with it
+    /// -- the same re-masking-on-context-switch the Variable Manager's own
+    /// scoped reveal already does.
     pub fn load(&mut self, slug: Option<String>, req: HttpRequest) {
         self.slug = slug;
         self.method = req.method;
@@ -211,6 +242,7 @@ impl Editor {
             None => "",
         });
         self.saved = Some(req);
+        self.computed.revealed = false;
     }
 
     /// Builds an `HttpRequest` from the editor's current field values.
@@ -231,6 +263,23 @@ impl Editor {
                 }
             },
         }
+    }
+
+    /// Recomputes `self.computed` from the editor's current fields against
+    /// `ctx` — cheap (small N), so callers run it on every draw rather than
+    /// trying to track exactly which edits invalidate it. `rows` uses the
+    /// live `revealed` flag (masked unless the user has toggled reveal on);
+    /// `has_secret` is a second, always-masked pass used only to decide
+    /// whether the reveal/hide toggle should draw at all — it must stay
+    /// independent of `revealed`, or revealing would make the toggle that
+    /// un-reveals it disappear.
+    pub fn recompute_computed_headers(&mut self, ctx: &postui_core::prepare::PrepareContext) {
+        let req = self.current_request();
+        self.computed.rows =
+            postui_core::prepare::computed_headers(&req, ctx, !self.computed.revealed);
+        self.computed.has_secret = postui_core::prepare::computed_headers(&req, ctx, true)
+            .iter()
+            .any(|r| r.value.contains(postui_core::prepare::SECRET_MASK));
     }
 
     /// A never-loaded (fresh scratch) editor is not dirty even though it has
@@ -586,10 +635,15 @@ impl Component for Editor {
             }
             EditorTab::Params | EditorTab::Headers | EditorTab::Vars => {
                 let (rows, active, active_hint) = self.table_geometry();
-                let inherited = if self.active_tab == EditorTab::Headers {
-                    self.inherited_header_lines(ctx.theme).len() as u16
+                let (inherited, computed_extra) = if self.active_tab == EditorTab::Headers {
+                    let auto_rows = self.computed_row_count();
+                    let divider = if auto_rows > 0 { 1 } else { 0 };
+                    (
+                        self.inherited_header_lines(ctx.theme).len() as u16,
+                        auto_rows + divider,
+                    )
                 } else {
-                    0
+                    (0, 0)
                 };
                 // Capped to what's left after the fixed address bar and tab
                 // bar rows, never the other way around: those two must never
@@ -599,7 +653,8 @@ impl Component for Editor {
                     .height
                     .saturating_sub(ADDRESS_BAR_HEIGHT + TAB_BAR_HEIGHT + TOOLBAR_HEIGHT);
                 Constraint::Length(
-                    (inherited + table_height(rows, active, active_hint)).min(available),
+                    (inherited + table_height(rows, active, active_hint) + computed_extra)
+                        .min(available),
                 )
             }
         };
@@ -1041,6 +1096,18 @@ impl Editor {
         );
     }
 
+    /// Rows the computed-headers section will draw: every `self.computed`
+    /// row that isn't `Request`-origin (those are already the editable
+    /// table above). Shared by the height math in `draw` and the draw
+    /// itself so they can never disagree.
+    fn computed_row_count(&self) -> u16 {
+        self.computed
+            .rows
+            .iter()
+            .filter(|r| r.origin != postui_core::prepare::HeaderOrigin::Request)
+            .count() as u16
+    }
+
     /// Builds the muted status lines for enabled inherited (project-default)
     /// headers, shown above the request headers table. Each line notes
     /// whether the name is untouched by the request (`project`), overridden
@@ -1195,6 +1262,28 @@ impl Editor {
                     frame.render_widget(Paragraph::new(inherited_lines), split[0]);
                     split[1]
                 };
+                // The table keeps its own full height first — it's the
+                // editable data — and the computed section only gets
+                // whatever's left after that, clamped to what it asked
+                // for; under real space pressure the auto section shrinks
+                // (or disappears) rather than eating into the table.
+                let auto_rows = self.computed_row_count();
+                let (rows, active, active_hint) = self.table_geometry();
+                let table_h = table_height(rows, active, active_hint).min(table_area.height);
+                let computed_h = if auto_rows == 0 {
+                    0
+                } else {
+                    (auto_rows + 1).min(table_area.height.saturating_sub(table_h))
+                };
+                let computed_area = (computed_h > 0).then(|| Rect {
+                    y: table_area.y + table_h,
+                    height: computed_h,
+                    ..table_area
+                });
+                let table_area = Rect {
+                    height: table_h,
+                    ..table_area
+                };
                 let table_ctx = DrawCtx {
                     theme,
                     focused,
@@ -1210,6 +1299,9 @@ impl Editor {
                     hits,
                     None,
                 );
+                if let Some(computed_area) = computed_area {
+                    self.draw_computed_headers(frame, computed_area, ctx, hits);
+                }
             }
             EditorTab::Body => {
                 let mut area = area;
@@ -1259,6 +1351,125 @@ impl Editor {
                     .syntax_highlighter(highlighter);
                 frame.render_widget(view, area);
             }
+        }
+    }
+
+    /// Paints the Headers tab's computed-headers section (spec §6, the
+    /// user's #4 complaint: see everything that will actually be sent): a
+    /// dim divider, then one dim row per `self.computed.rows` entry that
+    /// isn't `Request`-origin — those are already the editable table
+    /// above. A `DefaultHeader { suppressed: true }` row (overridden, or a
+    /// duplicate default) renders struck through; a row with unresolved
+    /// `{{tokens}}` tints its whole value `theme.error` (span-level tinting
+    /// is Task 12). Each row gets a trailing `⧉` copy icon
+    /// (`Hit::AutoHeaderCopy`, indexed by its position in this filtered
+    /// list); the divider carries a `👁 reveal`/`hide` toggle
+    /// (`Hit::AutoHeaderReveal`) whenever `self.computed.has_secret`.
+    fn draw_computed_headers(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        ctx: &DrawCtx,
+        hits: &mut crate::hit::HitMap,
+    ) {
+        use postui_core::prepare::HeaderOrigin;
+        if area.height == 0 || area.width == 0 {
+            return;
+        }
+        let theme = ctx.theme;
+        let dim = Style::default().fg(theme.text_muted);
+        let mut y = area.y;
+        let max_y = area.y.saturating_add(area.height);
+
+        // Divider, with the reveal/hide toggle right-aligned onto it when
+        // there's a secret to reveal.
+        if y < max_y {
+            let toggle_label = if self.computed.revealed {
+                "\u{1F441} hide"
+            } else {
+                "\u{1F441} reveal"
+            };
+            let show_toggle = self.computed.has_secret;
+            let toggle_w = if show_toggle {
+                toggle_label.chars().count() as u16 + 1
+            } else {
+                0
+            };
+            let prefix = "\u{2500}\u{2500} auto ";
+            let dash_w = area
+                .width
+                .saturating_sub(prefix.chars().count() as u16 + toggle_w);
+            let mut spans = vec![Span::styled(
+                format!("{prefix}{}", "\u{2500}".repeat(dash_w as usize)),
+                dim,
+            )];
+            if show_toggle {
+                let hovered = ctx.hovered == Some(&crate::hit::Hit::AutoHeaderReveal);
+                let toggle_style = if hovered {
+                    Style::default().bg(theme.accent).fg(theme.on_accent)
+                } else {
+                    Style::default().fg(theme.accent)
+                };
+                spans.push(Span::styled(format!(" {toggle_label}"), toggle_style));
+                let toggle_w = toggle_label.chars().count() as u16;
+                let toggle_x = area.x.saturating_add(area.width.saturating_sub(toggle_w));
+                hits.register(
+                    Rect::new(toggle_x, y, toggle_w, 1),
+                    crate::hit::Hit::AutoHeaderReveal,
+                );
+            }
+            frame.render_widget(
+                Paragraph::new(Line::from(spans)),
+                Rect::new(area.x, y, area.width, 1),
+            );
+            y += 1;
+        }
+
+        let auto = self
+            .computed
+            .rows
+            .iter()
+            .filter(|r| r.origin != HeaderOrigin::Request);
+        for (i, row) in auto.enumerate() {
+            if y >= max_y {
+                break;
+            }
+            let suppressed = matches!(row.origin, HeaderOrigin::DefaultHeader { suppressed: true });
+            let has_error = !row.unresolved.is_empty();
+            let mut name_style = dim;
+            let mut value_style = if has_error {
+                Style::default().fg(theme.error)
+            } else {
+                dim
+            };
+            if suppressed {
+                name_style = name_style.add_modifier(Modifier::CROSSED_OUT);
+                value_style = value_style.add_modifier(Modifier::CROSSED_OUT);
+            }
+            let name_piece = format!("  {}: ", row.name);
+            let value_piece = row.value.clone();
+            let text_len = name_piece.chars().count() + value_piece.chars().count();
+            let glyph_hovered = ctx.hovered == Some(&crate::hit::Hit::AutoHeaderCopy(i));
+            let glyph_style = if glyph_hovered {
+                Style::default().bg(theme.accent).fg(theme.on_accent)
+            } else {
+                Style::default().fg(theme.accent)
+            };
+            let line = Line::from(vec![
+                Span::styled(name_piece, name_style),
+                Span::styled(value_piece, value_style),
+                Span::styled(" \u{29c9} ", glyph_style),
+            ]);
+            frame.render_widget(Paragraph::new(line), Rect::new(area.x, y, area.width, 1));
+            let glyph_x = area.x.saturating_add(text_len as u16);
+            let glyph_w = area.width.saturating_sub(text_len as u16).min(3);
+            if glyph_w > 0 {
+                hits.register(
+                    Rect::new(glyph_x, y, glyph_w, 1),
+                    crate::hit::Hit::AutoHeaderCopy(i),
+                );
+            }
+            y += 1;
         }
     }
 }
@@ -2568,5 +2779,126 @@ url = "https://api.example.com/users""#,
         assert_eq!(EditorTab::from_index(1), EditorTab::Headers);
         assert_eq!(EditorTab::from_index(2), EditorTab::Body);
         assert_eq!(EditorTab::from_index(3), EditorTab::Vars);
+    }
+
+    // --- computed request-headers section (Task 10, spec §6) ---------
+
+    fn buffer_has_crossed_out(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
+        for y in 0..buf.area.height {
+            let line: String = (0..buf.area.width)
+                .map(|x| buf.cell((x, y)).unwrap().symbol().to_string())
+                .collect();
+            if line.contains(needle) {
+                let start = line.find(needle).unwrap();
+                // `find` is a byte offset into a `String` built one grapheme
+                // cell at a time; every cell here is ASCII, so it doubles as
+                // a column index.
+                let x = buf.area.x + start as u16;
+                if buf
+                    .cell((x, y))
+                    .unwrap()
+                    .modifier
+                    .contains(Modifier::CROSSED_OUT)
+                {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn headers_tab_shows_overridden_default_as_struck_through_auto_row() {
+        let mut app = App::new_for_test();
+        app.project.meta.default_headers.insert(
+            "Accept".into(),
+            Entry {
+                value: "application/json".into(),
+                enabled: true,
+            },
+        );
+        app.editor.active_tab = EditorTab::Headers;
+        app.editor.headers.insert(
+            "Accept".into(),
+            Entry {
+                value: "text/plain".into(),
+                enabled: true,
+            },
+        );
+        app.update(Action::Render);
+
+        let backend = TestBackend::new(100, 70);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            content.contains("text/plain"),
+            "the editable override row is still the table above: {content}"
+        );
+        assert!(
+            content.contains("auto"),
+            "the dim divider introduces the computed section: {content}"
+        );
+        assert!(
+            buffer_has_crossed_out(terminal.backend().buffer(), "application/json"),
+            "the suppressed default's own value renders struck through"
+        );
+    }
+
+    #[test]
+    fn headers_tab_shows_auto_content_type_with_a_body() {
+        let mut app = App::new_for_test();
+        app.editor.active_tab = EditorTab::Headers;
+        app.editor.set_body_text(r#"{"a":1}"#);
+        app.update(Action::Render);
+
+        let backend = TestBackend::new(100, 70);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(content.contains("Content-Type"), "{content}");
+        assert!(content.contains("application/json"), "{content}");
+    }
+
+    #[test]
+    fn headers_tab_shows_the_host_row() {
+        let mut app = App::new_for_test();
+        app.editor.active_tab = EditorTab::Headers;
+        app.editor.url = LineInput::new("https://example.com/foo");
+        app.update(Action::Render);
+
+        let backend = TestBackend::new(100, 70);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(content.contains("Host"), "{content}");
+        assert!(content.contains("example.com"), "{content}");
+    }
+
+    #[test]
+    fn computed_headers_height_math_reserves_the_divider_and_auto_rows() {
+        // table_height's own header/ghost/edge rows plus 1 divider + however
+        // many auto rows must fit within what the pane hands the content
+        // constraint, never overflowing it (draw would panic on an
+        // out-of-bounds rect otherwise — this is a "does not panic and
+        // draws the whole thing" check, not just a row count).
+        let mut app = App::new_for_test();
+        app.editor.active_tab = EditorTab::Headers;
+        app.editor.url = LineInput::new("https://example.com/foo");
+        app.update(Action::Render);
+
+        let backend = TestBackend::new(100, 70);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+
+        assert!(
+            app.editor.computed_row_count() > 0,
+            "a scratch request with a resolvable URL still gets a Host row"
+        );
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(content.contains("Host"), "{content}");
     }
 }

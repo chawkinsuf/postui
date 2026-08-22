@@ -713,6 +713,10 @@ impl App {
                 self.editor.substitute_body = !self.editor.substitute_body;
                 true
             }
+            Action::ToggleHeaderReveal => {
+                self.editor.computed.revealed = !self.editor.computed.revealed;
+                true
+            }
             // Suspending the terminal is the main loop's job; park the action
             // and let it pick this up after the current key is handled.
             Action::OpenBodyInEditor => {
@@ -3079,6 +3083,14 @@ impl App {
                 _ => None,
             },
             CopyTarget::Url => Some((self.editor.url.text().to_string(), "Copied URL".to_string())),
+            CopyTarget::ComputedHeader(i) => self
+                .editor
+                .computed
+                .rows
+                .iter()
+                .filter(|r| r.origin != postui_core::prepare::HeaderOrigin::Request)
+                .nth(*i)
+                .map(|r| (r.value.clone(), format!("Copied {}", r.name))),
         }
     }
 

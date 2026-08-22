@@ -52,6 +52,13 @@ pub enum Hit {
     SaveBodyButton,
     /// Copy icon on row `i` of the response Headers view.
     HeaderCopy(usize),
+    /// Copy icon on row `i` (index into the computed-headers section's own
+    /// display order — the request table's rows are excluded and have no
+    /// hit of this kind) of the request Headers tab's computed section.
+    AutoHeaderCopy(usize),
+    /// The single "reveal"/"hide" toggle shown above the computed-headers
+    /// section when at least one row would otherwise show a masked secret.
+    AutoHeaderReveal,
     /// Visible row `i` of the JSON tree (click selects).
     JsonRow(usize),
     /// The ▸/▾ glyph cell of visible row `i` (click toggles).

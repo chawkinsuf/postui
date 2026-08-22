@@ -55,6 +55,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             // panes — the surviving separator now that panes no longer
             // draw a `│` border of their own.
             crate::paint::fill(frame.buffer_mut(), layout.gutter, app.theme.page);
+            // Recomputed every draw the Headers tab is showing (spec §6,
+            // Task 10): cheap (small N), and keeps the computed section
+            // live across an env switch or an in-progress edit without
+            // having to track exactly which action invalidates it. Gated on
+            // the active tab -- there's nothing on screen to read it on any
+            // other tab, so skip the two prepare_context-driven passes.
+            if app.editor.active_tab == crate::components::editor::EditorTab::Headers {
+                let prepare_ctx = app.project.prepare_context();
+                app.editor.recompute_computed_headers(&prepare_ctx);
+            }
             let hovered = app.hovered.as_ref();
             let dragged_pane = app.drag.as_ref().map(|d| d.pane);
             // Destructured so each component can be borrowed mutably
