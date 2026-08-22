@@ -200,6 +200,45 @@ pub fn delete_request(root: &Path, slug: &str) -> Result<(), StorageError> {
     Ok(())
 }
 
+/// Copies `root/requests/<slug>.toml` to `<slug>-copy.toml` (then `-copy-2`, `-copy-3`, …
+/// on collision), byte-identical content (raw file copy — round-tripping through parse
+/// would reorder). Returns the new slug.
+pub fn duplicate_request(root: &Path, slug: &str) -> Result<String, StorageError> {
+    validate_slug(slug)?;
+    let source_path = request_path(root, slug);
+    if !source_path.is_file() {
+        return Err(StorageError::NotFound(slug.to_string()));
+    }
+
+    // Read the original file as bytes
+    let contents = std::fs::read(&source_path).map_err(io_err(&source_path))?;
+
+    // Find the next available copy slug
+    let mut new_slug = format!("{slug}-copy");
+    let mut counter = 2;
+    while request_exists(root, &new_slug) {
+        new_slug = format!("{slug}-copy-{counter}");
+        counter += 1;
+    }
+
+    // Validate the new slug before proceeding
+    validate_slug(&new_slug)?;
+
+    // Write the bytes to the new location using the atomic NamedTempFile+persist pattern
+    let new_path = request_path(root, &new_slug);
+    let parent = new_path.parent().expect("request path always has a parent");
+    std::fs::create_dir_all(parent).map_err(io_err(parent))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(parent).map_err(io_err(parent))?;
+    use std::io::Write;
+    tmp.write_all(&contents).map_err(io_err(&new_path))?;
+    tmp.persist(&new_path).map_err(|e| StorageError::Io {
+        path: new_path.clone(),
+        source: e.error,
+    })?;
+
+    Ok(new_slug)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,6 +409,74 @@ mod tests {
         assert!(
             listing.iter().any(|l| l.slug == "aaa"),
             "listing should still include everything walked before the error: {listing:?}"
+        );
+    }
+
+    #[test]
+    fn duplicate_request_creates_copy_with_identical_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_project(dir.path()).unwrap();
+        save_request(dir.path(), "users/list", &req()).unwrap();
+
+        let new_slug = duplicate_request(dir.path(), "users/list").unwrap();
+
+        assert_eq!(new_slug, "users/list-copy");
+        let original_bytes = std::fs::read(dir.path().join("requests/users/list.toml")).unwrap();
+        let copy_bytes = std::fs::read(dir.path().join("requests/users/list-copy.toml")).unwrap();
+        assert_eq!(original_bytes, copy_bytes, "copy should be byte-identical");
+    }
+
+    #[test]
+    fn duplicate_request_yields_copy_2_on_collision() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_project(dir.path()).unwrap();
+        save_request(dir.path(), "users/list", &req()).unwrap();
+
+        let first_copy = duplicate_request(dir.path(), "users/list").unwrap();
+        assert_eq!(first_copy, "users/list-copy");
+
+        let second_copy = duplicate_request(dir.path(), "users/list").unwrap();
+        assert_eq!(second_copy, "users/list-copy-2");
+    }
+
+    #[test]
+    fn duplicate_request_copies_broken_toml_without_parsing() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_project(dir.path()).unwrap();
+        let broken_content = "url = \"x\"\nurl = \"dup\"\n";
+        std::fs::write(dir.path().join("requests/broken.toml"), broken_content).unwrap();
+
+        let new_slug = duplicate_request(dir.path(), "broken").unwrap();
+
+        assert_eq!(new_slug, "broken-copy");
+        let copy_bytes = std::fs::read(dir.path().join("requests/broken-copy.toml")).unwrap();
+        assert_eq!(
+            copy_bytes,
+            broken_content.as_bytes(),
+            "copy should preserve broken content without parsing"
+        );
+    }
+
+    #[test]
+    fn duplicate_request_returns_not_found_for_missing_slug() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_project(dir.path()).unwrap();
+
+        let err = duplicate_request(dir.path(), "missing").unwrap_err();
+        assert!(matches!(err, StorageError::NotFound(_)));
+    }
+
+    #[test]
+    fn duplicate_request_generated_slug_is_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_project(dir.path()).unwrap();
+        save_request(dir.path(), "auth/login", &req()).unwrap();
+
+        let new_slug = duplicate_request(dir.path(), "auth/login").unwrap();
+
+        assert!(
+            validate_slug(&new_slug).is_ok(),
+            "generated slug should be valid"
         );
     }
 }
