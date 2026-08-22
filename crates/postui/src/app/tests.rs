@@ -7216,6 +7216,167 @@ fn right_clicking_an_entry_row_opens_its_own_menu() {
     );
 }
 
+/// Review finding 1: the right-click path has to commit a live cell edit
+/// *before* its menu can reshape the rows. Otherwise a menu action on
+/// another row (Delete…) renumbers the entries under a `GridEdit` that
+/// still holds the old index, and the next click-away writes the typed
+/// text into a different record.
+#[test]
+fn right_clicking_another_row_commits_the_live_cell_to_the_entry_it_belongs_to() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+
+    // Type into bob's (row 1) value cell…
+    let r = cell_rect(&mut app, 1, 1);
+    app.handle_mouse(left_down(r.x, r.y));
+    app.handle_key(&Keymap::default_bindings(), plain('9'));
+    assert!(app.varmanager.grid.editing.is_some());
+
+    // …then right-click alice's row (row 0).
+    let r = cell_rect(&mut app, 0, 0);
+    app.handle_mouse(right_down(r.x, r.y));
+
+    assert!(
+        app.varmanager.grid.editing.is_none(),
+        "the right click committed the live cell first"
+    );
+    let env = postui_core::project::load_environment(dir.path(), "qa").unwrap();
+    assert_eq!(
+        env.entries["user"]["bob"].values["user"], "20029",
+        "the text landed in the entry it was typed into"
+    );
+    assert_eq!(
+        env.entries["user"]["alice"].values["user"], "1001",
+        "the right-clicked entry is untouched"
+    );
+    // …and the menu is the one for the row that was right-clicked.
+    let Some(Modal::Dropdown(state)) = app.modals.top() else {
+        panic!("no entry menu");
+    };
+    assert_eq!(
+        state.items[2].action,
+        Some(Action::ConfirmDeleteEntry {
+            env: "qa".into(),
+            group: "user".into(),
+            name: "alice".into(),
+        })
+    );
+}
+
+/// The same rule for the variable form's own field: a right click is a
+/// click away from it too.
+#[test]
+fn right_clicking_commits_a_live_form_field() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
+    });
+
+    let r = field_rect(&mut app, VmField::EnvValue);
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    app.handle_key(&Keymap::default_bindings(), plain('9'));
+
+    let row = app.varmanager.left_cursor;
+    let left_rect = app.hits.rect_of(&crate::hit::Hit::VmLeftRow(row)).unwrap();
+    app.handle_mouse(right_down(left_rect.x + 1, left_rect.y + 1));
+
+    assert!(app.varmanager.form.editing.is_none(), "committed");
+    let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(on_disk.contains("https://qa.example.com9"), "{on_disk}");
+}
+
+/// Review finding 2: the grid is a keyboard focus stop of its own, so a
+/// keyboard-only user can reach an entry other than the first one and
+/// select it — and can start editing the focused cell.
+#[test]
+fn the_keyboard_reaches_the_grid_selects_a_row_and_edits_the_focused_cell() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    let keymap = Keymap::default_bindings();
+    let arrow = |c| KeyEvent::new(c, KeyModifiers::NONE);
+    assert_eq!(app.varmanager.focus, VmFocus::List);
+
+    // Right steps into the grid; Down then moves the *grid's* cursor
+    // rather than the left list's selection.
+    app.handle_key(&keymap, arrow(KeyCode::Right));
+    assert_eq!(app.varmanager.focus, VmFocus::Grid);
+    app.handle_key(&keymap, arrow(KeyCode::Down));
+    assert_eq!(app.varmanager.grid.cursor.0, 1);
+    assert_eq!(
+        app.varmanager.detail,
+        crate::components::varmanager::VmDetail::Group("user".into()),
+        "the left list kept its own selection"
+    );
+
+    // space selects the entry the cursor is on — row 1, not row 0.
+    app.handle_key(&keymap, plain(' '));
+    assert_eq!(app.project.selections_for("qa")["user"], "bob");
+    assert_eq!(app.project.resolved.values["user"], "2002");
+
+    // Enter edits the focused cell; Right first moves onto the value column.
+    app.handle_key(&keymap, arrow(KeyCode::Right));
+    app.handle_key(&keymap, arrow(KeyCode::Enter));
+    let edit = app
+        .varmanager
+        .grid
+        .editing
+        .as_ref()
+        .expect("Enter started an edit");
+    assert_eq!((edit.row, edit.col), (1, 1));
+    assert_eq!(edit.input.text(), "2002");
+
+    // Esc leaves the edit; a second Esc hands the keyboard back to the
+    // list; only a third closes the screen.
+    app.handle_key(&keymap, arrow(KeyCode::Esc));
+    assert!(app.varmanager.grid.editing.is_none());
+    assert_eq!(app.varmanager.focus, VmFocus::Grid);
+    app.handle_key(&keymap, arrow(KeyCode::Esc));
+    assert_eq!(app.varmanager.focus, VmFocus::List);
+    assert_eq!(app.screen, Screen::VarManager);
+    app.handle_key(&keymap, arrow(KeyCode::Esc));
+    assert_eq!(app.screen, Screen::Main);
+}
+
+/// Task 8 parity for the grid's cell walk: `Tab` runs on in reading order
+/// (wrapping to the next row), `BackTab` runs back.
+#[test]
+fn tab_and_backtab_walk_the_grid_in_reading_order() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    let keymap = Keymap::default_bindings();
+    let at = |app: &App| app.varmanager.grid.editing.as_ref().map(|e| (e.row, e.col));
+
+    // Start on alice's value cell (the last column of row 0).
+    let r = cell_rect(&mut app, 0, 1);
+    app.handle_mouse(left_down(r.x, r.y));
+    assert_eq!(at(&app), Some((0, 1)));
+
+    // Off the end of the row wraps to the next row's name cell…
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(at(&app), Some((1, 0)));
+    // …and BackTab runs back the same way.
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
+    assert_eq!(at(&app), Some((0, 1)));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
+    assert_eq!(at(&app), Some((0, 0)));
+    // Nothing is before the first cell: the edit stays put.
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
+    assert_eq!(at(&app), Some((0, 0)));
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+}
+
 #[test]
 fn the_new_entry_button_starts_the_ghost_row_and_edit_fields_opens_the_editor() {
     let dir = tempfile::tempdir().unwrap();

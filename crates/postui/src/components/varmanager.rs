@@ -368,6 +368,21 @@ pub struct EntryGridState {
     pub scroll: usize,
 }
 
+/// Which of the screen's two keyboard focus stops has the keyboard: the
+/// left list, or the group pane's entries grid. Each keeps its own cursor,
+/// so stepping out of the grid and back lands where it was. See
+/// [`VarManager::handle_key`] for the keys that move between them.
+///
+/// The variable form has no stop of its own: its fields are reached by
+/// clicking (and, once one is live, `App` routes every key to it), so
+/// there is no second cursor for the keyboard to be lost in.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum VmFocus {
+    #[default]
+    List,
+    Grid,
+}
+
 /// The full-frame Variable Manager screen.
 #[derive(Debug, Default)]
 pub struct VarManager {
@@ -382,6 +397,8 @@ pub struct VarManager {
     pub left_scroll: usize,
     pub form: VarFormState,
     pub grid: EntryGridState,
+    /// Which stop has the keyboard (see [`VmFocus`]).
+    pub focus: VmFocus,
     /// The group grid's entry-row region as of the last `draw` — the wheel
     /// scrolls the grid when the pointer is inside it, the left list
     /// otherwise. Empty when no grid is on screen.
@@ -546,11 +563,16 @@ impl VarManager {
     /// Points the detail pane at `left_rows[i]` and moves the cursor there.
     /// A section header is a label, not a selection: the cursor still moves
     /// (a click landed there) but the detail pane keeps what it had.
+    ///
+    /// Picking a row is the left list acting, so the keyboard comes back to
+    /// it — a grid the pane may no longer even be showing must never keep
+    /// the arrows.
     pub fn select_row(&mut self, i: usize) {
         if i >= self.left_rows.len() {
             return;
         }
         self.left_cursor = i;
+        self.focus = VmFocus::List;
         match &self.left_rows[i] {
             VmRow::Var(name) => {
                 let target = VmDetail::Var(name.clone());
@@ -602,6 +624,10 @@ impl VarManager {
         let row = row.min(rows.len());
         let col = if row == rows.len() { 0 } else { col };
         let original = grid_cell_text(ctx, &group, row, col);
+        // Typing into a cell is the grid holding the keyboard, however the
+        // edit was started — so `Esc` out of it lands in the grid, not back
+        // in the left list.
+        self.focus = VmFocus::Grid;
         self.grid.cursor = (row, col);
         self.grid.editing = Some(GridEdit {
             row,
@@ -641,6 +667,7 @@ impl VarManager {
             self.detail = VmDetail::None;
             self.form = VarFormState::default();
             self.grid = EntryGridState::default();
+            self.focus = VmFocus::List;
         }
         self.ensure_visible = true;
     }
@@ -679,7 +706,31 @@ impl VarManager {
     /// since a commit needs write access to the project that this method's
     /// `&ProjectContext` (shared, not mutable) can't give it. `form.editing`
     /// is still consulted below, for the single-letter command gate.
+    ///
+    /// # Keyboard focus (spec §4's keyboard parity)
+    ///
+    /// The screen has two keyboard focus stops, [`VmFocus`]: the left list
+    /// and — when the detail pane is showing a group — its entries grid.
+    /// The left list owns the keyboard by default; `Right`/`Tab` step into
+    /// the grid, and `Left` from its first column, `Esc`, or `BackTab` step
+    /// back out. Each keeps its own cursor, so returning to the list lands
+    /// where it was. Inside the grid the arrows move the cell cursor,
+    /// `Enter` starts editing the focused cell, `space` selects the cursor
+    /// row's entry, and `e`/`d` rename/delete *that entry* rather than the
+    /// group (the list's own `e`/`d` still target the declaration — which
+    /// stop has focus is what tells them apart).
     pub fn handle_key(&mut self, ev: KeyEvent, ctx: &ProjectContext) -> Option<Action> {
+        // The grid is a focus stop of its own: while it has the keyboard,
+        // the arrows drive its cell cursor rather than the left list, and
+        // the commands act on the entry under that cursor.
+        if self.focus == VmFocus::Grid {
+            if let VmDetail::Group(group) = self.detail.clone() {
+                return self.handle_grid_focus_key(ev, ctx, &group);
+            }
+            // The pane stopped showing a group under it (deleted, or the
+            // selection moved): the grid is gone, so the focus goes home.
+            self.focus = VmFocus::List;
+        }
         match ev.code {
             KeyCode::Esc => return Some(Action::CloseScreen),
             KeyCode::Up => {
@@ -690,6 +741,17 @@ impl VarManager {
                 self.move_cursor(1);
                 return None;
             }
+            // Into the grid, when there is one to step into.
+            KeyCode::Right | KeyCode::Tab => {
+                if matches!(&self.detail, VmDetail::Group(g) if ctx.model.groups.contains_key(g))
+                    && ctx.active_env.is_some()
+                    && self.form.editing.is_none()
+                    && self.grid.editing.is_none()
+                {
+                    self.focus = VmFocus::Grid;
+                }
+                return None;
+            }
             _ => {}
         }
         if self.form.editing.is_some() || self.grid.editing.is_some() {
@@ -698,24 +760,19 @@ impl VarManager {
         // The group grid's own commands, on the group the detail pane has
         // open (spec §3.4's "old keys"). They come first so `o`/`m`/`space`
         // never fall through to a left-list command that would act on a
-        // different row than the grid the user is looking at.
+        // different row than the grid the user is looking at. Unlike the
+        // focused-grid keys above, these work straight from the left list —
+        // `o` and `m` need no cursor, and `space` uses the grid's own.
         if let VmDetail::Group(group) = self.detail.clone() {
             match ev.code {
                 KeyCode::Char('o') => {
                     let row = entry_rows(ctx, &group).len();
+                    self.focus = VmFocus::Grid;
                     self.start_cell_edit(ctx, row, 0);
                     return None;
                 }
                 KeyCode::Char('m') => return Some(Action::PromptGroupFields { group }),
-                KeyCode::Char(' ') => {
-                    let env = ctx.active_env.clone()?;
-                    let entry = self.entry_at(ctx, self.grid.cursor.0)?;
-                    return Some(Action::VarEdit(VarEditOp::SelectEntry {
-                        env,
-                        group,
-                        entry,
-                    }));
-                }
+                KeyCode::Char(' ') => return self.select_entry_action(ctx, &group),
                 _ => {}
             }
         }
@@ -734,6 +791,97 @@ impl VarManager {
             },
             _ => None,
         }
+    }
+
+    /// Keys while the entries grid is the focus stop (see
+    /// [`Self::handle_key`]'s focus notes). The cursor moves over the whole
+    /// grid, ghost row included — `Enter` there starts a new entry, exactly
+    /// like clicking it. `Esc`, `BackTab`, and `Left` from the first column
+    /// hand the keyboard back to the left list rather than closing the
+    /// screen; the screen's own `Esc` is then one more press away, which is
+    /// the same "leave the inner thing first" rhythm the modal stack has.
+    fn handle_grid_focus_key(
+        &mut self,
+        ev: KeyEvent,
+        ctx: &ProjectContext,
+        group: &str,
+    ) -> Option<Action> {
+        // A live cell edit owns every key (`App` routes those before this
+        // is reached); nothing here may act behind its back.
+        if self.grid.editing.is_some() {
+            return None;
+        }
+        let last_row = entry_rows(ctx, group).len(); // == the ghost row
+        let last_col = group_fields(ctx, group).len(); // == 1 + fields - 1
+        let (row, col) = &mut self.grid.cursor;
+        *row = (*row).min(last_row);
+        *col = (*col).min(last_col);
+        match ev.code {
+            KeyCode::Esc | KeyCode::BackTab => {
+                self.focus = VmFocus::List;
+                None
+            }
+            KeyCode::Up => {
+                *row = row.saturating_sub(1);
+                None
+            }
+            KeyCode::Down => {
+                *row = (*row + 1).min(last_row);
+                None
+            }
+            KeyCode::Left => {
+                if *col == 0 {
+                    self.focus = VmFocus::List;
+                } else {
+                    *col -= 1;
+                }
+                None
+            }
+            KeyCode::Right | KeyCode::Tab => {
+                *col = (*col + 1).min(last_col);
+                None
+            }
+            KeyCode::Enter => {
+                let (row, col) = self.grid.cursor;
+                self.start_cell_edit(ctx, row, col);
+                None
+            }
+            KeyCode::Char('o') => {
+                self.start_cell_edit(ctx, last_row, 0);
+                None
+            }
+            KeyCode::Char('m') => Some(Action::PromptGroupFields {
+                group: group.to_string(),
+            }),
+            KeyCode::Char(' ') => self.select_entry_action(ctx, group),
+            // `e`/`d` here act on the entry under the cursor — the left
+            // list's own `e`/`d`, which target the declaration, are one
+            // focus stop away.
+            KeyCode::Char('e') | KeyCode::F(2) => Some(Action::PromptRenameEntry {
+                env: ctx.active_env.clone()?,
+                group: group.to_string(),
+                from: self.entry_at(ctx, self.grid.cursor.0)?,
+            }),
+            KeyCode::Char('d') | KeyCode::Delete => Some(Action::ConfirmDeleteEntry {
+                env: ctx.active_env.clone()?,
+                group: group.to_string(),
+                name: self.entry_at(ctx, self.grid.cursor.0)?,
+            }),
+            KeyCode::Char('n') => Some(Action::PromptNewVar),
+            KeyCode::Char('g') => Some(Action::PromptNewGroup),
+            _ => None,
+        }
+    }
+
+    /// `space`: select the entry the grid cursor is on for the active
+    /// environment. `None` on the ghost row (nothing to select yet) and
+    /// with no active environment.
+    fn select_entry_action(&self, ctx: &ProjectContext, group: &str) -> Option<Action> {
+        Some(Action::VarEdit(VarEditOp::SelectEntry {
+            env: ctx.active_env.clone()?,
+            group: group.to_string(),
+            entry: self.entry_at(ctx, self.grid.cursor.0)?,
+        }))
     }
 
     /// `e`/`F2` and the context menu's "Rename…". Both a variable and a
@@ -1056,6 +1204,11 @@ impl VarManager {
         let rows_bottom = bottom.saturating_sub(1).max(y);
         let visible = (rows_bottom - y) as usize;
         let total = rows.len() + 1;
+        // A cursor that outlived the rows it pointed at (an entry deleted,
+        // a field removed) clamps back into the grid.
+        self.grid.cursor.0 = self.grid.cursor.0.min(total - 1);
+        self.grid.cursor.1 = self.grid.cursor.1.min(fields.len());
+        let cursor = (self.focus == VmFocus::Grid).then_some(self.grid.cursor);
         self.grid_visible = visible;
         self.grid_area = Rect::new(right.x, y, right.width, (rows_bottom - y).max(1));
         // Keep whatever the keyboard is on (the cell under edit, else the
@@ -1085,7 +1238,11 @@ impl VarManager {
                 Some(Hit::VmEntryCell { row, .. }) | Some(Hit::VmEntryRadio(row)) => *row == i,
                 _ => false,
             };
-            let bg = if hovered_row || self.grid.cursor.0 == i {
+            // The keyboard cursor only paints while the grid actually has
+            // the keyboard — a lift the arrows aren't driving would lie
+            // about where keys land (Task 8's rule for its own row cursor).
+            let cursor_row = cursor.is_some_and(|(r, _)| r == i);
+            let bg = if hovered_row || cursor_row {
                 theme.control_hover
             } else {
                 theme.control
@@ -1106,6 +1263,19 @@ impl VarManager {
 
             for col in 0..cols.x.len() {
                 let (cx, cw) = (cols.x[col], cols.w[col]);
+                // The focused cell keeps a lift of its own inside the
+                // cursor row, so the keyboard's exact position — the cell
+                // `Enter` would edit — is visible, not just its row. One
+                // more hover-step up, the same direction focus lifts a
+                // `TextField` (never darker: pressed reads as a click).
+                let bg = if cursor == Some((i, col)) {
+                    crate::theme::lift_color(bg, 0.06)
+                } else {
+                    bg
+                };
+                if cursor == Some((i, col)) {
+                    fill(buf, Rect::new(cx, ry, cw, 1), bg);
+                }
                 let editing = self
                     .grid
                     .editing

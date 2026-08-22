@@ -6,7 +6,7 @@ use crate::components::response::{ResponseState, SYNC_PRETTY_BYTES};
 use crate::components::sidebar::Row;
 use crate::components::toast::{ToastKind, Toasts};
 use crate::components::varmanager::{
-    VarEditOp, VarManager, VarStructOp, VmDetail, var_edit_op_for,
+    VarEditOp, VarManager, VarStructOp, VmDetail, VmFocus, var_edit_op_for,
 };
 use crate::components::{Component, sidebar::Sidebar};
 use crate::hit::{Hit, HitMap, ScrollbarSpec};
@@ -3754,29 +3754,8 @@ impl App {
                 self.varmanager.grid.editing = None;
             }
             KeyCode::Enter => self.commit_grid_edit(),
-            KeyCode::Tab => {
-                let at = self
-                    .varmanager
-                    .grid
-                    .editing
-                    .as_ref()
-                    .map(|e| (e.row, e.col));
-                self.commit_grid_edit();
-                if let Some((row, col)) = at
-                    && self.varmanager.grid.editing.is_none()
-                    && let VmDetail::Group(group) = self.varmanager.detail.clone()
-                {
-                    let ncols = 1 + self
-                        .project
-                        .model
-                        .groups
-                        .get(&group)
-                        .map_or(0, |g| g.fields.len());
-                    if col + 1 < ncols {
-                        self.varmanager.start_cell_edit(&self.project, row, col + 1);
-                    }
-                }
-            }
+            KeyCode::Tab => self.step_grid_edit(1),
+            KeyCode::BackTab => self.step_grid_edit(-1),
             _ => {
                 if let Some(edit) = self.varmanager.grid.editing.as_mut() {
                     edit.input.handle_key(ev);
@@ -3784,6 +3763,55 @@ impl App {
             }
         }
         self.update(Action::Render)
+    }
+
+    /// `Tab`/`BackTab` inside a live grid cell: commit, then open the cell
+    /// one step away in reading order (Task 8's table parity) — off the end
+    /// of a row wraps to the next row's first column, and off the front of
+    /// one wraps back to the previous row's last. The ghost row is the far
+    /// end in both directions: forward stops there (it becomes a real entry
+    /// only once its name commits), and there is nothing before row 0's
+    /// name cell.
+    ///
+    /// A commit that failed keeps its own edit (spec §5) and this leaves it
+    /// exactly where it is; a ghost-row commit that already walked the edit
+    /// on into the new entry's first field is likewise left alone.
+    fn step_grid_edit(&mut self, dir: i32) {
+        let at = self
+            .varmanager
+            .grid
+            .editing
+            .as_ref()
+            .map(|e| (e.row, e.col));
+        self.commit_grid_edit();
+        let Some((row, col)) = at else { return };
+        if self.varmanager.grid.editing.is_some() {
+            return;
+        }
+        let VmDetail::Group(group) = self.varmanager.detail.clone() else {
+            return;
+        };
+        let ncols = 1 + self
+            .project
+            .model
+            .groups
+            .get(&group)
+            .map_or(0, |g| g.fields.len());
+        let last_row = postui_core::varmodel::group_entries(&self.project.env_data, &group)
+            .map_or(0, indexmap::IndexMap::len);
+        let flat = (row * ncols + col) as i32 + dir;
+        let (next_row, next_col) = match flat {
+            // Off either end of the grid: the walk stops rather than
+            // closing the edit out from under the user — the same cell
+            // re-opens, now showing what was just committed.
+            f if f < 0 => (row, col),
+            f => {
+                let (r, c) = (f as usize / ncols, f as usize % ncols);
+                if r > last_row { (row, col) } else { (r, c) }
+            }
+        };
+        self.varmanager
+            .start_cell_edit(&self.project, next_row, next_col);
     }
 
     fn focused_component_key(&mut self, ev: KeyEvent) -> Option<Action> {

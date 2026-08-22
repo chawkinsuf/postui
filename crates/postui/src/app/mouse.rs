@@ -96,7 +96,27 @@ impl App {
                 else {
                     return false;
                 };
+                // A right click is a click away from whatever detail-pane
+                // cell was being typed into, exactly like a left click
+                // (see `on_hit`'s blanket rule): commit it *before*
+                // anything below reads or reshapes the rows underneath.
+                // Skipping this let a menu action (Delete…, Rename…) shift
+                // the entry rows out from under a still-live `GridEdit`,
+                // whose row index would then address a different record —
+                // and the next click-away would write the typed text into
+                // that wrong entry.
                 let mut changed = false;
+                self.commit_var_form();
+                self.commit_grid_edit();
+                // A commit that *failed* keeps its edit (spec §5: the typed
+                // text survives), so the row indices it holds must stay
+                // meaningful: offer no menu that could renumber them until
+                // the user has dealt with it. The failure already toasted.
+                if self.varmanager.grid.editing.is_some()
+                    && matches!(hit, Hit::VmEntryCell { .. } | Hit::VmEntryRadio(_))
+                {
+                    return self.update(Action::Render);
+                }
                 match &hit {
                     Hit::SidebarRow(i) | Hit::SidebarFolderArrow(i) => {
                         changed |= self.update(Action::FocusPane(PaneId::Sidebar));
@@ -106,6 +126,19 @@ impl App {
                     Hit::VmLeftRow(i) => {
                         changed |= self.varmanager.left_cursor != *i;
                         self.varmanager.select_row(*i);
+                    }
+                    // Same rule for a grid row: the click moves the grid's
+                    // cursor onto it (and the keyboard with it) before its
+                    // menu opens.
+                    Hit::VmEntryCell { row, .. } | Hit::VmEntryRadio(row) => {
+                        let col = match &hit {
+                            Hit::VmEntryCell { col, .. } => *col,
+                            _ => 0,
+                        };
+                        changed |= self.varmanager.grid.cursor != (*row, col)
+                            || self.varmanager.focus != VmFocus::Grid;
+                        self.varmanager.grid.cursor = (*row, col);
+                        self.varmanager.focus = VmFocus::Grid;
                     }
                     Hit::TableRow(i)
                     | Hit::TableCheckbox(i)
@@ -718,6 +751,7 @@ impl App {
                     return false;
                 };
                 self.varmanager.grid.cursor = (row, 0);
+                self.varmanager.focus = VmFocus::Grid;
                 self.update(Action::VarEdit(VarEditOp::SelectEntry {
                     env,
                     group,
