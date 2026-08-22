@@ -5,7 +5,9 @@ use crate::components::modal::{Modal, ModalResult, ModalStack, PromptKind};
 use crate::components::response::{ResponseState, SYNC_PRETTY_BYTES};
 use crate::components::sidebar::Row;
 use crate::components::toast::{ToastKind, Toasts};
-use crate::components::varmanager::{VarEditOp, VarManager, VarStructOp};
+use crate::components::varmanager::{
+    VarEditOp, VarManager, VarStructOp, VmDetail, var_edit_op_for,
+};
 use crate::components::{Component, sidebar::Sidebar};
 use crate::hit::{Hit, HitMap, ScrollbarSpec};
 use crate::keys::{KeyCombo, Keymap};
@@ -2324,6 +2326,28 @@ impl App {
     /// toast (never a secret value); the caller (`Action::VarEdit`) toasts
     /// it and leaves the originating field untouched, so the typed text
     /// survives a retry.
+    /// Commits whatever field the variable form's [`VarFormState::editing`]
+    /// holds (click-away, click-another-field, or `Enter`): builds its
+    /// `VarEditOp` and writes it through `apply_var_edit`. A no-op with
+    /// nothing being edited. A write failure toasts and puts the edit back
+    /// exactly as it was — the typed text is never lost to a failed write
+    /// (spec §5's general write-failure rule), and a secret's value never
+    /// appears in the toast.
+    pub(crate) fn commit_var_form(&mut self) {
+        let Some((field, input)) = self.varmanager.form.editing.take() else {
+            return;
+        };
+        let VmDetail::Var(name) = self.varmanager.detail.clone() else {
+            return;
+        };
+        let value = input.text().to_string();
+        let op = var_edit_op_for(&self.project, &name, field, value);
+        if let Err(msg) = self.apply_var_edit(&op) {
+            self.varmanager.form.editing = Some((field, input));
+            self.toasts.push(msg, ToastKind::Error);
+        }
+    }
+
     fn apply_var_edit(&mut self, op: &VarEditOp) -> Result<(), String> {
         match op {
             VarEditOp::SetEnvValue { env, name, value } => self.project.edit_env(env, |doc| {
@@ -3281,6 +3305,14 @@ impl App {
             {
                 return self.update(a);
             }
+            // A variable-form field under edit owns the keyboard: `Esc`
+            // reverts, `Enter` commits (through `commit_var_form`, which
+            // needs the mutable project access `VarManager::handle_key`'s
+            // shared `&ProjectContext` can't give it), everything else is
+            // forwarded straight to its `LineInput`.
+            if self.screen == Screen::VarManager && self.varmanager.form.editing.is_some() {
+                return self.handle_var_form_key(ev);
+            }
             if let Some(a) = self.varmanager.handle_key(ev, &self.project) {
                 return self.update(a);
             }
@@ -3303,6 +3335,28 @@ impl App {
         }
 
         false
+    }
+
+    /// Keys while a variable-form field owns the keyboard (Task 8's model,
+    /// exactly): `Esc` reverts (drops the edit with nothing written —
+    /// there's nothing to restore since the form only ever reads its
+    /// resting text live from `self.project`, never caches it), `Enter`
+    /// commits via `commit_var_form`, everything else goes to the field's
+    /// own `LineInput`. Always reports a redraw, like a modal capturing
+    /// every key while it's open.
+    fn handle_var_form_key(&mut self, ev: KeyEvent) -> bool {
+        match ev.code {
+            KeyCode::Esc => {
+                self.varmanager.form.editing = None;
+            }
+            KeyCode::Enter => self.commit_var_form(),
+            _ => {
+                if let Some((_, input)) = self.varmanager.form.editing.as_mut() {
+                    input.handle_key(ev);
+                }
+            }
+        }
+        self.update(Action::Render)
     }
 
     fn focused_component_key(&mut self, ev: KeyEvent) -> Option<Action> {

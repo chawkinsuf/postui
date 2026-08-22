@@ -3,27 +3,33 @@
 //! left list of every declared variable and group, and a detail pane for
 //! whatever the list has selected.
 //!
-//! This task builds the skeleton: the top bar, the left list and its
+//! Task 14 built the skeleton: the top bar, the left list and its
 //! selection model, and the structural ops the list's own commands
-//! dispatch. The detail pane's two faces — the variable form (Task 15) and
-//! the group entries table (Task 16) — are placeholders here
-//! ([`VarFormState`] / [`EntryGridState`]), and the pane paints an
-//! instruction line until one lands.
+//! dispatch. Task 15 fills the right pane's variable face — [`VarFormState`]
+//! and [`draw_var_form`] — description/default/env-value fields edited in
+//! place exactly like Task 8's tables, plus the secret toggle, rename/delete
+//! buttons and the promote/demote button where the legacy `p`/`P`
+//! preconditions hold. The group face ([`EntryGridState`]) is still a
+//! placeholder for Task 16.
 
 use crate::action::Action;
+use crate::components::line_input::LineInput;
 use crate::hit::{Hit, HitMap, ScrollbarSpec};
 use crate::layout::PaneId;
 use crate::paint::{
-    BUTTON_HEIGHT, Button, ButtonKind, ControlState, PillRow, RowHighlight, button_min_width, fill,
-    text,
+    BUTTON_HEIGHT, Button, ButtonKind, ControlState, FIELD_HEIGHT, PillRow, RowHighlight,
+    TextField, button_min_width, fill, text,
 };
 use crate::project_ctx::ProjectContext;
 use crate::theme::Theme;
 use indexmap::IndexMap;
 use postui_core::model::HttpRequest;
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
+use ratatui::style::Style;
+use ratatui::text::Line;
 
 /// A committed value edit, dispatched as `Action::VarEdit` and applied by
 /// `App` (spec §5: every commit writes atomically and immediately to
@@ -176,13 +182,140 @@ impl VmRow {
     }
 }
 
-/// The detail pane's variable form (Task 15). A placeholder this task: only
-/// `editing` — whether one of its inputs currently owns the keyboard — is
-/// consulted, by the command-key gate in [`VarManager::handle_key`].
+/// Which field of the variable form is under edit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VmField {
+    Description,
+    Default,
+    EnvValue,
+}
+
+/// The detail pane's variable form (spec §3.4). Editing is always in place
+/// (Task 8's model, exactly): a click seeds `editing` with the clicked
+/// field's current text and a caret at the end; another click, `Enter`, or
+/// `Esc` all leave it — the caller (`App`) commits or reverts, since a
+/// commit writes through `ctx.edit_variables`/`edit_env` and only `App` can
+/// reach those.
 #[derive(Debug, Default)]
 pub struct VarFormState {
-    /// True while a form field has an in-progress edit.
-    pub editing: bool,
+    /// The field under edit and its live `LineInput`, or `None` when
+    /// nothing in the form owns the keyboard — consulted by the
+    /// command-key gate in [`VarManager::handle_key`].
+    pub editing: Option<(VmField, LineInput)>,
+    /// Whether the env-value field currently shows a secret's plaintext
+    /// instead of `\u{25cf}` dots. Reset to `false` whenever the detail
+    /// selection changes (mirrors Task 10's per-context reset precedent) —
+    /// a reveal never survives moving on to a different variable.
+    pub revealed: bool,
+}
+
+/// The text a field shows when nothing is being typed into it — the seed a
+/// click begins editing from, and what a resting (non-edited) field
+/// displays. `EnvValue` reads the active environment's *resolved* value
+/// (default-if-no-override, secret plaintext included) so editing always
+/// starts from what the user actually sees; with no active environment it
+/// falls back to the declaration default, mirroring [`var_edit_op_for`]'s
+/// write-target fallback.
+fn field_seed_text(ctx: &ProjectContext, name: &str, field: VmField) -> String {
+    let decl = ctx.model.vars.get(name);
+    match field {
+        VmField::Description => decl.and_then(|d| d.description.clone()).unwrap_or_default(),
+        VmField::Default => decl.and_then(|d| d.default.clone()).unwrap_or_default(),
+        VmField::EnvValue => {
+            if ctx.active_env.is_some() {
+                ctx.resolved.values.get(name).cloned().unwrap_or_default()
+            } else {
+                decl.and_then(|d| d.default.clone()).unwrap_or_default()
+            }
+        }
+    }
+}
+
+/// The [`VarEditOp`] a committed `field` edit writes (spec §5's "every
+/// commit writes atomically and immediately"). `EnvValue` targets the
+/// active environment (masked through `SetSecretValue` for a secret var,
+/// `.local/secrets.toml` rather than the env file); with no active
+/// environment there is nowhere to write an override, so it targets the
+/// declaration default instead — the same field a secret can't have, so
+/// that edit fails and toasts rather than silently landing somewhere
+/// unexpected (spec's general write-failure rule: the text stays put).
+pub fn var_edit_op_for(
+    ctx: &ProjectContext,
+    name: &str,
+    field: VmField,
+    value: String,
+) -> VarEditOp {
+    match field {
+        VmField::Description => VarEditOp::SetDescription {
+            owner: name.to_string(),
+            value,
+        },
+        VmField::Default => VarEditOp::SetDefault {
+            name: name.to_string(),
+            value,
+        },
+        VmField::EnvValue => match &ctx.active_env {
+            Some(env) => {
+                let secret = ctx.model.vars.get(name).is_some_and(|d| d.secret);
+                if secret {
+                    VarEditOp::SetSecretValue {
+                        env: env.clone(),
+                        name: name.to_string(),
+                        value,
+                    }
+                } else {
+                    VarEditOp::SetEnvValue {
+                        env: env.clone(),
+                        name: name.to_string(),
+                        value,
+                    }
+                }
+            }
+            None => VarEditOp::SetDefault {
+                name: name.to_string(),
+                value,
+            },
+        },
+    }
+}
+
+/// The promote/demote button's label and click action for `name` right now
+/// — `None` when neither applies, which is what hides the button entirely.
+/// Mirrors the legacy `p`/`P` preconditions exactly: a secret's value can
+/// never move through either (its plaintext would otherwise land in a
+/// git-tracked request file, or promoting a plain value onto it would make
+/// the declaration invalid — `promote_var`'s own conflict cases, moot here
+/// since a name reachable as `VmDetail::Var` is already a simple
+/// declaration, never a group name or field). Which direction applies
+/// depends on whether the open request already overrides `name` in its own
+/// `[variables]` — if so, "Promote" offers to move that override up into
+/// the project (`apply_promote` requires exactly this); otherwise, with a
+/// request open, "Demote" offers to copy the resolved project value down
+/// into it.
+pub fn promote_demote_action(
+    ctx: &ProjectContext,
+    open_request: Option<&HttpRequest>,
+    name: &str,
+) -> Option<(&'static str, Action)> {
+    if ctx.model.vars.get(name).is_some_and(|d| d.secret) {
+        return None;
+    }
+    let req = open_request?;
+    if req.variables.contains_key(name) {
+        Some((
+            "Promote",
+            Action::PromptPromoteVar {
+                name: name.to_string(),
+            },
+        ))
+    } else {
+        Some((
+            "Demote",
+            Action::ConfirmDemoteVar {
+                name: name.to_string(),
+            },
+        ))
+    }
 }
 
 /// The detail pane's entries table (Task 16). Same placeholder shape as
@@ -280,10 +413,38 @@ impl VarManager {
         }
         self.left_cursor = i;
         match &self.left_rows[i] {
-            VmRow::Var(name) => self.detail = VmDetail::Var(name.clone()),
-            VmRow::Group(name) => self.detail = VmDetail::Group(name.clone()),
+            VmRow::Var(name) => {
+                let target = VmDetail::Var(name.clone());
+                if self.detail != target {
+                    // A fresh selection starts with nothing mid-edit and no
+                    // reveal carried over from whatever was open before.
+                    self.form = VarFormState::default();
+                }
+                self.detail = target;
+            }
+            VmRow::Group(name) => {
+                let target = VmDetail::Group(name.clone());
+                if self.detail != target {
+                    self.grid = EntryGridState::default();
+                }
+                self.detail = target;
+            }
             VmRow::SectionVars | VmRow::SectionGroups => {}
         }
+    }
+
+    /// Click entry point for a form field (`Hit::VmFormField`): seeds
+    /// `field` with its current text and a caret at the end. A second click
+    /// on the field already under edit is the caller's job to no-op (it
+    /// must not restart the edit and lose what was typed) — this always
+    /// (re)starts one, so the caller checks first. A no-op with nothing
+    /// selected (`self.detail` isn't `Var`).
+    pub fn start_field_edit(&mut self, ctx: &ProjectContext, field: VmField) {
+        let VmDetail::Var(name) = &self.detail else {
+            return;
+        };
+        let seed = field_seed_text(ctx, name, field);
+        self.form.editing = Some((field, LineInput::new(&seed)));
     }
 
     /// The row the commands act on — the left list's current selection.
@@ -306,6 +467,7 @@ impl VarManager {
         };
         if gone {
             self.detail = VmDetail::None;
+            self.form = VarFormState::default();
         }
         self.ensure_visible = true;
     }
@@ -338,6 +500,12 @@ impl VarManager {
     /// They are ignored while a detail-pane cell edit owns the keyboard
     /// (spec §11: a command key that collides with typing yields to the
     /// text input) — `esc` and the arrows still work.
+    ///
+    /// This is never reached while a form field is under edit — `App`
+    /// intercepts Esc (revert)/Enter (commit)/plain typing itself first,
+    /// since a commit needs write access to the project that this method's
+    /// `&ProjectContext` (shared, not mutable) can't give it. `form.editing`
+    /// is still consulted below, for the single-letter command gate.
     pub fn handle_key(&mut self, ev: KeyEvent, ctx: &ProjectContext) -> Option<Action> {
         match ev.code {
             KeyCode::Esc => return Some(Action::CloseScreen),
@@ -351,7 +519,7 @@ impl VarManager {
             }
             _ => {}
         }
-        if self.form.editing || self.grid.editing {
+        if self.form.editing.is_some() || self.grid.editing {
             return None;
         }
         match ev.code {
@@ -458,12 +626,13 @@ impl VarManager {
     }
 
     /// Paints the screen: the top bar (environment switcher + `+ Variable` /
-    /// `+ Group`), the fixed-width left list, and the detail pane.
+    /// `+ Group`), the fixed-width left list, and the detail pane —
+    /// [`draw_var_form`] for a selected variable, a placeholder otherwise
+    /// (a selected group is Task 16's job).
     ///
-    /// `_open_request` is the request-scope half of the detail pane (the
-    /// promote/demote buttons of Task 15's variable form); unused while the
-    /// pane is a placeholder, but kept on the signature so the call site in
-    /// `ui::draw` doesn't churn twice.
+    /// `open_request` is the request-scope half of the variable form: the
+    /// promote/demote button's precondition (whether the open request
+    /// already overrides the selected name in its own `[variables]`).
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
@@ -471,7 +640,7 @@ impl VarManager {
         area: Rect,
         theme: &Theme,
         ctx: &ProjectContext,
-        _open_request: Option<&HttpRequest>,
+        open_request: Option<&HttpRequest>,
         hits: &mut HitMap,
         hovered: Option<&Hit>,
     ) {
@@ -505,7 +674,326 @@ impl VarManager {
             ..body
         };
         self.draw_left(frame, left, theme, ctx, hits, hovered);
-        draw_detail_placeholder(frame, right, theme);
+        let name = match self.detail.clone() {
+            VmDetail::Var(name) if ctx.model.vars.contains_key(&name) => Some(name),
+            _ => None,
+        };
+        match name {
+            Some(name) => {
+                let buf = frame.buffer_mut();
+                fill(buf, right, theme.page);
+                self.draw_var_form(buf, right, theme, ctx, open_request, hits, hovered, &name);
+            }
+            None => draw_detail_placeholder(frame, right, theme),
+        }
+    }
+
+    /// The right pane for `VmDetail::Var(name)` (spec §3.4): a title row
+    /// (`name  🔒?  [Rename] [Delete]`), then description/default/env-value
+    /// fields as label + `TextField` rows (`Default` omitted for a secret —
+    /// it can never hold one), the secret on/off toggle, the promote/demote
+    /// button where [`promote_demote_action`] applies, and a dim `used by:`
+    /// line. `name` is guaranteed declared by the caller.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_var_form(
+        &self,
+        buf: &mut Buffer,
+        right: Rect,
+        theme: &Theme,
+        ctx: &ProjectContext,
+        open_request: Option<&HttpRequest>,
+        hits: &mut HitMap,
+        hovered: Option<&Hit>,
+        name: &str,
+    ) {
+        if right.width < 8 || right.height < 3 {
+            return;
+        }
+        let secret = ctx.model.vars.get(name).is_some_and(|d| d.secret);
+        let state_of = |hit: &Hit| {
+            if hovered == Some(hit) {
+                ControlState::Hover
+            } else {
+                ControlState::Normal
+            }
+        };
+
+        let x0 = right.x + 2;
+        let field_w = right.width.saturating_sub(4).max(1);
+        let bottom = right.y + right.height;
+        let mut y = right.y + 1;
+
+        // --- title row: name, lock badge, Rename/Delete ---------------
+        if y + BUTTON_HEIGHT <= bottom {
+            let mid = y + 1;
+            let label = if secret {
+                format!("{name}  {GLYPH_LOCK}")
+            } else {
+                name.to_string()
+            };
+            text(buf, x0, mid, &label, theme.text, theme.page, true);
+            let mut bx = right.x + right.width;
+            for (lbl, hit) in [("Delete", Hit::VmDelete), ("Rename", Hit::VmRename)] {
+                let w = button_min_width(lbl);
+                if bx < x0 + label.chars().count() as u16 + w + 3 {
+                    break;
+                }
+                bx -= w + 1;
+                let rect = Rect {
+                    x: bx,
+                    y,
+                    width: w,
+                    height: BUTTON_HEIGHT,
+                };
+                Button {
+                    label: lbl,
+                    kind: ButtonKind::Secondary,
+                    state: state_of(&hit),
+                }
+                .paint(buf, rect, theme.page, theme);
+                hits.register(rect, hit);
+            }
+            y += BUTTON_HEIGHT + 1;
+        }
+
+        // --- Description ------------------------------------------------
+        y = self.draw_labeled_field(
+            buf,
+            hits,
+            hovered,
+            theme,
+            x0,
+            field_w,
+            bottom,
+            y,
+            "Description",
+            VmField::Description,
+            ctx,
+            name,
+            false,
+        );
+
+        // --- Default (never for a secret: it can't hold one) -------------
+        if !secret {
+            y = self.draw_labeled_field(
+                buf,
+                hits,
+                hovered,
+                theme,
+                x0,
+                field_w,
+                bottom,
+                y,
+                "Default",
+                VmField::Default,
+                ctx,
+                name,
+                false,
+            );
+        }
+
+        // --- secret on/off toggle -----------------------------------------
+        if y < bottom {
+            text(buf, x0, y, "Secret", theme.text_muted, theme.page, false);
+            let toggle_label = if secret { "[on]" } else { "[off]" };
+            let hit = Hit::VmSecretToggle;
+            let hovered_toggle = hovered == Some(&hit);
+            let style = if hovered_toggle {
+                Style::default().bg(theme.accent).fg(theme.on_accent)
+            } else {
+                Style::default().fg(theme.accent)
+            };
+            let tw = toggle_label.chars().count() as u16;
+            let tx = (x0 + field_w).saturating_sub(tw);
+            buf.set_string(tx, y, toggle_label, style);
+            hits.register(Rect::new(tx, y, tw, 1), hit);
+            y += 2;
+        }
+
+        // --- Value in <env> (masked + reveal for a secret) -----------------
+        let value_label = match &ctx.active_env {
+            Some(env) => format!("Value in {env}"),
+            None => "(no environment)".to_string(),
+        };
+        if y < bottom {
+            text(
+                buf,
+                x0,
+                y,
+                &value_label,
+                theme.text_muted,
+                theme.page,
+                false,
+            );
+            if secret {
+                let reveal_label = if self.form.revealed {
+                    "\u{1f441} hide"
+                } else {
+                    "\u{1f441} reveal"
+                };
+                let hit = Hit::VmRevealToggle;
+                let hovered_toggle = hovered == Some(&hit);
+                let style = if hovered_toggle {
+                    Style::default().bg(theme.accent).fg(theme.on_accent)
+                } else {
+                    Style::default().fg(theme.accent)
+                };
+                let rw = reveal_label.chars().count() as u16;
+                let rx = (x0 + field_w).saturating_sub(rw);
+                buf.set_string(rx, y, reveal_label, style);
+                hits.register(Rect::new(rx, y, rw, 1), hit);
+            }
+            y += 1;
+        }
+        if y + FIELD_HEIGHT <= bottom {
+            let masked = secret && !self.form.revealed;
+            let area = Rect {
+                x: x0,
+                y,
+                width: field_w,
+                height: FIELD_HEIGHT,
+            };
+            self.draw_form_field(
+                buf,
+                hits,
+                area,
+                theme,
+                hovered,
+                VmField::EnvValue,
+                ctx,
+                name,
+                masked,
+            );
+            y += FIELD_HEIGHT + 1;
+        }
+
+        // --- promote/demote --------------------------------------------
+        if let Some((label, _)) = promote_demote_action(ctx, open_request, name)
+            && y + BUTTON_HEIGHT <= bottom
+        {
+            let w = button_min_width(label).min(field_w);
+            let rect = Rect {
+                x: x0,
+                y,
+                width: w,
+                height: BUTTON_HEIGHT,
+            };
+            let hit = Hit::VmPromoteBtn;
+            Button {
+                label,
+                kind: ButtonKind::Secondary,
+                state: state_of(&hit),
+            }
+            .paint(buf, rect, theme.page, theme);
+            hits.register(rect, hit);
+            y += BUTTON_HEIGHT + 1;
+        }
+
+        // --- used by -----------------------------------------------------
+        if y < bottom {
+            let usage = postui_core::varedit::scan_usage(&ctx.root, name);
+            let line = if usage.is_empty() {
+                "used by: (none)".to_string()
+            } else {
+                format!("used by: {}", usage.join(", "))
+            };
+            text(
+                buf,
+                x0,
+                y,
+                super::chooser::clip(&line, field_w),
+                theme.text_muted,
+                theme.page,
+                false,
+            );
+        }
+    }
+
+    /// One label + `TextField` row: the label on its own line, the field
+    /// [`FIELD_HEIGHT`] rows below. Returns the next `y` past the field
+    /// (unchanged, i.e. no gap consumed, when there isn't room to draw it —
+    /// so a caller past the pane's bottom just stops drawing further rows).
+    #[allow(clippy::too_many_arguments)]
+    fn draw_labeled_field(
+        &self,
+        buf: &mut Buffer,
+        hits: &mut HitMap,
+        hovered: Option<&Hit>,
+        theme: &Theme,
+        x0: u16,
+        field_w: u16,
+        bottom: u16,
+        y: u16,
+        label: &str,
+        field: VmField,
+        ctx: &ProjectContext,
+        name: &str,
+        masked: bool,
+    ) -> u16 {
+        if y >= bottom {
+            return y;
+        }
+        text(buf, x0, y, label, theme.text_muted, theme.page, false);
+        let field_y = y + 1;
+        if field_y + FIELD_HEIGHT > bottom {
+            return field_y;
+        }
+        let area = Rect {
+            x: x0,
+            y: field_y,
+            width: field_w,
+            height: FIELD_HEIGHT,
+        };
+        self.draw_form_field(buf, hits, area, theme, hovered, field, ctx, name, masked);
+        field_y + FIELD_HEIGHT + 1
+    }
+
+    /// Paints one field's `TextField`: the live `LineInput` (windowed,
+    /// masked when `masked`) while it's under edit, else the resting text
+    /// `field_seed_text` reads from `ctx` (masked to dots when `masked`, a
+    /// muted "(not set)" when empty). Registers `Hit::VmFormField(field)`
+    /// over the whole painted area.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_form_field(
+        &self,
+        buf: &mut Buffer,
+        hits: &mut HitMap,
+        area: Rect,
+        theme: &Theme,
+        hovered: Option<&Hit>,
+        field: VmField,
+        ctx: &ProjectContext,
+        name: &str,
+        masked: bool,
+    ) {
+        let hit = Hit::VmFormField(field);
+        let editing = self.form.editing.as_ref().filter(|(f, _)| *f == field);
+        let state = if editing.is_some() {
+            ControlState::Focused
+        } else if hovered == Some(&hit) {
+            ControlState::Hover
+        } else {
+            ControlState::Normal
+        };
+        let inner_w = area.width.saturating_sub(2);
+        let content = if let Some((_, input)) = editing {
+            if masked {
+                input.draw_line_windowed_masked(true, theme, inner_w)
+            } else {
+                input.draw_line_windowed(true, theme, inner_w)
+            }
+        } else {
+            let text_value = field_seed_text(ctx, name, field);
+            if masked {
+                Line::raw(text_value.chars().map(|_| '\u{25cf}').collect::<String>())
+            } else if text_value.is_empty() {
+                Line::styled("(not set)", Style::default().fg(theme.text_muted))
+            } else {
+                Line::raw(text_value)
+            }
+        };
+        TextField { content, state }.paint(buf, area, theme);
+        hits.register(area, hit);
     }
 
     fn draw_top_bar(
@@ -1136,5 +1624,242 @@ fields = ["user_id", "customer_id"]
         vm.handle_key(key(KeyCode::Down), &ctx);
         let (content, _) = render(&mut vm, &ctx);
         assert!(content.contains("v01"), "cursor row is visible: {content}");
+    }
+
+    // --- Task 15: variable detail form -----------------------------------
+
+    /// The form's full column of rows (title, three fields, the promote/
+    /// demote button and the usage line) doesn't fit `render`'s 24-row
+    /// screen all at once — plenty tall for a real terminal, but tests that
+    /// need to see the whole column use this taller one instead.
+    fn render_with_request(
+        vm: &mut VarManager,
+        ctx: &ProjectContext,
+        open_request: Option<&HttpRequest>,
+    ) -> (String, HitMap) {
+        let theme = Theme::dark();
+        let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
+        let mut hits = HitMap::default();
+        terminal
+            .draw(|f| vm.draw(f, f.area(), &theme, ctx, open_request, &mut hits, None))
+            .unwrap();
+        (format!("{:?}", terminal.backend().buffer()), hits)
+    }
+
+    fn select_var(vm: &mut VarManager, ctx: &ProjectContext, name: &str) {
+        render(vm, ctx); // populates left_rows
+        let i = vm
+            .left_rows
+            .iter()
+            .position(|r| r == &VmRow::Var(name.into()))
+            .unwrap();
+        vm.select_row(i);
+    }
+
+    #[test]
+    fn selecting_a_var_renders_its_description_default_and_env_value() {
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        select_var(&mut vm, &ctx, "base_url");
+        let (content, hits) = render_with_request(&mut vm, &ctx, None);
+        assert!(content.contains("base_url"), "{content}");
+        assert!(content.contains("Description"), "{content}");
+        assert!(content.contains("API root"), "{content}");
+        assert!(content.contains("Default"), "{content}");
+        assert!(content.contains("http://localhost:8080"), "{content}");
+        assert!(content.contains("Value in qa"), "{content}");
+        assert!(hits.rect_of(&Hit::VmRename).is_some());
+        assert!(hits.rect_of(&Hit::VmDelete).is_some());
+        assert!(
+            hits.rect_of(&Hit::VmFormField(VmField::Description))
+                .is_some()
+        );
+        assert!(hits.rect_of(&Hit::VmFormField(VmField::Default)).is_some());
+        assert!(hits.rect_of(&Hit::VmFormField(VmField::EnvValue)).is_some());
+        assert!(content.contains("used by:"), "{content}");
+    }
+
+    #[test]
+    fn a_secret_var_hides_the_default_row_and_masks_its_value_with_a_reveal_toggle() {
+        let (dir, _ctx) = fixture();
+        let mut secrets = IndexMap::new();
+        let mut qa_secrets = IndexMap::new();
+        qa_secrets.insert("api_key".to_string(), "sk-live-secret".to_string());
+        secrets.insert("qa".to_string(), qa_secrets);
+        project::save_secrets(dir.path(), &secrets).unwrap();
+        let (ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+
+        let mut vm = VarManager::default();
+        select_var(&mut vm, &ctx, "api_key");
+        let (content, hits) = render(&mut vm, &ctx);
+        assert!(!content.contains("Default"), "{content}");
+        assert!(!content.contains("sk-live-secret"), "{content}");
+        assert!(content.contains('\u{25cf}'), "masked dots: {content}");
+        assert!(hits.rect_of(&Hit::VmRevealToggle).is_some());
+
+        vm.form.revealed = true;
+        let (content, _) = render(&mut vm, &ctx);
+        assert!(content.contains("sk-live-secret"), "{content}");
+    }
+
+    #[test]
+    fn no_active_environment_shows_a_hint_instead_of_a_value_field_target() {
+        let (_dir, mut ctx) = fixture();
+        ctx.active_env = None;
+        let mut vm = VarManager::default();
+        select_var(&mut vm, &ctx, "base_url");
+        let (content, _) = render(&mut vm, &ctx);
+        assert!(content.contains("(no environment)"), "{content}");
+    }
+
+    #[test]
+    fn selecting_a_different_var_resets_the_form_but_a_reclick_does_not() {
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        select_var(&mut vm, &ctx, "base_url");
+        vm.form.revealed = true;
+        vm.form.editing = Some((VmField::Description, LineInput::new("typing...")));
+
+        // Re-selecting the same row must not disturb an in-progress edit.
+        let same = vm
+            .left_rows
+            .iter()
+            .position(|r| r == &VmRow::Var("base_url".into()))
+            .unwrap();
+        vm.select_row(same);
+        assert!(vm.form.editing.is_some(), "same-row reselect kept the edit");
+        assert!(vm.form.revealed, "same-row reselect kept reveal");
+
+        let other = vm
+            .left_rows
+            .iter()
+            .position(|r| r == &VmRow::Var("api_key".into()))
+            .unwrap();
+        vm.select_row(other);
+        assert!(vm.form.editing.is_none(), "a new selection drops the edit");
+        assert!(!vm.form.revealed, "a new selection resets reveal");
+    }
+
+    #[test]
+    fn field_seed_text_reads_description_default_and_the_resolved_env_value() {
+        let (_dir, ctx) = fixture();
+        assert_eq!(
+            field_seed_text(&ctx, "base_url", VmField::Description),
+            "API root"
+        );
+        assert_eq!(
+            field_seed_text(&ctx, "base_url", VmField::Default),
+            "http://localhost:8080"
+        );
+        // qa has no override, so the env-value seed falls back through to
+        // the resolved (default) value, matching what the field displays.
+        assert_eq!(
+            field_seed_text(&ctx, "base_url", VmField::EnvValue),
+            "http://localhost:8080"
+        );
+    }
+
+    #[test]
+    fn var_edit_op_for_targets_the_env_or_secret_store_and_falls_back_to_default_with_no_env() {
+        let (_dir, mut ctx) = fixture();
+        assert_eq!(
+            var_edit_op_for(&ctx, "base_url", VmField::Description, "new desc".into()),
+            VarEditOp::SetDescription {
+                owner: "base_url".into(),
+                value: "new desc".into()
+            }
+        );
+        assert_eq!(
+            var_edit_op_for(&ctx, "base_url", VmField::Default, "x".into()),
+            VarEditOp::SetDefault {
+                name: "base_url".into(),
+                value: "x".into()
+            }
+        );
+        assert_eq!(
+            var_edit_op_for(&ctx, "base_url", VmField::EnvValue, "y".into()),
+            VarEditOp::SetEnvValue {
+                env: "qa".into(),
+                name: "base_url".into(),
+                value: "y".into()
+            }
+        );
+        assert_eq!(
+            var_edit_op_for(&ctx, "api_key", VmField::EnvValue, "z".into()),
+            VarEditOp::SetSecretValue {
+                env: "qa".into(),
+                name: "api_key".into(),
+                value: "z".into()
+            },
+            "a secret's value never lands in the env file"
+        );
+
+        ctx.active_env = None;
+        assert_eq!(
+            var_edit_op_for(&ctx, "base_url", VmField::EnvValue, "w".into()),
+            VarEditOp::SetDefault {
+                name: "base_url".into(),
+                value: "w".into()
+            },
+            "no active environment: the value field targets the declaration default"
+        );
+    }
+
+    fn req_with_var(name: &str, value: &str) -> HttpRequest {
+        HttpRequest::from_toml_str(&format!(
+            "url = \"https://x\"\n[variables]\n{name} = \"{value}\"\n"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn promote_demote_action_follows_whether_the_open_request_overrides_the_name() {
+        let (_dir, ctx) = fixture();
+        assert_eq!(
+            promote_demote_action(&ctx, None, "base_url"),
+            None,
+            "no open request: neither applies"
+        );
+
+        let overriding = req_with_var("base_url", "http://elsewhere");
+        assert_eq!(
+            promote_demote_action(&ctx, Some(&overriding), "base_url").map(|(l, _)| l),
+            Some("Promote"),
+            "the open request already overrides it: offer to promote that override up"
+        );
+
+        let plain_req = HttpRequest::from_toml_str("url = \"https://x\"\n").unwrap();
+        assert_eq!(
+            promote_demote_action(&ctx, Some(&plain_req), "base_url").map(|(l, _)| l),
+            Some("Demote"),
+            "no override: offer to push the project value down"
+        );
+
+        assert_eq!(
+            promote_demote_action(&ctx, Some(&plain_req), "api_key"),
+            None,
+            "a secret can never move through either direction"
+        );
+    }
+
+    #[test]
+    fn the_promote_button_appears_only_when_its_precondition_holds() {
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        select_var(&mut vm, &ctx, "base_url");
+
+        let (content, hits) = render_with_request(&mut vm, &ctx, None);
+        assert!(hits.rect_of(&Hit::VmPromoteBtn).is_none());
+        let _ = content;
+
+        let overriding = req_with_var("base_url", "http://elsewhere");
+        let (content, hits) = render_with_request(&mut vm, &ctx, Some(&overriding));
+        assert!(content.contains("Promote"), "{content}");
+        assert!(hits.rect_of(&Hit::VmPromoteBtn).is_some());
+
+        let plain_req = HttpRequest::from_toml_str("url = \"https://x\"\n").unwrap();
+        let (content, hits) = render_with_request(&mut vm, &ctx, Some(&plain_req));
+        assert!(content.contains("Demote"), "{content}");
+        assert!(hits.rect_of(&Hit::VmPromoteBtn).is_some());
     }
 }

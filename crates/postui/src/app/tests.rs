@@ -6477,3 +6477,409 @@ fn computed_headers_reveal_resets_when_switching_to_a_different_request() {
          \"⌄ hide\" label is a substring trap here, so this checks the 👁 glyph too): {b_view}"
     );
 }
+
+// --- Task 15: variable detail form (spec §3.4) ---------------------------
+
+use crate::components::varmanager::VmField;
+
+/// The form's full column of rows doesn't fit `rendered_text`'s 80x24
+/// screen (header + footer leave the right pane only a little taller than
+/// its title + description + default fields) — plenty for a real terminal,
+/// but these tests need the rest of the column too.
+fn rendered_text_tall(app: &mut App) -> String {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    let backend = TestBackend::new(100, 46);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+    format!("{:?}", terminal.backend().buffer())
+}
+
+fn field_rect(app: &mut App, field: VmField) -> ratatui::layout::Rect {
+    rendered_text_tall(app);
+    app.hits
+        .rect_of(&crate::hit::Hit::VmFormField(field))
+        .unwrap_or_else(|| panic!("no rect for {field:?}"))
+}
+
+#[test]
+fn selecting_a_var_renders_its_form_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
+    });
+    let content = rendered_text_tall(&mut app);
+    assert!(content.contains("Description"), "{content}");
+    assert!(content.contains("API root"), "{content}");
+    assert!(content.contains("Default"), "{content}");
+    assert!(content.contains("http://localhost:8080"), "{content}");
+    assert!(content.contains("Value in qa"), "{content}");
+    assert!(
+        content.contains("https://qa.example.com"),
+        "qa's own override, not the declaration default: {content}"
+    );
+}
+
+#[test]
+fn clicking_the_env_value_field_typing_and_clicking_away_writes_the_env_file() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
+    });
+
+    let r = field_rect(&mut app, VmField::EnvValue);
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    assert!(app.varmanager.form.editing.is_some(), "the field is live");
+
+    let keymap = Keymap::default_bindings();
+    for c in "9".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+
+    // Click away — the left list row for the same variable is "elsewhere".
+    let row = app.varmanager.left_cursor;
+    let left_rect = app.hits.rect_of(&crate::hit::Hit::VmLeftRow(row)).unwrap();
+    app.handle_mouse(left_down(left_rect.x + 1, left_rect.y + 1));
+
+    assert!(app.varmanager.form.editing.is_none(), "the click committed");
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(
+        on_disk.contains("https://qa.example.com9"),
+        "the typed digit landed at the caret (end of qa's own override): {on_disk}"
+    );
+    assert_eq!(
+        app.project.resolved.values["base_url"],
+        "https://qa.example.com9"
+    );
+}
+
+#[test]
+fn enter_commits_a_field_edit_and_esc_reverts_it() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
+    });
+    let keymap = Keymap::default_bindings();
+
+    // Esc reverts: the typed digit never reaches disk.
+    let r = field_rect(&mut app, VmField::Description);
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    app.handle_key(&keymap, plain('!'));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.varmanager.form.editing.is_none());
+    assert_eq!(
+        app.project.model.vars["base_url"].description.as_deref(),
+        Some("API root"),
+        "Esc must not write anything"
+    );
+
+    // Enter commits.
+    let r = field_rect(&mut app, VmField::Description);
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    app.handle_key(&keymap, plain('!'));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.varmanager.form.editing.is_none());
+    assert_eq!(
+        app.project.model.vars["base_url"].description.as_deref(),
+        Some("API root!")
+    );
+}
+
+/// Clicking straight from one form field into a *different* one (no
+/// intervening click-away) must commit the first field rather than
+/// silently discarding it — a regression the top-of-`on_hit` guard's
+/// `VmFormField(_)` exemption briefly reintroduced.
+#[test]
+fn clicking_directly_from_one_field_into_another_commits_the_first() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
+    });
+
+    let r = field_rect(&mut app, VmField::Description);
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    let keymap = Keymap::default_bindings();
+    for c in "!".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+
+    // Straight into the env-value field — no click-away in between.
+    let r = field_rect(&mut app, VmField::EnvValue);
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+
+    assert_eq!(
+        app.project.model.vars["base_url"].description.as_deref(),
+        Some("API root!"),
+        "the description field must have committed, not been discarded"
+    );
+    assert_eq!(
+        app.varmanager.form.editing.as_ref().map(|(f, _)| *f),
+        Some(VmField::EnvValue),
+        "the click landed in the newly clicked field"
+    );
+}
+
+/// The write-failure variant of the above: when the first field's commit
+/// fails, the click into the second field must not clobber the restored
+/// (still-live) edit with a fresh one on the field that was clicked.
+#[test]
+fn clicking_into_another_field_after_a_failed_commit_keeps_the_original_edit_live() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::SwitchEnv(None));
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("api_key".into())
+    });
+
+    let r = field_rect(&mut app, VmField::EnvValue);
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    let keymap = Keymap::default_bindings();
+    for c in "sk-typed-secret".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+
+    // Click straight into Description — the env-value commit must fail
+    // first (a secret has no active env to target and can't hold a
+    // default), so this must not switch away from it.
+    let r = field_rect(&mut app, VmField::Description);
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+
+    assert_eq!(
+        app.varmanager.form.editing.as_ref().map(|(f, _)| *f),
+        Some(VmField::EnvValue),
+        "the failed commit's field stays live rather than switching to the click"
+    );
+    assert_eq!(
+        app.varmanager
+            .form
+            .editing
+            .as_ref()
+            .map(|(_, i)| i.text().to_string()),
+        Some("sk-typed-secret".to_string()),
+        "its typed text is untouched"
+    );
+    assert!(!app.toasts.is_empty(), "the failed commit still toasts");
+    for msg in app.toasts.messages() {
+        assert!(!msg.contains("sk-typed-secret"), "{msg}");
+    }
+}
+
+/// A secret var with no active environment: the value field falls back to
+/// targeting the declaration default (spec's stated fallback), which the
+/// model rejects for a secret (`SecretWithDefault`) — the write fails, the
+/// typed text stays in the live editor, and the failure toasts without the
+/// secret value ever appearing in it.
+#[test]
+fn a_write_failure_keeps_the_typed_text_and_toasts_without_the_secret_value() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::SwitchEnv(None));
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("api_key".into())
+    });
+
+    let r = field_rect(&mut app, VmField::EnvValue);
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    let keymap = Keymap::default_bindings();
+    for c in "sk-typed-secret".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(
+        app.varmanager.form.editing.is_some(),
+        "a failed write must keep the field live with its typed text"
+    );
+    assert_eq!(
+        app.varmanager
+            .form
+            .editing
+            .as_ref()
+            .map(|(_, i)| i.text().to_string()),
+        Some("sk-typed-secret".to_string())
+    );
+    assert!(!app.toasts.is_empty(), "the failure must toast");
+    for msg in app.toasts.messages() {
+        assert!(
+            !msg.contains("sk-typed-secret"),
+            "a secret's value must never appear in a toast: {msg}"
+        );
+    }
+}
+
+#[test]
+fn a_secret_var_masks_its_value_and_the_reveal_toggle_unmasks_it() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::VarEdit(VarEditOp::SetSecretValue {
+        env: "qa".into(),
+        name: "api_key".into(),
+        value: "sk-live-secret".into(),
+    }));
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("api_key".into())
+    });
+
+    let content = rendered_text_tall(&mut app);
+    assert!(!content.contains("Default"), "{content}");
+    assert!(!content.contains("sk-live-secret"), "{content}");
+    let r = app
+        .hits
+        .rect_of(&crate::hit::Hit::VmRevealToggle)
+        .expect("reveal toggle registered for a secret");
+    app.handle_mouse(left_down(r.x, r.y));
+    let content = rendered_text_tall(&mut app);
+    assert!(content.contains("sk-live-secret"), "{content}");
+}
+
+#[test]
+fn the_rename_button_opens_the_same_prompt_as_the_e_key() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
+    });
+    rendered_text_tall(&mut app);
+    let r = app.hits.rect_of(&crate::hit::Hit::VmRename).unwrap();
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    assert!(matches!(
+        app.modals.top(),
+        Some(Modal::Prompt {
+            kind: PromptKind::RenameVariable { .. },
+            ..
+        })
+    ));
+}
+
+#[test]
+fn the_delete_button_opens_the_confirm_with_the_usage_list() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    request_with_var(dir.path(), "ping", "trace_id", "abc-123");
+    postui_core::storage::save_request(
+        dir.path(),
+        "uses-base",
+        &req("https://x/uses-base/{{base_url}}"),
+    )
+    .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
+    });
+    rendered_text_tall(&mut app);
+    let r = app.hits.rect_of(&crate::hit::Hit::VmDelete).unwrap();
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    let Some(Modal::Confirm { body, .. }) = app.modals.top() else {
+        panic!("expected a delete confirm");
+    };
+    assert!(body.contains("uses-base"), "{body}");
+}
+
+#[test]
+fn the_secret_toggle_button_opens_the_same_confirm_as_the_s_key() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
+    });
+    rendered_text_tall(&mut app);
+    let r = app.hits.rect_of(&crate::hit::Hit::VmSecretToggle).unwrap();
+    app.handle_mouse(left_down(r.x, r.y));
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+}
+
+#[test]
+fn the_promote_button_promotes_the_requests_override_up_into_the_project() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    request_with_var(dir.path(), "ping", "base_url", "http://from-request");
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("ping".into()));
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
+    });
+    let content = rendered_text_tall(&mut app);
+    assert!(content.contains("Promote"), "{content}");
+
+    let r = app.hits.rect_of(&crate::hit::Hit::VmPromoteBtn).unwrap();
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+    // Confirm "Default value".
+    app.handle_key(&Keymap::default_bindings(), plain('d'));
+    assert_eq!(
+        app.project.model.vars["base_url"].default.as_deref(),
+        Some("http://from-request")
+    );
+    assert!(!app.editor.variables.contains_key("base_url"));
+}
+
+#[test]
+fn the_demote_button_opens_the_demote_confirm_when_no_override_exists() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    postui_core::storage::save_request(dir.path(), "ping", &req("https://x/ping")).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("ping".into()));
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
+    });
+    let content = rendered_text_tall(&mut app);
+    assert!(content.contains("Demote"), "{content}");
+
+    let r = app.hits.rect_of(&crate::hit::Hit::VmPromoteBtn).unwrap();
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+}
+
+/// Keyboard parity: `e`/`F2` rename and `s` secret-toggle still work while
+/// the variable form is on screen (unchanged from before this task).
+#[test]
+fn keyboard_e_and_s_still_work_with_the_form_on_screen() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
+    });
+    let keymap = Keymap::default_bindings();
+
+    app.handle_key(&keymap, plain('e'));
+    assert!(matches!(
+        app.modals.top(),
+        Some(Modal::Prompt {
+            kind: PromptKind::RenameVariable { .. },
+            ..
+        })
+    ));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    app.handle_key(&keymap, plain('s'));
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+}

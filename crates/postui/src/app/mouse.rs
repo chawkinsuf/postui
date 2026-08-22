@@ -314,6 +314,17 @@ impl App {
             self.commit_table_edit();
             self.editor.table.selected = None;
         }
+        // Same rule for the variable form's own in-place field: any click
+        // that isn't on the field already under edit (or the reveal
+        // toggle, which must not disturb an edit in progress) commits
+        // whatever is being typed there first — including a click on a
+        // *different* form field, which must never silently overwrite
+        // `form.editing` out from under the field that was live.
+        let editing_this_field = matches!(hit, Hit::VmFormField(field)
+            if self.varmanager.form.editing.as_ref().is_some_and(|(f, _)| *f == field));
+        if !editing_this_field && !matches!(hit, Hit::VmRevealToggle) {
+            self.commit_var_form();
+        }
         // Likewise, clicking away blurs whichever editor input is active
         // (URL line / table / body). Hits that themselves place the
         // sub-focus (UrlBar, BodyEditor, the table hits) re-set it right
@@ -637,6 +648,80 @@ impl App {
             Hit::VmEnvSwitch => self.update(Action::OpenEnvChooser),
             Hit::VmNewVar => self.update(Action::PromptNewVar),
             Hit::VmNewGroup => self.update(Action::PromptNewGroup),
+            // A second click on the field already under edit is inert (the
+            // top-of-`on_hit` guard above left it alone precisely so this
+            // check still sees the live edit). A click on any other field
+            // lands here only after that same guard already tried to
+            // commit whatever was being edited: on success `form.editing`
+            // is now `None` and this starts a fresh edit on the clicked
+            // field; on a write failure it restores the *original* field's
+            // edit (spec's write-failure rule: the typed text stays put),
+            // and this must not clobber that with the newly clicked field
+            // — the click is absorbed and the original edit stays live.
+            Hit::VmFormField(field) => {
+                if self
+                    .varmanager
+                    .form
+                    .editing
+                    .as_ref()
+                    .is_some_and(|(f, _)| *f == field)
+                {
+                    return false;
+                }
+                if self.varmanager.form.editing.is_some() {
+                    return self.update(Action::Render);
+                }
+                self.varmanager.start_field_edit(&self.project, field);
+                self.update(Action::Render)
+            }
+            Hit::VmSecretToggle => {
+                let crate::components::varmanager::VmDetail::Var(name) =
+                    self.varmanager.detail.clone()
+                else {
+                    return false;
+                };
+                self.update(Action::ToggleSecretVar { name })
+            }
+            Hit::VmRevealToggle => {
+                self.varmanager.form.revealed = !self.varmanager.form.revealed;
+                self.update(Action::Render)
+            }
+            Hit::VmRename => {
+                let crate::components::varmanager::VmDetail::Var(name) =
+                    self.varmanager.detail.clone()
+                else {
+                    return false;
+                };
+                self.update(Action::PromptRenameVar { from: name })
+            }
+            Hit::VmDelete => {
+                let crate::components::varmanager::VmDetail::Var(name) =
+                    self.varmanager.detail.clone()
+                else {
+                    return false;
+                };
+                self.update(Action::ConfirmDeleteVar { name })
+            }
+            Hit::VmPromoteBtn => {
+                let crate::components::varmanager::VmDetail::Var(name) =
+                    self.varmanager.detail.clone()
+                else {
+                    return false;
+                };
+                let open_request = self
+                    .editor
+                    .slug
+                    .is_some()
+                    .then(|| self.editor.current_request());
+                let Some((_, action)) = crate::components::varmanager::promote_demote_action(
+                    &self.project,
+                    open_request.as_ref(),
+                    &name,
+                ) else {
+                    return false;
+                };
+                self.update(action)
+            }
         }
     }
 }

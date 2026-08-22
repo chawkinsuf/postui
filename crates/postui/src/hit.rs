@@ -88,6 +88,24 @@ pub enum Hit {
     /// The Manager top bar's `+ Variable` / `+ Group` buttons.
     VmNewVar,
     VmNewGroup,
+    /// One field of the variable form's right pane (spec §3.4): click seeds
+    /// it with its current text and a caret at the end, exactly like a
+    /// table cell (Task 8's in-place model).
+    VmFormField(crate::components::varmanager::VmField),
+    /// The variable form's `secret [on/off]` toggle: opens the existing
+    /// `ToggleSecretVar` confirm.
+    VmSecretToggle,
+    /// The variable form's `👁 reveal`/`hide` toggle beside a secret's
+    /// "Value in <env>" field.
+    VmRevealToggle,
+    /// The variable form's title-row `[Rename]` button.
+    VmRename,
+    /// The variable form's title-row `[Delete]` button.
+    VmDelete,
+    /// The variable form's promote/demote button — whichever of the two
+    /// applies right now (`VarManager`'s own precondition check decides
+    /// which, and which `Action` a click fires).
+    VmPromoteBtn,
     /// One drawn `{{name}}` token, carrying the variable's name (spec §7).
     /// Registered *over* whatever control the token sits on (URL bar, table
     /// cell, computed-header row, body editor), so a left click opens the
