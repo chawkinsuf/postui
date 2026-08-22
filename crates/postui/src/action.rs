@@ -52,6 +52,11 @@ pub enum Action {
     /// Actually delete row `i` from the active params/headers table (the
     /// confirm modal's "Delete" choice).
     DeleteTableRow(usize),
+    /// The row context menu's "Duplicate row" (Task 17, spec §5): copies row
+    /// `i` of the active params/headers/vars table to `<key>-copy` (then
+    /// `-copy-2`, …, same collision rule as `DuplicateRequest`/`DuplicateVar`)
+    /// directly below it, with the same value and enabled flag.
+    DuplicateTableRow(usize),
     /// Open the method-selector dropdown, anchored below the method badge.
     OpenMethodDropdown,
     /// Set the editor's method directly (the dropdown's row action).
@@ -251,6 +256,10 @@ pub enum Action {
     },
     /// Switch the response pane's view (the tabs row's click target).
     ResponseViewMode(crate::components::response::ViewMode),
+    /// Opens the response pane's in-pane search (Task 17, spec §5): the
+    /// dispatchable form of the `⌕` button / `/` key, so the footer's
+    /// Response-pane search chip and the palette can reach it too.
+    OpenResponseSearch,
     /// Click on a JSON-tree body row: moves the cursor there, and — when
     /// `toggle` is set — collapses/expands the container it opens.
     JsonRowClicked {

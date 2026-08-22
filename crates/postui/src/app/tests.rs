@@ -405,6 +405,111 @@ fn deleting_a_vars_row_by_key_requires_confirmation() {
     assert!(app.modals.top().is_none(), "modal closed after the choice");
 }
 
+/// Task 17, spec §5: right-clicking a params row opens Duplicate/Delete/
+/// Extract, and each one works end to end.
+#[test]
+fn table_row_context_menu_duplicate_delete_extract_end_to_end() {
+    let mut app = App::new_for_test();
+    app.editor.params.insert(
+        "page".into(),
+        postui_core::model::Entry {
+            value: "2".into(),
+            enabled: true,
+        },
+    );
+    app.focus = PaneId::Editor;
+    app.editor.active_tab = EditorTab::Params;
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.table.selected = Some(0);
+    render_once(&mut app);
+    let r = app
+        .hits
+        .rect_of(&crate::hit::Hit::TableRow(0))
+        .expect("the row's background is registered");
+
+    app.handle_mouse(right_down(r.x, r.y));
+    let Some(Modal::Dropdown(menu)) = app.modals.top() else {
+        panic!("expected the row's context menu");
+    };
+    let labels: Vec<String> = menu.items.iter().map(|i| i.label.clone()).collect();
+    assert_eq!(
+        labels,
+        vec![
+            "Duplicate row",
+            "Delete param\u{2026}",
+            "Extract value to variable\u{2026}"
+        ]
+    );
+    let duplicate = menu.items[0].action.clone().unwrap();
+    let delete = menu.items[1].action.clone().unwrap();
+    let extract = menu.items[2].action.clone().unwrap();
+    app.update(Action::Close);
+
+    // "Duplicate row": inserts "page-copy" right below with the same value.
+    app.update(duplicate);
+    assert_eq!(app.editor.params.len(), 2);
+    assert_eq!(
+        app.editor.params.get_index(1),
+        Some((
+            &"page-copy".to_string(),
+            &postui_core::model::Entry {
+                value: "2".into(),
+                enabled: true,
+            }
+        ))
+    );
+
+    // "Extract value to variable…": the row is only *selected*, not under
+    // edit, yet the prompt still opens against its Value cell's text.
+    app.editor.table.selected = Some(0);
+    app.editor.table.editing = None;
+    app.update(extract);
+    let Some(Modal::MultiPrompt { kind, .. }) = app.modals.top() else {
+        panic!("expected the extract-variable multi-prompt");
+    };
+    assert!(matches!(kind, PromptKind::ExtractVariable));
+    let keymap = Keymap::default_bindings();
+    type_into_field(&mut app, &keymap, "page_num");
+    app.handle_key(&keymap, enter_key());
+    assert!(app.modals.is_empty());
+    assert_eq!(app.editor.params["page"].value, "{{page_num}}");
+
+    // "Delete param…": same confirm the `d` key opens.
+    app.editor.table.selected = Some(0);
+    app.update(delete);
+    match app.modals.top() {
+        Some(Modal::Confirm { body, .. }) => assert!(body.contains("page"), "{body}"),
+        _ => panic!("expected a delete confirm"),
+    }
+    app.handle_key(&keymap, plain('y'));
+    assert!(!app.editor.params.contains_key("page"));
+    assert!(app.editor.params.contains_key("page-copy"));
+}
+
+/// A second right-click-duplicate collides with an existing `-copy` row and
+/// falls back to `-copy-2`, matching `DuplicateRequest`/`DuplicateVar`.
+#[test]
+fn duplicate_table_row_resolves_collisions_like_duplicate_request() {
+    let mut app = App::new_for_test();
+    app.editor.params.insert(
+        "page".into(),
+        postui_core::model::Entry {
+            value: "2".into(),
+            enabled: true,
+        },
+    );
+    app.editor.params.insert(
+        "page-copy".into(),
+        postui_core::model::Entry {
+            value: "9".into(),
+            enabled: true,
+        },
+    );
+    app.update(Action::DuplicateTableRow(0));
+    assert!(app.editor.params.contains_key("page-copy-2"));
+    assert_eq!(app.editor.params["page-copy-2"].value, "2");
+}
+
 #[test]
 fn editor_tab_cycle_order_is_params_headers_vars_body() {
     let mut app = App::new_for_test();
@@ -436,6 +541,17 @@ fn alt_1_2_3_still_select_params_headers_body_with_vars_inserted() {
     assert_eq!(app.editor.active_tab, EditorTab::Headers);
     app.handle_key(&keymap, alt('3'));
     assert_eq!(app.editor.active_tab, EditorTab::Body);
+}
+
+/// Task 17: alt+4 fills the one gap the above test called out — Vars gets
+/// its own direct shortcut alongside alt+1/2/3.
+#[test]
+fn alt_4_selects_the_vars_tab() {
+    let mut app = App::new_for_test();
+    let keymap = Keymap::default_bindings();
+    app.editor.active_tab = EditorTab::Body;
+    app.handle_key(&keymap, alt('4'));
+    assert_eq!(app.editor.active_tab, EditorTab::Vars);
 }
 
 #[test]
@@ -2982,6 +3098,35 @@ fn click_response_tab_switches_to_headers() {
     app.handle_mouse(left_down(r.x, r.y));
     assert_eq!(app.session.response.view().unwrap().mode, ViewMode::Headers);
     assert_eq!(app.focus, PaneId::Response);
+}
+
+/// Task 17, spec §5: the Response pane's footer chips are clickable, and
+/// clicking them does what the `r`/`/` keys do.
+#[test]
+fn click_footer_response_chips_toggle_view_and_open_search() {
+    use crate::components::response::ViewMode;
+    let mut app = App::new_for_test();
+    ready_response(&mut app, r#"{"a": 1}"#);
+    app.focus = PaneId::Response;
+    render_once(&mut app);
+
+    let r = app
+        .hits
+        .rect_of(&Hit::FooterChip(Action::ResponseViewMode(ViewMode::Raw)))
+        .expect("the 'r' chip is registered");
+    app.handle_mouse(left_down(r.x + 1, r.y));
+    assert_eq!(app.session.response.view().unwrap().mode, ViewMode::Raw);
+
+    render_once(&mut app);
+    let r = app
+        .hits
+        .rect_of(&Hit::FooterChip(Action::OpenResponseSearch))
+        .expect("the '/' chip is registered");
+    app.handle_mouse(left_down(r.x + 1, r.y));
+    assert!(
+        app.session.response.view().unwrap().search.is_some(),
+        "clicking the search chip opens the in-pane search"
+    );
 }
 
 #[test]
@@ -7408,4 +7553,99 @@ fn the_new_entry_button_starts_the_ghost_row_and_edit_fields_opens_the_editor() 
     assert_eq!(fields.len(), 2);
     assert_eq!(fields[0].input.text(), "user");
     assert_eq!(fields[1].input.text(), "");
+}
+
+// -- Task 17: the mouse-parity sweep (spec §5) --------------------------
+
+/// THE PARITY CHECK. Every action `keys::named_actions()` can bind a key to
+/// must also be reachable by mouse: a footer/toolbar chip, a direct `on_hit`
+/// dispatch, a context-menu item, or a palette command. This walks the real
+/// production lists/builders (not copies of them) so a future keybinding
+/// added without a mouse path fails here rather than shipping silently.
+///
+/// The only exceptions are `keyboard_only_navigation` below — pure
+/// navigation actions whose every target is *also* reachable by clicking it
+/// directly, so no button for "next"/"previous" itself is missing any real
+/// capability. That list must stay empty of anything else: if this test
+/// fails, the fix is a mouse path, not a new entry there.
+#[test]
+fn every_named_action_is_mouse_reachable() {
+    // Kept deliberately short, and each entry justified: these are the only
+    // named actions with no mouse-dispatchable path anywhere, and both are
+    // pure cycling over targets a click already reaches directly.
+    let keyboard_only_navigation: Vec<Action> = vec![
+        // tab/shift+tab cycles Sidebar → Editor → Response → Sidebar; each
+        // pane is focused directly by clicking it (`Hit::Pane`).
+        Action::FocusNext,
+        Action::FocusPrev,
+        // alt+right/left cycles the four editor tabs in draw order; each
+        // tab is selected directly by clicking it (`Hit::EditorTab`, listed
+        // in `App::mouse_dispatch_mirror`).
+        Action::EditorTabCycle(1),
+        Action::EditorTabCycle(-1),
+    ];
+
+    // Group A: footer/toolbar chips — the same function `draw_footer`
+    // paints from. The always-present quit chip is registered separately
+    // in `draw_footer` itself (`QUIT_LABEL`, not part of `footer_chips`),
+    // so it's added by hand here.
+    let mut mouse_reachable: Vec<Action> = vec![Action::Quit];
+    for pane in [PaneId::Sidebar, PaneId::Editor, PaneId::Response] {
+        mouse_reachable.extend(
+            crate::components::footer::footer_chips(pane)
+                .into_iter()
+                .filter_map(|(_, _, a)| a),
+        );
+    }
+
+    // Group B: the command palette.
+    mouse_reachable.extend(
+        crate::components::palette::all_commands()
+            .into_iter()
+            .map(|c| c.action),
+    );
+
+    // Group C: `on_hit`'s own direct dispatches not already covered above —
+    // the hand-maintained mirror kept beside `on_hit` in `app/mouse.rs`.
+    mouse_reachable.extend(App::mouse_dispatch_mirror());
+
+    // Group D: context menus, built with real state through the same
+    // methods the mouse's right-click path calls.
+    let mut app = App::new_for_test();
+    app.editor.params.insert(
+        "k".into(),
+        postui_core::model::Entry {
+            value: "v".into(),
+            enabled: true,
+        },
+    );
+    mouse_reachable.extend(
+        app.table_row_context_menu(0)
+            .into_iter()
+            .flatten()
+            .filter_map(|item| item.action),
+    );
+    postui_core::storage::save_request(&app.project.root, "req", &req("https://x/req")).unwrap();
+    app.refresh_sidebar();
+    let row = app
+        .sidebar
+        .rows
+        .iter()
+        .position(|r| matches!(r, Row::Request { slug, .. } if slug == "req"))
+        .expect("the saved request is in the sidebar tree");
+    mouse_reachable.extend(
+        app.context_menu_for(&Hit::SidebarRow(row))
+            .into_iter()
+            .flatten()
+            .filter_map(|item| item.action),
+    );
+
+    for (name, action) in crate::keys::named_actions() {
+        assert!(
+            keyboard_only_navigation.contains(&action) || mouse_reachable.contains(&action),
+            "named action {name:?} ({action:?}) has a keybinding but no mouse path \
+             (chip/menu/palette/on_hit) — add one, or justify a keyboard-only \
+             exception in `keyboard_only_navigation`"
+        );
+    }
 }

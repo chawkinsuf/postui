@@ -685,6 +685,11 @@ impl App {
                 self.session.response.set_view_mode(mode);
                 true
             }
+            Action::OpenResponseSearch => {
+                self.update(Action::FocusPane(PaneId::Response));
+                self.session.response.open_search();
+                true
+            }
             Action::JsonRowClicked { row, toggle } => {
                 self.session.response.click_row(row, toggle);
                 true
@@ -997,6 +1002,28 @@ impl App {
                     EditorTab::Body => return true,
                 };
                 self.editor.table.delete_row(map, i);
+                true
+            }
+            Action::DuplicateTableRow(i) => {
+                let map = match self.editor.active_tab {
+                    EditorTab::Params => &mut self.editor.params,
+                    EditorTab::Headers => &mut self.editor.headers,
+                    EditorTab::Vars => &mut self.editor.variables,
+                    EditorTab::Body => return true,
+                };
+                let Some((key, entry)) = map.get_index(i).map(|(k, e)| (k.clone(), e.clone()))
+                else {
+                    return true;
+                };
+                let mut new_key = format!("{key}-copy");
+                let mut n = 2;
+                while map.contains_key(&new_key) {
+                    new_key = format!("{key}-copy-{n}");
+                    n += 1;
+                }
+                let insert_at = (i + 1).min(map.len());
+                map.shift_insert(insert_at, new_key, entry);
+                self.editor.table.selected = Some(insert_at);
                 true
             }
             Action::ConfirmDeleteRequest => {
@@ -2113,6 +2140,22 @@ impl App {
                         ToastKind::Warning,
                     );
                     return true;
+                }
+                // The table-row context menu's "Extract value to variable"
+                // only ever *selects* a row (see `context_menu_for`) — it
+                // never leaves a cell genuinely under edit, which is what
+                // `focused_field_text` requires below. Promote the selected
+                // row's Value cell to a live edit here, exactly as clicking
+                // it would, so the menu path reaches the same text the
+                // direct-action/palette paths do.
+                if self.focus == PaneId::Editor
+                    && self.editor.sub_focus == SubFocus::Content
+                    && self.editor.table.editing.is_none()
+                    && let Some(row) = self.editor.table.selected
+                    && row < self.editor.table_len()
+                {
+                    self.editor
+                        .click_table_cell(row, crate::components::table_editor::Col::Value);
                 }
                 let Some(text) = self.focused_field_text().map(|(t, _)| t.to_string()) else {
                     self.toasts
@@ -3461,6 +3504,12 @@ impl App {
             Hit::VmEntryRadio(row) | Hit::VmEntryCell { row, .. } => {
                 return self.varmanager.entry_context_menu(&self.project, *row);
             }
+            // A params/headers/vars row (Task 17, spec §5): the right-click
+            // handler has already re-resolved `i` past any commit and
+            // normalized the hit to `TableRow` regardless of which part of
+            // the row was clicked (see `handle_mouse`), so `i` is a live
+            // index into the active tab's map here.
+            Hit::TableRow(i) => return self.table_row_context_menu(*i),
             _ => return None,
         };
         Some(match row {
@@ -3497,6 +3546,29 @@ impl App {
                 ),
             ],
         })
+    }
+
+    /// The right-click menu for row `i` of the active params/headers/vars
+    /// table (Task 17, spec §5): duplicate, delete, and extract its value to
+    /// a variable. `None` for the Body tab (no table there) or a row index
+    /// past the map's end (the ghost row, or one that vanished under a
+    /// commit the caller already resolved past).
+    fn table_row_context_menu(&self, i: usize) -> Option<Vec<crate::components::modal::MenuItem>> {
+        use crate::components::modal::MenuItem;
+        let (map, noun) = match self.editor.active_tab {
+            EditorTab::Params => (&self.editor.params, "param"),
+            EditorTab::Headers => (&self.editor.headers, "header"),
+            EditorTab::Vars => (&self.editor.variables, "variable"),
+            EditorTab::Body => return None,
+        };
+        if i >= map.len() {
+            return None;
+        }
+        Some(vec![
+            MenuItem::new("Duplicate row", Action::DuplicateTableRow(i)),
+            MenuItem::new(format!("Delete {noun}…"), Action::ConfirmDeleteTableRow(i)),
+            MenuItem::new("Extract value to variable…", Action::ExtractToVariable),
+        ])
     }
 
     /// Push the standard unsaved-changes confirm whose "save" path relies on

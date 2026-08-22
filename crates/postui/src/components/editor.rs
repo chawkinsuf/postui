@@ -41,9 +41,9 @@ const DRAW_ORDER: [EditorTab; 4] = [
 ];
 
 impl EditorTab {
-    /// Stable slot number for the `alt+1/2/3` shortcuts (`Action::EditorTabSelect`),
-    /// unaffected by where Vars was inserted on screen: Params=0, Headers=1,
-    /// Body=2, Vars=3 (no shortcut currently reaches it).
+    /// Stable slot number for the `alt+1/2/3/4` shortcuts
+    /// (`Action::EditorTabSelect`), unaffected by where Vars was inserted on
+    /// screen: Params=0, Headers=1, Body=2, Vars=3.
     pub fn index(self) -> usize {
         match self {
             EditorTab::Params => 0,

@@ -117,6 +117,12 @@ impl App {
                 {
                     return self.update(Action::Render);
                 }
+                // A table hit is normalized to `TableRow(resolved)` for the
+                // menu lookup below: right-clicking any part of the row (a
+                // cell, the checkbox, the ✕) opens the same row menu, and
+                // `resolve_table_row_across_commit` re-numbers `i` past
+                // whatever commit just landed — see its own doc comment.
+                let mut menu_hit = hit.clone();
                 match &hit {
                     Hit::SidebarRow(i) | Hit::SidebarFolderArrow(i) => {
                         changed |= self.update(Action::FocusPane(PaneId::Sidebar));
@@ -143,17 +149,25 @@ impl App {
                     Hit::TableRow(i)
                     | Hit::TableCheckbox(i)
                     | Hit::TableDelete(i)
-                    | Hit::TableCell { row: i, .. }
-                        if self.editor.table.editing.is_none() =>
-                    {
+                    | Hit::TableCell { row: i, .. } => {
+                        let i = *i;
                         changed |= self.update(Action::FocusPane(PaneId::Editor));
-                        changed |= self.editor.table.selected != Some(*i);
                         self.editor.sub_focus = SubFocus::Content;
-                        self.editor.table.selected = Some(*i);
+                        match self.resolve_table_row_across_commit(i) {
+                            Some(resolved) => {
+                                changed |= self.editor.table.selected != Some(resolved);
+                                self.editor.table.selected = Some(resolved);
+                                menu_hit = Hit::TableRow(resolved);
+                            }
+                            // The clicked row was a ghost row that just
+                            // discarded itself on commit: nothing left to
+                            // menu.
+                            None => return self.update(Action::Render) || changed,
+                        }
                     }
                     _ => {}
                 }
-                match self.context_menu_for(&hit) {
+                match self.context_menu_for(&menu_hit) {
                     Some(items) => self.open_context_menu(m.column, m.row, items) || changed,
                     None => changed,
                 }
@@ -310,6 +324,32 @@ impl App {
         self.update(Action::FocusPane(PaneId::Response));
         self.session.response.step_search(delta);
         self.update(Action::Render)
+    }
+
+    /// Mirrors every keybound (`keys::named_actions`) action that `on_hit`
+    /// below dispatches directly — i.e. reachable by a click that isn't
+    /// already counted via a footer/toolbar chip, a context menu, or a
+    /// palette command. Feeds `app::tests`'s mouse-parity sweep (spec §5):
+    /// that test can't reflect over `on_hit`'s match arms, so this list is
+    /// hand-kept beside it instead. Add a `Hit` arm below that fires a
+    /// keybound action directly, and add the same action here in the same
+    /// change — otherwise the parity test starts failing for it.
+    #[cfg(test)]
+    pub(crate) fn mouse_dispatch_mirror() -> Vec<Action> {
+        vec![
+            Action::Close,               // Hit::ModalOutside
+            Action::OpenProjectChooser,  // Hit::HeaderProject
+            Action::OpenEnvChooser,      // Hit::HeaderEnv
+            Action::OpenVarManager,      // Hit::HeaderVars
+            Action::OpenMethodDropdown,  // Hit::MethodSelector
+            Action::ToggleTableCollapse, // Hit::TableCollapse
+            Action::FocusUrl,            // Hit::UrlBar
+            Action::Send,                // Hit::SendButton (not in flight)
+            Action::EditorTabSelect(0),  // Hit::EditorTab, any draw position
+            Action::EditorTabSelect(1),  // (converted through
+            Action::EditorTabSelect(2),  //  EditorTab::from_draw_position(..).index())
+            Action::EditorTabSelect(3),
+        ]
     }
 
     /// The central click dispatch: maps a resolved `Hit` (plus click count
@@ -513,9 +553,13 @@ impl App {
             }
             Hit::TableCollapse => self.update(Action::ToggleTableCollapse),
             Hit::UrlBar => {
-                self.update(Action::FocusPane(PaneId::Editor));
                 let was_focused = self.editor.sub_focus == SubFocus::Url;
-                self.editor.sub_focus = SubFocus::Url;
+                // `Action::FocusUrl` is exactly "focus Editor, sub-focus
+                // Url" (see its handler) — dispatching it here rather than
+                // setting both fields by hand is what makes the mouse-parity
+                // test's job possible: `focus_url` genuinely goes through
+                // this arm rather than merely resembling it.
+                self.update(Action::FocusUrl);
                 if let Some(area) = self.editor.last_url_text_area {
                     // Map the clicked column back to a char index: the drawn
                     // window starts at 0 unfocused, or scrolls to keep the

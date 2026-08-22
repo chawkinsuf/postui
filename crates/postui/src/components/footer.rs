@@ -16,8 +16,10 @@ pub const FOOTER_HEIGHT: u16 = 3;
 /// always appended at the end. Each entry is `(key, label, action)`; `None`
 /// actions render as plain (unregistered, muted) text on the panel
 /// background rather than a filled chip — they describe a binding with no
-/// single dispatchable `Action` (e.g. multi-key hints).
-fn footer_chips(focus: PaneId) -> Vec<(&'static str, &'static str, Option<Action>)> {
+/// single dispatchable `Action` (e.g. multi-key hints). `pub(crate)` so
+/// `app::tests`'s mouse-parity sweep (spec §5) can enumerate the same
+/// actions `draw_footer` paints as chips, rather than a copy of this list.
+pub(crate) fn footer_chips(focus: PaneId) -> Vec<(&'static str, &'static str, Option<Action>)> {
     let mut chips: Vec<(&'static str, &'static str, Option<Action>)> = match focus {
         PaneId::Sidebar => vec![
             ("enter", "open", None),
@@ -33,9 +35,21 @@ fn footer_chips(focus: PaneId) -> Vec<(&'static str, &'static str, Option<Action
             ("↑↓←→", "navigate", None),
         ],
         PaneId::Response => vec![
-            ("r", "raw", None),
-            ("h", "headers", None),
-            ("/", "search", None),
+            (
+                "r",
+                "raw",
+                Some(Action::ResponseViewMode(
+                    crate::components::response::ViewMode::Raw,
+                )),
+            ),
+            (
+                "h",
+                "headers",
+                Some(Action::ResponseViewMode(
+                    crate::components::response::ViewMode::Headers,
+                )),
+            ),
+            ("/", "search", Some(Action::OpenResponseSearch)),
         ],
     };
     chips.push(("^P", "commands", Some(Action::OpenPalette)));
@@ -199,6 +213,35 @@ mod tests {
         let content = render(PaneId::Response);
         assert!(content.contains("r raw"));
         assert!(content.contains("/ search"));
+    }
+
+    /// Task 17, spec §5: the Response pane's `r`/`h`/`/` chips used to be
+    /// plain unregistered text (`None` action) — they must now be clickable
+    /// like every other chip.
+    #[test]
+    fn response_chips_are_clickable() {
+        let theme = Theme::for_terminal();
+        let backend = TestBackend::new(120, FOOTER_HEIGHT);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| draw_footer(f, f.area(), &theme, PaneId::Response, &mut hits, None))
+            .unwrap();
+        use crate::components::response::ViewMode;
+        assert!(
+            hits.rect_of(&Hit::FooterChip(Action::ResponseViewMode(ViewMode::Raw)))
+                .is_some()
+        );
+        assert!(
+            hits.rect_of(&Hit::FooterChip(Action::ResponseViewMode(
+                ViewMode::Headers
+            )))
+            .is_some()
+        );
+        assert!(
+            hits.rect_of(&Hit::FooterChip(Action::OpenResponseSearch))
+                .is_some()
+        );
     }
 
     #[test]
