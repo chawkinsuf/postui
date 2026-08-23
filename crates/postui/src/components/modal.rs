@@ -336,6 +336,22 @@ impl ModalStack {
         self.stack.is_empty()
     }
 
+    /// The `LineInput` that currently owns the keyboard in the top modal,
+    /// if that modal is a text-entry kind — used by the app's ctrl+c
+    /// copy-selection interception.
+    pub fn focused_input(&self) -> Option<&LineInput> {
+        match self.stack.last()? {
+            Modal::Prompt { input, .. } => Some(input),
+            Modal::NewProject { name, path, on_path, .. } => {
+                Some(if *on_path { path } else { name })
+            }
+            Modal::MultiPrompt { fields, focus, .. } => {
+                fields.get(*focus).map(|f| &f.input)
+            }
+            _ => None,
+        }
+    }
+
     pub fn top(&self) -> Option<&Modal> {
         self.stack.last()
     }

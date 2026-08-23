@@ -229,6 +229,67 @@ fn ctrl_c_quits_even_with_modal_open() {
 }
 
 #[test]
+fn ctrl_c_copies_the_url_selection_instead_of_quitting() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.txt");
+    let cmd = format!("cat > {}", out.to_string_lossy());
+    let mut app = App::new_for_test();
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
+        Some(cmd),
+        65536,
+        false,
+    ));
+    app.editor.url = crate::components::line_input::LineInput::new("https://example.com");
+    app.editor.sub_focus = SubFocus::Url;
+    app.editor.url.select_all();
+
+    app.handle_key(&Keymap::default_bindings(), ctrl('c'));
+
+    assert!(!app.should_quit, "copy pre-empts quit");
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "https://example.com");
+    assert!(
+        app.editor.url.selection().is_some(),
+        "copy keeps the selection"
+    );
+    // With the selection gone, ctrl+c means quit again (here gated on the
+    // unsaved URL edit, so it surfaces as the confirm modal).
+    app.editor.url.clear_selection();
+    app.handle_key(&Keymap::default_bindings(), ctrl('c'));
+    assert!(
+        app.should_quit || !app.modals.is_empty(),
+        "quit (or its unsaved-changes gate) fires once nothing is selected"
+    );
+}
+
+#[test]
+fn ctrl_c_copies_a_modal_prompt_selection_and_keeps_the_modal_open() {
+    use crate::components::modal::{Modal, PromptKind};
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.txt");
+    let cmd = format!("cat > {}", out.to_string_lossy());
+    let mut app = App::new_for_test();
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
+        Some(cmd),
+        65536,
+        false,
+    ));
+    let mut input = crate::components::line_input::LineInput::new("my-request");
+    input.select_all();
+    app.modals.push(Modal::Prompt {
+        title: "Name".into(),
+        input,
+        kind: PromptKind::NewRequest,
+        revealed: false,
+    });
+
+    app.handle_key(&Keymap::default_bindings(), ctrl('c'));
+
+    assert!(!app.should_quit);
+    assert!(!app.modals.is_empty(), "the modal stays open");
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "my-request");
+}
+
+#[test]
 fn plain_q_types_into_palette_instead_of_quitting() {
     let mut app = App::new_for_test();
     app.update(Action::OpenPalette);

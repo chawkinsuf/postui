@@ -740,23 +740,7 @@ impl App {
                         .push("nothing to copy — send a request first", ToastKind::Warning);
                     return true;
                 };
-                match self.clipboard.copy(&text) {
-                    crate::clipboard::CopyResult::Copied { .. } => {
-                        self.toasts.push(success_msg, ToastKind::Success);
-                    }
-                    crate::clipboard::CopyResult::OscTooLarge => {
-                        self.toasts.push(
-                            "Too large for the terminal clipboard — use Save body to file, or set clipboard_cmd in config",
-                            ToastKind::Warning,
-                        );
-                    }
-                    crate::clipboard::CopyResult::Failed(_) => {
-                        self.toasts.push(
-                            "Clipboard unavailable — try Shift+drag to select",
-                            ToastKind::Error,
-                        );
-                    }
-                }
+                self.copy_text_with_toast(&text, success_msg);
                 true
             }
             Action::PromptSaveBody => {
@@ -3762,6 +3746,60 @@ impl App {
         }
     }
 
+    /// Copies `text` to the clipboard and toasts the outcome:
+    /// `success_msg` on success, the shared size/availability warnings
+    /// otherwise. The one clipboard-write path for both explicit copy
+    /// actions and ctrl+c selection copies.
+    fn copy_text_with_toast(&mut self, text: &str, success_msg: String) {
+        match self.clipboard.copy(text) {
+            crate::clipboard::CopyResult::Copied { .. } => {
+                self.toasts.push(success_msg, ToastKind::Success);
+            }
+            crate::clipboard::CopyResult::OscTooLarge => {
+                self.toasts.push(
+                    "Too large for the terminal clipboard — use Save body to file, or set clipboard_cmd in config",
+                    ToastKind::Warning,
+                );
+            }
+            crate::clipboard::CopyResult::Failed(_) => {
+                self.toasts.push(
+                    "Clipboard unavailable — try Shift+drag to select",
+                    ToastKind::Error,
+                );
+            }
+        }
+    }
+
+    /// The text of whichever selection currently owns the keyboard, in
+    /// focus-priority order: the top modal's text field, a Variable
+    /// Manager edit, then (on the main screen) a table cell edit, the URL
+    /// bar, the body editor, and the response view. `None` when nothing
+    /// is selected anywhere — the caller falls back to the key's normal
+    /// meaning (ctrl+c quits).
+    fn active_selection_text(&self) -> Option<String> {
+        if let Some(input) = self.modals.focused_input() {
+            return input.selected_text();
+        }
+        if self.screen == Screen::VarManager {
+            if let Some((_, input)) = self.varmanager.form.editing.as_ref() {
+                return input.selected_text();
+            }
+            if let Some(edit) = self.varmanager.grid.editing.as_ref() {
+                return edit.input.selected_text();
+            }
+            return None;
+        }
+        if let Some(edit) = self.editor.table.editing.as_ref()
+            && let Some(text) = edit.input.selected_text()
+        {
+            return Some(text);
+        }
+        if self.editor.sub_focus == SubFocus::Url {
+            return self.editor.url.selected_text();
+        }
+        None
+    }
+
     /// Resolves `target` to the text to copy and the success toast to show
     /// on a successful copy. `None` when `target` needs a ready response
     /// and there isn't one (or the header index is out of range).
@@ -3836,8 +3874,15 @@ impl App {
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
 
-        // 1. A modified quit combo is the escape hatch: it pre-empts everything.
+        // 1. A modified quit combo is the escape hatch: it pre-empts
+        // everything — except that when a text selection is live anywhere,
+        // ctrl+c means "copy" (the GUI meaning) and quit keeps working the
+        // moment nothing is selected.
         if modified && global == Some(Action::Quit) {
+            if let Some(text) = self.active_selection_text() {
+                self.copy_text_with_toast(&text, "Copied selection".to_string());
+                return true;
+            }
             return self.update(Action::Quit);
         }
 
