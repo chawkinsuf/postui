@@ -344,13 +344,13 @@ impl LineInput {
         let mut spans: Vec<Span<'static>> = Vec::new();
         let mut run = String::new();
         let mut run_style = base;
-        for i in start..end {
+        for (i, &ch) in chars.iter().enumerate().take(end).skip(start) {
             let style = style_at(i);
             if style != run_style && !run.is_empty() {
                 spans.push(Span::styled(std::mem::take(&mut run), run_style));
             }
             run_style = style;
-            run.push(chars[i]);
+            run.push(ch);
         }
         if !run.is_empty() {
             spans.push(Span::styled(run, run_style));
