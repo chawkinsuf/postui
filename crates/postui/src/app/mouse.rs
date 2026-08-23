@@ -51,9 +51,7 @@ impl App {
                         Some(TextDrag::Response) => {
                             self.session.response.drag_selection_to(m.column, m.row)
                         }
-                        // The Url sweep is wired by its own task (plan
-                        // 2026-08-23-text-selection).
-                        Some(TextDrag::Url) => false,
+                        Some(TextDrag::Url) => self.url_drag_to(m.column),
                         None => false,
                     };
                 }
@@ -358,6 +356,23 @@ impl App {
             return false;
         }
         self.session.response.set_scroll_h(offset)
+    }
+
+    /// Extends a URL-bar selection sweep to the pointer's column: maps it
+    /// back through the same window math the click used (the input is
+    /// focused mid-sweep, so the window follows its caret) and moves the
+    /// caret while keeping the anchor.
+    fn url_drag_to(&mut self, column: u16) -> bool {
+        let Some(area) = self.editor.last_url_text_area else {
+            return false;
+        };
+        if area.width == 0 {
+            return false;
+        }
+        let start = self.editor.url.window_start(true, area.width);
+        let col = usize::from(column.clamp(area.x, area.x + area.width - 1) - area.x);
+        self.editor.url.set_cursor_extending(start + col);
+        true
     }
 
     /// Commits any in-progress table cell edit, surfacing its warning as a
@@ -668,17 +683,27 @@ impl App {
                 // this arm rather than merely resembling it.
                 self.update(Action::FocusUrl);
                 if let Some(area) = self.editor.last_url_text_area {
-                    // Map the clicked column back to a char index: the drawn
-                    // window starts at 0 unfocused, or scrolls to keep the
-                    // caret visible when already focused (mirroring
-                    // `LineInput::draw_line_windowed`).
-                    let start = if was_focused {
-                        (self.editor.url.cursor() + 1).saturating_sub(area.width.max(1) as usize)
+                    if clicks == 2 {
+                        // Address-bar convention: double click selects the
+                        // whole URL.
+                        self.editor.url.select_all();
                     } else {
-                        0
-                    };
-                    let col = m.column.saturating_sub(area.x) as usize;
-                    self.editor.url.set_cursor(start + col);
+                        // Map the clicked column back to a char index: the
+                        // drawn window starts at 0 unfocused, or scrolls to
+                        // keep the caret visible when already focused
+                        // (mirroring `LineInput::draw_line_windowed`).
+                        let start = if was_focused {
+                            (self.editor.url.cursor() + 1)
+                                .saturating_sub(area.width.max(1) as usize)
+                        } else {
+                            0
+                        };
+                        let col = m.column.saturating_sub(area.x) as usize;
+                        self.editor.url.set_cursor(start + col);
+                        // The click also anchors a possible drag sweep.
+                        self.editor.url.begin_mouse_selection();
+                        self.text_drag = Some(TextDrag::Url);
+                    }
                 }
                 self.update(Action::Render)
             }

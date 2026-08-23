@@ -3559,6 +3559,34 @@ fn ready_response(app: &mut App, body: &str) {
 }
 
 #[test]
+fn url_bar_drag_selects_and_double_click_selects_all() {
+    let mut app = App::new_for_test();
+    app.editor.url = crate::components::line_input::LineInput::new("https://example.com");
+    render_once(&mut app);
+    let area = app.editor.last_url_text_area.expect("url area recorded");
+
+    // Click at the start, sweep 5 cells right: "https" selected.
+    app.handle_mouse(left_down(area.x, area.y));
+    assert!(app.handle_mouse(dragged(area.x + 5, area.y)));
+    app.handle_mouse(left_up(area.x + 5, area.y));
+    assert_eq!(app.editor.url.selected_text().as_deref(), Some("https"));
+
+    // A double click selects the whole URL. (Reset the click pairing so
+    // the sweep's Down above can't count as this pair's first click.)
+    app.last_click = None;
+    app.handle_mouse(left_down(area.x + 2, area.y));
+    app.handle_mouse(left_down(area.x + 2, area.y)); // within 400ms => clicks == 2
+    assert_eq!(
+        app.editor.url.selected_text().as_deref(),
+        Some("https://example.com")
+    );
+
+    // A later plain click collapses the selection.
+    app.handle_mouse(left_down(area.x + 1, area.y));
+    assert_eq!(app.editor.url.selection(), None);
+}
+
+#[test]
 fn dragging_in_the_response_selects_and_ctrl_c_copies_it() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.txt");
