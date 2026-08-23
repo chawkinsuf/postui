@@ -3559,6 +3559,61 @@ fn ready_response(app: &mut App, body: &str) {
 }
 
 #[test]
+fn ctrl_c_copies_a_table_cell_selection_and_keeps_the_edit_live() {
+    use crate::components::table_editor::{CellEdit, Col};
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.txt");
+    let cmd = format!("cat > {}", out.to_string_lossy());
+    let mut app = App::new_for_test();
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
+        Some(cmd),
+        65536,
+        false,
+    ));
+    let mut input = crate::components::line_input::LineInput::new("page");
+    input.select_all();
+    app.editor.table.editing = Some(CellEdit {
+        row: 0,
+        col: Col::Key,
+        input,
+        original: "page".into(),
+    });
+
+    app.handle_key(&Keymap::default_bindings(), ctrl('c'));
+
+    assert!(!app.should_quit);
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "page");
+    assert!(
+        app.editor.table.editing.is_some(),
+        "the cell edit stays live"
+    );
+}
+
+#[test]
+fn ctrl_c_copies_a_var_form_selection_on_the_varmanager_screen() {
+    use crate::components::varmanager::VmField;
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.txt");
+    let cmd = format!("cat > {}", out.to_string_lossy());
+    let mut app = App::new_for_test();
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
+        Some(cmd),
+        65536,
+        false,
+    ));
+    app.screen = Screen::VarManager;
+    let mut input = crate::components::line_input::LineInput::new("token value");
+    input.select_all();
+    app.varmanager.form.editing = Some((VmField::Default, input));
+
+    app.handle_key(&Keymap::default_bindings(), ctrl('c'));
+
+    assert!(!app.should_quit);
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "token value");
+    assert!(app.varmanager.form.editing.is_some(), "the edit stays live");
+}
+
+#[test]
 fn url_bar_drag_selects_and_double_click_selects_all() {
     let mut app = App::new_for_test();
     app.editor.url = crate::components::line_input::LineInput::new("https://example.com");
