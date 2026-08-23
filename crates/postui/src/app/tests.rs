@@ -3559,6 +3559,39 @@ fn ready_response(app: &mut App, body: &str) {
 }
 
 #[test]
+fn dragging_in_the_response_selects_and_ctrl_c_copies_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.txt");
+    let cmd = format!("cat > {}", out.to_string_lossy());
+    let mut app = App::new_for_test();
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
+        Some(cmd),
+        65536,
+        false,
+    ));
+    ready_response(&mut app, "plain text body"); // not JSON -> Raw view
+    render_once(&mut app);
+    let area = app
+        .session
+        .response
+        .view()
+        .unwrap()
+        .last_area
+        .expect("body area recorded");
+    app.handle_mouse(left_down(area.x, area.y));
+    assert!(app.handle_mouse(dragged(area.x + 4, area.y)));
+    app.handle_mouse(left_up(area.x + 4, area.y));
+    assert_eq!(
+        app.session.response.selected_text().as_deref(),
+        Some("plain")
+    );
+
+    app.handle_key(&Keymap::default_bindings(), ctrl('c'));
+    assert!(!app.should_quit, "copy pre-empts quit");
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "plain");
+}
+
+#[test]
 fn click_response_tab_switches_to_headers() {
     use crate::components::response::ViewMode;
     let mut app = App::new_for_test();

@@ -48,9 +48,12 @@ impl App {
                     // hover update.
                     return match self.text_drag {
                         Some(TextDrag::Body) => self.editor.body_drag_to(m.column, m.row),
-                        // Url and Response sweeps are wired by their own
-                        // tasks (plan 2026-08-23-text-selection).
-                        Some(TextDrag::Url) | Some(TextDrag::Response) => false,
+                        Some(TextDrag::Response) => {
+                            self.session.response.drag_selection_to(m.column, m.row)
+                        }
+                        // The Url sweep is wired by its own task (plan
+                        // 2026-08-23-text-selection).
+                        Some(TextDrag::Url) => false,
                         None => false,
                     };
                 }
@@ -508,7 +511,17 @@ impl App {
             self.editor.sub_focus = SubFocus::None;
         }
         match hit {
-            Hit::Pane(p) => self.update(Action::FocusPane(p)),
+            Hit::Pane(p) => {
+                // A click on the response pane's bare content (Raw and
+                // Headers register no per-row hits) anchors a selection
+                // sweep, exactly like a JsonRow click does in Pretty.
+                if p == PaneId::Response
+                    && self.session.response.begin_selection_at(m.column, m.row)
+                {
+                    self.text_drag = Some(TextDrag::Response);
+                }
+                self.update(Action::FocusPane(p))
+            }
             Hit::BodyEditor => {
                 self.update(Action::FocusPane(PaneId::Editor));
                 self.editor.handle_mouse(m);
@@ -782,6 +795,11 @@ impl App {
             }
             Hit::JsonRow(i) => {
                 self.update(Action::FocusPane(PaneId::Response));
+                // The click also anchors a possible selection sweep (and
+                // collapses any previous selection), like any text click.
+                if self.session.response.begin_selection_at(m.column, m.row) {
+                    self.text_drag = Some(TextDrag::Response);
+                }
                 self.update(Action::JsonRowClicked {
                     row: i,
                     toggle: false,

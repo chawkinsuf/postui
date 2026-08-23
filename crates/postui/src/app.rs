@@ -3812,9 +3812,13 @@ impl App {
         {
             return Some(text);
         }
-        // A body selection is a visible highlight — copyable whenever it
-        // exists, not only while the body owns the keyboard.
+        // Body and response selections are visible highlights — copyable
+        // whenever they exist, not only while their pane owns the
+        // keyboard.
         if let Some(text) = self.editor.body_selected_text() {
+            return Some(text);
+        }
+        if let Some(text) = self.session.response.selected_text() {
             return Some(text);
         }
         None

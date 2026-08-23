@@ -96,6 +96,16 @@ pub struct ReadyView {
     /// is O(all visible lines), too much to redo per wheel tick on a
     /// megabyte body.
     content_width: Option<(ViewMode, usize, usize)>,
+    /// The body content rect as of the last draw — the coordinate frame
+    /// mouse selection maps through. `None` before the first frame.
+    pub last_area: Option<Rect>,
+    /// The fixed (visible line, char col) cell a selection sweep grows
+    /// from; planted on `Down`, consumed by drags and shift+Up/Down.
+    sel_anchor: Option<(usize, usize)>,
+    /// A live selection: its anchor and head cells (either order, both
+    /// inclusive), in (visible line, char col) coordinates of the current
+    /// view mode.
+    sel: Option<((usize, usize), (usize, usize))>,
 }
 
 impl ReadyView {
@@ -139,6 +149,9 @@ impl ReadyView {
             height: 10,
             width: 40,
             content_width: None,
+            last_area: None,
+            sel_anchor: None,
+            sel: None,
         }
     }
 
@@ -270,6 +283,8 @@ impl ReadyView {
             return;
         }
         self.mode = mode;
+        // Selection coordinates live in the old mode's line space.
+        self.clear_sel();
         if mode != ViewMode::Headers {
             self.body_mode = mode;
         }
@@ -359,6 +374,126 @@ impl ReadyView {
             .map(|(_, c)| (*c, c + width));
         LineMatches { ranges, current }
     }
+
+    /// The text visible line `i` shows in the current mode: the verbatim
+    /// raw/header line, or (Pretty) the row's indent plus its rendered
+    /// tokens — the summary for a collapsed row, exactly what's painted.
+    fn display_line_text(&self, i: usize) -> Option<String> {
+        match self.mode {
+            ViewMode::Raw => self.raw_lines.get(i).cloned(),
+            ViewMode::Headers => self.header_lines.get(i).cloned(),
+            ViewMode::Pretty => {
+                let tree = self.tree.as_ref()?;
+                let line = tree.visible_lines().get(i).copied()?;
+                let mut out = " ".repeat(line.indent);
+                for tok in line.render_tokens() {
+                    out.push_str(&tok.text);
+                }
+                Some(out)
+            }
+        }
+    }
+
+    /// Maps a screen position to a (visible line, char col) cell of the
+    /// current view, through the drawn area, `scroll` and `h_scroll`.
+    /// `clamp` pulls positions outside the drawn area onto its nearest
+    /// cell (drag sweeps keep selecting at the edges); without it such
+    /// positions return `None` (a click must land inside).
+    fn cell_at(&self, x: u16, y: u16, clamp: bool) -> Option<(usize, usize)> {
+        use ratatui::layout::Position;
+        let area = self.last_area?;
+        if area.width == 0 || area.height == 0 || self.visible_len() == 0 {
+            return None;
+        }
+        if !clamp && !area.contains(Position { x, y }) {
+            return None;
+        }
+        let yy = y.clamp(area.y, area.y + area.height - 1);
+        let xx = x.clamp(area.x, area.x + area.width - 1);
+        let line = (self.scroll + usize::from(yy - area.y)).min(self.visible_len() - 1);
+        let disp_col = self.h_scroll + usize::from(xx - area.x);
+        let text = self.display_line_text(line).unwrap_or_default();
+        Some((line, char_cell_at_display_col(&text, disp_col)))
+    }
+
+    /// The selection's char range on visible line `i`, as half-open
+    /// `[from, to)` over that line's display text (`to` may exceed the
+    /// line's length — callers clamp). `None` when `i` is outside the
+    /// selection.
+    fn sel_range_on_line(&self, i: usize) -> Option<(usize, usize)> {
+        let (a, b) = self.sel?;
+        let (s, e) = if a <= b { (a, b) } else { (b, a) };
+        if i < s.0 || i > e.0 {
+            return None;
+        }
+        let from = if i == s.0 { s.1 } else { 0 };
+        let to = if i == e.0 { e.1 + 1 } else { usize::MAX };
+        Some((from, to))
+    }
+
+    /// The selected text, lines joined with `\n`. `None` without a
+    /// selection.
+    fn selected_text(&self) -> Option<String> {
+        let (a, b) = self.sel?;
+        let (s, e) = if a <= b { (a, b) } else { (b, a) };
+        let mut out = String::new();
+        for line in s.0..=e.0 {
+            if line > s.0 {
+                out.push('\n');
+            }
+            let text = self.display_line_text(line).unwrap_or_default();
+            let len = text.chars().count();
+            let from = if line == s.0 { s.1.min(len) } else { 0 };
+            let to = if line == e.0 { (e.1 + 1).min(len) } else { len };
+            out.extend(text.chars().skip(from).take(to.saturating_sub(from)));
+        }
+        Some(out)
+    }
+
+    fn clear_sel(&mut self) {
+        self.sel = None;
+        self.sel_anchor = None;
+    }
+
+    /// Extends a line-wise selection by `delta` lines (shift+Up/Down): the
+    /// anchor line is fixed, the cursor line moves, and every line between
+    /// them is covered in full.
+    fn select_line_extend(&mut self, delta: i32) {
+        let anchor_line = self.sel_anchor.map(|(l, _)| l).unwrap_or(self.cursor);
+        self.sel_anchor = Some((anchor_line, 0));
+        self.move_cursor(delta);
+        let cl = self.cursor;
+        let len =
+            |v: &Self, l: usize| v.display_line_text(l).map_or(0, |t| t.chars().count());
+        self.sel = Some(if cl >= anchor_line {
+            (
+                (anchor_line, 0),
+                (cl, len(self, cl).saturating_sub(1)),
+            )
+        } else {
+            (
+                (anchor_line, len(self, anchor_line).saturating_sub(1)),
+                (cl, 0),
+            )
+        });
+    }
+}
+
+/// The char index of the cell at display column `col` of `text` (wide
+/// chars span several columns), clamped onto the line's last char (0 when
+/// empty).
+fn char_cell_at_display_col(text: &str, col: usize) -> usize {
+    use unicode_width::UnicodeWidthChar;
+    let mut w = 0usize;
+    let mut count = 0usize;
+    for (i, c) in text.chars().enumerate() {
+        w += c.width().unwrap_or(0);
+        if w > col {
+            return i;
+        }
+        count = i + 1;
+    }
+    count.saturating_sub(1)
 }
 
 /// The search hits that fall on one rendered line, as char ranges.
@@ -404,6 +539,7 @@ impl Response {
             return false;
         }
         view.parsing = false;
+        view.clear_sel();
         match tree {
             Some(tree) => {
                 view.tree = Some(tree);
@@ -563,9 +699,59 @@ impl Response {
             && let Some(tree) = view.tree.as_mut()
         {
             tree.toggle(view.cursor);
+            // Collapsing/expanding renumbers the visible lines a selection
+            // is addressed in.
+            view.clear_sel();
             view.clamp_cursor();
             view.follow_cursor();
         }
+    }
+
+    /// Plants a selection anchor at the screen position of a left click in
+    /// the body content (clearing any previous selection). Returns whether
+    /// an anchor was planted — the caller arms the drag sweep on `true`.
+    pub fn begin_selection_at(&mut self, x: u16, y: u16) -> bool {
+        let Some(view) = self.view.as_mut() else {
+            return false;
+        };
+        view.clear_sel();
+        let Some(cell) = view.cell_at(x, y, false) else {
+            return false;
+        };
+        view.sel_anchor = Some(cell);
+        true
+    }
+
+    /// Extends the selection sweep to the drag point (clamped onto the
+    /// body area, so sweeping past an edge keeps selecting the nearest
+    /// cells). Dragging back onto the anchor cell collapses the selection.
+    pub fn drag_selection_to(&mut self, x: u16, y: u16) -> bool {
+        let Some(view) = self.view.as_mut() else {
+            return false;
+        };
+        let Some(anchor) = view.sel_anchor else {
+            return false;
+        };
+        let Some(head) = view.cell_at(x, y, true) else {
+            return false;
+        };
+        view.sel = (head != anchor).then_some((anchor, head));
+        true
+    }
+
+    /// The selected response text, if any.
+    pub fn selected_text(&self) -> Option<String> {
+        self.view.as_ref()?.selected_text()
+    }
+
+    /// Clears any selection; returns whether there was one.
+    pub fn clear_selection(&mut self) -> bool {
+        let Some(view) = self.view.as_mut() else {
+            return false;
+        };
+        let had = view.sel.is_some();
+        view.clear_sel();
+        had
     }
 
     /// Ready-state key handling. Split out so [`Component::handle_key`] stays
@@ -616,11 +802,21 @@ impl Response {
                 view.set_mode(next);
                 Some(Action::Render)
             }
+            KeyCode::Down if ev.modifiers.contains(KeyModifiers::SHIFT) => {
+                view.select_line_extend(1);
+                Some(Action::Render)
+            }
+            KeyCode::Up if ev.modifiers.contains(KeyModifiers::SHIFT) => {
+                view.select_line_extend(-1);
+                Some(Action::Render)
+            }
             KeyCode::Char('j') | KeyCode::Down => {
+                view.clear_sel();
                 view.move_cursor(1);
                 Some(Action::Render)
             }
             KeyCode::Char('k') | KeyCode::Up => {
+                view.clear_sel();
                 view.move_cursor(-1);
                 Some(Action::Render)
             }
@@ -675,6 +871,7 @@ impl Response {
                     && let Some(tree) = view.tree.as_mut()
                 {
                     tree.toggle(view.cursor);
+                    view.clear_sel();
                     view.clamp_cursor();
                     view.follow_cursor();
                 }
@@ -690,6 +887,10 @@ impl Response {
             }
             KeyCode::Char('N') => {
                 view.step_match(-1);
+                Some(Action::Render)
+            }
+            KeyCode::Esc if view.sel.is_some() => {
+                view.clear_sel();
                 Some(Action::Render)
             }
             KeyCode::Esc if view.search.is_some() => {
@@ -829,6 +1030,7 @@ impl Component for Response {
             crate::hit::draw_scrollbar(frame, hits, column, &spec, ctx.hovered, ctx.dragging, t);
         }
         view.width = body_area.width as usize;
+        view.last_area = Some(body_area);
         // The visible set may have shrunk (a collapse, a view switch) since
         // the offset was set; never leave the viewport past the content.
         view.h_scroll = view
@@ -1080,7 +1282,13 @@ fn body_lines(
                 current: None,
             }
         };
-        let mut line = crop_cols(highlighted(pieces, &hits), view.h_scroll);
+        let mut line = highlighted(pieces, &hits);
+        // Selection bg on top of search styling, before the h-crop (its
+        // char columns are pre-crop coordinates).
+        if let Some((from, to)) = view.sel_range_on_line(i) {
+            line = apply_col_bg(line, from, to, t.selection);
+        }
+        let mut line = crop_cols(line, view.h_scroll);
         if focused && i == view.cursor {
             line = line.style(cursor_bg);
         }
@@ -1262,6 +1470,44 @@ fn draw_h_indicator(
         },
         thumb_hit,
     );
+}
+
+/// Repaints the chars in the half-open column range `[from, to)` of `line`
+/// onto background `bg`, splitting spans at the boundaries and keeping
+/// every other style bit — how a selection lies over already-styled
+/// content (tokens, search matches).
+fn apply_col_bg(line: Line<'static>, from: usize, to: usize, bg: Color) -> Line<'static> {
+    let style = line.style;
+    let mut spans = Vec::new();
+    let mut at = 0usize;
+    for span in line.spans {
+        let chars: Vec<char> = span.content.chars().collect();
+        let (s0, s1) = (at, at + chars.len());
+        at = s1;
+        if to <= s0 || from >= s1 {
+            spans.push(span);
+            continue;
+        }
+        let a = from.saturating_sub(s0).min(chars.len());
+        let b = to.saturating_sub(s0).min(chars.len());
+        if a > 0 {
+            spans.push(Span::styled(
+                chars[..a].iter().collect::<String>(),
+                span.style,
+            ));
+        }
+        spans.push(Span::styled(
+            chars[a..b].iter().collect::<String>(),
+            span.style.bg(bg),
+        ));
+        if b < chars.len() {
+            spans.push(Span::styled(
+                chars[b..].iter().collect::<String>(),
+                span.style,
+            ));
+        }
+    }
+    Line::from(spans).style(style)
 }
 
 /// Drops the first `skip` display columns of `line`, keeping every span
@@ -1486,6 +1732,113 @@ mod tests {
             .draw(|f| resp.draw(f, f.area(), &ctx, &mut hits))
             .unwrap();
         format!("{:?}", terminal.backend().buffer())
+    }
+
+    /// Renders and returns the (body-area rect, buffer) so selection tests
+    /// can map screen cells.
+    fn render_buf(resp: &mut Response) -> (Rect, ratatui::buffer::Buffer) {
+        let theme = Theme::dark();
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: None,
+            dragging: false,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| resp.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+        let area = resp.view().unwrap().last_area.expect("area recorded");
+        (area, terminal.backend().buffer().clone())
+    }
+
+    #[test]
+    fn raw_drag_selects_across_lines_and_copies_with_newlines() {
+        let mut r = ready("hello world\nsecond line\nthird");
+        let (area, _) = render_buf(&mut r);
+        assert!(r.begin_selection_at(area.x, area.y));
+        assert!(r.drag_selection_to(area.x + 2, area.y + 1));
+        assert_eq!(r.selected_text().as_deref(), Some("hello world\nsec"));
+    }
+
+    #[test]
+    fn drag_past_the_line_end_clamps_to_its_last_char() {
+        let mut r = ready("ab\nlonger line");
+        let (area, _) = render_buf(&mut r);
+        r.begin_selection_at(area.x, area.y);
+        r.drag_selection_to(area.x + 50, area.y);
+        assert_eq!(r.selected_text().as_deref(), Some("ab"));
+    }
+
+    #[test]
+    fn a_new_click_or_view_switch_clears_the_selection() {
+        let mut r = ready("hello\nworld");
+        let (area, _) = render_buf(&mut r);
+        r.begin_selection_at(area.x, area.y);
+        r.drag_selection_to(area.x + 3, area.y);
+        assert!(r.selected_text().is_some());
+        // A fresh click collapses...
+        r.begin_selection_at(area.x + 1, area.y + 1);
+        assert_eq!(r.selected_text(), None);
+        // ...and so does a tab switch.
+        r.begin_selection_at(area.x, area.y);
+        r.drag_selection_to(area.x + 3, area.y);
+        assert!(r.selected_text().is_some());
+        r.set_view_mode(ViewMode::Headers);
+        assert_eq!(r.selected_text(), None);
+    }
+
+    #[test]
+    fn selection_paints_on_the_selection_background_even_h_scrolled() {
+        let theme = Theme::dark();
+        let mut r = ready("abcdefghij\nklmnopqrst");
+        let (area, _) = render_buf(&mut r);
+        r.begin_selection_at(area.x, area.y);
+        r.drag_selection_to(area.x + 4, area.y);
+        let (area, buf) = render_buf(&mut r);
+        assert_eq!(
+            buf.cell((area.x + 1, area.y)).unwrap().bg,
+            theme.selection,
+            "selected cell paints on the selection bg"
+        );
+        assert_ne!(
+            buf.cell((area.x + 7, area.y)).unwrap().bg,
+            theme.selection,
+            "unselected cell stays plain"
+        );
+        // Scroll right: painting must crop, not panic, and the visible
+        // remainder of the selection stays highlighted.
+        r.view.as_mut().unwrap().h_scroll = 2;
+        let (area, buf) = render_buf(&mut r);
+        assert_eq!(
+            buf.cell((area.x, area.y)).unwrap().bg,
+            theme.selection,
+            "col 2 of the selection is now at the left edge"
+        );
+    }
+
+    #[test]
+    fn shift_down_extends_a_line_wise_selection() {
+        let mut r = ready("hello\nworld\nthird");
+        render_buf(&mut r);
+        r.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
+        assert_eq!(r.selected_text().as_deref(), Some("hello\nworld"));
+        r.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
+        assert_eq!(r.selected_text().as_deref(), Some("hello\nworld\nthird"));
+        // Esc clears the selection before anything else.
+        r.handle_key(key(KeyCode::Esc));
+        assert_eq!(r.selected_text(), None);
+    }
+
+    #[test]
+    fn pretty_mode_selection_copies_the_on_screen_text() {
+        let mut r = ready(r#"{"a": 1}"#);
+        let (area, _) = render_buf(&mut r);
+        // Row 1 renders `  "a": 1` (indent 2). Select its first 5 cells.
+        r.begin_selection_at(area.x, area.y + 1);
+        r.drag_selection_to(area.x + 4, area.y + 1);
+        assert_eq!(r.selected_text().as_deref(), Some("  \"a\""));
     }
 
     #[test]
