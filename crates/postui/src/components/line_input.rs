@@ -12,6 +12,10 @@ pub struct LineInput {
     text: String,
     /// Cursor position, in chars (not bytes).
     cursor: usize,
+    /// Selection anchor, in chars: the fixed end of a selection whose
+    /// moving end is the cursor. `None` (or equal to the cursor) means no
+    /// selection.
+    anchor: Option<usize>,
 }
 
 impl LineInput {
@@ -20,6 +24,7 @@ impl LineInput {
         Self {
             text: text.to_string(),
             cursor,
+            anchor: None,
         }
     }
 
@@ -32,9 +37,64 @@ impl LineInput {
     }
 
     /// Moves the cursor to char index `idx`, clamped to the text's char
-    /// count. Used by mouse click-to-place.
+    /// count. Used by mouse click-to-place. Drops any selection.
     pub fn set_cursor(&mut self, idx: usize) {
         self.cursor = idx.min(self.len_chars());
+        self.anchor = None;
+    }
+
+    /// The selected char range as half-open `(start, end)` with
+    /// `start < end`, or `None` when nothing is selected.
+    pub fn selection(&self) -> Option<(usize, usize)> {
+        let anchor = self.anchor?;
+        match anchor.cmp(&self.cursor) {
+            std::cmp::Ordering::Less => Some((anchor, self.cursor)),
+            std::cmp::Ordering::Equal => None,
+            std::cmp::Ordering::Greater => Some((self.cursor, anchor)),
+        }
+    }
+
+    /// The selected text, or `None` when nothing is selected.
+    pub fn selected_text(&self) -> Option<String> {
+        let (start, end) = self.selection()?;
+        Some(self.text.chars().skip(start).take(end - start).collect())
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.anchor = None;
+    }
+
+    pub fn select_all(&mut self) {
+        self.anchor = Some(0);
+        self.cursor = self.len_chars();
+    }
+
+    /// Anchors a mouse selection at the current cursor; subsequent
+    /// [`Self::set_cursor_extending`] calls grow the selection to the drag
+    /// point.
+    pub fn begin_mouse_selection(&mut self) {
+        self.anchor = Some(self.cursor);
+    }
+
+    /// Moves the cursor (clamped) while keeping the selection anchor, so a
+    /// mouse drag extends the selection instead of collapsing it.
+    pub fn set_cursor_extending(&mut self, idx: usize) {
+        self.cursor = idx.min(self.len_chars());
+    }
+
+    /// Removes the selected text (cursor lands at the selection start).
+    /// Returns whether a selection was removed.
+    fn delete_selection(&mut self) -> bool {
+        let Some((start, end)) = self.selection() else {
+            self.anchor = None;
+            return false;
+        };
+        let bs = self.byte_offset(start);
+        let be = self.byte_offset(end);
+        self.text.replace_range(bs..be, "");
+        self.cursor = start;
+        self.anchor = None;
+        true
     }
 
     fn len_chars(&self) -> usize {
@@ -58,6 +118,7 @@ impl LineInput {
         let at = self.byte_offset(self.cursor);
         self.text.insert_str(at, s);
         self.cursor += s.chars().count();
+        self.anchor = None;
     }
 
     /// Whether the text *before* the cursor ends with `suffix`. Used to spot
@@ -71,14 +132,26 @@ impl LineInput {
     /// Handles a key event, returning `true` if it was consumed (state may
     /// have changed) or `false` if the caller should treat it as unhandled.
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        // Shifted motion extends a selection from an anchor planted at the
+        // pre-move cursor; unshifted motion collapses any selection first
+        // (Left/Right land on the selection's own edge, GUI-style).
         match key.code {
+            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.select_all();
+                true
+            }
             KeyCode::Char(c) if key.modifiers.difference(KeyModifiers::SHIFT).is_empty() => {
+                self.delete_selection();
                 let at = self.byte_offset(self.cursor);
                 self.text.insert(at, c);
                 self.cursor += 1;
                 true
             }
             KeyCode::Backspace => {
+                if self.delete_selection() {
+                    return true;
+                }
                 if self.cursor > 0 {
                     let start = self.byte_offset(self.cursor - 1);
                     let end = self.byte_offset(self.cursor);
@@ -88,6 +161,9 @@ impl LineInput {
                 true
             }
             KeyCode::Delete => {
+                if self.delete_selection() {
+                    return true;
+                }
                 if self.cursor < self.len_chars() {
                     let start = self.byte_offset(self.cursor);
                     let end = self.byte_offset(self.cursor + 1);
@@ -96,20 +172,50 @@ impl LineInput {
                 true
             }
             KeyCode::Left => {
-                self.cursor = self.cursor.saturating_sub(1);
+                if shift {
+                    self.anchor.get_or_insert(self.cursor);
+                    self.cursor = self.cursor.saturating_sub(1);
+                } else if let Some((start, _)) = self.selection() {
+                    self.cursor = start;
+                    self.anchor = None;
+                } else {
+                    self.anchor = None;
+                    self.cursor = self.cursor.saturating_sub(1);
+                }
                 true
             }
             KeyCode::Right => {
-                if self.cursor < self.len_chars() {
-                    self.cursor += 1;
+                if shift {
+                    self.anchor.get_or_insert(self.cursor);
+                    if self.cursor < self.len_chars() {
+                        self.cursor += 1;
+                    }
+                } else if let Some((_, end)) = self.selection() {
+                    self.cursor = end;
+                    self.anchor = None;
+                } else {
+                    self.anchor = None;
+                    if self.cursor < self.len_chars() {
+                        self.cursor += 1;
+                    }
                 }
                 true
             }
             KeyCode::Home => {
+                if shift {
+                    self.anchor.get_or_insert(self.cursor);
+                } else {
+                    self.anchor = None;
+                }
                 self.cursor = 0;
                 true
             }
             KeyCode::End => {
+                if shift {
+                    self.anchor.get_or_insert(self.cursor);
+                } else {
+                    self.anchor = None;
+                }
                 self.cursor = self.len_chars();
                 true
             }
@@ -121,55 +227,14 @@ impl LineInput {
     /// character under the cursor (or a trailing blank cell at end-of-text)
     /// is rendered with a REVERSED style to represent the caret.
     pub fn draw_line(&self, focused: bool, theme: &Theme) -> Line<'static> {
-        let base = Style::default().fg(theme.text);
-        if !focused {
-            return Line::styled(self.text.clone(), base);
-        }
-        let chars: Vec<char> = self.text.chars().collect();
-        let mut spans = Vec::new();
-        if self.cursor > 0 {
-            let before: String = chars[..self.cursor].iter().collect();
-            spans.push(Span::styled(before, base));
-        }
-        let cursor_style = base.add_modifier(Modifier::REVERSED);
-        if self.cursor < chars.len() {
-            spans.push(Span::styled(chars[self.cursor].to_string(), cursor_style));
-            if self.cursor + 1 < chars.len() {
-                let after: String = chars[self.cursor + 1..].iter().collect();
-                spans.push(Span::styled(after, base));
-            }
-        } else {
-            spans.push(Span::styled(" ", cursor_style));
-        }
-        Line::from(spans)
+        self.render(focused, theme, None, false)
     }
 
     /// Like [`Self::draw_line`], but every character renders as `●` — used
     /// for a secret cell's in-place edit (Variable Manager, spec §5), so
     /// the typed value never appears in plaintext on screen.
     pub fn draw_line_masked(&self, focused: bool, theme: &Theme) -> Line<'static> {
-        let base = Style::default().fg(theme.text);
-        let masked: String = self.text.chars().map(|_| '\u{25cf}').collect();
-        if !focused {
-            return Line::styled(masked, base);
-        }
-        let chars: Vec<char> = masked.chars().collect();
-        let mut spans = Vec::new();
-        if self.cursor > 0 {
-            let before: String = chars[..self.cursor].iter().collect();
-            spans.push(Span::styled(before, base));
-        }
-        let cursor_style = base.add_modifier(Modifier::REVERSED);
-        if self.cursor < chars.len() {
-            spans.push(Span::styled(chars[self.cursor].to_string(), cursor_style));
-            if self.cursor + 1 < chars.len() {
-                let after: String = chars[self.cursor + 1..].iter().collect();
-                spans.push(Span::styled(after, base));
-            }
-        } else {
-            spans.push(Span::styled(" ", cursor_style));
-        }
-        Line::from(spans)
+        self.render(focused, theme, None, true)
     }
 
     /// Like [`Self::draw_line`], but windowed to `width` columns: when
@@ -227,35 +292,72 @@ impl LineInput {
         width: u16,
         mask: bool,
     ) -> Line<'static> {
+        self.render(focused, theme, Some(width.max(1) as usize), mask)
+    }
+
+    /// The single renderer behind all the `draw_line*` variants: optionally
+    /// masked, optionally windowed to `width` columns (the window scrolls
+    /// with the cursor when focused), with the caret and any selected range
+    /// rendered REVERSED.
+    fn render(
+        &self,
+        focused: bool,
+        theme: &Theme,
+        width: Option<usize>,
+        mask: bool,
+    ) -> Line<'static> {
         let base = Style::default().fg(theme.text);
-        let width = width.max(1) as usize;
         let chars: Vec<char> = if mask {
             self.text.chars().map(|_| '\u{25cf}').collect()
         } else {
             self.text.chars().collect()
         };
         if !focused {
-            let visible: String = chars.iter().take(width).collect();
+            let visible: String = match width {
+                Some(w) => chars.iter().take(w).collect(),
+                None => chars.iter().collect(),
+            };
             return Line::styled(visible, base);
         }
-        // Smallest `start` that keeps `cursor` within the last column of the
-        // window; 0 when the cursor already fits without scrolling.
-        let start = self.window_start(true, width as u16);
-        let cursor_style = base.add_modifier(Modifier::REVERSED);
-        let mut spans = Vec::new();
-        if self.cursor > start {
-            let before: String = chars[start..self.cursor].iter().collect();
-            spans.push(Span::styled(before, base));
-        }
-        if self.cursor < chars.len() {
-            spans.push(Span::styled(chars[self.cursor].to_string(), cursor_style));
-            let after_end = (start + width).min(chars.len());
-            if self.cursor + 1 < after_end {
-                let after: String = chars[self.cursor + 1..after_end].iter().collect();
-                spans.push(Span::styled(after, base));
+        // Smallest window start that keeps the cursor visible; 0 when the
+        // whole text is drawn.
+        let start = match width {
+            Some(w) => self.window_start(true, w.min(u16::MAX as usize) as u16),
+            None => 0,
+        };
+        let end = match width {
+            Some(w) => chars.len().min(start + w),
+            None => chars.len(),
+        };
+        let reversed = base.add_modifier(Modifier::REVERSED);
+        let selection = self.selection();
+        let style_at = |i: usize| {
+            if i == self.cursor {
+                return reversed;
             }
-        } else {
-            spans.push(Span::styled(" ", cursor_style));
+            match selection {
+                Some((s, e)) if i >= s && i < e => reversed,
+                _ => base,
+            }
+        };
+        // Group consecutive same-styled cells into spans.
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        let mut run = String::new();
+        let mut run_style = base;
+        for i in start..end {
+            let style = style_at(i);
+            if style != run_style && !run.is_empty() {
+                spans.push(Span::styled(std::mem::take(&mut run), run_style));
+            }
+            run_style = style;
+            run.push(chars[i]);
+        }
+        if !run.is_empty() {
+            spans.push(Span::styled(run, run_style));
+        }
+        // The trailing caret cell when the cursor sits past the drawn text.
+        if self.cursor >= end {
+            spans.push(Span::styled(" ", reversed));
         }
         Line::from(spans)
     }
@@ -404,6 +506,161 @@ mod tests {
         assert!(
             rendered.chars().all(|c| c == '\u{25cf}' || c == ' '),
             "must be all masked dots (plus the trailing caret cell): {rendered:?}"
+        );
+    }
+
+    fn shifted(c: KeyCode) -> KeyEvent {
+        KeyEvent::new(c, KeyModifiers::SHIFT)
+    }
+
+    #[test]
+    fn shift_right_extends_a_selection() {
+        let mut input = LineInput::new("abc");
+        input.handle_key(code(KeyCode::Home));
+        assert!(input.handle_key(shifted(KeyCode::Right)));
+        assert_eq!(input.selection(), Some((0, 1)));
+        assert_eq!(input.cursor(), 1);
+        assert_eq!(input.selected_text().as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn shift_home_selects_back_to_start_reversed() {
+        let mut input = LineInput::new("abc"); // cursor at end
+        assert!(input.handle_key(shifted(KeyCode::Home)));
+        assert_eq!(input.selection(), Some((0, 3)));
+        assert_eq!(input.cursor(), 0);
+        assert_eq!(input.selected_text().as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn unshifted_left_collapses_to_selection_start() {
+        let mut input = LineInput::new("abc");
+        input.handle_key(code(KeyCode::Home));
+        input.handle_key(shifted(KeyCode::Right));
+        input.handle_key(shifted(KeyCode::Right));
+        assert!(input.handle_key(code(KeyCode::Left)));
+        assert_eq!(input.cursor(), 0, "collapses to the start, no extra move");
+        assert_eq!(input.selection(), None);
+    }
+
+    #[test]
+    fn unshifted_right_collapses_to_selection_end() {
+        let mut input = LineInput::new("abc");
+        input.handle_key(code(KeyCode::Home));
+        input.handle_key(shifted(KeyCode::Right));
+        input.handle_key(shifted(KeyCode::Right));
+        assert!(input.handle_key(code(KeyCode::Right)));
+        assert_eq!(input.cursor(), 2, "collapses to the end, no extra move");
+        assert_eq!(input.selection(), None);
+    }
+
+    #[test]
+    fn typing_replaces_the_selection() {
+        let mut input = LineInput::new("abc");
+        input.handle_key(code(KeyCode::Home));
+        input.handle_key(shifted(KeyCode::Right));
+        input.handle_key(shifted(KeyCode::Right));
+        assert!(input.handle_key(key('x')));
+        assert_eq!(input.text(), "xc");
+        assert_eq!(input.cursor(), 1);
+        assert_eq!(input.selection(), None);
+    }
+
+    #[test]
+    fn backspace_and_delete_remove_only_the_selection() {
+        let mut input = LineInput::new("abcd");
+        input.handle_key(code(KeyCode::Home));
+        input.handle_key(code(KeyCode::Right));
+        input.handle_key(shifted(KeyCode::Right));
+        input.handle_key(shifted(KeyCode::Right));
+        assert!(input.handle_key(code(KeyCode::Backspace)));
+        assert_eq!(input.text(), "ad");
+        assert_eq!(input.cursor(), 1);
+
+        let mut input = LineInput::new("abcd");
+        input.handle_key(code(KeyCode::Home));
+        input.handle_key(shifted(KeyCode::Right));
+        assert!(input.handle_key(code(KeyCode::Delete)));
+        assert_eq!(input.text(), "bcd");
+        assert_eq!(input.cursor(), 0);
+    }
+
+    #[test]
+    fn ctrl_a_selects_all() {
+        let mut input = LineInput::new("hello");
+        input.set_cursor(2);
+        assert!(input.handle_key(KeyEvent::new(
+            KeyCode::Char('a'),
+            KeyModifiers::CONTROL
+        )));
+        assert_eq!(input.selection(), Some((0, 5)));
+        assert_eq!(input.selected_text().as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn empty_selection_is_none_and_set_cursor_clears_the_anchor() {
+        let mut input = LineInput::new("abc");
+        input.handle_key(shifted(KeyCode::Left));
+        input.handle_key(shifted(KeyCode::Right)); // back to the anchor
+        assert_eq!(input.selection(), None, "anchor == cursor is no selection");
+        input.handle_key(shifted(KeyCode::Left));
+        assert!(input.selection().is_some());
+        input.set_cursor(0);
+        assert_eq!(input.selection(), None, "set_cursor drops the anchor");
+    }
+
+    #[test]
+    fn mouse_selection_api_extends_from_the_anchor() {
+        let mut input = LineInput::new("hello world");
+        input.set_cursor(0);
+        input.begin_mouse_selection();
+        input.set_cursor_extending(5);
+        assert_eq!(input.selection(), Some((0, 5)));
+        assert_eq!(input.selected_text().as_deref(), Some("hello"));
+        input.select_all();
+        assert_eq!(input.selection(), Some((0, 11)));
+        input.clear_selection();
+        assert_eq!(input.selection(), None);
+    }
+
+    #[test]
+    fn selected_cells_render_reversed() {
+        let mut input = LineInput::new("abcd");
+        input.handle_key(code(KeyCode::Home));
+        input.handle_key(shifted(KeyCode::Right));
+        input.handle_key(shifted(KeyCode::Right));
+        let theme = Theme::dark();
+        let line = input.draw_line(true, &theme);
+        // Walk the spans char-by-char and record which cells carry REVERSED.
+        let mut reversed = Vec::new();
+        for span in &line.spans {
+            for ch in span.content.chars() {
+                reversed.push((ch, span.style.add_modifier.contains(Modifier::REVERSED)));
+            }
+        }
+        assert_eq!(reversed[0], ('a', true), "selected");
+        assert_eq!(reversed[1], ('b', true), "selected");
+        assert_eq!(reversed[2], ('c', true), "caret cell at the selection end");
+        assert_eq!(reversed[3], ('d', false), "outside the selection");
+    }
+
+    #[test]
+    fn windowed_selection_paints_only_the_visible_slice() {
+        let text: String = (0..40).map(|i| char::from(b'a' + (i % 26) as u8)).collect();
+        let mut input = LineInput::new(&text); // cursor at end
+        input.handle_key(shifted(KeyCode::Home)); // select all, cursor 0
+        // Cursor at 0 keeps the window at the head; everything visible is
+        // selected, and nothing panics even though the range extends past
+        // the window.
+        let theme = Theme::dark();
+        let line = input.draw_line_windowed(true, &theme, 10);
+        let total: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+        assert!(total <= 10);
+        assert!(
+            line.spans
+                .iter()
+                .all(|s| s.style.add_modifier.contains(Modifier::REVERSED)),
+            "every visible cell is inside the selection"
         );
     }
 
