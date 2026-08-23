@@ -13,7 +13,7 @@ use edtui::{
 use indexmap::IndexMap;
 use postui_core::model::{Body, Entry, HttpRequest, Method};
 use ratatui::Frame;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -401,6 +401,53 @@ impl Editor {
         self.spinner_frame = self.spinner_frame.wrapping_add(1);
     }
 
+    /// Cursor-movement niceties edtui 0.11 doesn't provide, applied before
+    /// its event handler sees the key: ←/→ wrapping across line boundaries,
+    /// ctrl+Home/ctrl+End buffer jumps, and smart Home (first non-whitespace
+    /// first, column 0 on the next press). Only unmodified (or exactly-ctrl)
+    /// combos are touched, so shifted selection keys and edtui's own emacs
+    /// bindings pass through untouched. Returns true when handled here.
+    fn body_nav_key(&mut self, ev: &KeyEvent) -> bool {
+        let ctrl = ev.modifiers == KeyModifiers::CONTROL;
+        let plain = ev.modifiers.is_empty();
+        let cursor = self.body.cursor;
+        let rows = self.body.lines.len();
+        let len_of = |row: usize| self.body.lines.len_col(row).unwrap_or(0);
+        match ev.code {
+            KeyCode::Home if ctrl => {
+                self.body.cursor = edtui::Index2::new(0, 0);
+                true
+            }
+            KeyCode::End if ctrl => {
+                let row = rows.saturating_sub(1);
+                self.body.cursor = edtui::Index2::new(row, len_of(row));
+                true
+            }
+            KeyCode::Left if plain && cursor.col == 0 && cursor.row > 0 => {
+                self.body.cursor = edtui::Index2::new(cursor.row - 1, len_of(cursor.row - 1));
+                true
+            }
+            KeyCode::Right
+                if plain && cursor.col >= len_of(cursor.row) && cursor.row + 1 < rows =>
+            {
+                self.body.cursor = edtui::Index2::new(cursor.row + 1, 0);
+                true
+            }
+            KeyCode::Home if plain => {
+                let first_nw = self
+                    .body
+                    .lines
+                    .iter_row()
+                    .nth(cursor.row)
+                    .and_then(|line| line.iter().position(|c| !c.is_whitespace()))
+                    .unwrap_or(0);
+                self.body.cursor.col = if cursor.col == first_nw { 0 } else { first_nw };
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Forwards a raw mouse event to the body editor when the Body tab is
     /// active and the event landed inside the area it was last drawn into.
     /// Returns `true` when the event was consumed (edtui itself does its own
@@ -740,6 +787,9 @@ impl Component for Editor {
                 }
                 if ev.code == KeyCode::Up && self.body.cursor.row == 0 {
                     self.sub_focus = SubFocus::Tabs;
+                    return Some(Action::Render);
+                }
+                if self.body_nav_key(&ev) {
                     return Some(Action::Render);
                 }
                 self.body_handler.on_key_event(ev, &mut self.body);
@@ -1871,6 +1921,73 @@ mod tests {
         };
         e.handle_key(key(KeyCode::Up));
         assert_eq!(e.sub_focus, SubFocus::Tabs);
+    }
+
+    /// A Body-tab editor with the buffer focused and `text` loaded.
+    fn body_editor(text: &str) -> Editor {
+        let mut e = Editor {
+            active_tab: EditorTab::Body,
+            sub_focus: SubFocus::Content,
+            ..Editor::default()
+        };
+        e.set_body_text(text);
+        e
+    }
+
+    #[test]
+    fn body_arrows_wrap_across_line_boundaries() {
+        let mut e = body_editor("ab\ncd");
+        e.body.cursor = edtui::Index2::new(0, 2); // after "ab"
+        e.handle_key(key(KeyCode::Right));
+        assert_eq!(
+            e.body.cursor,
+            edtui::Index2::new(1, 0),
+            "Right at a line's end wraps to the next line's start"
+        );
+        e.handle_key(key(KeyCode::Left));
+        assert_eq!(
+            e.body.cursor,
+            edtui::Index2::new(0, 2),
+            "Left at a line's start wraps to the previous line's end"
+        );
+    }
+
+    #[test]
+    fn body_ctrl_home_and_ctrl_end_jump_to_the_buffer_ends() {
+        let mut e = body_editor("ab\ncd\nef");
+        e.body.cursor = edtui::Index2::new(1, 1);
+        e.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL));
+        assert_eq!(
+            e.body.cursor,
+            edtui::Index2::new(2, 2),
+            "ctrl+End lands after the last char of the last line"
+        );
+        e.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL));
+        assert_eq!(
+            e.body.cursor,
+            edtui::Index2::new(0, 0),
+            "ctrl+Home lands at the buffer's start"
+        );
+    }
+
+    #[test]
+    fn body_home_goes_to_first_non_whitespace_then_column_zero() {
+        let mut e = body_editor("  \"a\": 1");
+        e.body.cursor = edtui::Index2::new(0, 6);
+        e.handle_key(key(KeyCode::Home));
+        assert_eq!(e.body.cursor.col, 2, "first press: first non-whitespace");
+        e.handle_key(key(KeyCode::Home));
+        assert_eq!(e.body.cursor.col, 0, "second press: column 0");
+        e.handle_key(key(KeyCode::Home));
+        assert_eq!(e.body.cursor.col, 2, "and it toggles back");
+    }
+
+    #[test]
+    fn body_home_on_an_all_whitespace_line_goes_to_column_zero() {
+        let mut e = body_editor("    ");
+        e.body.cursor = edtui::Index2::new(0, 3);
+        e.handle_key(key(KeyCode::Home));
+        assert_eq!(e.body.cursor.col, 0);
     }
 
     #[test]
