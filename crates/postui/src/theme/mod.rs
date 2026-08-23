@@ -89,6 +89,9 @@ pub struct Theme {
     pub accent_edge_dark: Color,
     pub on_accent: Color,
     pub focus_ring: Color,
+    /// Text-selection background: a muted accent that keeps `text` legible
+    /// on top of it, shared by the body editor and the response view.
+    pub selection: Color,
     // text
     pub text: Color,
     pub text_muted: Color,
@@ -126,6 +129,9 @@ impl Theme {
             (0x11, 0x11, 0x11)
         };
         let focus_ring = accent;
+        // 35% accent over the background: visibly "the accent's" selection
+        // without fighting the text drawn on top of it.
+        let selection = blend(accent, bg, 0.35);
 
         let mut text = fg;
         let text_muted = blend(fg, bg, 0.55);
@@ -155,6 +161,7 @@ impl Theme {
             accent_edge_dark: to_color(accent_edge_dark),
             on_accent: to_color(on_accent),
             focus_ring: to_color(focus_ring),
+            selection: to_color(selection),
             text: to_color(text),
             text_muted: to_color(text_muted),
             text_disabled: to_color(text_disabled),
@@ -263,6 +270,7 @@ impl Theme {
             accent_edge_dark: f(self.accent_edge_dark),
             on_accent: f(self.on_accent),
             focus_ring: f(self.focus_ring),
+            selection: f(self.selection),
             text: f(self.text),
             text_muted: f(self.text_muted),
             text_disabled: f(self.text_disabled),

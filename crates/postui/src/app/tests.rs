@@ -1864,6 +1864,60 @@ fn click_in_body_area_places_cursor_and_focuses_content() {
     assert_eq!(app.editor.body.cursor.row, 1, "clicked the second line");
 }
 
+#[test]
+fn dragging_in_the_body_selects_and_ctrl_c_copies_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.txt");
+    let cmd = format!("cat > {}", out.to_string_lossy());
+    let mut app = App::new_for_test();
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
+        Some(cmd),
+        65536,
+        false,
+    ));
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.set_body_text("hello\nworld");
+    render_once(&mut app);
+    let area = app.editor.last_body_area.expect("body area recorded");
+    // 2 lines -> a 2-cell gutter; content column 0 is at area.x + 2.
+    app.handle_mouse(left_down(area.x + 2, area.y));
+    assert!(
+        app.handle_mouse(dragged(area.x + 4, area.y)),
+        "the sweep routes to the body editor"
+    );
+    app.handle_mouse(left_up(area.x + 4, area.y));
+    assert_eq!(app.editor.body_selected_text().as_deref(), Some("hel"));
+    assert!(app.text_drag.is_none(), "release ends the sweep");
+
+    app.handle_key(&Keymap::default_bindings(), ctrl('c'));
+    assert!(!app.should_quit, "copy pre-empts quit");
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "hel");
+}
+
+#[test]
+fn body_selection_paints_with_the_selection_color() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.set_body_text("hello\nworld");
+    render_once(&mut app);
+    let area = app.editor.last_body_area.expect("body area recorded");
+    app.handle_mouse(left_down(area.x + 2, area.y));
+    app.handle_mouse(dragged(area.x + 4, area.y));
+
+    // Same size as `render_once`, so the recorded body area still matches.
+    let backend = TestBackend::new(120, 40);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let buf = terminal.backend().buffer();
+    let cell = buf.cell((area.x + 3, area.y)).unwrap();
+    assert_eq!(
+        cell.bg, app.theme.selection,
+        "a selected body cell paints on the selection background"
+    );
+}
+
 fn req(url: &str) -> postui_core::model::HttpRequest {
     postui_core::model::HttpRequest::from_toml_str(&format!(r#"url = "{url}""#)).unwrap()
 }

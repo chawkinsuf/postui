@@ -131,6 +131,11 @@ pub struct Editor {
     pub body: EditorState,
     /// Emacs-mode (modeless) key handling for `body`.
     body_handler: EditorEventHandler,
+    /// The fixed end of an in-progress body selection: planted by a left
+    /// click (mouse) or the first shifted motion (keyboard), consumed by
+    /// `body_drag_to`/shifted motions to rebuild `body.selection` as the
+    /// moving end travels. `None` when no selection gesture is live.
+    body_sel_anchor: Option<edtui::Index2>,
     pub active_tab: EditorTab,
     pub sub_focus: SubFocus,
     /// Shared cursor/edit state for the key/value table, reused by both the
@@ -214,6 +219,7 @@ impl Default for Editor {
             inherited_headers: IndexMap::new(),
             body: new_body_state(""),
             body_handler: EditorEventHandler::emacs_mode(),
+            body_sel_anchor: None,
             active_tab: EditorTab::Params,
             sub_focus: SubFocus::Url,
             table: TableEditorState::default(),
@@ -501,12 +507,107 @@ impl Editor {
         // reaches this far still rides on edtui's own mapping, where a
         // selection endpoint wants the clamped, on-a-character semantics.
         // (`App::handle_mouse` does not currently route drags here at all.)
-        if m.kind == MouseEventKind::Down(MouseButton::Left)
-            && let Some(cursor) = self.body_cursor_for_click(m.column, m.row)
-        {
-            self.body.cursor = cursor;
+        if m.kind == MouseEventKind::Down(MouseButton::Left) {
+            if let Some(cursor) = self.body_cursor_for_click(m.column, m.row) {
+                self.body.cursor = cursor;
+            }
+            // A plain click collapses any selection and plants the anchor a
+            // following drag will extend from.
+            self.body.selection = None;
+            self.body_sel_anchor = Some(self.body.cursor);
         }
+        // Modeless invariant: whatever edtui's own handling did (its mouse
+        // paths switch to Normal/Visual), the body editor never leaves
+        // Insert.
+        self.body.mode = EditorMode::Insert;
         true
+    }
+
+    /// Extends the body selection to the drag point `(x, y)`: the moving
+    /// end of a selection anchored by the preceding left click. The head
+    /// cell is included in the selection (edtui's inclusive-`end`
+    /// semantics); dragging back onto the anchor cell collapses it.
+    /// Returns `false` when there is no live anchor or the point doesn't
+    /// resolve to a body position (e.g. the gutter).
+    pub fn body_drag_to(&mut self, x: u16, y: u16) -> bool {
+        if self.active_tab != EditorTab::Body {
+            return false;
+        }
+        let Some(anchor) = self.body_sel_anchor else {
+            return false;
+        };
+        let Some(cursor) = self.body_cursor_for_click(x, y) else {
+            return false;
+        };
+        self.body.cursor = cursor;
+        self.set_body_selection(anchor, cursor);
+        self.body.mode = EditorMode::Insert;
+        true
+    }
+
+    /// Sets `body.selection` to the inclusive cell range between two caret
+    /// positions (each clamped onto its line's last character — carets sit
+    /// on boundaries, selections cover cells), or clears it when both
+    /// clamp to the same cell. edtui doesn't export its `Selection` type,
+    /// so the range is built by letting `SwitchMode(Visual)` construct one
+    /// and then rewriting its public endpoints (the mode is restored to
+    /// Insert by the callers' modeless invariant).
+    fn set_body_selection(&mut self, a: edtui::Index2, b: edtui::Index2) {
+        use edtui::actions::{Execute, SwitchMode};
+        let clamp = |lines: &Lines, i: edtui::Index2| {
+            let len = lines.len_col(i.row).unwrap_or(0);
+            edtui::Index2::new(i.row, i.col.min(len.saturating_sub(1)))
+        };
+        let (a, b) = (
+            clamp(&self.body.lines, a),
+            clamp(&self.body.lines, b),
+        );
+        if a == b {
+            self.body.selection = None;
+            return;
+        }
+        let cursor = self.body.cursor;
+        self.body.cursor = a;
+        SwitchMode(EditorMode::Visual).execute(&mut self.body);
+        if let Some(sel) = self.body.selection.as_mut() {
+            sel.end = b;
+        }
+        self.body.cursor = cursor;
+        self.body.mode = EditorMode::Insert;
+    }
+
+    /// The selected body text, rows joined with `\n` (the head cell
+    /// included). `None` when nothing is selected.
+    pub fn body_selected_text(&self) -> Option<String> {
+        let sel = self.body.selection.as_ref()?;
+        let (start, end) = (sel.start(), sel.end());
+        let mut out = String::new();
+        for (row, line) in self
+            .body
+            .lines
+            .iter_row()
+            .enumerate()
+            .skip(start.row)
+            .take(end.row - start.row + 1)
+        {
+            if row > start.row {
+                out.push('\n');
+            }
+            let from = if row == start.row { start.col } else { 0 };
+            let to = if row == end.row {
+                (end.col + 1).min(line.len())
+            } else {
+                line.len()
+            };
+            out.extend(line.iter().skip(from).take(to.saturating_sub(from)));
+        }
+        Some(out)
+    }
+
+    /// Drops any body selection and its anchor.
+    pub fn clear_body_selection(&mut self) {
+        self.body.selection = None;
+        self.body_sel_anchor = None;
     }
 
     /// Maps a screen click inside `last_body_area` to a body-buffer cursor,
@@ -1649,6 +1750,7 @@ impl Editor {
                     .base(Style::default().bg(theme.page).fg(theme.text))
                     .cursor_style(Style::default().add_modifier(Modifier::REVERSED))
                     .line_numbers_style(Style::default().bg(theme.page).fg(theme.text_muted))
+                    .selection_style(Style::default().bg(theme.selection).fg(theme.text))
                     .hide_status_line();
                 // A cursor block on an unfocused pane reads as "you are typing
                 // here", so only the focused editor shows one.
@@ -3490,6 +3592,49 @@ mod body_click_tests {
         // The next logical line starts on the third visual row.
         e.handle_mouse(left_down(2 + 1, 2));
         assert_eq!(e.body.cursor, Index2::new(1, 1));
+    }
+
+    #[test]
+    fn drag_selects_from_the_click_anchor_and_stays_modeless() {
+        let mut e = editor_with_body("hello\nworld\n");
+        e.handle_mouse(left_down(2, 0)); // caret at (0,0), anchor planted
+        assert!(e.body_drag_to(4, 0), "drag inside the body area consumed");
+        assert_eq!(e.body.cursor, Index2::new(0, 2));
+        assert_eq!(e.body_selected_text().as_deref(), Some("hel"));
+        assert_eq!(
+            e.body.mode,
+            EditorMode::Insert,
+            "selection never surfaces a vim mode"
+        );
+    }
+
+    #[test]
+    fn drag_across_lines_joins_with_newlines() {
+        let mut e = editor_with_body("hello\nworld\n");
+        e.handle_mouse(left_down(2, 0));
+        e.body_drag_to(4, 1);
+        assert_eq!(e.body_selected_text().as_deref(), Some("hello\nwor"));
+    }
+
+    #[test]
+    fn a_plain_click_clears_the_selection() {
+        let mut e = editor_with_body("hello\nworld\n");
+        e.handle_mouse(left_down(2, 0));
+        e.body_drag_to(4, 0);
+        assert!(e.body.selection.is_some());
+        e.handle_mouse(left_down(3, 1));
+        assert!(e.body.selection.is_none());
+        assert_eq!(e.body_selected_text(), None);
+    }
+
+    #[test]
+    fn drag_back_to_the_anchor_cell_is_no_selection() {
+        let mut e = editor_with_body("hello\n");
+        e.handle_mouse(left_down(2, 0));
+        e.body_drag_to(4, 0);
+        assert!(e.body.selection.is_some());
+        e.body_drag_to(2, 0);
+        assert!(e.body.selection.is_none());
     }
 
     #[test]

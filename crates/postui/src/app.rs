@@ -47,6 +47,16 @@ pub struct Drag {
     pub horizontal: bool,
 }
 
+/// Which text surface a left-button drag is sweeping a selection over,
+/// armed by the `Down(Left)` that started the sweep and cleared on
+/// `Up(Left)` — the text-selection sibling of the scrollbar [`Drag`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextDrag {
+    Body,
+    Url,
+    Response,
+}
+
 /// Which full-frame screen is showing. `ui::draw` and `App::handle_key`
 /// each branch on this once; every screen but `Main` replaces the three
 /// panes with its own full-frame draw while the header and footer stay.
@@ -138,6 +148,8 @@ pub struct App {
     caret_token_ticks: u8,
     /// An in-progress drag (e.g. a scrollbar thumb), if any.
     pub drag: Option<Drag>,
+    /// A live text-selection sweep (which surface it is over), or `None`.
+    pub text_drag: Option<TextDrag>,
     /// Whether the active tab's params/headers table body is collapsed
     /// (tab strip + its count chip stay visible; only the table itself is
     /// hidden). Session-only — never persisted.
@@ -455,6 +467,7 @@ impl App {
             caret_token: None,
             caret_token_ticks: 0,
             drag: None,
+            text_drag: None,
             table_collapsed: false,
             last_click: None,
             last_action_failed: false,
@@ -3794,8 +3807,15 @@ impl App {
         {
             return Some(text);
         }
-        if self.editor.sub_focus == SubFocus::Url {
-            return self.editor.url.selected_text();
+        if self.editor.sub_focus == SubFocus::Url
+            && let Some(text) = self.editor.url.selected_text()
+        {
+            return Some(text);
+        }
+        // A body selection is a visible highlight — copyable whenever it
+        // exists, not only while the body owns the keyboard.
+        if let Some(text) = self.editor.body_selected_text() {
+            return Some(text);
         }
         None
     }

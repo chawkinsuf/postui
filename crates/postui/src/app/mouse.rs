@@ -43,9 +43,16 @@ impl App {
                     };
                 }
                 if m.kind != MouseEventKind::Moved {
-                    // Button-held motion with no drag of ours in progress
-                    // (e.g. a text selection sweep) is not a hover update.
-                    return false;
+                    // Button-held motion: a text-selection sweep if one was
+                    // armed by the press that started it, otherwise not a
+                    // hover update.
+                    return match self.text_drag {
+                        Some(TextDrag::Body) => self.editor.body_drag_to(m.column, m.row),
+                        // Url and Response sweeps are wired by their own
+                        // tasks (plan 2026-08-23-text-selection).
+                        Some(TextDrag::Url) | Some(TextDrag::Response) => false,
+                        None => false,
+                    };
                 }
                 // Two independent hover tracks: the control under the
                 // pointer (styling), and any `{{token}}` drawn on top of it
@@ -192,7 +199,12 @@ impl App {
                     None => changed,
                 }
             }
-            MouseEventKind::Up(MouseButton::Left) => self.drag.take().is_some(),
+            MouseEventKind::Up(MouseButton::Left) => {
+                // Releasing the button ends both drag kinds; a finished
+                // text sweep keeps its selection, only the sweep state ends.
+                let had_text = self.text_drag.take().is_some();
+                self.drag.take().is_some() || had_text
+            }
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 if !self.modals.is_empty() {
                     let d = if m.kind == MouseEventKind::ScrollUp {
@@ -500,6 +512,9 @@ impl App {
             Hit::BodyEditor => {
                 self.update(Action::FocusPane(PaneId::Editor));
                 self.editor.handle_mouse(m);
+                // Arm a selection sweep: if the button now moves before it
+                // releases, the drag extends a selection from this click.
+                self.text_drag = Some(TextDrag::Body);
                 self.update(Action::Render)
             }
             Hit::HeaderProject => self.update(Action::OpenProjectChooser),
