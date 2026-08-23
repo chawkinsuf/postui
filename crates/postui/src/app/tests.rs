@@ -1576,6 +1576,86 @@ fn clicking_the_row_toggle_toggles_without_selecting() {
     );
 }
 
+/// An app whose editor holds typed-but-never-saved content: no slug, no
+/// saved snapshot, a URL in the bar.
+fn scratch_app() -> App {
+    let mut app = App::new_for_test();
+    app.editor.url = crate::components::line_input::LineInput::new("https://x/scratch");
+    assert!(!app.editor.is_dirty(), "no snapshot, so never 'dirty'");
+    app
+}
+
+#[test]
+fn quitting_a_never_saved_scratch_gates_too() {
+    let mut app = scratch_app();
+    app.update(Action::Quit);
+    assert!(!app.should_quit, "typed content must not vanish silently");
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+    app.handle_key(&Keymap::default_bindings(), plain('d'));
+    assert!(app.should_quit, "Discard quits");
+}
+
+#[test]
+fn saving_a_scratch_through_the_gate_chains_the_quit() {
+    let mut app = scratch_app();
+    let keymap = Keymap::default_bindings();
+    app.update(Action::Quit);
+    app.handle_key(&keymap, plain('s')); // Save as… & quit
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Prompt { .. })),
+        "the scratch save path is the name prompt"
+    );
+    for c in "fresh".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let saved = postui_core::storage::load_request(&app.project.root, "fresh").unwrap();
+    assert_eq!(saved.url, "https://x/scratch");
+    assert!(app.should_quit, "the deferred quit ran after the save");
+}
+
+#[test]
+fn a_failing_gate_save_does_not_run_the_deferred_action() {
+    let mut app = scratch_app();
+    let keymap = Keymap::default_bindings();
+    app.update(Action::Quit);
+    app.handle_key(&keymap, plain('s'));
+    // An invalid name: the save fails with a toast, so quitting now would
+    // still lose the content.
+    for c in "Bad Name!".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(!app.should_quit, "no save, no quit");
+}
+
+#[test]
+fn escaping_the_gates_save_prompt_cancels_everything() {
+    let mut app = scratch_app();
+    let keymap = Keymap::default_bindings();
+    app.update(Action::Quit);
+    app.handle_key(&keymap, plain('s'));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.modals.is_empty());
+    assert!(!app.should_quit, "Esc means stay, with everything intact");
+    assert_eq!(app.editor.url.text(), "https://x/scratch");
+}
+
+#[test]
+fn opening_a_request_over_a_scratch_gates_first() {
+    let mut app = scratch_app();
+    postui_core::storage::save_request(&app.project.root, "other", &req("https://x/other"))
+        .unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::OpenRequest("other".into()));
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Confirm { .. })),
+        "the scratch content gates the open"
+    );
+    app.handle_key(&Keymap::default_bindings(), plain('d'));
+    assert_eq!(app.editor.slug.as_deref(), Some("other"));
+}
+
 #[test]
 fn quitting_clean_needs_no_confirm() {
     let mut app = App::new_for_test();

@@ -622,7 +622,7 @@ impl App {
             // screen: with any modal already up (this gate included),
             // ctrl+c stays a reliable, immediate exit, so pressing it
             // twice always leaves without saving.
-            Action::Quit if self.editor.is_dirty() && self.modals.is_empty() => {
+            Action::Quit if self.editor_holds_unsaved() && self.modals.is_empty() => {
                 self.dirty_gate("quit", Action::ForceQuit);
                 true
             }
@@ -883,7 +883,7 @@ impl App {
                 true
             }
             Action::OpenRequest(slug) => {
-                if self.editor.is_dirty() {
+                if self.editor_holds_unsaved() {
                     self.dirty_gate("open", Action::ForceOpenRequest(slug));
                     true
                 } else {
@@ -1135,6 +1135,27 @@ impl App {
                 self.create_or_save_as(&name, move |_| req.clone());
                 true
             }
+            Action::PromptSaveScratch(then) => {
+                self.commit_table_edit();
+                self.modals.push(Modal::Prompt {
+                    title: "Save request as".into(),
+                    input: crate::components::line_input::LineInput::new(""),
+                    kind: PromptKind::SaveAsThen(then),
+                    revealed: false,
+                });
+                true
+            }
+            Action::SaveRequestAsThen(name, then) => {
+                self.commit_table_edit();
+                let req = self.editor.current_request();
+                // The deferred step (quit, open another request, switch
+                // project) runs only when the save lands — a bad name or a
+                // write failure toasts and stays put, content intact.
+                if self.create_or_save_as(&name, move |_| req.clone()) {
+                    self.apply(*then);
+                }
+                true
+            }
             Action::Send => {
                 // Same for sending: the typed cell is part of the request
                 // that goes out, not something to discard.
@@ -1369,7 +1390,7 @@ impl App {
                 if target == self.project.root {
                     return false;
                 }
-                if self.editor.is_dirty() {
+                if self.editor_holds_unsaved() {
                     self.dirty_gate("switch", Action::ForceSwitchProject(target));
                 } else {
                     self.apply(Action::ForceSwitchProject(target));
@@ -1487,7 +1508,7 @@ impl App {
                 if let Some(p) = &self.registry_path {
                     let _ = self.registry.save_to(p);
                 }
-                if self.editor.is_dirty() {
+                if self.editor_holds_unsaved() {
                     self.dirty_gate("create", Action::ForceSwitchProject(path));
                 } else {
                     self.apply(Action::ForceSwitchProject(path));
@@ -3625,9 +3646,33 @@ impl App {
         ])
     }
 
-    /// Push the standard unsaved-changes confirm whose "save" path relies on
-    /// SaveRequest completing synchronously (dirty implies a slugged request).
+    /// Whether leaving the editor's current content behind would lose
+    /// work: edits to a saved request, or a never-saved scratch with real
+    /// content. Every dirty gate checks this.
+    fn editor_holds_unsaved(&self) -> bool {
+        self.editor.is_dirty() || self.editor.is_scratch_dirty()
+    }
+
+    /// Push the standard unsaved-changes confirm. A slugged request's
+    /// "save" path relies on SaveRequest completing synchronously; a
+    /// never-saved scratch has no name yet, so its save path goes through
+    /// the Save-as prompt, with `then` deferred until that save succeeds.
     fn dirty_gate(&mut self, verb: &str, then: Action) {
+        if self.editor.slug.is_none() {
+            self.modals.push(Modal::Confirm {
+                title: "Unsaved request".into(),
+                body: "This request has never been saved.".into(),
+                choices: vec![
+                    (
+                        's',
+                        format!("Save as… & {verb}"),
+                        vec![Action::PromptSaveScratch(Box::new(then.clone()))],
+                    ),
+                    ('d', "Discard request".into(), vec![then]),
+                ],
+            });
+            return;
+        }
         let current = self.editor.slug.clone().unwrap_or_default();
         self.modals.push(Modal::Confirm {
             title: "Unsaved changes".into(),
@@ -3648,24 +3693,26 @@ impl App {
     /// the editor's current one) to a brand-new slug and switch the editor
     /// over to it. `build` receives the slug in case a future caller needs it;
     /// today's callers ignore it.
+    /// Returns whether the request was actually saved, so callers with a
+    /// deferred follow-up (the scratch gate) only proceed on success.
     fn create_or_save_as(
         &mut self,
         name: &str,
         build: impl FnOnce(&str) -> postui_core::model::HttpRequest,
-    ) {
+    ) -> bool {
         if postui_core::storage::validate_slug(name).is_err() {
             self.toasts.push(
                 "invalid name: lowercase letters, digits, - _ and / only",
                 ToastKind::Error,
             );
-            return;
+            return false;
         }
         if postui_core::storage::request_exists(&self.project.root, name) {
             self.toasts.push(
                 format!("request already exists: {name:?}"),
                 ToastKind::Error,
             );
-            return;
+            return false;
         }
         let req = build(name);
         match postui_core::storage::save_request(&self.project.root, name, &req) {
@@ -3681,10 +3728,12 @@ impl App {
                 self.refresh_sidebar();
                 self.sidebar.select_slug(name);
                 self.apply(Action::PersistLocalState);
+                true
             }
             Err(e) => {
                 self.toasts
                     .push(format!("could not save {name}: {e}"), ToastKind::Error);
+                false
             }
         }
     }

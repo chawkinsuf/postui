@@ -303,6 +303,22 @@ impl Editor {
         self.saved = Some(self.current_request());
     }
 
+    /// A request that was typed but never saved at all: no slug, no saved
+    /// snapshot, and content that isn't the blank editor's. `is_dirty` can
+    /// never be true here (there is nothing to diff against), yet quitting
+    /// or opening another request over it loses real work — the gates
+    /// check both.
+    pub fn is_scratch_dirty(&self) -> bool {
+        self.slug.is_none()
+            && self.saved.is_none()
+            && !(self.method == Method::Get
+                && self.url.text().is_empty()
+                && self.params.is_empty()
+                && self.headers.is_empty()
+                && self.variables.is_empty()
+                && self.body_text().is_empty())
+    }
+
     /// The name of the `{{token}}` the keyboard caret is currently sitting
     /// in, for the caret-resting tooltip (spec §7 — a keyboard user gets the
     /// same value readout a hover gives). Covers the two fields a caret can
@@ -2408,6 +2424,25 @@ mod tests {
         assert!(
             dirty.contains("save •"),
             "dirty editor shows the dot: {dirty}"
+        );
+    }
+
+    #[test]
+    fn scratch_dirty_is_typed_content_with_no_saved_snapshot() {
+        let mut e = Editor::default();
+        assert!(
+            !e.is_scratch_dirty(),
+            "a blank editor holds nothing to lose"
+        );
+        e.url = LineInput::new("https://x");
+        assert!(e.is_scratch_dirty(), "typed content with no file behind it");
+        e.load(
+            Some("a".into()),
+            HttpRequest::from_toml_str("url = \"https://x\"\n").unwrap(),
+        );
+        assert!(
+            !e.is_scratch_dirty(),
+            "a loaded request is `is_dirty`'s territory, never this"
         );
     }
 

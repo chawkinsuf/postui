@@ -108,6 +108,12 @@ pub enum Action {
     DuplicateRequest,
     /// The `discard` chip / palette: asks before reverting unsaved edits.
     ConfirmDiscardChanges,
+    /// The scratch gate's save path: opens the Save-as name prompt with the
+    /// deferred action to run once the save succeeds.
+    PromptSaveScratch(Box<Action>),
+    /// That prompt confirmed: save under the name, then run the deferred
+    /// action — only if the save actually succeeded.
+    SaveRequestAsThen(String, Box<Action>),
     /// The confirmed revert: reload the editor from its saved snapshot.
     DiscardChanges,
     /// Open the delete confirmation for the selected sidebar slug.

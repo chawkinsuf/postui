@@ -22,6 +22,9 @@ pub enum PromptKind {
         from: String,
     },
     SaveAs,
+    /// The never-saved-scratch gate's save path: a Save-as whose success
+    /// chains the gate's deferred action (quit, open, switch…).
+    SaveAsThen(Box<Action>),
     OpenProjectPath,
     SaveBodyAs,
     /// The env chooser's "new environment…" row: the text is the new
@@ -414,6 +417,10 @@ impl ModalStack {
                             to: text.to_string(),
                         }]),
                         PromptKind::SaveAs => Some(vec![Action::SaveRequestAs(text.to_string())]),
+                        PromptKind::SaveAsThen(then) => Some(vec![Action::SaveRequestAsThen(
+                            text.to_string(),
+                            then.clone(),
+                        )]),
                         PromptKind::OpenProjectPath => {
                             Some(vec![Action::OpenProjectByPath(text.to_string())])
                         }
