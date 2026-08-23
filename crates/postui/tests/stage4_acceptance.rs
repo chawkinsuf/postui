@@ -225,6 +225,13 @@ async fn stage4_mouse_only_acceptance_flow() {
     };
     let quit_row = p.filtered().iter().position(|c| c.id == "quit").unwrap();
     click(&mut app, Hit::PaletteRow(quit_row));
-    assert!(app.should_quit, "clicking the Quit palette row quits");
+    // The flow's edits were never saved, so quitting gates on the
+    // unsaved-changes confirm first; discard by mouse.
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Confirm { .. })),
+        "a dirty editor gates the quit behind the unsaved-changes confirm"
+    );
+    click(&mut app, Hit::ConfirmChoice('d'));
+    assert!(app.should_quit, "discarding through the confirm quits");
     assert!(app.modals.is_empty());
 }

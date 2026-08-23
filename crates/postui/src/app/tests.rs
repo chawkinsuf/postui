@@ -1491,6 +1491,61 @@ fn horizontal_wheel_over_the_response_pane_scrolls_it_sideways() {
     );
 }
 
+/// An app with one saved request open and a dirtying edit typed into its
+/// URL, so quit paths can exercise the unsaved-changes gate.
+fn dirty_app() -> App {
+    let mut app = App::new_for_test();
+    postui_core::storage::save_request(&app.project.root, "r", &req("https://x/r")).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::ForceOpenRequest("r".into()));
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Url;
+    app.handle_key(&Keymap::default_bindings(), plain('/'));
+    assert!(app.editor.is_dirty());
+    app
+}
+
+#[test]
+fn quitting_with_unsaved_changes_gates_on_the_confirm() {
+    let mut app = dirty_app();
+    app.update(Action::Quit);
+    assert!(!app.should_quit, "quit must wait for the gate");
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+    app.handle_key(&Keymap::default_bindings(), plain('d'));
+    assert!(app.should_quit, "Discard changes quits");
+}
+
+#[test]
+fn quitting_with_unsaved_changes_can_save_first() {
+    let mut app = dirty_app();
+    app.update(Action::Quit);
+    app.handle_key(&Keymap::default_bindings(), plain('s'));
+    assert!(app.should_quit, "Save & quit quits");
+    assert!(!app.editor.is_dirty(), "…after actually saving");
+}
+
+#[test]
+fn quitting_clean_needs_no_confirm() {
+    let mut app = App::new_for_test();
+    app.update(Action::Quit);
+    assert!(app.should_quit);
+    assert!(app.modals.is_empty());
+}
+
+#[test]
+fn quit_with_a_modal_already_open_stays_immediate() {
+    // ctrl+c must stay a reliable exit from inside any modal — including
+    // the unsaved-changes gate itself (press it twice to leave without
+    // saving), so a dirty editor never traps the user.
+    let mut app = dirty_app();
+    app.modals.push(crate::components::modal::Modal::Message {
+        title: "About".into(),
+        body: "hello".into(),
+    });
+    app.update(Action::Quit);
+    assert!(app.should_quit);
+}
+
 /// An app whose response pane holds a wide non-JSON one-liner, rendered
 /// once so the horizontal scrollbar's hits exist.
 fn app_with_wide_response() -> App {

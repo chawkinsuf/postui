@@ -617,7 +617,16 @@ impl App {
 
     fn apply(&mut self, action: Action) -> bool {
         match action {
-            Action::Quit => {
+            // An unsaved request gates quitting behind the same confirm as
+            // opening/switching away from it — but only from the plain
+            // screen: with any modal already up (this gate included),
+            // ctrl+c stays a reliable, immediate exit, so pressing it
+            // twice always leaves without saving.
+            Action::Quit if self.editor.is_dirty() && self.modals.is_empty() => {
+                self.dirty_gate("quit", Action::ForceQuit);
+                true
+            }
+            Action::Quit | Action::ForceQuit => {
                 self.project
                     .persist_local_state(self.editor.slug.as_deref());
                 if let Some(path) = &self.usage_path {

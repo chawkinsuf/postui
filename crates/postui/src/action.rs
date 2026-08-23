@@ -29,6 +29,9 @@ pub enum CopyTarget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
     Quit,
+    /// Quit without the unsaved-changes gate — what the gate's own choices
+    /// dispatch once the user has decided.
+    ForceQuit,
     Tick,
     Render,
     FocusNext,

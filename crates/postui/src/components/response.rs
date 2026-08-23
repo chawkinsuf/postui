@@ -214,7 +214,9 @@ impl ReadyView {
     /// the widest visible line's end never scrolls past the right edge.
     fn scroll_h(&mut self, delta: i32) {
         let max = self.content_width().saturating_sub(self.width.max(1)) as i32;
-        self.h_scroll = (self.h_scroll as i32 + delta).clamp(0, max.max(0)) as usize;
+        self.h_scroll = (self.h_scroll as i32)
+            .saturating_add(delta)
+            .clamp(0, max.max(0)) as usize;
     }
 
     /// The body viewport's width as of the last draw, in columns.
@@ -638,8 +640,24 @@ impl Response {
                 view.scroll_h((-H_SCROLL_STEP).into());
                 Some(Action::Render)
             }
+            // Document jumps come before the line jumps so the plain
+            // Home/End arms (which don't check modifiers) can't shadow them.
+            KeyCode::Home if ev.modifiers.contains(KeyModifiers::CONTROL) => {
+                view.cursor = 0;
+                view.follow_cursor();
+                Some(Action::Render)
+            }
+            KeyCode::End if ev.modifiers.contains(KeyModifiers::CONTROL) => {
+                view.cursor = view.visible_len().saturating_sub(1);
+                view.follow_cursor();
+                Some(Action::Render)
+            }
             KeyCode::Home => {
                 view.h_scroll = 0;
+                Some(Action::Render)
+            }
+            KeyCode::End => {
+                view.scroll_h(i32::MAX);
                 Some(Action::Render)
             }
             KeyCode::Char('g') => {
@@ -687,11 +705,15 @@ impl Component for Response {
     fn handle_key(&mut self, ev: KeyEvent) -> Option<Action> {
         match self.state {
             ResponseState::InFlight { .. } if ev.code == KeyCode::Esc => Some(Action::CancelSend),
-            // Modified combos belong to the global keymap, not the pane.
+            // Modified combos belong to the global keymap, not the pane —
+            // except ctrl+Home/ctrl+End, the standard document-top/bottom
+            // jumps, which nothing global binds.
             ResponseState::Ready(_)
                 if !ev
                     .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                    || (ev.modifiers == KeyModifiers::CONTROL
+                        && matches!(ev.code, KeyCode::Home | KeyCode::End)) =>
             {
                 self.ready_key(ev)
             }
@@ -1908,6 +1930,35 @@ mod tests {
         r.handle_key(key(KeyCode::PageUp));
         let v = r.view().unwrap();
         assert_eq!(v.cursor, 0, "PageUp comes back and clamps at the top");
+    }
+
+    #[test]
+    fn end_key_jumps_to_the_widest_line_end() {
+        let mut r = wide_raw();
+        render(&mut r);
+        r.handle_key(key(KeyCode::End));
+        let out = render(&mut r);
+        assert!(out.contains("TAIL"), "End shows the line's end: {out}");
+        r.handle_key(key(KeyCode::Home));
+        assert_eq!(r.view().unwrap().h_scroll, 0);
+    }
+
+    #[test]
+    fn ctrl_home_and_ctrl_end_jump_to_document_top_and_bottom() {
+        let body = (0..100)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut r = ready(&body);
+        render(&mut r);
+        r.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL));
+        let v = r.view().unwrap();
+        assert_eq!(v.cursor, 99, "ctrl+End lands on the last line");
+        assert!(v.scroll > 0, "the viewport follows to the bottom");
+        r.handle_key(KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL));
+        let v = r.view().unwrap();
+        assert_eq!(v.cursor, 0, "ctrl+Home lands on the first line");
+        assert_eq!(v.scroll, 0, "the viewport follows back to the top");
     }
 
     #[test]
