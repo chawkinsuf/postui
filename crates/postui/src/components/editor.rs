@@ -548,24 +548,26 @@ impl Editor {
     /// Sets `body.selection` to the inclusive cell range between two caret
     /// positions (each clamped onto its line's last character — carets sit
     /// on boundaries, selections cover cells), or clears it when both
-    /// clamp to the same cell. edtui doesn't export its `Selection` type,
-    /// so the range is built by letting `SwitchMode(Visual)` construct one
-    /// and then rewriting its public endpoints (the mode is restored to
-    /// Insert by the callers' modeless invariant).
+    /// clamp to the same cell (a mouse drag that never left its cell is
+    /// not a selection).
     fn set_body_selection(&mut self, a: edtui::Index2, b: edtui::Index2) {
-        use edtui::actions::{Execute, SwitchMode};
-        let clamp = |lines: &Lines, i: edtui::Index2| {
-            let len = lines.len_col(i.row).unwrap_or(0);
-            edtui::Index2::new(i.row, i.col.min(len.saturating_sub(1)))
-        };
-        let (a, b) = (
-            clamp(&self.body.lines, a),
-            clamp(&self.body.lines, b),
-        );
+        let (a, b) = (self.clamp_to_cell(a), self.clamp_to_cell(b));
         if a == b {
             self.body.selection = None;
             return;
         }
+        self.set_body_selection_cells(a, b);
+    }
+
+    /// Sets `body.selection` to the inclusive cell range `a..=b` (either
+    /// order), allowing a single-cell selection. edtui doesn't export its
+    /// `Selection` type, so the range is built by letting
+    /// `SwitchMode(Visual)` construct one and then rewriting its public
+    /// endpoints; the mode goes straight back to Insert (modeless
+    /// invariant).
+    fn set_body_selection_cells(&mut self, a: edtui::Index2, b: edtui::Index2) {
+        use edtui::actions::{Execute, SwitchMode};
+        let (a, b) = (self.clamp_to_cell(a), self.clamp_to_cell(b));
         let cursor = self.body.cursor;
         self.body.cursor = a;
         SwitchMode(EditorMode::Visual).execute(&mut self.body);
@@ -573,6 +575,65 @@ impl Editor {
             sel.end = b;
         }
         self.body.cursor = cursor;
+        self.body.mode = EditorMode::Insert;
+    }
+
+    /// Sets `body.selection` from two caret *boundaries* (keyboard
+    /// semantics: the selection covers the chars strictly between them, so
+    /// one shift+Right selects exactly one char). Clears the selection
+    /// when the boundaries coincide.
+    fn set_body_selection_boundaries(&mut self, a: edtui::Index2, b: edtui::Index2) {
+        let (lo, hi) = if (a.row, a.col) <= (b.row, b.col) {
+            (a, b)
+        } else {
+            (b, a)
+        };
+        if lo == hi {
+            self.body.selection = None;
+            return;
+        }
+        // The exclusive upper boundary becomes an inclusive end cell: the
+        // char just before it (last char of the previous row when the
+        // boundary sits at a line start).
+        let end = if hi.col > 0 {
+            edtui::Index2::new(hi.row, hi.col - 1)
+        } else {
+            let row = hi.row - 1; // hi > lo, so hi.row >= 1 here
+            edtui::Index2::new(row, self.body.lines.len_col(row).unwrap_or(0))
+        };
+        self.set_body_selection_cells(lo, end);
+    }
+
+    /// Clamps a caret position onto a character cell of its line (col
+    /// `len` -> `len - 1`; col 0 on an empty line).
+    fn clamp_to_cell(&self, i: edtui::Index2) -> edtui::Index2 {
+        let len = self.body.lines.len_col(i.row).unwrap_or(0);
+        edtui::Index2::new(i.row, i.col.min(len.saturating_sub(1)))
+    }
+
+    /// Deletes the selected body text (cursor collapses to the selection
+    /// start), staying in Insert mode. Selections cover characters, never
+    /// the line break after them — but edtui's `DeleteSelection` (jagged
+    /// `extract`) consumes that break whenever the selection ends on a
+    /// row's last character, joining the next row up; the break is
+    /// restored so deleting a selected word at a line end can't silently
+    /// merge lines.
+    fn delete_body_selection(&mut self) {
+        use edtui::actions::{DeleteSelection, Execute, LineBreak};
+        let Some(sel) = self.body.selection.as_ref() else {
+            self.body_sel_anchor = None;
+            return;
+        };
+        let (start, end) = (sel.start(), sel.end());
+        let end_len = self.body.lines.len_col(end.row).unwrap_or(0);
+        let eats_break = end.col + 1 >= end_len && end.row + 1 < self.body.lines.len();
+        DeleteSelection.execute(&mut self.body);
+        if eats_break {
+            // The cursor sits exactly at the join point after the delete.
+            LineBreak(1).execute(&mut self.body);
+            self.body.cursor = start;
+        }
+        self.body_sel_anchor = None;
         self.body.mode = EditorMode::Insert;
     }
 
@@ -890,13 +951,77 @@ impl Component for Editor {
                     }
                     return None;
                 }
+                // GUI-style selection first (plan 2026-08-23-text-selection):
+                // ctrl+a selects the whole body (Home/ctrl+Home cover the
+                // start-of-line jump edtui's emacs ctrl+a used to give),
+                // shifted motions extend a selection through the same
+                // wrap-aware nav path the unshifted keys use, and while a
+                // selection is live the editing keys take their desktop
+                // meanings (type to replace, Backspace/Delete to remove,
+                // Esc to deselect).
+                if ev.code == KeyCode::Char('a') && ev.modifiers == KeyModifiers::CONTROL {
+                    let last = self.body.lines.len().saturating_sub(1);
+                    let last_col = self.body.lines.len_col(last).unwrap_or(0);
+                    self.body_sel_anchor = Some(edtui::Index2::new(0, 0));
+                    self.set_body_selection_cells(
+                        edtui::Index2::new(0, 0),
+                        edtui::Index2::new(last, last_col),
+                    );
+                    return Some(Action::Render);
+                }
+                let is_motion = matches!(
+                    ev.code,
+                    KeyCode::Left
+                        | KeyCode::Right
+                        | KeyCode::Up
+                        | KeyCode::Down
+                        | KeyCode::Home
+                        | KeyCode::End
+                );
+                if is_motion && ev.modifiers.contains(KeyModifiers::SHIFT) {
+                    let anchor = *self.body_sel_anchor.get_or_insert(self.body.cursor);
+                    let stripped =
+                        KeyEvent::new(ev.code, ev.modifiers.difference(KeyModifiers::SHIFT));
+                    if !self.body_nav_key(&stripped) {
+                        self.body_handler.on_key_event(stripped, &mut self.body);
+                    }
+                    self.set_body_selection_boundaries(anchor, self.body.cursor);
+                    self.body.mode = EditorMode::Insert;
+                    return Some(Action::Render);
+                }
+                if self.body.selection.is_some() {
+                    match ev.code {
+                        KeyCode::Esc => {
+                            self.clear_body_selection();
+                            return Some(Action::Render);
+                        }
+                        KeyCode::Backspace | KeyCode::Delete => {
+                            self.delete_body_selection();
+                            return Some(Action::Render);
+                        }
+                        // Typing replaces: delete the selection, then fall
+                        // through so the key inserts at the collapsed
+                        // cursor.
+                        KeyCode::Char(_)
+                            if ev.modifiers.difference(KeyModifiers::SHIFT).is_empty() =>
+                        {
+                            self.delete_body_selection();
+                        }
+                        KeyCode::Enter | KeyCode::Tab if ev.modifiers.is_empty() => {
+                            self.delete_body_selection();
+                        }
+                        // Any other key drops the selection and acts
+                        // normally.
+                        _ => self.clear_body_selection(),
+                    }
+                }
                 // Esc blurs the buffer (Enter must stay a newline in a
                 // multi-line editor); Up climbs out to the tab strip only
                 // from the top row, so it can still navigate the body. CTRL/ALT
                 // combos the keymap binds to an app action are shadowed here
                 // (the router hands those to the global keymap first); any
                 // unbound modified combo falls through to this component and
-                // reaches edtui's own emacs-style bindings (ctrl+a/e/k etc.)
+                // reaches edtui's own emacs-style bindings (ctrl+e/k etc.)
                 // deliberately, so those keep working for body editing.
                 if ev.code == KeyCode::Esc {
                     self.sub_focus = SubFocus::None;
@@ -3635,6 +3760,96 @@ mod body_click_tests {
         assert!(e.body.selection.is_some());
         e.body_drag_to(2, 0);
         assert!(e.body.selection.is_none());
+    }
+
+    fn skey(code: ratatui::crossterm::event::KeyCode) -> ratatui::crossterm::event::KeyEvent {
+        ratatui::crossterm::event::KeyEvent::new(code, KeyModifiers::SHIFT)
+    }
+    fn pkey(code: ratatui::crossterm::event::KeyCode) -> ratatui::crossterm::event::KeyEvent {
+        ratatui::crossterm::event::KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn shift_right_selects_one_char_and_stays_modeless() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut e = editor_with_body("abc\n");
+        e.body.cursor = Index2::new(0, 0);
+        e.handle_key(skey(KeyCode::Right));
+        assert_eq!(e.body.cursor, Index2::new(0, 1));
+        assert_eq!(e.body_selected_text().as_deref(), Some("a"));
+        assert_eq!(e.body.mode, EditorMode::Insert);
+    }
+
+    #[test]
+    fn shift_down_selects_the_first_line() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut e = editor_with_body("hello\nworld\n");
+        e.body.cursor = Index2::new(0, 0);
+        e.handle_key(skey(KeyCode::Down));
+        assert_eq!(e.body.cursor, Index2::new(1, 0));
+        assert_eq!(e.body_selected_text().as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn shift_end_then_typing_replaces_the_selection() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut e = editor_with_body("abc\n");
+        e.body.cursor = Index2::new(0, 0);
+        e.handle_key(skey(KeyCode::End));
+        assert_eq!(e.body_selected_text().as_deref(), Some("abc"));
+        e.handle_key(pkey(KeyCode::Char('x')));
+        assert_eq!(e.body_text(), "x\n");
+        assert!(e.body.selection.is_none());
+        assert_eq!(e.body.mode, EditorMode::Insert);
+    }
+
+    #[test]
+    fn backspace_deletes_only_the_selection() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut e = editor_with_body("abcd\n");
+        e.body.cursor = Index2::new(0, 1);
+        e.handle_key(skey(KeyCode::Right));
+        e.handle_key(skey(KeyCode::Right));
+        assert_eq!(e.body_selected_text().as_deref(), Some("bc"));
+        e.handle_key(pkey(KeyCode::Backspace));
+        assert_eq!(e.body_text(), "ad\n");
+        assert_eq!(e.body.cursor, Index2::new(0, 1));
+    }
+
+    #[test]
+    fn unshifted_motion_clears_the_selection() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut e = editor_with_body("abc\n");
+        e.body.cursor = Index2::new(0, 0);
+        e.handle_key(skey(KeyCode::Right));
+        assert!(e.body.selection.is_some());
+        e.handle_key(pkey(KeyCode::Right));
+        assert!(e.body.selection.is_none());
+    }
+
+    #[test]
+    fn esc_clears_the_selection_before_it_blurs() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut e = editor_with_body("abc\n");
+        e.body.cursor = Index2::new(0, 0);
+        e.handle_key(skey(KeyCode::Right));
+        e.handle_key(pkey(KeyCode::Esc));
+        assert!(e.body.selection.is_none());
+        assert_eq!(e.sub_focus, SubFocus::Content, "first Esc only clears");
+        e.handle_key(pkey(KeyCode::Esc));
+        assert_eq!(e.sub_focus, SubFocus::None, "second Esc blurs");
+    }
+
+    #[test]
+    fn ctrl_a_selects_the_whole_body() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut e = editor_with_body("hello\nworld");
+        e.body.cursor = Index2::new(1, 2);
+        e.handle_key(ratatui::crossterm::event::KeyEvent::new(
+            KeyCode::Char('a'),
+            KeyModifiers::CONTROL,
+        ));
+        assert_eq!(e.body_selected_text().as_deref(), Some("hello\nworld"));
     }
 
     #[test]
