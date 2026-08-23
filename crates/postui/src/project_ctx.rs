@@ -4,6 +4,7 @@
 //! that persist across runs.
 
 use indexmap::IndexMap;
+use postui_core::migrate::{self, MigrationOutcome};
 use postui_core::project::ProjectMeta;
 use postui_core::varedit::EditError;
 use postui_core::varmodel::{self, VarModel};
@@ -36,11 +37,21 @@ pub struct ProjectContext {
     /// caller can restore the previously-open request. Not kept in sync
     /// afterward — it's a one-shot startup value.
     local_open_request: Option<String>,
+    /// Set when the on-disk files still use stage-6 syntax (spec §3.3):
+    /// the conversion the confirm modal offers to apply. While it is
+    /// `Some`, `model`/`env_data` are left at their defaults — nothing
+    /// parses the legacy shapes, so the variables are simply inert until
+    /// the user applies or declines.
+    pending_migration: Option<MigrationOutcome>,
+    /// Set once the user declines: the files stay legacy (so they keep
+    /// failing `needs_migration`), but we stop re-offering the migration
+    /// on every reload for the rest of this session.
+    migration_declined: bool,
 }
 
-/// Loads an environment's data, validating it against `model` (spec §1.2: a
-/// flat value for an enumerated/secret name, or an `[options.*]` table for
-/// an undeclared/secret name, is an error).
+/// Loads an environment's data, validating it against `model` (spec §3.2:
+/// a flat value for a secret, a group, or a group field, or an
+/// `[entries.*]` table for an undeclared group, is an error).
 fn load_and_validate_env(
     root: &Path,
     name: &str,
@@ -73,14 +84,14 @@ fn atomic_write(path: &Path, contents: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Drops any entry in `selections` naming an option key that no longer
-/// exists in `model`/`env`'s merged options for that name (spec §1.3: "a
-/// selection naming a missing option key degrades to unselected ... with a
-/// toast on load"). `resolve_env` already degrades a stale selection to
-/// `NeedsSelection` on its own, so this isn't required for correct
-/// resolution — it's purely so the user gets told once, and so the stale
-/// entry doesn't linger forever in `.local/state.toml`. Returns one warning
-/// per cleared entry, worded to match the finding's example exactly.
+/// Drops any entry in `selections` naming an entry that no longer exists
+/// among `env`'s entries for that group (spec §1.3: "a selection naming a
+/// missing option key degrades to unselected ... with a toast on load").
+/// `resolve_env` already degrades a stale selection to `NeedsSelection` on
+/// its own, so this isn't required for correct resolution — it's purely so
+/// the user gets told once, and so the stale entry doesn't linger forever
+/// in `.local/state.toml`. Returns one warning per cleared entry, worded to
+/// match the finding's example exactly.
 fn prune_stale_selections(
     model: &VarModel,
     env_data: &varmodel::EnvData,
@@ -89,15 +100,11 @@ fn prune_stale_selections(
 ) -> Vec<String> {
     let stale: Vec<String> = selections
         .iter()
-        .filter(|(name, key)| {
-            let merged_has_key = if model.vars.contains_key(name.as_str()) {
-                varmodel::merged_var_options(model, env_data, name).contains_key(key.as_str())
-            } else if model.groups.contains_key(name.as_str()) {
-                varmodel::merged_group_options(model, env_data, name).contains_key(key.as_str())
-            } else {
-                false
-            };
-            !merged_has_key
+        .filter(|(group, entry)| {
+            let entry_exists = model.groups.contains_key(group.as_str())
+                && varmodel::group_entries(env_data, group)
+                    .is_some_and(|entries| entries.contains_key(entry.as_str()));
+            !entry_exists
         })
         .map(|(name, _)| name.clone())
         .collect();
@@ -109,6 +116,50 @@ fn prune_stale_selections(
             format!("selection for `{name}` no longer exists in env `{env_label}` \u{2014} cleared")
         })
         .collect()
+}
+
+/// `environments/<env>.toml` under `root`.
+fn env_path(root: &Path, env: &str) -> PathBuf {
+    root.join("environments").join(format!("{env}.toml"))
+}
+
+/// The raw text of `variables.toml` plus every environment document, as
+/// [`migrate`] wants them: unparsed, so stage-6 shapes survive the trip.
+/// Unreadable files read as empty — a file we can't read has nothing to
+/// migrate, and the ordinary load path reports the read failure.
+fn raw_docs(root: &Path) -> (String, Vec<(String, String)>) {
+    let vars = read_or_empty(&root.join("variables.toml")).unwrap_or_default();
+    let envs = postui_core::project::list_environments(root)
+        .into_iter()
+        .map(|env| {
+            let doc = read_or_empty(&env_path(root, &env)).unwrap_or_default();
+            (env, doc)
+        })
+        .collect();
+    (vars, envs)
+}
+
+/// Probes `root` for stage-6 syntax (spec §3.3). Returns `(legacy,
+/// outcome, warnings)`: `legacy` is true whenever the files need
+/// migrating — even when the conversion itself can't be computed, since
+/// the model can't read those files either way — and `outcome` is the
+/// conversion to offer, absent when `migrate` refused to convert (its
+/// reason is the warning).
+fn probe_migration(root: &Path) -> (bool, Option<MigrationOutcome>, Vec<String>) {
+    let (vars, envs) = raw_docs(root);
+    if !migrate::needs_migration(&vars, &envs) {
+        return (false, None, Vec::new());
+    }
+    match migrate::migrate(&vars, &envs) {
+        Ok(outcome) => (true, Some(outcome), Vec::new()),
+        Err(e) => (
+            true,
+            None,
+            vec![format!(
+                "variables use the old format and can't be converted automatically: {e}"
+            )],
+        ),
+    }
 }
 
 fn mtime(path: &PathBuf) -> Option<SystemTime> {
@@ -149,10 +200,19 @@ impl ProjectContext {
             warnings.push(format!("could not read project.toml: {e}"));
             ProjectMeta::default()
         });
-        let model = postui_core::project::load_variables(&root).unwrap_or_else(|e| {
-            warnings.push(format!("could not read variables.toml: {e}"));
+        let (legacy, pending_migration, migration_warnings) = probe_migration(&root);
+        warnings.extend(migration_warnings);
+        let model = if legacy {
+            // Legacy files parse as nothing useful (and would only produce
+            // confusing errors): leave the variables inert until the user
+            // applies or declines the migration.
             VarModel::default()
-        });
+        } else {
+            postui_core::project::load_variables(&root).unwrap_or_else(|e| {
+                warnings.push(format!("could not read variables.toml: {e}"));
+                VarModel::default()
+            })
+        };
         let environments = postui_core::project::list_environments(&root);
 
         let local_state = postui_core::project::load_local_state(&root).unwrap_or_else(|e| {
@@ -170,6 +230,11 @@ impl ProjectContext {
         if let Some(env) = local_state.environment {
             if !environments.contains(&env) {
                 warnings.push(format!("saved environment {env:?} no longer exists"));
+            } else if legacy {
+                // Same reasoning as `model` above: the env file is legacy
+                // too, so it stays unread — but the environment is still
+                // the active one, so applying the migration loads it.
+                active_env = Some(env);
             } else {
                 match load_and_validate_env(&root, &env, &model) {
                     Ok(data) => {
@@ -201,8 +266,14 @@ impl ProjectContext {
             selections: local_state.selections,
             stamps,
             local_open_request: local_state.open_request,
+            pending_migration,
+            migration_declined: false,
         };
-        if let Some(env) = ctx.active_env.clone() {
+        // `legacy` leaves `model`/`env_data` empty, which would make
+        // every recorded selection look stale: pruning there would wipe
+        // (and persist the loss of) selections the migration is about to
+        // carry over, and toast a bogus warning for each one.
+        if let Some(env) = ctx.active_env.clone().filter(|_| !legacy) {
             let stale = prune_stale_selections(
                 &ctx.model,
                 &ctx.env_data,
@@ -404,9 +475,21 @@ impl ProjectContext {
             Ok(meta) => self.meta = meta,
             Err(e) => warnings.push(format!("could not read project.toml: {e}")),
         }
-        match postui_core::project::load_variables(&self.root) {
-            Ok(model) => self.model = model,
-            Err(e) => warnings.push(format!("could not read variables.toml: {e}")),
+        let (legacy, pending, migration_warnings) = probe_migration(&self.root);
+        warnings.extend(migration_warnings);
+        self.pending_migration = if self.migration_declined {
+            None
+        } else {
+            pending
+        };
+        if legacy {
+            self.model = VarModel::default();
+            self.env_data = varmodel::EnvData::default();
+        } else {
+            match postui_core::project::load_variables(&self.root) {
+                Ok(model) => self.model = model,
+                Err(e) => warnings.push(format!("could not read variables.toml: {e}")),
+            }
         }
         self.environments = postui_core::project::list_environments(&self.root);
 
@@ -420,7 +503,7 @@ impl ProjectContext {
                 warnings.push(format!("active environment {env:?} no longer exists"));
                 self.active_env = None;
                 self.env_data = varmodel::EnvData::default();
-            } else {
+            } else if !legacy {
                 match load_and_validate_env(&self.root, &env, &self.model) {
                     Ok(data) => self.env_data = data,
                     Err(e) => warnings.push(format!("could not load environment {env:?}: {e}")),
@@ -428,7 +511,8 @@ impl ProjectContext {
             }
         }
 
-        if let Some(env) = self.active_env.clone() {
+        // See `open`: an unparsed legacy model must never prune.
+        if let Some(env) = self.active_env.clone().filter(|_| !legacy) {
             let stale = prune_stale_selections(
                 &self.model,
                 &self.env_data,
@@ -444,6 +528,73 @@ impl ProjectContext {
         self.stamps = stamp(&self.root, &self.active_env);
         self.refresh_resolved();
         (true, warnings)
+    }
+
+    /// The stage-6 → stage-7 conversion waiting to be confirmed (spec
+    /// §3.3), computed at `open`/`reload_if_changed` from the raw file
+    /// texts. `None` once applied or declined, and for any project already
+    /// in the new format.
+    pub fn pending_migration(&self) -> Option<&MigrationOutcome> {
+        self.pending_migration.as_ref()
+    }
+
+    /// Applies the pending migration: each rewritten file is copied to
+    /// `<file>.bak` first (a plain write — it's the safety copy, not the
+    /// live file), then the new text is written atomically, and
+    /// `environments/default.toml` is created when the conversion needs
+    /// somewhere to put the migrated entries. Reloads everything
+    /// afterwards, so the model comes up on the new format. `Ok(notes)`
+    /// are the conversion's human-readable notes, for a toast.
+    pub fn apply_migration(&mut self) -> Result<Vec<String>, String> {
+        let Some(outcome) = self.pending_migration.take() else {
+            return Err("no migration is pending".to_string());
+        };
+        let write = |path: &Path, text: &str| -> Result<(), String> {
+            let backup = path.with_extension("toml.bak");
+            // Only ever back up once: retrying after a partly-applied
+            // attempt would otherwise copy the already-migrated text over
+            // the only surviving copy of the original.
+            if path.exists() && !backup.exists() {
+                let existing = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+                std::fs::write(&backup, existing).map_err(|e| e.to_string())?;
+            }
+            atomic_write(path, text).map_err(|e| e.to_string())
+        };
+
+        let result = (|| -> Result<(), String> {
+            if let Some(text) = &outcome.variables {
+                write(&self.root.join("variables.toml"), text)?;
+            }
+            for (env, text) in &outcome.envs {
+                write(&env_path(&self.root, env), text)?;
+            }
+            if let Some(text) = &outcome.new_default_env {
+                write(&env_path(&self.root, "default"), text)?;
+            }
+            Ok(())
+        })();
+        if let Err(e) = result {
+            // Keep it pending so the user can retry (and so a partial
+            // write is still recognized as legacy on the next probe).
+            self.pending_migration = Some(outcome);
+            return Err(e);
+        }
+
+        // Force a full reload: the stamps recorded before the rewrite say
+        // nothing changed for files we just replaced in the same instant.
+        self.stamps.clear();
+        let (_, warnings) = self.reload_if_changed();
+        let mut notes = outcome.notes;
+        notes.extend(warnings);
+        Ok(notes)
+    }
+
+    /// The confirm modal's "Not now": leaves every file untouched and the
+    /// variables inert (the model stays `Default`), and stops re-offering
+    /// the migration for the rest of this session.
+    pub fn decline_migration(&mut self) {
+        self.pending_migration = None;
+        self.migration_declined = true;
     }
 
     /// Best-effort save of the UI-owned local state: active environment,
@@ -540,6 +691,55 @@ impl ProjectContext {
         if self.active_env.as_deref() == Some(env) {
             self.env_data = new_env;
         }
+        self.stamps = stamp(&self.root, &self.active_env);
+        self.refresh_resolved();
+        Ok(())
+    }
+
+    /// One edit that has to change `variables.toml` *and* every environment
+    /// file together, because neither half validates without the other:
+    /// renaming a group (an environment's `[entries.<old>]` names a group
+    /// the new model no longer declares — and the new name's entries don't
+    /// exist yet) and reshaping a group's field list (every entry must
+    /// supply exactly the declared fields, so a rename/add/remove is
+    /// invalid the moment one side lands alone). Doing it as two
+    /// [`Self::edit_variables`]/[`Self::edit_env`] calls fails whichever
+    /// goes first, in either order.
+    ///
+    /// So both halves are built in memory, and the *new* model is validated
+    /// against every *new* environment before anything is written. A
+    /// refusal leaves every file untouched, exactly like the single-file
+    /// verbs. (The writes themselves are per-file atomic and sequential —
+    /// an I/O failure part-way can still leave the project half-written,
+    /// the same exposure the existing per-env cascades in
+    /// `App::apply_var_struct` already carry.)
+    pub fn edit_variables_and_envs(
+        &mut self,
+        vf: impl FnOnce(&str) -> Result<String, EditError>,
+        ef: impl Fn(&str) -> Result<String, EditError>,
+    ) -> Result<(), String> {
+        let vars_path = self.root.join("variables.toml");
+        let new_vars_text = vf(&read_or_empty(&vars_path)?).map_err(|e| e.to_string())?;
+        let new_model = varmodel::parse_variables(&new_vars_text).map_err(|e| e.to_string())?;
+
+        let mut envs: Vec<(String, PathBuf, String, varmodel::EnvData)> = Vec::new();
+        for env in &self.environments {
+            let path = self.root.join("environments").join(format!("{env}.toml"));
+            let new_text = ef(&read_or_empty(&path)?).map_err(|e| e.to_string())?;
+            let new_data = varmodel::parse_environment(&new_text).map_err(|e| e.to_string())?;
+            varmodel::validate_env(&new_model, &new_data).map_err(|e| e.to_string())?;
+            envs.push((env.clone(), path, new_text, new_data));
+        }
+
+        atomic_write(&vars_path, &new_vars_text).map_err(|e| e.to_string())?;
+        for (env, path, text, data) in envs {
+            atomic_write(&path, &text).map_err(|e| e.to_string())?;
+            if self.active_env.as_deref() == Some(env.as_str()) {
+                self.env_data = data;
+            }
+        }
+
+        self.model = new_model;
         self.stamps = stamp(&self.root, &self.active_env);
         self.refresh_resolved();
         Ok(())
@@ -671,10 +871,14 @@ mod tests {
         postui_core::project::init_project(dir.path(), None).unwrap();
         std::fs::write(
             dir.path().join("variables.toml"),
-            "[user]\n[user.options.alice]\nvalue = \"1001\"\n[user.options.bob]\nvalue = \"2002\"\n\n[api_key]\nsecret = true\n",
+            "[groups.user]\nfields = [\"user\"]\n\n[api_key]\nsecret = true\n",
         )
         .unwrap();
-        std::fs::write(dir.path().join("environments/qa.toml"), "").unwrap();
+        std::fs::write(
+            dir.path().join("environments/qa.toml"),
+            "[entries.user.alice]\nuser = \"1001\"\n[entries.user.bob]\nuser = \"2002\"\n",
+        )
+        .unwrap();
 
         let mut selections = IndexMap::new();
         let mut qa_sel = IndexMap::new();
@@ -711,10 +915,14 @@ mod tests {
         postui_core::project::init_project(dir.path(), None).unwrap();
         std::fs::write(
             dir.path().join("variables.toml"),
-            "[user]\n[user.options.alice]\nvalue = \"1001\"\n",
+            "[groups.user]\nfields = [\"user\"]\n",
         )
         .unwrap();
-        std::fs::write(dir.path().join("environments/qa.toml"), "").unwrap();
+        std::fs::write(
+            dir.path().join("environments/qa.toml"),
+            "[entries.user.alice]\nuser = \"1001\"\n",
+        )
+        .unwrap();
         let mut selections = IndexMap::new();
         let mut qa_sel = IndexMap::new();
         qa_sel.insert("user".to_string(), "ghost".to_string());
@@ -758,21 +966,25 @@ mod tests {
         postui_core::project::init_project(dir.path(), None).unwrap();
         std::fs::write(
             dir.path().join("variables.toml"),
-            "[user]\n[user.options.alice]\nvalue = \"1001\"\n",
+            "[groups.user]\nfields = [\"user\"]\n",
         )
         .unwrap();
-        std::fs::write(dir.path().join("environments/qa.toml"), "").unwrap();
+        std::fs::write(
+            dir.path().join("environments/qa.toml"),
+            "[entries.user.alice]\nuser = \"1001\"\n",
+        )
+        .unwrap();
         let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
         ctx.set_env(Some("qa".into()));
         ctx.set_selection("user", "alice");
         assert_eq!(ctx.resolved.values["user"], "1001");
 
         std::fs::write(
-            dir.path().join("variables.toml"),
-            "[user]\n[user.options.bob]\nvalue = \"2002\"\n",
+            dir.path().join("environments/qa.toml"),
+            "[entries.user.bob]\nuser = \"2002\"\n",
         )
         .unwrap();
-        bump_mtime(&dir.path().join("variables.toml"));
+        bump_mtime(&dir.path().join("environments/qa.toml"));
 
         let (changed, warns) = ctx.reload_if_changed();
         assert!(changed);
@@ -791,10 +1003,14 @@ mod tests {
         postui_core::project::init_project(dir.path(), None).unwrap();
         std::fs::write(
             dir.path().join("variables.toml"),
-            "[user]\n[user.options.alice]\nvalue = \"1001\"\n",
+            "[groups.user]\nfields = [\"user\"]\n",
         )
         .unwrap();
-        std::fs::write(dir.path().join("environments/qa.toml"), "").unwrap();
+        std::fs::write(
+            dir.path().join("environments/qa.toml"),
+            "[entries.user.alice]\nuser = \"1001\"\n",
+        )
+        .unwrap();
         let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
         ctx.set_env(Some("qa".into()));
         ctx.set_selection("user", "alice");
@@ -814,11 +1030,12 @@ mod tests {
         postui_core::project::init_project(dir.path(), None).unwrap();
         std::fs::write(
             dir.path().join("variables.toml"),
-            "[user]\n[user.options.alice]\nvalue = \"1001\"\n",
+            "[groups.user]\nfields = [\"user\"]\n",
         )
         .unwrap();
-        std::fs::write(dir.path().join("environments/qa.toml"), "").unwrap();
-        std::fs::write(dir.path().join("environments/dev.toml"), "").unwrap();
+        let entries = "[entries.user.alice]\nuser = \"1001\"\n";
+        std::fs::write(dir.path().join("environments/qa.toml"), entries).unwrap();
+        std::fs::write(dir.path().join("environments/dev.toml"), entries).unwrap();
         let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
         ctx.set_env(Some("qa".into()));
         ctx.set_selection("user", "alice");
@@ -840,10 +1057,14 @@ mod tests {
         postui_core::project::init_project(dir.path(), None).unwrap();
         std::fs::write(
             dir.path().join("variables.toml"),
-            "[user]\n[user.options.alice]\nvalue = \"1001\"\n[user.options.bob]\nvalue = \"2002\"\n",
+            "[groups.user]\nfields = [\"user\"]\n",
         )
         .unwrap();
-        std::fs::write(dir.path().join("environments/qa.toml"), "").unwrap();
+        std::fs::write(
+            dir.path().join("environments/qa.toml"),
+            "[entries.user.alice]\nuser = \"1001\"\n[entries.user.bob]\nuser = \"2002\"\n",
+        )
+        .unwrap();
         let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
         ctx.set_env(Some("qa".into()));
         assert!(!ctx.resolved.values.contains_key("user"));
@@ -926,35 +1147,76 @@ mod tests {
         assert!(on_disk.contains("http://localhost:9090"), "{on_disk}");
     }
 
+    /// Review finding: a retry after a partly-applied migration used to
+    /// re-back-up whatever was on disk — by then the already-migrated
+    /// text — overwriting the only copy of the original.
     #[test]
-    fn reload_with_broken_env_option_table_warns_and_keeps_previous() {
+    fn retrying_a_partly_applied_migration_keeps_the_original_bak() {
+        let dir = tempfile::tempdir().unwrap();
+        postui_core::project::init_project(dir.path(), None).unwrap();
+        let legacy_vars = "[tier]\n[tier.options.gold]\nvalue = \"g-1\"\n";
+        std::fs::write(dir.path().join("variables.toml"), legacy_vars).unwrap();
+        // A directory where `environments/qa.toml` should be: the env
+        // write fails after `variables.toml` has already been rewritten.
+        std::fs::create_dir(dir.path().join("environments/qa.toml")).unwrap();
+
+        let (mut ctx, _warns) = ProjectContext::open(dir.path().to_path_buf());
+        assert!(ctx.pending_migration().is_some());
+        assert!(ctx.apply_migration().is_err(), "the env write must fail");
+
+        let bak = dir.path().join("variables.toml.bak");
+        assert_eq!(
+            std::fs::read_to_string(&bak).unwrap(),
+            legacy_vars,
+            "the first attempt saved the original"
+        );
+        assert_ne!(
+            std::fs::read_to_string(dir.path().join("variables.toml")).unwrap(),
+            legacy_vars,
+            "...and rewrote the live file before failing"
+        );
+
+        // Clear the obstruction and retry.
+        std::fs::remove_dir(dir.path().join("environments/qa.toml")).unwrap();
+        assert!(ctx.pending_migration().is_some(), "still retryable");
+        ctx.apply_migration().unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&bak).unwrap(),
+            legacy_vars,
+            "the retry must not overwrite the original with migrated text"
+        );
+    }
+
+    #[test]
+    fn reload_with_broken_env_entries_table_warns_and_keeps_previous() {
         let dir = tempfile::tempdir().unwrap();
         postui_core::project::init_project(dir.path(), None).unwrap();
         std::fs::write(
             dir.path().join("variables.toml"),
-            "[user]\n[user.options.alice]\nvalue = \"1001\"\n",
+            "[groups.user]\nfields = [\"user\"]\n",
         )
         .unwrap();
         std::fs::write(
             dir.path().join("environments/qa.toml"),
-            "[options.user.alice]\nvalue = \"9001\"\n",
+            "[entries.user.alice]\nuser = \"9001\"\n",
         )
         .unwrap();
         let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
         ctx.set_env(Some("qa".into()));
-        assert_eq!(ctx.env_data.options["user"]["alice"]["value"], "9001");
+        assert_eq!(ctx.env_data.entries["user"]["alice"].values["user"], "9001");
 
-        // break it: an [options.*] table for an undeclared name
+        // break it: an [entries.*] table for an undeclared group
         std::fs::write(
             dir.path().join("environments/qa.toml"),
-            "[options.nope.x]\nvalue = \"1\"\n",
+            "[entries.nope.x]\nuser = \"1\"\n",
         )
         .unwrap();
         bump_mtime(&dir.path().join("environments/qa.toml"));
         let (changed, warns) = ctx.reload_if_changed();
         assert!(changed && !warns.is_empty());
         assert_eq!(
-            ctx.env_data.options["user"]["alice"]["value"], "9001",
+            ctx.env_data.entries["user"]["alice"].values["user"], "9001",
             "previous good env data kept"
         );
     }

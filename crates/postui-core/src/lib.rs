@@ -2,6 +2,7 @@
 pub const APP_NAME: &str = "postui";
 
 pub mod json;
+pub mod migrate;
 pub mod model;
 pub mod prepare;
 pub mod project;

@@ -21,6 +21,9 @@ pub enum CopyTarget {
     ResponseBody,
     ResponseHeader(usize),
     Url,
+    /// One row of the request Headers tab's computed-headers section, by
+    /// index into its own display order (see `Hit::AutoHeaderCopy`).
+    ComputedHeader(usize),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,6 +52,11 @@ pub enum Action {
     /// Actually delete row `i` from the active params/headers table (the
     /// confirm modal's "Delete" choice).
     DeleteTableRow(usize),
+    /// The row context menu's "Duplicate row" (Task 17, spec §5): copies row
+    /// `i` of the active params/headers/vars table to `<key>-copy` (then
+    /// `-copy-2`, …, same collision rule as `DuplicateRequest`/`DuplicateVar`)
+    /// directly below it, with the same value and enabled flag.
+    DuplicateTableRow(usize),
     /// Open the method-selector dropdown, anchored below the method badge.
     OpenMethodDropdown,
     /// Set the editor's method directly (the dropdown's row action).
@@ -79,6 +87,10 @@ pub enum Action {
     RefreshSidebar,
     /// Open the "New request" name prompt.
     PromptNewRequest,
+    /// Open the "New request" name prompt prefilled with `folder` + `/` —
+    /// the folder context menu's "New request here…", so the typed name
+    /// lands inside the folder that was right-clicked.
+    PromptNewRequestIn(String),
     /// Create a fresh request at `name` (a slug), then open it.
     CreateRequest(String),
     /// Open the rename prompt, prefilled with the selected sidebar slug.
@@ -88,6 +100,9 @@ pub enum Action {
         from: String,
         to: String,
     },
+    /// Copy the selected sidebar request to the next free `<slug>-copy…`
+    /// name and open the copy.
+    DuplicateRequest,
     /// Open the delete confirmation for the selected sidebar slug.
     ConfirmDeleteRequest,
     /// Delete the request at `slug` from disk.
@@ -127,6 +142,14 @@ pub enum Action {
     RequestFailed {
         generation: u64,
         error: String,
+    },
+    /// A background pretty-print finished: the parsed tree for the response
+    /// of `generation`, or `None` when that body turned out not to be JSON.
+    /// Delivered to whichever response slot is still waiting on it (on
+    /// screen or cached); a superseded generation is dropped.
+    PrettyParsed {
+        generation: u64,
+        tree: Option<Box<crate::components::json_tree::JsonTree>>,
     },
     /// The opened root has no `project.toml`; user chose to create one here
     /// (from the "Not a postui project" confirm modal).
@@ -196,6 +219,9 @@ pub enum Action {
     /// Flip `editor.substitute_body` — whether `{{var}}` tokens in the body
     /// are substituted at send time.
     ToggleBodyVars,
+    /// Flip whether the Headers tab's computed-headers section shows
+    /// secrets in the clear (`editor.computed.revealed`).
+    ToggleHeaderReveal,
     /// Open the variable picker: reload project files, then (barring the
     /// selection-context redirect — see `open_select_picker`) list every
     /// defined name — project variables, group members, and the open
@@ -209,6 +235,10 @@ pub enum Action {
     OpenVarPicker {
         completing: bool,
     },
+    /// Opens the same insert picker with its filter pre-seeded to a
+    /// variable name — what clicking an inline `{{token}}` does (spec §7),
+    /// so the picker comes up already narrowed to the token clicked.
+    OpenVarPickerFor(String),
     /// Insert `text` at the currently focused text field: the URL line, an
     /// in-progress table cell edit, or the body buffer (Body tab +
     /// content focus). Toasts "nowhere to insert" when focus isn't on a
@@ -226,6 +256,10 @@ pub enum Action {
     },
     /// Switch the response pane's view (the tabs row's click target).
     ResponseViewMode(crate::components::response::ViewMode),
+    /// Opens the response pane's in-pane search (Task 17, spec §5): the
+    /// dispatchable form of the `⌕` button / `/` key, so the footer's
+    /// Response-pane search chip and the palette can reach it too.
+    OpenResponseSearch,
     /// Click on a JSON-tree body row: moves the cursor there, and — when
     /// `toggle` is set — collapses/expands the container it opens.
     JsonRowClicked {
@@ -251,41 +285,36 @@ pub enum Action {
     /// Leave the current non-`Main` screen and return to `Screen::Main`,
     /// restoring the focus that was active when the screen was opened.
     CloseScreen,
-    /// A committed Variable Manager cell edit or ✓ selection (spec §5).
+    /// A committed Variable Manager value edit or ✓ selection (spec §5).
     /// `App::update` writes it through to whichever file owns it; a write
-    /// failure toasts and leaves `VarManager::editing` open with the typed
-    /// text rather than clearing it.
+    /// failure toasts and leaves the field it came from untouched, so the
+    /// typed text survives a retry.
     VarEdit(VarEditOp),
 
-    // -- Variable Manager structural actions (spec §5 action list; Task 12) --
-    /// `n`: open the new-variable name prompt.
+    // -- Variable Manager structural actions (spec §3.4/§5 action list) --
+    /// `n` / the `+ Variable` button: open the new-variable name prompt.
     PromptNewVar,
-    /// `g`: open the new-group prompt (comma-separated name + members).
+    /// `g` / the `+ Group` button: open the new-group prompt (name + a
+    /// comma-separated field list).
     PromptNewGroup,
-    /// `o` on an enumerated/group row: open the new-option prompt.
-    PromptNewOption {
-        owner: String,
-    },
-    /// `F2`/`=` on a `Var` row: open the rename prompt, prefilled.
+    /// `e`/`F2` on a variable row, or its context menu's "Rename…": open
+    /// the rename prompt, prefilled.
     PromptRenameVar {
         from: String,
     },
-    /// `m` on a `GroupHeader` row: open the member-list prompt, prefilled.
+    /// The left list's context-menu "Duplicate": copies `name`'s
+    /// declaration under `<name>-copy` (then `-copy-2`, …). A variable
+    /// keeps its description and default; a group copies its field list
+    /// only — entries belong to an environment, not to the declaration, and
+    /// are not duplicated with it.
+    DuplicateVar {
+        name: String,
+    },
+    /// Open the group's field-list prompt, prefilled.
     PromptEditGroupMembers {
         group: String,
     },
-    /// Enter or a single click on a group header's or enumerated
-    /// variable's env cell (or an unselected member cell): open a dropdown
-    /// of `owner`'s option keys for `env`, anchored at the cell
-    /// (`row`/`col` locate its rect in the last frame's `HitMap`);
-    /// confirming a row dispatches the `Select`.
-    OpenSelectDropdown {
-        owner: String,
-        env: String,
-        row: usize,
-        col: usize,
-    },
-    /// `a` on a group's rows: open the single-name add-member prompt.
+    /// Open the single-name add-field prompt for a group.
     PromptAddGroupMember {
         group: String,
     },
@@ -308,36 +337,61 @@ pub enum Action {
         group: String,
         member: String,
     },
-    /// `d`/`Delete` on a `Var`/`GroupHeader` row: open the delete confirm,
-    /// its body listing `varedit::scan_usage`'s referencing requests.
+    /// `d`/`Delete` on a left-list row: open the delete confirm, its body
+    /// listing `varedit::scan_usage`'s referencing requests.
     ConfirmDeleteVar {
         name: String,
     },
-    /// `d`/`Delete` on an `OptionRow` (finding 3): open the delete confirm,
-    /// its body naming whether this removes the active env's override, the
-    /// shared option, or (when both exist) just the override first.
-    ConfirmDeleteOption {
-        owner: String,
-        key: String,
-    },
-    /// `s` on a non-enumerated `Var` row: open the secret-flag transition
+    /// `s` on a variable row: open the secret-flag transition
     /// confirm (spec §3) — its wording and the value(s) it offers for copy
     /// depend on which direction the flip goes.
     ToggleSecretVar {
         name: String,
     },
-    /// `p` on a `RequestVar` row: open the promote-target choice (spec
+    /// Open the promote-target choice (spec
     /// §4) — declaration default, or the active environment.
     PromptPromoteVar {
         name: String,
     },
-    /// `P` on a `Var` row: open the demote confirm (spec §4), or a
-    /// message modal refusing it (secret, enumerated, or a group member).
+    /// Open the demote confirm (spec §4), or a
+    /// message modal refusing it (a secret or a group).
     ConfirmDemoteVar {
         name: String,
     },
     /// A confirmed structural mutation; `App::apply_var_struct` applies it.
     VarStruct(VarStructOp),
+
+    // -- Task 16: the group entries grid (spec §3.4) --
+    /// The group pane's `[Edit fields]` button / `m`: opens the field-list
+    /// editor — a `Modal::MultiPrompt` with one text slot per current
+    /// field, in order, plus a trailing empty "add field" slot.
+    PromptGroupFields {
+        group: String,
+    },
+    /// The field-list editor's confirmed slots, positionally: slot `i` is
+    /// `group`'s current `i`th field (renamed when its text changed,
+    /// removed when it was cleared), and any slot past the current list is
+    /// a new field. `confirmed` is false on the way in; a removal bounces
+    /// through a confirm modal that re-dispatches this with it set, since
+    /// dropping a field deletes that column's values from every entry.
+    ApplyGroupFields {
+        group: String,
+        slots: Vec<String>,
+        confirmed: bool,
+    },
+    /// The entry-row context menu's "Rename…": opens a prompt seeded with
+    /// the entry's current name.
+    PromptRenameEntry {
+        env: String,
+        group: String,
+        from: String,
+    },
+    /// The entry-row context menu's "Delete…": opens the delete confirm.
+    ConfirmDeleteEntry {
+        env: String,
+        group: String,
+        name: String,
+    },
 
     // -- Task 17: in-context flows (spec §6) --
     /// The `SelectOption` picker's "add new option…" ghost row: opens the
@@ -394,4 +448,13 @@ pub enum Action {
         name: String,
         destination: ExtractDestination,
     },
+
+    // -- Stage 7: variable-format migration (spec §3.3) --
+    /// The migration confirm modal's "Migrate": rewrites `variables.toml`
+    /// and the environment files into the new format, leaving a `.bak`
+    /// beside each one, then reloads the project.
+    ApplyMigration,
+    /// The migration confirm modal's "Not now": leaves the files as they
+    /// are; the project stays open with its variables inert.
+    DeclineMigration,
 }

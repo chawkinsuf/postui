@@ -179,11 +179,35 @@ fn running_a_palette_command_via_enter_records_usage() {
     for c in "quit".chars() {
         app.handle_key(&Keymap::default_bindings(), plain(c));
     }
+    select_palette_command(&mut app, "quit");
     app.handle_key(
         &Keymap::default_bindings(),
         KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
     );
     assert!(app.usage.score("quit", crate::usage::now()) > 0.0);
+}
+
+/// The filtered-list index of command `id` in the open palette. A typed
+/// query is a subsequence match, so several commands can survive it (e.g.
+/// "quit" also matches "Request: duplicate"); tests that mean one specific
+/// command name it by id rather than assuming it lands on row 0.
+fn palette_row_of(app: &App, id: &str) -> usize {
+    let Some(Modal::Palette(p)) = app.modals.top() else {
+        panic!("expected the palette to be open");
+    };
+    p.filtered()
+        .iter()
+        .position(|c| c.id == id)
+        .unwrap_or_else(|| panic!("{id} was filtered out"))
+}
+
+/// Moves the open palette's cursor onto command `id`.
+fn select_palette_command(app: &mut App, id: &str) {
+    let i = palette_row_of(app, id);
+    let Some(Modal::Palette(p)) = app.modals.top_mut() else {
+        unreachable!()
+    };
+    p.select(i);
 }
 
 fn ctrl(c: char) -> KeyEvent {
@@ -266,6 +290,17 @@ fn left_down(x: u16, y: u16) -> ratatui::crossterm::event::MouseEvent {
     ratatui::crossterm::event::MouseEvent {
         kind: ratatui::crossterm::event::MouseEventKind::Down(
             ratatui::crossterm::event::MouseButton::Left,
+        ),
+        column: x,
+        row: y,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
+fn right_down(x: u16, y: u16) -> ratatui::crossterm::event::MouseEvent {
+    ratatui::crossterm::event::MouseEvent {
+        kind: ratatui::crossterm::event::MouseEventKind::Down(
+            ratatui::crossterm::event::MouseButton::Right,
         ),
         column: x,
         row: y,
@@ -370,6 +405,111 @@ fn deleting_a_vars_row_by_key_requires_confirmation() {
     assert!(app.modals.top().is_none(), "modal closed after the choice");
 }
 
+/// Task 17, spec §5: right-clicking a params row opens Duplicate/Delete/
+/// Extract, and each one works end to end.
+#[test]
+fn table_row_context_menu_duplicate_delete_extract_end_to_end() {
+    let mut app = App::new_for_test();
+    app.editor.params.insert(
+        "page".into(),
+        postui_core::model::Entry {
+            value: "2".into(),
+            enabled: true,
+        },
+    );
+    app.focus = PaneId::Editor;
+    app.editor.active_tab = EditorTab::Params;
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.table.selected = Some(0);
+    render_once(&mut app);
+    let r = app
+        .hits
+        .rect_of(&crate::hit::Hit::TableRow(0))
+        .expect("the row's background is registered");
+
+    app.handle_mouse(right_down(r.x, r.y));
+    let Some(Modal::Dropdown(menu)) = app.modals.top() else {
+        panic!("expected the row's context menu");
+    };
+    let labels: Vec<String> = menu.items.iter().map(|i| i.label.clone()).collect();
+    assert_eq!(
+        labels,
+        vec![
+            "Duplicate row",
+            "Delete param\u{2026}",
+            "Extract value to variable\u{2026}"
+        ]
+    );
+    let duplicate = menu.items[0].action.clone().unwrap();
+    let delete = menu.items[1].action.clone().unwrap();
+    let extract = menu.items[2].action.clone().unwrap();
+    app.update(Action::Close);
+
+    // "Duplicate row": inserts "page-copy" right below with the same value.
+    app.update(duplicate);
+    assert_eq!(app.editor.params.len(), 2);
+    assert_eq!(
+        app.editor.params.get_index(1),
+        Some((
+            &"page-copy".to_string(),
+            &postui_core::model::Entry {
+                value: "2".into(),
+                enabled: true,
+            }
+        ))
+    );
+
+    // "Extract value to variable…": the row is only *selected*, not under
+    // edit, yet the prompt still opens against its Value cell's text.
+    app.editor.table.selected = Some(0);
+    app.editor.table.editing = None;
+    app.update(extract);
+    let Some(Modal::MultiPrompt { kind, .. }) = app.modals.top() else {
+        panic!("expected the extract-variable multi-prompt");
+    };
+    assert!(matches!(kind, PromptKind::ExtractVariable));
+    let keymap = Keymap::default_bindings();
+    type_into_field(&mut app, &keymap, "page_num");
+    app.handle_key(&keymap, enter_key());
+    assert!(app.modals.is_empty());
+    assert_eq!(app.editor.params["page"].value, "{{page_num}}");
+
+    // "Delete param…": same confirm the `d` key opens.
+    app.editor.table.selected = Some(0);
+    app.update(delete);
+    match app.modals.top() {
+        Some(Modal::Confirm { body, .. }) => assert!(body.contains("page"), "{body}"),
+        _ => panic!("expected a delete confirm"),
+    }
+    app.handle_key(&keymap, plain('y'));
+    assert!(!app.editor.params.contains_key("page"));
+    assert!(app.editor.params.contains_key("page-copy"));
+}
+
+/// A second right-click-duplicate collides with an existing `-copy` row and
+/// falls back to `-copy-2`, matching `DuplicateRequest`/`DuplicateVar`.
+#[test]
+fn duplicate_table_row_resolves_collisions_like_duplicate_request() {
+    let mut app = App::new_for_test();
+    app.editor.params.insert(
+        "page".into(),
+        postui_core::model::Entry {
+            value: "2".into(),
+            enabled: true,
+        },
+    );
+    app.editor.params.insert(
+        "page-copy".into(),
+        postui_core::model::Entry {
+            value: "9".into(),
+            enabled: true,
+        },
+    );
+    app.update(Action::DuplicateTableRow(0));
+    assert!(app.editor.params.contains_key("page-copy-2"));
+    assert_eq!(app.editor.params["page-copy-2"].value, "2");
+}
+
 #[test]
 fn editor_tab_cycle_order_is_params_headers_vars_body() {
     let mut app = App::new_for_test();
@@ -401,6 +541,17 @@ fn alt_1_2_3_still_select_params_headers_body_with_vars_inserted() {
     assert_eq!(app.editor.active_tab, EditorTab::Headers);
     app.handle_key(&keymap, alt('3'));
     assert_eq!(app.editor.active_tab, EditorTab::Body);
+}
+
+/// Task 17: alt+4 fills the one gap the above test called out — Vars gets
+/// its own direct shortcut alongside alt+1/2/3.
+#[test]
+fn alt_4_selects_the_vars_tab() {
+    let mut app = App::new_for_test();
+    let keymap = Keymap::default_bindings();
+    app.editor.active_tab = EditorTab::Body;
+    app.handle_key(&keymap, alt('4'));
+    assert_eq!(app.editor.active_tab, EditorTab::Vars);
 }
 
 #[test]
@@ -489,30 +640,344 @@ fn clicking_the_row_delete_affordance_opens_the_confirm_modal() {
     assert_eq!(app.editor.params.len(), 1);
 }
 
-#[test]
-fn clicking_the_selected_row_again_deselects_it() {
+/// Seeds the Params tab with `page = 1` and puts the editor in front.
+fn app_with_one_param() -> App {
     let mut app = App::new_for_test();
     app.editor.params.insert(
         "page".into(),
         postui_core::model::Entry {
-            value: "2".into(),
+            value: "1".into(),
             enabled: true,
         },
     );
-    render_once(&mut app);
-    let row = app.hits.rect_of(&Hit::TableRow(0)).unwrap();
-    assert!(app.handle_mouse(left_down(row.x + 4, row.y)));
-    assert_eq!(app.editor.table.selected, Some(0), "first click selects");
+    app.editor.active_tab = EditorTab::Params;
+    app.focus = PaneId::Editor;
+    app
+}
 
+/// Re-renders and clicks just inside `hit`'s rect.
+fn click_hit(app: &mut App, hit: Hit) {
+    render_once(app);
+    let r = app
+        .hits
+        .rect_of(&hit)
+        .unwrap_or_else(|| panic!("no rect registered for {hit:?}"));
+    let x = if r.width > 1 { r.x + 1 } else { r.x };
+    app.handle_mouse(left_down(x, r.y));
+}
+
+fn type_chars(app: &mut App, s: &str) {
+    let keymap = Keymap::default_bindings();
+    for c in s.chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+}
+
+#[test]
+fn click_cell_edits_in_place_and_click_away_commits() {
+    let mut app = app_with_one_param();
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    assert!(
+        app.editor.table.editing.is_some(),
+        "one click into a cell edits it — no select-then-edit dance"
+    );
+    assert_eq!(app.editor.sub_focus, SubFocus::Content);
+    type_chars(&mut app, "2");
+
+    // Clicking the URL bar is a click away: it commits, it doesn't discard.
+    render_once(&mut app);
+    let url = app.editor.last_url_text_area.unwrap();
+    app.handle_mouse(left_down(url.x + 1, url.y));
+    assert!(app.editor.table.editing.is_none());
+    assert_eq!(app.editor.params["page"].value, "12");
+    assert_eq!(app.editor.sub_focus, SubFocus::Url);
+}
+
+#[test]
+fn two_fast_clicks_on_a_cell_leave_exactly_one_edit_session() {
+    let mut app = app_with_one_param();
+    render_once(&mut app);
+    let cell = app
+        .hits
+        .rect_of(&Hit::TableCell { row: 0, col: 1 })
+        .unwrap();
+    app.handle_mouse(left_down(cell.x + 1, cell.y));
+    type_chars(&mut app, "2");
+    // The second click of a double click lands on the same cell; it must
+    // do nothing beyond what the first did.
+    render_once(&mut app);
+    let cell = app
+        .hits
+        .rect_of(&Hit::TableCell { row: 0, col: 1 })
+        .unwrap();
+    app.handle_mouse(left_down(cell.x + 1, cell.y));
+    let edit = app.editor.table.editing.as_ref().expect("still editing");
+    assert_eq!(edit.input.text(), "12", "the typing survives");
+    assert_eq!(app.editor.params["page"].value, "1", "not committed yet");
+
+    // The first click expands the row, so the second click of a real
+    // double click often lands on one of the pad lines the expansion added
+    // (the row background) rather than the cell. That must be inert too.
     render_once(&mut app);
     let row = app.hits.rect_of(&Hit::TableRow(0)).unwrap();
-    // Well past double-click time, so this registers as a fresh click.
-    std::thread::sleep(std::time::Duration::from_millis(450));
-    assert!(app.handle_mouse(left_down(row.x + 4, row.y)));
+    assert_eq!(row.height, 3, "the edited row is expanded");
+    app.handle_mouse(left_down(row.x, row.y));
+    let edit = app
+        .editor
+        .table
+        .editing
+        .as_ref()
+        .expect("a click on the edited row's own chrome keeps the edit");
+    assert_eq!(edit.input.text(), "12");
+}
+
+#[test]
+fn clicking_the_ghost_row_and_typing_creates_the_row_when_it_commits() {
+    let mut app = app_with_one_param();
+    click_hit(&mut app, Hit::TableCell { row: 1, col: 0 });
+    type_chars(&mut app, "limit");
+    assert_eq!(app.editor.params.len(), 1, "nothing inserted while typing");
+    render_once(&mut app);
+    let url = app.editor.last_url_text_area.unwrap();
+    app.handle_mouse(left_down(url.x + 1, url.y));
     assert_eq!(
-        app.editor.table.selected, None,
-        "clicking the selected row again deselects it"
+        app.editor.params.get("limit").map(|e| e.value.as_str()),
+        Some(""),
+        "the ghost row became a real row on commit"
     );
+}
+
+#[test]
+fn a_ghost_row_left_empty_creates_nothing() {
+    let mut app = app_with_one_param();
+    click_hit(&mut app, Hit::TableCell { row: 1, col: 0 });
+    render_once(&mut app);
+    let url = app.editor.last_url_text_area.unwrap();
+    app.handle_mouse(left_down(url.x + 1, url.y));
+    assert_eq!(app.editor.params.len(), 1, "no empty row was added");
+    assert!(app.editor.table.editing.is_none());
+}
+
+#[test]
+fn esc_mid_edit_puts_the_original_cell_text_back() {
+    let mut app = app_with_one_param();
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    type_chars(&mut app, "999");
+    app.handle_key(
+        &Keymap::default_bindings(),
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+    );
+    assert!(app.editor.table.editing.is_none());
+    assert_eq!(app.editor.params["page"].value, "1", "the edit reverted");
+    assert_eq!(app.editor.params.len(), 1, "the row survives");
+}
+
+#[test]
+fn checkbox_and_delete_clicks_during_an_edit_commit_it_first() {
+    let mut app = App::new_for_test();
+    for (k, v) in [("a", "1"), ("b", "2")] {
+        app.editor.params.insert(
+            k.into(),
+            postui_core::model::Entry {
+                value: v.into(),
+                enabled: true,
+            },
+        );
+    }
+    app.focus = PaneId::Editor;
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    type_chars(&mut app, "9");
+    click_hit(&mut app, Hit::TableCheckbox(1));
+    assert_eq!(app.editor.params["a"].value, "19", "the edit committed");
+    assert!(!app.editor.params["b"].enabled, "and the toggle landed");
+    assert!(app.editor.table.editing.is_none());
+
+    // Same for the ✕ affordance on another row.
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 0 });
+    type_chars(&mut app, "x");
+    render_once(&mut app);
+    let del = app.hits.rect_of(&Hit::TableDelete(0)).unwrap();
+    app.handle_mouse(left_down(del.x, del.y));
+    assert_eq!(
+        app.editor.params.get_index(0).unwrap().0,
+        "ax",
+        "the rename committed before the delete confirm opened"
+    );
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+}
+
+/// Params `a=1, b=2, c=3`, editor focused.
+fn app_with_three_params() -> App {
+    let mut app = App::new_for_test();
+    for (k, v) in [("a", "1"), ("b", "2"), ("c", "3")] {
+        app.editor.params.insert(
+            k.into(),
+            postui_core::model::Entry {
+                value: v.into(),
+                enabled: true,
+            },
+        );
+    }
+    app.focus = PaneId::Editor;
+    app
+}
+
+/// Puts row 0's key cell under edit with "c" typed into it — committing it
+/// collapses row "a" into row "c" and shifts every later row down one.
+fn stage_a_collapsing_rename(app: &mut App) {
+    let keymap = Keymap::default_bindings();
+    click_hit(app, Hit::TableCell { row: 0, col: 0 });
+    app.handle_key(
+        &keymap,
+        KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+    );
+    type_chars(app, "c");
+}
+
+#[test]
+fn a_collapsing_commit_reresolves_the_row_a_checkbox_click_named() {
+    let mut app = app_with_three_params();
+    stage_a_collapsing_rename(&mut app);
+    // Row 1 is "b" in the frame the user clicked; after the commit collapses
+    // "a" into "c" it is row 0. The toggle must follow the row, not the
+    // index.
+    click_hit(&mut app, Hit::TableCheckbox(1));
+    assert_eq!(app.editor.params.len(), 2, "a collapsed into c");
+    assert!(!app.editor.params["b"].enabled, "the clicked row toggled");
+    assert!(app.editor.params["c"].enabled, "no neighbour was toggled");
+}
+
+#[test]
+fn a_collapsing_commit_reresolves_the_row_a_delete_click_named() {
+    let mut app = app_with_three_params();
+    stage_a_collapsing_rename(&mut app);
+    // The ✕ sits on the row being edited; after the collapse that row *is*
+    // the surviving "c", so the confirm must name "c" — not whatever now
+    // occupies index 0 ("b").
+    render_once(&mut app);
+    let del = app.hits.rect_of(&Hit::TableDelete(0)).unwrap();
+    app.handle_mouse(left_down(del.x, del.y));
+    let Some(Modal::Confirm { body, .. }) = app.modals.top() else {
+        panic!("expected the delete confirm");
+    };
+    assert!(
+        body.contains('c'),
+        "the confirm names the clicked row: {body}"
+    );
+    assert!(
+        !body.contains('b'),
+        "and never the row that shifted into its index: {body}"
+    );
+}
+
+#[test]
+fn ctrl_s_commits_the_cell_under_edit_into_the_saved_file() {
+    let mut app = App::new_for_test();
+    postui_core::storage::save_request(&app.project.root, "ping", &req("https://x/ping")).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::OpenRequest("ping".into()));
+    app.focus = PaneId::Editor;
+    app.editor.active_tab = EditorTab::Params;
+
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 0 }); // the ghost row
+    type_chars(&mut app, "page");
+    app.handle_key(&Keymap::default_bindings(), ctrl('s'));
+
+    let saved = postui_core::storage::load_request(&app.project.root, "ping").unwrap();
+    assert!(
+        saved.params.contains_key("page"),
+        "the cell under the caret is part of what ctrl+s saves: {:?}",
+        saved.params
+    );
+    assert!(app.editor.table.editing.is_none());
+}
+
+#[test]
+fn clicking_the_toolbar_save_chip_commits_the_cell_under_edit_and_saves() {
+    let mut app = App::new_for_test();
+    postui_core::storage::save_request(&app.project.root, "ping", &req("https://x/ping")).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::OpenRequest("ping".into()));
+    app.focus = PaneId::Editor;
+    app.editor.active_tab = EditorTab::Params;
+
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 0 }); // the ghost row
+    type_chars(&mut app, "page");
+    click_hit(&mut app, Hit::FooterChip(Action::SaveRequest));
+
+    let saved = postui_core::storage::load_request(&app.project.root, "ping").unwrap();
+    assert!(
+        saved.params.contains_key("page"),
+        "the in-progress cell rides along with a mouse-only save: {:?}",
+        saved.params
+    );
+    assert!(
+        !app.editor.is_dirty(),
+        "a successful save clears the dirty flag"
+    );
+}
+
+#[test]
+fn clicking_the_toolbar_format_chip_formats_the_body() {
+    let mut app = App::new_for_test();
+    app.focus = PaneId::Editor;
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.set_body_text("{\"a\":1}");
+
+    click_hit(&mut app, Hit::FooterChip(Action::FormatBody));
+
+    assert!(
+        app.editor.body_text().contains('\n'),
+        "the format chip pretty-prints the body: {:?}",
+        app.editor.body_text()
+    );
+}
+
+#[tokio::test]
+async fn sending_commits_the_cell_under_edit_into_the_request() {
+    let mut app = app_with_one_param();
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    type_chars(&mut app, "2");
+    app.editor.url = crate::components::line_input::LineInput::new("https://x/y");
+    app.update(Action::Send);
+    assert_eq!(
+        app.editor.params["page"].value, "12",
+        "the typed cell rides along with the request"
+    );
+}
+
+#[test]
+fn switching_editor_tabs_commits_the_cell_under_edit() {
+    let mut app = app_with_one_param();
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    type_chars(&mut app, "2");
+    app.handle_key(&Keymap::default_bindings(), alt('2'));
+    assert_eq!(app.editor.active_tab, EditorTab::Headers);
+    assert_eq!(
+        app.editor.params["page"].value, "12",
+        "the tab switch commits instead of resetting the edit away"
+    );
+    assert!(app.editor.table.editing.is_none());
+}
+
+#[test]
+fn up_from_a_cell_under_edit_commits_and_never_desyncs_the_focus() {
+    let mut app = app_with_one_param();
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    type_chars(&mut app, "2");
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert!(app.editor.table.editing.is_none(), "the edit committed");
+    assert_eq!(app.editor.params["page"].value, "12");
+    assert_eq!(
+        app.editor.sub_focus,
+        SubFocus::Content,
+        "the first Up stays in the table"
+    );
+    // Only then does Up climb out — with no edit left open behind it.
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    assert_eq!(app.editor.sub_focus, SubFocus::Tabs);
+    assert!(app.editor.table.editing.is_none());
 }
 
 #[test]
@@ -712,16 +1177,17 @@ fn scrollbar_track_click_below_the_thumb_pages_the_response() {
         .map(|i| format!("line {i}"))
         .collect::<Vec<_>>()
         .join("\n");
-    app.session
-        .response
-        .set_state(ResponseState::Ready(Box::new(crate::http::ResponseData {
+    app.session.response.set_state(
+        ResponseState::Ready(Box::new(crate::http::ResponseData {
             status: 200,
             headers: vec![],
             size: body.len(),
             body,
             elapsed: std::time::Duration::from_millis(1),
             content_type: Some("text/plain".into()),
-        })));
+        })),
+        0,
+    );
     render_once(&mut app);
 
     let track = app.hits.track_of(PaneId::Response).expect("response track");
@@ -765,34 +1231,147 @@ fn header_buffer_shows_dropdown_glyph_for_project_and_env() {
 }
 
 #[test]
-fn clicking_the_add_variable_row_opens_the_prompt() {
+fn clicking_the_manager_env_switcher_opens_the_environment_chooser() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.update(Action::OpenVarManager);
     render_once(&mut app);
-    let add_var_row = app
-        .varmanager
-        .rows
-        .iter()
-        .position(|r| matches!(r, crate::components::varmanager::RowKind::AddVar))
-        .unwrap();
+    assert!(rendered_text(&mut app).contains("Environment: qa"));
+
     let r = app
         .hits
-        .rect_of(&crate::hit::Hit::VarName(add_var_row))
-        .expect("add-variable row name region registered");
-    app.handle_mouse(left_down(r.x + 2, r.y));
+        .rect_of(&crate::hit::Hit::VmEnvSwitch)
+        .expect("env switcher registered");
+    app.handle_mouse(left_down(r.x + 2, r.y + 1));
     assert!(
-        matches!(
-            app.modals.top(),
-            Some(Modal::Prompt {
-                kind: PromptKind::NewVariable,
-                ..
-            })
-        ),
-        "single click on + Add variable opens the prompt"
+        matches!(app.modals.top(), Some(Modal::Chooser(_))),
+        "the switcher opens the same chooser the header env chip does"
     );
+
+    // Switching relabels the bar and the group's inline selection with it.
+    app.update(Action::Close);
+    app.update(Action::SwitchEnv(Some("dev".into())));
+    let content = rendered_text(&mut app);
+    assert!(content.contains("Environment: dev"), "{content}");
+    assert!(
+        content.contains("user (needs selection)"),
+        "dev has no entries for the group: {content}"
+    );
+}
+
+#[test]
+fn the_manager_left_list_lists_variables_then_groups() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::OpenVarManager);
+    let content = rendered_text(&mut app);
+    assert!(
+        content.contains("VARIABLES") && content.contains("GROUPS"),
+        "{content}"
+    );
+    assert!(content.contains("base_url"), "{content}");
+
+    use crate::components::varmanager::{VmDetail, VmRow};
+    let group_row = app
+        .varmanager
+        .left_rows
+        .iter()
+        .position(|r| r == &VmRow::Group("user".into()))
+        .expect("the group has a row");
+    let r = app
+        .hits
+        .rect_of(&crate::hit::Hit::VmLeftRow(group_row))
+        .expect("left row registered");
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    assert_eq!(app.varmanager.detail, VmDetail::Group("user".into()));
+}
+
+#[test]
+fn right_clicking_a_left_row_opens_its_rename_duplicate_delete_menu() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::OpenVarManager);
+    rendered_text(&mut app);
+
+    use crate::components::varmanager::VmRow;
+    let row = app
+        .varmanager
+        .left_rows
+        .iter()
+        .position(|r| r == &VmRow::Var("base_url".into()))
+        .unwrap();
+    let r = app.hits.rect_of(&crate::hit::Hit::VmLeftRow(row)).unwrap();
+    app.handle_mouse(right_down(r.x + 1, r.y + 1));
+
+    let Some(Modal::Dropdown(menu)) = app.modals.top() else {
+        panic!("expected a context menu");
+    };
+    let labels: Vec<String> = menu.items.iter().map(|i| i.label.clone()).collect();
+    assert_eq!(
+        labels,
+        vec!["Rename\u{2026}", "Duplicate", "Delete\u{2026}"]
+    );
+    assert_eq!(
+        menu.items[2].action,
+        Some(Action::ConfirmDeleteVar {
+            name: "base_url".into()
+        })
+    );
+}
+
+#[test]
+fn duplicating_a_variable_copies_its_description_and_default() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    app.update(Action::DuplicateVar {
+        name: "base_url".into(),
+    });
+    let copy = app
+        .project
+        .model
+        .vars
+        .get("base_url-copy")
+        .expect("copy declared");
+    assert_eq!(copy.default.as_deref(), Some("http://localhost:8080"));
+    assert_eq!(copy.description.as_deref(), Some("API root"));
+
+    // A second duplicate steps the suffix rather than colliding.
+    app.update(Action::DuplicateVar {
+        name: "base_url".into(),
+    });
+    assert!(app.project.model.vars.contains_key("base_url-copy-2"));
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+}
+
+/// A group's fields belong to exactly one group (`ModelError::
+/// FieldInTwoGroups`), so a duplicate carrying the same field list could
+/// never load: the menu shows "Duplicate" disabled for a group instead of
+/// writing a `variables.toml` that no longer parses.
+#[test]
+fn duplicating_a_group_is_offered_but_disabled() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Group("user".into())
+    });
+
+    let menu = app
+        .varmanager
+        .context_menu(app.varmanager.left_cursor)
+        .expect("menu for a group row");
+    assert_eq!(menu[1].label, "Duplicate");
+    assert_eq!(menu[1].action, None);
 }
 
 #[test]
@@ -1058,7 +1637,7 @@ fn opening_another_request_swaps_the_response_panel() {
     app.update(Action::ForceOpenRequest("a".into()));
     app.session
         .response
-        .set_state(ResponseState::Failed("a's result".into()));
+        .set_state(ResponseState::Failed("a's result".into()), 0);
 
     app.update(Action::ForceOpenRequest("b".into()));
     assert!(
@@ -1679,9 +2258,12 @@ async fn response_arrived_with_current_generation_clears_in_flight() {
 #[test]
 fn esc_on_in_flight_response_pane_requests_cancel() {
     let mut app = App::new_for_test();
-    app.session.response.set_state(ResponseState::InFlight {
-        started: std::time::Instant::now(),
-    });
+    app.session.response.set_state(
+        ResponseState::InFlight {
+            started: std::time::Instant::now(),
+        },
+        0,
+    );
     let action = app
         .session
         .response
@@ -1692,16 +2274,17 @@ fn esc_on_in_flight_response_pane_requests_cancel() {
 #[test]
 fn plain_keys_reach_the_focused_response_pane() {
     let mut app = App::new_for_test();
-    app.session
-        .response
-        .set_state(ResponseState::Ready(Box::new(crate::http::ResponseData {
+    app.session.response.set_state(
+        ResponseState::Ready(Box::new(crate::http::ResponseData {
             status: 200,
             headers: vec![],
             body: r#"{"a": 1}"#.into(),
             elapsed: std::time::Duration::from_millis(5),
             size: 8,
             content_type: None,
-        })));
+        })),
+        0,
+    );
     app.focus = PaneId::Response;
     let keymap = Keymap::default_bindings();
     app.handle_key(&keymap, plain('j'));
@@ -2284,6 +2867,56 @@ fn body_insert_autoenables_substitution() {
     assert!(!app.toasts.is_empty());
 }
 
+/// The toolbar's `{{ }} vars` chip is the *mouse* route into the picker
+/// (spec §5), so clicking it must not blur the field it is going to insert
+/// into — found by the stage-7 tmux sweep, where the chip could only ever
+/// answer "nowhere to insert".
+#[test]
+fn the_vars_chip_keeps_the_url_focused_so_the_picker_can_insert() {
+    let mut app = app_with_vars();
+    app.update(Action::FocusUrl);
+    assert_eq!(app.editor.sub_focus, SubFocus::Url);
+
+    click_hit(
+        &mut app,
+        Hit::FooterChip(Action::OpenVarPicker { completing: false }),
+    );
+    assert!(matches!(app.modals.top(), Some(Modal::VarPicker(_))));
+    assert_eq!(
+        app.editor.sub_focus,
+        SubFocus::Url,
+        "the chip is not a click-away from the line it inserts into"
+    );
+
+    click_hit(&mut app, Hit::VarPickerRow(0));
+    assert_eq!(app.editor.url.text(), "{{base}}");
+    assert!(
+        app.toasts.is_empty(),
+        "no \"nowhere to insert\" — the caret was still there"
+    );
+}
+
+/// Same rule for a live table cell: the chip inserts into what is being
+/// typed rather than committing it away first.
+#[test]
+fn the_vars_chip_inserts_into_a_table_cell_under_edit() {
+    let mut app = app_with_vars();
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    type_chars(&mut app, "x");
+    click_hit(
+        &mut app,
+        Hit::FooterChip(Action::OpenVarPicker { completing: false }),
+    );
+    click_hit(&mut app, Hit::VarPickerRow(0));
+    let edit = app
+        .editor
+        .table
+        .editing
+        .as_ref()
+        .expect("the cell is still under edit");
+    assert_eq!(edit.input.text(), "x{{base}}");
+}
+
 #[test]
 fn picker_with_no_declared_vars_still_offers_the_new_variable_row() {
     // Task 15: the picker no longer needs anything declared — the "new
@@ -2309,12 +2942,7 @@ default = "http://localhost:8080"
 
 [groups.identity]
 description = "identity"
-members = ["user_id", "customer_id"]
-
-[groups.identity.options.alice]
-description = "admin"
-user_id = "1001"
-customer_id = "c-77"
+fields = ["user_id", "customer_id"]
 "#,
     )
     .unwrap();
@@ -2494,16 +3122,17 @@ fn click_editor_tab_selects_it() {
 }
 
 fn ready_response(app: &mut App, body: &str) {
-    app.session
-        .response
-        .set_state(ResponseState::Ready(Box::new(crate::http::ResponseData {
+    app.session.response.set_state(
+        ResponseState::Ready(Box::new(crate::http::ResponseData {
             status: 200,
             headers: vec![("content-type".into(), "application/json".into())],
             body: body.to_string(),
             elapsed: std::time::Duration::from_millis(1),
             size: body.len(),
             content_type: Some("application/json".into()),
-        })));
+        })),
+        app.session.send_generation,
+    );
 }
 
 #[test]
@@ -2519,6 +3148,35 @@ fn click_response_tab_switches_to_headers() {
     app.handle_mouse(left_down(r.x, r.y));
     assert_eq!(app.session.response.view().unwrap().mode, ViewMode::Headers);
     assert_eq!(app.focus, PaneId::Response);
+}
+
+/// Task 17, spec §5: the Response pane's footer chips are clickable, and
+/// clicking them does what the `r`/`/` keys do.
+#[test]
+fn click_footer_response_chips_toggle_view_and_open_search() {
+    use crate::components::response::ViewMode;
+    let mut app = App::new_for_test();
+    ready_response(&mut app, r#"{"a": 1}"#);
+    app.focus = PaneId::Response;
+    render_once(&mut app);
+
+    let r = app
+        .hits
+        .rect_of(&Hit::FooterChip(Action::ResponseViewMode(ViewMode::Raw)))
+        .expect("the 'r' chip is registered");
+    app.handle_mouse(left_down(r.x + 1, r.y));
+    assert_eq!(app.session.response.view().unwrap().mode, ViewMode::Raw);
+
+    render_once(&mut app);
+    let r = app
+        .hits
+        .rect_of(&Hit::FooterChip(Action::OpenResponseSearch))
+        .expect("the '/' chip is registered");
+    app.handle_mouse(left_down(r.x + 1, r.y));
+    assert!(
+        app.session.response.view().unwrap().search.is_some(),
+        "clicking the search chip opens the in-pane search"
+    );
 }
 
 #[test]
@@ -2548,13 +3206,103 @@ fn click_json_row_moves_the_cursor_without_collapsing() {
 }
 
 #[test]
-fn oversize_response_does_not_register_the_tree_tab() {
-    use crate::components::response::{MAX_PRETTY_BYTES, ViewMode};
+fn a_big_body_offers_the_tree_tab_while_its_parse_runs() {
+    use crate::components::response::{SYNC_PRETTY_BYTES, ViewMode};
     let mut app = App::new_for_test();
-    let body = format!("{{\"a\": \"{}\"}}", "x".repeat(MAX_PRETTY_BYTES));
+    let body = format!("{{\"a\": \"{}\"}}", "x".repeat(SYNC_PRETTY_BYTES));
     ready_response(&mut app, &body);
     render_once(&mut app);
+    assert!(app.session.response.view().unwrap().parsing);
+    let tab = app
+        .hits
+        .rect_of(&Hit::ResponseTab(ViewMode::Pretty))
+        .expect("the Tree tab is clickable while parsing");
+    app.handle_mouse(left_down(tab.x, tab.y));
+    assert_eq!(app.session.response.view().unwrap().mode, ViewMode::Pretty);
+}
+
+#[test]
+fn a_non_json_body_never_offers_the_tree_tab() {
+    use crate::components::response::ViewMode;
+    let mut app = App::new_for_test();
+    ready_response(&mut app, "<html>hi</html>");
+    render_once(&mut app);
     assert_eq!(app.hits.rect_of(&Hit::ResponseTab(ViewMode::Pretty)), None);
+}
+
+#[test]
+fn the_search_button_opens_the_response_search() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, r#"{"a": 1}"#);
+    render_once(&mut app);
+    let r = app
+        .hits
+        .rect_of(&Hit::ResponseSearchButton)
+        .expect("⌕ button");
+    app.handle_mouse(left_down(r.x, r.y));
+    let search = app
+        .session
+        .response
+        .view()
+        .unwrap()
+        .search
+        .as_ref()
+        .expect("search opened");
+    assert!(search.active, "and it is taking typing, exactly as / does");
+    assert_eq!(app.focus, PaneId::Response);
+}
+
+#[test]
+fn the_search_step_buttons_cycle_the_matches() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, r#"{"a": 1, "b": 1, "c": 1}"#);
+    app.focus = PaneId::Response;
+    let keymap = Keymap::default_bindings();
+    for k in ['/', '1'] {
+        app.handle_key(&keymap, plain(k));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    render_once(&mut app);
+    let matches = app
+        .session
+        .response
+        .view()
+        .unwrap()
+        .search
+        .as_ref()
+        .unwrap();
+    assert_eq!(matches.matches.len(), 3, "one per value");
+    assert_eq!(matches.current, 0);
+
+    let next = app.hits.rect_of(&Hit::ResponseSearchNext).expect("▼");
+    app.handle_mouse(left_down(next.x, next.y));
+    assert_eq!(
+        app.session
+            .response
+            .view()
+            .unwrap()
+            .search
+            .as_ref()
+            .unwrap()
+            .current,
+        1
+    );
+
+    let prev = app.hits.rect_of(&Hit::ResponseSearchPrev).expect("▲");
+    app.handle_mouse(left_down(prev.x, prev.y));
+    app.handle_mouse(left_down(prev.x, prev.y));
+    assert_eq!(
+        app.session
+            .response
+            .view()
+            .unwrap()
+            .search
+            .as_ref()
+            .unwrap()
+            .current,
+        2,
+        "▲ wraps backwards past the first match"
+    );
 }
 
 #[test]
@@ -2573,41 +3321,6 @@ fn click_table_checkbox_toggles_enabled() {
     assert!(!app.editor.params["page"].enabled);
     assert_eq!(app.editor.table.selected, Some(0));
     assert_eq!(app.focus, PaneId::Editor);
-}
-
-#[test]
-fn double_click_table_row_begins_editing_the_key_cell() {
-    let mut app = App::new_for_test();
-    app.editor.params.insert(
-        "page".into(),
-        postui_core::model::Entry {
-            value: "2".into(),
-            enabled: true,
-        },
-    );
-    render_once(&mut app);
-    let r = app.hits.rect_of(&Hit::TableRow(0)).unwrap();
-    // Clicks past the leading checkbox cell so the row hit (not the
-    // checkbox registered on top of it) wins.
-    let click_x = r.x + r.width - 1;
-    app.handle_mouse(left_down(click_x, r.y));
-    assert!(
-        app.editor.table.editing.is_none(),
-        "single click only selects"
-    );
-    assert_eq!(
-        app.editor.table.selected,
-        Some(0),
-        "single click selects the row"
-    );
-    app.handle_mouse(left_down(click_x, r.y));
-    let edit = app
-        .editor
-        .table
-        .editing
-        .as_ref()
-        .expect("double click begins editing");
-    assert_eq!(edit.input.text(), "page", "key cell seeded");
 }
 
 fn three_params(app: &mut App) {
@@ -2718,8 +3431,8 @@ fn open_method_dropdown_has_all_seven_methods_selected_at_current() {
     assert_eq!(state.items.len(), 7);
     assert_eq!(state.selected, 2, "Put is index 2 in Method::ALL");
     assert_eq!(
-        state.items[2].1,
-        Action::SetMethod(postui_core::model::Method::Put)
+        state.items[2].action,
+        Some(Action::SetMethod(postui_core::model::Method::Put))
     );
 }
 
@@ -2777,8 +3490,9 @@ fn click_palette_row_runs_immediately() {
     for c in "quit".chars() {
         app.handle_key(&Keymap::default_bindings(), plain(c));
     }
+    let i = palette_row_of(&app, "quit");
     render_once(&mut app);
-    let row = app.hits.rect_of(&Hit::PaletteRow(0)).unwrap();
+    let row = app.hits.rect_of(&Hit::PaletteRow(i)).unwrap();
     assert!(app.handle_mouse(left_down(row.x, row.y)));
     assert!(app.should_quit, "single click on the Quit row runs it");
     assert!(app.modals.is_empty());
@@ -3179,7 +3893,8 @@ fn alt_v_opens_the_manager_and_renders_its_title() {
     app.handle_key(&keymap, alt('v'));
     assert_eq!(app.screen, crate::app::Screen::VarManager);
     let content = rendered_text(&mut app);
-    assert!(content.contains("Variables"));
+    assert!(content.contains("VARIABLES"), "the left list's own heading");
+    assert!(content.contains("Environment:"), "{content}");
 }
 
 #[test]
@@ -3380,12 +4095,9 @@ fn var_project(dir: &std::path::Path) {
 description = "API root"
 default = "http://localhost:8080"
 
-[user]
+[groups.user]
 description = "acting user"
-[user.options.alice]
-value = "1001"
-[user.options.bob]
-value = "2002"
+fields = ["user"]
 
 [api_key]
 description = "service key"
@@ -3396,7 +4108,7 @@ secret = true
     std::fs::write(dir.join("environments/dev.toml"), "").unwrap();
     std::fs::write(
         dir.join("environments/qa.toml"),
-        "base_url = \"https://qa.example.com\"\n",
+        "base_url = \"https://qa.example.com\"\n\n[entries.user.alice]\nuser = \"1001\"\n\n[entries.user.bob]\nuser = \"2002\"\n",
     )
     .unwrap();
     postui_core::project::save_local_state(
@@ -3498,57 +4210,27 @@ fn var_edit_set_secret_value_lands_only_in_secrets_toml() {
 }
 
 #[test]
-fn var_edit_set_option_value_lands_in_the_env_file_when_that_env_already_overrides_it() {
+fn var_edit_set_entry_value_writes_one_field_of_the_entry_in_that_env() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
-    std::fs::write(
-        dir.path().join("environments/qa.toml"),
-        "base_url = \"https://qa.example.com\"\n\n[options.user.alice]\nvalue = \"9001\"\n",
-    )
-    .unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
-    app.update(Action::VarEdit(VarEditOp::SetOptionValue {
+    app.update(Action::VarEdit(VarEditOp::SetEntryValue {
         env: "qa".into(),
-        owner: "user".into(),
-        key: "alice".into(),
-        member: None,
+        group: "user".into(),
+        entry: "alice".into(),
+        field: "user".into(),
         value: "9999".into(),
     }));
 
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
     let env_on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(env_on_disk.contains("9999"), "{env_on_disk}");
     let vars_on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     assert!(
-        vars_on_disk.contains("1001"),
-        "the shared declared value must be untouched: {vars_on_disk}"
-    );
-}
-
-#[test]
-fn var_edit_set_option_value_lands_in_variables_toml_when_the_cell_shows_the_shared_value() {
-    let dir = tempfile::tempdir().unwrap();
-    var_project(dir.path());
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, dir.path().to_path_buf());
-
-    // qa has no [options.user.alice] override in this fixture: the cell
-    // shown is the shared/declared value, so the edit must land there.
-    app.update(Action::VarEdit(VarEditOp::SetOptionValue {
-        env: "qa".into(),
-        owner: "user".into(),
-        key: "alice".into(),
-        member: None,
-        value: "8888".into(),
-    }));
-
-    let vars_on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
-    assert!(vars_on_disk.contains("8888"), "{vars_on_disk}");
-    let env_on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
-    assert!(
-        !env_on_disk.contains("8888"),
-        "must not write an env override: {env_on_disk}"
+        !vars_on_disk.contains("9999"),
+        "an entry value must never land in variables.toml: {vars_on_disk}"
     );
 }
 
@@ -3592,10 +4274,10 @@ fn var_edit_select_records_the_choice_for_the_targeted_env_even_when_not_active(
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     assert_eq!(app.project.env_label(), "qa");
 
-    app.update(Action::VarEdit(VarEditOp::Select {
+    app.update(Action::VarEdit(VarEditOp::SelectEntry {
         env: "dev".into(),
-        name: "user".into(),
-        key: "bob".into(),
+        group: "user".into(),
+        entry: "bob".into(),
     }));
 
     assert_eq!(app.project.selections_for("dev")["user"], "bob");
@@ -3609,18 +4291,11 @@ fn var_edit_select_records_the_choice_for_the_targeted_env_even_when_not_active(
 }
 
 #[test]
-fn var_edit_a_failed_write_toasts_and_leaves_the_cell_in_edit() {
+fn var_edit_a_failed_write_toasts_and_writes_nothing() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.varmanager.editing = Some(crate::components::varmanager::CellEdit {
-        row: 3,
-        col: 1,
-        input: crate::components::line_input::LineInput::new("attempted-value"),
-        masked: false,
-    });
-
     use std::os::unix::fs::PermissionsExt;
     let env_dir = dir.path().join("environments");
     let original_mode = std::fs::metadata(&env_dir).unwrap().permissions().mode();
@@ -3644,125 +4319,26 @@ fn var_edit_a_failed_write_toasts_and_leaves_the_cell_in_edit() {
         !app.toasts.is_empty(),
         "a failed write must toast, not silently drop the edit"
     );
-    assert!(
-        app.varmanager.editing.is_some(),
-        "the cell must stay in edit so the typed text survives a retry"
-    );
-    assert_eq!(
-        app.varmanager.editing.as_ref().unwrap().input.text(),
-        "attempted-value"
-    );
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(!on_disk.contains("blocked"), "{on_disk}");
-}
-
-#[test]
-fn keyboard_driven_flow_navigate_edit_commit_via_the_grid() {
-    let dir = tempfile::tempdir().unwrap();
-    var_project(dir.path());
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, dir.path().to_path_buf());
-    let keymap = Keymap::default_bindings();
-
-    app.handle_key(&keymap, alt('v'));
-    assert_eq!(app.screen, crate::app::Screen::VarManager);
-    rendered_text(&mut app); // a draw populates `varmanager.rows`
-
-    // Land the cursor on `base_url`'s row (skipping the "Project" header),
-    // then move right onto its `dev` column.
-    let base_url_row = app
-        .varmanager
-        .rows
-        .iter()
-        .position(|r| {
-            matches!(r, crate::components::varmanager::RowKind::Var { name } if name == "base_url")
-        })
-        .unwrap();
-    app.varmanager.cursor = (base_url_row, 2); // dev is the first env column (after Default)
-
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(app.varmanager.editing.is_some());
-    for c in "http://dev.local".chars() {
-        app.handle_key(&keymap, plain(c));
-    }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-
-    assert!(app.varmanager.editing.is_none(), "the write succeeded");
-    let on_disk = std::fs::read_to_string(dir.path().join("environments/dev.toml")).unwrap();
-    assert!(on_disk.contains("http://dev.local"), "{on_disk}");
-}
-
-/// Same failure contract as `var_edit_a_failed_write_toasts_and_leaves_the_cell_in_edit`,
-/// but driven through the real keyboard path (navigate → Enter → type →
-/// Enter) rather than dispatching `Action::VarEdit` directly, so the whole
-/// `VarManager::handle_key`/`commit_edit`/`App::apply_var_edit` chain is
-/// exercised end to end against a genuinely read-only directory.
-#[test]
-fn keyboard_driven_failed_write_leaves_editing_open_and_toasts() {
-    let dir = tempfile::tempdir().unwrap();
-    var_project(dir.path());
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, dir.path().to_path_buf());
-    let keymap = Keymap::default_bindings();
-
-    app.handle_key(&keymap, alt('v'));
-    rendered_text(&mut app);
-    let base_url_row = app
-        .varmanager
-        .rows
-        .iter()
-        .position(|r| {
-            matches!(r, crate::components::varmanager::RowKind::Var { name } if name == "base_url")
-        })
-        .unwrap();
-    app.varmanager.cursor = (base_url_row, 2);
-
-    use std::os::unix::fs::PermissionsExt;
-    let env_dir = dir.path().join("environments");
-    let original_mode = std::fs::metadata(&env_dir).unwrap().permissions().mode();
-    std::fs::set_permissions(&env_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
-
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    app.handle_key(&keymap, plain('X'));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-
-    std::fs::set_permissions(&env_dir, std::fs::Permissions::from_mode(original_mode)).unwrap();
-
-    assert!(
-        !app.toasts.is_empty(),
-        "expected a toast from the failed write"
-    );
-    assert!(
-        app.varmanager.editing.is_some(),
-        "expected editing to stay open after a failed write"
-    );
-    assert!(
-        app.varmanager
-            .editing
-            .as_ref()
-            .unwrap()
-            .input
-            .text()
-            .ends_with('X')
-    );
 }
 
 // --- Task 12: Manager structural actions (spec §5 action list; §4
 // promote/demote; §3 secret-flag transitions) --------------------------
 
-/// Opens the Manager and moves the cursor to whichever row matches
-/// `pred`, panicking if none does — `rendered_text` first so
-/// `varmanager.rows` is populated (rows only rebuild inside `draw`).
-fn goto_row(app: &mut App, pred: impl Fn(&crate::components::varmanager::RowKind) -> bool) {
+/// Opens the Manager and selects whichever left-list row matches `pred`,
+/// panicking if none does — `rendered_text` first so `left_rows` is
+/// populated (the list only rebuilds inside `draw`).
+fn goto_row(app: &mut App, pred: impl Fn(&crate::components::varmanager::VmRow) -> bool) {
     app.update(Action::OpenVarManager);
     rendered_text(app);
     let i = app
         .varmanager
-        .rows
+        .left_rows
         .iter()
         .position(pred)
         .expect("no row matched");
-    app.varmanager.cursor = (i, 0);
+    app.varmanager.select_row(i);
 }
 
 #[test]
@@ -3807,7 +4383,7 @@ fn var_struct_new_group_creates_group_with_members() {
 
     app.update(Action::VarStruct(VarStructOp::NewGroup {
         name: "creds".into(),
-        members: vec!["user_id".into(), "customer_id".into()],
+        fields: vec!["user_id".into(), "customer_id".into()],
     }));
 
     assert!(app.toasts.is_empty());
@@ -3818,71 +4394,41 @@ fn var_struct_new_group_creates_group_with_members() {
         .get("creds")
         .expect("group created");
     assert_eq!(
-        g.members,
+        g.fields,
         vec!["user_id".to_string(), "customer_id".to_string()]
     );
 }
 
 #[test]
-fn var_struct_new_option_on_a_variable_writes_the_shared_option() {
-    let dir = tempfile::tempdir().unwrap();
-    var_project(dir.path());
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, dir.path().to_path_buf());
-    // A fresh variable, not `base_url` — `base_url` already has a flat `qa`
-    // env value, and a flat value for a variable enumerated *in that env*
-    // is a §1.2 error, which is the right behavior but not what this test
-    // is about.
-    app.update(Action::VarStruct(VarStructOp::NewVar {
-        name: "region".into(),
-        description: None,
-    }));
-
-    let mut values = indexmap::IndexMap::new();
-    values.insert("value".to_string(), "us-east".to_string());
-    app.update(Action::VarStruct(VarStructOp::NewOption {
-        owner: "region".into(),
-        key: "east".into(),
-        description: None,
-        values,
-    }));
-
-    assert!(app.toasts.is_empty());
-    let opt = app.project.model.vars["region"]
-        .options
-        .get("east")
-        .expect("option created");
-    assert_eq!(opt.value, "us-east");
-}
-
-#[test]
-fn var_struct_new_option_on_a_group_writes_every_member_value() {
+fn var_struct_new_entry_writes_every_field_into_the_active_env() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.update(Action::VarStruct(VarStructOp::NewGroup {
         name: "creds".into(),
-        members: vec!["user_id".into(), "customer_id".into()],
+        fields: vec!["user_id".into(), "customer_id".into()],
     }));
 
     let mut values = indexmap::IndexMap::new();
     values.insert("user_id".to_string(), "1001".to_string());
     values.insert("customer_id".to_string(), "c-77".to_string());
-    app.update(Action::VarStruct(VarStructOp::NewOption {
-        owner: "creds".into(),
-        key: "alice".into(),
+    app.update(Action::VarStruct(VarStructOp::NewEntry {
+        env: "qa".into(),
+        group: "creds".into(),
+        name: "alice".into(),
         description: None,
         values,
     }));
 
-    assert!(app.toasts.is_empty());
-    let opt = app.project.model.groups["creds"]
-        .options
-        .get("alice")
-        .expect("option created");
-    assert_eq!(opt.values["user_id"], "1001");
-    assert_eq!(opt.values["customer_id"], "c-77");
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    let entry = postui_core::varmodel::group_entries(&app.project.env_data, "creds")
+        .and_then(|entries| entries.get("alice"))
+        .expect("entry created in the active env");
+    assert_eq!(entry.values["user_id"], "1001");
+    assert_eq!(entry.values["customer_id"], "c-77");
+    let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(on_disk.contains("[entries.creds.alice]"), "{on_disk}");
 }
 
 #[test]
@@ -3906,11 +4452,11 @@ fn var_struct_rename_updates_the_declaration() {
 /// rename used to leave every environment's flat value/`[options.*]`
 /// table under the OLD name — silently degrading to the declaration's
 /// default post-rename, with no error and no warning. `shard` is simple
-/// (a flat value) in `dev` and enumerated (an env-only options table) in
-/// `qa` — spec §1.2's "enumerated in one env, simple in another" case —
-/// so this one rename exercises both cascades `rename_env_var` handles.
+/// (a flat value) in `dev` and unset in `qa`, where an unrelated group's
+/// entries table lives — the rename must follow the flat value across and
+/// leave everything else alone.
 #[test]
-fn var_struct_rename_cascades_into_every_environments_flat_value_and_options_table() {
+fn var_struct_rename_cascades_into_every_environments_flat_value() {
     let dir = tempfile::tempdir().unwrap();
     postui_core::project::init_project(dir.path(), Some("demo")).unwrap();
     std::fs::write(
@@ -3918,6 +4464,9 @@ fn var_struct_rename_cascades_into_every_environments_flat_value_and_options_tab
         r#"
 [shard]
 description = "shard id"
+
+[groups.tier]
+fields = ["tier"]
 "#,
     )
     .unwrap();
@@ -3928,7 +4477,7 @@ description = "shard id"
     .unwrap();
     std::fs::write(
         dir.path().join("environments/qa.toml"),
-        "[options.shard.east]\nvalue = \"e-1\"\n",
+        "[entries.tier.gold]\ntier = \"g-1\"\n",
     )
     .unwrap();
     postui_core::project::save_local_state(
@@ -3948,7 +4497,7 @@ description = "shard id"
         to: "node".into(),
     }));
 
-    assert!(app.toasts.is_empty());
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
     assert!(app.project.model.vars.contains_key("node"));
     assert!(!app.project.model.vars.contains_key("shard"));
     // Resolution follows the rename — still "d-1" in dev, now under "node".
@@ -3960,8 +4509,10 @@ description = "shard id"
     assert!(!dev_on_disk.contains("shard"), "{dev_on_disk}");
 
     let qa_on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
-    assert!(qa_on_disk.contains("[options.node.east]"), "{qa_on_disk}");
-    assert!(!qa_on_disk.contains("shard"), "{qa_on_disk}");
+    assert!(
+        qa_on_disk.contains("[entries.tier.gold]"),
+        "an unrelated group's entries stay untouched: {qa_on_disk}"
+    );
 }
 
 #[test]
@@ -3970,11 +4521,9 @@ fn var_struct_delete_var_removes_the_declaration_and_clamps_the_cursor() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    goto_row(&mut app, |r| {
-        matches!(r, crate::components::varmanager::RowKind::AddGroup)
-    });
-    let past_end = app.varmanager.rows.len() + 5;
-    app.varmanager.cursor.0 = past_end;
+    app.update(Action::OpenVarManager);
+    rendered_text(&mut app);
+    app.varmanager.left_cursor = app.varmanager.left_rows.len() + 5;
 
     app.update(Action::VarStruct(VarStructOp::Delete {
         name: "base_url".into(),
@@ -3983,36 +4532,36 @@ fn var_struct_delete_var_removes_the_declaration_and_clamps_the_cursor() {
     assert!(app.toasts.is_empty());
     assert!(!app.project.model.vars.contains_key("base_url"));
     assert!(
-        app.varmanager.cursor.0 < app.varmanager.rows.len().max(1),
+        app.varmanager.left_cursor < app.varmanager.left_rows.len(),
         "cursor must clamp back inside the (now shorter) row list"
     );
 }
 
 /// Finding 1: `VarStructOp::Delete` used to only edit `variables.toml`,
-/// stranding any environment's `[options.<name>]` table for the deleted
-/// name. This drives the cascade for a var whose ACTIVE env has an
-/// options table for it (the confusing-parse-toast case) and a NON-active
-/// env too (the silently-stranded-file case).
+/// stranding any environment's entries table for the deleted name. This
+/// drives the cascade for a group whose ACTIVE env has entries for it
+/// (the confusing-parse-toast case) and a NON-active env too (the
+/// silently-stranded-file case).
 #[test]
-fn var_struct_delete_cascades_into_every_environments_options_table() {
+fn var_struct_delete_cascades_into_every_environments_entries_table() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     std::fs::write(
         dir.path().join("variables.toml"),
         std::fs::read_to_string(dir.path().join("variables.toml")).unwrap()
-            + "\n[region]\ndescription = \"deploy region\"\n",
+            + "\n[groups.region]\ndescription = \"deploy region\"\nfields = [\"region\"]\n",
     )
     .unwrap();
-    // qa is the active env (see var_project); env-only enumerated list for
-    // "region", plus the same shape in the non-active "dev" env.
+    // qa is the active env (see var_project); entries for "region" there,
+    // plus the same shape in the non-active "dev" env.
     std::fs::write(
         dir.path().join("environments/qa.toml"),
-        "base_url = \"https://qa.example.com\"\n[options.region.east]\nvalue = \"us-east-1\"\n",
+        "base_url = \"https://qa.example.com\"\n[entries.region.east]\nregion = \"us-east-1\"\n",
     )
     .unwrap();
     std::fs::write(
         dir.path().join("environments/dev.toml"),
-        "[options.region.west]\nvalue = \"us-west-1\"\n",
+        "[entries.region.west]\nregion = \"us-west-1\"\n",
     )
     .unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -4027,7 +4576,7 @@ fn var_struct_delete_cascades_into_every_environments_options_table() {
     }));
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert!(!app.project.model.vars.contains_key("region"));
+    assert!(!app.project.model.groups.contains_key("region"));
     let qa_on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(
         !qa_on_disk.contains("region"),
@@ -4045,15 +4594,15 @@ fn var_struct_delete_cascades_into_every_environments_options_table() {
 }
 
 /// Finding 1, the group half: deleting a group must also strip every
-/// environment's `[options.<group>]` table.
+/// environment's `[entries.<group>]` table.
 #[test]
-fn var_struct_delete_group_cascades_into_every_environments_options_table() {
+fn var_struct_delete_group_cascades_into_every_environments_entries_table() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     app_new_group(dir.path(), "creds", &["user_id", "customer_id"]);
     std::fs::write(
         dir.path().join("environments/qa.toml"),
-        "base_url = \"https://qa.example.com\"\n[options.creds.alice]\nuser_id = \"1001\"\ncustomer_id = \"c-1\"\n",
+        "base_url = \"https://qa.example.com\"\n\n[entries.user.alice]\nuser = \"1001\"\n\n[entries.creds.alice]\nuser_id = \"1001\"\ncustomer_id = \"c-1\"\n",
     )
     .unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -4063,7 +4612,7 @@ fn var_struct_delete_group_cascades_into_every_environments_options_table() {
         name: "creds".into(),
     }));
 
-    assert!(app.toasts.is_empty());
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
     assert!(!app.project.model.groups.contains_key("creds"));
     let qa_on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(!qa_on_disk.contains("creds"), "{qa_on_disk}");
@@ -4074,11 +4623,6 @@ fn var_struct_delete_group_cascades_into_every_environments_options_table() {
 /// `VarStructOp::NewGroup` round trip through a running `App`.
 fn app_new_group(dir: &std::path::Path, name: &str, members: &[&str]) {
     let existing = std::fs::read_to_string(dir.join("variables.toml")).unwrap();
-    let member_decls: String = members
-        .iter()
-        .map(|m| format!("\n[{m}]\n"))
-        .collect::<Vec<_>>()
-        .join("");
     let members_list = members
         .iter()
         .map(|m| format!("\"{m}\""))
@@ -4086,29 +4630,29 @@ fn app_new_group(dir: &std::path::Path, name: &str, members: &[&str]) {
         .join(", ");
     std::fs::write(
         dir.join("variables.toml"),
-        format!("{existing}{member_decls}\n[groups.{name}]\nmembers = [{members_list}]\n"),
+        format!("{existing}\n[groups.{name}]\nfields = [{members_list}]\n"),
     )
     .unwrap();
 }
 
 #[test]
-fn var_struct_set_members_replaces_the_group_list() {
+fn var_struct_set_fields_replaces_the_group_list() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.update(Action::VarStruct(VarStructOp::NewGroup {
         name: "creds".into(),
-        members: vec!["user_id".into()],
+        fields: vec!["user_id".into()],
     }));
 
-    app.update(Action::VarStruct(VarStructOp::SetMembers {
+    app.update(Action::VarStruct(VarStructOp::SetFields {
         group: "creds".into(),
-        members: vec!["user_id".into(), "customer_id".into()],
+        fields: vec!["user_id".into(), "customer_id".into()],
     }));
 
     assert_eq!(
-        app.project.model.groups["creds"].members,
+        app.project.model.groups["creds"].fields,
         vec!["user_id".to_string(), "customer_id".to_string()]
     );
 }
@@ -4288,38 +4832,26 @@ fn extract_to_request_saves_the_request_file_to_disk() {
 
 /// Review finding: `apply_demote` used to insert the demoted entry into
 /// `editor.variables` BEFORE the fallible `delete_var` write, so a
-/// `delete_var` failure (e.g. the variable is still a group member —
-/// `varedit::delete_var`'s own `Conflict`) left a demoted entry live in
-/// the editor while the project still held the declaration, violating
-/// `apply_var_struct`'s documented "Err leaves everything unchanged"
-/// contract. This drives exactly that failure path.
+/// `delete_var` failure left a demoted entry live in the editor while the
+/// project still held the declaration, violating `apply_var_struct`'s
+/// documented "Err leaves everything unchanged" contract. This drives
+/// exactly that failure path, with a name that resolves (an undeclared
+/// environment value passes through — spec §3.2's leniency) but has no
+/// declaration for `delete_var` to remove.
 #[test]
 fn demote_leaves_the_editor_untouched_when_the_project_write_fails() {
     let dir = tempfile::tempdir().unwrap();
     postui_core::project::init_project(dir.path(), Some("demo")).unwrap();
+    std::fs::write(dir.path().join("variables.toml"), "").unwrap();
     std::fs::write(
-        dir.path().join("variables.toml"),
-        r#"
-[shard]
-default = "member-default"
-
-[groups.g]
-members = ["shard"]
-[groups.g.options.pick]
-shard = "picked-value"
-"#,
+        dir.path().join("environments/dev.toml"),
+        "shard = \"picked-value\"\n",
     )
     .unwrap();
-    std::fs::write(dir.path().join("environments/dev.toml"), "").unwrap();
-    let mut selections = indexmap::IndexMap::new();
-    let mut dev_sel = indexmap::IndexMap::new();
-    dev_sel.insert("g".to_string(), "pick".to_string());
-    selections.insert("dev".to_string(), dev_sel);
     postui_core::project::save_local_state(
         dir.path(),
         &postui_core::project::LocalState {
             environment: Some("dev".into()),
-            selections,
             ..Default::default()
         },
     )
@@ -4332,30 +4864,22 @@ shard = "picked-value"
     assert_eq!(
         app.project.resolved.values.get("shard"),
         Some(&"picked-value".to_string()),
-        "shard must resolve (via the group's selected option) so apply_demote reaches delete_var"
+        "shard must resolve so apply_demote reaches delete_var"
     );
 
     app.update(Action::VarStruct(VarStructOp::Demote {
         name: "shard".into(),
     }));
 
-    assert!(
-        !app.toasts.is_empty(),
-        "delete_var's Conflict (still a group member) must toast"
-    );
+    assert!(!app.toasts.is_empty(), "delete_var's failure must toast");
     assert!(
         !app.editor.variables.contains_key("shard"),
         "the editor must NOT gain a demoted entry when the project write failed"
     );
+    let dev_on_disk = std::fs::read_to_string(dir.path().join("environments/dev.toml")).unwrap();
     assert!(
-        app.project.model.vars.contains_key("shard"),
-        "the declaration must be untouched"
-    );
-    assert!(
-        app.project.model.groups["g"]
-            .members
-            .contains(&"shard".to_string()),
-        "the group membership must be untouched too"
+        dev_on_disk.contains("picked-value"),
+        "the env value must be untouched: {dev_on_disk}"
     );
 }
 
@@ -4364,104 +4888,45 @@ shard = "picked-value"
 // -------------------------------------------------------------
 
 #[test]
-fn delete_option_removes_a_shared_only_option() {
+fn delete_entry_removes_it_from_the_active_env() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
-    app.update(Action::VarStruct(VarStructOp::DeleteOption {
-        owner: "user".into(),
-        key: "bob".into(),
+    app.update(Action::VarStruct(VarStructOp::DeleteEntry {
+        env: "qa".into(),
+        group: "user".into(),
+        name: "bob".into(),
     }));
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert!(!app.project.model.vars["user"].options.contains_key("bob"));
+    let entries = postui_core::varmodel::group_entries(&app.project.env_data, "user")
+        .expect("the group still has entries here");
+    assert!(!entries.contains_key("bob"));
+    assert!(entries.contains_key("alice"), "the others are untouched");
+    let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(!on_disk.contains("[entries.user.bob]"), "{on_disk}");
 }
 
 #[test]
-fn delete_option_removes_an_env_only_override() {
+fn delete_entry_that_is_already_gone_is_a_quiet_no_op() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
-    std::fs::write(
-        dir.path().join("environments/qa.toml"),
-        "base_url = \"https://qa.example.com\"\n[options.user.carol]\nvalue = \"3003\"\n",
-    )
-    .unwrap();
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, dir.path().to_path_buf());
-    assert!(
-        app.project
-            .env_data
-            .options
-            .get("user")
-            .is_some_and(|m| m.contains_key("carol"))
-    );
-
-    app.update(Action::VarStruct(VarStructOp::DeleteOption {
-        owner: "user".into(),
-        key: "carol".into(),
-    }));
-
-    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert!(
-        !app.project
-            .env_data
-            .options
-            .get("user")
-            .is_some_and(|m| m.contains_key("carol"))
-    );
-    // "carol" was never a shared option, so there's nothing left to remove
-    // on a second delete either.
-    assert!(!app.project.model.vars["user"].options.contains_key("carol"));
-}
-
-/// A key that's both a shared option AND env-overridden: the first delete
-/// removes only the env override, leaving the shared option intact; a
-/// second delete then removes the shared option too.
-#[test]
-fn delete_option_present_in_both_removes_the_env_override_first_then_the_shared_option() {
-    let dir = tempfile::tempdir().unwrap();
-    var_project(dir.path());
-    std::fs::write(
-        dir.path().join("environments/qa.toml"),
-        "base_url = \"https://qa.example.com\"\n[options.user.alice]\nvalue = \"9001\"\n",
-    )
-    .unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
-    app.update(Action::VarStruct(VarStructOp::DeleteOption {
-        owner: "user".into(),
-        key: "alice".into(),
+    app.update(Action::VarStruct(VarStructOp::DeleteEntry {
+        env: "qa".into(),
+        group: "user".into(),
+        name: "carol".into(),
     }));
-    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert!(
-        !app.project
-            .env_data
-            .options
-            .get("user")
-            .is_some_and(|m| m.contains_key("alice")),
-        "the first delete must strip only the env override"
-    );
-    assert!(
-        app.project.model.vars["user"].options.contains_key("alice"),
-        "the shared option must survive the first delete"
-    );
 
-    app.update(Action::VarStruct(VarStructOp::DeleteOption {
-        owner: "user".into(),
-        key: "alice".into(),
-    }));
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert!(
-        !app.project.model.vars["user"].options.contains_key("alice"),
-        "the second delete must remove the now env-override-free shared option"
-    );
 }
 
 #[test]
-fn delete_option_clears_the_selection_when_the_deleted_key_was_selected() {
+fn delete_entry_clears_the_selection_when_the_deleted_entry_was_selected() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -4469,69 +4934,15 @@ fn delete_option_clears_the_selection_when_the_deleted_key_was_selected() {
     app.project.set_selection("user", "alice");
     assert_eq!(app.project.resolved.values["user"], "1001");
 
-    app.update(Action::VarStruct(VarStructOp::DeleteOption {
-        owner: "user".into(),
-        key: "alice".into(),
+    app.update(Action::VarStruct(VarStructOp::DeleteEntry {
+        env: "qa".into(),
+        group: "user".into(),
+        name: "alice".into(),
     }));
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
     assert!(!app.project.selections_for("qa").contains_key("user"));
     assert!(!app.project.resolved.values.contains_key("user"));
-}
-
-#[test]
-fn confirm_delete_option_body_names_the_env_override_when_shared_and_env_both_exist() {
-    let dir = tempfile::tempdir().unwrap();
-    var_project(dir.path());
-    std::fs::write(
-        dir.path().join("environments/qa.toml"),
-        "base_url = \"https://qa.example.com\"\n[options.user.alice]\nvalue = \"9001\"\n",
-    )
-    .unwrap();
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, dir.path().to_path_buf());
-
-    app.update(Action::ConfirmDeleteOption {
-        owner: "user".into(),
-        key: "alice".into(),
-    });
-
-    let Some(Modal::Confirm { body, .. }) = app.modals.top() else {
-        panic!("expected a Confirm modal");
-    };
-    assert!(
-        body.contains("qa") && body.to_lowercase().contains("override"),
-        "{body}"
-    );
-}
-
-/// The footer chip / `d`-key parity check (spec §5), for an `OptionRow`
-/// this time — finding 3 explicitly calls out keyboard + click parity via
-/// the shared `struct_action_target` gate.
-#[test]
-fn clicking_the_delete_chip_on_an_option_row_opens_the_same_confirm_as_the_d_key() {
-    let dir = tempfile::tempdir().unwrap();
-    var_project(dir.path());
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.varmanager.expanded.insert("user".to_string());
-    goto_row(
-        &mut app,
-        |r| matches!(r, crate::components::varmanager::RowKind::OptionRow { owner, key } if owner == "user" && key == "bob"),
-    );
-    rendered_text(&mut app);
-
-    let hit = crate::hit::Hit::FooterChip(Action::ConfirmDeleteOption {
-        owner: "user".into(),
-        key: "bob".into(),
-    });
-    let rect = app
-        .hits
-        .rect_of(&hit)
-        .expect("delete chip must be painted and hit-mapped for an option row");
-
-    assert!(app.handle_mouse(left_down(rect.x, rect.y)));
-    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
 }
 
 // -------------------------------------------------------------
@@ -4632,7 +5043,7 @@ fn confirm_delete_var_lists_referencing_requests_from_scan_usage() {
 }
 
 #[test]
-fn confirm_demote_var_on_an_enumerated_variable_refuses_and_changes_nothing() {
+fn confirm_demote_var_on_a_group_refuses_and_changes_nothing() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     postui_core::storage::save_request(dir.path(), "ping", &req("https://x/ping")).unwrap();
@@ -4646,10 +5057,10 @@ fn confirm_demote_var_on_an_enumerated_variable_refuses_and_changes_nothing() {
 
     assert!(
         matches!(app.modals.top(), Some(Modal::Message { .. })),
-        "an enumerated variable must be refused with a message modal"
+        "a group must be refused with a message modal"
     );
     assert!(
-        app.project.model.vars.contains_key("user"),
+        app.project.model.groups.contains_key("user"),
         "the declaration must be untouched"
     );
     assert!(!app.editor.variables.contains_key("user"));
@@ -4745,7 +5156,7 @@ fn toggle_secret_var_nonsecret_to_secret_moves_env_values_and_strips_env_files()
 }
 
 #[test]
-fn toggle_secret_is_refused_for_an_enumerated_variable() {
+fn toggle_secret_is_refused_for_a_group() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -4784,7 +5195,7 @@ fn keyboard_n_and_g_open_the_new_var_and_new_group_prompts() {
     app.handle_key(&keymap, plain('g'));
     assert!(matches!(
         app.modals.top(),
-        Some(Modal::Prompt {
+        Some(Modal::MultiPrompt {
             kind: PromptKind::NewGroup,
             ..
         })
@@ -4798,10 +5209,9 @@ fn keyboard_f2_d_s_open_the_matching_var_row_actions() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     let keymap = Keymap::default_bindings();
-    goto_row(
-        &mut app,
-        |r| matches!(r, crate::components::varmanager::RowKind::Var { name } if name == "base_url"),
-    );
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
+    });
 
     app.handle_key(&keymap, KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE));
     assert!(matches!(
@@ -4823,90 +5233,34 @@ fn keyboard_f2_d_s_open_the_matching_var_row_actions() {
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 }
 
+/// Mouse/keyboard parity (spec §5: "every mutation ... has a keyboard
+/// action and a painted button"): the left list's context-menu "Delete…"
+/// opens the exact same confirm the `d` key does.
 #[test]
-fn keyboard_o_and_m_open_the_option_and_members_prompts_on_a_group() {
+fn the_context_menu_delete_opens_the_same_confirm_as_the_d_key() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.update(Action::VarStruct(VarStructOp::NewGroup {
-        name: "creds".into(),
-        members: vec!["user_id".into()],
-    }));
-    let keymap = Keymap::default_bindings();
-    goto_row(
-        &mut app,
-        |r| matches!(r, crate::components::varmanager::RowKind::GroupHeader { name } if name == "creds"),
-    );
-
-    app.handle_key(&keymap, plain('m'));
-    assert!(matches!(
-        app.modals.top(),
-        Some(Modal::Prompt {
-            kind: PromptKind::GroupMembers { .. },
-            ..
-        })
-    ));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-
-    app.handle_key(&keymap, plain('o'));
-    assert!(matches!(
-        app.modals.top(),
-        Some(Modal::Prompt {
-            kind: PromptKind::NewOption { .. },
-            ..
-        })
-    ));
-}
-
-#[test]
-fn keyboard_p_on_a_request_var_opens_the_promote_choice() {
-    let dir = tempfile::tempdir().unwrap();
-    var_project(dir.path());
-    request_with_var(dir.path(), "ping", "trace_id", "abc-123");
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.update(Action::ForceOpenRequest("ping".into()));
-    let keymap = Keymap::default_bindings();
-    goto_row(
-        &mut app,
-        |r| matches!(r, crate::components::varmanager::RowKind::RequestVar { name } if name == "trace_id"),
-    );
-
-    app.handle_key(&keymap, plain('p'));
-    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
-}
-
-/// The footer chip parity check (spec §5: "every mutation ... has a
-/// keyboard action and a painted button"): clicking the `d` chip on
-/// `base_url`'s row must open the exact same delete confirm the `d` key
-/// does.
-#[test]
-fn clicking_the_delete_chip_opens_the_same_confirm_as_the_d_key() {
-    let dir = tempfile::tempdir().unwrap();
-    var_project(dir.path());
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, dir.path().to_path_buf());
-    goto_row(
-        &mut app,
-        |r| matches!(r, crate::components::varmanager::RowKind::Var { name } if name == "base_url"),
-    );
-    rendered_text(&mut app);
-
-    let hit = crate::hit::Hit::FooterChip(Action::ConfirmDeleteVar {
-        name: "base_url".into(),
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
     });
-    let rect = app
-        .hits
-        .rect_of(&hit)
-        .expect("delete chip must be painted and hit-mapped");
 
-    assert!(app.handle_mouse(left_down(rect.x, rect.y)));
+    let via_menu = app
+        .varmanager
+        .context_menu(app.varmanager.left_cursor)
+        .expect("menu for a variable row");
+    app.update(via_menu[2].action.clone().unwrap());
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+    app.update(Action::Close);
+
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, plain('d'));
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
 }
 
 #[test]
-fn clicking_the_new_var_chip_opens_the_new_variable_prompt() {
+fn clicking_the_new_variable_button_opens_the_new_variable_prompt() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -4914,13 +5268,11 @@ fn clicking_the_new_var_chip_opens_the_new_variable_prompt() {
     app.update(Action::OpenVarManager);
     rendered_text(&mut app);
 
-    let hit = crate::hit::Hit::FooterChip(Action::PromptNewVar);
     let rect = app
         .hits
-        .rect_of(&hit)
-        .expect("new-var chip must be painted");
-    assert!(app.handle_mouse(left_down(rect.x, rect.y)));
-
+        .rect_of(&crate::hit::Hit::VmNewVar)
+        .expect("+ Variable button must be painted");
+    assert!(app.handle_mouse(left_down(rect.x + 1, rect.y + 1)));
     assert!(matches!(
         app.modals.top(),
         Some(Modal::Prompt {
@@ -4928,10 +5280,26 @@ fn clicking_the_new_var_chip_opens_the_new_variable_prompt() {
             ..
         })
     ));
+
+    // …and the `+ Group` button opens the group prompt.
+    app.update(Action::Close);
+    rendered_text(&mut app);
+    let rect = app
+        .hits
+        .rect_of(&crate::hit::Hit::VmNewGroup)
+        .expect("+ Group button must be painted");
+    assert!(app.handle_mouse(left_down(rect.x + 1, rect.y + 1)));
+    assert!(matches!(
+        app.modals.top(),
+        Some(Modal::MultiPrompt {
+            kind: PromptKind::NewGroup,
+            ..
+        })
+    ));
 }
 
 #[test]
-fn prompt_new_group_takes_just_a_name_and_creates_an_empty_group() {
+fn prompt_new_group_takes_a_name_and_a_field_list() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -4940,6 +5308,10 @@ fn prompt_new_group_takes_just_a_name_and_creates_an_empty_group() {
     app.update(Action::PromptNewGroup);
 
     for c in "creds".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    for c in "user_id, customer_id".chars() {
         app.handle_key(&keymap, plain(c));
     }
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -4951,8 +5323,11 @@ fn prompt_new_group_takes_just_a_name_and_creates_an_empty_group() {
         .groups
         .get("creds")
         .expect("group created");
-    assert!(g.members.is_empty(), "members are added one at a time");
-    // and the empty group survives a reload (parse accepts members = [])
+    assert_eq!(
+        g.fields,
+        vec!["user_id".to_string(), "customer_id".to_string()]
+    );
+    // and the empty group survives a reload (parse accepts fields = [])
     app.update(Action::ReloadProjectFiles);
     assert!(app.project.model.groups.contains_key("creds"));
 }
@@ -4966,7 +5341,7 @@ fn add_and_remove_group_members_one_at_a_time() {
     let keymap = Keymap::default_bindings();
     app.update(Action::VarStruct(VarStructOp::NewGroup {
         name: "creds".into(),
-        members: vec![],
+        fields: vec![],
     }));
 
     // `a` flow: one member name per prompt, appended in order
@@ -4980,7 +5355,7 @@ fn add_and_remove_group_members_one_at_a_time() {
         app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     }
     assert_eq!(
-        app.project.model.groups.get("creds").unwrap().members,
+        app.project.model.groups.get("creds").unwrap().fields,
         vec!["user_id".to_string(), "customer_id".to_string()]
     );
 
@@ -4995,7 +5370,7 @@ fn add_and_remove_group_members_one_at_a_time() {
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.toasts.messages().len() > toasts_before);
     assert_eq!(
-        app.project.model.groups.get("creds").unwrap().members.len(),
+        app.project.model.groups.get("creds").unwrap().fields.len(),
         2
     );
 
@@ -5010,7 +5385,7 @@ fn add_and_remove_group_members_one_at_a_time() {
     );
     app.handle_key(&keymap, plain('y'));
     assert_eq!(
-        app.project.model.groups.get("creds").unwrap().members,
+        app.project.model.groups.get("creds").unwrap().fields,
         vec!["customer_id".to_string()]
     );
 }
@@ -5024,21 +5399,25 @@ fn group_project(dir: &std::path::Path) {
         r#"
 [groups.identity]
 description = "identity"
-members = ["user_id", "customer_id"]
-
-[groups.identity.options.alice]
+fields = ["user_id", "customer_id"]
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("environments/qa.toml"),
+        r#"
+[entries.identity.alice]
 description = "admin"
 user_id = "1001"
 customer_id = "c-77"
 
-[groups.identity.options.bob]
+[entries.identity.bob]
 description = "reader"
 user_id = "1002"
 customer_id = "c-78"
 "#,
     )
     .unwrap();
-    std::fs::write(dir.join("environments/qa.toml"), "").unwrap();
     postui_core::project::save_local_state(
         dir,
         &postui_core::project::LocalState {
@@ -5062,7 +5441,7 @@ fn focus_url_with_cursor_on(app: &mut App, url: &str, token: &str) {
 }
 
 #[test]
-fn ctrl_v_on_enumerated_token_opens_select_option_with_checkmark() {
+fn ctrl_v_on_a_one_field_groups_token_opens_select_option_with_checkmark() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -5079,7 +5458,7 @@ fn ctrl_v_on_enumerated_token_opens_select_option_with_checkmark() {
         p.mode,
         crate::components::var_picker::PickerMode::SelectOption {
             name: "user".into(),
-            group: None,
+            group: "user".into(),
         }
     );
 
@@ -5110,7 +5489,7 @@ fn ctrl_v_on_group_member_token_shows_the_group_s_options_with_full_preview() {
         p.mode,
         crate::components::var_picker::PickerMode::SelectOption {
             name: "user_id".into(),
-            group: Some("identity".into()),
+            group: "identity".into(),
         }
     );
 
@@ -5383,7 +5762,7 @@ fn type_into_field(app: &mut App, keymap: &Keymap, text: &str) {
 }
 
 #[test]
-fn add_new_option_writes_to_the_active_envs_options_table_selects_it_and_restores_focus() {
+fn add_new_entry_writes_to_the_active_envs_entries_table_selects_it_and_restores_focus() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -5394,7 +5773,7 @@ fn add_new_option_writes_to_the_active_envs_options_table_selects_it_and_restore
     focus_url_with_cursor_on(&mut app, url, "{{user}}");
     app.update(Action::OpenVarPicker { completing: false });
 
-    // "user" has two options (alice, bob); the ghost "add new option…" row
+    // "user" has two entries (alice, bob); the ghost "add new option…" row
     // sits one past them.
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
@@ -5417,23 +5796,27 @@ fn add_new_option_writes_to_the_active_envs_options_table_selects_it_and_restore
     assert_eq!(app.editor.sub_focus, SubFocus::Url);
     assert_eq!(app.editor.url.text(), url, "the token text is untouched");
 
-    // Written to the ACTIVE ENV's options table, not the shared file.
+    // Written to the ACTIVE ENV's entries table — entries only ever live
+    // in an environment file (spec §3.1).
     let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
-    assert!(env_doc.contains("[options.user.carol]"), "{env_doc}");
+    assert!(env_doc.contains("[entries.user.carol]"), "{env_doc}");
     assert!(env_doc.contains("3003"), "{env_doc}");
     assert!(env_doc.contains("temp hire"), "{env_doc}");
 
     let shared_doc = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     assert!(
         !shared_doc.contains("carol"),
-        "must not land in the shared declaration: {shared_doc}"
+        "must not land in variables.toml: {shared_doc}"
     );
 
     assert_eq!(app.project.selections_for("qa")["user"], "carol");
 }
 
+/// Review finding 1: entry names are free-form strings (spec §3.2), unlike
+/// variable names — the inline-create path must not run them through
+/// `is_valid_var_name`'s charset check.
 #[test]
-fn e_on_a_shared_option_edits_it_in_variables_toml() {
+fn inline_create_accepts_a_free_form_entry_name_with_a_space() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -5442,7 +5825,66 @@ fn e_on_a_shared_option_edits_it_in_variables_toml() {
 
     focus_url_with_cursor_on(&mut app, "https://x/{{user}}", "{{user}}");
     app.update(Action::OpenVarPicker { completing: false });
-    // Row 0 is "alice" (first option, current default order).
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(&keymap, enter_key());
+
+    type_into_field(&mut app, &keymap, "user 1");
+    app.handle_key(&keymap, tab_key());
+    type_into_field(&mut app, &keymap, "9009");
+    app.handle_key(&keymap, enter_key());
+
+    assert!(
+        app.modals.is_empty(),
+        "a free-form name must not be rejected: {:?}",
+        app.toasts.messages()
+    );
+    let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(env_doc.contains("[entries.user.\"user 1\"]"), "{env_doc}");
+    assert!(env_doc.contains("9009"), "{env_doc}");
+}
+
+/// Review finding 4: an inline-created entry on a multi-field group only
+/// fills the first field — the rest start empty — so a hint toast must
+/// point the user at the Manager to fill them in.
+#[test]
+fn inline_create_on_a_multi_field_group_hints_at_the_empty_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    group_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let keymap = Keymap::default_bindings();
+
+    focus_url_with_cursor_on(&mut app, "https://x/{{user_id}}", "{{user_id}}");
+    app.update(Action::OpenVarPicker { completing: false });
+    // "identity" has two entries (alice, bob); the ghost row sits one past
+    // them.
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(&keymap, enter_key());
+
+    type_into_field(&mut app, &keymap, "carol");
+    app.handle_key(&keymap, enter_key());
+
+    assert!(app.modals.is_empty());
+    let msgs = app.toasts.messages();
+    assert!(
+        msgs.iter().any(|m| m.contains("empty")),
+        "expected a hint about the unfilled fields: {msgs:?}"
+    );
+}
+
+#[test]
+fn e_on_an_entry_edits_it_in_the_environment_that_holds_it() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let keymap = Keymap::default_bindings();
+
+    focus_url_with_cursor_on(&mut app, "https://x/{{user}}", "{{user}}");
+    app.update(Action::OpenVarPicker { completing: false });
+    // Row 0 is "alice" (first entry, file order).
     app.handle_key(
         &keymap,
         KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE),
@@ -5470,60 +5912,12 @@ fn e_on_a_shared_option_edits_it_in_variables_toml() {
     app.handle_key(&keymap, enter_key());
 
     assert!(app.modals.is_empty());
-    let shared_doc = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
-    assert!(shared_doc.contains("9999"), "{shared_doc}");
     let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
-    assert!(
-        !env_doc.contains("9999"),
-        "a shared option's edit must not create an env override: {env_doc}"
-    );
-}
-
-#[test]
-fn e_on_an_env_overridden_option_edits_the_env_file_not_the_shared_one() {
-    let dir = tempfile::tempdir().unwrap();
-    var_project(dir.path());
-    // Give qa its own override of "alice" on top of the shared declaration.
-    std::fs::write(
-        dir.path().join("environments/qa.toml"),
-        "base_url = \"https://qa.example.com\"\n[options.user.alice]\nvalue = \"9001\"\n",
-    )
-    .unwrap();
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, dir.path().to_path_buf());
-    let keymap = Keymap::default_bindings();
-
-    focus_url_with_cursor_on(&mut app, "https://x/{{user}}", "{{user}}");
-    app.update(Action::OpenVarPicker { completing: false });
-    app.handle_key(
-        &keymap,
-        KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE),
-    );
-
-    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
-        panic!("expected the edit-option multi-prompt");
-    };
-    assert_eq!(
-        fields[0].input.text(),
-        "9001",
-        "prefilled with the env's overriding value"
-    );
-
-    for _ in 0..4 {
-        app.handle_key(
-            &keymap,
-            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
-        );
-    }
-    type_into_field(&mut app, &keymap, "9002");
-    app.handle_key(&keymap, enter_key());
-
-    let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
-    assert!(env_doc.contains("9002"), "{env_doc}");
+    assert!(env_doc.contains("9999"), "{env_doc}");
     let shared_doc = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     assert!(
-        shared_doc.contains("1001") && !shared_doc.contains("9002"),
-        "an env override's edit must not touch the shared declaration: {shared_doc}"
+        !shared_doc.contains("9999"),
+        "an entry's edit must never touch variables.toml: {shared_doc}"
     );
 }
 
@@ -5824,42 +6218,9 @@ fn extract_to_active_env_refuses_a_name_colliding_with_an_existing_secret() {
 }
 
 #[test]
-fn confirm_edit_option_on_a_shared_group_option_writes_variables_toml() {
+fn confirm_edit_option_writes_every_field_into_the_active_envs_entry() {
     let dir = tempfile::tempdir().unwrap();
     group_project(dir.path());
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, dir.path().to_path_buf());
-
-    let mut values = indexmap::IndexMap::new();
-    values.insert("user_id".to_string(), "9999".to_string());
-    values.insert("customer_id".to_string(), "c-99".to_string());
-    app.update(Action::ConfirmEditOption {
-        owner: "identity".into(),
-        key: "alice".into(),
-        values,
-        description: Some("admin".into()),
-    });
-
-    let shared_doc = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
-    assert!(shared_doc.contains("9999"), "{shared_doc}");
-    assert!(shared_doc.contains("c-99"), "{shared_doc}");
-
-    let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
-    assert!(
-        !env_doc.contains("9999"),
-        "a shared group option's edit must not create an env override: {env_doc}"
-    );
-}
-
-#[test]
-fn confirm_edit_option_on_an_env_overridden_group_option_writes_the_env_file() {
-    let dir = tempfile::tempdir().unwrap();
-    group_project(dir.path());
-    std::fs::write(
-        dir.path().join("environments/qa.toml"),
-        "[options.identity.alice]\nuser_id = \"5000\"\n",
-    )
-    .unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
@@ -5876,10 +6237,1577 @@ fn confirm_edit_option_on_an_env_overridden_group_option_writes_the_env_file() {
     let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(env_doc.contains("9001"), "{env_doc}");
     assert!(env_doc.contains("c-101"), "{env_doc}");
+    assert!(env_doc.contains("admin updated"), "{env_doc}");
 
     let shared_doc = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     assert!(
-        shared_doc.contains("1001") && !shared_doc.contains("9001"),
-        "an env override's edit must not touch the shared declaration: {shared_doc}"
+        !shared_doc.contains("9001"),
+        "an entry edit must never touch variables.toml: {shared_doc}"
     );
+}
+
+// -- Stage 7: the variable-format migration prompt (spec §3.3) ----------
+
+/// A project written with stage-6 syntax: an enumerated variable, a group
+/// with `members`, and one environment carrying a keyed `[options.*]`
+/// override.
+fn legacy_project(dir: &std::path::Path) {
+    postui_core::project::init_project(dir, Some("legacy")).unwrap();
+    std::fs::write(
+        dir.join("variables.toml"),
+        r#"
+[base_url]
+default = "http://localhost:8080"
+
+[tier]
+description = "pricing tier"
+[tier.options.gold]
+value = "g-1"
+
+[groups.user]
+members = ["user_id", "customer_id"]
+[groups.user.options.alice]
+user_id = "1001"
+customer_id = "c-77"
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("environments/qa.toml"),
+        "[options.tier.gold]\nvalue = \"g-qa\"\n",
+    )
+    .unwrap();
+    postui_core::project::save_local_state(
+        dir,
+        &postui_core::project::LocalState {
+            environment: Some("qa".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+}
+
+#[test]
+fn opening_a_legacy_project_offers_the_migration_and_lists_its_notes() {
+    let dir = tempfile::tempdir().unwrap();
+    legacy_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let app = App::with_root(tx, dir.path().to_path_buf());
+
+    let Some(Modal::Confirm {
+        title,
+        body,
+        choices,
+    }) = app.modals.top()
+    else {
+        panic!("a legacy project must offer the migration");
+    };
+    assert_eq!(title, "Migrate variables");
+    assert!(
+        body.contains("tier"),
+        "the conversion's notes are listed: {body}"
+    );
+    assert!(body.contains(".bak"), "the safety copy is promised: {body}");
+    let keys: Vec<char> = choices.iter().map(|(k, _, _)| *k).collect();
+    assert_eq!(keys, vec!['n', 'y']);
+
+    // Until the user answers, the variables are inert rather than
+    // half-parsed from a format the model doesn't speak.
+    assert!(app.project.model.vars.is_empty());
+    assert!(app.project.model.groups.is_empty());
+}
+
+#[test]
+fn confirming_the_migration_rewrites_the_files_leaves_baks_and_reloads() {
+    let dir = tempfile::tempdir().unwrap();
+    legacy_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let keymap = Keymap::default_bindings();
+    let vars_before = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    let qa_before = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+
+    app.handle_key(&keymap, plain('y'));
+
+    assert!(app.modals.is_empty(), "answering closes the prompt");
+    assert!(
+        app.project.pending_migration().is_none(),
+        "nothing left to migrate"
+    );
+
+    // The safety copies hold exactly what was there before.
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("variables.toml.bak")).unwrap(),
+        vars_before
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("environments/qa.toml.bak")).unwrap(),
+        qa_before
+    );
+
+    // ...and the live files are the new format, loaded into the model.
+    let vars_after = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    assert!(!vars_after.contains("options"), "{vars_after}");
+    let parsed = postui_core::varmodel::parse_variables(&vars_after).expect("new text parses");
+    assert_eq!(parsed.groups["tier"].fields, ["tier"]);
+    assert_eq!(parsed.groups["user"].fields, ["user_id", "customer_id"]);
+    assert_eq!(
+        app.project.model.groups["user"].fields,
+        ["user_id", "customer_id"]
+    );
+    assert_eq!(
+        app.project.model.vars["base_url"].default.as_deref(),
+        Some("http://localhost:8080"),
+        "the plain variable came through untouched"
+    );
+
+    let qa_after = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    let env = postui_core::varmodel::parse_environment(&qa_after).expect("new env text parses");
+    assert_eq!(env.entries["tier"]["gold"].values["tier"], "g-qa");
+    assert_eq!(
+        app.project.env_data.entries["user"]["alice"].values["customer_id"],
+        "c-77"
+    );
+
+    let content = rendered_text(&mut app);
+    assert!(
+        content.contains("migrated"),
+        "the result is toasted: {content}"
+    );
+}
+
+#[test]
+fn declining_the_migration_leaves_the_files_alone_and_the_project_open() {
+    let dir = tempfile::tempdir().unwrap();
+    legacy_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let keymap = Keymap::default_bindings();
+    let vars_before = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+
+    app.handle_key(&keymap, plain('n'));
+
+    assert!(app.modals.is_empty());
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("variables.toml")).unwrap(),
+        vars_before,
+        "declining must not touch a single file"
+    );
+    assert!(!dir.path().join("variables.toml.bak").exists());
+    assert!(app.project.model.vars.is_empty(), "variables stay inert");
+    assert!(app.project.resolved.values.is_empty());
+
+    // The project itself is still perfectly usable, and the prompt does
+    // not come back on the next reload.
+    app.update(Action::ReloadProjectFiles);
+    assert!(app.modals.is_empty(), "declined once, not re-offered");
+    assert!(app.project.pending_migration().is_none());
+    app.update(Action::CreateRequest("ping".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("ping"));
+}
+
+#[test]
+fn migrating_a_project_with_no_environments_creates_default_toml_for_the_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::project::init_project(dir.path(), Some("legacy")).unwrap();
+    std::fs::write(
+        dir.path().join("variables.toml"),
+        "[tier]\n[tier.options.gold]\nvalue = \"g-1\"\n",
+    )
+    .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    assert!(app.project.environments.is_empty());
+
+    let Some(Modal::Confirm { body, .. }) = app.modals.top() else {
+        panic!("a legacy project must offer the migration");
+    };
+    assert!(
+        body.contains("environments/default.toml"),
+        "the new environment is announced up front: {body}"
+    );
+
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, plain('y'));
+
+    let default_toml =
+        std::fs::read_to_string(dir.path().join("environments/default.toml")).unwrap();
+    let env = postui_core::varmodel::parse_environment(&default_toml).unwrap();
+    assert_eq!(env.entries["tier"]["gold"].values["tier"], "g-1");
+    assert_eq!(app.project.environments, vec!["default".to_string()]);
+    assert!(
+        !dir.path().join("environments/default.toml.bak").exists(),
+        "a brand-new file has nothing to back up"
+    );
+}
+
+/// Review finding: `open` used to prune "stale" selections against the
+/// *empty* model a legacy project leaves behind, wiping (and persisting
+/// the loss of) every selection before the user had even answered the
+/// prompt — so declining lost local state despite the untouched promise,
+/// and applying came up all-needs-selection even though the migration
+/// keeps the group names.
+#[test]
+fn a_legacy_projects_saved_selections_survive_the_prompt_and_resolve_after_applying() {
+    let dir = tempfile::tempdir().unwrap();
+    legacy_project(dir.path());
+    let mut selections = indexmap::IndexMap::new();
+    let mut qa = indexmap::IndexMap::new();
+    qa.insert("tier".to_string(), "gold".to_string());
+    qa.insert("user".to_string(), "alice".to_string());
+    selections.insert("qa".to_string(), qa);
+    postui_core::project::save_local_state(
+        dir.path(),
+        &postui_core::project::LocalState {
+            environment: Some("qa".into()),
+            selections,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    // Nothing was cleared while the prompt is still up...
+    assert!(
+        !app.toasts
+            .messages()
+            .iter()
+            .any(|m| m.contains("no longer exists")),
+        "no bogus stale-selection warnings: {:?}",
+        app.toasts.messages()
+    );
+    assert_eq!(app.project.selections_for("qa")["tier"], "gold");
+    assert_eq!(app.project.selections_for("qa")["user"], "alice");
+    let on_disk = postui_core::project::load_local_state(dir.path()).unwrap();
+    assert_eq!(on_disk.selections["qa"]["tier"], "gold");
+    assert_eq!(on_disk.selections["qa"]["user"], "alice");
+
+    // ...and once migrated, they select the migrated entries.
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, plain('y'));
+
+    assert_eq!(app.project.selections_for("qa")["tier"], "gold");
+    assert_eq!(
+        app.project.resolved.values["tier"], "g-qa",
+        "the carried-over selection resolves: {:?}",
+        app.project.resolved.values
+    );
+    assert_eq!(app.project.resolved.values["user_id"], "1001");
+    assert_eq!(app.project.resolved.values["customer_id"], "c-77");
+}
+
+/// The decline half of the same finding: refusing the migration must leave
+/// `.local/state.toml` exactly as it was, not just the shareable files.
+#[test]
+fn declining_the_migration_leaves_saved_selections_on_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    legacy_project(dir.path());
+    let mut selections = indexmap::IndexMap::new();
+    let mut qa = indexmap::IndexMap::new();
+    qa.insert("tier".to_string(), "gold".to_string());
+    selections.insert("qa".to_string(), qa);
+    postui_core::project::save_local_state(
+        dir.path(),
+        &postui_core::project::LocalState {
+            environment: Some("qa".into()),
+            selections,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, plain('n'));
+
+    let on_disk = postui_core::project::load_local_state(dir.path()).unwrap();
+    assert_eq!(
+        on_disk.selections["qa"]["tier"], "gold",
+        "declining must not touch local state either"
+    );
+}
+
+// --- computed request-headers section: copy/reveal/env-switch (Task 10) ---
+
+#[test]
+fn auto_header_copy_icon_puts_the_resolved_value_on_the_clipboard() {
+    let mut app = App::new_for_test();
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
+        None, 65536, false,
+    ));
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor.url = LineInput::new("https://example.com/foo");
+    app.update(Action::Render);
+
+    let backend = ratatui::backend::TestBackend::new(100, 70);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    // The scratch request has no default headers and no body, so the Host
+    // row (from the URL) is the only computed row, at index 0.
+    let rect = app
+        .hits
+        .rect_of(&Hit::AutoHeaderCopy(0))
+        .expect("the Host row's copy icon is registered");
+
+    app.handle_mouse(left_down(rect.x, rect.y));
+
+    assert!(
+        rendered_text(&mut app).contains("Copied Host"),
+        "toast confirms the copy"
+    );
+}
+
+#[test]
+fn computed_headers_mask_a_secret_by_default_and_the_reveal_toggle_unmasks() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::VarEdit(VarEditOp::SetSecretValue {
+        env: "qa".into(),
+        name: "api_key".into(),
+        value: "sk-live-abc123".into(),
+    }));
+    // A project default header, not a request-table row: the computed
+    // section only shows non-`Request`-origin rows, so this is what
+    // exercises it (see `computed_headers_recompute_reflects_an_env_switch`
+    // for the same reasoning).
+    app.project.meta.default_headers.insert(
+        "Authorization".into(),
+        postui_core::model::Entry {
+            value: "Bearer {{api_key}}".into(),
+            enabled: true,
+        },
+    );
+    app.editor.active_tab = EditorTab::Headers;
+    app.update(Action::Render);
+
+    let backend = ratatui::backend::TestBackend::new(100, 70);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let masked = format!("{:?}", terminal.backend().buffer());
+    assert!(
+        !masked.contains("sk-live-abc123"),
+        "the secret must not render in the clear by default: {masked}"
+    );
+    assert!(
+        masked.contains("\u{25cf}"),
+        "the masked value renders as the dot mask: {masked}"
+    );
+    let reveal_rect = app
+        .hits
+        .rect_of(&Hit::AutoHeaderReveal)
+        .expect("the reveal toggle shows because a secret is in play");
+
+    app.handle_mouse(left_down(reveal_rect.x, reveal_rect.y));
+    assert!(app.editor.computed.revealed);
+
+    let mut terminal2 =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 70)).unwrap();
+    terminal2.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let revealed = format!("{:?}", terminal2.backend().buffer());
+    assert!(
+        revealed.contains("sk-live-abc123"),
+        "revealing shows the real value: {revealed}"
+    );
+
+    // The toggle itself must survive the round trip (still present, now
+    // reading "hide") rather than vanishing once nothing is masked.
+    assert!(app.hits.rect_of(&Hit::AutoHeaderReveal).is_some());
+}
+
+#[test]
+fn computed_headers_recompute_reflects_an_env_switch() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    // A project default header, not a request-table row: the computed
+    // section only shows non-`Request`-origin rows (the editable table
+    // above already shows the request's own rows, literal text and all),
+    // so this is what actually exercises the env-driven recompute.
+    app.project.meta.default_headers.insert(
+        "X-Base".into(),
+        postui_core::model::Entry {
+            value: "{{base_url}}".into(),
+            enabled: true,
+        },
+    );
+    app.editor.active_tab = EditorTab::Headers;
+    app.update(Action::Render);
+
+    let backend = ratatui::backend::TestBackend::new(100, 70);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let qa_view = format!("{:?}", terminal.backend().buffer());
+    assert!(
+        qa_view.contains("https://qa.example.com"),
+        "qa's own value resolves: {qa_view}"
+    );
+
+    app.update(Action::SwitchEnv(Some("dev".into())));
+    let mut terminal2 =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 70)).unwrap();
+    terminal2.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let dev_view = format!("{:?}", terminal2.backend().buffer());
+    assert!(
+        dev_view.contains("http://localhost:8080"),
+        "dev has no override, so the declared default resolves instead: {dev_view}"
+    );
+    assert!(
+        !dev_view.contains("https://qa.example.com"),
+        "the stale qa value must not linger: {dev_view}"
+    );
+}
+
+#[test]
+fn computed_headers_reveal_resets_when_switching_to_a_different_request() {
+    // Reveal is a per-request gesture (spec §3: secrets masked by default);
+    // it must not leak from request A into request B just because both
+    // happen to render the same project default header.
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::VarEdit(VarEditOp::SetSecretValue {
+        env: "qa".into(),
+        name: "api_key".into(),
+        value: "sk-live-abc123".into(),
+    }));
+    app.project.meta.default_headers.insert(
+        "Authorization".into(),
+        postui_core::model::Entry {
+            value: "Bearer {{api_key}}".into(),
+            enabled: true,
+        },
+    );
+    postui_core::storage::save_request(&app.project.root, "a", &req("https://x/a")).unwrap();
+    postui_core::storage::save_request(&app.project.root, "b", &req("https://x/b")).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::OpenRequest("a".into()));
+    app.editor.active_tab = EditorTab::Headers;
+    app.update(Action::Render);
+
+    let backend = ratatui::backend::TestBackend::new(100, 70);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let reveal_rect = app
+        .hits
+        .rect_of(&Hit::AutoHeaderReveal)
+        .expect("A shows the reveal toggle");
+    app.handle_mouse(left_down(reveal_rect.x, reveal_rect.y));
+    assert!(app.editor.computed.revealed, "A is now revealed");
+
+    let mut terminal_a =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 70)).unwrap();
+    terminal_a.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let a_view = format!("{:?}", terminal_a.backend().buffer());
+    assert!(
+        a_view.contains("sk-live-abc123"),
+        "sanity: A really is showing the secret in the clear: {a_view}"
+    );
+
+    app.update(Action::OpenRequest("b".into()));
+    assert!(
+        !app.editor.computed.revealed,
+        "opening a different request must re-mask"
+    );
+
+    let mut terminal_b =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 70)).unwrap();
+    terminal_b.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let b_view = format!("{:?}", terminal_b.backend().buffer());
+    assert!(
+        !b_view.contains("sk-live-abc123"),
+        "B must render masked, not inherit A's reveal: {b_view}"
+    );
+    assert!(
+        b_view.contains("\u{25cf}"),
+        "B shows the dot mask: {b_view}"
+    );
+    assert!(
+        b_view.contains("\u{1F441} reveal") && !b_view.contains("\u{1F441} hide"),
+        "B's own toggle reads \"reveal\", not \"hide\" (the collapse toggle's unrelated \
+         \"⌄ hide\" label is a substring trap here, so this checks the 👁 glyph too): {b_view}"
+    );
+}
+
+// --- Task 15: variable detail form (spec §3.4) ---------------------------
+
+use crate::components::varmanager::VmField;
+
+/// The form's full column of rows doesn't fit `rendered_text`'s 80x24
+/// screen (header + footer leave the right pane only a little taller than
+/// its title + description + default fields) — plenty for a real terminal,
+/// but these tests need the rest of the column too.
+fn rendered_text_tall(app: &mut App) -> String {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    let backend = TestBackend::new(100, 46);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+    format!("{:?}", terminal.backend().buffer())
+}
+
+fn field_rect(app: &mut App, field: VmField) -> ratatui::layout::Rect {
+    rendered_text_tall(app);
+    app.hits
+        .rect_of(&crate::hit::Hit::VmFormField(field))
+        .unwrap_or_else(|| panic!("no rect for {field:?}"))
+}
+
+#[test]
+fn selecting_a_var_renders_its_form_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
+    });
+    let content = rendered_text_tall(&mut app);
+    assert!(content.contains("Description"), "{content}");
+    assert!(content.contains("API root"), "{content}");
+    assert!(content.contains("Default"), "{content}");
+    assert!(content.contains("http://localhost:8080"), "{content}");
+    assert!(content.contains("Value in qa"), "{content}");
+    assert!(
+        content.contains("https://qa.example.com"),
+        "qa's own override, not the declaration default: {content}"
+    );
+}
+
+#[test]
+fn clicking_the_env_value_field_typing_and_clicking_away_writes_the_env_file() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
+    });
+
+    let r = field_rect(&mut app, VmField::EnvValue);
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    assert!(app.varmanager.form.editing.is_some(), "the field is live");
+
+    let keymap = Keymap::default_bindings();
+    for c in "9".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+
+    // Click away — the left list row for the same variable is "elsewhere".
+    let row = app.varmanager.left_cursor;
+    let left_rect = app.hits.rect_of(&crate::hit::Hit::VmLeftRow(row)).unwrap();
+    app.handle_mouse(left_down(left_rect.x + 1, left_rect.y + 1));
+
+    assert!(app.varmanager.form.editing.is_none(), "the click committed");
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(
+        on_disk.contains("https://qa.example.com9"),
+        "the typed digit landed at the caret (end of qa's own override): {on_disk}"
+    );
+    assert_eq!(
+        app.project.resolved.values["base_url"],
+        "https://qa.example.com9"
+    );
+}
+
+#[test]
+fn enter_commits_a_field_edit_and_esc_reverts_it() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
+    });
+    let keymap = Keymap::default_bindings();
+
+    // Esc reverts: the typed digit never reaches disk.
+    let r = field_rect(&mut app, VmField::Description);
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    app.handle_key(&keymap, plain('!'));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.varmanager.form.editing.is_none());
+    assert_eq!(
+        app.project.model.vars["base_url"].description.as_deref(),
+        Some("API root"),
+        "Esc must not write anything"
+    );
+
+    // Enter commits.
+    let r = field_rect(&mut app, VmField::Description);
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    app.handle_key(&keymap, plain('!'));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.varmanager.form.editing.is_none());
+    assert_eq!(
+        app.project.model.vars["base_url"].description.as_deref(),
+        Some("API root!")
+    );
+}
+
+/// Clicking straight from one form field into a *different* one (no
+/// intervening click-away) must commit the first field rather than
+/// silently discarding it — a regression the top-of-`on_hit` guard's
+/// `VmFormField(_)` exemption briefly reintroduced.
+#[test]
+fn clicking_directly_from_one_field_into_another_commits_the_first() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
+    });
+
+    let r = field_rect(&mut app, VmField::Description);
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    let keymap = Keymap::default_bindings();
+    for c in "!".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+
+    // Straight into the env-value field — no click-away in between.
+    let r = field_rect(&mut app, VmField::EnvValue);
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+
+    assert_eq!(
+        app.project.model.vars["base_url"].description.as_deref(),
+        Some("API root!"),
+        "the description field must have committed, not been discarded"
+    );
+    assert_eq!(
+        app.varmanager.form.editing.as_ref().map(|(f, _)| *f),
+        Some(VmField::EnvValue),
+        "the click landed in the newly clicked field"
+    );
+}
+
+/// The write-failure variant of the above: when the first field's commit
+/// fails, the click into the second field must not clobber the restored
+/// (still-live) edit with a fresh one on the field that was clicked.
+#[test]
+fn clicking_into_another_field_after_a_failed_commit_keeps_the_original_edit_live() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::SwitchEnv(None));
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("api_key".into())
+    });
+
+    let r = field_rect(&mut app, VmField::EnvValue);
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    let keymap = Keymap::default_bindings();
+    for c in "sk-typed-secret".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+
+    // Click straight into Description — the env-value commit must fail
+    // first (a secret has no active env to target and can't hold a
+    // default), so this must not switch away from it.
+    let r = field_rect(&mut app, VmField::Description);
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+
+    assert_eq!(
+        app.varmanager.form.editing.as_ref().map(|(f, _)| *f),
+        Some(VmField::EnvValue),
+        "the failed commit's field stays live rather than switching to the click"
+    );
+    assert_eq!(
+        app.varmanager
+            .form
+            .editing
+            .as_ref()
+            .map(|(_, i)| i.text().to_string()),
+        Some("sk-typed-secret".to_string()),
+        "its typed text is untouched"
+    );
+    assert!(!app.toasts.is_empty(), "the failed commit still toasts");
+    for msg in app.toasts.messages() {
+        assert!(!msg.contains("sk-typed-secret"), "{msg}");
+    }
+}
+
+/// Review finding 2: clicking a DIFFERENT left-list row after a failed
+/// form commit must not reset `form` (which would discard the typed text
+/// the failure left live) — the click is absorbed instead.
+#[test]
+fn clicking_a_different_left_row_after_a_failed_commit_keeps_the_original_edit_live() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::SwitchEnv(None));
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("api_key".into())
+    });
+    rendered_text_tall(&mut app);
+
+    let r = field_rect(&mut app, VmField::EnvValue);
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    let keymap = Keymap::default_bindings();
+    for c in "sk-typed-secret".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+
+    let other = app
+        .varmanager
+        .left_rows
+        .iter()
+        .position(|r| r == &crate::components::varmanager::VmRow::Var("base_url".into()))
+        .expect("base_url row present");
+    let left_rect = app
+        .hits
+        .rect_of(&crate::hit::Hit::VmLeftRow(other))
+        .unwrap();
+    app.handle_mouse(left_down(left_rect.x + 1, left_rect.y + 1));
+
+    assert_eq!(
+        app.varmanager.detail,
+        crate::components::varmanager::VmDetail::Var("api_key".into()),
+        "the click must not move the detail pane off the failed edit"
+    );
+    assert_eq!(
+        app.varmanager
+            .form
+            .editing
+            .as_ref()
+            .map(|(_, i)| i.text().to_string()),
+        Some("sk-typed-secret".to_string()),
+        "the typed text must survive the click on another row"
+    );
+}
+
+/// A secret var with no active environment: the value field falls back to
+/// targeting the declaration default (spec's stated fallback), which the
+/// model rejects for a secret (`SecretWithDefault`) — the write fails, the
+/// typed text stays in the live editor, and the failure toasts without the
+/// secret value ever appearing in it.
+#[test]
+fn a_write_failure_keeps_the_typed_text_and_toasts_without_the_secret_value() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::SwitchEnv(None));
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("api_key".into())
+    });
+
+    let r = field_rect(&mut app, VmField::EnvValue);
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    let keymap = Keymap::default_bindings();
+    for c in "sk-typed-secret".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(
+        app.varmanager.form.editing.is_some(),
+        "a failed write must keep the field live with its typed text"
+    );
+    assert_eq!(
+        app.varmanager
+            .form
+            .editing
+            .as_ref()
+            .map(|(_, i)| i.text().to_string()),
+        Some("sk-typed-secret".to_string())
+    );
+    assert!(!app.toasts.is_empty(), "the failure must toast");
+    for msg in app.toasts.messages() {
+        assert!(
+            !msg.contains("sk-typed-secret"),
+            "a secret's value must never appear in a toast: {msg}"
+        );
+    }
+}
+
+#[test]
+fn a_secret_var_masks_its_value_and_the_reveal_toggle_unmasks_it() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::VarEdit(VarEditOp::SetSecretValue {
+        env: "qa".into(),
+        name: "api_key".into(),
+        value: "sk-live-secret".into(),
+    }));
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("api_key".into())
+    });
+
+    let content = rendered_text_tall(&mut app);
+    assert!(!content.contains("Default"), "{content}");
+    assert!(!content.contains("sk-live-secret"), "{content}");
+    let r = app
+        .hits
+        .rect_of(&crate::hit::Hit::VmRevealToggle)
+        .expect("reveal toggle registered for a secret");
+    app.handle_mouse(left_down(r.x, r.y));
+    let content = rendered_text_tall(&mut app);
+    assert!(content.contains("sk-live-secret"), "{content}");
+}
+
+#[test]
+fn the_rename_button_opens_the_same_prompt_as_the_e_key() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
+    });
+    rendered_text_tall(&mut app);
+    let r = app.hits.rect_of(&crate::hit::Hit::VmRename).unwrap();
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    assert!(matches!(
+        app.modals.top(),
+        Some(Modal::Prompt {
+            kind: PromptKind::RenameVariable { .. },
+            ..
+        })
+    ));
+}
+
+#[test]
+fn the_delete_button_opens_the_confirm_with_the_usage_list() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    request_with_var(dir.path(), "ping", "trace_id", "abc-123");
+    postui_core::storage::save_request(
+        dir.path(),
+        "uses-base",
+        &req("https://x/uses-base/{{base_url}}"),
+    )
+    .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
+    });
+    rendered_text_tall(&mut app);
+    let r = app.hits.rect_of(&crate::hit::Hit::VmDelete).unwrap();
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    let Some(Modal::Confirm { body, .. }) = app.modals.top() else {
+        panic!("expected a delete confirm");
+    };
+    assert!(body.contains("uses-base"), "{body}");
+}
+
+#[test]
+fn the_secret_toggle_button_opens_the_same_confirm_as_the_s_key() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
+    });
+    rendered_text_tall(&mut app);
+    let r = app.hits.rect_of(&crate::hit::Hit::VmSecretToggle).unwrap();
+    app.handle_mouse(left_down(r.x, r.y));
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+}
+
+#[test]
+fn the_promote_button_promotes_the_requests_override_up_into_the_project() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    request_with_var(dir.path(), "ping", "base_url", "http://from-request");
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("ping".into()));
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
+    });
+    let content = rendered_text_tall(&mut app);
+    assert!(content.contains("Promote"), "{content}");
+
+    let r = app.hits.rect_of(&crate::hit::Hit::VmPromoteBtn).unwrap();
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+    // Confirm "Default value".
+    app.handle_key(&Keymap::default_bindings(), plain('d'));
+    assert_eq!(
+        app.project.model.vars["base_url"].default.as_deref(),
+        Some("http://from-request")
+    );
+    assert!(!app.editor.variables.contains_key("base_url"));
+}
+
+#[test]
+fn the_demote_button_opens_the_demote_confirm_when_no_override_exists() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    postui_core::storage::save_request(dir.path(), "ping", &req("https://x/ping")).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("ping".into()));
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
+    });
+    let content = rendered_text_tall(&mut app);
+    assert!(content.contains("Demote"), "{content}");
+
+    let r = app.hits.rect_of(&crate::hit::Hit::VmPromoteBtn).unwrap();
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+}
+
+/// Keyboard parity: `e`/`F2` rename and `s` secret-toggle still work while
+/// the variable form is on screen (unchanged from before this task).
+#[test]
+fn keyboard_e_and_s_still_work_with_the_form_on_screen() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
+    });
+    let keymap = Keymap::default_bindings();
+
+    app.handle_key(&keymap, plain('e'));
+    assert!(matches!(
+        app.modals.top(),
+        Some(Modal::Prompt {
+            kind: PromptKind::RenameVariable { .. },
+            ..
+        })
+    ));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    app.handle_key(&keymap, plain('s'));
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+}
+
+// --- Task 16: the group entries grid (spec §3.4) -------------------------
+
+fn goto_group(app: &mut App, name: &str) {
+    goto_row(app, |r| {
+        r == &crate::components::varmanager::VmRow::Group(name.into())
+    });
+}
+
+fn cell_rect(app: &mut App, row: usize, col: usize) -> ratatui::layout::Rect {
+    rendered_text_tall(app);
+    app.hits
+        .rect_of(&crate::hit::Hit::VmEntryCell { row, col })
+        .unwrap_or_else(|| panic!("no rect for cell {row}/{col}"))
+}
+
+#[test]
+fn clicking_an_entrys_radio_records_the_selection_and_re_resolves_every_field() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    assert!(
+        !app.project.resolved.values.contains_key("user"),
+        "no selection yet: the group's field doesn't resolve"
+    );
+
+    rendered_text_tall(&mut app);
+    let r = app
+        .hits
+        .rect_of(&crate::hit::Hit::VmEntryRadio(1))
+        .expect("bob's radio");
+    app.handle_mouse(left_down(r.x, r.y));
+
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    assert_eq!(app.project.selections_for("qa")["user"], "bob");
+    assert_eq!(
+        app.project.resolved.values["user"], "2002",
+        "{{user}} now resolves through the selected entry"
+    );
+    let state = postui_core::project::load_local_state(dir.path()).unwrap();
+    assert_eq!(state.selections["qa"]["user"], "bob");
+
+    // …and clicking the other radio moves it, rather than adding a second.
+    let r = app.hits.rect_of(&crate::hit::Hit::VmEntryRadio(0)).unwrap();
+    app.handle_mouse(left_down(r.x, r.y));
+    assert_eq!(app.project.selections_for("qa")["user"], "alice");
+    assert_eq!(app.project.resolved.values["user"], "1001");
+}
+
+#[test]
+fn editing_a_field_cell_and_clicking_away_rewrites_the_env_file() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+
+    let r = cell_rect(&mut app, 0, 1);
+    app.handle_mouse(left_down(r.x, r.y));
+    assert!(app.varmanager.grid.editing.is_some(), "the cell is live");
+
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, plain('9'));
+
+    // Clicking a *different* cell commits the first one (Task 8's
+    // commit-first rule) and starts editing the one clicked.
+    let other = cell_rect(&mut app, 1, 1);
+    app.handle_mouse(left_down(other.x, other.y));
+
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(on_disk.contains("10019"), "{on_disk}");
+    let edit = app.varmanager.grid.editing.as_ref().expect("second cell");
+    assert_eq!((edit.row, edit.col), (1, 1));
+    assert_eq!(edit.input.text(), "2002");
+
+    // Esc puts the second cell back with nothing written.
+    app.handle_key(&keymap, plain('x'));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.varmanager.grid.editing.is_none());
+    let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(!on_disk.contains("2002x"), "esc reverted: {on_disk}");
+}
+
+#[test]
+fn the_ghost_row_creates_an_entry_and_keeps_going_into_its_first_field() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    let keymap = Keymap::default_bindings();
+
+    // Row 2 is the ghost row (alice, bob, then the ghost).
+    let r = cell_rect(&mut app, 2, 0);
+    app.handle_mouse(left_down(r.x, r.y));
+    for c in "carol".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(on_disk.contains("[entries.user.carol]"), "{on_disk}");
+    // The new entry is created with an empty value for every field, so it
+    // validates — and the edit walks on into that first field cell.
+    let edit = app
+        .varmanager
+        .grid
+        .editing
+        .as_ref()
+        .expect("editing continues left-to-right");
+    assert_eq!((edit.row, edit.col), (2, 1));
+
+    for c in "3003".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let env = postui_core::project::load_environment(dir.path(), "qa").unwrap();
+    assert_eq!(env.entries["user"]["carol"].values["user"], "3003");
+}
+
+#[test]
+fn a_refused_entry_name_toasts_and_keeps_the_typed_text() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    let keymap = Keymap::default_bindings();
+
+    let r = cell_rect(&mut app, 2, 0);
+    app.handle_mouse(left_down(r.x, r.y));
+    // `description` inside an entries table is an entry's own description,
+    // so core refuses it as an entry name.
+    for c in "description".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(!app.toasts.is_empty(), "the refusal is surfaced");
+    let edit = app
+        .varmanager
+        .grid
+        .editing
+        .as_ref()
+        .expect("the failed write left the edit in place");
+    assert_eq!(edit.input.text(), "description");
+    let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(!on_disk.contains("description"), "{on_disk}");
+}
+
+#[test]
+fn the_field_editor_renames_adds_and_removes_across_variables_and_every_env() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    std::fs::write(
+        dir.path().join("environments/dev.toml"),
+        "[entries.user.dave]\nuser = \"7\"\n",
+    )
+    .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+
+    // --- rename: slot 0 is the group's current field, retyped -----------
+    app.update(Action::ApplyGroupFields {
+        group: "user".into(),
+        slots: vec!["user_id".into()],
+        confirmed: false,
+    });
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    assert_eq!(app.project.model.groups["user"].fields, vec!["user_id"]);
+    let qa = postui_core::project::load_environment(dir.path(), "qa").unwrap();
+    assert_eq!(qa.entries["user"]["alice"].values["user_id"], "1001");
+    let dev = postui_core::project::load_environment(dir.path(), "dev").unwrap();
+    assert_eq!(
+        dev.entries["user"]["dave"].values["user_id"], "7",
+        "a non-active environment renames too"
+    );
+
+    // --- add: a slot past the current list -------------------------------
+    app.update(Action::ApplyGroupFields {
+        group: "user".into(),
+        slots: vec!["user_id".into(), "customer_id".into()],
+        confirmed: false,
+    });
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    assert_eq!(
+        app.project.model.groups["user"].fields,
+        vec!["user_id", "customer_id"]
+    );
+    let qa = postui_core::project::load_environment(dir.path(), "qa").unwrap();
+    assert_eq!(
+        qa.entries["user"]["alice"].values["customer_id"], "",
+        "every existing entry gains the column, empty"
+    );
+
+    // --- remove: a cleared slot warns before deleting the column ---------
+    app.update(Action::ApplyGroupFields {
+        group: "user".into(),
+        slots: vec!["user_id".into(), String::new()],
+        confirmed: false,
+    });
+    let Some(Modal::Confirm { body, .. }) = app.modals.top() else {
+        panic!("a removal must confirm first");
+    };
+    assert!(body.contains("deleted from"), "{body}");
+    assert!(body.contains("qa") && body.contains("dev"), "{body}");
+    assert_eq!(
+        app.project.model.groups["user"].fields,
+        vec!["user_id", "customer_id"],
+        "nothing has changed yet"
+    );
+
+    app.handle_key(&Keymap::default_bindings(), plain('y'));
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    assert_eq!(app.project.model.groups["user"].fields, vec!["user_id"]);
+    let qa = postui_core::project::load_environment(dir.path(), "qa").unwrap();
+    assert!(
+        !qa.entries["user"]["alice"]
+            .values
+            .contains_key("customer_id"),
+        "the column is gone from every entry"
+    );
+}
+
+#[test]
+fn renaming_a_group_moves_its_declaration_its_entries_and_its_selections() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    std::fs::write(
+        dir.path().join("environments/dev.toml"),
+        "[entries.user.dave]\nuser = \"7\"\n",
+    )
+    .unwrap();
+    postui_core::project::save_local_state(
+        dir.path(),
+        &postui_core::project::LocalState {
+            environment: Some("qa".into()),
+            selections: [
+                (
+                    "qa".to_string(),
+                    [("user".to_string(), "bob".to_string())].into(),
+                ),
+                (
+                    "dev".to_string(),
+                    [("user".to_string(), "dave".to_string())].into(),
+                ),
+            ]
+            .into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    assert_eq!(app.project.resolved.values["user"], "2002");
+
+    app.update(Action::VarStruct(VarStructOp::Rename {
+        from: "user".into(),
+        to: "account".into(),
+    }));
+
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    let vars = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    assert!(vars.contains("[groups.account]"), "{vars}");
+    assert!(!vars.contains("[groups.user]"), "{vars}");
+    for env in ["qa", "dev"] {
+        let text =
+            std::fs::read_to_string(dir.path().join(format!("environments/{env}.toml"))).unwrap();
+        assert!(
+            text.contains("[entries.account."),
+            "{env} entries moved: {text}"
+        );
+        assert!(!text.contains("[entries.user."), "{env}: {text}");
+    }
+    // The selection follows the name in every environment…
+    assert_eq!(app.project.selections_for("qa")["account"], "bob");
+    assert_eq!(app.project.selections_for("dev")["account"], "dave");
+    assert!(!app.project.selections_for("qa").contains_key("user"));
+    let state = postui_core::project::load_local_state(dir.path()).unwrap();
+    assert_eq!(state.selections["dev"]["account"], "dave");
+    // …so the group's field still resolves to the same value it did.
+    assert_eq!(app.project.resolved.values["user"], "2002");
+    // …and the detail pane is still looking at the group it was on.
+    assert_eq!(
+        app.varmanager.detail,
+        crate::components::varmanager::VmDetail::Group("account".into())
+    );
+}
+
+#[test]
+fn a_group_rename_onto_a_taken_name_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    app.update(Action::VarStruct(VarStructOp::Rename {
+        from: "user".into(),
+        to: "base_url".into(),
+    }));
+
+    assert!(!app.toasts.is_empty(), "the refusal is surfaced");
+    assert!(app.project.model.groups.contains_key("user"));
+    let qa = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(qa.contains("[entries.user.alice]"), "{qa}");
+}
+
+#[test]
+fn right_clicking_an_entry_row_opens_its_own_menu() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+
+    let r = cell_rect(&mut app, 0, 0);
+    app.handle_mouse(right_down(r.x, r.y));
+    let Some(Modal::Dropdown(state)) = app.modals.top() else {
+        panic!("no entry menu");
+    };
+    let labels: Vec<&str> = state.items.iter().map(|i| i.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        vec!["Duplicate entry", "Rename\u{2026}", "Delete\u{2026}"]
+    );
+}
+
+/// Review finding 1: the right-click path has to commit a live cell edit
+/// *before* its menu can reshape the rows. Otherwise a menu action on
+/// another row (Delete…) renumbers the entries under a `GridEdit` that
+/// still holds the old index, and the next click-away writes the typed
+/// text into a different record.
+#[test]
+fn right_clicking_another_row_commits_the_live_cell_to_the_entry_it_belongs_to() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+
+    // Type into bob's (row 1) value cell…
+    let r = cell_rect(&mut app, 1, 1);
+    app.handle_mouse(left_down(r.x, r.y));
+    app.handle_key(&Keymap::default_bindings(), plain('9'));
+    assert!(app.varmanager.grid.editing.is_some());
+
+    // …then right-click alice's row (row 0).
+    let r = cell_rect(&mut app, 0, 0);
+    app.handle_mouse(right_down(r.x, r.y));
+
+    assert!(
+        app.varmanager.grid.editing.is_none(),
+        "the right click committed the live cell first"
+    );
+    let env = postui_core::project::load_environment(dir.path(), "qa").unwrap();
+    assert_eq!(
+        env.entries["user"]["bob"].values["user"], "20029",
+        "the text landed in the entry it was typed into"
+    );
+    assert_eq!(
+        env.entries["user"]["alice"].values["user"], "1001",
+        "the right-clicked entry is untouched"
+    );
+    // …and the menu is the one for the row that was right-clicked.
+    let Some(Modal::Dropdown(state)) = app.modals.top() else {
+        panic!("no entry menu");
+    };
+    assert_eq!(
+        state.items[2].action,
+        Some(Action::ConfirmDeleteEntry {
+            env: "qa".into(),
+            group: "user".into(),
+            name: "alice".into(),
+        })
+    );
+}
+
+/// The same rule for the variable form's own field: a right click is a
+/// click away from it too.
+#[test]
+fn right_clicking_commits_a_live_form_field() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
+    });
+
+    let r = field_rect(&mut app, VmField::EnvValue);
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    app.handle_key(&Keymap::default_bindings(), plain('9'));
+
+    let row = app.varmanager.left_cursor;
+    let left_rect = app.hits.rect_of(&crate::hit::Hit::VmLeftRow(row)).unwrap();
+    app.handle_mouse(right_down(left_rect.x + 1, left_rect.y + 1));
+
+    assert!(app.varmanager.form.editing.is_none(), "committed");
+    let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(on_disk.contains("https://qa.example.com9"), "{on_disk}");
+}
+
+/// Review finding 2: the grid is a keyboard focus stop of its own, so a
+/// keyboard-only user can reach an entry other than the first one and
+/// select it — and can start editing the focused cell.
+#[test]
+fn the_keyboard_reaches_the_grid_selects_a_row_and_edits_the_focused_cell() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    let keymap = Keymap::default_bindings();
+    let arrow = |c| KeyEvent::new(c, KeyModifiers::NONE);
+    assert_eq!(app.varmanager.focus, VmFocus::List);
+
+    // Right steps into the grid; Down then moves the *grid's* cursor
+    // rather than the left list's selection.
+    app.handle_key(&keymap, arrow(KeyCode::Right));
+    assert_eq!(app.varmanager.focus, VmFocus::Grid);
+    app.handle_key(&keymap, arrow(KeyCode::Down));
+    assert_eq!(app.varmanager.grid.cursor.0, 1);
+    assert_eq!(
+        app.varmanager.detail,
+        crate::components::varmanager::VmDetail::Group("user".into()),
+        "the left list kept its own selection"
+    );
+
+    // space selects the entry the cursor is on — row 1, not row 0.
+    app.handle_key(&keymap, plain(' '));
+    assert_eq!(app.project.selections_for("qa")["user"], "bob");
+    assert_eq!(app.project.resolved.values["user"], "2002");
+
+    // Enter edits the focused cell; Right first moves onto the value column.
+    app.handle_key(&keymap, arrow(KeyCode::Right));
+    app.handle_key(&keymap, arrow(KeyCode::Enter));
+    let edit = app
+        .varmanager
+        .grid
+        .editing
+        .as_ref()
+        .expect("Enter started an edit");
+    assert_eq!((edit.row, edit.col), (1, 1));
+    assert_eq!(edit.input.text(), "2002");
+
+    // Esc leaves the edit; a second Esc hands the keyboard back to the
+    // list; only a third closes the screen.
+    app.handle_key(&keymap, arrow(KeyCode::Esc));
+    assert!(app.varmanager.grid.editing.is_none());
+    assert_eq!(app.varmanager.focus, VmFocus::Grid);
+    app.handle_key(&keymap, arrow(KeyCode::Esc));
+    assert_eq!(app.varmanager.focus, VmFocus::List);
+    assert_eq!(app.screen, Screen::VarManager);
+    app.handle_key(&keymap, arrow(KeyCode::Esc));
+    assert_eq!(app.screen, Screen::Main);
+}
+
+/// Task 8 parity for the grid's cell walk: `Tab` runs on in reading order
+/// (wrapping to the next row), `BackTab` runs back.
+#[test]
+fn tab_and_backtab_walk_the_grid_in_reading_order() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    let keymap = Keymap::default_bindings();
+    let at = |app: &App| app.varmanager.grid.editing.as_ref().map(|e| (e.row, e.col));
+
+    // Start on alice's value cell (the last column of row 0).
+    let r = cell_rect(&mut app, 0, 1);
+    app.handle_mouse(left_down(r.x, r.y));
+    assert_eq!(at(&app), Some((0, 1)));
+
+    // Off the end of the row wraps to the next row's name cell…
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(at(&app), Some((1, 0)));
+    // …and BackTab runs back the same way.
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
+    assert_eq!(at(&app), Some((0, 1)));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
+    assert_eq!(at(&app), Some((0, 0)));
+    // Nothing is before the first cell: the edit stays put.
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
+    assert_eq!(at(&app), Some((0, 0)));
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+}
+
+#[test]
+fn the_new_entry_button_starts_the_ghost_row_and_edit_fields_opens_the_editor() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+
+    rendered_text_tall(&mut app);
+    let r = app.hits.rect_of(&crate::hit::Hit::VmNewEntry).unwrap();
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    let edit = app.varmanager.grid.editing.as_ref().expect("ghost is live");
+    assert_eq!((edit.row, edit.col), (2, 0));
+
+    rendered_text_tall(&mut app);
+    let r = app.hits.rect_of(&crate::hit::Hit::VmEditFields).unwrap();
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    assert!(matches!(
+        app.modals.top(),
+        Some(Modal::MultiPrompt {
+            kind: PromptKind::GroupFields { .. },
+            ..
+        })
+    ));
+    // One slot per current field, plus the empty "add field" slot.
+    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
+        unreachable!()
+    };
+    assert_eq!(fields.len(), 2);
+    assert_eq!(fields[0].input.text(), "user");
+    assert_eq!(fields[1].input.text(), "");
+}
+
+// -- Task 17: the mouse-parity sweep (spec §5) --------------------------
+
+/// THE PARITY CHECK. Every action `keys::named_actions()` can bind a key to
+/// must also be reachable by mouse: a footer/toolbar chip, a direct `on_hit`
+/// dispatch, a context-menu item, or a palette command. This walks the real
+/// production lists/builders (not copies of them) so a future keybinding
+/// added without a mouse path fails here rather than shipping silently.
+///
+/// The only exceptions are `keyboard_only_navigation` below — pure
+/// navigation actions whose every target is *also* reachable by clicking it
+/// directly, so no button for "next"/"previous" itself is missing any real
+/// capability. That list must stay empty of anything else: if this test
+/// fails, the fix is a mouse path, not a new entry there.
+#[test]
+fn every_named_action_is_mouse_reachable() {
+    // Kept deliberately short, and each entry justified: these are the only
+    // named actions with no mouse-dispatchable path anywhere, and both are
+    // pure cycling over targets a click already reaches directly.
+    let keyboard_only_navigation: Vec<Action> = vec![
+        // tab/shift+tab cycles Sidebar → Editor → Response → Sidebar; each
+        // pane is focused directly by clicking it (`Hit::Pane`).
+        Action::FocusNext,
+        Action::FocusPrev,
+        // alt+right/left cycles the four editor tabs in draw order; each
+        // tab is selected directly by clicking it (`Hit::EditorTab`, listed
+        // in `App::mouse_dispatch_mirror`).
+        Action::EditorTabCycle(1),
+        Action::EditorTabCycle(-1),
+    ];
+
+    // Group A: footer/toolbar chips — the same function `draw_footer`
+    // paints from. The always-present quit chip is registered separately
+    // in `draw_footer` itself (`QUIT_LABEL`, not part of `footer_chips`),
+    // so it's added by hand here.
+    let mut mouse_reachable: Vec<Action> = vec![Action::Quit];
+    for pane in [PaneId::Sidebar, PaneId::Editor, PaneId::Response] {
+        mouse_reachable.extend(
+            crate::components::footer::footer_chips(pane)
+                .into_iter()
+                .filter_map(|(_, _, a)| a),
+        );
+    }
+
+    // Group B: the command palette.
+    mouse_reachable.extend(
+        crate::components::palette::all_commands()
+            .into_iter()
+            .map(|c| c.action),
+    );
+
+    // Group C: `on_hit`'s own direct dispatches not already covered above —
+    // the hand-maintained mirror kept beside `on_hit` in `app/mouse.rs`.
+    mouse_reachable.extend(App::mouse_dispatch_mirror());
+
+    // Group D: context menus, built with real state through the same
+    // methods the mouse's right-click path calls.
+    let mut app = App::new_for_test();
+    app.editor.params.insert(
+        "k".into(),
+        postui_core::model::Entry {
+            value: "v".into(),
+            enabled: true,
+        },
+    );
+    mouse_reachable.extend(
+        app.table_row_context_menu(0)
+            .into_iter()
+            .flatten()
+            .filter_map(|item| item.action),
+    );
+    postui_core::storage::save_request(&app.project.root, "req", &req("https://x/req")).unwrap();
+    app.refresh_sidebar();
+    let row = app
+        .sidebar
+        .rows
+        .iter()
+        .position(|r| matches!(r, Row::Request { slug, .. } if slug == "req"))
+        .expect("the saved request is in the sidebar tree");
+    mouse_reachable.extend(
+        app.context_menu_for(&Hit::SidebarRow(row))
+            .into_iter()
+            .flatten()
+            .filter_map(|item| item.action),
+    );
+
+    for (name, action) in crate::keys::named_actions() {
+        assert!(
+            keyboard_only_navigation.contains(&action) || mouse_reachable.contains(&action),
+            "named action {name:?} ({action:?}) has a keybinding but no mouse path \
+             (chip/menu/palette/on_hit) — add one, or justify a keyboard-only \
+             exception in `keyboard_only_navigation`"
+        );
+    }
 }

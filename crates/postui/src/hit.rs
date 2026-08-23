@@ -29,12 +29,20 @@ pub enum Hit {
     UrlBar,
     /// 0 = Params, 1 = Headers, 2 = Body.
     EditorTab(usize),
+    /// A table row's background: hover and right-click target. The row's
+    /// own cells are registered on top of it, so an ordinary left click
+    /// lands in a cell (`TableCell`) rather than here.
     TableRow(usize),
     TableCheckbox(usize),
     /// The `✕` delete affordance on the active (expanded) row.
     TableDelete(usize),
-    /// The ghost `+ Add …` row at the bottom of the table.
-    TableAdd,
+    /// One editable cell of a key/value table: `col` 0 is the key, 1 the
+    /// value. `row == map.len()` is the ghost row — the always-present
+    /// empty row that becomes a real entry once its key is typed.
+    TableCell {
+        row: usize,
+        col: u8,
+    },
     /// The `⌄ hide` / `› show` toggle at the tab strip's right edge.
     TableCollapse,
     /// Raw mouse event forwarded to edtui (click-to-place, wheel).
@@ -42,8 +50,23 @@ pub enum Hit {
     ResponseTab(crate::components::response::ViewMode),
     CopyBodyButton,
     SaveBodyButton,
+    /// The `⌕` button on the response header strip: opens the in-pane
+    /// search, exactly as `/` does.
+    ResponseSearchButton,
+    /// The `▼`/`▲` buttons beside the search footer: step to the next /
+    /// previous match, exactly as `n`/`N` do. Registered only while a
+    /// search is open.
+    ResponseSearchNext,
+    ResponseSearchPrev,
     /// Copy icon on row `i` of the response Headers view.
     HeaderCopy(usize),
+    /// Copy icon on row `i` (index into the computed-headers section's own
+    /// display order — the request table's rows are excluded and have no
+    /// hit of this kind) of the request Headers tab's computed section.
+    AutoHeaderCopy(usize),
+    /// The single "reveal"/"hide" toggle shown above the computed-headers
+    /// section when at least one row would otherwise show a masked secret.
+    AutoHeaderReveal,
     /// Visible row `i` of the JSON tree (click selects).
     JsonRow(usize),
     /// The ▸/▾ glyph cell of visible row `i` (click toggles).
@@ -55,20 +78,58 @@ pub enum Hit {
     ChooserRow(usize),
     PaletteRow(usize),
     VarPickerRow(usize),
-    /// A visible row of the Variable Manager grid (spec §5), background
-    /// click target. Index into `VarManager::rows`.
-    VarRow(usize),
-    /// The name region of a Variable Manager row (the first `NAME_W`
-    /// cells): double-click renames a variable (or expands an expandable
-    /// row), unlike the description region next to it (`VarCell` col 0).
-    VarName(usize),
-    /// One visible cell of the Variable Manager grid: `row` indexes
-    /// `VarManager::rows`; `col` 0 is the shared name/desc block, `col`
-    /// 1.. are environment columns (relative to `env_scroll`).
-    VarCell {
+    /// A visible row of the Variable Manager's left list (spec §3.4).
+    /// Index into `VarManager::left_rows`; a left click opens it in the
+    /// detail pane, a right click opens its Rename/Duplicate/Delete menu.
+    VmLeftRow(usize),
+    /// The Manager top bar's `Environment: <name> ▾` button: opens the same
+    /// environment chooser the header's env chip does.
+    VmEnvSwitch,
+    /// The Manager top bar's `+ Variable` / `+ Group` buttons.
+    VmNewVar,
+    VmNewGroup,
+    /// One field of the variable form's right pane (spec §3.4): click seeds
+    /// it with its current text and a caret at the end, exactly like a
+    /// table cell (Task 8's in-place model).
+    VmFormField(crate::components::varmanager::VmField),
+    /// The variable form's `secret [on/off]` toggle: opens the existing
+    /// `ToggleSecretVar` confirm.
+    VmSecretToggle,
+    /// The variable form's `👁 reveal`/`hide` toggle beside a secret's
+    /// "Value in <env>" field.
+    VmRevealToggle,
+    /// The variable form's title-row `[Rename]` button.
+    VmRename,
+    /// The variable form's title-row `[Delete]` button.
+    VmDelete,
+    /// The group grid's `◉`/`○` radio on entry row `i` (spec §3.4): a
+    /// click selects that entry for the active environment, which is what
+    /// makes every one of the group's fields resolve to its values.
+    VmEntryRadio(usize),
+    /// One cell of the group grid: `col == 0` is the entry-name cell, `col
+    /// n` is the group's `n-1`th field. `row == entries.len()` is the ghost
+    /// row — the always-present empty row that becomes a real entry the
+    /// moment its name cell commits non-empty (Task 8's table model).
+    VmEntryCell {
         row: usize,
         col: usize,
     },
+    /// The group pane's `[+ Entry]` button.
+    VmNewEntry,
+    /// The group pane's `[Edit fields]` button: opens the field-list
+    /// editor (one text slot per current field plus an empty one).
+    VmEditFields,
+    /// The variable form's promote/demote button — whichever of the two
+    /// applies right now (`VarManager`'s own precondition check decides
+    /// which, and which `Action` a click fires).
+    VmPromoteBtn,
+    /// One drawn `{{name}}` token, carrying the variable's name (spec §7).
+    /// Registered *over* whatever control the token sits on (URL bar, table
+    /// cell, computed-header row, body editor), so a left click opens the
+    /// var picker prefiltered to that name. Deliberately invisible to
+    /// hover styling and to right-click menus — see
+    /// [`HitMap::hit_at_ignoring_var_tokens`].
+    VarToken(String),
     /// A clickable `[y] Label` chip in a Confirm modal.
     ConfirmChoice(char),
     /// The top modal's painted Cancel button (Message has none; Prompt and
@@ -135,6 +196,32 @@ impl HitMap {
             .rev()
             .find(|(rect, _)| rect.contains(ratatui::layout::Position { x, y }))
             .map(|(_, hit)| hit)
+    }
+
+    /// Topmost hit containing the point, skipping [`Hit::VarToken`]
+    /// overlays: a token sits *on* a control, and hover styling and
+    /// right-click menus belong to the control under it (a hovered row must
+    /// not lose its highlight because the pointer crossed a `{{token}}` in
+    /// its value). Token hovering is tracked separately, by
+    /// [`HitMap::var_token_at`].
+    pub fn hit_at_ignoring_var_tokens(&self, x: u16, y: u16) -> Option<&Hit> {
+        self.regions
+            .iter()
+            .rev()
+            .filter(|(_, hit)| !matches!(hit, Hit::VarToken(_)))
+            .find(|(rect, _)| rect.contains(ratatui::layout::Position { x, y }))
+            .map(|(_, hit)| hit)
+    }
+
+    /// The topmost drawn `{{token}}` under the point: its name and the rect
+    /// it was drawn into (the tooltip's anchor).
+    pub fn var_token_at(&self, x: u16, y: u16) -> Option<(&str, Rect)> {
+        self.regions.iter().rev().find_map(|(rect, hit)| match hit {
+            Hit::VarToken(name) if rect.contains(ratatui::layout::Position { x, y }) => {
+                Some((name.as_str(), *rect))
+            }
+            _ => None,
+        })
     }
 
     /// Topmost `Hit::Pane` containing the point (for wheel routing).

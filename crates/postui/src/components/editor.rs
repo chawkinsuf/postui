@@ -1,5 +1,5 @@
 use super::line_input::LineInput;
-use super::table_editor::{TableEditorState, table_height};
+use super::table_editor::{Col, TableEditorState, TableOutcome, table_height};
 use super::toast::ToastKind;
 use super::{Component, DrawCtx, pane_surface};
 use crate::action::Action;
@@ -16,7 +16,7 @@ use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 /// Which editor tab is active.
@@ -41,9 +41,9 @@ const DRAW_ORDER: [EditorTab; 4] = [
 ];
 
 impl EditorTab {
-    /// Stable slot number for the `alt+1/2/3` shortcuts (`Action::EditorTabSelect`),
-    /// unaffected by where Vars was inserted on screen: Params=0, Headers=1,
-    /// Body=2, Vars=3 (no shortcut currently reaches it).
+    /// Stable slot number for the `alt+1/2/3/4` shortcuts
+    /// (`Action::EditorTabSelect`), unaffected by where Vars was inserted on
+    /// screen: Params=0, Headers=1, Body=2, Vars=3.
     pub fn index(self) -> usize {
         match self {
             EditorTab::Params => 0,
@@ -165,6 +165,37 @@ pub struct Editor {
     /// params/headers table body (header/rows/ghost/edge) is skipped and the
     /// tab strip's `⌄ hide`/`› show` toggle flips to `› show`.
     pub table_collapsed: bool,
+    /// The Headers tab's read-only computed-headers section (spec §6):
+    /// everything that will actually be sent beyond the editable request
+    /// rows above — default headers (struck through when overridden), the
+    /// auto Content-Type, and the client-generated Host/Content-Length
+    /// rows. Recomputed every draw by `recompute_computed_headers` (cheap,
+    /// small N) so an env switch or a body edit shows up live; never
+    /// itself edited here.
+    pub computed: ComputedHeadersView,
+    /// The variable snapshot inline `{{token}}` highlighting and the hover
+    /// tooltip resolve against (spec §7), synced by `App::update` on every
+    /// action alongside `shadowed`. Draw-only: every surface that can show a
+    /// token (URL bar, table cells, computed-header rows, the body editor)
+    /// tints and registers its spans from this.
+    pub vars: crate::components::var_tokens::VarView,
+}
+
+/// State for [`Editor::draw_computed_headers`]. `rows` is the full result
+/// of `postui_core::prepare::computed_headers` (request-origin rows
+/// included, so `Hit::AutoHeaderCopy`'s index can be mapped back to the
+/// same non-`Request` subsequence the draw filtered); `revealed` is
+/// whether secrets currently show in the clear; `has_secret` is whether
+/// any row *would* be masked at the current values, independent of
+/// `revealed` — this is what keeps the reveal/hide toggle visible after
+/// revealing (a masked probe recomputed alongside `rows`, since `rows`
+/// itself no longer carries [`postui_core::prepare::SECRET_MASK`] once
+/// revealed).
+#[derive(Debug, Default)]
+pub struct ComputedHeadersView {
+    pub rows: Vec<postui_core::prepare::ComputedHeader>,
+    pub revealed: bool,
+    pub has_secret: bool,
 }
 
 impl Default for Editor {
@@ -179,6 +210,7 @@ impl Default for Editor {
             headers: IndexMap::new(),
             variables: IndexMap::new(),
             shadowed: IndexMap::new(),
+            vars: Default::default(),
             inherited_headers: IndexMap::new(),
             body: new_body_state(""),
             body_handler: EditorEventHandler::emacs_mode(),
@@ -191,13 +223,19 @@ impl Default for Editor {
             last_url_text_area: None,
             spinner_frame: 0,
             table_collapsed: false,
+            computed: ComputedHeadersView::default(),
         }
     }
 }
 
 impl Editor {
     /// Loads `req` into the editor for editing, and records it as the
-    /// last-saved state so `is_dirty` starts out `false`.
+    /// last-saved state so `is_dirty` starts out `false`. Also re-masks the
+    /// computed-headers section (`computed.revealed = false`): reveal is a
+    /// per-request gesture (spec §3: secrets masked by default), so opening
+    /// a different request must not carry an earlier reveal along with it
+    /// -- the same re-masking-on-context-switch the Variable Manager's own
+    /// scoped reveal already does.
     pub fn load(&mut self, slug: Option<String>, req: HttpRequest) {
         self.slug = slug;
         self.method = req.method;
@@ -211,6 +249,7 @@ impl Editor {
             None => "",
         });
         self.saved = Some(req);
+        self.computed.revealed = false;
     }
 
     /// Builds an `HttpRequest` from the editor's current field values.
@@ -233,6 +272,23 @@ impl Editor {
         }
     }
 
+    /// Recomputes `self.computed` from the editor's current fields against
+    /// `ctx` — cheap (small N), so callers run it on every draw rather than
+    /// trying to track exactly which edits invalidate it. `rows` uses the
+    /// live `revealed` flag (masked unless the user has toggled reveal on);
+    /// `has_secret` is a second, always-masked pass used only to decide
+    /// whether the reveal/hide toggle should draw at all — it must stay
+    /// independent of `revealed`, or revealing would make the toggle that
+    /// un-reveals it disappear.
+    pub fn recompute_computed_headers(&mut self, ctx: &postui_core::prepare::PrepareContext) {
+        let req = self.current_request();
+        self.computed.rows =
+            postui_core::prepare::computed_headers(&req, ctx, !self.computed.revealed);
+        self.computed.has_secret = postui_core::prepare::computed_headers(&req, ctx, true)
+            .iter()
+            .any(|r| r.value.contains(postui_core::prepare::SECRET_MASK));
+    }
+
     /// A never-loaded (fresh scratch) editor is not dirty even though it has
     /// no saved snapshot to compare against; only a request that has been
     /// loaded and then changed counts as dirty.
@@ -245,6 +301,35 @@ impl Editor {
 
     pub fn mark_saved(&mut self) {
         self.saved = Some(self.current_request());
+    }
+
+    /// The name of the `{{token}}` the keyboard caret is currently sitting
+    /// in, for the caret-resting tooltip (spec §7 — a keyboard user gets the
+    /// same value readout a hover gives). Covers the two fields a caret can
+    /// rest in: the URL line, and the body editor's current line. `None`
+    /// anywhere else, and whenever the caret is outside every token.
+    pub fn caret_token(&self) -> Option<String> {
+        let (text, byte_off) = match self.sub_focus {
+            SubFocus::Url => {
+                let text = self.url.text().to_string();
+                let off = char_byte_offset(&text, self.url.cursor());
+                (text, off)
+            }
+            SubFocus::Content if self.active_tab == EditorTab::Body => {
+                let cursor = self.body.cursor;
+                let line: String = self.body.lines.iter_row().nth(cursor.row)?.iter().collect();
+                let off = char_byte_offset(&line, cursor.col);
+                (line, off)
+            }
+            _ => return None,
+        };
+        // Strictly inside the span: a caret parked immediately *after* a
+        // token (the natural resting place right after typing one) would
+        // otherwise hold a tooltip open over the pane indefinitely.
+        postui_core::vars::find_tokens(&text)
+            .into_iter()
+            .find(|t| byte_off >= t.start && byte_off < t.end)
+            .map(|t| t.name)
     }
 
     /// The body buffer's text, with lines joined by `\n`.
@@ -342,8 +427,159 @@ impl Editor {
             self.sub_focus = SubFocus::Content;
         }
         self.body_handler.on_mouse_event(m, &mut self.body);
+        // edtui 0.11.6 gets the caret wrong on a plain click: its own
+        // click→cursor mapping clamps the column to `len - 1` (so a click
+        // past the end of a line lands *on* its last character instead of
+        // after it) and, when the click is below the last line, its wrapped
+        // walk falls through without ever setting a column, leaving the
+        // clamp to snap the caret to the last character of the whole
+        // buffer. Both are wrong for a desktop-style editor, so the click's
+        // caret is recomputed here. Only `Down` is corrected: a drag that
+        // reaches this far still rides on edtui's own mapping, where a
+        // selection endpoint wants the clamped, on-a-character semantics.
+        // (`App::handle_mouse` does not currently route drags here at all.)
+        if m.kind == MouseEventKind::Down(MouseButton::Left)
+            && let Some(cursor) = self.body_cursor_for_click(m.column, m.row)
+        {
+            self.body.cursor = cursor;
+        }
         true
     }
+
+    /// Maps a screen click inside `last_body_area` to a body-buffer cursor,
+    /// honouring `wrap(true)`, the line-number gutter and the vertical
+    /// viewport offset — a port of edtui 0.11.6's
+    /// `mouse_position_to_cursor_position` with the two corrections postui
+    /// needs: the column clamps to the line's length (the caret sits AFTER
+    /// the last character, which insert mode allows), and a click below the
+    /// last rendered line resolves to the end of the LAST line rather than
+    /// falling through.
+    ///
+    /// Returns `None` when the click cannot be resolved to a position —
+    /// notably a click in the line-number gutter, which edtui ignores too
+    /// (its recorded screen area starts after the gutter), so the caret
+    /// stays put.
+    fn body_cursor_for_click(&self, x: u16, y: u16) -> Option<edtui::Index2> {
+        let area = self.last_body_area?;
+        if area.height == 0 || y < area.y {
+            return None;
+        }
+        // edtui records the post-gutter content rect in its `view.screen_area`,
+        // but that field is crate-private, so the gutter width is recomputed
+        // here the way edtui's `EditorView::line_number_width` does.
+        let gutter = line_number_gutter_width(self.body.lines.len());
+        let content_x = area.x.saturating_add(gutter);
+        let width = usize::from(area.width.saturating_sub(gutter));
+        if width == 0 || x < content_x {
+            return None;
+        }
+        let mouse_row = usize::from(y - area.y);
+        let mouse_col = usize::from(x - content_x);
+
+        // Walk the visible logical lines, each occupying as many screen rows
+        // as it wraps into, until the one covering `mouse_row` is found.
+        let top = self.body.viewport_offset().1;
+        let mut screen_row = 0usize;
+        for (row, line) in (top..).zip(self.body.lines.iter_row().skip(top)) {
+            let segments = wrap_segments(line, width);
+            let rows = segments.len().max(1);
+            if screen_row + rows > mouse_row {
+                let col =
+                    column_in_wrapped_line(line, &segments, mouse_row - screen_row, mouse_col);
+                return Some(edtui::Index2::new(row, col));
+            }
+            screen_row += rows;
+        }
+
+        // Below the last line: the end of the last line, like every desktop
+        // editor (edtui instead snapped to the last char of the buffer).
+        let last = self.body.lines.len().checked_sub(1)?;
+        Some(edtui::Index2::new(
+            last,
+            self.body.lines.len_col(last).unwrap_or(0),
+        ))
+    }
+}
+
+/// Byte offset of char index `idx` in `text` (the end offset when `idx` is
+/// past the last char) — `find_tokens`'s spans are byte ranges, while both
+/// caret positions postui tracks are char indices.
+fn char_byte_offset(text: &str, idx: usize) -> usize {
+    text.char_indices()
+        .nth(idx)
+        .map(|(b, _)| b)
+        .unwrap_or(text.len())
+}
+
+/// The tab width edtui renders the body with: its `ViewState` default, which
+/// postui never overrides (there is no public getter to read it back).
+const BODY_TAB_WIDTH: usize = 2;
+
+/// The rendered width of `ch` in the body editor, matching edtui's own
+/// `helper::char_width`.
+fn body_char_width(ch: char) -> usize {
+    use unicode_width::UnicodeWidthChar;
+    if ch == '\t' {
+        return BODY_TAB_WIDTH;
+    }
+    ch.width().unwrap_or(0)
+}
+
+/// The width of the line-number gutter edtui splits off the left of the body
+/// area: one column per digit of the line count, plus a separating space.
+/// Duplicates edtui 0.11.6's private `EditorView::line_number_width` (postui
+/// always renders the body with `LineNumbers::Absolute`).
+fn line_number_gutter_width(line_count: usize) -> u16 {
+    let digits = line_count.max(1).to_string().len();
+    u16::try_from(digits + 1).unwrap_or(u16::MAX)
+}
+
+/// Splits `line` into the character ranges edtui's `LineWrapper::wrap_line`
+/// would render as successive screen rows in a `max_width`-wide content area.
+fn wrap_segments(line: &[char], max_width: usize) -> Vec<std::ops::Range<usize>> {
+    let mut segments = Vec::new();
+    let mut start = 0usize;
+    let mut line_width = 0usize;
+    for (i, &ch) in line.iter().enumerate() {
+        let char_width = body_char_width(ch);
+        if line_width + char_width > max_width {
+            segments.push(start..i);
+            start = i;
+            line_width = 0;
+        }
+        line_width += char_width;
+    }
+    if start < line.len() {
+        segments.push(start..line.len());
+    }
+    segments
+}
+
+/// The buffer column a click at `mouse_col` on wrapped row `sub_row` of
+/// `line` addresses. A click past the end of the row's text yields the
+/// column *after* its last character — for the final wrapped row that is the
+/// line's length, which is where a desktop editor puts the caret.
+fn column_in_wrapped_line(
+    line: &[char],
+    segments: &[std::ops::Range<usize>],
+    sub_row: usize,
+    mouse_col: usize,
+) -> usize {
+    let Some(segment) = segments.get(sub_row) else {
+        // Only reachable for an empty line, which renders as one blank row.
+        return line.len();
+    };
+    let mut width = 0usize;
+    let mut col = segment.start;
+    for &ch in &line[segment.clone()] {
+        let char_width = body_char_width(ch);
+        if width + char_width > mouse_col {
+            break;
+        }
+        width += char_width;
+        col += 1;
+    }
+    col
 }
 
 /// edtui's emacs keybindings are all registered against `EditorMode::Insert`,
@@ -586,10 +822,15 @@ impl Component for Editor {
             }
             EditorTab::Params | EditorTab::Headers | EditorTab::Vars => {
                 let (rows, active, active_hint) = self.table_geometry();
-                let inherited = if self.active_tab == EditorTab::Headers {
-                    self.inherited_header_lines(ctx.theme).len() as u16
+                let (inherited, computed_extra) = if self.active_tab == EditorTab::Headers {
+                    let auto_rows = self.computed_row_count();
+                    let divider = if auto_rows > 0 { 1 } else { 0 };
+                    (
+                        self.inherited_header_lines(ctx.theme).len() as u16,
+                        auto_rows + divider,
+                    )
                 } else {
-                    0
+                    (0, 0)
                 };
                 // Capped to what's left after the fixed address bar and tab
                 // bar rows, never the other way around: those two must never
@@ -597,9 +838,10 @@ impl Component for Editor {
                 // height than the pane has.
                 let available = inner
                     .height
-                    .saturating_sub(ADDRESS_BAR_HEIGHT + TAB_BAR_HEIGHT);
+                    .saturating_sub(ADDRESS_BAR_HEIGHT + TAB_BAR_HEIGHT + TOOLBAR_HEIGHT);
                 Constraint::Length(
-                    (inherited + table_height(rows, active, active_hint)).min(available),
+                    (inherited + table_height(rows, active, active_hint) + computed_extra)
+                        .min(available),
                 )
             }
         };
@@ -609,13 +851,15 @@ impl Component for Editor {
             .constraints([
                 Constraint::Length(ADDRESS_BAR_HEIGHT), // fused address bar + its ring margins
                 Constraint::Length(TAB_BAR_HEIGHT),     // tab bar
+                Constraint::Length(TOOLBAR_HEIGHT),     // save/vars/body-tools chip row
                 content_constraint,                     // active tab content
             ])
             .split(inner);
 
         self.draw_address_bar(frame, rows[0], ctx, hits);
         self.draw_tab_bar(frame, rows[1], ctx, hits);
-        self.draw_tab_content(frame, rows[2], ctx, hits);
+        self.draw_toolbar(frame, rows[2], ctx, hits);
+        self.draw_tab_content(frame, rows[3], ctx, hits);
     }
 }
 
@@ -633,14 +877,18 @@ pub const ADDRESS_BAR_HEIGHT: u16 = 5;
 const URL_PAD: u16 = 2;
 /// Height of the tab bar row — the second row of that split.
 pub const TAB_BAR_HEIGHT: u16 = 2;
+/// Height of the toolbar chip row — the third row of that split, holding
+/// the always-clickable save/vars chips (plus, on the Body tab, the
+/// format/minify/substitute/`$EDITOR` chips).
+pub const TOOLBAR_HEIGHT: u16 = 1;
 /// The Editor pane's total on-screen height when its params/headers table is
-/// collapsed: just the two fixed content rows above (address bar, tab bar),
-/// with nothing left for a table. Panes no longer draw a border, so this is
-/// exactly their combined height — no border-row inset to add.
-/// `layout::compute_layout` sizes the Editor pane down to exactly this so
-/// the Response pane can reclaim every row the table would otherwise have
-/// used.
-pub const CHROME_HEIGHT: u16 = ADDRESS_BAR_HEIGHT + TAB_BAR_HEIGHT;
+/// collapsed: just the three fixed content rows above (address bar, tab
+/// bar, toolbar), with nothing left for a table. Panes no longer draw a
+/// border, so this is exactly their combined height — no border-row inset
+/// to add. `layout::compute_layout` sizes the Editor pane down to exactly
+/// this so the Response pane can reclaim every row the table would
+/// otherwise have used.
+pub const CHROME_HEIGHT: u16 = ADDRESS_BAR_HEIGHT + TAB_BAR_HEIGHT + TOOLBAR_HEIGHT;
 
 /// Cycled through (one glyph per `Action::Tick`) at the start of the Send
 /// cap's label while a request is in flight.
@@ -774,6 +1022,17 @@ impl Editor {
         url_line.style = Style::default().bg(url_fill).patch(url_line.style);
         buf.set_line(url_text_area.x, text_y, &url_line, url_text_area.width);
         hits.register(url_area, crate::hit::Hit::UrlBar);
+        // Token tinting paints over the text just drawn, and registers its
+        // spans on top of `UrlBar` so a click lands on the token.
+        crate::components::var_tokens::paint_var_tokens(
+            buf,
+            Rect::new(url_text_area.x, text_y, url_text_area.width, 1),
+            &self.url.visible_window(url_focused, url_text_area.width),
+            url_text_area.x,
+            &self.vars,
+            theme,
+            hits,
+        );
         self.last_url_text_area = Some(Rect {
             y: text_y,
             height: 1,
@@ -843,6 +1102,64 @@ impl Editor {
         }
     }
 
+    /// The key of the active tab's table row `i`, if it has one. Paired
+    /// with [`Self::table_index_of`] to re-resolve a row across a commit
+    /// that may have collapsed rows (and shifted every later index down).
+    pub fn table_key_at(&self, i: usize) -> Option<String> {
+        let map = match self.active_tab {
+            EditorTab::Params => &self.params,
+            EditorTab::Headers => &self.headers,
+            EditorTab::Vars => &self.variables,
+            EditorTab::Body => return None,
+        };
+        map.get_index(i).map(|(k, _)| k.clone())
+    }
+
+    /// How many rows the active tab's table has (the ghost row's index).
+    pub fn table_len(&self) -> usize {
+        match self.active_tab {
+            EditorTab::Params => self.params.len(),
+            EditorTab::Headers => self.headers.len(),
+            EditorTab::Vars => self.variables.len(),
+            EditorTab::Body => 0,
+        }
+    }
+
+    /// Where `key` sits in the active tab's table now. `None` once the row
+    /// is gone (a duplicate-key commit collapsed it away).
+    pub fn table_index_of(&self, key: &str) -> Option<usize> {
+        let map = match self.active_tab {
+            EditorTab::Params => &self.params,
+            EditorTab::Headers => &self.headers,
+            EditorTab::Vars => &self.variables,
+            EditorTab::Body => return None,
+        };
+        map.get_index_of(key)
+    }
+
+    /// Commits any in-progress table cell edit into the active tab's map —
+    /// the click-away / focus-loss path. Its warning is the caller's to
+    /// surface.
+    pub fn commit_table(&mut self) -> TableOutcome {
+        match self.active_tab {
+            EditorTab::Params => self.table.commit(&mut self.params),
+            EditorTab::Headers => self.table.commit(&mut self.headers),
+            EditorTab::Vars => self.table.commit(&mut self.variables),
+            EditorTab::Body => TableOutcome::default(),
+        }
+    }
+
+    /// Begins editing one cell of the active tab's table in place,
+    /// committing whatever was being edited before it.
+    pub fn click_table_cell(&mut self, row: usize, col: Col) -> TableOutcome {
+        match self.active_tab {
+            EditorTab::Params => self.table.click_cell(row, col, &mut self.params),
+            EditorTab::Headers => self.table.click_cell(row, col, &mut self.headers),
+            EditorTab::Vars => self.table.click_cell(row, col, &mut self.variables),
+            EditorTab::Body => TableOutcome::default(),
+        }
+    }
+
     /// `(total row-lines, active-row presence, active row carries a shadow
     /// hint)` for the active tab's table (Params/Headers/Vars), fed to
     /// [`table_height`] both by `draw`'s layout pass and
@@ -855,16 +1172,14 @@ impl Editor {
             EditorTab::Body => return (0, None, false),
         };
         let map_len = map.len();
-        let new_row_pending = self
-            .table
-            .editing
-            .as_ref()
-            .is_some_and(|e| e.original_key.is_none());
-        let rows = map_len + usize::from(new_row_pending);
+        // The ghost row is always drawn (it is `table_height`'s constant
+        // `+ 1`); it only affects the geometry when it is the expanded row,
+        // i.e. while it is being typed into.
+        let rows = map_len;
         let active = self
             .table
             .active_index(map_len)
-            .or(new_row_pending.then_some(map_len));
+            .or_else(|| self.table.editing_ghost(map_len).then_some(map_len));
         let active_hint = active.is_some_and(|_| {
             self.active_tab == EditorTab::Vars
                 && self
@@ -979,6 +1294,18 @@ impl Editor {
         );
     }
 
+    /// Rows the computed-headers section will draw: every `self.computed`
+    /// row that isn't `Request`-origin (those are already the editable
+    /// table above). Shared by the height math in `draw` and the draw
+    /// itself so they can never disagree.
+    fn computed_row_count(&self) -> u16 {
+        self.computed
+            .rows
+            .iter()
+            .filter(|r| r.origin != postui_core::prepare::HeaderOrigin::Request)
+            .count() as u16
+    }
+
     /// Builds the muted status lines for enabled inherited (project-default)
     /// headers, shown above the request headers table. Each line notes
     /// whether the name is untouched by the request (`project`), overridden
@@ -1005,6 +1332,63 @@ impl Editor {
                 )
             })
             .collect()
+    }
+
+    /// Paints the toolbar chip row: `save` (dirty-marked) and `vars` are
+    /// always present; the Body tab adds `format`/`minify`/`substitute`/
+    /// `$EDITOR` chips for the body-only actions that alt+f/alt+g/alt+b/
+    /// ctrl+e already bind, but had no mouse-reachable equivalent before —
+    /// this row is the whole point of the toolbar (spec §5: "Save gets a
+    /// visible button next to what it saves"). Chips reuse
+    /// `Hit::FooterChip(Action)` and `footer::paint_chip_row`'s painting so
+    /// hover/click behave exactly like the footer's own chips; `on_hit`
+    /// already dispatches `FooterChip`'s action with no new `Hit` variant.
+    fn draw_toolbar(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        ctx: &DrawCtx,
+        hits: &mut crate::hit::HitMap,
+    ) {
+        let theme = ctx.theme;
+        let buf = frame.buffer_mut();
+        crate::paint::fill(buf, area, theme.panel);
+        if area.height == 0 {
+            return;
+        }
+
+        let save_label = if self.is_dirty() { "save •" } else { "save" };
+        let mut chips: Vec<(&str, &str, Option<Action>)> = vec![
+            ("⭳", save_label, Some(Action::SaveRequest)),
+            (
+                "{{ }}",
+                "vars",
+                Some(Action::OpenVarPicker { completing: false }),
+            ),
+        ];
+        if self.active_tab == EditorTab::Body {
+            let sub_label = if self.substitute_body {
+                "{{on}}"
+            } else {
+                "{{off}}"
+            };
+            chips.push(("align", "format", Some(Action::FormatBody)));
+            chips.push(("min", "minify", Some(Action::MinifyBody)));
+            chips.push(("sub", sub_label, Some(Action::ToggleBodyVars)));
+            chips.push(("ed", "$EDITOR", Some(Action::OpenBodyInEditor)));
+        }
+
+        let right_limit = area.x + area.width;
+        crate::components::footer::paint_chip_row(
+            buf,
+            area.y,
+            area.x + 1,
+            right_limit,
+            &chips,
+            theme,
+            hits,
+            ctx.hovered,
+        );
     }
 
     fn draw_tab_content(
@@ -1036,6 +1420,7 @@ impl Editor {
                     "+ Add param",
                     hits,
                     None,
+                    &self.vars,
                 );
             }
             EditorTab::Vars => {
@@ -1056,6 +1441,7 @@ impl Editor {
                     "+ Add variable",
                     hits,
                     Some(&self.shadowed),
+                    &self.vars,
                 );
             }
             EditorTab::Headers => {
@@ -1076,6 +1462,28 @@ impl Editor {
                     frame.render_widget(Paragraph::new(inherited_lines), split[0]);
                     split[1]
                 };
+                // The table keeps its own full height first — it's the
+                // editable data — and the computed section only gets
+                // whatever's left after that, clamped to what it asked
+                // for; under real space pressure the auto section shrinks
+                // (or disappears) rather than eating into the table.
+                let auto_rows = self.computed_row_count();
+                let (rows, active, active_hint) = self.table_geometry();
+                let table_h = table_height(rows, active, active_hint).min(table_area.height);
+                let computed_h = if auto_rows == 0 {
+                    0
+                } else {
+                    (auto_rows + 1).min(table_area.height.saturating_sub(table_h))
+                };
+                let computed_area = (computed_h > 0).then(|| Rect {
+                    y: table_area.y + table_h,
+                    height: computed_h,
+                    ..table_area
+                });
+                let table_area = Rect {
+                    height: table_h,
+                    ..table_area
+                };
                 let table_ctx = DrawCtx {
                     theme,
                     focused,
@@ -1090,7 +1498,11 @@ impl Editor {
                     "+ Add header",
                     hits,
                     None,
+                    &self.vars,
                 );
+                if let Some(computed_area) = computed_area {
+                    self.draw_computed_headers(frame, computed_area, ctx, hits);
+                }
             }
             EditorTab::Body => {
                 let mut area = area;
@@ -1139,7 +1551,151 @@ impl Editor {
                     .line_numbers(LineNumbers::Absolute)
                     .syntax_highlighter(highlighter);
                 frame.render_widget(view, area);
+                // Body coverage (spec §7): edtui paints the text itself, so
+                // its tokens are found by reading the rendered rows back out
+                // of the buffer. A token wrapped across two visual rows is
+                // not `{{name}}` on either of them and is therefore skipped
+                // — the documented limitation of this approach.
+                let buf = frame.buffer_mut();
+                for y in area.y..area.bottom() {
+                    let row = Rect::new(area.x, y, area.width, 1);
+                    let text = crate::components::var_tokens::row_text(buf, row);
+                    if !text.contains("{{") {
+                        continue;
+                    }
+                    crate::components::var_tokens::paint_var_tokens(
+                        buf, row, &text, area.x, &self.vars, theme, hits,
+                    );
+                }
             }
+        }
+    }
+
+    /// Paints the Headers tab's computed-headers section (spec §6, the
+    /// user's #4 complaint: see everything that will actually be sent): a
+    /// dim divider, then one dim row per `self.computed.rows` entry that
+    /// isn't `Request`-origin — those are already the editable table
+    /// above. A `DefaultHeader { suppressed: true }` row (overridden, or a
+    /// duplicate default) renders struck through; a row with unresolved
+    /// `{{tokens}}` tints its whole value `theme.error` (span-level tinting
+    /// is Task 12). Each row gets a trailing `⧉` copy icon
+    /// (`Hit::AutoHeaderCopy`, indexed by its position in this filtered
+    /// list); the divider carries a `👁 reveal`/`hide` toggle
+    /// (`Hit::AutoHeaderReveal`) whenever `self.computed.has_secret`.
+    fn draw_computed_headers(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        ctx: &DrawCtx,
+        hits: &mut crate::hit::HitMap,
+    ) {
+        use postui_core::prepare::HeaderOrigin;
+        if area.height == 0 || area.width == 0 {
+            return;
+        }
+        let theme = ctx.theme;
+        let dim = Style::default().fg(theme.text_muted);
+        let mut y = area.y;
+        let max_y = area.y.saturating_add(area.height);
+
+        // Divider, with the reveal/hide toggle right-aligned onto it when
+        // there's a secret to reveal.
+        if y < max_y {
+            let toggle_label = if self.computed.revealed {
+                "\u{1F441} hide"
+            } else {
+                "\u{1F441} reveal"
+            };
+            let show_toggle = self.computed.has_secret;
+            let toggle_w = if show_toggle {
+                toggle_label.chars().count() as u16 + 1
+            } else {
+                0
+            };
+            let prefix = "\u{2500}\u{2500} auto ";
+            let dash_w = area
+                .width
+                .saturating_sub(prefix.chars().count() as u16 + toggle_w);
+            let mut spans = vec![Span::styled(
+                format!("{prefix}{}", "\u{2500}".repeat(dash_w as usize)),
+                dim,
+            )];
+            if show_toggle {
+                let hovered = ctx.hovered == Some(&crate::hit::Hit::AutoHeaderReveal);
+                let toggle_style = if hovered {
+                    Style::default().bg(theme.accent).fg(theme.on_accent)
+                } else {
+                    Style::default().fg(theme.accent)
+                };
+                spans.push(Span::styled(format!(" {toggle_label}"), toggle_style));
+                let toggle_w = toggle_label.chars().count() as u16;
+                let toggle_x = area.x.saturating_add(area.width.saturating_sub(toggle_w));
+                hits.register(
+                    Rect::new(toggle_x, y, toggle_w, 1),
+                    crate::hit::Hit::AutoHeaderReveal,
+                );
+            }
+            frame.render_widget(
+                Paragraph::new(Line::from(spans)),
+                Rect::new(area.x, y, area.width, 1),
+            );
+            y += 1;
+        }
+
+        let auto = self
+            .computed
+            .rows
+            .iter()
+            .filter(|r| r.origin != HeaderOrigin::Request);
+        for (i, row) in auto.enumerate() {
+            if y >= max_y {
+                break;
+            }
+            let suppressed = matches!(row.origin, HeaderOrigin::DefaultHeader { suppressed: true });
+            let mut name_style = dim;
+            // The value draws dim throughout; an unresolved `{{token}}` in
+            // it is tinted span-level by `paint_var_tokens` below (Task 12
+            // replaces Task 10's whole-value error tint, which coloured the
+            // resolved parts of the value red too).
+            let mut value_style = dim;
+            if suppressed {
+                name_style = name_style.add_modifier(Modifier::CROSSED_OUT);
+                value_style = value_style.add_modifier(Modifier::CROSSED_OUT);
+            }
+            let name_piece = format!("  {}: ", row.name);
+            let value_x = area.x.saturating_add(name_piece.chars().count() as u16);
+            let value_piece = row.value.clone();
+            let text_len = name_piece.chars().count() + value_piece.chars().count();
+            let glyph_hovered = ctx.hovered == Some(&crate::hit::Hit::AutoHeaderCopy(i));
+            let glyph_style = if glyph_hovered {
+                Style::default().bg(theme.accent).fg(theme.on_accent)
+            } else {
+                Style::default().fg(theme.accent)
+            };
+            let line = Line::from(vec![
+                Span::styled(name_piece, name_style),
+                Span::styled(value_piece, value_style),
+                Span::styled(" \u{29c9} ", glyph_style),
+            ]);
+            frame.render_widget(Paragraph::new(line), Rect::new(area.x, y, area.width, 1));
+            crate::components::var_tokens::paint_var_tokens(
+                frame.buffer_mut(),
+                Rect::new(value_x, y, area.right().saturating_sub(value_x), 1),
+                &row.value,
+                value_x,
+                &self.vars,
+                theme,
+                hits,
+            );
+            let glyph_x = area.x.saturating_add(text_len as u16);
+            let glyph_w = area.width.saturating_sub(text_len as u16).min(3);
+            if glyph_w > 0 {
+                hits.register(
+                    Rect::new(glyph_x, y, glyph_w, 1),
+                    crate::hit::Hit::AutoHeaderCopy(i),
+                );
+            }
+            y += 1;
         }
     }
 }
@@ -1167,6 +1723,7 @@ fn json_highlighter(theme: &Theme) -> Option<SyntaxHighlighter> {
 mod tests {
     use super::*;
     use crate::app::App;
+    use crate::hit::Hit;
     use postui_core::model::{HttpRequest, Method};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -1441,26 +1998,40 @@ mod tests {
     #[test]
     fn duplicate_key_commit_in_params_tab_shows_warning_toast() {
         let mut e = Editor::default();
-        e.params.insert(
-            "a".into(),
-            Entry {
-                value: "1".into(),
-                enabled: true,
-            },
-        );
+        for (k, v) in [("a", "1"), ("b", "2")] {
+            e.params.insert(
+                k.into(),
+                Entry {
+                    value: v.into(),
+                    enabled: true,
+                },
+            );
+        }
         e.sub_focus = SubFocus::Content;
-        // Append a new row keyed "a", which duplicates the existing entry.
-        e.handle_key(key(KeyCode::Char('a')));
-        e.handle_key(key(KeyCode::Char('a')));
-        e.handle_key(key(KeyCode::Tab));
-        e.handle_key(key(KeyCode::Char('9')));
+        // Rename "a" onto "b": the two rows collapse, with a warning.
+        e.table.selected = Some(0);
+        e.handle_key(key(KeyCode::Enter));
+        e.handle_key(key(KeyCode::Backspace));
+        e.handle_key(key(KeyCode::Char('b')));
         let action = e.handle_key(key(KeyCode::Enter));
         assert!(
             matches!(action, Some(Action::ShowToast(_, ToastKind::Warning))),
             "expected a warning toast, got {action:?}"
         );
         assert_eq!(e.params.len(), 1);
-        assert_eq!(e.params["a"].value, "9");
+        assert_eq!(e.params["b"].value, "1");
+
+        // Typing an existing key into the ghost row warns too, rather than
+        // silently overwriting the row that already owns the key.
+        e.handle_key(key(KeyCode::Char('a'))); // opens the ghost row
+        e.handle_key(key(KeyCode::Char('b')));
+        let action = e.handle_key(key(KeyCode::Tab));
+        assert!(
+            matches!(action, Some(Action::ShowToast(_, ToastKind::Warning))),
+            "expected a warning toast, got {action:?}"
+        );
+        assert_eq!(e.params.len(), 1, "no second 'b' row");
+        assert_eq!(e.params["b"].value, "1", "the existing value is untouched");
     }
 
     #[test]
@@ -1583,6 +2154,134 @@ mod tests {
             app.pending_terminal_action.take(),
             Some(Action::OpenBodyInEditor),
             "App::update must not touch the terminal itself"
+        );
+    }
+
+    /// Draws `e` at 120x14 (wide enough for every toolbar chip, Body tab
+    /// included) and returns (buffer content, hits) — shared by the
+    /// toolbar tests below.
+    fn draw_editor(e: &mut Editor) -> (String, crate::hit::HitMap) {
+        let theme = Theme::dark();
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: None,
+            dragging: false,
+        };
+        let backend = TestBackend::new(120, 14);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+        (format!("{:?}", terminal.backend().buffer()), hits)
+    }
+
+    #[test]
+    fn toolbar_row_sits_between_tab_bar_and_content_and_always_shows_save_and_vars() {
+        let mut e = Editor::default();
+        let (content, hits) = draw_editor(&mut e);
+        assert!(content.contains("save"), "save chip label: {content}");
+        assert!(content.contains("vars"), "vars chip label: {content}");
+
+        let save_rect = hits
+            .rect_of(&Hit::FooterChip(Action::SaveRequest))
+            .expect("save chip must be a registered hit");
+        let vars_rect = hits
+            .rect_of(&Hit::FooterChip(Action::OpenVarPicker {
+                completing: false,
+            }))
+            .expect("vars chip must be a registered hit");
+        // Toolbar row is the third fixed row: address bar (5) + tab bar (2).
+        assert_eq!(save_rect.y, ADDRESS_BAR_HEIGHT + TAB_BAR_HEIGHT);
+        assert_eq!(vars_rect.y, ADDRESS_BAR_HEIGHT + TAB_BAR_HEIGHT);
+        assert!(
+            vars_rect.x > save_rect.x,
+            "vars chip sits right of save, left to right"
+        );
+    }
+
+    #[test]
+    fn save_chip_label_gains_a_dirty_dot_only_while_the_editor_is_dirty() {
+        let mut e = Editor::default();
+        e.load(
+            Some("a".into()),
+            HttpRequest::from_toml_str("url = \"https://x\"\n").unwrap(),
+        );
+        let (clean, _) = draw_editor(&mut e);
+        assert!(clean.contains("save "), "clean editor: {clean}");
+        assert!(!clean.contains("save •"), "clean editor: {clean}");
+
+        e.url = LineInput::new("https://x/changed");
+        assert!(e.is_dirty());
+        let (dirty, _) = draw_editor(&mut e);
+        assert!(
+            dirty.contains("save •"),
+            "dirty editor shows the dot: {dirty}"
+        );
+    }
+
+    #[test]
+    fn body_only_toolbar_chips_are_absent_on_the_params_tab() {
+        let mut e = Editor {
+            active_tab: EditorTab::Params,
+            ..Editor::default()
+        };
+        let (_, hits) = draw_editor(&mut e);
+        assert!(hits.rect_of(&Hit::FooterChip(Action::FormatBody)).is_none());
+        assert!(hits.rect_of(&Hit::FooterChip(Action::MinifyBody)).is_none());
+        assert!(
+            hits.rect_of(&Hit::FooterChip(Action::ToggleBodyVars))
+                .is_none()
+        );
+        assert!(
+            hits.rect_of(&Hit::FooterChip(Action::OpenBodyInEditor))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn body_only_toolbar_chips_appear_on_the_body_tab() {
+        let mut e = Editor {
+            active_tab: EditorTab::Body,
+            ..Editor::default()
+        };
+        let (content, hits) = draw_editor(&mut e);
+        assert!(content.contains("format"), "{content}");
+        assert!(content.contains("minify"), "{content}");
+        assert!(content.contains("$EDITOR"), "{content}");
+        assert!(hits.rect_of(&Hit::FooterChip(Action::FormatBody)).is_some());
+        assert!(hits.rect_of(&Hit::FooterChip(Action::MinifyBody)).is_some());
+        assert!(
+            hits.rect_of(&Hit::FooterChip(Action::ToggleBodyVars))
+                .is_some()
+        );
+        assert!(
+            hits.rect_of(&Hit::FooterChip(Action::OpenBodyInEditor))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn substitute_chip_label_reflects_substitute_body_state() {
+        let mut e = Editor {
+            active_tab: EditorTab::Body,
+            substitute_body: false,
+            ..Editor::default()
+        };
+        let (off, _) = draw_editor(&mut e);
+        assert!(off.contains("{{off}}"), "{off}");
+
+        e.substitute_body = true;
+        let (on, _) = draw_editor(&mut e);
+        assert!(on.contains("{{on}}"), "{on}");
+    }
+
+    #[test]
+    fn chrome_height_accounts_for_the_toolbar_row() {
+        assert_eq!(
+            CHROME_HEIGHT,
+            ADDRESS_BAR_HEIGHT + TAB_BAR_HEIGHT + TOOLBAR_HEIGHT
         );
     }
 
@@ -2173,8 +2872,12 @@ url = "https://api.example.com/users""#,
         assert!(content.contains("token"), "key text: {content}");
         assert!(content.contains("us-east"), "value text: {content}");
         assert!(
-            hits.rect_of(&crate::hit::Hit::TableAdd).is_some(),
-            "ghost + Add row must be registered on the Vars tab"
+            hits.rect_of(&crate::hit::Hit::TableCell {
+                row: e.variables.len(),
+                col: 0
+            })
+            .is_some(),
+            "the ghost row's cells must be registered on the Vars tab"
         );
     }
 
@@ -2302,5 +3005,267 @@ url = "https://api.example.com/users""#,
         assert_eq!(EditorTab::from_index(1), EditorTab::Headers);
         assert_eq!(EditorTab::from_index(2), EditorTab::Body);
         assert_eq!(EditorTab::from_index(3), EditorTab::Vars);
+    }
+
+    // --- computed request-headers section (Task 10, spec §6) ---------
+
+    fn buffer_has_crossed_out(buf: &ratatui::buffer::Buffer, needle: &str) -> bool {
+        for y in 0..buf.area.height {
+            let line: String = (0..buf.area.width)
+                .map(|x| buf.cell((x, y)).unwrap().symbol().to_string())
+                .collect();
+            if line.contains(needle) {
+                let start = line.find(needle).unwrap();
+                // `find` is a byte offset into a `String` built one grapheme
+                // cell at a time; every cell here is ASCII, so it doubles as
+                // a column index.
+                let x = buf.area.x + start as u16;
+                if buf
+                    .cell((x, y))
+                    .unwrap()
+                    .modifier
+                    .contains(Modifier::CROSSED_OUT)
+                {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn headers_tab_shows_overridden_default_as_struck_through_auto_row() {
+        let mut app = App::new_for_test();
+        app.project.meta.default_headers.insert(
+            "Accept".into(),
+            Entry {
+                value: "application/json".into(),
+                enabled: true,
+            },
+        );
+        app.editor.active_tab = EditorTab::Headers;
+        app.editor.headers.insert(
+            "Accept".into(),
+            Entry {
+                value: "text/plain".into(),
+                enabled: true,
+            },
+        );
+        app.update(Action::Render);
+
+        let backend = TestBackend::new(100, 70);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            content.contains("text/plain"),
+            "the editable override row is still the table above: {content}"
+        );
+        assert!(
+            content.contains("auto"),
+            "the dim divider introduces the computed section: {content}"
+        );
+        assert!(
+            buffer_has_crossed_out(terminal.backend().buffer(), "application/json"),
+            "the suppressed default's own value renders struck through"
+        );
+    }
+
+    #[test]
+    fn headers_tab_shows_auto_content_type_with_a_body() {
+        let mut app = App::new_for_test();
+        app.editor.active_tab = EditorTab::Headers;
+        app.editor.set_body_text(r#"{"a":1}"#);
+        app.update(Action::Render);
+
+        let backend = TestBackend::new(100, 70);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(content.contains("Content-Type"), "{content}");
+        assert!(content.contains("application/json"), "{content}");
+    }
+
+    #[test]
+    fn headers_tab_shows_the_host_row() {
+        let mut app = App::new_for_test();
+        app.editor.active_tab = EditorTab::Headers;
+        app.editor.url = LineInput::new("https://example.com/foo");
+        app.update(Action::Render);
+
+        let backend = TestBackend::new(100, 70);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(content.contains("Host"), "{content}");
+        assert!(content.contains("example.com"), "{content}");
+    }
+
+    #[test]
+    fn computed_headers_height_math_reserves_the_divider_and_auto_rows() {
+        // table_height's own header/ghost/edge rows plus 1 divider + however
+        // many auto rows must fit within what the pane hands the content
+        // constraint, never overflowing it (draw would panic on an
+        // out-of-bounds rect otherwise — this is a "does not panic and
+        // draws the whole thing" check, not just a row count).
+        let mut app = App::new_for_test();
+        app.editor.active_tab = EditorTab::Headers;
+        app.editor.url = LineInput::new("https://example.com/foo");
+        app.update(Action::Render);
+
+        let backend = TestBackend::new(100, 70);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+
+        assert!(
+            app.editor.computed_row_count() > 0,
+            "a scratch request with a resolvable URL still gets a Host row"
+        );
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(content.contains("Host"), "{content}");
+    }
+}
+
+#[cfg(test)]
+mod body_click_tests {
+    use super::*;
+    use edtui::Index2;
+    use ratatui::buffer::Buffer;
+    use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::widgets::Widget;
+
+    /// The synthetic area the body editor is "rendered" into by the helper.
+    const AREA: Rect = Rect {
+        x: 0,
+        y: 0,
+        width: 40,
+        height: 10,
+    };
+
+    /// Builds a Body-tab editor with `text` in the buffer, then renders the
+    /// body view once into a synthetic 40x10 area with exactly the same
+    /// builder options the real `draw` uses, so edtui records its own
+    /// (post-gutter) screen area and viewport just as it would on screen.
+    fn editor_with_body(text: &str) -> Editor {
+        let mut e = Editor {
+            active_tab: EditorTab::Body,
+            sub_focus: SubFocus::Content,
+            ..Editor::default()
+        };
+        e.set_body_text(text);
+        render_body(&mut e);
+        e
+    }
+
+    fn render_body(e: &mut Editor) {
+        e.last_body_area = Some(AREA);
+        let mut buf = Buffer::empty(AREA);
+        EditorView::new(&mut e.body)
+            .theme(EditorTheme::default().hide_status_line())
+            .wrap(true)
+            .line_numbers(LineNumbers::Absolute)
+            .render(AREA, &mut buf);
+    }
+
+    fn left_down(x: u16, y: u16) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn click_past_line_end_places_caret_at_line_end() {
+        let mut e = editor_with_body("{\n  \"a\": 1,\n  \"bb\": 2\n}\n");
+        e.handle_mouse(left_down(35, 1));
+        // Line 1 is `  "a": 1,` - 9 chars. The caret belongs AFTER the
+        // trailing comma (insert mode allows col == len), not on it.
+        assert_eq!(e.body.cursor, Index2::new(1, 9));
+    }
+
+    #[test]
+    fn click_below_last_line_goes_to_end_of_last_line() {
+        // No trailing newline: the last row has text, so the "end of the
+        // last line" is a column edtui's own clamp could not produce.
+        let mut e = editor_with_body("{\n  \"a\": 1\n}");
+        e.handle_mouse(left_down(5, 8));
+        assert_eq!(e.body.cursor, Index2::new(2, 1));
+
+        // With a trailing newline the last row is empty, and that is where a
+        // click in the void below belongs.
+        let mut e = editor_with_body("{\n  \"a\": 1\n}\n");
+        e.handle_mouse(left_down(5, 8));
+        assert_eq!(e.body.cursor, Index2::new(3, 0));
+    }
+
+    #[test]
+    fn click_on_a_character_lands_on_that_character() {
+        let mut e = editor_with_body("{\n  \"a\": 1,\n}\n");
+        // The gutter is 2 cells wide (3 rows -> 1 digit + 1 space), so
+        // content column 3 (the `a`) sits at screen x = 5.
+        e.handle_mouse(left_down(5, 1));
+        assert_eq!(e.body.cursor, Index2::new(1, 3));
+    }
+
+    #[test]
+    fn click_at_content_column_zero_is_the_start_of_the_line() {
+        let mut e = editor_with_body("{\n  \"a\": 1,\n}\n");
+        e.handle_mouse(left_down(2, 1));
+        assert_eq!(e.body.cursor, Index2::new(1, 0));
+    }
+
+    #[test]
+    fn click_in_the_gutter_leaves_the_cursor_alone() {
+        let mut e = editor_with_body("{\n  \"a\": 1,\n}\n");
+        e.body.cursor = Index2::new(0, 1);
+        e.handle_mouse(left_down(0, 1));
+        assert_eq!(e.body.cursor, Index2::new(0, 1));
+    }
+
+    #[test]
+    fn click_on_the_second_visual_row_of_a_wrapped_line() {
+        // Content width is 40 - 2 (gutter) = 38, so a 50-char line wraps
+        // after 38 chars and its second visual row is screen row 1.
+        let long: String = std::iter::repeat_n('x', 50).collect();
+        let mut e = editor_with_body(&format!("{long}\nend\n"));
+        e.handle_mouse(left_down(2 + 5, 1));
+        assert_eq!(e.body.cursor, Index2::new(0, 38 + 5));
+        // Past the end of the wrapped line's tail: caret after the last char.
+        e.handle_mouse(left_down(35, 1));
+        assert_eq!(e.body.cursor, Index2::new(0, 50));
+        // The next logical line starts on the third visual row.
+        e.handle_mouse(left_down(2 + 1, 2));
+        assert_eq!(e.body.cursor, Index2::new(1, 1));
+    }
+
+    #[test]
+    fn click_maps_through_a_scrolled_viewport() {
+        let text: String = (0..30).map(|i| format!("line {i}\n")).collect();
+        let mut e = editor_with_body(&text);
+        // Put the cursor deep in the buffer and re-render so edtui scrolls
+        // the viewport down to follow it.
+        e.body.cursor = Index2::new(25, 0);
+        render_body(&mut e);
+        let top = e.body.viewport_offset().1;
+        assert!(top > 0, "viewport should have scrolled, got {top}");
+        // 31 rows -> a 3-cell gutter, so content column 1 sits at x = 4.
+        e.handle_mouse(left_down(4, 0));
+        assert_eq!(e.body.cursor, Index2::new(top, 1));
+        // Past the end of the top visible line: caret after its last char.
+        e.handle_mouse(left_down(35, 0));
+        let len = e.body.lines.len_col(top).unwrap();
+        assert_eq!(e.body.cursor, Index2::new(top, len));
+    }
+
+    #[test]
+    fn click_in_an_empty_body_stays_at_the_origin() {
+        let mut e = editor_with_body("");
+        e.handle_mouse(left_down(20, 5));
+        assert_eq!(e.body.cursor, Index2::new(0, 0));
     }
 }

@@ -2,7 +2,6 @@ use super::json_tree::{JsonTree, TokenKind};
 use super::line_input::LineInput;
 use super::{Component, DrawCtx, pane_surface};
 use crate::action::{Action, CopyTarget};
-use crate::components::toast::ToastKind;
 use crate::hit::ScrollbarSpec;
 use crate::layout::PaneId;
 use crate::theme::Theme;
@@ -14,11 +13,11 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use std::time::{Duration, Instant};
 
-/// Bodies larger than this are never parsed or pretty-printed — the raw view
-/// is the only one offered, so a huge response can't stall the UI thread.
-pub const MAX_PRETTY_BYTES: usize = 2 * 1024 * 1024;
-
-const OVERSIZE_HINT: &str = "body exceeds 2 MiB — raw view only";
+/// Bodies up to this size are parsed on the UI thread, where the parse is
+/// too quick to be noticed. Anything larger is parsed on a blocking worker
+/// and delivered later via [`Response::attach_tree`], so no response is ever
+/// too big to pretty-print and none of them stall the UI.
+pub const SYNC_PRETTY_BYTES: usize = 256 * 1024;
 
 /// Braille spinner frames, cycled while a request is in flight.
 pub const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -65,8 +64,14 @@ pub struct ReadyView {
     /// The body view (`Pretty` or `Raw`) to come back to from `Headers`.
     body_mode: ViewMode,
     pub tree: Option<JsonTree>,
-    /// True when the body tripped [`MAX_PRETTY_BYTES`].
-    oversize: bool,
+    /// The send generation this response belongs to, so a background parse
+    /// can be matched to the view it was started for (and only that one).
+    pub generation: u64,
+    /// True while a background parse of this body is still running: no tree
+    /// yet, but one may still arrive.
+    pub parsing: bool,
+    /// When the background parse started, so the wait can animate.
+    parse_started: Instant,
     /// Verbatim body lines — never reformatted, never re-wrapped.
     raw_lines: Vec<String>,
     header_lines: Vec<String>,
@@ -79,9 +84,11 @@ pub struct ReadyView {
 }
 
 impl ReadyView {
-    fn new(data: &crate::http::ResponseData) -> Self {
-        let oversize = data.body.len() > MAX_PRETTY_BYTES;
-        let tree = if oversize {
+    fn new(data: &crate::http::ResponseData, generation: u64) -> Self {
+        // A big body is parsed off-thread; until that lands there is no tree
+        // to show, so the raw view leads and the Tree tab spins.
+        let parsing = data.body.len() > SYNC_PRETTY_BYTES;
+        let tree = if parsing {
             None
         } else {
             JsonTree::parse(&data.body)
@@ -101,7 +108,9 @@ impl ReadyView {
             mode,
             body_mode: mode,
             tree,
-            oversize,
+            generation,
+            parsing,
+            parse_started: Instant::now(),
             raw_lines: data.body.split('\n').map(|l| l.to_string()).collect(),
             header_lines: data
                 .headers
@@ -113,6 +122,28 @@ impl ReadyView {
             search: None,
             height: 10,
         }
+    }
+
+    /// Whether the `Pretty` view is offered at all: a parsed tree, or a
+    /// parse still running that may yet produce one.
+    fn has_tree_view(&self) -> bool {
+        self.tree.is_some() || self.parsing
+    }
+
+    /// Whether a background parse tagged `generation` belongs to this view
+    /// and is still expected.
+    fn awaits_tree(&self, generation: u64) -> bool {
+        self.parsing && self.generation == generation
+    }
+
+    fn open_search(&mut self) {
+        self.search = Some(SearchState {
+            input: LineInput::new(""),
+            active: true,
+            query: String::new(),
+            matches: Vec::new(),
+            current: 0,
+        });
     }
 
     /// How many lines the current view shows right now (collapse included).
@@ -272,12 +303,55 @@ impl Response {
 
     /// The only way to change state, so the view (tree, cursor, search) is
     /// always rebuilt for — and only for — the response actually on screen.
-    pub fn set_state(&mut self, state: ResponseState) {
+    /// `generation` tags a ready view with the send it came from, so a
+    /// background pretty-print can find it again (see
+    /// [`Response::attach_tree`]).
+    pub fn set_state(&mut self, state: ResponseState, generation: u64) {
         self.view = match &state {
-            ResponseState::Ready(data) => Some(ReadyView::new(data)),
+            ResponseState::Ready(data) => Some(ReadyView::new(data, generation)),
             _ => None,
         };
         self.state = state;
+    }
+
+    /// Delivers the result of a background pretty-print started for
+    /// `generation`: `Some` tree to show, `None` when the body turned out
+    /// not to be JSON. Returns whether it was accepted — a tree for a view
+    /// this response no longer holds, or one that is not waiting for a
+    /// parse, is dropped.
+    pub fn attach_tree(&mut self, generation: u64, tree: Option<JsonTree>) -> bool {
+        let Some(view) = self.view.as_mut() else {
+            return false;
+        };
+        if !view.awaits_tree(generation) {
+            return false;
+        }
+        view.parsing = false;
+        match tree {
+            Some(tree) => {
+                view.tree = Some(tree);
+                // Already on the Tree tab (watching the spinner): the tree
+                // it was waiting for is now the view's content.
+                if view.mode == ViewMode::Pretty {
+                    view.cursor = 0;
+                    view.scroll = 0;
+                    view.recompute_matches();
+                }
+            }
+            // Not JSON after all: the Tree tab disappears, exactly as it
+            // never appears for a small non-JSON body.
+            None => view.set_mode(ViewMode::Raw),
+        }
+        true
+    }
+
+    /// Whether this response is still waiting on the background parse
+    /// started for `generation` — how [`crate::session::Session`] finds the
+    /// slot a finished parse belongs to.
+    pub fn awaits_tree(&self, generation: u64) -> bool {
+        self.view
+            .as_ref()
+            .is_some_and(|v| v.awaits_tree(generation))
     }
 
     pub fn view(&self) -> Option<&ReadyView> {
@@ -314,15 +388,52 @@ impl Response {
 
     /// Switches to `mode` (the tabs row's click target). A no-op with no
     /// ready response, and a no-op switching to `Pretty` when the body has
-    /// no tree (not JSON, or oversize-blocked).
+    /// no tree and none is coming (not JSON). While a background parse is
+    /// running `Pretty` is allowed: it shows the wait, then the tree.
     pub fn set_view_mode(&mut self, mode: ViewMode) {
         let Some(view) = self.view.as_mut() else {
             return;
         };
-        if mode == ViewMode::Pretty && view.tree.is_none() {
+        if mode == ViewMode::Pretty && !view.has_tree_view() {
             return;
         }
         view.set_mode(mode);
+    }
+
+    /// Opens the in-pane search, exactly as `/` does (the `⌕` button).
+    pub fn open_search(&mut self) -> bool {
+        let Some(view) = self.view.as_mut() else {
+            return false;
+        };
+        view.open_search();
+        true
+    }
+
+    /// Steps to the next (`1`) or previous (`-1`) match, exactly as `n`/`N`
+    /// do (the `▼`/`▲` buttons).
+    ///
+    /// A still-live input is committed first, exactly as `Enter` does, and
+    /// that commit *is* the step: matches only highlight once the query is
+    /// committed, so a click on `▼` straight after typing must land on the
+    /// first match rather than silently skipping it. Without this the whole
+    /// mouse route into search dead-ended — nothing highlighted, and the
+    /// buttons looked broken (found by the stage-7 tmux sweep).
+    pub fn step_search(&mut self, delta: i32) -> bool {
+        let Some(view) = self.view.as_mut() else {
+            return false;
+        };
+        let Some(search) = view.search.as_mut() else {
+            return false;
+        };
+        if search.active {
+            search.active = false;
+            search.query = search.input.text().to_string();
+            view.recompute_matches();
+            view.jump_to_match();
+            return true;
+        }
+        view.step_match(delta);
+        true
     }
 
     /// Clicking a body row: moves the cursor there, and — when `toggle` is
@@ -370,10 +481,7 @@ impl Response {
 
         match ev.code {
             KeyCode::Char('r') => {
-                if view.oversize {
-                    return Some(Action::ShowToast(OVERSIZE_HINT.into(), ToastKind::Warning));
-                }
-                if view.tree.is_some() {
+                if view.has_tree_view() {
                     let next = match view.body_mode {
                         ViewMode::Pretty => ViewMode::Raw,
                         _ => ViewMode::Pretty,
@@ -423,13 +531,7 @@ impl Response {
                 Some(Action::Render)
             }
             KeyCode::Char('/') => {
-                view.search = Some(SearchState {
-                    input: LineInput::new(""),
-                    active: true,
-                    query: String::new(),
-                    matches: Vec::new(),
-                    current: 0,
-                });
+                view.open_search();
                 Some(Action::Render)
             }
             KeyCode::Char('n') => {
@@ -524,29 +626,20 @@ impl Component for Response {
             return;
         };
 
-        let hint = view.oversize;
         let footer = view.search.is_some();
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(HEADER_STRIP_HEIGHT), // status chip / chips+tabs / underline
-                Constraint::Length(if hint { 1 } else { 0 }), // guard hint
                 Constraint::Min(0),                      // body
                 Constraint::Length(if footer { 1 } else { 0 }), // search footer
             ])
             .split(inner);
 
         draw_header_strip(frame, hits, rows[0], data, view, ctx);
-        if hint {
-            crate::paint::fill(frame.buffer_mut(), rows[1], t.page);
-            frame.render_widget(
-                Paragraph::new(Line::styled(OVERSIZE_HINT, Style::default().fg(t.warning))),
-                rows[1],
-            );
-        }
 
-        view.height = rows[2].height as usize;
-        let mut body_area = rows[2];
+        view.height = rows[1].height as usize;
+        let mut body_area = rows[1];
         crate::paint::fill(frame.buffer_mut(), body_area, t.page);
         let spec = ScrollbarSpec {
             pane: PaneId::Response,
@@ -569,11 +662,7 @@ impl Component for Response {
         frame.render_widget(Paragraph::new(body), body_area);
 
         if footer {
-            crate::paint::fill(frame.buffer_mut(), rows[3], t.page);
-            frame.render_widget(
-                Paragraph::new(search_footer(view, t, rows[3].width)),
-                rows[3],
-            );
+            draw_search_footer(frame, hits, rows[2], view, ctx);
         }
     }
 }
@@ -606,10 +695,10 @@ fn draw_header_strip(
     }
     .paint(buf, area.x, area.y, t.panel, t);
 
-    // Row 0 (right): Copy body / Save to file, right-aligned — the row's
-    // only other content is the short status chip, so there's no risk of
-    // the buttons colliding with it at any pane width worth supporting.
-    draw_copy_save_buttons(frame, hits, area, ctx);
+    // Row 0 (right): ⌕ / Copy body / Save to file, right-aligned — the
+    // row's only other content is the short status chip, so there's no risk
+    // of the buttons colliding with it at any pane width worth supporting.
+    draw_header_actions(frame, hits, area, ctx);
 
     let buf = frame.buffer_mut();
 
@@ -632,7 +721,7 @@ fn draw_header_strip(
     // right-aligned.
     let mut tabs: Vec<(String, Option<(char, ratatui::style::Color)>)> = Vec::new();
     let mut modes: Vec<ViewMode> = Vec::new();
-    if view.tree.is_some() {
+    if view.has_tree_view() {
         tabs.push(("Tree".to_string(), None));
         modes.push(ViewMode::Pretty);
     }
@@ -675,57 +764,63 @@ fn tabstrip_width(tabs: &[(String, Option<(char, ratatui::style::Color)>)]) -> u
     sum + widths.len().saturating_sub(1) as u16
 }
 
-/// `Copy body`/`Save to file` plain painted actions, right-aligned in
-/// `area` on the header strip's `theme.panel` fill. Overflows leftward when
-/// `area` is too narrow rather than off its right edge.
-fn draw_copy_save_buttons(
+/// The header strip's plain painted actions — `⌕` (open search), `Copy
+/// body`, `Save to file` — right-aligned in `area` on its `theme.panel`
+/// fill. Overflows leftward when `area` is too narrow rather than off its
+/// right edge.
+fn draw_header_actions(
     frame: &mut Frame,
     hits: &mut crate::hit::HitMap,
     area: Rect,
     ctx: &DrawCtx,
 ) {
-    const COPY_LABEL: &str = "Copy body";
-    const SAVE_LABEL: &str = "Save to file";
-    let copy_text = format!(" {COPY_LABEL} ");
-    let save_text = format!(" {SAVE_LABEL} ");
-    let copy_w = copy_text.chars().count() as u16;
-    let save_w = save_text.chars().count() as u16;
-    let total = copy_w + 1 + save_w;
-    let start = area.right().saturating_sub(total).max(area.x);
-    let copy_area = Rect::new(start, area.y, copy_w, 1);
-    let save_x = start + copy_w + 1;
-    let save_area = Rect::new(save_x, area.y, save_w, 1);
+    let actions = [
+        (" ⌕ ".to_string(), crate::hit::Hit::ResponseSearchButton),
+        (" Copy body ".to_string(), crate::hit::Hit::CopyBodyButton),
+        (
+            " Save to file ".to_string(),
+            crate::hit::Hit::SaveBodyButton,
+        ),
+    ];
+    let widths: Vec<u16> = actions
+        .iter()
+        .map(|(label, _)| label.chars().count() as u16)
+        .collect();
+    // One blank column between neighbours, the group flush to the right.
+    let total: u16 = widths.iter().sum::<u16>() + widths.len().saturating_sub(1) as u16;
+    let mut x = area.right().saturating_sub(total).max(area.x);
 
+    let mut rects = Vec::new();
     let buf = frame.buffer_mut();
-    draw_pane_action(
-        buf,
-        copy_area,
-        &copy_text,
-        crate::hit::Hit::CopyBodyButton,
-        ctx.hovered,
-        ctx.theme,
-    );
-    draw_pane_action(
-        buf,
-        save_area,
-        &save_text,
-        crate::hit::Hit::SaveBodyButton,
-        ctx.hovered,
-        ctx.theme,
-    );
-    hits.register(copy_area, crate::hit::Hit::CopyBodyButton);
-    hits.register(save_area, crate::hit::Hit::SaveBodyButton);
+    for ((label, hit), w) in actions.iter().zip(widths) {
+        let rect = Rect::new(x, area.y, w, 1);
+        draw_pane_action(
+            buf,
+            rect,
+            label,
+            hit.clone(),
+            ctx.hovered,
+            ctx.theme.panel,
+            ctx.theme,
+        );
+        rects.push((rect, hit.clone()));
+        x += w + 1;
+    }
+    for (rect, hit) in rects {
+        hits.register(rect, hit);
+    }
 }
 
-/// A plain (unbracketed) clickable text action on the header strip's
-/// `theme.panel` surface: accent fg at rest; inverted (accent fill,
-/// `on_accent` fg, bold) while `hovered == Some(&hit)`.
+/// A plain (unbracketed) clickable text action painted on `surface`: accent
+/// fg at rest; inverted (accent fill, `on_accent` fg, bold) while
+/// `hovered == Some(&hit)`.
 fn draw_pane_action(
     buf: &mut ratatui::buffer::Buffer,
     area: Rect,
     label: &str,
     hit: crate::hit::Hit,
     hovered: Option<&crate::hit::Hit>,
+    surface: Color,
     theme: &Theme,
 ) {
     if hovered == Some(&hit) {
@@ -740,7 +835,7 @@ fn draw_pane_action(
             true,
         );
     } else {
-        crate::paint::text(buf, area.x, area.y, label, theme.accent, theme.panel, false);
+        crate::paint::text(buf, area.x, area.y, label, theme.accent, surface, false);
     }
 }
 
@@ -770,8 +865,9 @@ fn human_size(bytes: usize) -> String {
 /// search highlighting and the cursor row's background.
 ///
 /// Only the `view.scroll .. view.scroll + view.height` window is built — a
-/// 2 MiB body is a lot of lines, and none of the ones off screen are worth
-/// styling. The caller therefore renders the result at scroll offset 0.
+/// multi-megabyte body is a lot of lines, and none of the ones off screen
+/// are worth styling. The caller therefore renders the result at scroll
+/// offset 0.
 ///
 /// In `Pretty` mode, also registers a `JsonRow` hit over each rendered row
 /// (click selects) and a `JsonArrow` hit over its first two columns when the
@@ -810,7 +906,17 @@ fn body_lines(
 
     match view.mode {
         ViewMode::Pretty => {
-            let Some(tree) = &view.tree else { return out };
+            let Some(tree) = &view.tree else {
+                if view.parsing {
+                    let e = view.parse_started.elapsed();
+                    let frame_i = (e.subsec_millis() / 100) as usize % SPINNER.len();
+                    out.push(Line::styled(
+                        format!(" {} parsing…", SPINNER[frame_i]),
+                        Style::default().fg(t.text_muted),
+                    ));
+                }
+                return out;
+            };
             let lines = tree.visible_lines();
             let indices = tree.visible_indices();
             for i in start..end.min(lines.len()) {
@@ -948,6 +1054,48 @@ fn highlighted(pieces: Vec<(String, Style)>, hits: &LineMatches) -> Line<'static
     Line::from(spans)
 }
 
+/// The search row: the query/match counter (or the live input) on the left,
+/// and the `▲`/`▼` step buttons right-aligned — the mouse's `N`/`n`. The
+/// buttons are painted over the row's own fill, and the text is given the
+/// remaining width so the two never overlap.
+fn draw_search_footer(
+    frame: &mut Frame,
+    hits: &mut crate::hit::HitMap,
+    area: Rect,
+    view: &ReadyView,
+    ctx: &DrawCtx,
+) {
+    let t = ctx.theme;
+    crate::paint::fill(frame.buffer_mut(), area, t.page);
+
+    const PREV: &str = " ▲ ";
+    const NEXT: &str = " ▼ ";
+    let step_w = PREV.chars().count() as u16;
+    let buttons_w = step_w * 2 + 1;
+    let text_w = area.width.saturating_sub(buttons_w + 1);
+    frame.render_widget(
+        Paragraph::new(search_footer(view, t, text_w)),
+        Rect {
+            width: text_w,
+            ..area
+        },
+    );
+
+    if area.width <= buttons_w {
+        return;
+    }
+    let prev_area = Rect::new(area.right() - buttons_w, area.y, step_w, 1);
+    let next_area = Rect::new(area.right() - step_w, area.y, step_w, 1);
+    let buf = frame.buffer_mut();
+    for (rect, label, hit) in [
+        (prev_area, PREV, crate::hit::Hit::ResponseSearchPrev),
+        (next_area, NEXT, crate::hit::Hit::ResponseSearchNext),
+    ] {
+        draw_pane_action(buf, rect, label, hit.clone(), ctx.hovered, t.page, t);
+        hits.register(rect, hit);
+    }
+}
+
 /// `/query   3/17` — or the live input while the search is being typed.
 fn search_footer(view: &ReadyView, t: &Theme, width: u16) -> Line<'static> {
     let Some(search) = &view.search else {
@@ -1005,9 +1153,18 @@ mod tests {
     }
 
     fn ready(body: &str) -> Response {
+        ready_gen(body, 0)
+    }
+
+    fn ready_gen(body: &str, generation: u64) -> Response {
         let mut r = Response::default();
-        r.set_state(ResponseState::Ready(Box::new(data(body))));
+        r.set_state(ResponseState::Ready(Box::new(data(body))), generation);
         r
+    }
+
+    /// A JSON body over [`SYNC_PRETTY_BYTES`], so its parse is deferred.
+    fn big_json() -> String {
+        format!("{{\"a\": \"{}\"}}", "x".repeat(3 * 1024 * 1024))
     }
 
     fn render(resp: &mut Response) -> String {
@@ -1047,7 +1204,7 @@ mod tests {
         d.size = 1434;
         d.elapsed = Duration::from_millis(1234);
         let mut r = Response::default();
-        r.set_state(ResponseState::Ready(Box::new(d)));
+        r.set_state(ResponseState::Ready(Box::new(d)), 0);
         let out = render(&mut r);
         assert!(out.contains("1.4 KB"), "{out}");
         assert!(out.contains("1.2 s"), "{out}");
@@ -1265,16 +1422,80 @@ mod tests {
     }
 
     #[test]
-    fn oversize_body_falls_back_to_raw_with_a_hint() {
-        let body = format!("{{\"a\": \"{}\"}}", "x".repeat(MAX_PRETTY_BYTES));
-        assert!(body.len() > MAX_PRETTY_BYTES);
+    fn a_big_body_defers_its_parse_and_leads_with_raw() {
+        let body = big_json();
         let mut r = ready(&body);
+        let v = r.view().unwrap();
+        assert!(v.parsing, "the parse was handed off, not run inline");
+        assert!(v.tree.is_none(), "no tree until it lands");
+        assert_eq!(v.mode, ViewMode::Raw, "the raw body is readable at once");
+        assert!(
+            render(&mut r).contains("Tree"),
+            "the Tree tab is offered while the parse runs"
+        );
+    }
+
+    #[test]
+    fn the_tree_tab_spins_while_a_big_body_is_parsed() {
+        let mut r = ready(&big_json());
+        r.set_view_mode(ViewMode::Pretty);
+        assert_eq!(
+            r.view().unwrap().mode,
+            ViewMode::Pretty,
+            "switching to Tree mid-parse is allowed"
+        );
         let out = render(&mut r);
-        assert!(out.contains("exceeds 2 MiB"), "guard hint: {out}");
-        match r.handle_key(ch('r')) {
-            Some(Action::ShowToast(msg, _)) => assert!(msg.contains("2 MiB"), "{msg}"),
-            other => panic!("expected a toast refusing the pretty toggle, got {other:?}"),
-        }
+        assert!(out.contains("parsing"), "the wait is named: {out}");
+        assert!(
+            SPINNER.iter().any(|g| out.contains(*g)),
+            "a spinner glyph: {out}"
+        );
+    }
+
+    #[test]
+    fn an_attached_tree_renders_in_the_pretty_view() {
+        let body = big_json();
+        let mut r = ready_gen(&body, 7);
+        let tree = JsonTree::parse(&body).unwrap();
+        assert!(
+            r.attach_tree(7, Some(tree)),
+            "delivered to the waiting view"
+        );
+        let v = r.view().unwrap();
+        assert!(!v.parsing && v.tree.is_some());
+        r.set_view_mode(ViewMode::Pretty);
+        let out = render(&mut r);
+        assert!(out.contains("\"a\""), "the parsed key is drawn: {out}");
+        assert!(!out.contains("parsing"), "the spinner is gone: {out}");
+    }
+
+    #[test]
+    fn a_tree_from_a_superseded_generation_is_dropped() {
+        let body = big_json();
+        let mut r = ready_gen(&body, 7);
+        let tree = JsonTree::parse(&body).unwrap();
+        assert!(!r.attach_tree(6, Some(tree)), "an older parse is not ours");
+        assert!(r.view().unwrap().parsing, "still waiting for generation 7");
+
+        let tree = JsonTree::parse(&body).unwrap();
+        let mut r = ready_gen(&body, 7);
+        assert!(r.attach_tree(7, Some(tree)));
+        assert!(!r.attach_tree(7, None), "a second delivery is dropped");
+        assert!(r.view().unwrap().tree.is_some(), "and changes nothing");
+    }
+
+    #[test]
+    fn a_big_body_that_is_not_json_settles_on_raw() {
+        let body = "x".repeat(SYNC_PRETTY_BYTES + 1);
+        let mut r = ready_gen(&body, 3);
+        r.set_view_mode(ViewMode::Pretty);
+        assert!(r.attach_tree(3, None), "the parse said: not JSON");
+        let v = r.view().unwrap();
+        assert!(!v.parsing);
+        assert_eq!(v.mode, ViewMode::Raw, "kicked back to the raw view");
+        let out = render(&mut r);
+        assert!(!out.contains("parsing"), "no spinner left behind: {out}");
+        assert!(!out.contains("Tree"), "and no Tree tab to click: {out}");
     }
 
     #[test]
@@ -1393,6 +1614,35 @@ mod tests {
         assert!(r.view().unwrap().search.is_none(), "esc closes search");
     }
 
+    /// The mouse route: `\u{2315}` opens the search, the query is typed, and
+    /// the `\u{25bc}` button both commits it and lands on the first match —
+    /// there is no click that means "Enter", so a button that only stepped
+    /// a never-committed query left the whole flow inert.
+    #[test]
+    fn the_next_match_button_commits_a_live_query_and_lands_on_the_first_match() {
+        let mut r = ready(r#"{"aa": "zz", "bb": "zz"}"#);
+        r.open_search();
+        for c in "zz".chars() {
+            r.handle_key(ch(c));
+        }
+        assert!(r.view().unwrap().search.as_ref().unwrap().active);
+
+        assert!(r.step_search(1));
+        let search = r.view().unwrap().search.as_ref().unwrap();
+        assert!(!search.active, "the click committed the query");
+        assert_eq!(search.query, "zz");
+        assert_eq!(search.matches.len(), 2);
+        let out = render(&mut r);
+        assert!(
+            out.contains("1/2"),
+            "on the first match, not the second: {out}"
+        );
+
+        // A second click steps, as `n` does.
+        assert!(r.step_search(1));
+        assert!(render(&mut r).contains("2/2"));
+    }
+
     #[test]
     fn typing_while_search_is_active_does_not_move_the_cursor() {
         let mut r = ready(r#"{"a": 1, "b": 2}"#);
@@ -1463,9 +1713,12 @@ mod tests {
     #[test]
     fn in_flight_shows_a_spinner_and_the_cancel_hint() {
         let mut r = Response::default();
-        r.set_state(ResponseState::InFlight {
-            started: Instant::now(),
-        });
+        r.set_state(
+            ResponseState::InFlight {
+                started: Instant::now(),
+            },
+            0,
+        );
         let out = render(&mut r);
         assert!(
             SPINNER.iter().any(|g| out.contains(*g)),
@@ -1477,11 +1730,11 @@ mod tests {
     #[test]
     fn failed_and_cancelled_render_their_messages() {
         let mut r = Response::default();
-        r.set_state(ResponseState::Failed("connection refused".into()));
+        r.set_state(ResponseState::Failed("connection refused".into()), 0);
         assert!(render(&mut r).contains("connection refused"));
-        r.set_state(ResponseState::Cancelled);
+        r.set_state(ResponseState::Cancelled, 0);
         assert!(render(&mut r).contains("Request cancelled"));
-        r.set_state(ResponseState::Empty);
+        r.set_state(ResponseState::Empty, 0);
         assert!(render(&mut r).contains("response will appear here"));
     }
 
@@ -1494,9 +1747,12 @@ mod tests {
             "an empty pane ignores navigation"
         );
         assert_eq!(r.handle_key(ch('/')), None);
-        r.set_state(ResponseState::InFlight {
-            started: Instant::now(),
-        });
+        r.set_state(
+            ResponseState::InFlight {
+                started: Instant::now(),
+            },
+            0,
+        );
         assert_eq!(r.handle_key(key(KeyCode::Esc)), Some(Action::CancelSend));
         assert_eq!(r.handle_key(ch('j')), None);
     }
@@ -1509,19 +1765,14 @@ mod tests {
     }
 
     #[test]
-    fn set_view_mode_is_a_no_op_when_oversize_blocks_pretty() {
-        let body = format!("{{\"a\": \"{}\"}}", "x".repeat(MAX_PRETTY_BYTES));
-        let mut r = ready(&body);
-        assert_eq!(
-            r.view().unwrap().mode,
-            ViewMode::Raw,
-            "oversize defaults to raw"
-        );
+    fn set_view_mode_is_a_no_op_when_the_body_has_no_tree() {
+        let mut r = ready("<html>hi</html>");
+        assert_eq!(r.view().unwrap().mode, ViewMode::Raw, "non-JSON is raw");
         r.set_view_mode(ViewMode::Pretty);
         assert_eq!(
             r.view().unwrap().mode,
             ViewMode::Raw,
-            "oversize blocks switching to pretty"
+            "there is no tree to switch to"
         );
     }
 
@@ -1556,7 +1807,7 @@ mod tests {
         );
         r.handle_key(ch('G'));
         assert_eq!(r.view().unwrap().cursor, 1, "last raw line");
-        r.set_state(ResponseState::Ready(Box::new(data(r#"{"z": 1}"#))));
+        r.set_state(ResponseState::Ready(Box::new(data(r#"{"z": 1}"#))), 0);
         let v = r.view().unwrap();
         assert_eq!(v.cursor, 0);
         assert_eq!(v.scroll, 0);

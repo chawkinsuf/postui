@@ -374,7 +374,6 @@ mod tests {
                 description: None,
                 default: Some("http://l".into()),
                 secret: false,
-                options: IndexMap::new(),
             },
         );
         model.vars.insert(
@@ -383,7 +382,6 @@ mod tests {
                 description: None,
                 default: None,
                 secret: false,
-                options: IndexMap::new(),
             },
         );
         let env = load_environment(dir.path(), "qa").unwrap();

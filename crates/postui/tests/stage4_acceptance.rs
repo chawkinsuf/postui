@@ -218,7 +218,13 @@ async fn stage4_mouse_only_acceptance_flow() {
     click(&mut app, Hit::FooterChip(Action::OpenPalette));
     assert!(matches!(app.modals.top(), Some(Modal::Palette(_))));
     type_text(&mut app, &keymap, "quit");
-    click(&mut app, Hit::PaletteRow(0));
+    // The query is a subsequence match, so more than one command can survive
+    // it ("quit" also matches "Request: duplicate"); click Quit's own row.
+    let Some(Modal::Palette(p)) = app.modals.top() else {
+        unreachable!()
+    };
+    let quit_row = p.filtered().iter().position(|c| c.id == "quit").unwrap();
+    click(&mut app, Hit::PaletteRow(quit_row));
     assert!(app.should_quit, "clicking the Quit palette row quits");
     assert!(app.modals.is_empty());
 }

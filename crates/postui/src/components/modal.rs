@@ -27,8 +27,8 @@ pub enum PromptKind {
     /// The env chooser's "new environment…" row: the text is the new
     /// environment's name (slug rules).
     NewEnvironment,
-    /// `n` (spec §5): a bare variable name — the grid's own cell edit sets
-    /// its default/description afterward.
+    /// `n` / the `+ Variable` button: a bare variable name — the detail
+    /// pane's form sets its default/description afterward.
     NewVariable,
     /// The Insert-mode picker's "new variable…" row (Task 15, spec §6): the
     /// text is the new variable's name, pre-filled with what was typed in
@@ -39,30 +39,37 @@ pub enum PromptKind {
     NewVariableAndInsert {
         completing: bool,
     },
-    /// `g`: the new group's bare name — members are added one at a time
-    /// afterward (`AddGroupMember`).
+    /// `g` / the `+ Group` button (spec 3.4): a `Modal::MultiPrompt` with
+    /// a `name` field and a comma-separated `fields` field. Confirming
+    /// declares the group and its field list in one write
+    /// (`VarStructOp::NewGroup`).
     NewGroup,
-    /// `a` on a group's rows: one member name, appended to `group`'s list.
+    /// One field name, appended to `group`'s list.
     AddGroupMember {
         group: String,
     },
-    /// `o` on an enumerated/group row: comma-separated `key, value` for a
-    /// plain variable's option, or `key, member=value, member=value, ...`
-    /// for a group's — `member_names` (the group's declared members, empty
-    /// for a plain variable) tells `parse_option_prompt` which form to
-    /// expect.
-    NewOption {
-        owner: String,
-        member_names: Vec<String>,
-    },
-    /// `F2`/`=` on a `Var` row.
+    /// `e`/`F2` on a variable row.
     RenameVariable {
         from: String,
     },
-    /// `m` on a `GroupHeader` row: comma-separated member names, replacing
-    /// the group's current list.
+    /// Comma-separated field names, replacing the group's current list.
     GroupMembers {
         group: String,
+    },
+    /// The group pane's `[Edit fields]` (Task 16, spec §3.4): a
+    /// `Modal::MultiPrompt` with one text slot per current field (keys
+    /// `f0`, `f1`, … — position *is* the identity, which is how a changed
+    /// text reads as a rename) plus a trailing empty slot for adding one.
+    /// Confirming emits `Action::ApplyGroupFields`.
+    GroupFields {
+        group: String,
+    },
+    /// The entry-row context menu's "Rename…" (Task 16): the text is the
+    /// entry's new name within `group` in `env`.
+    RenameEntry {
+        env: String,
+        group: String,
+        from: String,
     },
     /// Send-time secret prompt (spec §3): `prepare()` reported `name`
     /// missing for the active environment (`env`, display only — never a
@@ -165,41 +172,6 @@ fn comma_tokens(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// `PromptKind::NewOption`'s text -> `(key, values)`. For a plain variable
-/// (`member_names` empty), the second token is the option's `value`. For a
-/// group, every remaining token must be `member=value`; a member outside
-/// `member_names`, or fewer members than the group declares, means "not
-/// finished typing yet" (`None`) rather than a hard error — the field
-/// simply doesn't confirm until it parses.
-fn parse_option_prompt(
-    text: &str,
-    member_names: &[String],
-) -> Option<(String, IndexMap<String, String>)> {
-    let mut tokens = comma_tokens(text);
-    if tokens.is_empty() {
-        return None;
-    }
-    let key = tokens.remove(0);
-    let mut values = IndexMap::new();
-    if member_names.is_empty() {
-        let value = tokens.into_iter().next()?;
-        values.insert("value".to_string(), value);
-    } else {
-        for token in &tokens {
-            let (member, value) = token.split_once('=')?;
-            let member = member.trim();
-            if !member_names.iter().any(|m| m == member) {
-                return None;
-            }
-            values.insert(member.to_string(), value.trim().to_string());
-        }
-        if values.len() != member_names.len() {
-            return None;
-        }
-    }
-    Some((key, values))
-}
-
 pub enum Modal {
     Message {
         title: String,
@@ -261,18 +233,74 @@ pub enum Modal {
     },
 }
 
-/// State for `Modal::Dropdown`: the cell it opens from, its `(label,
-/// action)` rows, which row the keyboard cursor is on, and (separately)
-/// which row reflects the value already in effect (e.g. the method that
-/// was active when the dropdown opened). `selected` moves as the user
-/// arrows through the list; `current` does not — it stays put so the `✓`
-/// marker keeps pointing at the actual current value even while the
+/// One row of a `Modal::Dropdown` — a value in a select popup, or an entry
+/// in a right-click context menu. `action: None` marks the row *disabled*:
+/// it still paints (so the menu's shape doesn't shift with context) but in
+/// the muted text color, takes no hover fill, and neither a click nor Enter
+/// activates it or closes the menu.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuItem {
+    pub label: String,
+    pub action: Option<Action>,
+}
+
+impl MenuItem {
+    pub fn new(label: impl Into<String>, action: Action) -> Self {
+        Self {
+            label: label.into(),
+            action: Some(action),
+        }
+    }
+
+    /// A row that is shown but cannot be chosen — e.g. "Open" on a request
+    /// whose file doesn't parse.
+    pub fn disabled(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            action: None,
+        }
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.action.is_some()
+    }
+}
+
+/// State for `Modal::Dropdown`: the cell (or pointer position) it opens
+/// from, its [`MenuItem`] rows, which row the keyboard cursor is on, and
+/// (separately) which row reflects the value already in effect (e.g. the
+/// method that was active when the dropdown opened). `selected` moves as
+/// the user arrows through the list; `current` does not — it stays put so
+/// the `✓` marker keeps pointing at the actual current value even while the
 /// highlight is elsewhere.
 pub struct DropdownState {
     pub anchor: Rect,
-    pub items: Vec<(String, Action)>,
+    pub items: Vec<MenuItem>,
     pub selected: usize,
     pub current: Option<usize>,
+}
+
+impl DropdownState {
+    /// The next enabled row `delta` steps from `selected` in that direction,
+    /// or `None` when there is none (edge of the list, or nothing but
+    /// disabled rows beyond it) — in which case the cursor stays put.
+    fn step(&self, delta: isize) -> Option<usize> {
+        let mut i = self.selected as isize;
+        loop {
+            i += delta;
+            if i < 0 || i as usize >= self.items.len() {
+                return None;
+            }
+            if self.items[i as usize].is_enabled() {
+                return Some(i as usize);
+            }
+        }
+    }
+
+    /// The first row a keyboard cursor may usefully land on.
+    pub fn first_enabled(items: &[MenuItem]) -> usize {
+        items.iter().position(MenuItem::is_enabled).unwrap_or(0)
+    }
 }
 
 /// The outcome of a modal handling a key event: any actions the caller
@@ -307,6 +335,12 @@ impl ModalStack {
 
     pub fn top(&self) -> Option<&Modal> {
         self.stack.last()
+    }
+
+    /// Every modal on the stack, bottom first — for asking "is one of
+    /// these already open?" before pushing another.
+    pub fn iter(&self) -> impl Iterator<Item = &Modal> {
+        self.stack.iter()
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<ModalResult> {
@@ -410,29 +444,12 @@ impl ModalStack {
                                 Action::InsertVarText(insert_text),
                             ])
                         }
-                        PromptKind::NewGroup => {
-                            Some(vec![Action::VarStruct(VarStructOp::NewGroup {
-                                name: text.to_string(),
-                                members: vec![],
-                            })])
-                        }
                         PromptKind::AddGroupMember { group } => {
                             Some(vec![Action::AddGroupMember {
                                 group: group.clone(),
                                 member: text.to_string(),
                             }])
                         }
-                        PromptKind::NewOption {
-                            owner,
-                            member_names,
-                        } => parse_option_prompt(text, member_names).map(|(key, values)| {
-                            vec![Action::VarStruct(VarStructOp::NewOption {
-                                owner: owner.clone(),
-                                key,
-                                description: None,
-                                values,
-                            })]
-                        }),
                         PromptKind::RenameVariable { from } => {
                             Some(vec![Action::VarStruct(VarStructOp::Rename {
                                 from: from.clone(),
@@ -440,21 +457,33 @@ impl ModalStack {
                             })])
                         }
                         PromptKind::GroupMembers { group } => {
-                            Some(vec![Action::VarStruct(VarStructOp::SetMembers {
+                            Some(vec![Action::VarStruct(VarStructOp::SetFields {
                                 group: group.clone(),
-                                members: comma_tokens(text),
+                                fields: comma_tokens(text),
+                            })])
+                        }
+                        PromptKind::RenameEntry { env, group, from } => {
+                            Some(vec![Action::VarStruct(VarStructOp::RenameEntry {
+                                env: env.clone(),
+                                group: group.clone(),
+                                from: from.clone(),
+                                to: text.to_string(),
                             })])
                         }
                         PromptKind::SecretValue { name, .. } => Some(vec![Action::SetSecret {
                             name: name.clone(),
                             value: text.to_string(),
                         }]),
-                        // Task 17's three kinds are `Modal::MultiPrompt`
-                        // only — never a single-input `Modal::Prompt`.
-                        PromptKind::NewOptionInline { .. }
+                        // These kinds are `Modal::MultiPrompt` only — never a
+                        // single-input `Modal::Prompt`.
+                        PromptKind::NewGroup
+                        | PromptKind::GroupFields { .. }
+                        | PromptKind::NewOptionInline { .. }
                         | PromptKind::EditOption { .. }
                         | PromptKind::ExtractVariable => {
-                            unreachable!("Task 17 prompt kinds only ever back Modal::MultiPrompt")
+                            unreachable!(
+                                "multi-field prompt kinds only ever back Modal::MultiPrompt"
+                            )
                         }
                     };
                     // A well-formed-but-incomplete comma prompt (e.g. a
@@ -528,21 +557,31 @@ impl ModalStack {
                 }
             },
             Modal::Dropdown(state) => match key.code {
+                // Arrows step over disabled rows rather than parking the
+                // cursor on a dead end, so Enter always has something to do.
                 KeyCode::Up => {
-                    state.selected = state.selected.saturating_sub(1);
-                    None // swallowed: modals capture all input
-                }
-                KeyCode::Down => {
-                    if state.selected + 1 < state.items.len() {
-                        state.selected += 1;
+                    if let Some(i) = state.step(-1) {
+                        state.selected = i;
                     }
                     None // swallowed: modals capture all input
                 }
-                KeyCode::Enter => Some(ModalResult {
-                    actions: vec![state.items[state.selected].1.clone()],
-                    close: true,
-                    ..Default::default()
-                }),
+                KeyCode::Down => {
+                    if let Some(i) = state.step(1) {
+                        state.selected = i;
+                    }
+                    None // swallowed: modals capture all input
+                }
+                // A disabled row has no action: swallowed, menu stays open.
+                KeyCode::Enter => state
+                    .items
+                    .get(state.selected)?
+                    .action
+                    .clone()
+                    .map(|action| ModalResult {
+                        actions: vec![action],
+                        close: true,
+                        ..Default::default()
+                    }),
                 KeyCode::Esc => Some(ModalResult {
                     actions: vec![],
                     close: true,
@@ -613,6 +652,27 @@ impl ModalStack {
                                 key: key.clone(),
                                 values,
                                 description,
+                            }]
+                        }
+                        PromptKind::NewGroup => {
+                            let name = get("name").filter(|s| !s.is_empty())?.to_string();
+                            let fields = comma_tokens(get("fields").unwrap_or(""));
+                            vec![Action::VarStruct(VarStructOp::NewGroup { name, fields })]
+                        }
+                        // Position is the identity here: slot `i` stands
+                        // for the group's current `i`th field, so the raw
+                        // per-slot text (empties included — an emptied slot
+                        // is how a field is removed) is what the app needs
+                        // to tell renames from additions and removals.
+                        PromptKind::GroupFields { group } => {
+                            let slots = fields
+                                .iter()
+                                .map(|f| f.input.text().trim().to_string())
+                                .collect();
+                            vec![Action::ApplyGroupFields {
+                                group: group.clone(),
+                                slots,
+                                confirmed: false,
                             }]
                         }
                         PromptKind::ExtractVariable => {
@@ -980,10 +1040,16 @@ impl ModalStack {
                 focus,
                 ..
             } => {
-                // 2 rows per field (label + input), plus the title/hint/
-                // button chrome — mirrors `NewProject`'s fixed two-field
-                // layout, generalized to N.
-                let height = (6 + fields.len() as u16 * 2 + 2).min(screen.height);
+                // Each field costs a label row plus a `FIELD_HEIGHT` box;
+                // around them sit the top pad, the title, a blank row, the
+                // hint row, the button row and the bottom pad. Counting the
+                // boxes (not just 2 rows per field) is what keeps the
+                // bottom-anchored buttons off the last field — with two
+                // fields the old estimate had them painting straight
+                // through it.
+                let per_field = 1 + FIELD_HEIGHT;
+                let height = (3 + fields.len() as u16 * per_field + 1 + BUTTON_HEIGHT + 1)
+                    .min(screen.height);
                 let area = centered_rect(screen, 60.min(screen.width), height);
                 hits.register(area, crate::hit::Hit::ModalBody);
                 paint::floating_panel(frame.buffer_mut(), area, screen, theme);
@@ -1087,7 +1153,7 @@ fn draw_dropdown(
     let max_label = state
         .items
         .iter()
-        .map(|(label, _)| label.chars().count() as u16)
+        .map(|item| item.label.chars().count() as u16)
         .max()
         .unwrap_or(0);
     // The popup floats over undimmed live content, so it needs real
@@ -1132,18 +1198,22 @@ fn draw_dropdown(
         height: area.height.saturating_sub(4),
     };
 
-    for (i, (label, _)) in state.items.iter().enumerate() {
+    for (i, item) in state.items.iter().enumerate() {
         if i as u16 >= inner.height {
             break;
         }
+        let label = &item.label;
         let row_area = Rect {
             x: inner.x,
             y: inner.y + i as u16,
             width: inner.width,
             height: 1,
         };
-        let selected = i == state.selected;
-        let row_hovered = hovered == Some(&crate::hit::Hit::DropdownRow(i));
+        let enabled = item.is_enabled();
+        let selected = enabled && i == state.selected;
+        let row_hovered = enabled && hovered == Some(&crate::hit::Hit::DropdownRow(i));
+        // A disabled row takes no fill at all: no cursor highlight, no hover
+        // response — the only affordance it has is looking muted.
         let row_fill = if selected {
             theme.control_hover
         } else if row_hovered {
@@ -1162,7 +1232,13 @@ fn draw_dropdown(
         } else {
             "  "
         };
-        let fg = if selected { theme.accent } else { theme.text };
+        let fg = if !enabled {
+            theme.text_muted
+        } else if selected {
+            theme.accent
+        } else {
+            theme.text
+        };
         paint::text(
             frame.buffer_mut(),
             row_area.x,
@@ -1278,6 +1354,48 @@ mod tests {
         assert_eq!(clamped.height, 40);
     }
 
+    /// A two-field `MultiPrompt` (extract-to-variable, new group, …) must
+    /// leave room for its bottom-anchored buttons: the old height estimate
+    /// counted 2 rows per field instead of the label + `FIELD_HEIGHT` box
+    /// it actually paints, so Cancel/Confirm landed *inside* the second
+    /// field. Found by the stage-7 tmux sweep.
+    #[test]
+    fn multi_prompt_buttons_sit_below_the_last_field() {
+        let screen = Rect::new(0, 0, 120, 40);
+        let mut m = ModalStack::default();
+        m.push(Modal::MultiPrompt {
+            title: "Extract to variable".into(),
+            fields: vec![
+                PromptField::text("name", "Name", ""),
+                PromptField::text("dest", "Destination", "here"),
+            ],
+            focus: 0,
+            kind: PromptKind::NewGroup,
+        });
+
+        let theme = Theme::for_terminal();
+        let mut hits = crate::hit::HitMap::default();
+        let mut terminal = Terminal::new(TestBackend::new(screen.width, screen.height)).unwrap();
+        terminal
+            .draw(|f| m.draw(f, screen, &theme, &mut hits, None))
+            .unwrap();
+
+        let body = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
+        let confirm = hits.rect_of(&crate::hit::Hit::ModalConfirm).unwrap();
+        // Two fields, each a label row plus a FIELD_HEIGHT box, starting
+        // two rows under the title.
+        let fields_end = body.y + 3 + 2 * (1 + FIELD_HEIGHT);
+        assert!(
+            confirm.y >= fields_end,
+            "buttons at {} overlap the fields, which end at {fields_end}",
+            confirm.y
+        );
+        assert!(
+            confirm.y + confirm.height <= body.y + body.height,
+            "...and they stay inside the panel"
+        );
+    }
+
     #[test]
     fn esc_closes_top_modal_only() {
         let mut m = ModalStack::default();
@@ -1317,6 +1435,12 @@ mod tests {
         ));
         for c in "quit".chars() {
             assert!(m.handle_key(key(KeyCode::Char(c))).is_none());
+        }
+        // The query is a subsequence match and survives on more than one
+        // command, so put the cursor on Quit itself.
+        if let Some(Modal::Palette(p)) = m.top_mut() {
+            let i = p.filtered().iter().position(|c| c.id == "quit").unwrap();
+            p.select(i);
         }
         let res = m.handle_key(key(KeyCode::Enter)).unwrap();
         assert!(res.close);
@@ -1476,11 +1600,11 @@ mod tests {
         assert_eq!(slugify("Weird!! Na@me_1"), "weird-name_1");
     }
 
-    fn dropdown_items() -> Vec<(String, Action)> {
+    fn dropdown_items() -> Vec<MenuItem> {
         vec![
-            ("GET".into(), Action::Render),
-            ("POST".into(), Action::Render),
-            ("PUT".into(), Action::Render),
+            MenuItem::new("GET", Action::Render),
+            MenuItem::new("POST", Action::Render),
+            MenuItem::new("PUT", Action::Render),
         ]
     }
 

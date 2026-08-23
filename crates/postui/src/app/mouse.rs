@@ -22,6 +22,14 @@ impl App {
     pub fn handle_mouse(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
         use ratatui::crossterm::event::{MouseButton, MouseEventKind};
 
+        // Every event carries the pointer's position, motion reports or
+        // not: a press moves the pointer just as truly as a `Moved` does.
+        // Recording it here keeps the `{{token}}` tooltip (which is drawn
+        // from `pointer`) honest in terminals that report no motion, where
+        // a tip opened by one hover would otherwise hang over the UI
+        // through every later click — including the clicks it covers.
+        self.pointer = Some((m.column, m.row));
+
         match m.kind {
             // Terminals report pointer motion with a button held as `Drag`,
             // not `Moved`, so a thumb drag arrives as either depending on
@@ -35,12 +43,26 @@ impl App {
                     // (e.g. a text selection sweep) is not a hover update.
                     return false;
                 }
-                let hit = self.hits.hit_at(m.column, m.row).cloned();
-                if hit != self.hovered {
-                    self.hovered = hit;
-                    return true;
-                }
-                false
+                // Two independent hover tracks: the control under the
+                // pointer (styling), and any `{{token}}` drawn on top of it
+                // (the value tooltip). A token must not steal its control's
+                // hover styling, and leaving one must drop the tooltip on
+                // the very next motion event.
+                let hit = self
+                    .hits
+                    .hit_at_ignoring_var_tokens(m.column, m.row)
+                    .cloned();
+                let token = self
+                    .hits
+                    .var_token_at(m.column, m.row)
+                    .map(|(name, _)| name.to_string());
+                // The pointer's exact position (recorded above) is not part
+                // of "changed": the tooltip is anchored at the token's own
+                // drawn rect, so moving within one token changes nothing.
+                let changed = hit != self.hovered || token != self.hovered_token;
+                self.hovered = hit;
+                self.hovered_token = token;
+                changed
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 let Some(hit) = self.hits.hit_at(m.column, m.row).cloned() else {
@@ -66,6 +88,106 @@ impl App {
                 };
                 self.on_hit(hit, clicks, m)
             }
+            // A right click targets the row under the pointer: it moves the
+            // selection there first (so the menu's flows, which all read the
+            // selection, act on what was clicked), then opens whatever menu
+            // that hit offers. Hits with no menu still get the selection
+            // move — right-clicking a row selects it, menu or not.
+            MouseEventKind::Down(MouseButton::Right) => {
+                // Tokens are a left-click affordance only: a right click
+                // belongs to the row/cell under them and its context menu.
+                let Some(hit) = self
+                    .hits
+                    .hit_at_ignoring_var_tokens(m.column, m.row)
+                    .cloned()
+                else {
+                    return false;
+                };
+                // A right click is a click away from whatever detail-pane
+                // cell was being typed into, exactly like a left click
+                // (see `on_hit`'s blanket rule): commit it *before*
+                // anything below reads or reshapes the rows underneath.
+                // Skipping this let a menu action (Delete…, Rename…) shift
+                // the entry rows out from under a still-live `GridEdit`,
+                // whose row index would then address a different record —
+                // and the next click-away would write the typed text into
+                // that wrong entry.
+                let mut changed = false;
+                self.commit_var_form();
+                self.commit_grid_edit();
+                // A commit that *failed* keeps its edit (spec §5: the typed
+                // text survives), so the row indices it holds must stay
+                // meaningful: offer no menu that could renumber them until
+                // the user has dealt with it. The failure already toasted.
+                if self.varmanager.grid.editing.is_some()
+                    && matches!(hit, Hit::VmEntryCell { .. } | Hit::VmEntryRadio(_))
+                {
+                    return self.update(Action::Render);
+                }
+                // Same rule for the left list: selecting a different row
+                // after a failed form/grid commit would reset `form`/`grid`
+                // and discard the typed text the failure left live.
+                if (self.varmanager.form.editing.is_some()
+                    || self.varmanager.grid.editing.is_some())
+                    && matches!(hit, Hit::VmLeftRow(_))
+                {
+                    return self.update(Action::Render);
+                }
+                // A table hit is normalized to `TableRow(resolved)` for the
+                // menu lookup below: right-clicking any part of the row (a
+                // cell, the checkbox, the ✕) opens the same row menu, and
+                // `resolve_table_row_across_commit` re-numbers `i` past
+                // whatever commit just landed — see its own doc comment.
+                let mut menu_hit = hit.clone();
+                match &hit {
+                    Hit::SidebarRow(i) | Hit::SidebarFolderArrow(i) => {
+                        changed |= self.update(Action::FocusPane(PaneId::Sidebar));
+                        changed |= self.sidebar.selected != Some(*i);
+                        self.sidebar.selected = Some(*i);
+                    }
+                    Hit::VmLeftRow(i) => {
+                        changed |= self.varmanager.left_cursor != *i;
+                        self.varmanager.select_row(*i);
+                    }
+                    // Same rule for a grid row: the click moves the grid's
+                    // cursor onto it (and the keyboard with it) before its
+                    // menu opens.
+                    Hit::VmEntryCell { row, .. } | Hit::VmEntryRadio(row) => {
+                        let col = match &hit {
+                            Hit::VmEntryCell { col, .. } => *col,
+                            _ => 0,
+                        };
+                        changed |= self.varmanager.grid.cursor != (*row, col)
+                            || self.varmanager.focus != VmFocus::Grid;
+                        self.varmanager.grid.cursor = (*row, col);
+                        self.varmanager.focus = VmFocus::Grid;
+                    }
+                    Hit::TableRow(i)
+                    | Hit::TableCheckbox(i)
+                    | Hit::TableDelete(i)
+                    | Hit::TableCell { row: i, .. } => {
+                        let i = *i;
+                        changed |= self.update(Action::FocusPane(PaneId::Editor));
+                        self.editor.sub_focus = SubFocus::Content;
+                        match self.resolve_table_row_across_commit(i) {
+                            Some(resolved) => {
+                                changed |= self.editor.table.selected != Some(resolved);
+                                self.editor.table.selected = Some(resolved);
+                                menu_hit = Hit::TableRow(resolved);
+                            }
+                            // The clicked row was a ghost row that just
+                            // discarded itself on commit: nothing left to
+                            // menu.
+                            None => return self.update(Action::Render) || changed,
+                        }
+                    }
+                    _ => {}
+                }
+                match self.context_menu_for(&menu_hit) {
+                    Some(items) => self.open_context_menu(m.column, m.row, items) || changed,
+                    None => changed,
+                }
+            }
             MouseEventKind::Up(MouseButton::Left) => self.drag.take().is_some(),
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 if !self.modals.is_empty() {
@@ -87,7 +209,7 @@ impl App {
                     } else {
                         3
                     };
-                    self.varmanager.handle_scroll(d);
+                    self.varmanager.handle_scroll_at(m.column, m.row, d);
                     return self.update(Action::Render);
                 }
                 if let Some(pane) = self.hits.pane_at(m.column, m.row) {
@@ -109,6 +231,12 @@ impl App {
     /// thumb can never disagree. `None` when the pane has nothing scrollable
     /// (or has not been drawn yet).
     pub fn scrollbar_spec(&self, pane: PaneId) -> Option<ScrollbarSpec> {
+        // The Variable Manager screen replaces the whole body, sidebar
+        // included: while it is up, the sidebar's pane slot belongs to its
+        // left list (see `VarManager::scrollbar_spec`).
+        if self.screen == Screen::VarManager {
+            return self.varmanager.scrollbar_spec().filter(|s| s.pane == pane);
+        }
         match pane {
             PaneId::Sidebar => self.sidebar.scrollbar_spec(),
             PaneId::Editor => self.editor.scrollbar_spec(),
@@ -138,6 +266,10 @@ impl App {
         if offset == spec.offset {
             return false;
         }
+        if self.screen == Screen::VarManager {
+            self.varmanager.set_scroll(offset);
+            return true;
+        }
         match pane {
             PaneId::Sidebar => {
                 self.sidebar.scroll = offset;
@@ -159,21 +291,98 @@ impl App {
         }
     }
 
+    /// Commits any in-progress table cell edit, surfacing its warning as a
+    /// toast. The one place typing is turned into map data outside the
+    /// table's own key handling — click-away, focus loss, tab switch, save
+    /// and send all go through here so a typed cell is never dropped.
+    pub(crate) fn commit_table_edit(&mut self) {
+        if self.editor.table.editing.is_none() {
+            return;
+        }
+        if let Some(w) = self.editor.commit_table().warning {
+            self.toasts.push(w, ToastKind::Warning);
+        }
+    }
+
+    /// Commits the in-progress edit and re-resolves row `i` — an index from
+    /// the last frame's hit map — afterwards. A duplicate-key commit
+    /// `shift_remove`s a row, shifting every later index down, so acting on
+    /// the raw `i` would hit the neighbour. `None` when the row the user
+    /// clicked no longer exists (it was the one collapsed away).
+    fn resolve_table_row_across_commit(&mut self, i: usize) -> Option<usize> {
+        let edited_row = self.editor.table.editing.as_ref().map(|e| e.row);
+        let key = self.editor.table_key_at(i);
+        self.commit_table_edit();
+        match edited_row {
+            // Nothing was being edited: the index is still good.
+            None => Some(i),
+            // The clicked row is the one that just committed — its key may
+            // have changed under us, so take the row the commit resolved to
+            // (a discarded ghost row resolves to nothing to act on).
+            Some(r) if r == i => self
+                .editor
+                .table
+                .selected
+                .filter(|s| *s < self.editor.table_len()),
+            // Another row committed; that commit may have collapsed rows,
+            // so re-resolve by the key `i` named before it ran.
+            Some(_) => match key {
+                Some(k) => self.editor.table_index_of(&k),
+                // The ghost row has no key; it sits at the new length.
+                None => Some(self.editor.table_len()),
+            },
+        }
+    }
+
+    /// The `▼`/`▲` search buttons: focus the response pane and step the
+    /// match cycle, exactly as `n`/`N` do.
+    fn step_response_search(&mut self, delta: i32) -> bool {
+        self.update(Action::FocusPane(PaneId::Response));
+        self.session.response.step_search(delta);
+        self.update(Action::Render)
+    }
+
+    /// Mirrors every keybound (`keys::named_actions`) action that `on_hit`
+    /// below dispatches directly — i.e. reachable by a click that isn't
+    /// already counted via a footer/toolbar chip, a context menu, or a
+    /// palette command. Feeds `app::tests`'s mouse-parity sweep (spec §5):
+    /// that test can't reflect over `on_hit`'s match arms, so this list is
+    /// hand-kept beside it instead. Add a `Hit` arm below that fires a
+    /// keybound action directly, and add the same action here in the same
+    /// change — otherwise the parity test starts failing for it.
+    #[cfg(test)]
+    pub(crate) fn mouse_dispatch_mirror() -> Vec<Action> {
+        vec![
+            Action::Close,               // Hit::ModalOutside
+            Action::OpenProjectChooser,  // Hit::HeaderProject
+            Action::OpenEnvChooser,      // Hit::HeaderEnv
+            Action::OpenVarManager,      // Hit::HeaderVars
+            Action::OpenMethodDropdown,  // Hit::MethodSelector
+            Action::ToggleTableCollapse, // Hit::TableCollapse
+            Action::FocusUrl,            // Hit::UrlBar
+            Action::Send,                // Hit::SendButton (not in flight)
+            Action::EditorTabSelect(0),  // Hit::EditorTab, any draw position
+            Action::EditorTabSelect(1),  // (converted through
+            Action::EditorTabSelect(2),  //  EditorTab::from_draw_position(..).index())
+            Action::EditorTabSelect(3),
+        ]
+    }
+
     /// The central click dispatch: maps a resolved `Hit` (plus click count
     /// and the raw event, for hits that need to forward it) to app state
     /// changes. Only `Pane` and `BodyEditor` are wired up so far; later
     /// tasks extend this match as more hit kinds gain behavior.
     fn on_hit(&mut self, hit: Hit, clicks: u8, m: ratatui::crossterm::event::MouseEvent) -> bool {
         // A click anywhere that isn't the params/headers table itself (and
-        // isn't inside a modal — e.g. this row's own delete confirm) clears
-        // the table selection, so clicking around the app deselects.
-        // Suppressed mid-edit: an in-progress cell edit owns the selection.
+        // isn't inside a modal — e.g. this row's own delete confirm) is a
+        // click away: it commits whatever cell was being edited (typing is
+        // never silently thrown away) and clears the table selection.
         let keeps_table_selection = matches!(
             hit,
             Hit::TableRow(_)
                 | Hit::TableCheckbox(_)
                 | Hit::TableDelete(_)
-                | Hit::TableAdd
+                | Hit::TableCell { .. }
                 | Hit::TableCollapse
                 | Hit::ModalCancel
                 | Hit::ModalConfirm
@@ -186,20 +395,47 @@ impl App {
                 | Hit::VarPickerRow(_)
                 | Hit::ScrollbarThumb(_)
                 | Hit::ScrollbarTrack(..)
+                // A token sits *on* a cell: hovering or clicking one must
+                // neither commit the cell under edit nor drop the selection.
+                | Hit::VarToken(_)
+                // The `{{ }} vars` chip inserts into whatever text field is
+                // live, so it must not be treated as a click away: blurring
+                // the URL line (or committing the cell) first would leave
+                // the picker it opens with nowhere to insert.
+                | Hit::FooterChip(Action::OpenVarPicker { .. })
         );
-        if !keeps_table_selection && self.editor.table.editing.is_none() {
+        if !keeps_table_selection {
+            self.commit_table_edit();
             self.editor.table.selected = None;
         }
-        // Likewise, clicking away deselects whichever editor input is
-        // active (URL line / table / body). Hits that themselves place the
+        // Same rule for the variable form's own in-place field: any click
+        // that isn't on the field already under edit (or the reveal
+        // toggle, which must not disturb an edit in progress) commits
+        // whatever is being typed there first — including a click on a
+        // *different* form field, which must never silently overwrite
+        // `form.editing` out from under the field that was live.
+        let editing_this_field = matches!(hit, Hit::VmFormField(field)
+            if self.varmanager.form.editing.as_ref().is_some_and(|(f, _)| *f == field));
+        if !editing_this_field && !matches!(hit, Hit::VmRevealToggle) {
+            self.commit_var_form();
+        }
+        // …and the group grid's cell, likewise: any click that isn't on the
+        // cell already under edit commits it first, so clicking straight
+        // from one cell to another never drops what was typed into the
+        // first (Task 8's commit-first rule).
+        let editing_this_cell = matches!(hit, Hit::VmEntryCell { row, col }
+            if self.varmanager.grid.editing.as_ref().is_some_and(|e| e.row == row && e.col == col));
+        if !editing_this_cell {
+            self.commit_grid_edit();
+        }
+        // Likewise, clicking away blurs whichever editor input is active
+        // (URL line / table / body). Hits that themselves place the
         // sub-focus (UrlBar, BodyEditor, the table hits) re-set it right
         // after; modal and scrollbar hits are excluded above so an open
-        // popup or a scroll never blurs the input under it. Suppressed
-        // mid-edit for the same reason as the selection: an in-progress
-        // cell edit owns the focus.
-        let keeps_editor_input =
-            keeps_table_selection || matches!(hit, Hit::UrlBar | Hit::BodyEditor);
-        if !keeps_editor_input && self.editor.table.editing.is_none() {
+        // popup or a scroll never blurs the input under it.
+        let keeps_editor_input = keeps_table_selection
+            || matches!(hit, Hit::UrlBar | Hit::BodyEditor | Hit::VarToken(_));
+        if !keeps_editor_input {
             self.editor.sub_focus = SubFocus::None;
         }
         match hit {
@@ -267,6 +503,13 @@ impl App {
             Hit::TableCheckbox(i) => {
                 self.update(Action::FocusPane(PaneId::Editor));
                 self.editor.sub_focus = SubFocus::Content;
+                // A checkbox click during another row's edit commits that
+                // edit first — and that commit can collapse rows, so `i`
+                // (baked into the last frame's hit map) is re-resolved by
+                // the key it named before the toggle lands.
+                let Some(i) = self.resolve_table_row_across_commit(i) else {
+                    return self.update(Action::Render);
+                };
                 self.editor.table.selected = Some(i);
                 let map = match self.editor.active_tab {
                     EditorTab::Params => &mut self.editor.params,
@@ -281,52 +524,63 @@ impl App {
                 }
                 self.update(Action::Render)
             }
+            // The row background is only reachable at the slivers its cells
+            // don't cover (the accent-bar column, the key/value divider):
+            // it selects the row, nothing more — editing is the cells' job.
             Hit::TableRow(i) => {
                 self.update(Action::FocusPane(PaneId::Editor));
                 self.editor.sub_focus = SubFocus::Content;
-                if clicks == 2 {
-                    self.editor.table.selected = Some(i);
-                    let map = match self.editor.active_tab {
-                        EditorTab::Params => &mut self.editor.params,
-                        EditorTab::Headers => &mut self.editor.headers,
-                        EditorTab::Vars => &mut self.editor.variables,
-                        EditorTab::Body => {
-                            unreachable!("TableRow only fires on Params/Headers/Vars")
-                        }
-                    };
-                    self.editor.table.begin_edit_selected(map);
-                } else if self.editor.table.editing.is_none()
-                    && self.editor.table.selected == Some(i)
+                // The background of the row being edited is that row's own
+                // chrome (the pad lines its expansion added): clicking it
+                // is inert, so the second click of a double click can't
+                // cancel the edit the first one started.
+                if self
+                    .editor
+                    .table
+                    .editing
+                    .as_ref()
+                    .is_some_and(|e| e.row == i)
                 {
-                    // Clicking the already-selected row again deselects it.
-                    self.editor.table.selected = None;
-                } else {
-                    self.editor.table.selected = Some(i);
+                    return self.update(Action::Render);
+                }
+                let Some(i) = self.resolve_table_row_across_commit(i) else {
+                    return self.update(Action::Render);
+                };
+                self.editor.table.selected = Some(i);
+                self.update(Action::Render)
+            }
+            // A cell click edits that cell in place, committing whatever
+            // was being edited before it.
+            Hit::TableCell { row, col } => {
+                self.update(Action::FocusPane(PaneId::Editor));
+                self.editor.sub_focus = SubFocus::Content;
+                let outcome = self
+                    .editor
+                    .click_table_cell(row, crate::components::table_editor::Col::from_index(col));
+                if let Some(w) = outcome.warning {
+                    self.toasts.push(w, ToastKind::Warning);
                 }
                 self.update(Action::Render)
             }
             Hit::TableDelete(i) => {
                 self.update(Action::FocusPane(PaneId::Editor));
                 self.editor.sub_focus = SubFocus::Content;
-                self.update(Action::ConfirmDeleteTableRow(i))
-            }
-            Hit::TableAdd => {
-                self.update(Action::FocusPane(PaneId::Editor));
-                self.editor.sub_focus = SubFocus::Content;
-                let map = match self.editor.active_tab {
-                    EditorTab::Params => &self.editor.params,
-                    EditorTab::Headers => &self.editor.headers,
-                    EditorTab::Vars => &self.editor.variables,
-                    EditorTab::Body => unreachable!("TableAdd only fires on Params/Headers/Vars"),
+                // Same as the checkbox: commit first, then re-resolve the
+                // row so the confirm never names the wrong one.
+                let Some(i) = self.resolve_table_row_across_commit(i) else {
+                    return self.update(Action::Render);
                 };
-                self.editor.table.begin_add(map);
-                self.update(Action::Render)
+                self.update(Action::ConfirmDeleteTableRow(i))
             }
             Hit::TableCollapse => self.update(Action::ToggleTableCollapse),
             Hit::UrlBar => {
-                self.update(Action::FocusPane(PaneId::Editor));
                 let was_focused = self.editor.sub_focus == SubFocus::Url;
-                self.editor.sub_focus = SubFocus::Url;
+                // `Action::FocusUrl` is exactly "focus Editor, sub-focus
+                // Url" (see its handler) — dispatching it here rather than
+                // setting both fields by hand is what makes the mouse-parity
+                // test's job possible: `focus_url` genuinely goes through
+                // this arm rather than merely resembling it.
+                self.update(Action::FocusUrl);
                 if let Some(area) = self.editor.last_url_text_area {
                     // Map the clicked column back to a char index: the drawn
                     // window starts at 0 unfocused, or scrolls to keep the
@@ -350,7 +604,9 @@ impl App {
                 let Some(Modal::Dropdown(state)) = self.modals.top_mut() else {
                     return false;
                 };
-                let Some((_, action)) = state.items.get(i).cloned() else {
+                // A disabled row swallows its click: nothing runs, and the
+                // menu stays open rather than closing on a dead press.
+                let Some(action) = state.items.get(i).and_then(|it| it.action.clone()) else {
                     return false;
                 };
                 self.modals.pop();
@@ -456,11 +712,22 @@ impl App {
                     toggle: true,
                 })
             }
+            Hit::ResponseSearchButton => {
+                self.update(Action::FocusPane(PaneId::Response));
+                self.session.response.open_search();
+                self.update(Action::Render)
+            }
+            Hit::ResponseSearchNext => self.step_response_search(1),
+            Hit::ResponseSearchPrev => self.step_response_search(-1),
             Hit::CopyBodyButton => self.update(Action::CopyToClipboard(CopyTarget::ResponseBody)),
             Hit::SaveBodyButton => self.update(Action::PromptSaveBody),
             Hit::HeaderCopy(i) => {
                 self.update(Action::CopyToClipboard(CopyTarget::ResponseHeader(i)))
             }
+            Hit::AutoHeaderCopy(i) => {
+                self.update(Action::CopyToClipboard(CopyTarget::ComputedHeader(i)))
+            }
+            Hit::AutoHeaderReveal => self.update(Action::ToggleHeaderReveal),
             Hit::ScrollbarThumb(pane) => {
                 let Some(thumb) = self.hits.rect_of(&Hit::ScrollbarThumb(pane)) else {
                     return false;
@@ -475,30 +742,171 @@ impl App {
             Hit::ScrollbarTrack(pane, delta) => {
                 self.update(Action::ScrollPane(pane, delta.clamp(-30, 30)))
             }
-            Hit::VarRow(i) => match self.varmanager.click_row(i) {
-                Some(action) => self.update(action),
-                None => self.update(Action::Render),
-            },
-            Hit::VarName(i) => match self.varmanager.click_name(i, clicks == 2, &self.project) {
-                Some(action) => self.update(action),
-                None => self.update(Action::Render),
-            },
-            Hit::VarCell { row, col } => {
+            // Clicking a drawn `{{token}}` opens the var picker already
+            // filtered to that name (spec §7) — the shortest path from
+            // "what is this?" to the variable itself.
+            Hit::VarToken(name) => self.update(Action::OpenVarPickerFor(name)),
+            // Like `VmFormField`/`VmEntryCell` above: the commit attempts at
+            // the top of this function just ran, and a write failure
+            // restores the original edit (still live) with its typed text.
+            // Selecting a different row would reset `form`/`grid` and throw
+            // that text away, so the click is absorbed instead — render
+            // only, edit and detail stay put.
+            Hit::VmLeftRow(i) => {
+                if self.varmanager.form.editing.is_some() || self.varmanager.grid.editing.is_some()
+                {
+                    return self.update(Action::Render);
+                }
+                self.varmanager.select_row(i);
+                self.update(Action::Render)
+            }
+            // The Manager's environment switcher is the header env chip's
+            // chooser, reached from the screen that replaced the header.
+            Hit::VmEnvSwitch => self.update(Action::OpenEnvChooser),
+            Hit::VmNewVar => self.update(Action::PromptNewVar),
+            Hit::VmNewGroup => self.update(Action::PromptNewGroup),
+            // A second click on the field already under edit is inert (the
+            // top-of-`on_hit` guard above left it alone precisely so this
+            // check still sees the live edit). A click on any other field
+            // lands here only after that same guard already tried to
+            // commit whatever was being edited: on success `form.editing`
+            // is now `None` and this starts a fresh edit on the clicked
+            // field; on a write failure it restores the *original* field's
+            // edit (spec's write-failure rule: the typed text stays put),
+            // and this must not clobber that with the newly clicked field
+            // — the click is absorbed and the original edit stays live.
+            Hit::VmFormField(field) => {
+                if self
+                    .varmanager
+                    .form
+                    .editing
+                    .as_ref()
+                    .is_some_and(|(f, _)| *f == field)
+                {
+                    return false;
+                }
+                if self.varmanager.form.editing.is_some() {
+                    return self.update(Action::Render);
+                }
+                self.varmanager.start_field_edit(&self.project, field);
+                self.update(Action::Render)
+            }
+            // The grid's cells follow `VmFormField`'s rules exactly: a
+            // second click on the live cell is inert, and a click on
+            // another cell after a *failed* commit is absorbed so the
+            // original edit (holding the text that couldn't be written)
+            // stays live.
+            Hit::VmEntryCell { row, col } => {
+                if self
+                    .varmanager
+                    .grid
+                    .editing
+                    .as_ref()
+                    .is_some_and(|e| e.row == row && e.col == col)
+                {
+                    return false;
+                }
+                if self.varmanager.grid.editing.is_some() {
+                    return self.update(Action::Render);
+                }
+                self.varmanager.grid.cursor = (row, col);
+                self.varmanager.start_cell_edit(&self.project, row, col);
+                self.update(Action::Render)
+            }
+            Hit::VmEntryRadio(row) => {
+                let crate::components::varmanager::VmDetail::Group(group) =
+                    self.varmanager.detail.clone()
+                else {
+                    return false;
+                };
+                let (Some(env), Some(entry)) = (
+                    self.project.active_env.clone(),
+                    self.varmanager.entry_at(&self.project, row),
+                ) else {
+                    return false;
+                };
+                self.varmanager.grid.cursor = (row, 0);
+                self.varmanager.focus = VmFocus::Grid;
+                self.update(Action::VarEdit(VarEditOp::SelectEntry {
+                    env,
+                    group,
+                    entry,
+                }))
+            }
+            Hit::VmNewEntry => {
+                if self.project.active_env.is_none() {
+                    self.toasts.push(
+                        crate::components::varmanager::NO_ENV_HINT,
+                        crate::components::toast::ToastKind::Warning,
+                    );
+                    return self.update(Action::Render);
+                }
+                let crate::components::varmanager::VmDetail::Group(group) =
+                    self.varmanager.detail.clone()
+                else {
+                    return false;
+                };
+                // The ghost row *is* the new-entry affordance: put the
+                // cursor in its name cell and start typing.
+                let row = postui_core::varmodel::group_entries(&self.project.env_data, &group)
+                    .map_or(0, indexmap::IndexMap::len);
+                self.varmanager.start_cell_edit(&self.project, row, 0);
+                self.update(Action::Render)
+            }
+            Hit::VmEditFields => {
+                let crate::components::varmanager::VmDetail::Group(group) =
+                    self.varmanager.detail.clone()
+                else {
+                    return false;
+                };
+                self.update(Action::PromptGroupFields { group })
+            }
+            Hit::VmSecretToggle => {
+                let crate::components::varmanager::VmDetail::Var(name) =
+                    self.varmanager.detail.clone()
+                else {
+                    return false;
+                };
+                self.update(Action::ToggleSecretVar { name })
+            }
+            Hit::VmRevealToggle => {
+                self.varmanager.form.revealed = !self.varmanager.form.revealed;
+                self.update(Action::Render)
+            }
+            // Both buttons are on the variable form *and* the group pane;
+            // the rename/delete flows behind them already branch on what
+            // the name is declared as.
+            Hit::VmRename => {
+                let Some(name) = self.varmanager.detail.name().map(str::to_string) else {
+                    return false;
+                };
+                self.update(Action::PromptRenameVar { from: name })
+            }
+            Hit::VmDelete => {
+                let Some(name) = self.varmanager.detail.name().map(str::to_string) else {
+                    return false;
+                };
+                self.update(Action::ConfirmDeleteVar { name })
+            }
+            Hit::VmPromoteBtn => {
+                let crate::components::varmanager::VmDetail::Var(name) =
+                    self.varmanager.detail.clone()
+                else {
+                    return false;
+                };
                 let open_request = self
                     .editor
                     .slug
                     .is_some()
                     .then(|| self.editor.current_request());
-                match self.varmanager.click_cell(
-                    row,
-                    col,
-                    clicks == 2,
+                let Some((_, action)) = crate::components::varmanager::promote_demote_action(
                     &self.project,
                     open_request.as_ref(),
-                ) {
-                    Some(action) => self.update(action),
-                    None => self.update(Action::Render),
-                }
+                    &name,
+                ) else {
+                    return false;
+                };
+                self.update(action)
             }
         }
     }

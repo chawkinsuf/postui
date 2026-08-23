@@ -1,39 +1,43 @@
-use super::line_input::LineInput;
+//! The Variable Manager screen (spec §3.4): a master-detail layout —
+//! a top bar (environment switcher + the two "new" buttons), a fixed-width
+//! left list of every declared variable and group, and a detail pane for
+//! whatever the list has selected.
+//!
+//! Task 14 built the skeleton: the top bar, the left list and its
+//! selection model, and the structural ops the list's own commands
+//! dispatch. Task 15 fills the right pane's variable face — [`VarFormState`]
+//! and [`draw_var_form`] — description/default/env-value fields edited in
+//! place exactly like Task 8's tables, plus the secret toggle, rename/delete
+//! buttons and the promote/demote button where the legacy `p`/`P`
+//! preconditions hold. The group face ([`EntryGridState`]) is still a
+//! placeholder for Task 16.
+
 use crate::action::Action;
-use crate::hit::HitMap;
-use crate::paint::{fill, text};
+use crate::components::line_input::LineInput;
+use crate::hit::{Hit, HitMap, ScrollbarSpec};
+use crate::layout::PaneId;
+use crate::paint::{
+    BUTTON_HEIGHT, Button, ButtonKind, ControlState, FIELD_HEIGHT, PillRow, RowHighlight,
+    TextField, button_min_width, fill, text,
+};
 use crate::project_ctx::ProjectContext;
 use crate::theme::Theme;
 use indexmap::IndexMap;
 use postui_core::model::HttpRequest;
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Style};
-use std::collections::BTreeSet;
+use ratatui::layout::Rect;
+use ratatui::style::Style;
+use ratatui::text::Line;
 
-/// In-progress edit of a single grid cell (spec §5). `row` indexes
-/// `VarManager::rows`; `col` matches the cursor's — 0 is the shared
-/// name/desc block, 1 is the Default column, 2.. are environment
-/// columns. `masked` is set for a
-/// secret cell's value: the typed text renders as `●` per char
-/// ([`LineInput::draw_line_masked`]) and the secret string itself is
-/// never toasted.
-#[derive(Debug, Clone)]
-pub struct CellEdit {
-    pub row: usize,
-    pub col: usize,
-    pub input: LineInput,
-    pub masked: bool,
-}
-
-/// A committed cell edit, dispatched as `Action::VarEdit` and applied by
+/// A committed value edit, dispatched as `Action::VarEdit` and applied by
 /// `App` (spec §5: every commit writes atomically and immediately to
-/// whichever file owns it; a write failure toasts and leaves the cell in
-/// edit rather than losing the typed text).
+/// whichever file owns it; a write failure toasts and leaves the field it
+/// came from untouched rather than losing the typed text).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VarEditOp {
-    /// A simple (non-secret, non-enumerated) variable's flat value in
+    /// A simple (non-secret) variable's flat value in
     /// `env` — `varedit::set_env_value` via `ctx.edit_env`.
     SetEnvValue {
         env: String,
@@ -52,748 +56,639 @@ pub enum VarEditOp {
         name: String,
         value: String,
     },
-    /// An option row's stored value: when the cell currently shows `env`'s
-    /// own override (the row's `overridden` truth), the edit lands in that
-    /// env's `[options.owner.key]` (`varedit::upsert_env_option`); when it
-    /// shows the shared/declared value, the edit lands in the shared
-    /// `[owner.options.key]` (`varedit::upsert_shared_option`) instead.
-    /// `member` is `Some(member_name)` for a group option's per-member
-    /// value; `None` for a variable option's single `value` field.
-    SetOptionValue {
+    /// One field of one entry: the edit lands in `env`'s
+    /// `[entries.<group>.<entry>]` table (`varedit::upsert_entry`), the
+    /// only place an entry's values live (spec §3.1). Every group grid
+    /// cell but the name column commits through this.
+    SetEntryValue {
         env: String,
-        owner: String,
-        key: String,
-        member: Option<String>,
+        group: String,
+        entry: String,
+        field: String,
         value: String,
     },
     /// A request-scoped `[variables]` entry's value on the open request —
     /// mutates `Editor::variables` directly and rides the editor's existing
     /// dirty/save path (no immediate write of its own).
     SetRequestVar { name: String, value: String },
-    /// Records `name`'s selection as `key` for `env` — `ctx.set_selection`
-    /// (the ✓ action; also the picker's confirm in Task 14).
-    Select {
+    /// Records `entry` as `group`'s selection in `env` — `ctx.set_selection`
+    /// (the group grid's radio column; also the var picker's confirm and
+    /// the ✓ action). Picking an entry is what makes every one of the
+    /// group's fields resolve, together, to that record's values.
+    SelectEntry {
         env: String,
-        name: String,
-        key: String,
-    },
-}
-
-/// The title bar's height, matching the header/footer's 3-row painted
-/// rhythm (a blank panel row, the content row, a blank panel row).
-pub const TITLE_HEIGHT: u16 = 3;
-/// The footer hint row's height: a single line, since the Manager already
-/// carries its own title bar and doesn't need the app footer's blank
-/// panel padding rows around it.
-pub const HINT_HEIGHT: u16 = 1;
-
-/// A row of the Variable Manager grid (spec §5). Structural only — this
-/// says *which* row it is, not its per-environment cell content (that's
-/// computed at draw time against each visible environment column).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RowKind {
-    /// "This request" / "Project".
-    SectionHeader(&'static str),
-    /// A request-scoped `[variables]` override on the open request.
-    RequestVar {
-        name: String,
-    },
-    /// A declared variable: simple, enumerated, or secret alike.
-    Var {
-        name: String,
-    },
-    GroupHeader {
-        name: String,
-    },
-    /// Indented under its `GroupHeader`.
-    GroupMember {
         group: String,
-        name: String,
+        entry: String,
     },
-    /// An option sub-row, indented under an expanded `Var` or `GroupHeader`.
-    OptionRow {
-        owner: String,
-        key: String,
-    },
-    /// Ghost action rows at the end of the project section.
-    AddVar,
-    AddGroup,
 }
 
-/// A structural mutation dispatched by the Variable Manager (spec §5
-/// action list; §4 promote/demote; §3 secret flag transitions). Unlike
-/// [`VarEditOp`] (one cell's value), these add/remove/rename/reshape
-/// declarations — each still applies through `ctx.edit_variables`/
-/// `edit_env`/the request editor, per `App::apply_var_struct`.
+/// A structural mutation dispatched by the Variable Manager: unlike
+/// [`VarEditOp`] (one value), these add/remove/rename/reshape declarations
+/// and entries. Each applies through `ctx.edit_variables`/`edit_env` in
+/// `App::apply_var_struct`.
+///
+/// The declaration ops (`NewVar`..`Demote`) write `variables.toml`; the
+/// entry ops (`NewEntry`..`DuplicateEntry`) write one environment file
+/// each — entries belong to exactly one environment (spec §3.1), so every
+/// one of them names the `env` it targets.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VarStructOp {
-    /// `n`: a bare new variable declaration (no default yet — the grid's
-    /// existing cell edit sets it afterward).
+    /// A bare new variable declaration (`+ Variable` / `n`).
     NewVar {
         name: String,
         description: Option<String>,
     },
-    /// `g`: a new group (or, reused for `m`'s member edit, an update to an
-    /// existing one — `varedit::upsert_group` is create-or-update either
-    /// way).
-    NewGroup { name: String, members: Vec<String> },
-    /// `o` on an enumerated/group row: a new keyed option, written to the
-    /// shared declaration (`varedit::upsert_shared_option`).
-    NewOption {
-        owner: String,
-        key: String,
-        description: Option<String>,
-        values: IndexMap<String, String>,
-    },
-    /// `e`/`F2`/`=` (or double-click on the name) on a `Var` row
-    /// (variables only — see the module doc on why groups aren't
-    /// renameable this task).
+    /// A new group and its field list (`+ Group` / `g`). Create-or-update:
+    /// `varedit::upsert_group` is the same verb either way.
+    NewGroup { name: String, fields: Vec<String> },
+    /// Rename a variable or a group. A group renames in both halves at
+    /// once (`varedit::rename_group` + `rename_group_entries` per
+    /// environment): an environment's `[entries.<old>]` table names a
+    /// group the renamed model no longer declares, so neither half is
+    /// valid without the other. Any recorded selection follows the name.
     Rename { from: String, to: String },
-    /// `d`/`Delete` on a `Var` or `GroupHeader` row.
+    /// Delete a variable or a group. A group cascades: every environment's
+    /// `[entries.<name>]` subtree goes with the declaration, and every
+    /// environment's selection for it is cleared.
     Delete { name: String },
-    /// `d`/`Delete` on an `OptionRow` (finding 3): location-aware — the
-    /// active env's override if it has one (leaving a shared option, if
-    /// any, intact — a second delete then removes it), the shared option
-    /// otherwise. `App::apply_delete_option` recomputes which at apply
-    /// time, matching `Delete`'s own var-vs-group recompute above.
-    DeleteOption { owner: String, key: String },
-    /// `s` on a non-enumerated `Var` row: flips `secret` (spec §3's two
-    /// transitions — `App::apply_var_struct` does the value-moving work).
+    /// Flip a variable's `secret` flag (spec §3's two transitions).
     ToggleSecret { name: String },
-    /// `m` on a `GroupHeader` row: replaces the group's member list.
-    SetMembers { group: String, members: Vec<String> },
-    /// `p` on a `RequestVar` row (spec §4).
+    /// Replace a group's field list.
+    SetFields { group: String, fields: Vec<String> },
+    /// Promote a request-scoped variable to the project (spec §4).
     Promote {
         name: String,
         target: postui_core::varedit::PromoteTarget,
     },
-    /// `P` on a `Var` row (spec §4); refused for secret/enumerated/group
-    /// names before this is ever dispatched.
+    /// Demote a project variable into the open request (spec §4).
     Demote { name: String },
+    /// A new entry of `group` in `env` (`varedit::upsert_entry`).
+    NewEntry {
+        env: String,
+        group: String,
+        name: String,
+        description: Option<String>,
+        values: IndexMap<String, String>,
+    },
+    /// Rename one entry of `group` within `env`.
+    RenameEntry {
+        env: String,
+        group: String,
+        from: String,
+        to: String,
+    },
+    /// Delete one entry of `group` from `env`, clearing any selection that
+    /// named it.
+    DeleteEntry {
+        env: String,
+        group: String,
+        name: String,
+    },
+    /// Copy one entry of `group` in `env` to a fresh name — `"<name> copy"`,
+    /// then `"<name> copy-2"`, … on collision.
+    DuplicateEntry {
+        env: String,
+        group: String,
+        name: String,
+    },
 }
 
-/// The structural action a key/chip asks for — see
-/// `VarManager::struct_action_target`. Not the wire type ([`VarStructOp`]
-/// is that, built once the modal collecting the rest of its fields
-/// confirms); this only picks *which* modal/confirm to open for the
-/// cursor's row.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StructKind {
-    NewOption,
-    Rename,
-    Delete,
-    ToggleSecret,
-    EditMembers,
-    AddMember,
-    Promote,
-    Demote,
-    /// `e` on an `OptionRow`: the multi-field value(s)/description prompt
-    /// (the same one the picker's `e` opens), prefilled from the ACTIVE
-    /// env's merged view of the option.
-    EditOptionPrompt,
+/// What the detail pane is showing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum VmDetail {
+    #[default]
+    None,
+    Var(String),
+    Group(String),
 }
 
-/// The full-frame Variable Manager screen (spec §5): a title bar, the
-/// read-only variable/environment grid, and a footer hint row. Editing
-/// (Task 11) will extend `handle_key` and add mutation actions; this task
-/// only renders the resolution truth.
-#[derive(Debug, Default)]
-pub struct VarManager {
-    /// Rebuilt from `&ProjectContext` (+ the open request + `expanded`) at
-    /// the top of every `draw` call.
-    pub rows: Vec<RowKind>,
-    /// `(row, col)`: `row` indexes `rows`; `col` 0 is the shared name/desc
-    /// block, `col` 1 is the Default column, `col` 2.. are environment
-    /// columns (relative to `env_scroll`).
-    pub cursor: (usize, usize),
-    /// Index into the project's environment list: the first visible env
-    /// column.
-    pub env_scroll: usize,
-    /// First visible row's index into `rows`.
-    pub scroll: usize,
-    /// Names (variable or group) whose option sub-rows are shown.
-    pub expanded: BTreeSet<String>,
-    /// Set by a keyboard move (arrows/Tab) so the next `draw` snaps `scroll`
-    /// to keep `cursor.0` visible; a mouse click or wheel scroll never sets
-    /// it, since those gestures place the viewport (or cursor) explicitly.
-    /// Cleared once `draw` has applied it. Mirrors `Sidebar::ensure_visible`.
-    pub ensure_visible: bool,
-    /// The row list's height as of the last `draw` — `move_row`'s and
-    /// `draw`'s snap-into-view math must agree, so `draw` records it here
-    /// rather than each recomputing it independently.
-    pub visible_rows: usize,
-    /// How many environment columns fit as of the last `draw` — used the
-    /// same way as `visible_rows`, for horizontal cursor movement.
-    pub env_capacity: usize,
-    /// The in-progress edit of one cell, if any (spec §5). `Esc` with this
-    /// `Some` cancels the edit and is swallowed (the first `Esc` "eats" —
-    /// closing the screen needs a second, now-`None` press).
-    pub editing: Option<CellEdit>,
-    /// The one secret cell currently shown in plaintext instead of `●`s
-    /// (`(variable name, environment name)`), toggled by `r` on a secret
-    /// cell without entering edit. At most one at a time.
-    pub revealed: Option<(String, String)>,
-}
-
-/// Builds the grid's row list (order, not content): the request-scope
-/// section (only when `open_request` carries any `[variables]`), then the
-/// project section — declared variables in file order, then groups (a
-/// header row followed by its indented members) in file order — each
-/// var/group's option rows spliced in right after it when its name is in
-/// `expanded`, and finally the two ghost action rows.
-pub fn build_rows(
-    ctx: &ProjectContext,
-    open_request: Option<&HttpRequest>,
-    expanded: &BTreeSet<String>,
-) -> Vec<RowKind> {
-    let mut rows = Vec::new();
-
-    if let Some(req) = open_request
-        && !req.variables.is_empty()
-    {
-        rows.push(RowKind::SectionHeader("This request"));
-        for name in req.variables.keys() {
-            rows.push(RowKind::RequestVar { name: name.clone() });
+impl VmDetail {
+    /// The declared name the pane has open, whichever face it is showing —
+    /// what the shared `[Rename]`/`[Delete]` buttons act on.
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            VmDetail::Var(n) | VmDetail::Group(n) => Some(n),
+            VmDetail::None => None,
         }
     }
+}
 
-    rows.push(RowKind::SectionHeader("Project"));
+/// One row of the left list, rebuilt from `&ProjectContext` at the top of
+/// every `draw` (and after every structural write).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VmRow {
+    SectionVars,
+    Var(String),
+    SectionGroups,
+    Group(String),
+}
 
-    // Group members are rendered under their `GroupHeader`, not as their
-    // own top-level `Var` row, even though a member may also have its own
-    // (option-less) entry in `model.vars`.
-    let group_members: std::collections::HashSet<&str> = ctx
+impl VmRow {
+    /// Whether the keyboard cursor stops here — section headers are labels,
+    /// not selections.
+    fn is_stop(&self) -> bool {
+        matches!(self, VmRow::Var(_) | VmRow::Group(_))
+    }
+
+    /// The declared name this row addresses, if any.
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            VmRow::Var(n) | VmRow::Group(n) => Some(n),
+            _ => None,
+        }
+    }
+}
+
+/// Which field of the variable form is under edit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VmField {
+    Description,
+    Default,
+    EnvValue,
+}
+
+/// The detail pane's variable form (spec §3.4). Editing is always in place
+/// (Task 8's model, exactly): a click seeds `editing` with the clicked
+/// field's current text and a caret at the end; another click, `Enter`, or
+/// `Esc` all leave it — the caller (`App`) commits or reverts, since a
+/// commit writes through `ctx.edit_variables`/`edit_env` and only `App` can
+/// reach those.
+#[derive(Debug, Default)]
+pub struct VarFormState {
+    /// The field under edit and its live `LineInput`, or `None` when
+    /// nothing in the form owns the keyboard — consulted by the
+    /// command-key gate in [`VarManager::handle_key`].
+    pub editing: Option<(VmField, LineInput)>,
+    /// Whether the env-value field currently shows a secret's plaintext
+    /// instead of `\u{25cf}` dots. Reset to `false` whenever the detail
+    /// selection changes (mirrors Task 10's per-context reset precedent) —
+    /// a reveal never survives moving on to a different variable.
+    pub revealed: bool,
+}
+
+/// The text a field shows when nothing is being typed into it — the seed a
+/// click begins editing from, and what a resting (non-edited) field
+/// displays. `EnvValue` reads the active environment's *resolved* value
+/// (default-if-no-override, secret plaintext included) so editing always
+/// starts from what the user actually sees; with no active environment it
+/// falls back to the declaration default, mirroring [`var_edit_op_for`]'s
+/// write-target fallback.
+fn field_seed_text(ctx: &ProjectContext, name: &str, field: VmField) -> String {
+    let decl = ctx.model.vars.get(name);
+    match field {
+        VmField::Description => decl.and_then(|d| d.description.clone()).unwrap_or_default(),
+        VmField::Default => decl.and_then(|d| d.default.clone()).unwrap_or_default(),
+        VmField::EnvValue => {
+            if ctx.active_env.is_some() {
+                ctx.resolved.values.get(name).cloned().unwrap_or_default()
+            } else {
+                decl.and_then(|d| d.default.clone()).unwrap_or_default()
+            }
+        }
+    }
+}
+
+/// The [`VarEditOp`] a committed `field` edit writes (spec §5's "every
+/// commit writes atomically and immediately"). `EnvValue` targets the
+/// active environment (masked through `SetSecretValue` for a secret var,
+/// `.local/secrets.toml` rather than the env file); with no active
+/// environment there is nowhere to write an override, so it targets the
+/// declaration default instead — the same field a secret can't have, so
+/// that edit fails and toasts rather than silently landing somewhere
+/// unexpected (spec's general write-failure rule: the text stays put).
+pub fn var_edit_op_for(
+    ctx: &ProjectContext,
+    name: &str,
+    field: VmField,
+    value: String,
+) -> VarEditOp {
+    match field {
+        VmField::Description => VarEditOp::SetDescription {
+            owner: name.to_string(),
+            value,
+        },
+        VmField::Default => VarEditOp::SetDefault {
+            name: name.to_string(),
+            value,
+        },
+        VmField::EnvValue => match &ctx.active_env {
+            Some(env) => {
+                let secret = ctx.model.vars.get(name).is_some_and(|d| d.secret);
+                if secret {
+                    VarEditOp::SetSecretValue {
+                        env: env.clone(),
+                        name: name.to_string(),
+                        value,
+                    }
+                } else {
+                    VarEditOp::SetEnvValue {
+                        env: env.clone(),
+                        name: name.to_string(),
+                        value,
+                    }
+                }
+            }
+            None => VarEditOp::SetDefault {
+                name: name.to_string(),
+                value,
+            },
+        },
+    }
+}
+
+/// The promote/demote button's label and click action for `name` right now
+/// — `None` when neither applies, which is what hides the button entirely.
+/// Mirrors the legacy `p`/`P` preconditions exactly: a secret's value can
+/// never move through either (its plaintext would otherwise land in a
+/// git-tracked request file, or promoting a plain value onto it would make
+/// the declaration invalid — `promote_var`'s own conflict cases, moot here
+/// since a name reachable as `VmDetail::Var` is already a simple
+/// declaration, never a group name or field). Which direction applies
+/// depends on whether the open request already overrides `name` in its own
+/// `[variables]` — if so, "Promote" offers to move that override up into
+/// the project (`apply_promote` requires exactly this); otherwise, with a
+/// request open, "Demote" offers to copy the resolved project value down
+/// into it.
+pub fn promote_demote_action(
+    ctx: &ProjectContext,
+    open_request: Option<&HttpRequest>,
+    name: &str,
+) -> Option<(&'static str, Action)> {
+    if ctx.model.vars.get(name).is_some_and(|d| d.secret) {
+        return None;
+    }
+    let req = open_request?;
+    if req.variables.contains_key(name) {
+        Some((
+            "Promote",
+            Action::PromptPromoteVar {
+                name: name.to_string(),
+            },
+        ))
+    } else {
+        Some((
+            "Demote",
+            Action::ConfirmDemoteVar {
+                name: name.to_string(),
+            },
+        ))
+    }
+}
+
+/// One grid cell's in-progress edit (Task 8's `CellEdit`, for the group
+/// grid): which cell, the live buffer, and the text it started from so
+/// `Esc` can put it back.
+#[derive(Debug)]
+pub struct GridEdit {
+    /// Index into the group's entries — or `entries.len()`, the ghost row
+    /// that becomes a real entry the moment its name cell commits
+    /// non-empty.
+    pub row: usize,
+    /// `0` is the entry-name column; `n` is the group's `n-1`th field.
+    pub col: usize,
+    pub input: LineInput,
+    /// The cell's pre-edit text, for `Esc`-revert.
+    pub original: String,
+}
+
+/// The detail pane's entries grid (spec §3.4): one row per entry of the
+/// selected group in the active environment, one column per group field,
+/// plus the radio column that says which entry the environment has
+/// selected. Editing is Task 8's in-place model, exactly — see
+/// [`VarFormState`] for the same contract on the variable form.
+#[derive(Debug, Default)]
+pub struct EntryGridState {
+    /// The keyboard cursor's `(row, col)`; `space`/`o`/`m` act here.
+    pub cursor: (usize, usize),
+    /// The cell under edit, or `None` when nothing in the grid owns the
+    /// keyboard — consulted by the command-key gate in
+    /// [`VarManager::handle_key`].
+    pub editing: Option<GridEdit>,
+    /// First visible entry row.
+    pub scroll: usize,
+}
+
+/// Which of the screen's two keyboard focus stops has the keyboard: the
+/// left list, or the group pane's entries grid. Each keeps its own cursor,
+/// so stepping out of the grid and back lands where it was. See
+/// [`VarManager::handle_key`] for the keys that move between them.
+///
+/// The variable form has no stop of its own: its fields are reached by
+/// clicking (and, once one is live, `App` routes every key to it), so
+/// there is no second cursor for the keyboard to be lost in.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum VmFocus {
+    #[default]
+    List,
+    Grid,
+}
+
+/// The full-frame Variable Manager screen.
+#[derive(Debug, Default)]
+pub struct VarManager {
+    /// What the detail pane shows — set by [`VarManager::select_row`],
+    /// whichever gesture (click or arrow key) got there.
+    pub detail: VmDetail,
+    /// Rebuilt from `&ProjectContext` at the top of every `draw`.
+    pub left_rows: Vec<VmRow>,
+    /// Index into `left_rows`.
+    pub left_cursor: usize,
+    /// First visible row of `left_rows`.
+    pub left_scroll: usize,
+    pub form: VarFormState,
+    pub grid: EntryGridState,
+    /// Which stop has the keyboard (see [`VmFocus`]).
+    pub focus: VmFocus,
+    /// The group grid's entry-row region as of the last `draw` — the wheel
+    /// scrolls the grid when the pointer is inside it, the left list
+    /// otherwise. Empty when no grid is on screen.
+    grid_area: Rect,
+    /// How many entry rows that region showed, for the wheel's clamp.
+    grid_visible: usize,
+    /// Set by a keyboard move so the next `draw` snaps `left_scroll` to
+    /// keep `left_cursor` visible; a wheel/drag gesture clears it (those
+    /// place the viewport explicitly). Mirrors `Sidebar::ensure_visible`.
+    ensure_visible: bool,
+    /// How many rows the left list showed as of the last `draw` — the
+    /// scrollbar's viewport, and the snap math's page size.
+    visible_rows: usize,
+}
+
+/// The top bar's height, matching the header/footer's 3-row painted rhythm
+/// (and exactly one painted button tall).
+pub const TITLE_HEIGHT: u16 = BUTTON_HEIGHT;
+/// The left list's fixed width (spec §3.4's mock).
+pub const LEFT_W: u16 = 28;
+
+const GLYPH_GROUP: &str = "\u{25b6}"; // ▶
+const GLYPH_LOCK: &str = "\u{1f512}"; // 🔒
+const GLYPH_UNRESOLVED: &str = "\u{25cf}"; // ●
+const GLYPH_CARET: &str = "\u{25be}"; // ▾
+const GLYPH_RADIO_ON: &str = "\u{25c9}"; // ◉
+const GLYPH_RADIO_OFF: &str = "\u{25cb}"; // ○
+
+/// The hint the group pane shows instead of a grid when no environment is
+/// active: entries belong to one environment each (spec §3.1), so there is
+/// nowhere for them to live until one is picked.
+pub const NO_ENV_HINT: &str = "entries live in environments \u{2014} pick or create one";
+
+/// The ghost row's resting label.
+const GHOST_LABEL: &str = "+ entry";
+
+/// Width of the grid's radio column (glyph + one column of gutter).
+const RADIO_W: u16 = 3;
+
+/// Where each grid column starts and how wide it is: `x[0]`/`w[0]` is the
+/// entry-name column, `x[n]` the group's `n-1`th field. Columns that would
+/// start past the pane's right edge are dropped, so a narrow pane simply
+/// shows fewer columns rather than painting over its own border.
+struct GridCols {
+    radio_x: u16,
+    x: Vec<u16>,
+    w: Vec<u16>,
+}
+
+fn grid_columns(x0: u16, width: u16, ncols: usize) -> GridCols {
+    let mut cols = GridCols {
+        radio_x: x0,
+        x: Vec::new(),
+        w: Vec::new(),
+    };
+    let right = x0 + width;
+    let avail = width.saturating_sub(RADIO_W);
+    let n = ncols.max(1) as u16;
+    let each = (avail / n).max(6);
+    let mut cx = x0 + RADIO_W;
+    for _ in 0..n {
+        if cx + 4 > right {
+            break;
+        }
+        let w = each.saturating_sub(1).min(right - cx);
+        cols.x.push(cx);
+        cols.w.push(w);
+        cx += each;
+    }
+    cols
+}
+
+/// One group's entries in `ctx`'s active environment, as `(name, values)`
+/// pairs in file order. Empty when the group has no entries here (or there
+/// is no active environment).
+fn entry_rows(ctx: &ProjectContext, group: &str) -> Vec<(String, IndexMap<String, String>)> {
+    if ctx.active_env.is_none() {
+        return Vec::new();
+    }
+    postui_core::varmodel::group_entries(&ctx.env_data, group)
+        .map(|entries| {
+            entries
+                .iter()
+                .map(|(name, e)| (name.clone(), e.values.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The text grid cell `(row, col)` currently shows — the seed a click
+/// starts editing from. Empty for the ghost row and for a field an entry
+/// doesn't set.
+fn grid_cell_text(ctx: &ProjectContext, group: &str, row: usize, col: usize) -> String {
+    let rows = entry_rows(ctx, group);
+    let Some((name, values)) = rows.get(row) else {
+        return String::new();
+    };
+    if col == 0 {
+        return name.clone();
+    }
+    let fields = group_fields(ctx, group);
+    fields
+        .get(col - 1)
+        .and_then(|f| values.get(f))
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// `group`'s declared field list (empty for an undeclared name).
+fn group_fields(ctx: &ProjectContext, group: &str) -> Vec<String> {
+    ctx.model
+        .groups
+        .get(group)
+        .map(|g| g.fields.clone())
+        .unwrap_or_default()
+}
+
+/// The left list's rows: the VARIABLES section (every declared variable
+/// that isn't a group field — fields live inside their group's entries),
+/// then the GROUPS section.
+pub fn build_left_rows(ctx: &ProjectContext) -> Vec<VmRow> {
+    let mut rows = vec![VmRow::SectionVars];
+
+    let group_fields: std::collections::HashSet<&str> = ctx
         .model
         .groups
         .values()
-        .flat_map(|g| g.members.iter().map(String::as_str))
+        .flat_map(|g| g.fields.iter().map(String::as_str))
         .collect();
-
     for name in ctx.model.vars.keys() {
-        if group_members.contains(name.as_str()) {
-            continue;
-        }
-        rows.push(RowKind::Var { name: name.clone() });
-        if expanded.contains(name) {
-            for key in union_var_option_keys(ctx, name) {
-                rows.push(RowKind::OptionRow {
-                    owner: name.clone(),
-                    key,
-                });
-            }
+        if !group_fields.contains(name.as_str()) {
+            rows.push(VmRow::Var(name.clone()));
         }
     }
 
-    for (group_name, decl) in &ctx.model.groups {
-        rows.push(RowKind::GroupHeader {
-            name: group_name.clone(),
-        });
-        if expanded.contains(group_name) {
-            for key in union_group_option_keys(ctx, group_name) {
-                rows.push(RowKind::OptionRow {
-                    owner: group_name.clone(),
-                    key,
-                });
-            }
-        }
-        for member in &decl.members {
-            rows.push(RowKind::GroupMember {
-                group: group_name.clone(),
-                name: member.clone(),
-            });
-        }
+    rows.push(VmRow::SectionGroups);
+    for name in ctx.model.groups.keys() {
+        rows.push(VmRow::Group(name.clone()));
     }
-
-    rows.push(RowKind::AddVar);
-    rows.push(RowKind::AddGroup);
-
     rows
 }
 
-/// `env`'s data: the active environment's is read straight off `ctx`
-/// (already loaded); any other environment is loaded fresh. A missing or
-/// unparseable file degrades to empty rather than erroring — the Manager
-/// is a read-only truth display, and a broken environment is surfaced
-/// elsewhere (toasts on load), not here.
-fn env_data_for(ctx: &ProjectContext, env: &str) -> postui_core::varmodel::EnvData {
-    if ctx.active_env.as_deref() == Some(env) {
-        ctx.env_data.clone()
-    } else {
-        postui_core::project::load_environment(&ctx.root, env).unwrap_or_default()
-    }
+/// A group's current selection in the active environment, as the left list
+/// shows it inline: the selected entry's name, or `None` when the group has
+/// no (or a stale) selection here.
+fn active_selection(ctx: &ProjectContext, group: &str) -> Option<String> {
+    let env = ctx.active_env.as_deref()?;
+    let key = ctx.selections_for(env).get(group)?;
+    let entries = postui_core::varmodel::group_entries(&ctx.env_data, group)?;
+    entries.contains_key(key).then(|| key.clone())
 }
 
-/// The union of `name`'s option keys across `variables.toml` and every
-/// environment's `[options.<name>.*]` overrides — a variable can be
-/// enumerated *only* in one environment (no options declared in
-/// `variables.toml` at all), and that environment's option keys must
-/// still make the variable expandable and show up as option rows.
-/// Declared keys come first (in their declared order), then any env-only
-/// keys in environment-list order — order doesn't matter for correctness
-/// (row content is looked up by key), only determinism.
-pub(crate) fn union_var_option_keys(ctx: &ProjectContext, name: &str) -> Vec<String> {
-    let mut seen: IndexMap<String, ()> = ctx
-        .model
-        .vars
-        .get(name)
-        .map(|d| d.options.keys().map(|k| (k.clone(), ())).collect())
-        .unwrap_or_default();
-    for env in &ctx.environments {
-        let env_data = env_data_for(ctx, env);
-        for key in postui_core::varmodel::merged_var_options(&ctx.model, &env_data, name).keys() {
-            seen.entry(key.clone()).or_insert(());
-        }
-    }
-    seen.into_keys().collect()
-}
-
-/// [`union_var_option_keys`], for a group's options.
-fn union_group_option_keys(ctx: &ProjectContext, name: &str) -> Vec<String> {
-    let mut seen: IndexMap<String, ()> = ctx
-        .model
-        .groups
-        .get(name)
-        .map(|g| g.options.keys().map(|k| (k.clone(), ())).collect())
-        .unwrap_or_default();
-    for env in &ctx.environments {
-        let env_data = env_data_for(ctx, env);
-        for key in postui_core::varmodel::merged_group_options(&ctx.model, &env_data, name).keys() {
-            seen.entry(key.clone()).or_insert(());
-        }
-    }
-    seen.into_keys().collect()
-}
-
-/// Fixed column widths (spec §5: "Fixed left columns: name, description;
-/// then one column per environment side by side" — plus the shared
-/// Default column between them, `ENV_W` wide like the env columns).
-const NAME_W: u16 = 20;
-const DESC_W: u16 = 20;
-const ENV_W: u16 = 26;
-
-const GLYPH_EXPANDED: &str = "\u{2304}"; // ⌄
-const GLYPH_COLLAPSED: &str = "\u{203a}"; // ›
-
-/// One environment's data, resolved once per `draw` call and reused for
-/// every row's cell in that column (spec's per-env resolution truth).
-/// Built by `env_column`: the active environment's is read straight off
-/// `ctx` (already loaded/resolved); any other environment is loaded and
-/// resolved fresh here. Cheap: `variables.toml` and `environments/*.toml`
-/// are tiny, and this runs once per draw, not once per cell.
-struct EnvColumn<'a> {
-    name: &'a str,
-    env_data: postui_core::varmodel::EnvData,
-    resolved: postui_core::varmodel::Resolved,
-    selections: &'a IndexMap<String, String>,
-}
-
-fn env_column<'a>(ctx: &'a ProjectContext, name: &'a str) -> EnvColumn<'a> {
-    let selections = ctx.selections_for(name);
-    if ctx.active_env.as_deref() == Some(name) {
-        return EnvColumn {
-            name,
-            env_data: ctx.env_data.clone(),
-            resolved: ctx.resolved.clone(),
-            selections,
-        };
-    }
-    let env_data = env_data_for(ctx, name);
-    let empty_secrets = IndexMap::new();
-    let secrets = ctx.secrets.get(name).unwrap_or(&empty_secrets);
-    let resolved = postui_core::varmodel::resolve_env(&ctx.model, &env_data, selections, secrets);
-    EnvColumn {
-        name,
-        env_data,
-        resolved,
-        selections,
-    }
-}
-
-/// One rendered cell: its text and foreground color.
-struct Cell {
-    text: String,
-    fg: Color,
-}
-
-impl Cell {
-    fn blank() -> Self {
-        Cell {
-            text: String::new(),
-            fg: Color::Reset,
-        }
-    }
-}
-
-/// Computes an env column's cell for `row`. `theme` supplies the palette;
-/// `open_request` is only consulted for `RequestVar` rows. `revealed` is
-/// the one secret cell (`(variable name, environment name)`) currently
-/// shown in plaintext instead of `●`s, toggled by `r` (spec §5) — `None`
-/// for every other draw.
-/// The Default column's cell (col 1): a `Var`'s shared `default` from
-/// `variables.toml`, or a request var's single value. Blank for every
-/// other row — groups, options, and members have no shared flat value,
-/// and a secret's value never lives in `variables.toml`.
-fn default_cell(
-    ctx: &ProjectContext,
-    row: &RowKind,
-    open_request: Option<&HttpRequest>,
-    theme: &Theme,
-) -> Cell {
-    match row {
-        RowKind::Var { name } => {
-            let Some(decl) = ctx.model.vars.get(name) else {
-                return Cell::blank();
-            };
-            if decl.secret {
-                return Cell::blank();
-            }
-            match &decl.default {
-                Some(v) => Cell {
-                    text: v.clone(),
-                    fg: theme.text,
-                },
-                None => Cell {
-                    text: "\u{2014}".into(),
-                    fg: theme.text_muted,
-                },
-            }
-        }
-        RowKind::RequestVar { name } => {
-            let Some(entry) = open_request.and_then(|r| r.variables.get(name)) else {
-                return Cell::blank();
-            };
-            let fg = if entry.enabled {
-                theme.text
-            } else {
-                theme.text_muted
-            };
-            Cell {
-                text: entry.value.clone(),
-                fg,
-            }
-        }
-        _ => Cell::blank(),
-    }
-}
-
-fn env_cell(
-    ctx: &ProjectContext,
-    row: &RowKind,
-    col: &EnvColumn,
-    theme: &Theme,
-    revealed: Option<&(String, String)>,
-) -> Cell {
-    use postui_core::varmodel::VarMeta;
-
-    match row {
-        RowKind::SectionHeader(_) | RowKind::AddVar | RowKind::AddGroup => Cell::blank(),
-
-        // A request var's single value renders in the Default column
-        // (`default_cell`); a muted dash in each env cell marks that it
-        // has no per-env variants to set.
-        RowKind::RequestVar { .. } => Cell {
-            text: "\u{2014}".into(),
-            fg: theme.text_muted,
-        },
-
-        RowKind::Var { name } => {
-            let Some(decl) = ctx.model.vars.get(name) else {
-                return Cell::blank();
-            };
-            if decl.secret {
-                return match col.resolved.meta.get(name) {
-                    Some(VarMeta::Secret) => {
-                        let shown = revealed.is_some_and(|(n, e)| n == name && e == col.name);
-                        if shown {
-                            Cell {
-                                text: col.resolved.values.get(name).cloned().unwrap_or_default(),
-                                fg: theme.text,
-                            }
-                        } else {
-                            Cell {
-                                text: "\u{25cf}\u{25cf}\u{25cf}\u{25cf}".into(),
-                                fg: theme.text,
-                            }
-                        }
-                    }
-                    _ => Cell {
-                        text: "\u{26a0} secret".into(),
-                        fg: theme.warning,
-                    },
-                };
-            }
-            let merged = postui_core::varmodel::merged_var_options(&ctx.model, &col.env_data, name);
-            if !merged.is_empty() {
-                return match col.resolved.meta.get(name) {
-                    Some(VarMeta::Enumerated { selected }) => {
-                        let value = col.resolved.values.get(name).cloned().unwrap_or_default();
-                        Cell {
-                            text: format!("{selected} \u{b7} {value}"),
-                            fg: theme.text,
-                        }
-                    }
-                    _ => Cell {
-                        text: "\u{26a0} select".into(),
-                        fg: theme.warning,
-                    },
-                };
-            }
-            match col.resolved.values.get(name) {
-                Some(v) => {
-                    let is_default = !col.env_data.values.contains_key(name);
-                    Cell {
-                        text: v.clone(),
-                        fg: if is_default {
-                            theme.text_muted
-                        } else {
-                            theme.text
-                        },
-                    }
-                }
-                None => Cell {
-                    text: "\u{2014}".into(),
-                    fg: theme.text_muted,
-                },
-            }
-        }
-
-        RowKind::GroupHeader { name } => {
-            let merged =
-                postui_core::varmodel::merged_group_options(&ctx.model, &col.env_data, name);
-            if merged.is_empty() {
-                return Cell::blank();
-            }
-            match col.selections.get(name) {
-                Some(key) if merged.contains_key(key) => Cell {
-                    text: key.clone(),
-                    fg: theme.text,
-                },
-                _ => Cell {
-                    text: "\u{26a0} select".into(),
-                    fg: theme.warning,
-                },
-            }
-        }
-
-        RowKind::GroupMember { name, .. } => match col.resolved.meta.get(name) {
-            Some(VarMeta::GroupMember { selected, .. }) => {
-                let value = col.resolved.values.get(name).cloned().unwrap_or_default();
-                Cell {
-                    text: format!("{selected} \u{b7} {value}"),
-                    fg: theme.text,
-                }
-            }
-            _ => Cell {
-                text: "\u{26a0} select".into(),
-                fg: theme.warning,
-            },
-        },
-
-        RowKind::OptionRow { owner, key } => {
-            if ctx.model.vars.contains_key(owner) {
-                let merged =
-                    postui_core::varmodel::merged_var_options(&ctx.model, &col.env_data, owner);
-                let Some(opt) = merged.get(key) else {
-                    return Cell::blank();
-                };
-                let overridden = col
-                    .env_data
-                    .options
-                    .get(owner)
-                    .and_then(|m| m.get(key))
-                    .is_some_and(|fields| fields.contains_key("value"));
-                let mut text = opt.value.clone();
-                if col.selections.get(owner) == Some(key) {
-                    text = format!("\u{2713} {text}");
-                }
-                Cell {
-                    text,
-                    fg: if overridden {
-                        theme.text
-                    } else {
-                        theme.text_muted
-                    },
-                }
-            } else if ctx.model.groups.contains_key(owner) {
-                let merged =
-                    postui_core::varmodel::merged_group_options(&ctx.model, &col.env_data, owner);
-                let Some(opt) = merged.get(key) else {
-                    return Cell::blank();
-                };
-                let overridden = col
-                    .env_data
-                    .options
-                    .get(owner)
-                    .and_then(|m| m.get(key))
-                    .is_some_and(|fields| fields.keys().any(|f| f != "description"));
-                let mut text = opt
-                    .values
-                    .iter()
-                    .map(|(m, v)| format!("{m}={v}"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                if col.selections.get(owner) == Some(key) {
-                    text = format!("\u{2713} {text}");
-                }
-                Cell {
-                    text,
-                    fg: if overridden {
-                        theme.text
-                    } else {
-                        theme.text_muted
-                    },
-                }
-            } else {
-                Cell::blank()
-            }
-        }
-    }
-}
-
-/// The name-column glyph (expand/collapse) for a row that owns option
-/// sub-rows, or `None` for rows that never expand.
-fn expand_glyph(
-    ctx: &ProjectContext,
-    row: &RowKind,
-    expanded: &BTreeSet<String>,
-) -> Option<&'static str> {
-    let has_options = match row {
-        RowKind::Var { name } => !union_var_option_keys(ctx, name).is_empty(),
-        RowKind::GroupHeader { name } => !union_group_option_keys(ctx, name).is_empty(),
-        _ => return None,
-    };
-    let name = match row {
-        RowKind::Var { name } => name,
-        RowKind::GroupHeader { name } => name,
-        _ => unreachable!("returned above for any other row kind"),
-    };
-    if !has_options {
-        return None;
-    }
-    Some(if expanded.contains(name) {
-        GLYPH_EXPANDED
-    } else {
-        GLYPH_COLLAPSED
-    })
-}
-
-/// The context-sensitive action chips for the Manager's hint row (spec §5:
-/// "every mutation ... has a keyboard action and a painted button"),
-/// registered as `Hit::FooterChip` — the same generic click-dispatch the
-/// main footer's chips already use, so no new hit-routing code is needed.
-/// `n`/`g` (new variable/new group) are always offered; the rest come from
-/// [`VarManager::struct_action_target`] against the cursor's row, so a key
-/// and its chip can never disagree about which rows accept it.
-fn action_chips(
-    ctx: &ProjectContext,
-    row: Option<&RowKind>,
-) -> Vec<(&'static str, &'static str, Action)> {
-    let mut chips = vec![
-        ("n", "new var", Action::PromptNewVar),
-        ("g", "new group", Action::PromptNewGroup),
-    ];
-    let Some(row) = row else { return chips };
-    for (key, label, kind) in [
-        ("o", "add option", StructKind::NewOption),
-        ("e", "rename", StructKind::Rename),
-        ("e", "edit", StructKind::EditOptionPrompt),
-        ("d", "delete", StructKind::Delete),
-        ("s", "secret", StructKind::ToggleSecret),
-        ("a", "member", StructKind::AddMember),
-        ("m", "members", StructKind::EditMembers),
-        ("p", "promote", StructKind::Promote),
-        ("P", "demote", StructKind::Demote),
-    ] {
-        if let Some(action) = VarManager::struct_action_target(row, kind, ctx) {
-            chips.push((key, label, action));
-        }
-    }
-    chips
-}
-
-/// The name column's indent (in cells) and label for `row`.
-fn name_and_indent(row: &RowKind) -> (u16, String) {
-    match row {
-        RowKind::SectionHeader(s) => (0, s.to_string()),
-        RowKind::RequestVar { name } => (0, name.clone()),
-        RowKind::Var { name } => (0, name.clone()),
-        RowKind::GroupHeader { name } => (0, name.clone()),
-        RowKind::GroupMember { name, .. } => (2, name.clone()),
-        RowKind::OptionRow { key, .. } => (4, key.clone()),
-        RowKind::AddVar => (0, "+ Add variable".to_string()),
-        RowKind::AddGroup => (0, "+ Add group".to_string()),
-    }
-}
-
-/// The description column's text for `row` (blank for rows with none).
-fn description_for(ctx: &ProjectContext, row: &RowKind) -> String {
-    match row {
-        RowKind::Var { name } => ctx
-            .model
-            .vars
-            .get(name)
-            .and_then(|d| d.description.clone())
-            .unwrap_or_default(),
-        RowKind::GroupHeader { name } => ctx
-            .model
-            .groups
-            .get(name)
-            .and_then(|g| g.description.clone())
-            .unwrap_or_default(),
-        RowKind::OptionRow { owner, key } => if let Some(decl) = ctx.model.vars.get(owner) {
-            decl.options.get(key).and_then(|o| o.description.clone())
-        } else {
-            ctx.model
-                .groups
-                .get(owner)
-                .and_then(|g| g.options.get(key))
-                .and_then(|o| o.description.clone())
-        }
-        .unwrap_or_default(),
-        _ => String::new(),
-    }
-}
-
-/// `row`'s name, when clicking/Entering it (on any column) should
-/// toggle expand rather than edit a cell — a `Var`/`GroupHeader` that owns
-/// option sub-rows ([`union_var_option_keys`]/[`union_group_option_keys`]
-/// non-empty), matching [`expand_glyph`]'s own "has options" test.
-fn expandable_name<'a>(ctx: &ProjectContext, row: &'a RowKind) -> Option<&'a str> {
-    match row {
-        RowKind::Var { name } if !union_var_option_keys(ctx, name).is_empty() => Some(name),
-        RowKind::GroupHeader { name } if !union_group_option_keys(ctx, name).is_empty() => {
-            Some(name)
-        }
-        _ => None,
-    }
-}
-
-/// Whether an option row's `key`/`member` value, as currently shown in
-/// `env`'s column, is that env's own override (`true`) or the
-/// shared/declared value falling through from `variables.toml` (`false`)
-/// — the same "resolution truth" `env_cell` already renders (overridden =
-/// normal fg, shared = muted), reused here to route a committed
-/// `VarEditOp::SetOptionValue` to the right document: `member: None` for a
-/// variable option's `value` field, `member: Some(m)` for one member of a
-/// group option row.
-pub fn option_value_is_env_override(
-    ctx: &ProjectContext,
-    env: &str,
-    owner: &str,
-    key: &str,
-    member: Option<&str>,
-) -> bool {
-    let env_data = env_data_for(ctx, env);
-    let Some(fields) = env_data.options.get(owner).and_then(|m| m.get(key)) else {
-        return false;
-    };
-    match member {
-        None => fields.contains_key("value"),
-        Some(m) => fields.contains_key(m),
-    }
+/// Whether `name` currently resolves to a value in the active environment —
+/// false for a group field awaiting a selection, a secret with no value,
+/// and a variable with neither default nor env value. Drives the left
+/// list's red dot.
+fn is_unresolved(ctx: &ProjectContext, name: &str) -> bool {
+    !ctx.resolved.values.contains_key(name)
 }
 
 impl VarManager {
+    /// Points the detail pane at `left_rows[i]` and moves the cursor there.
+    /// A section header is a label, not a selection: the cursor still moves
+    /// (a click landed there) but the detail pane keeps what it had.
+    ///
+    /// Picking a row is the left list acting, so the keyboard comes back to
+    /// it — a grid the pane may no longer even be showing must never keep
+    /// the arrows.
+    pub fn select_row(&mut self, i: usize) {
+        if i >= self.left_rows.len() {
+            return;
+        }
+        self.left_cursor = i;
+        self.focus = VmFocus::List;
+        match &self.left_rows[i] {
+            VmRow::Var(name) => {
+                let target = VmDetail::Var(name.clone());
+                if self.detail != target {
+                    // A fresh selection starts with nothing mid-edit and no
+                    // reveal carried over from whatever was open before.
+                    self.form = VarFormState::default();
+                }
+                self.detail = target;
+            }
+            VmRow::Group(name) => {
+                let target = VmDetail::Group(name.clone());
+                if self.detail != target {
+                    self.grid = EntryGridState::default();
+                }
+                self.detail = target;
+            }
+            VmRow::SectionVars | VmRow::SectionGroups => {}
+        }
+    }
+
+    /// Click entry point for a form field (`Hit::VmFormField`): seeds
+    /// `field` with its current text and a caret at the end. A second click
+    /// on the field already under edit is the caller's job to no-op (it
+    /// must not restart the edit and lose what was typed) — this always
+    /// (re)starts one, so the caller checks first. A no-op with nothing
+    /// selected (`self.detail` isn't `Var`).
+    pub fn start_field_edit(&mut self, ctx: &ProjectContext, field: VmField) {
+        let VmDetail::Var(name) = &self.detail else {
+            return;
+        };
+        let seed = field_seed_text(ctx, name, field);
+        self.form.editing = Some((field, LineInput::new(&seed)));
+    }
+
+    /// Click entry point for a grid cell (`Hit::VmEntryCell`): seeds
+    /// `(row, col)` with its current text and a caret at the end, and puts
+    /// the grid cursor there. Like [`Self::start_field_edit`], a second
+    /// click on the cell already under edit is the caller's job to no-op.
+    /// A no-op with no group selected, and on a ghost-row cell other than
+    /// the name column (there is no entry yet for a value to belong to —
+    /// the click is redirected to the name cell by the caller).
+    pub fn start_cell_edit(&mut self, ctx: &ProjectContext, row: usize, col: usize) {
+        let VmDetail::Group(group) = &self.detail else {
+            return;
+        };
+        let group = group.clone();
+        let rows = entry_rows(ctx, &group);
+        let row = row.min(rows.len());
+        let col = if row == rows.len() { 0 } else { col };
+        let original = grid_cell_text(ctx, &group, row, col);
+        // Typing into a cell is the grid holding the keyboard, however the
+        // edit was started — so `Esc` out of it lands in the grid, not back
+        // in the left list.
+        self.focus = VmFocus::Grid;
+        self.grid.cursor = (row, col);
+        self.grid.editing = Some(GridEdit {
+            row,
+            col,
+            input: LineInput::new(&original),
+            original,
+        });
+    }
+
+    /// The entry `row` names, or `None` for the ghost row / no group.
+    pub fn entry_at(&self, ctx: &ProjectContext, row: usize) -> Option<String> {
+        let VmDetail::Group(group) = &self.detail else {
+            return None;
+        };
+        entry_rows(ctx, group).get(row).map(|(n, _)| n.clone())
+    }
+
+    /// The row the commands act on — the left list's current selection.
+    fn selected_row(&self) -> Option<&VmRow> {
+        self.left_rows.get(self.left_cursor).filter(|r| r.is_stop())
+    }
+
+    /// Rebuilds `left_rows` from `ctx` and repairs the selection after a
+    /// structural write: the cursor clamps into range, and a detail pane
+    /// pointing at a name that no longer exists empties.
+    pub fn sync(&mut self, ctx: &ProjectContext) {
+        self.left_rows = build_left_rows(ctx);
+        if self.left_cursor >= self.left_rows.len() {
+            self.left_cursor = self.left_rows.len().saturating_sub(1);
+        }
+        let gone = match &self.detail {
+            VmDetail::None => false,
+            VmDetail::Var(name) => !ctx.model.vars.contains_key(name),
+            VmDetail::Group(name) => !ctx.model.groups.contains_key(name),
+        };
+        if gone {
+            self.detail = VmDetail::None;
+            self.form = VarFormState::default();
+            self.grid = EntryGridState::default();
+            self.focus = VmFocus::List;
+        }
+        self.ensure_visible = true;
+    }
+
+    /// Moves the cursor one selectable row in `dir` (`-1`/`1`), skipping
+    /// section headers, and opens whatever it lands on.
+    fn move_cursor(&mut self, dir: i32) {
+        let mut i = self.left_cursor as i32;
+        loop {
+            i += dir;
+            if i < 0 || i as usize >= self.left_rows.len() {
+                return;
+            }
+            if self.left_rows[i as usize].is_stop() {
+                self.select_row(i as usize);
+                self.ensure_visible = true;
+                return;
+            }
+        }
+    }
+
     /// Handles a key while the Manager screen is open. `App::handle_key`
     /// routes every key here once an open modal and a modified global
     /// shortcut (e.g. ctrl+p for the palette) have had first refusal, and
@@ -801,647 +696,340 @@ impl VarManager {
     /// through to the global keymap — so, for instance, plain `q` does not
     /// quit the app from this screen.
     ///
-    /// `Esc` with no cell under edit asks the app to leave the screen
-    /// (`Action::CloseScreen`); with one, it cancels the edit instead and
-    /// is swallowed — the first `Esc` "eats", closing the screen needs a
-    /// second, now-`editing: None` press (spec §5's key model, verbatim in
-    /// the task brief). Arrows/Tab move the cursor (skipping header/ghost
-    /// rows vertically, landing on the nearest editable row); Enter begins
-    /// an edit or toggles expand, depending on the cursor's cell; `Space`
-    /// is the ✓ action on an option row; `r` toggles plaintext reveal on a
-    /// secret cell without entering edit.
-    pub fn handle_key(
+    /// The single-letter commands all target the left list's selection.
+    /// They are ignored while a detail-pane cell edit owns the keyboard
+    /// (spec §11: a command key that collides with typing yields to the
+    /// text input) — `esc` and the arrows still work.
+    ///
+    /// This is never reached while a form field is under edit — `App`
+    /// intercepts Esc (revert)/Enter (commit)/plain typing itself first,
+    /// since a commit needs write access to the project that this method's
+    /// `&ProjectContext` (shared, not mutable) can't give it. `form.editing`
+    /// is still consulted below, for the single-letter command gate.
+    ///
+    /// # Keyboard focus (spec §4's keyboard parity)
+    ///
+    /// The screen has two keyboard focus stops, [`VmFocus`]: the left list
+    /// and — when the detail pane is showing a group — its entries grid.
+    /// The left list owns the keyboard by default; `Right`/`Tab` step into
+    /// the grid, and `Left` from its first column, `Esc`, or `BackTab` step
+    /// back out. Each keeps its own cursor, so returning to the list lands
+    /// where it was. Inside the grid the arrows move the cell cursor,
+    /// `Enter` starts editing the focused cell, `space` selects the cursor
+    /// row's entry, and `e`/`d` rename/delete *that entry* rather than the
+    /// group (the list's own `e`/`d` still target the declaration — which
+    /// stop has focus is what tells them apart).
+    pub fn handle_key(&mut self, ev: KeyEvent, ctx: &ProjectContext) -> Option<Action> {
+        // The grid is a focus stop of its own: while it has the keyboard,
+        // the arrows drive its cell cursor rather than the left list, and
+        // the commands act on the entry under that cursor.
+        if self.focus == VmFocus::Grid {
+            if let VmDetail::Group(group) = self.detail.clone() {
+                return self.handle_grid_focus_key(ev, ctx, &group);
+            }
+            // The pane stopped showing a group under it (deleted, or the
+            // selection moved): the grid is gone, so the focus goes home.
+            self.focus = VmFocus::List;
+        }
+        match ev.code {
+            KeyCode::Esc => return Some(Action::CloseScreen),
+            KeyCode::Up => {
+                self.move_cursor(-1);
+                return None;
+            }
+            KeyCode::Down => {
+                self.move_cursor(1);
+                return None;
+            }
+            // Into the grid, when there is one to step into.
+            KeyCode::Right | KeyCode::Tab => {
+                if matches!(&self.detail, VmDetail::Group(g) if ctx.model.groups.contains_key(g))
+                    && ctx.active_env.is_some()
+                    && self.form.editing.is_none()
+                    && self.grid.editing.is_none()
+                {
+                    self.focus = VmFocus::Grid;
+                }
+                return None;
+            }
+            _ => {}
+        }
+        if self.form.editing.is_some() || self.grid.editing.is_some() {
+            return None;
+        }
+        // The group grid's own commands, on the group the detail pane has
+        // open (spec §3.4's "old keys"). They come first so `o`/`m`/`space`
+        // never fall through to a left-list command that would act on a
+        // different row than the grid the user is looking at. Unlike the
+        // focused-grid keys above, these work straight from the left list —
+        // `o` and `m` need no cursor, and `space` uses the grid's own.
+        if let VmDetail::Group(group) = self.detail.clone() {
+            match ev.code {
+                KeyCode::Char('o') => {
+                    let row = entry_rows(ctx, &group).len();
+                    self.focus = VmFocus::Grid;
+                    self.start_cell_edit(ctx, row, 0);
+                    return None;
+                }
+                KeyCode::Char('m') => return Some(Action::PromptGroupFields { group }),
+                KeyCode::Char(' ') => return self.select_entry_action(ctx, &group),
+                _ => {}
+            }
+        }
+        match ev.code {
+            KeyCode::Char('n') => Some(Action::PromptNewVar),
+            KeyCode::Char('g') => Some(Action::PromptNewGroup),
+            KeyCode::Char('e') | KeyCode::F(2) => self.rename_action(),
+            KeyCode::Char('d') | KeyCode::Delete => Some(Action::ConfirmDeleteVar {
+                name: self.selected_row()?.name()?.to_string(),
+            }),
+            KeyCode::Char('s') => match self.selected_row()? {
+                VmRow::Var(name) if ctx.model.vars.contains_key(name) => {
+                    Some(Action::ToggleSecretVar { name: name.clone() })
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Keys while the entries grid is the focus stop (see
+    /// [`Self::handle_key`]'s focus notes). The cursor moves over the whole
+    /// grid, ghost row included — `Enter` there starts a new entry, exactly
+    /// like clicking it. `Esc`, `BackTab`, and `Left` from the first column
+    /// hand the keyboard back to the left list rather than closing the
+    /// screen; the screen's own `Esc` is then one more press away, which is
+    /// the same "leave the inner thing first" rhythm the modal stack has.
+    fn handle_grid_focus_key(
         &mut self,
         ev: KeyEvent,
         ctx: &ProjectContext,
-        open_request: Option<&HttpRequest>,
+        group: &str,
     ) -> Option<Action> {
-        if self.editing.is_some() {
-            return match ev.code {
-                KeyCode::Esc => {
-                    self.editing = None;
-                    None
-                }
-                KeyCode::Enter => self.commit_edit(ctx),
-                _ => {
-                    if let Some(edit) = self.editing.as_mut() {
-                        edit.input.handle_key(ev);
-                    }
-                    None
-                }
-            };
+        // A live cell edit owns every key (`App` routes those before this
+        // is reached); nothing here may act behind its back.
+        if self.grid.editing.is_some() {
+            return None;
         }
-
+        let last_row = entry_rows(ctx, group).len(); // == the ghost row
+        let last_col = group_fields(ctx, group).len(); // == 1 + fields - 1
+        let (row, col) = &mut self.grid.cursor;
+        *row = (*row).min(last_row);
+        *col = (*col).min(last_col);
         match ev.code {
-            KeyCode::Esc => Some(Action::CloseScreen),
+            KeyCode::Esc | KeyCode::BackTab => {
+                self.focus = VmFocus::List;
+                None
+            }
             KeyCode::Up => {
-                self.move_row(-1);
+                *row = row.saturating_sub(1);
                 None
             }
             KeyCode::Down => {
-                self.move_row(1);
+                *row = (*row + 1).min(last_row);
                 None
             }
-            KeyCode::Left | KeyCode::BackTab => {
-                self.move_col(-1, ctx);
+            KeyCode::Left => {
+                if *col == 0 {
+                    self.focus = VmFocus::List;
+                } else {
+                    *col -= 1;
+                }
                 None
             }
             KeyCode::Right | KeyCode::Tab => {
-                self.move_col(1, ctx);
+                *col = (*col + 1).min(last_col);
                 None
             }
-            KeyCode::Enter => self.activate_cursor(ctx, open_request),
-            KeyCode::Char(' ') => self.select_cursor(ctx),
-            KeyCode::Char('r' | 'R') => {
-                self.toggle_reveal(ctx);
+            KeyCode::Enter => {
+                let (row, col) = self.grid.cursor;
+                self.start_cell_edit(ctx, row, col);
                 None
             }
+            KeyCode::Char('o') => {
+                self.start_cell_edit(ctx, last_row, 0);
+                None
+            }
+            KeyCode::Char('m') => Some(Action::PromptGroupFields {
+                group: group.to_string(),
+            }),
+            KeyCode::Char(' ') => self.select_entry_action(ctx, group),
+            // `e`/`d` here act on the entry under the cursor — the left
+            // list's own `e`/`d`, which target the declaration, are one
+            // focus stop away.
+            KeyCode::Char('e') | KeyCode::F(2) => Some(Action::PromptRenameEntry {
+                env: ctx.active_env.clone()?,
+                group: group.to_string(),
+                from: self.entry_at(ctx, self.grid.cursor.0)?,
+            }),
+            KeyCode::Char('d') | KeyCode::Delete => Some(Action::ConfirmDeleteEntry {
+                env: ctx.active_env.clone()?,
+                group: group.to_string(),
+                name: self.entry_at(ctx, self.grid.cursor.0)?,
+            }),
             KeyCode::Char('n') => Some(Action::PromptNewVar),
             KeyCode::Char('g') => Some(Action::PromptNewGroup),
-            KeyCode::Char('o') => self.struct_action(ctx, StructKind::NewOption),
-            KeyCode::Char('e') | KeyCode::F(2) | KeyCode::Char('=') => self
-                .struct_action(ctx, StructKind::Rename)
-                .or_else(|| self.struct_action(ctx, StructKind::EditOptionPrompt)),
-            KeyCode::Char('d') | KeyCode::Delete => self.struct_action(ctx, StructKind::Delete),
-            KeyCode::Char('s') => self.struct_action(ctx, StructKind::ToggleSecret),
-            KeyCode::Char('m') => self.struct_action(ctx, StructKind::EditMembers),
-            KeyCode::Char('a') => self.struct_action(ctx, StructKind::AddMember),
-            KeyCode::Char('p') => self.struct_action(ctx, StructKind::Promote),
-            KeyCode::Char('P') => self.struct_action(ctx, StructKind::Demote),
             _ => None,
         }
     }
 
-    /// Whether `row` is a stop for vertical cursor movement — every row
-    /// except the section headers and the trailing ghost action rows (spec
-    /// §5's key model: "skip headers/ghost rows vertically into nearest
-    /// editable").
-    fn is_stop_row(row: &RowKind) -> bool {
-        !matches!(
-            row,
-            RowKind::SectionHeader(_) | RowKind::AddVar | RowKind::AddGroup
-        )
-    }
-
-    /// Moves `cursor.0` one stop row in `dir` (`-1`/`1`), skipping
-    /// non-stop rows; stays put at either end of the list. Any editing
-    /// state was already gone by the time this runs (`handle_key` routes
-    /// arrows to the editing input instead while `editing.is_some()`).
-    fn move_row(&mut self, dir: i32) {
-        if self.rows.is_empty() {
-            return;
-        }
-        let mut i = self.cursor.0 as i32;
-        loop {
-            i += dir;
-            if i < 0 || i as usize >= self.rows.len() {
-                return;
-            }
-            if Self::is_stop_row(&self.rows[i as usize]) {
-                self.cursor.0 = i as usize;
-                self.ensure_visible = true;
-                return;
-            }
-        }
-    }
-
-    /// Moves `cursor.1` one column in `dir` (`-1`/`1`), clamped to
-    /// `[0, 1 + environments.len()]` (0 = name/desc block, 1 = Default,
-    /// 2.. = envs), snapping `env_scroll` to keep the target env column
-    /// visible (mirrors `move_row`'s row snap, horizontally).
-    fn move_col(&mut self, dir: i32, ctx: &ProjectContext) {
-        let max = 1 + ctx.environments.len() as i32;
-        let next = (self.cursor.1 as i32 + dir).clamp(0, max);
-        self.cursor.1 = next as usize;
-        if self.cursor.1 >= 2 && self.env_capacity > 0 {
-            let abs = self.cursor.1 - 2;
-            if abs < self.env_scroll {
-                self.env_scroll = abs;
-            } else if abs >= self.env_scroll + self.env_capacity {
-                self.env_scroll = abs + 1 - self.env_capacity;
-            }
-        }
-    }
-
-    /// The environment name `cursor.1 == col` addresses, or `None` for
-    /// `col == 0` (the shared name/desc block) and `col == 1` (the shared
-    /// Default column).
-    fn env_at(&self, ctx: &ProjectContext, col: usize) -> Option<String> {
-        if col <= 1 {
-            return None;
-        }
-        ctx.environments.get(self.env_scroll + col - 2).cloned()
-    }
-
-    fn toggle_expand(&mut self, name: &str) {
-        if !self.expanded.remove(name) {
-            self.expanded.insert(name.to_string());
-        }
-    }
-
-    fn begin_edit(&mut self, col: usize, seed: &str, masked: bool) {
-        self.editing = Some(CellEdit {
-            row: self.cursor.0,
-            col,
-            input: LineInput::new(seed),
-            masked,
-        });
-    }
-
-    /// `Enter` (or a click-selected-again) on the cursor's current cell:
-    /// toggles expand for an enumerated `Var`/`GroupHeader`, else begins
-    /// editing whichever value that cell shows (masked for a secret), else
-    /// (a cell with nothing to edit — `GroupMember`, ghost rows, an
-    /// `OptionRow`'s shared name column, a group `OptionRow`'s per-member
-    /// value) does nothing.
-    pub fn activate_cursor(
-        &mut self,
-        ctx: &ProjectContext,
-        open_request: Option<&HttpRequest>,
-    ) -> Option<Action> {
-        let row = self.rows.get(self.cursor.0)?.clone();
-        let col = self.cursor.1;
-
-        // Expand/collapse is the *name column's* activation; an env cell
-        // of the same expandable row offers the selection dropdown below.
-        if col == 0
-            && let Some(name) = expandable_name(ctx, &row)
-        {
-            self.toggle_expand(name);
-            return None;
-        }
-
-        match &row {
-            RowKind::Var { name } => {
-                let decl = ctx.model.vars.get(name)?;
-                if col == 0 {
-                    let seed = decl.description.clone().unwrap_or_default();
-                    self.begin_edit(0, &seed, false);
-                    return None;
-                }
-                if col == 1 {
-                    // The shared default lives in variables.toml, where a
-                    // secret's value must never be written — no edit.
-                    if decl.secret {
-                        return None;
-                    }
-                    let seed = decl.default.clone().unwrap_or_default();
-                    self.begin_edit(1, &seed, false);
-                    return None;
-                }
-                let env = self.env_at(ctx, col)?;
-                let column = env_column(ctx, &env);
-                if !postui_core::varmodel::merged_var_options(&ctx.model, &column.env_data, name)
-                    .is_empty()
-                {
-                    // An enumerated cell holds a *choice*, not free text.
-                    return Some(Action::OpenSelectDropdown {
-                        owner: name.clone(),
-                        env,
-                        row: self.cursor.0,
-                        col,
-                    });
-                }
-                let seed = column
-                    .resolved
-                    .values
-                    .get(name)
-                    .cloned()
-                    .unwrap_or_default();
-                self.begin_edit(col, &seed, decl.secret);
-                None
-            }
-            RowKind::GroupHeader { name } => {
-                if col == 0 {
-                    // Only a group with no options reaches here (expand
-                    // claimed the rest): edit its shared description.
-                    let seed = ctx
-                        .model
-                        .groups
-                        .get(name)
-                        .and_then(|g| g.description.clone())
-                        .unwrap_or_default();
-                    self.begin_edit(0, &seed, false);
-                    return None;
-                }
-                if col == 1 {
-                    return None;
-                }
-                let env = self.env_at(ctx, col)?;
-                let column = env_column(ctx, &env);
-                if postui_core::varmodel::merged_group_options(&ctx.model, &column.env_data, name)
-                    .is_empty()
-                {
-                    return None;
-                }
-                Some(Action::OpenSelectDropdown {
-                    owner: name.clone(),
-                    env,
-                    row: self.cursor.0,
-                    col,
-                })
-            }
-            RowKind::GroupMember { group, name } => {
-                if col <= 1 {
-                    return None;
-                }
-                let env = self.env_at(ctx, col)?;
-                let column = env_column(ctx, &env);
-                let merged = postui_core::varmodel::merged_group_options(
-                    &ctx.model,
-                    &column.env_data,
-                    group,
-                );
-                if merged.is_empty() {
-                    return None;
-                }
-                let Some(selected) = column
-                    .selections
-                    .get(group)
-                    .filter(|k| merged.contains_key(*k))
-                else {
-                    // No option chosen for this env yet — offer the choice
-                    // instead of an edit that has no target.
-                    return Some(Action::OpenSelectDropdown {
-                        owner: group.clone(),
-                        env,
-                        row: self.cursor.0,
-                        col,
-                    });
-                };
-                let seed = merged
-                    .get(selected)
-                    .and_then(|o| o.values.get(name))
-                    .cloned()
-                    .unwrap_or_default();
-                self.begin_edit(col, &seed, false);
-                None
-            }
-            RowKind::RequestVar { name } => {
-                // A request var is one flat value (no per-env variants):
-                // it shows and edits in the Default column only.
-                if col != 1 {
-                    return None;
-                }
-                let seed = open_request
-                    .and_then(|r| r.variables.get(name))
-                    .map(|e| e.value.clone())
-                    .unwrap_or_default();
-                self.begin_edit(1, &seed, false);
-                None
-            }
-            RowKind::OptionRow { owner, key } => {
-                // Group option rows carry one value per member (spec §5,
-                // `SetOptionValue.member`) rather than one flat value the
-                // grid's single-line cell could edit as free text; picking
-                // a group option is still reachable via `Space`/click
-                // (`select_cursor`), just not free-text edit here.
-                if col == 0 || !ctx.model.vars.contains_key(owner) {
-                    return None;
-                }
-                let env = self.env_at(ctx, col)?;
-                let column = env_column(ctx, &env);
-                let merged =
-                    postui_core::varmodel::merged_var_options(&ctx.model, &column.env_data, owner);
-                let seed = merged.get(key).map(|o| o.value.clone()).unwrap_or_default();
-                self.begin_edit(col, &seed, false);
-                None
-            }
-            _ => None,
-        }
-    }
-
-    /// `Space` (or a click) on an option row's cell: the ✓ action —
-    /// records `key` as `owner`'s selection for that column's environment.
-    /// A no-op anywhere else (col 0, or a row that isn't an `OptionRow`).
-    pub fn select_cursor(&mut self, ctx: &ProjectContext) -> Option<Action> {
-        let row = self.rows.get(self.cursor.0)?;
-        let RowKind::OptionRow { owner, key } = row else {
-            return None;
-        };
-        let env = self.env_at(ctx, self.cursor.1)?;
-        Some(Action::VarEdit(VarEditOp::Select {
-            env,
-            name: owner.clone(),
-            key: key.clone(),
+    /// `space`: select the entry the grid cursor is on for the active
+    /// environment. `None` on the ghost row (nothing to select yet) and
+    /// with no active environment.
+    fn select_entry_action(&self, ctx: &ProjectContext, group: &str) -> Option<Action> {
+        Some(Action::VarEdit(VarEditOp::SelectEntry {
+            env: ctx.active_env.clone()?,
+            group: group.to_string(),
+            entry: self.entry_at(ctx, self.grid.cursor.0)?,
         }))
     }
 
-    /// Which structural action a key/chip is asking for — routed through
-    /// [`Self::struct_action`] so the keyboard and the footer chip
-    /// ([`action_chips`]) share exactly one "is this row a valid target"
-    /// gate rather than risking the two disagreeing.
-    fn struct_action_target(
-        row: &RowKind,
-        kind: StructKind,
+    /// `e`/`F2` and the context menu's "Rename…". Both a variable and a
+    /// group rename through the same prompt: `VarStructOp::Rename` picks
+    /// the right pair of core verbs from what the name is declared as.
+    fn rename_action(&self) -> Option<Action> {
+        Some(Action::PromptRenameVar {
+            from: self.selected_row()?.name()?.to_string(),
+        })
+    }
+
+    /// The right-click menu for left-list row `i` (spec §3.4: Rename /
+    /// Duplicate / Delete). `None` for a section header.
+    pub fn context_menu(&self, i: usize) -> Option<Vec<crate::components::modal::MenuItem>> {
+        use crate::components::modal::MenuItem;
+        let row = self.left_rows.get(i).filter(|r| r.is_stop())?;
+        let name = row.name()?.to_string();
+        let (rename, duplicate) = match row {
+            VmRow::Var(_) => (
+                MenuItem::new(
+                    "Rename\u{2026}",
+                    Action::PromptRenameVar { from: name.clone() },
+                ),
+                MenuItem::new("Duplicate", Action::DuplicateVar { name: name.clone() }),
+            ),
+            // Duplicate is shown disabled rather than hidden, so the menu
+            // keeps its shape: a field belongs to exactly one group
+            // (`ModelError::FieldInTwoGroups`), so a copy carrying the same
+            // field list can never be a valid model — there is nothing to
+            // duplicate a group *into* until fields can be renamed as part
+            // of the copy.
+            _ => (
+                MenuItem::new(
+                    "Rename\u{2026}",
+                    Action::PromptRenameVar { from: name.clone() },
+                ),
+                MenuItem::disabled("Duplicate"),
+            ),
+        };
+        Some(vec![
+            rename,
+            duplicate,
+            MenuItem::new("Delete\u{2026}", Action::ConfirmDeleteVar { name }),
+        ])
+    }
+
+    /// The right-click menu for entry row `i` of the open group (spec
+    /// §3.4). `None` for the ghost row (nothing to act on yet) and when no
+    /// environment is active (there are no entries at all then).
+    pub fn entry_context_menu(
+        &self,
         ctx: &ProjectContext,
-    ) -> Option<Action> {
-        match (kind, row) {
-            (StructKind::NewOption, RowKind::Var { name })
-                if !ctx.model.vars.get(name).is_some_and(|d| d.secret) =>
-            {
-                Some(Action::PromptNewOption {
-                    owner: name.clone(),
-                })
-            }
-            (StructKind::NewOption, RowKind::GroupHeader { name }) => {
-                Some(Action::PromptNewOption {
-                    owner: name.clone(),
-                })
-            }
-            (StructKind::Rename, RowKind::Var { name }) => {
-                Some(Action::PromptRenameVar { from: name.clone() })
-            }
-            (StructKind::Delete, RowKind::Var { name } | RowKind::GroupHeader { name }) => {
-                Some(Action::ConfirmDeleteVar { name: name.clone() })
-            }
-            (StructKind::Delete, RowKind::GroupMember { group, name }) => {
-                Some(Action::ConfirmRemoveGroupMember {
+        i: usize,
+    ) -> Option<Vec<crate::components::modal::MenuItem>> {
+        use crate::components::modal::MenuItem;
+        let VmDetail::Group(group) = &self.detail else {
+            return None;
+        };
+        let env = ctx.active_env.clone()?;
+        let name = self.entry_at(ctx, i)?;
+        let (group, n) = (group.clone(), name.clone());
+        Some(vec![
+            MenuItem::new(
+                "Duplicate entry",
+                Action::VarStruct(VarStructOp::DuplicateEntry {
+                    env: env.clone(),
                     group: group.clone(),
-                    member: name.clone(),
-                })
-            }
-            (
-                StructKind::AddMember,
-                RowKind::GroupHeader { name: group } | RowKind::GroupMember { group, .. },
-            ) => Some(Action::PromptAddGroupMember {
-                group: group.clone(),
-            }),
-            (StructKind::Delete, RowKind::OptionRow { owner, key }) => {
-                Some(Action::ConfirmDeleteOption {
-                    owner: owner.clone(),
-                    key: key.clone(),
-                })
-            }
-            (StructKind::ToggleSecret, RowKind::Var { name })
-                if union_var_option_keys(ctx, name).is_empty() =>
-            {
-                Some(Action::ToggleSecretVar { name: name.clone() })
-            }
-            (StructKind::EditOptionPrompt, RowKind::OptionRow { owner, key }) => {
-                if ctx.model.vars.contains_key(owner)
-                    && let Some(opt) =
-                        postui_core::varmodel::merged_var_options(&ctx.model, &ctx.env_data, owner)
-                            .get(key)
-                {
-                    let mut values = IndexMap::new();
-                    values.insert("value".to_string(), opt.value.clone());
-                    return Some(Action::OpenEditOptionPrompt {
-                        owner: owner.clone(),
-                        key: key.clone(),
-                        description: opt.description.clone(),
-                        values,
-                    });
-                }
-                postui_core::varmodel::merged_group_options(&ctx.model, &ctx.env_data, owner)
-                    .get(key)
-                    .map(|opt| Action::OpenEditOptionPrompt {
-                        owner: owner.clone(),
-                        key: key.clone(),
-                        description: opt.description.clone(),
-                        values: opt.values.clone(),
-                    })
-            }
-            (StructKind::EditMembers, RowKind::GroupHeader { name }) => {
-                Some(Action::PromptEditGroupMembers {
-                    group: name.clone(),
-                })
-            }
-            (StructKind::Promote, RowKind::RequestVar { name }) => {
-                Some(Action::PromptPromoteVar { name: name.clone() })
-            }
-            (StructKind::Demote, RowKind::Var { name }) => {
-                Some(Action::ConfirmDemoteVar { name: name.clone() })
-            }
-            _ => None,
-        }
+                    name: n.clone(),
+                }),
+            ),
+            MenuItem::new(
+                "Rename\u{2026}",
+                Action::PromptRenameEntry {
+                    env: env.clone(),
+                    group: group.clone(),
+                    from: n,
+                },
+            ),
+            MenuItem::new(
+                "Delete\u{2026}",
+                Action::ConfirmDeleteEntry { env, group, name },
+            ),
+        ])
     }
 
-    /// The cursor-row version of [`Self::struct_action_target`] — the
-    /// keyboard path.
-    fn struct_action(&self, ctx: &ProjectContext, kind: StructKind) -> Option<Action> {
-        let row = self.rows.get(self.cursor.0)?;
-        Self::struct_action_target(row, kind, ctx)
-    }
-
-    /// `r` on a secret `Var`'s env cell: toggles that one `(name, env)`
-    /// pair between masked and plaintext display, replacing any other cell
-    /// currently revealed (spec §5: `r` toggles reveal *without* entering
-    /// edit). A no-op on any other cell.
-    fn toggle_reveal(&mut self, ctx: &ProjectContext) {
-        let Some(RowKind::Var { name }) = self.rows.get(self.cursor.0) else {
-            return;
-        };
-        if !ctx.model.vars.get(name).is_some_and(|d| d.secret) {
-            return;
-        }
-        let Some(env) = self.env_at(ctx, self.cursor.1) else {
-            return;
-        };
-        let pair = (name.clone(), env);
-        self.revealed = if self.revealed.as_ref() == Some(&pair) {
-            None
-        } else {
-            Some(pair)
-        };
-    }
-
-    /// `Enter` while a cell is under edit: builds the `VarEditOp` its kind
-    /// and column call for and dispatches `Action::VarEdit`. Does **not**
-    /// clear `self.editing` itself — `App` does that only once the write
-    /// actually succeeds (spec §5: a failed write "leave[s] the cell in
-    /// edit" with the typed text intact, so a retry doesn't need retyping).
-    fn commit_edit(&mut self, ctx: &ProjectContext) -> Option<Action> {
-        let edit = self.editing.as_ref()?;
-        let row = self.rows.get(edit.row)?.clone();
-        let value = edit.input.text().to_string();
-        let col = edit.col;
-
-        let op = match &row {
-            RowKind::Var { name } => {
-                let decl = ctx.model.vars.get(name)?;
-                if col == 0 {
-                    VarEditOp::SetDescription {
-                        owner: name.clone(),
-                        value,
-                    }
-                } else if col == 1 {
-                    VarEditOp::SetDefault {
-                        name: name.clone(),
-                        value,
-                    }
-                } else {
-                    let env = self.env_at(ctx, col)?;
-                    if decl.secret {
-                        VarEditOp::SetSecretValue {
-                            env,
-                            name: name.clone(),
-                            value,
-                        }
-                    } else {
-                        VarEditOp::SetEnvValue {
-                            env,
-                            name: name.clone(),
-                            value,
-                        }
-                    }
-                }
-            }
-            RowKind::GroupHeader { name } if col == 0 => VarEditOp::SetDescription {
-                owner: name.clone(),
-                value,
-            },
-            RowKind::GroupMember { group, name } => {
-                let env = self.env_at(ctx, col)?;
-                let column = env_column(ctx, &env);
-                let selected = column.selections.get(group)?.clone();
-                VarEditOp::SetOptionValue {
-                    env,
-                    owner: group.clone(),
-                    key: selected,
-                    member: Some(name.clone()),
-                    value,
-                }
-            }
-            RowKind::RequestVar { name } => VarEditOp::SetRequestVar {
-                name: name.clone(),
-                value,
-            },
-            RowKind::OptionRow { owner, key } => {
-                let env = self.env_at(ctx, col)?;
-                VarEditOp::SetOptionValue {
-                    env,
-                    owner: owner.clone(),
-                    key: key.clone(),
-                    member: None,
-                    value,
-                }
-            }
-            _ => return None,
-        };
-        Some(Action::VarEdit(op))
-    }
-
-    /// Mouse click routing for one cell (spec §5: "mouse click selects,
-    /// ... click-selected-again edits in place"). Always moves the cursor
-    /// to `(row, col)` first (and clears any *other* cell's edit — clicking
-    /// away from an in-progress edit discards it, same as `Esc`). An
-    /// option row's cell is its own ✓ checkbox (spec §5: "setting the
-    /// selected option per env (✓ in the env column)"), so any click on it
-    /// dispatches `Select` immediately rather than needing a second click;
-    /// every other row's second click within the double-click window
-    /// (`double`) does what `Enter` would.
-    pub fn click_cell(
-        &mut self,
-        row: usize,
-        col: usize,
-        double: bool,
-        ctx: &ProjectContext,
-        open_request: Option<&HttpRequest>,
-    ) -> Option<Action> {
-        if self
-            .editing
-            .as_ref()
-            .is_some_and(|e| e.row != row || e.col != col)
-        {
-            self.editing = None;
-        }
-        self.cursor = (row, col);
-        self.ensure_visible = false;
-        match self.rows.get(row).cloned() {
-            // The ghost action rows render like buttons; a single click
-            // anywhere on them acts immediately.
-            Some(RowKind::AddVar) => return Some(Action::PromptNewVar),
-            Some(RowKind::AddGroup) => return Some(Action::PromptNewGroup),
-            Some(RowKind::OptionRow { .. }) => return self.select_cursor(ctx),
-            // A choice cell acts on the first click too — it opens a
-            // dropdown, like the method selector.
-            Some(RowKind::GroupHeader { .. }) if col >= 2 => {
-                return self.activate_cursor(ctx, open_request);
-            }
-            Some(RowKind::Var { name }) if col >= 2 => {
-                if let Some(env) = self.env_at(ctx, col) {
-                    let column = env_column(ctx, &env);
-                    if !postui_core::varmodel::merged_var_options(
-                        &ctx.model,
-                        &column.env_data,
-                        &name,
-                    )
-                    .is_empty()
-                    {
-                        return self.activate_cursor(ctx, open_request);
-                    }
-                }
-            }
-            _ => {}
-        }
-        if double {
-            return self.activate_cursor(ctx, open_request);
-        }
-        None
-    }
-
-    /// Mouse click on a row's name region (the first `NAME_W` cells —
-    /// [`crate::hit::Hit::VarName`]). Single click moves the cursor to the
-    /// row's col 0 (discarding any in-progress edit) — except on the ghost
-    /// action rows, which act immediately like buttons. A double click
-    /// expands an expandable row, or opens the rename prompt for a plain
-    /// variable — the name's own "edit", mirroring `F2`.
-    pub fn click_name(&mut self, row: usize, double: bool, ctx: &ProjectContext) -> Option<Action> {
-        self.editing = None;
-        let kind = self.rows.get(row)?.clone();
-        self.cursor = (row, 0);
-        self.ensure_visible = false;
-        match &kind {
-            RowKind::AddVar => return Some(Action::PromptNewVar),
-            RowKind::AddGroup => return Some(Action::PromptNewGroup),
-            _ => {}
-        }
-        if !double {
-            return None;
-        }
-        if let Some(name) = expandable_name(ctx, &kind) {
-            self.toggle_expand(name);
-            return None;
-        }
-        Self::struct_action_target(&kind, StructKind::Rename, ctx)
-    }
-
-    /// Mouse click on a row's background (outside any specific cell):
-    /// moves `cursor.0` there, keeping the current column, and discards
-    /// any in-progress edit (same as clicking away from it in
-    /// `click_cell`). The ghost action rows act immediately, whole-row.
-    pub fn click_row(&mut self, row: usize) -> Option<Action> {
-        if row < self.rows.len() {
-            self.cursor.0 = row;
-        }
-        self.editing = None;
-        self.ensure_visible = false;
-        match self.rows.get(row) {
-            Some(RowKind::AddVar) => Some(Action::PromptNewVar),
-            Some(RowKind::AddGroup) => Some(Action::PromptNewGroup),
-            _ => None,
-        }
-    }
-
-    /// Free (unsnapped) wheel scroll over the grid — mirrors
+    /// Free (unsnapped) wheel scroll over the left list — mirrors
     /// `Sidebar::handle_scroll`: moves the viewport without touching the
-    /// cursor, and cancels any pending `ensure_visible` snap so the wheel
-    /// gesture isn't immediately overridden on the next draw.
+    /// cursor, and cancels any pending snap so the gesture isn't overridden
+    /// on the next draw.
     pub fn handle_scroll(&mut self, delta: i16) {
-        if self.rows.is_empty() {
+        self.set_scroll((self.left_scroll as i32 + delta as i32).max(0) as usize);
+    }
+
+    /// A wheel gesture at `(col, row)`: the group grid when the pointer is
+    /// over its entry rows, the left list everywhere else on the screen.
+    /// (The grid is the only other scrollable region the Manager draws, and
+    /// it has no scrollbar of its own — a grid tall enough to overflow is
+    /// reached by wheeling over it.)
+    pub fn handle_scroll_at(&mut self, col: u16, row: u16, delta: i16) {
+        if self.grid_area.width > 0 && self.grid_area.contains((col, row).into()) {
+            self.grid.scroll = (self.grid.scroll as i32 + delta as i32).max(0) as usize;
             return;
         }
-        let max = self.rows.len().saturating_sub(1);
-        self.scroll = (self.scroll as i32 + delta as i32).clamp(0, max as i32) as usize;
+        self.handle_scroll(delta);
+    }
+
+    /// Places the left list's viewport (the scrollbar drag's entry point).
+    pub fn set_scroll(&mut self, offset: usize) {
+        let max = self.left_rows.len().saturating_sub(1);
+        self.left_scroll = offset.min(max);
         self.ensure_visible = false;
     }
 
-    /// Paints the full-screen grid into `area`: a `theme.panel` title bar
-    /// reading "Variables — `<project>` · `<env>`", a column-header strip,
-    /// the variable/environment grid itself (rebuilt from `ctx` +
-    /// `open_request` + `self.expanded` at the top of every call), and a
-    /// muted footer hint row.
+    /// The left list's scroll state, as of the last draw. `None` before the
+    /// first frame (the viewport height is a render-time fact). Counted in
+    /// logical rows, not lines: the 2-line pitch scales every row the same.
+    ///
+    /// It borrows `PaneId::Sidebar`, the pane whose column the list stands
+    /// in: no sidebar is drawn while this screen is up, so the app's
+    /// existing wheel/drag routing for that pane is free, and `App`
+    /// redirects it here for the duration (see `App::scrollbar_spec`).
+    pub fn scrollbar_spec(&self) -> Option<ScrollbarSpec> {
+        if self.visible_rows == 0 {
+            return None;
+        }
+        Some(ScrollbarSpec {
+            pane: PaneId::Sidebar,
+            offset: self.left_scroll,
+            content: self.left_rows.len(),
+            viewport: self.visible_rows,
+        })
+    }
+
+    /// Number of 2-line rows that fit in a list `height` lines tall: a
+    /// trailing odd line still fits one more row's text line (its bottom pad
+    /// is clipped), so this rounds up. Mirrors `Sidebar::visible_rows`.
+    fn rows_that_fit(height: u16) -> usize {
+        (height as usize).div_ceil(2)
+    }
+
+    /// Paints the screen: the top bar (environment switcher + `+ Variable` /
+    /// `+ Group`), the fixed-width left list, and the detail pane —
+    /// [`draw_var_form`] for a selected variable, a placeholder otherwise
+    /// (a selected group is Task 16's job).
+    ///
+    /// `open_request` is the request-scope half of the variable form: the
+    /// promote/demote button's precondition (whether the open request
+    /// already overrides the selected name in its own `[variables]`).
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
@@ -1451,426 +1039,872 @@ impl VarManager {
         ctx: &ProjectContext,
         open_request: Option<&HttpRequest>,
         hits: &mut HitMap,
-        hovered: Option<&crate::hit::Hit>,
+        hovered: Option<&Hit>,
     ) {
-        self.rows = build_rows(ctx, open_request, &self.expanded);
+        self.left_rows = build_left_rows(ctx);
+        if self.left_cursor >= self.left_rows.len() {
+            self.left_cursor = self.left_rows.len().saturating_sub(1);
+        }
+        if area.width == 0 || area.height == 0 {
+            self.visible_rows = 0;
+            return;
+        }
 
-        let sections = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(TITLE_HEIGHT),
-                Constraint::Min(0),
-                Constraint::Length(HINT_HEIGHT),
-            ])
-            .split(area);
-        let title_row = sections[0];
-        let grid_area = sections[1];
-        let hint_row = sections[2];
+        let bar = Rect {
+            height: TITLE_HEIGHT.min(area.height),
+            ..area
+        };
+        let body = Rect {
+            y: area.y + bar.height,
+            height: area.height - bar.height,
+            ..area
+        };
+        self.draw_top_bar(frame, bar, theme, ctx, hits, hovered);
 
-        let buf = frame.buffer_mut();
+        let left = Rect {
+            width: LEFT_W.min(body.width),
+            ..body
+        };
+        let right = Rect {
+            x: body.x + left.width,
+            width: body.width - left.width,
+            ..body
+        };
+        self.draw_left(frame, left, theme, ctx, hits, hovered);
+        self.grid_area = Rect::default();
+        self.grid_visible = 0;
+        match self.detail.clone() {
+            VmDetail::Var(name) if ctx.model.vars.contains_key(&name) => {
+                let buf = frame.buffer_mut();
+                fill(buf, right, theme.page);
+                self.draw_var_form(buf, right, theme, ctx, open_request, hits, hovered, &name);
+            }
+            VmDetail::Group(name) if ctx.model.groups.contains_key(&name) => {
+                let buf = frame.buffer_mut();
+                fill(buf, right, theme.page);
+                self.draw_entry_grid(buf, right, theme, ctx, hits, hovered, &name);
+            }
+            _ => draw_detail_placeholder(frame, right, theme),
+        }
+    }
 
-        fill(buf, title_row, theme.panel);
-        if title_row.height > 0 {
-            let mid_y = title_row.y + title_row.height / 2;
-            let title = format!(
-                "Variables \u{2014} {} \u{b7} {}",
-                ctx.display_name(),
-                ctx.env_label()
-            );
+    /// The right pane for `VmDetail::Group(name)` (spec §3.4): a title row
+    /// (`Group: name  [+ Entry] [Edit fields] [Rename] [Delete]`), then the
+    /// entries grid for the active environment — a radio column saying
+    /// which entry this environment has selected, the entry-name column,
+    /// and one column per declared field — closed by the legend line. With
+    /// no active environment there is nowhere for entries to live, so the
+    /// grid is replaced by [`NO_ENV_HINT`] (the top bar's environment
+    /// switcher, drawn either way, is the way out of that state).
+    #[allow(clippy::too_many_arguments)]
+    fn draw_entry_grid(
+        &mut self,
+        buf: &mut Buffer,
+        right: Rect,
+        theme: &Theme,
+        ctx: &ProjectContext,
+        hits: &mut HitMap,
+        hovered: Option<&Hit>,
+        group: &str,
+    ) {
+        if right.width < 8 || right.height < 3 {
+            return;
+        }
+        let state_of = |hit: &Hit| {
+            if hovered == Some(hit) {
+                ControlState::Hover
+            } else {
+                ControlState::Normal
+            }
+        };
+        let x0 = right.x + 2;
+        let inner_w = right.width.saturating_sub(4).max(1);
+        let bottom = right.y + right.height;
+        let mut y = right.y + 1;
+
+        // --- title row: name + the pane's four buttons ------------------
+        if y + BUTTON_HEIGHT <= bottom {
+            let label = format!("Group: {group}");
+            text(buf, x0, y + 1, &label, theme.text, theme.page, true);
+            let mut bx = right.x + right.width;
+            for (lbl, kind, hit) in [
+                ("Delete", ButtonKind::Secondary, Hit::VmDelete),
+                ("Rename", ButtonKind::Secondary, Hit::VmRename),
+                ("Edit fields", ButtonKind::Secondary, Hit::VmEditFields),
+                ("+ Entry", ButtonKind::Primary, Hit::VmNewEntry),
+            ] {
+                let w = button_min_width(lbl);
+                if bx < x0 + label.chars().count() as u16 + w + 3 {
+                    break;
+                }
+                bx -= w + 1;
+                let rect = Rect {
+                    x: bx,
+                    y,
+                    width: w,
+                    height: BUTTON_HEIGHT,
+                };
+                let state = state_of(&hit);
+                Button {
+                    label: lbl,
+                    kind,
+                    state,
+                }
+                .paint(buf, rect, theme.page, theme);
+                hits.register(rect, hit);
+            }
+            y += BUTTON_HEIGHT + 1;
+        }
+
+        let Some(env) = ctx.active_env.clone() else {
+            if y < bottom {
+                text(
+                    buf,
+                    x0,
+                    y,
+                    super::chooser::clip(NO_ENV_HINT, inner_w),
+                    theme.text_muted,
+                    theme.page,
+                    false,
+                );
+            }
+            return;
+        };
+
+        // --- column headers ---------------------------------------------
+        let fields = group_fields(ctx, group);
+        let cols = grid_columns(x0, inner_w, 1 + fields.len());
+        if y >= bottom || cols.x.is_empty() {
+            return;
+        }
+        fill(buf, Rect::new(right.x, y, right.width, 1), theme.panel);
+        for (i, label) in std::iter::once("ENTRY".to_string())
+            .chain(fields.iter().map(|f| f.to_uppercase()))
+            .enumerate()
+        {
+            let (Some(cx), Some(cw)) = (cols.x.get(i), cols.w.get(i)) else {
+                break;
+            };
             text(
                 buf,
-                title_row.x + 3,
-                mid_y,
-                &title,
-                theme.text,
+                *cx,
+                y,
+                super::chooser::clip(&label, *cw),
+                theme.text_muted,
                 theme.panel,
                 true,
             );
         }
+        y += 1;
 
-        fill(buf, grid_area, theme.page);
-        if grid_area.height >= 1 && grid_area.width > 0 {
-            let header_row = Rect {
-                height: 1,
-                ..grid_area
-            };
-            let list_area = Rect {
-                y: grid_area.y + 1,
-                height: grid_area.height.saturating_sub(1),
-                ..grid_area
-            };
-
-            // How many env columns fit after the fixed name/desc/Default
-            // block, and which ones (via env_scroll).
-            let env_capacity =
-                ((list_area.width.saturating_sub(NAME_W + DESC_W + ENV_W)) / ENV_W) as usize;
-            self.env_capacity = env_capacity;
-            self.visible_rows = list_area.height as usize;
-            if self.ensure_visible {
-                if self.visible_rows > 0 {
-                    if self.cursor.0 < self.scroll {
-                        self.scroll = self.cursor.0;
-                    } else if self.cursor.0 >= self.scroll + self.visible_rows {
-                        self.scroll = self.cursor.0 + 1 - self.visible_rows;
-                    }
-                    let max_scroll = self.rows.len().saturating_sub(self.visible_rows);
-                    self.scroll = self.scroll.min(max_scroll);
-                }
-                self.ensure_visible = false;
+        // --- entry rows (+ the always-present ghost row) ------------------
+        let rows = entry_rows(ctx, group);
+        let selected = ctx.selections_for(&env).get(group).cloned();
+        // The last line of the pane belongs to the legend.
+        let rows_bottom = bottom.saturating_sub(1).max(y);
+        let visible = (rows_bottom - y) as usize;
+        let total = rows.len() + 1;
+        // A cursor that outlived the rows it pointed at (an entry deleted,
+        // a field removed) clamps back into the grid.
+        self.grid.cursor.0 = self.grid.cursor.0.min(total - 1);
+        self.grid.cursor.1 = self.grid.cursor.1.min(fields.len());
+        let cursor = (self.focus == VmFocus::Grid).then_some(self.grid.cursor);
+        self.grid_visible = visible;
+        self.grid_area = Rect::new(right.x, y, right.width, (rows_bottom - y).max(1));
+        // Keep whatever the keyboard is on (the cell under edit, else the
+        // cursor) in view, then clamp — the wheel places the viewport
+        // freely, but never past the last row.
+        let focus_row = self
+            .grid
+            .editing
+            .as_ref()
+            .map_or(self.grid.cursor.0, |e| e.row);
+        if visible > 0 {
+            if focus_row < self.grid.scroll {
+                self.grid.scroll = focus_row;
+            } else if focus_row >= self.grid.scroll + visible {
+                self.grid.scroll = focus_row + 1 - visible;
             }
-            let visible_envs: Vec<&String> = ctx
-                .environments
-                .iter()
-                .skip(self.env_scroll)
-                .take(env_capacity)
-                .collect();
-            let columns: Vec<EnvColumn> = visible_envs
-                .iter()
-                .map(|name| env_column(ctx, name.as_str()))
-                .collect();
+            self.grid.scroll = self.grid.scroll.min(total.saturating_sub(visible));
+        }
 
-            // Column header strip.
-            fill(buf, header_row, theme.panel);
-            text(
-                buf,
-                header_row.x + 1,
-                header_row.y,
-                "Name",
-                theme.text_muted,
-                theme.panel,
-                true,
-            );
-            text(
-                buf,
-                header_row.x + 1 + NAME_W,
-                header_row.y,
-                "Description",
-                theme.text_muted,
-                theme.panel,
-                true,
-            );
-            text(
-                buf,
-                header_row.x + NAME_W + DESC_W,
-                header_row.y,
-                "Default",
-                theme.text_muted,
-                theme.panel,
-                true,
-            );
-            for (i, col) in columns.iter().enumerate() {
-                let x = header_row.x + NAME_W + DESC_W + ENV_W + (i as u16) * ENV_W;
-                if x >= header_row.x + header_row.width {
-                    break;
-                }
-                text(
-                    buf,
-                    x,
-                    header_row.y,
-                    col.name,
-                    theme.text_muted,
-                    theme.panel,
-                    true,
+        for (pos, i) in (self.grid.scroll..total).enumerate() {
+            let ry = y + pos as u16;
+            if ry >= rows_bottom {
+                break;
+            }
+            let ghost = i == rows.len();
+            let hovered_row = match hovered {
+                Some(Hit::VmEntryCell { row, .. }) | Some(Hit::VmEntryRadio(row)) => *row == i,
+                _ => false,
+            };
+            // The keyboard cursor only paints while the grid actually has
+            // the keyboard — a lift the arrows aren't driving would lie
+            // about where keys land (Task 8's rule for its own row cursor).
+            let cursor_row = cursor.is_some_and(|(r, _)| r == i);
+            let bg = if hovered_row || cursor_row {
+                theme.control_hover
+            } else {
+                theme.control
+            };
+            fill(buf, Rect::new(x0, ry, inner_w, 1), bg);
+
+            if !ghost {
+                let name = &rows[i].0;
+                let on = selected.as_deref() == Some(name.as_str());
+                let glyph = if on { GLYPH_RADIO_ON } else { GLYPH_RADIO_OFF };
+                let fg = if on { theme.accent } else { theme.text_muted };
+                text(buf, cols.radio_x, ry, glyph, fg, bg, false);
+                hits.register(
+                    Rect::new(cols.radio_x, ry, RADIO_W, 1),
+                    Hit::VmEntryRadio(i),
                 );
             }
 
-            // Data rows.
-            for (i, row) in self
-                .rows
-                .iter()
-                .enumerate()
-                .skip(self.scroll)
-                .take(list_area.height as usize)
-            {
-                let y = list_area.y + (i - self.scroll) as u16;
-                let row_rect = Rect {
-                    x: list_area.x,
-                    y,
-                    width: list_area.width,
-                    height: 1,
-                };
-                let row_fill = if i == self.cursor.0 {
-                    theme.control_hover
+            for col in 0..cols.x.len() {
+                let (cx, cw) = (cols.x[col], cols.w[col]);
+                // The focused cell keeps a lift of its own inside the
+                // cursor row, so the keyboard's exact position — the cell
+                // `Enter` would edit — is visible, not just its row. One
+                // more hover-step up, the same direction focus lifts a
+                // `TextField` (never darker: pressed reads as a click).
+                let bg = if cursor == Some((i, col)) {
+                    crate::theme::lift_color(bg, 0.06)
                 } else {
-                    theme.page
+                    bg
                 };
-                fill(buf, row_rect, row_fill);
-                hits.register(row_rect, crate::hit::Hit::VarRow(i));
-
-                // The exact cursor cell gets its own, slightly stronger
-                // fill on top of the row highlight, so the column under
-                // keyboard/mouse focus reads distinctly from the rest of
-                // the (also-highlighted) row.
-                let cell_fill = |col: usize| -> Color {
-                    if i == self.cursor.0 && col == self.cursor.1 {
-                        theme.control_pressed
-                    } else {
-                        row_fill
-                    }
-                };
-
-                // Col 0's cell highlight covers the description region
-                // only — that's what its edit targets; the name region
-                // stays on the row fill (its actions are rename/expand,
-                // not a cell edit).
-                let name_fill = row_fill;
-                let desc_fill = cell_fill(0);
-                if desc_fill != row_fill {
-                    fill(
-                        buf,
-                        Rect {
-                            x: list_area.x + NAME_W,
-                            y,
-                            width: DESC_W,
-                            height: 1,
-                        },
-                        desc_fill,
-                    );
+                if cursor == Some((i, col)) {
+                    fill(buf, Rect::new(cx, ry, cw, 1), bg);
                 }
-                // Two hit regions over one logical column: the name half
-                // (rename/expand on double-click) and the description half
-                // (edit the description on double-click).
-                hits.register(
-                    Rect {
-                        x: list_area.x,
-                        y,
-                        width: NAME_W,
-                        height: 1,
-                    },
-                    crate::hit::Hit::VarName(i),
-                );
-                hits.register(
-                    Rect {
-                        x: list_area.x + NAME_W,
-                        y,
-                        width: DESC_W,
-                        height: 1,
-                    },
-                    crate::hit::Hit::VarCell { row: i, col: 0 },
-                );
-
-                let editing_here = self.editing.as_ref().filter(|e| e.row == i && e.col == 0);
-
-                let is_header = matches!(row, RowKind::SectionHeader(_));
-                let (indent, label) = name_and_indent(row);
-                let mut x = list_area.x + 1 + indent;
-                if let Some(glyph) = expand_glyph(ctx, row, &self.expanded) {
-                    text(buf, x, y, glyph, theme.text_muted, name_fill, false);
-                }
-                x += 2;
-                let name_fg = if is_header || matches!(row, RowKind::AddVar | RowKind::AddGroup) {
-                    theme.text_muted
-                } else {
-                    theme.text
-                };
-                let name_w = (list_area.x + NAME_W).saturating_sub(x).saturating_sub(1);
-                text(
-                    buf,
-                    x,
-                    y,
-                    super::chooser::clip(&label, name_w),
-                    name_fg,
-                    name_fill,
-                    is_header,
-                );
-
-                // A col-0 edit is a *description* edit — the input lives in
-                // the description column, and the name stays put.
-                let desc_x = list_area.x + NAME_W;
-                let desc_w = DESC_W.saturating_sub(1);
-                if let Some(edit) = editing_here {
-                    let mut line = edit.input.draw_line_windowed(true, theme, desc_w);
-                    line.style = Style::default().bg(desc_fill).patch(line.style);
-                    buf.set_line(desc_x, y, &line, desc_w);
-                } else {
-                    let desc = description_for(ctx, row);
-                    if !desc.is_empty() {
+                let editing = self
+                    .grid
+                    .editing
+                    .as_ref()
+                    .filter(|e| e.row == i && e.col == col);
+                if let Some(edit) = editing {
+                    let line = edit.input.draw_line_windowed(true, theme, cw);
+                    fill(buf, Rect::new(cx, ry, cw, 1), theme.control_hover);
+                    buf.set_line(cx, ry, &line, cw);
+                } else if ghost {
+                    if col == 0 {
                         text(
                             buf,
-                            desc_x,
-                            y,
-                            super::chooser::clip(&desc, desc_w),
+                            cx,
+                            ry,
+                            super::chooser::clip(GHOST_LABEL, cw),
                             theme.text_muted,
-                            desc_fill,
+                            bg,
                             false,
                         );
                     }
-                }
-
-                // Default column (col 1): the shared project-level value.
-                let dx = list_area.x + NAME_W + DESC_W;
-                if dx < list_area.x + list_area.width {
-                    let default_fill = cell_fill(1);
-                    let default_rect = Rect {
-                        x: dx,
-                        y,
-                        width: ENV_W,
-                        height: 1,
+                } else {
+                    let (name, values) = &rows[i];
+                    let value = match col {
+                        0 => Some(name),
+                        n => fields.get(n - 1).and_then(|f| values.get(f)),
                     };
-                    if default_fill != row_fill {
-                        fill(buf, default_rect, default_fill);
-                    }
-                    let w = ENV_W.saturating_sub(1);
-                    let editing_default =
-                        self.editing.as_ref().filter(|e| e.row == i && e.col == 1);
-                    if let Some(edit) = editing_default {
-                        let mut line = edit.input.draw_line_windowed(true, theme, w);
-                        line.style = Style::default().bg(default_fill).patch(line.style);
-                        buf.set_line(dx, y, &line, w);
-                    } else {
-                        let cell = default_cell(ctx, row, open_request, theme);
-                        if !cell.text.is_empty() {
-                            text(
-                                buf,
-                                dx,
-                                y,
-                                super::chooser::clip(&cell.text, w),
-                                cell.fg,
-                                default_fill,
-                                false,
-                            );
-                        }
-                    }
-                    hits.register(default_rect, crate::hit::Hit::VarCell { row: i, col: 1 });
-                }
-
-                for (ci, col) in columns.iter().enumerate() {
-                    let cx = list_area.x + NAME_W + DESC_W + ENV_W + (ci as u16) * ENV_W;
-                    if cx >= list_area.x + list_area.width {
-                        break;
-                    }
-                    let env_col = 2 + ci;
-                    let this_fill = cell_fill(env_col);
-                    let cell_rect = Rect {
-                        x: cx,
-                        y,
-                        width: ENV_W,
-                        height: 1,
+                    let (shown, fg) = match value {
+                        Some(v) if !v.is_empty() => (v.as_str(), theme.text),
+                        _ => ("(empty)", theme.text_muted),
                     };
-                    if this_fill != row_fill {
-                        fill(buf, cell_rect, this_fill);
-                    }
-                    let editing_here = self
-                        .editing
-                        .as_ref()
-                        .filter(|e| e.row == i && e.col == env_col);
-                    if let Some(edit) = editing_here {
-                        let w = ENV_W.saturating_sub(1);
-                        let mut line = if edit.masked {
-                            edit.input.draw_line_windowed_masked(true, theme, w)
-                        } else {
-                            edit.input.draw_line_windowed(true, theme, w)
-                        };
-                        line.style = Style::default().bg(this_fill).patch(line.style);
-                        buf.set_line(cx, y, &line, w);
-                    } else {
-                        let cell = env_cell(ctx, row, col, theme, self.revealed.as_ref());
-                        if !cell.text.is_empty() {
-                            let w = ENV_W.saturating_sub(1);
-                            text(
-                                buf,
-                                cx,
-                                y,
-                                super::chooser::clip(&cell.text, w),
-                                cell.fg,
-                                this_fill,
-                                false,
-                            );
-                        }
-                    }
-                    hits.register(
-                        cell_rect,
-                        crate::hit::Hit::VarCell {
-                            row: i,
-                            col: env_col,
-                        },
-                    );
+                    text(buf, cx, ry, super::chooser::clip(shown, cw), fg, bg, false);
                 }
+                hits.register(Rect::new(cx, ry, cw, 1), Hit::VmEntryCell { row: i, col });
             }
         }
 
-        fill(buf, hint_row, theme.panel);
-        if hint_row.height > 0 {
-            let y = hint_row.y;
-            let esc_label = " esc back ";
-            let esc_area = Rect {
-                x: hint_row.x + 1,
-                y,
-                width: esc_label.chars().count() as u16,
-                height: 1,
-            };
-            let esc_fill = if hovered == Some(&crate::hit::Hit::FooterChip(Action::CloseScreen)) {
-                theme.control_hover
+        // --- legend --------------------------------------------------------
+        if rows_bottom < bottom {
+            text(
+                buf,
+                x0,
+                rows_bottom,
+                super::chooser::clip(&format!("{GLYPH_RADIO_ON} = selected for {env}"), inner_w),
+                theme.text_muted,
+                theme.page,
+                false,
+            );
+        }
+    }
+
+    /// The right pane for `VmDetail::Var(name)` (spec §3.4): a title row
+    /// (`name  🔒?  [Rename] [Delete]`), then description/default/env-value
+    /// fields as label + `TextField` rows (`Default` omitted for a secret —
+    /// it can never hold one), the secret on/off toggle, the promote/demote
+    /// button where [`promote_demote_action`] applies, and a dim `used by:`
+    /// line. `name` is guaranteed declared by the caller.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_var_form(
+        &self,
+        buf: &mut Buffer,
+        right: Rect,
+        theme: &Theme,
+        ctx: &ProjectContext,
+        open_request: Option<&HttpRequest>,
+        hits: &mut HitMap,
+        hovered: Option<&Hit>,
+        name: &str,
+    ) {
+        if right.width < 8 || right.height < 3 {
+            return;
+        }
+        let secret = ctx.model.vars.get(name).is_some_and(|d| d.secret);
+        let state_of = |hit: &Hit| {
+            if hovered == Some(hit) {
+                ControlState::Hover
             } else {
-                theme.panel
+                ControlState::Normal
+            }
+        };
+
+        let x0 = right.x + 2;
+        let field_w = right.width.saturating_sub(4).max(1);
+        let bottom = right.y + right.height;
+        let mut y = right.y + 1;
+
+        // --- title row: name, lock badge, Rename/Delete ---------------
+        if y + BUTTON_HEIGHT <= bottom {
+            let mid = y + 1;
+            let label = if secret {
+                format!("{name}  {GLYPH_LOCK}")
+            } else {
+                name.to_string()
             };
-            if esc_fill != theme.panel {
-                fill(buf, esc_area, esc_fill);
+            text(buf, x0, mid, &label, theme.text, theme.page, true);
+            let mut bx = right.x + right.width;
+            for (lbl, hit) in [("Delete", Hit::VmDelete), ("Rename", Hit::VmRename)] {
+                let w = button_min_width(lbl);
+                if bx < x0 + label.chars().count() as u16 + w + 3 {
+                    break;
+                }
+                bx -= w + 1;
+                let rect = Rect {
+                    x: bx,
+                    y,
+                    width: w,
+                    height: BUTTON_HEIGHT,
+                };
+                Button {
+                    label: lbl,
+                    kind: ButtonKind::Secondary,
+                    state: state_of(&hit),
+                }
+                .paint(buf, rect, theme.page, theme);
+                hits.register(rect, hit);
+            }
+            y += BUTTON_HEIGHT + 1;
+        }
+
+        // --- Description ------------------------------------------------
+        y = self.draw_labeled_field(
+            buf,
+            hits,
+            hovered,
+            theme,
+            x0,
+            field_w,
+            bottom,
+            y,
+            "Description",
+            VmField::Description,
+            ctx,
+            name,
+            false,
+        );
+
+        // --- Default (never for a secret: it can't hold one) -------------
+        if !secret {
+            y = self.draw_labeled_field(
+                buf,
+                hits,
+                hovered,
+                theme,
+                x0,
+                field_w,
+                bottom,
+                y,
+                "Default",
+                VmField::Default,
+                ctx,
+                name,
+                false,
+            );
+        }
+
+        // --- secret on/off toggle -----------------------------------------
+        if y < bottom {
+            text(buf, x0, y, "Secret", theme.text_muted, theme.page, false);
+            let toggle_label = if secret { "[on]" } else { "[off]" };
+            let hit = Hit::VmSecretToggle;
+            let hovered_toggle = hovered == Some(&hit);
+            let style = if hovered_toggle {
+                Style::default().bg(theme.accent).fg(theme.on_accent)
+            } else {
+                Style::default().fg(theme.accent)
+            };
+            let tw = toggle_label.chars().count() as u16;
+            let tx = (x0 + field_w).saturating_sub(tw);
+            buf.set_string(tx, y, toggle_label, style);
+            hits.register(Rect::new(tx, y, tw, 1), hit);
+            y += 2;
+        }
+
+        // --- Value in <env> (masked + reveal for a secret) -----------------
+        let value_label = match &ctx.active_env {
+            Some(env) => format!("Value in {env}"),
+            None => "(no environment)".to_string(),
+        };
+        if y < bottom {
+            text(
+                buf,
+                x0,
+                y,
+                &value_label,
+                theme.text_muted,
+                theme.page,
+                false,
+            );
+            if secret {
+                let reveal_label = if self.form.revealed {
+                    "\u{1f441} hide"
+                } else {
+                    "\u{1f441} reveal"
+                };
+                let hit = Hit::VmRevealToggle;
+                let hovered_toggle = hovered == Some(&hit);
+                let style = if hovered_toggle {
+                    Style::default().bg(theme.accent).fg(theme.on_accent)
+                } else {
+                    Style::default().fg(theme.accent)
+                };
+                let rw = reveal_label.chars().count() as u16;
+                let rx = (x0 + field_w).saturating_sub(rw);
+                buf.set_string(rx, y, reveal_label, style);
+                hits.register(Rect::new(rx, y, rw, 1), hit);
+            }
+            y += 1;
+        }
+        if y + FIELD_HEIGHT <= bottom {
+            let masked = secret && !self.form.revealed;
+            let area = Rect {
+                x: x0,
+                y,
+                width: field_w,
+                height: FIELD_HEIGHT,
+            };
+            self.draw_form_field(
+                buf,
+                hits,
+                area,
+                theme,
+                hovered,
+                VmField::EnvValue,
+                ctx,
+                name,
+                masked,
+            );
+            y += FIELD_HEIGHT + 1;
+        }
+
+        // --- promote/demote --------------------------------------------
+        if let Some((label, _)) = promote_demote_action(ctx, open_request, name)
+            && y + BUTTON_HEIGHT <= bottom
+        {
+            let w = button_min_width(label).min(field_w);
+            let rect = Rect {
+                x: x0,
+                y,
+                width: w,
+                height: BUTTON_HEIGHT,
+            };
+            let hit = Hit::VmPromoteBtn;
+            Button {
+                label,
+                kind: ButtonKind::Secondary,
+                state: state_of(&hit),
+            }
+            .paint(buf, rect, theme.page, theme);
+            hits.register(rect, hit);
+            y += BUTTON_HEIGHT + 1;
+        }
+
+        // --- used by -----------------------------------------------------
+        if y < bottom {
+            let usage = postui_core::varedit::scan_usage(&ctx.root, name);
+            let line = if usage.is_empty() {
+                "used by: (none)".to_string()
+            } else {
+                format!("used by: {}", usage.join(", "))
+            };
+            text(
+                buf,
+                x0,
+                y,
+                super::chooser::clip(&line, field_w),
+                theme.text_muted,
+                theme.page,
+                false,
+            );
+        }
+    }
+
+    /// One label + `TextField` row: the label on its own line, the field
+    /// [`FIELD_HEIGHT`] rows below. Returns the next `y` past the field
+    /// (unchanged, i.e. no gap consumed, when there isn't room to draw it —
+    /// so a caller past the pane's bottom just stops drawing further rows).
+    #[allow(clippy::too_many_arguments)]
+    fn draw_labeled_field(
+        &self,
+        buf: &mut Buffer,
+        hits: &mut HitMap,
+        hovered: Option<&Hit>,
+        theme: &Theme,
+        x0: u16,
+        field_w: u16,
+        bottom: u16,
+        y: u16,
+        label: &str,
+        field: VmField,
+        ctx: &ProjectContext,
+        name: &str,
+        masked: bool,
+    ) -> u16 {
+        if y >= bottom {
+            return y;
+        }
+        text(buf, x0, y, label, theme.text_muted, theme.page, false);
+        let field_y = y + 1;
+        if field_y + FIELD_HEIGHT > bottom {
+            return field_y;
+        }
+        let area = Rect {
+            x: x0,
+            y: field_y,
+            width: field_w,
+            height: FIELD_HEIGHT,
+        };
+        self.draw_form_field(buf, hits, area, theme, hovered, field, ctx, name, masked);
+        field_y + FIELD_HEIGHT + 1
+    }
+
+    /// Paints one field's `TextField`: the live `LineInput` (windowed,
+    /// masked when `masked`) while it's under edit, else the resting text
+    /// `field_seed_text` reads from `ctx` (masked to dots when `masked`, a
+    /// muted "(not set)" when empty). Registers `Hit::VmFormField(field)`
+    /// over the whole painted area.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_form_field(
+        &self,
+        buf: &mut Buffer,
+        hits: &mut HitMap,
+        area: Rect,
+        theme: &Theme,
+        hovered: Option<&Hit>,
+        field: VmField,
+        ctx: &ProjectContext,
+        name: &str,
+        masked: bool,
+    ) {
+        let hit = Hit::VmFormField(field);
+        let editing = self.form.editing.as_ref().filter(|(f, _)| *f == field);
+        let state = if editing.is_some() {
+            ControlState::Focused
+        } else if hovered == Some(&hit) {
+            ControlState::Hover
+        } else {
+            ControlState::Normal
+        };
+        let inner_w = area.width.saturating_sub(2);
+        let content = if let Some((_, input)) = editing {
+            if masked {
+                input.draw_line_windowed_masked(true, theme, inner_w)
+            } else {
+                input.draw_line_windowed(true, theme, inner_w)
+            }
+        } else {
+            let text_value = field_seed_text(ctx, name, field);
+            if masked {
+                Line::raw(text_value.chars().map(|_| '\u{25cf}').collect::<String>())
+            } else if text_value.is_empty() {
+                Line::styled("(not set)", Style::default().fg(theme.text_muted))
+            } else {
+                Line::raw(text_value)
+            }
+        };
+        TextField { content, state }.paint(buf, area, theme);
+        hits.register(area, hit);
+    }
+
+    fn draw_top_bar(
+        &self,
+        frame: &mut Frame,
+        bar: Rect,
+        theme: &Theme,
+        ctx: &ProjectContext,
+        hits: &mut HitMap,
+        hovered: Option<&Hit>,
+    ) {
+        let buf = frame.buffer_mut();
+        fill(buf, bar, theme.panel);
+        if bar.height < BUTTON_HEIGHT {
+            return;
+        }
+
+        let state_of = |hit: &Hit| {
+            if hovered == Some(hit) {
+                ControlState::Hover
+            } else {
+                ControlState::Normal
+            }
+        };
+
+        let env_label = format!("Environment: {} {GLYPH_CARET}", ctx.env_label());
+        let env_w = button_min_width(&env_label).min(bar.width);
+        let env_area = Rect {
+            x: bar.x + 1,
+            y: bar.y,
+            width: env_w,
+            height: BUTTON_HEIGHT,
+        };
+        Button {
+            label: &env_label,
+            kind: ButtonKind::Secondary,
+            state: state_of(&Hit::VmEnvSwitch),
+        }
+        .paint(buf, env_area, theme.panel, theme);
+        hits.register(env_area, Hit::VmEnvSwitch);
+
+        // Right-aligned group, laid out from the bar's right edge inward so
+        // the buttons stay put as the environment name changes width. The
+        // close button rides along as the mouse's way back to the main
+        // screen (the header's vars chip toggles it too), labelled with the
+        // key that does the same thing.
+        let mut x = bar.x + bar.width;
+        for (label, kind, hit) in [
+            (
+                "Close (esc)",
+                ButtonKind::Secondary,
+                Hit::FooterChip(Action::CloseScreen),
+            ),
+            ("+ Group", ButtonKind::Secondary, Hit::VmNewGroup),
+            ("+ Variable", ButtonKind::Primary, Hit::VmNewVar),
+        ] {
+            let w = button_min_width(label);
+            if x < env_area.x + env_area.width + w + 2 {
+                break;
+            }
+            x -= w + 1;
+            let rect = Rect {
+                x,
+                y: bar.y,
+                width: w,
+                height: BUTTON_HEIGHT,
+            };
+            let state = state_of(&hit);
+            Button { label, kind, state }.paint(buf, rect, theme.panel, theme);
+            hits.register(rect, hit);
+        }
+    }
+
+    fn draw_left(
+        &mut self,
+        frame: &mut Frame,
+        left: Rect,
+        theme: &Theme,
+        ctx: &ProjectContext,
+        hits: &mut HitMap,
+        hovered: Option<&Hit>,
+    ) {
+        fill(frame.buffer_mut(), left, theme.panel);
+        if left.width <= 2 || left.height == 0 {
+            self.visible_rows = 0;
+            return;
+        }
+
+        // Rows keep a 1-column inset each side: the left column is the
+        // selected pill's accent lane, the right one hosts the scrollbar.
+        let list = Rect {
+            x: left.x + 1,
+            y: left.y,
+            width: left.width - 2,
+            height: left.height,
+        };
+        self.visible_rows = Self::rows_that_fit(list.height);
+        if self.ensure_visible {
+            if self.visible_rows > 0 {
+                if self.left_cursor < self.left_scroll {
+                    self.left_scroll = self.left_cursor;
+                } else if self.left_cursor >= self.left_scroll + self.visible_rows {
+                    self.left_scroll = self.left_cursor + 1 - self.visible_rows;
+                }
+                let max_scroll = self.left_rows.len().saturating_sub(self.visible_rows);
+                self.left_scroll = self.left_scroll.min(max_scroll);
+            }
+            self.ensure_visible = false;
+        }
+
+        if let Some(spec) = self.scrollbar_spec().filter(ScrollbarSpec::overflows) {
+            let column = Rect {
+                x: left.x + left.width - 1,
+                width: 1,
+                ..list
+            };
+            crate::hit::draw_scrollbar(frame, hits, column, &spec, hovered, false, theme);
+        }
+
+        let buf = frame.buffer_mut();
+        for (pos, (i, row)) in self
+            .left_rows
+            .iter()
+            .enumerate()
+            .skip(self.left_scroll)
+            .take(self.visible_rows.max(1))
+            .enumerate()
+        {
+            let y = list.y + (pos as u16) * 2;
+            if y >= left.y + left.height {
+                break;
+            }
+            let selected = match (&self.detail, row) {
+                (VmDetail::Var(a), VmRow::Var(b)) | (VmDetail::Group(a), VmRow::Group(b)) => a == b,
+                _ => false,
+            };
+            let highlight = if selected {
+                RowHighlight::Selected
+            } else if hovered == Some(&Hit::VmLeftRow(i)) || i == self.left_cursor {
+                RowHighlight::Hover
+            } else {
+                RowHighlight::None
+            };
+            let row_bg = match highlight {
+                RowHighlight::None => theme.panel,
+                RowHighlight::Hover => theme.control,
+                RowHighlight::Selected => theme.control_hover,
+            };
+            if row.is_stop() {
+                PillRow { highlight }.paint(buf, y, list.x, list.width, left, theme.panel, theme);
+            }
+            paint_left_row(buf, ctx, row, y, list, row_bg, theme);
+
+            let hit_top = y.saturating_sub(1).max(left.y);
+            let hit_bottom = (y + 2).min(left.y + left.height);
+            hits.register(
+                Rect {
+                    x: list.x,
+                    y: hit_top,
+                    width: list.width,
+                    height: hit_bottom.saturating_sub(hit_top),
+                },
+                Hit::VmLeftRow(i),
+            );
+        }
+    }
+}
+
+/// One left-list row's content: the section labels, a variable (name, lock
+/// badge, unresolved dot) or a group (`▶ name (entry)`).
+fn paint_left_row(
+    buf: &mut ratatui::buffer::Buffer,
+    ctx: &ProjectContext,
+    row: &VmRow,
+    y: u16,
+    list: Rect,
+    bg: ratatui::style::Color,
+    theme: &Theme,
+) {
+    let x = list.x + 1;
+    // One column of inset on the left (the selected pill's accent bar) —
+    // the label may run to the list's right edge.
+    let width = list.width.saturating_sub(1);
+    match row {
+        VmRow::SectionVars | VmRow::SectionGroups => {
+            let label = if matches!(row, VmRow::SectionVars) {
+                "VARIABLES"
+            } else {
+                "GROUPS"
+            };
+            text(buf, list.x, y, label, theme.text_muted, bg, true);
+        }
+        VmRow::Var(name) => {
+            let secret = ctx.model.vars.get(name).is_some_and(|d| d.secret);
+            // The badges are right-aligned in their own columns, so names
+            // stay left-aligned however long they are.
+            let mut label_w = width;
+            if secret {
+                label_w = label_w.saturating_sub(3);
+            }
+            if is_unresolved(ctx, name) {
+                label_w = label_w.saturating_sub(2);
             }
             text(
                 buf,
-                esc_area.x,
+                x,
                 y,
-                esc_label,
-                theme.text_muted,
-                esc_fill,
+                super::chooser::clip(name, label_w),
+                theme.text,
+                bg,
                 false,
             );
-            hits.register(esc_area, crate::hit::Hit::FooterChip(Action::CloseScreen));
-
-            let mut x = esc_area.x + esc_area.width + 1;
-            let right_limit = hint_row.x + hint_row.width;
-            for (key, label, action) in action_chips(ctx, self.rows.get(self.cursor.0)) {
-                let key_text = format!(" {key}");
-                let label_text = format!(" {label} ");
-                let width = key_text.chars().count() as u16 + label_text.chars().count() as u16;
-                if x + width > right_limit {
-                    break;
-                }
-                let chip_area = Rect {
-                    x,
-                    y,
-                    width,
-                    height: 1,
-                };
-                let chip_fill = if hovered == Some(&crate::hit::Hit::FooterChip(action.clone())) {
-                    theme.control_hover
-                } else {
-                    theme.control
-                };
-                fill(buf, chip_area, chip_fill);
-                text(buf, x, y, &key_text, theme.accent, chip_fill, true);
-                text(
-                    buf,
-                    x + key_text.chars().count() as u16,
-                    y,
-                    &label_text,
-                    theme.text_muted,
-                    chip_fill,
-                    false,
-                );
-                hits.register(chip_area, crate::hit::Hit::FooterChip(action));
-                x += width + 1;
+            let mut badge_x = list.x + list.width;
+            if is_unresolved(ctx, name) {
+                badge_x = badge_x.saturating_sub(2);
+                text(buf, badge_x, y, GLYPH_UNRESOLVED, theme.error, bg, false);
+            }
+            if secret {
+                badge_x = badge_x.saturating_sub(3);
+                text(buf, badge_x, y, GLYPH_LOCK, theme.text_muted, bg, false);
             }
         }
+        VmRow::Group(name) => {
+            let selection = match active_selection(ctx, name) {
+                Some(entry) => format!("({entry})"),
+                None => "(needs selection)".to_string(),
+            };
+            let label = format!("{GLYPH_GROUP} {name} {selection}");
+            text(
+                buf,
+                x,
+                y,
+                super::chooser::clip(&label, width),
+                theme.text,
+                bg,
+                false,
+            );
+        }
     }
+}
+
+/// The detail pane until Tasks 15/16 fill it: one muted instruction line.
+fn draw_detail_placeholder(frame: &mut Frame, right: Rect, theme: &Theme) {
+    let buf = frame.buffer_mut();
+    fill(buf, right, theme.page);
+    if right.width == 0 || right.height < 2 {
+        return;
+    }
+    text(
+        buf,
+        right.x + 2,
+        right.y + 1,
+        super::chooser::clip("select a variable or group", right.width.saturating_sub(3)),
+        theme.text_muted,
+        theme.page,
+        false,
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use indexmap::IndexMap;
-    use postui_core::model::Entry;
     use postui_core::project;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
     use ratatui::crossterm::event::KeyModifiers;
 
-    /// A project with: two envs (dev, qa); `base_url` simple with a
-    /// default (no env value in dev → falls back; qa sets its own);
-    /// `user` enumerated, selected in qa only; `api_key` secret, with a
-    /// value in qa only; group `creds` with two members, unselected in
-    /// both envs. Plus a `trace_id` request-scope override on the
-    /// returned `HttpRequest`.
-    fn fixture() -> (tempfile::TempDir, ProjectContext, HttpRequest) {
+    /// A project with two envs (dev, qa; qa active); `base_url` simple with
+    /// a default; `api_key` secret with no value anywhere (so it reads as
+    /// unresolved); group `creds` with two fields and two entries in qa,
+    /// `alice` selected there and nothing selected in dev.
+    fn fixture() -> (tempfile::TempDir, ProjectContext) {
         let dir = tempfile::tempdir().unwrap();
         project::init_project(dir.path(), Some("demo")).unwrap();
         std::fs::write(
@@ -1880,490 +1914,20 @@ mod tests {
 description = "API root"
 default = "http://localhost:8080"
 
-[user]
-description = "acting user"
-[user.options.alice]
-description = "admin"
-value = "1001"
-[user.options.bob]
-value = "2002"
-
 [api_key]
 description = "service key"
 secret = true
 
 [groups.creds]
 description = "paired ids"
-members = ["user_id", "customer_id"]
-[groups.creds.options.alice]
-user_id = "1001"
-customer_id = "c-77"
+fields = ["user_id", "customer_id"]
 "#,
         )
         .unwrap();
         std::fs::write(dir.path().join("environments/dev.toml"), "").unwrap();
         std::fs::write(
             dir.path().join("environments/qa.toml"),
-            "base_url = \"https://qa.example.com\"\n",
-        )
-        .unwrap();
-
-        let mut selections = IndexMap::new();
-        let mut qa_sel = IndexMap::new();
-        qa_sel.insert("user".to_string(), "alice".to_string());
-        selections.insert("qa".to_string(), qa_sel);
-        project::save_local_state(
-            dir.path(),
-            &project::LocalState {
-                environment: Some("qa".into()),
-                selections,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
-        let mut secrets = IndexMap::new();
-        let mut qa_secrets = IndexMap::new();
-        qa_secrets.insert("api_key".to_string(), "sk-qa-secret-value".to_string());
-        secrets.insert("qa".to_string(), qa_secrets);
-        project::save_secrets(dir.path(), &secrets).unwrap();
-
-        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf());
-        assert!(warns.is_empty(), "{warns:?}");
-
-        let mut req = HttpRequest {
-            method: postui_core::model::Method::Get,
-            url: "https://example.com".into(),
-            substitute_body: false,
-            params: IndexMap::new(),
-            headers: IndexMap::new(),
-            variables: IndexMap::new(),
-            body: None,
-        };
-        req.variables.insert(
-            "trace_id".to_string(),
-            Entry {
-                value: "abc-123".to_string(),
-                enabled: true,
-            },
-        );
-        req.variables.insert(
-            "disabled_flag".to_string(),
-            Entry {
-                value: "should-be-muted".to_string(),
-                enabled: false,
-            },
-        );
-
-        (dir, ctx, req)
-    }
-
-    // -----------------------------------------------------------------
-    // build_rows: structure/order
-    // -----------------------------------------------------------------
-
-    #[test]
-    fn row_order_request_section_then_project_vars_then_groups_then_ghosts() {
-        let (_dir, ctx, req) = fixture();
-        let rows = build_rows(&ctx, Some(&req), &BTreeSet::new());
-        assert_eq!(
-            rows,
-            vec![
-                RowKind::SectionHeader("This request"),
-                RowKind::RequestVar {
-                    name: "trace_id".into()
-                },
-                RowKind::RequestVar {
-                    name: "disabled_flag".into()
-                },
-                RowKind::SectionHeader("Project"),
-                RowKind::Var {
-                    name: "base_url".into()
-                },
-                RowKind::Var {
-                    name: "user".into()
-                },
-                RowKind::Var {
-                    name: "api_key".into()
-                },
-                RowKind::GroupHeader {
-                    name: "creds".into()
-                },
-                RowKind::GroupMember {
-                    group: "creds".into(),
-                    name: "user_id".into()
-                },
-                RowKind::GroupMember {
-                    group: "creds".into(),
-                    name: "customer_id".into()
-                },
-                RowKind::AddVar,
-                RowKind::AddGroup,
-            ]
-        );
-    }
-
-    #[test]
-    fn no_request_section_when_open_request_has_no_variables() {
-        let (_dir, ctx, _req) = fixture();
-        let bare = HttpRequest {
-            method: postui_core::model::Method::Get,
-            url: "https://example.com".into(),
-            substitute_body: false,
-            params: IndexMap::new(),
-            headers: IndexMap::new(),
-            variables: IndexMap::new(),
-            body: None,
-        };
-        let rows = build_rows(&ctx, Some(&bare), &BTreeSet::new());
-        assert!(!rows.contains(&RowKind::SectionHeader("This request")));
-        let rows_none = build_rows(&ctx, None, &BTreeSet::new());
-        assert!(!rows_none.contains(&RowKind::SectionHeader("This request")));
-    }
-
-    #[test]
-    fn expanding_a_variable_splices_its_option_rows_right_after_it() {
-        let (_dir, ctx, _req) = fixture();
-        let mut expanded = BTreeSet::new();
-        expanded.insert("user".to_string());
-        let rows = build_rows(&ctx, None, &expanded);
-        let user_idx = rows
-            .iter()
-            .position(|r| {
-                r == &RowKind::Var {
-                    name: "user".into(),
-                }
-            })
-            .unwrap();
-        assert_eq!(
-            rows[user_idx + 1],
-            RowKind::OptionRow {
-                owner: "user".into(),
-                key: "alice".into()
-            }
-        );
-        assert_eq!(
-            rows[user_idx + 2],
-            RowKind::OptionRow {
-                owner: "user".into(),
-                key: "bob".into()
-            }
-        );
-        // and NOT expanded when not in `expanded`:
-        let rows2 = build_rows(&ctx, None, &BTreeSet::new());
-        assert!(
-            !rows2
-                .iter()
-                .any(|r| matches!(r, RowKind::OptionRow { owner, .. } if owner == "user"))
-        );
-    }
-
-    #[test]
-    fn expanding_a_group_splices_its_option_rows_after_the_header() {
-        let (_dir, ctx, _req) = fixture();
-        let mut expanded = BTreeSet::new();
-        expanded.insert("creds".to_string());
-        let rows = build_rows(&ctx, None, &expanded);
-        let header_idx = rows
-            .iter()
-            .position(|r| {
-                r == &RowKind::GroupHeader {
-                    name: "creds".into(),
-                }
-            })
-            .unwrap();
-        assert_eq!(
-            rows[header_idx + 1],
-            RowKind::OptionRow {
-                owner: "creds".into(),
-                key: "alice".into()
-            }
-        );
-        // members still follow, after the option row(s):
-        assert_eq!(
-            rows[header_idx + 2],
-            RowKind::GroupMember {
-                group: "creds".into(),
-                name: "user_id".into()
-            }
-        );
-    }
-
-    // -----------------------------------------------------------------
-    // draw: cell content rules, via buffer cells
-    // -----------------------------------------------------------------
-
-    fn render(
-        ctx: &ProjectContext,
-        req: Option<&HttpRequest>,
-        expanded: BTreeSet<String>,
-        width: u16,
-        env_scroll: usize,
-    ) -> (String, ratatui::Terminal<ratatui::backend::TestBackend>) {
-        let theme = Theme::for_terminal();
-        let backend = ratatui::backend::TestBackend::new(width, 24);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        let mut hits = HitMap::default();
-        let mut vm = VarManager {
-            expanded,
-            env_scroll,
-            ..Default::default()
-        };
-        terminal
-            .draw(|f| vm.draw(f, f.area(), &theme, ctx, req, &mut hits, None))
-            .unwrap();
-        let content = format!("{:?}", terminal.backend().buffer());
-        (content, terminal)
-    }
-
-    #[test]
-    fn simple_var_default_fallback_is_muted_env_value_is_normal() {
-        let (_dir, ctx, req) = fixture();
-        let theme = Theme::for_terminal();
-        let (content, term) = render(&ctx, Some(&req), BTreeSet::new(), 120, 0);
-        assert!(content.contains("http://localhost:8080"), "{content}");
-        assert!(content.contains("https://qa.example.com"), "{content}");
-
-        let rows = build_rows(&ctx, Some(&req), &BTreeSet::new());
-        let y = row_y(
-            &rows,
-            &RowKind::Var {
-                name: "base_url".into(),
-            },
-        );
-        let (default_text, default_fg) = cell_at(&term, NAME_W + DESC_W, y, ENV_W);
-        assert_eq!(default_text, "http://localhost:8080");
-        assert_eq!(
-            default_fg, theme.text,
-            "the Default column is the value's home"
-        );
-        let (dev_text, dev_fg) = cell_at(&term, env_col_x(&ctx, "dev"), y, ENV_W);
-        assert_eq!(dev_text, "http://localhost:8080");
-        assert_eq!(dev_fg, theme.text_muted, "default fallback must be muted");
-        let (qa_text, qa_fg) = cell_at(&term, env_col_x(&ctx, "qa"), y, ENV_W);
-        assert_eq!(qa_text, "https://qa.example.com");
-        assert_eq!(qa_fg, theme.text, "explicit env value is normal fg");
-    }
-
-    #[test]
-    fn enumerated_var_shows_key_dot_value_when_selected_and_warns_when_not() {
-        let (_dir, ctx, req) = fixture();
-        let (content, _term) = render(&ctx, Some(&req), BTreeSet::new(), 120, 0);
-        assert!(content.contains("alice \u{b7} 1001"), "{content}");
-        assert!(content.contains("\u{26a0} select"), "{content}");
-    }
-
-    #[test]
-    fn secret_is_masked_never_shows_value_and_warns_when_missing() {
-        let (_dir, ctx, req) = fixture();
-        let (content, _term) = render(&ctx, Some(&req), BTreeSet::new(), 120, 0);
-        assert!(
-            content.contains("\u{25cf}\u{25cf}\u{25cf}\u{25cf}"),
-            "{content}"
-        );
-        assert!(content.contains("\u{26a0} secret"), "{content}");
-        assert!(
-            !content.contains("sk-qa-secret-value"),
-            "secret value must never render: {content}"
-        );
-    }
-
-    #[test]
-    fn expanded_option_row_shows_key_and_value_never_the_secret() {
-        let (_dir, ctx, req) = fixture();
-        let mut expanded = BTreeSet::new();
-        expanded.insert("user".to_string());
-        let (content, _term) = render(&ctx, Some(&req), expanded, 120, 0);
-        assert!(content.contains("alice"));
-        assert!(content.contains("bob"));
-        assert!(content.contains("1001"));
-        assert!(content.contains("2002"));
-        assert!(
-            !content.contains("sk-qa-secret-value"),
-            "secret value must never render: {content}"
-        );
-    }
-
-    #[test]
-    fn env_scroll_hides_the_first_env_column() {
-        let (_dir, ctx, req) = fixture();
-        let (all, _t) = render(&ctx, Some(&req), BTreeSet::new(), 120, 0);
-        assert!(all.contains("dev"), "{all}");
-        assert!(all.contains("qa"), "{all}");
-
-        let (scrolled, _t2) = render(&ctx, Some(&req), BTreeSet::new(), 120, 1);
-        // "dev" the env-column header is gone (env name string alone,
-        // distinct from any substring collisions in this fixture).
-        assert!(!scrolled.contains("dev"), "{scrolled}");
-        assert!(scrolled.contains("qa"), "{scrolled}");
-    }
-
-    #[test]
-    fn masked_secret_buffer_never_contains_the_value_anywhere() {
-        let (_dir, ctx, req) = fixture();
-        let mut expanded = BTreeSet::new();
-        expanded.insert("user".to_string());
-        expanded.insert("creds".to_string());
-        let (content, _term) = render(&ctx, Some(&req), expanded, 200, 0);
-        assert!(!content.contains("sk-qa-secret-value"));
-    }
-
-    #[test]
-    fn disabled_request_var_cell_is_muted_enabled_one_is_normal() {
-        let (_dir, ctx, req) = fixture();
-        let theme = Theme::for_terminal();
-        let (_content, term) = render(&ctx, Some(&req), BTreeSet::new(), 120, 0);
-        let enabled_fgs = fgs_of(&term, "abc-123");
-        assert!(!enabled_fgs.is_empty());
-        assert!(
-            enabled_fgs.iter().all(|fg| *fg == theme.text),
-            "an enabled request var's value must render in normal fg: {enabled_fgs:?}"
-        );
-        let disabled_fgs = fgs_of(&term, "should-be-muted");
-        assert!(!disabled_fgs.is_empty());
-        assert!(
-            disabled_fgs.iter().all(|fg| *fg == theme.text_muted),
-            "a disabled request var's value must render muted: {disabled_fgs:?}"
-        );
-    }
-
-    #[test]
-    fn selected_var_option_row_shows_a_check_mark_the_unselected_one_does_not() {
-        // Base fixture already selects `user = "alice"` in `qa`.
-        let (_dir, ctx, req) = fixture();
-        let mut expanded = BTreeSet::new();
-        expanded.insert("user".to_string());
-        let (content, _term) = render(&ctx, Some(&req), expanded, 120, 0);
-        assert!(
-            content.contains("\u{2713} 1001"),
-            "the selected option's row must carry the check mark: {content}"
-        );
-        assert!(
-            !content.contains("\u{2713} 2002"),
-            "the unselected option's row must not: {content}"
-        );
-    }
-
-    // -----------------------------------------------------------------
-    // Finding 1 (review): a variable/group enumerated ONLY via an
-    // environment's [options.*] table (nothing declared in
-    // variables.toml) must still be expandable and show its option row(s)
-    // — the row set is the union across every environment, not just
-    // variables.toml.
-    // -----------------------------------------------------------------
-
-    /// One var (`region`), declared with no options of its own; `qa`
-    /// declares an env-only option `east`, selected in `qa`; `dev` has
-    /// nothing for it at all.
-    fn fixture_env_only_enum() -> (tempfile::TempDir, ProjectContext) {
-        let dir = tempfile::tempdir().unwrap();
-        project::init_project(dir.path(), Some("env-only")).unwrap();
-        std::fs::write(
-            dir.path().join("variables.toml"),
-            "[region]\ndescription = \"deploy region\"\n",
-        )
-        .unwrap();
-        std::fs::write(dir.path().join("environments/dev.toml"), "").unwrap();
-        std::fs::write(
-            dir.path().join("environments/qa.toml"),
-            "[options.region.east]\ndescription = \"US East\"\nvalue = \"us-east-1\"\n",
-        )
-        .unwrap();
-
-        let mut selections = IndexMap::new();
-        let mut qa_sel = IndexMap::new();
-        qa_sel.insert("region".to_string(), "east".to_string());
-        selections.insert("qa".to_string(), qa_sel);
-        project::save_local_state(
-            dir.path(),
-            &project::LocalState {
-                environment: Some("qa".into()),
-                selections,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
-        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf());
-        assert!(warns.is_empty(), "{warns:?}");
-        (dir, ctx)
-    }
-
-    #[test]
-    fn var_enumerated_only_via_one_env_gets_an_expand_glyph() {
-        let (_dir, ctx) = fixture_env_only_enum();
-        let region_row = RowKind::Var {
-            name: "region".into(),
-        };
-        assert_eq!(
-            expand_glyph(&ctx, &region_row, &BTreeSet::new()),
-            Some(GLYPH_COLLAPSED),
-            "declared with zero options in variables.toml, but qa.toml \
-             declares one — must still be expandable"
-        );
-    }
-
-    #[test]
-    fn var_enumerated_only_via_one_env_expands_to_its_env_only_option_row() {
-        let (_dir, ctx) = fixture_env_only_enum();
-        let region_row = RowKind::Var {
-            name: "region".into(),
-        };
-        let mut expanded = BTreeSet::new();
-        expanded.insert("region".to_string());
-        let rows = build_rows(&ctx, None, &expanded);
-        let region_idx = rows.iter().position(|r| r == &region_row).unwrap();
-        assert_eq!(
-            rows[region_idx + 1],
-            RowKind::OptionRow {
-                owner: "region".into(),
-                key: "east".into()
-            }
-        );
-
-        // and collapsed, no option row appears anywhere:
-        let rows_collapsed = build_rows(&ctx, None, &BTreeSet::new());
-        assert!(
-            !rows_collapsed
-                .iter()
-                .any(|r| matches!(r, RowKind::OptionRow { owner, .. } if owner == "region"))
-        );
-    }
-
-    #[test]
-    fn var_enumerated_only_via_one_env_shows_selection_truth_in_that_env() {
-        let (_dir, ctx) = fixture_env_only_enum();
-        let mut expanded = BTreeSet::new();
-        expanded.insert("region".to_string());
-        let (content, _term) = render(&ctx, None, expanded, 120, 0);
-        // The Var row itself, resolved in qa (the active/selected env):
-        assert!(content.contains("east \u{b7} us-east-1"), "{content}");
-        // The spliced-in option row, check-marked as selected in qa:
-        assert!(content.contains("\u{2713} us-east-1"), "{content}");
-    }
-
-    // -----------------------------------------------------------------
-    // Finding 2 (review): group selected-state cell rules, asserted
-    // against actual buffer content (a group option genuinely selected
-    // in one environment, not selected in another).
-    // -----------------------------------------------------------------
-
-    /// Group `creds` (members `user_id`, `customer_id`), option `alice`
-    /// declared in `variables.toml`; `qa` overrides just `customer_id`
-    /// for that option and selects it; `dev` has neither an override nor
-    /// a selection.
-    fn fixture_group_selected() -> (tempfile::TempDir, ProjectContext) {
-        let dir = tempfile::tempdir().unwrap();
-        project::init_project(dir.path(), Some("group-selected")).unwrap();
-        std::fs::write(
-            dir.path().join("variables.toml"),
-            "[groups.creds]\ndescription = \"paired ids\"\nmembers = [\"user_id\", \"customer_id\"]\n[groups.creds.options.alice]\ncustomer_id = \"c-77\"\nuser_id = \"1001\"\n",
-        )
-        .unwrap();
-        std::fs::write(dir.path().join("environments/dev.toml"), "").unwrap();
-        std::fs::write(
-            dir.path().join("environments/qa.toml"),
-            "[options.creds.alice]\ncustomer_id = \"c-99\"\n",
+            "[entries.creds.alice]\nuser_id = \"1001\"\ncustomer_id = \"c-77\"\n\n[entries.creds.bob]\nuser_id = \"2002\"\ncustomer_id = \"c-91\"\n",
         )
         .unwrap();
 
@@ -2386,1275 +1950,766 @@ customer_id = "c-77"
         (dir, ctx)
     }
 
-    /// The list area's first data row's `y`, matching `draw`'s own
-    /// layout math (title bar, then a 1-line column-header strip).
-    const LIST_TOP: u16 = TITLE_HEIGHT + 1;
-
-    fn row_y(rows: &[RowKind], target: &RowKind) -> u16 {
-        let idx = rows
-            .iter()
-            .position(|r| r == target)
-            .unwrap_or_else(|| panic!("row not found: {target:?}"));
-        LIST_TOP + idx as u16
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
     }
 
-    fn env_col_x(ctx: &ProjectContext, env: &str) -> u16 {
-        let ci = ctx
-            .environments
-            .iter()
-            .position(|e| e == env)
-            .unwrap_or_else(|| panic!("env not found: {env:?}"));
-        NAME_W + DESC_W + ENV_W + (ci as u16) * ENV_W
-    }
-
-    /// The text (trimmed of trailing padding) and fg of the first
-    /// non-blank cell in a `w`-wide run starting at `(x, y)`.
-    fn cell_at(
-        term: &ratatui::Terminal<ratatui::backend::TestBackend>,
-        x: u16,
-        y: u16,
-        w: u16,
-    ) -> (String, Color) {
-        let buf = term.backend().buffer();
-        let mut s = String::new();
-        let mut fg = Color::Reset;
-        let mut got_fg = false;
-        for dx in 0..w {
-            let cell = &buf[(x + dx, y)];
-            let sym = cell.symbol();
-            if !got_fg && sym != " " {
-                fg = cell.fg;
-                got_fg = true;
-            }
-            s.push_str(sym);
-        }
-        (s.trim_end().to_string(), fg)
+    fn render(vm: &mut VarManager, ctx: &ProjectContext) -> (String, HitMap) {
+        let theme = Theme::dark();
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        let mut hits = HitMap::default();
+        terminal
+            .draw(|f| vm.draw(f, f.area(), &theme, ctx, None, &mut hits, None))
+            .unwrap();
+        (format!("{:?}", terminal.backend().buffer()), hits)
     }
 
     #[test]
-    fn group_header_shows_selected_key_or_needs_selection_per_env() {
-        let (_dir, ctx) = fixture_group_selected();
-        let rows = build_rows(&ctx, None, &BTreeSet::new());
-        let header_row = RowKind::GroupHeader {
-            name: "creds".into(),
-        };
-        let y = row_y(&rows, &header_row);
-        let (_content, term) = render(&ctx, None, BTreeSet::new(), 120, 0);
-
-        let (qa_text, qa_fg) = cell_at(&term, env_col_x(&ctx, "qa"), y, ENV_W);
-        assert_eq!(qa_text, "alice", "selected key shown bare on the header");
-        assert_eq!(qa_fg, Theme::for_terminal().text);
-
-        let (dev_text, dev_fg) = cell_at(&term, env_col_x(&ctx, "dev"), y, ENV_W);
-        assert_eq!(dev_text, "\u{26a0} select");
-        assert_eq!(dev_fg, Theme::for_terminal().warning);
-    }
-
-    #[test]
-    fn group_members_show_key_dot_value_when_selected_needs_selection_otherwise() {
-        let (_dir, ctx) = fixture_group_selected();
-        let rows = build_rows(&ctx, None, &BTreeSet::new());
-        let member_row = RowKind::GroupMember {
-            group: "creds".into(),
-            name: "customer_id".into(),
-        };
-        let y = row_y(&rows, &member_row);
-        let (_content, term) = render(&ctx, None, BTreeSet::new(), 120, 0);
-
-        let (qa_text, _) = cell_at(&term, env_col_x(&ctx, "qa"), y, ENV_W);
-        assert_eq!(
-            qa_text, "alice \u{b7} c-99",
-            "qa's own override of customer_id must show through"
-        );
-        let (dev_text, _) = cell_at(&term, env_col_x(&ctx, "dev"), y, ENV_W);
-        assert_eq!(dev_text, "\u{26a0} select");
-    }
-
-    #[test]
-    fn group_option_row_check_marks_the_selected_env_and_distinguishes_overridden_vs_shared_fg() {
-        let (_dir, ctx) = fixture_group_selected();
-        let theme = Theme::for_terminal();
-        let mut expanded = BTreeSet::new();
-        expanded.insert("creds".to_string());
-        let rows = build_rows(&ctx, None, &expanded);
-        let option_row = RowKind::OptionRow {
-            owner: "creds".into(),
-            key: "alice".into(),
-        };
-        let y = row_y(&rows, &option_row);
-        let (_content, term) = render(&ctx, None, expanded, 120, 0);
-
-        // qa overrides customer_id for this option and has it selected:
-        // check-marked, and normal (not muted) fg since it's overridden.
-        let (qa_text, qa_fg) = cell_at(&term, env_col_x(&ctx, "qa"), y, ENV_W);
-        assert!(
-            qa_text.starts_with('\u{2713}'),
-            "qa's selected option row must show the check mark: {qa_text:?}"
-        );
-        assert!(qa_text.contains("customer_id=c-99"), "{qa_text:?}");
-        assert_eq!(
-            qa_fg, theme.text,
-            "an env-overridden option row must render in normal fg"
-        );
-
-        // dev has no override and no selection: shared (declared) values,
-        // muted, no check mark.
-        let (dev_text, dev_fg) = cell_at(&term, env_col_x(&ctx, "dev"), y, ENV_W);
-        assert!(
-            !dev_text.starts_with('\u{2713}'),
-            "dev has no selection, must not be check-marked: {dev_text:?}"
-        );
-        assert!(dev_text.contains("customer_id=c-77"), "{dev_text:?}");
-        assert_eq!(
-            dev_fg, theme.text_muted,
-            "an un-overridden (shared/declared) option row must render muted"
-        );
-    }
-
-    /// All occurrences of `needle` in the rendered buffer, as (row, fg) —
-    /// actually just `fg`, since these tests only care about the color a
-    /// given piece of text renders in, and a needle may legitimately
-    /// repeat across environment columns.
-    fn fgs_of(term: &ratatui::Terminal<ratatui::backend::TestBackend>, needle: &str) -> Vec<Color> {
-        let buf = term.backend().buffer();
-        let mut out = Vec::new();
-        for y in 0..buf.area.height {
-            let mut line = String::new();
-            for x in 0..buf.area.width {
-                line.push_str(buf[(x, y)].symbol());
-            }
-            let mut start = 0;
-            while let Some(pos) = line[start..].find(needle) {
-                let byte_idx = start + pos;
-                out.push(buf[(byte_idx as u16, y)].fg);
-                start = byte_idx + needle.len();
-            }
-        }
-        out
-    }
-
-    // -----------------------------------------------------------------
-    // shell behaviors carried over
-    // -----------------------------------------------------------------
-
-    #[test]
-    fn title_bar_shows_project_and_env() {
-        let (_dir, ctx, _req) = fixture();
-        let (content, _term) = render(&ctx, None, BTreeSet::new(), 120, 0);
-        assert!(content.contains("Variables"));
-        assert!(content.contains("demo"));
-        assert!(content.contains("qa"));
-    }
-
-    #[test]
-    fn footer_hint_mentions_esc() {
-        let (_dir, ctx, _req) = fixture();
-        let (content, _term) = render(&ctx, None, BTreeSet::new(), 120, 0);
-        assert!(content.contains("esc"));
-        assert!(content.contains("back"));
-    }
-
-    #[test]
-    fn esc_asks_the_app_to_close_the_screen() {
-        let (_dir, ctx, _req) = fixture();
+    fn left_list_is_variables_then_groups_with_the_selection_inline() {
+        let (_dir, ctx) = fixture();
         let mut vm = VarManager::default();
-        let ev = KeyEvent::new(KeyCode::Esc, ratatui::crossterm::event::KeyModifiers::NONE);
-        assert_eq!(vm.handle_key(ev, &ctx, None), Some(Action::CloseScreen));
+        let (content, _) = render(&mut vm, &ctx);
+
+        assert_eq!(
+            vm.left_rows,
+            vec![
+                VmRow::SectionVars,
+                VmRow::Var("base_url".into()),
+                VmRow::Var("api_key".into()),
+                VmRow::SectionGroups,
+                VmRow::Group("creds".into()),
+            ],
+            "group fields (user_id/customer_id) are not top-level rows"
+        );
+        assert!(content.contains("VARIABLES"), "{content}");
+        assert!(content.contains("GROUPS"), "{content}");
+        assert!(content.contains("creds (alice)"), "{content}");
+        assert!(content.contains(GLYPH_LOCK), "secret badge: {content}");
+        assert!(
+            content.contains(GLYPH_UNRESOLVED),
+            "unresolved dot for the value-less secret: {content}"
+        );
     }
 
     #[test]
-    fn unbound_plain_key_is_unhandled_here() {
-        let (_dir, ctx, _req) = fixture();
+    fn a_group_with_no_selection_says_so() {
+        let (_dir, mut ctx) = fixture();
+        ctx.clear_selection_for("qa", "creds");
         let mut vm = VarManager::default();
-        let ev = KeyEvent::new(
-            KeyCode::Char('q'),
-            ratatui::crossterm::event::KeyModifiers::NONE,
-        );
-        assert_eq!(vm.handle_key(ev, &ctx, None), None);
+        let (content, _) = render(&mut vm, &ctx);
+        assert!(content.contains("creds (needs selection)"), "{content}");
     }
 
-    // -----------------------------------------------------------------
-    // Task 11: navigation + in-place editing
-    // -----------------------------------------------------------------
-
-    fn idx(rows: &[RowKind], target: &RowKind) -> usize {
-        rows.iter()
-            .position(|r| r == target)
-            .unwrap_or_else(|| panic!("row not found: {target:?}"))
-    }
-
-    fn env_col(ctx: &ProjectContext, env: &str) -> usize {
-        2 + ctx
-            .environments
+    #[test]
+    fn clicking_a_group_row_opens_it_in_the_detail_pane() {
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        render(&mut vm, &ctx);
+        let group_row = vm
+            .left_rows
             .iter()
-            .position(|e| e == env)
-            .unwrap_or_else(|| panic!("env not found: {env:?}"))
-    }
+            .position(|r| r == &VmRow::Group("creds".into()))
+            .unwrap();
 
-    fn down(vm: &mut VarManager, ctx: &ProjectContext) {
-        vm.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), ctx, None);
-    }
+        vm.select_row(group_row);
+        assert_eq!(vm.detail, VmDetail::Group("creds".into()));
+        assert_eq!(vm.left_cursor, group_row);
 
-    #[test]
-    fn cursor_down_skips_section_headers_and_lands_on_the_first_data_row() {
-        let (_dir, ctx, req) = fixture();
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
-            ..Default::default()
-        };
-        assert!(matches!(vm.rows[0], RowKind::SectionHeader("This request")));
-        assert_eq!(vm.cursor.0, 0);
-        down(&mut vm, &ctx); // -> RequestVar trace_id (row 1), skipping nothing yet
-        assert_eq!(vm.cursor.0, 1);
-        assert!(
-            matches!(&vm.rows[vm.cursor.0], RowKind::RequestVar { name } if name == "trace_id")
-        );
-        down(&mut vm, &ctx); // -> RequestVar disabled_flag
-        assert_eq!(vm.cursor.0, 2);
-        down(&mut vm, &ctx); // skips SectionHeader("Project") straight to base_url
-        assert!(matches!(&vm.rows[vm.cursor.0], RowKind::Var { name } if name == "base_url"));
+        // …and a variable row, likewise.
+        vm.select_row(1);
+        assert_eq!(vm.detail, VmDetail::Var("base_url".into()));
     }
 
     #[test]
-    fn cursor_down_never_lands_on_the_trailing_ghost_rows() {
-        let (_dir, ctx, _req) = fixture();
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, None, &BTreeSet::new()),
-            ..Default::default()
-        };
-        vm.cursor.0 = idx(
-            &vm.rows,
-            &RowKind::GroupMember {
-                group: "creds".into(),
-                name: "customer_id".into(),
-            },
-        );
-        let last = vm.cursor.0;
-        down(&mut vm, &ctx); // AddVar/AddGroup are not stops: cursor holds
-        assert_eq!(
-            vm.cursor.0, last,
-            "no editable row past the last group member; cursor must not move onto a ghost row"
-        );
+    fn clicking_a_section_header_moves_the_cursor_but_keeps_the_detail() {
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        render(&mut vm, &ctx);
+        vm.select_row(1);
+        vm.select_row(0);
+        assert_eq!(vm.left_cursor, 0);
+        assert_eq!(vm.detail, VmDetail::Var("base_url".into()));
     }
 
     #[test]
-    fn member_env_cell_edits_the_selected_options_value() {
-        let (_dir, ctx) = fixture_group_selected();
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, None, &BTreeSet::new()),
-            ..Default::default()
-        };
-        let row = idx(
-            &vm.rows,
-            &RowKind::GroupMember {
-                group: "creds".into(),
-                name: "customer_id".into(),
-            },
-        );
-        vm.cursor = (row, env_col(&ctx, "qa"));
-        assert_eq!(vm.activate_cursor(&ctx, None), None);
-        assert_eq!(
-            vm.editing.as_ref().expect("edit began").input.text(),
-            "c-99",
-            "seeded with the selected option's value for this member+env"
-        );
-        vm.editing.as_mut().unwrap().input = LineInput::new("c-100");
-        assert_eq!(
-            vm.commit_edit(&ctx),
-            Some(Action::VarEdit(VarEditOp::SetOptionValue {
-                env: "qa".into(),
-                owner: "creds".into(),
-                key: "alice".into(),
-                member: Some("customer_id".into()),
-                value: "c-100".into(),
-            }))
-        );
-    }
-
-    #[test]
-    fn unselected_cells_open_the_selection_dropdown() {
-        let (_dir, ctx) = fixture_group_selected();
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, None, &BTreeSet::new()),
-            ..Default::default()
-        };
-        let header = idx(
-            &vm.rows,
-            &RowKind::GroupHeader {
-                name: "creds".into(),
-            },
-        );
-        let member = idx(
-            &vm.rows,
-            &RowKind::GroupMember {
-                group: "creds".into(),
-                name: "user_id".into(),
-            },
-        );
-        // Enter on the header's env cell — selected or not — offers the
-        // choice, and expand stays on the name column
-        for (row, env) in [(header, "dev"), (header, "qa"), (member, "dev")] {
-            vm.cursor = (row, env_col(&ctx, env));
-            assert_eq!(
-                vm.activate_cursor(&ctx, None),
-                Some(Action::OpenSelectDropdown {
-                    owner: "creds".into(),
-                    env: env.to_string(),
-                    row,
-                    col: env_col(&ctx, env),
-                }),
-                "row {row} env {env}"
+    fn every_row_registers_a_left_row_hit() {
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        let (_, hits) = render(&mut vm, &ctx);
+        for i in 0..vm.left_rows.len() {
+            assert!(
+                hits.rect_of(&Hit::VmLeftRow(i)).is_some(),
+                "row {i} has no hit"
             );
-            assert!(vm.expanded.is_empty(), "no expand from an env cell");
         }
-        vm.cursor = (header, 0);
-        assert_eq!(vm.activate_cursor(&ctx, None), None);
-        assert!(vm.expanded.contains("creds"), "col 0 still expands");
     }
 
     #[test]
-    fn single_click_on_a_group_headers_env_cell_opens_the_dropdown() {
-        let (_dir, ctx) = fixture_group_selected();
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, None, &BTreeSet::new()),
-            ..Default::default()
-        };
-        let header = idx(
-            &vm.rows,
-            &RowKind::GroupHeader {
-                name: "creds".into(),
-            },
-        );
-        let col = env_col(&ctx, "dev");
-        assert_eq!(
-            vm.click_cell(header, col, false, &ctx, None),
-            Some(Action::OpenSelectDropdown {
-                owner: "creds".into(),
-                env: "dev".into(),
-                row: header,
-                col,
-            })
-        );
+    fn arrows_skip_section_headers_and_open_what_they_land_on() {
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        render(&mut vm, &ctx);
+
+        assert!(vm.handle_key(key(KeyCode::Down), &ctx).is_none());
+        assert_eq!(vm.detail, VmDetail::Var("base_url".into()));
+        vm.handle_key(key(KeyCode::Down), &ctx);
+        assert_eq!(vm.detail, VmDetail::Var("api_key".into()));
+        // Skips the GROUPS header.
+        vm.handle_key(key(KeyCode::Down), &ctx);
+        assert_eq!(vm.detail, VmDetail::Group("creds".into()));
+        // …and stops at the end.
+        vm.handle_key(key(KeyCode::Down), &ctx);
+        assert_eq!(vm.detail, VmDetail::Group("creds".into()));
+
+        vm.handle_key(key(KeyCode::Up), &ctx);
+        assert_eq!(vm.detail, VmDetail::Var("api_key".into()));
     }
 
     #[test]
-    fn enumerated_var_env_cell_opens_the_dropdown_too() {
-        let (_dir, ctx, req) = fixture();
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
-            ..Default::default()
-        };
-        let row = idx(
-            &vm.rows,
-            &RowKind::Var {
-                name: "user".into(),
-            },
-        );
-        let col = env_col(&ctx, "dev");
-        vm.cursor = (row, col);
-        assert_eq!(
-            vm.activate_cursor(&ctx, Some(&req)),
-            Some(Action::OpenSelectDropdown {
-                owner: "user".into(),
-                env: "dev".into(),
-                row,
-                col,
-            })
-        );
-        assert_eq!(
-            vm.click_cell(row, col, false, &ctx, Some(&req)),
-            Some(Action::OpenSelectDropdown {
-                owner: "user".into(),
-                env: "dev".into(),
-                row,
-                col,
-            })
-        );
-    }
-
-    #[test]
-    fn e_on_an_option_row_opens_the_edit_option_prompt_prefilled() {
-        let (_dir, ctx) = fixture_group_selected();
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, None, &BTreeSet::from(["creds".to_string()])),
-            ..Default::default()
-        };
-        vm.cursor = (
-            idx(
-                &vm.rows,
-                &RowKind::OptionRow {
-                    owner: "creds".into(),
-                    key: "alice".into(),
-                },
-            ),
-            0,
-        );
-        let action = vm.handle_key(
-            KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE),
-            &ctx,
-            None,
-        );
-        let Some(Action::OpenEditOptionPrompt {
-            owner, key, values, ..
-        }) = action
-        else {
-            panic!("expected the edit-option prompt, got {action:?}");
-        };
-        assert_eq!(owner, "creds");
-        assert_eq!(key, "alice");
-        // active env (qa) merge: shared user_id, qa-overridden customer_id
-        assert_eq!(values.get("user_id").map(String::as_str), Some("1001"));
-        assert_eq!(values.get("customer_id").map(String::as_str), Some("c-99"));
-    }
-
-    #[test]
-    fn a_key_adds_a_member_from_any_of_the_groups_rows() {
-        let (_dir, ctx, req) = fixture();
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
-            ..Default::default()
-        };
-        let expected = Some(Action::PromptAddGroupMember {
-            group: "creds".into(),
-        });
-        for target in [
-            RowKind::GroupHeader {
-                name: "creds".into(),
-            },
-            RowKind::GroupMember {
-                group: "creds".into(),
-                name: "user_id".into(),
-            },
-        ] {
-            vm.cursor = (idx(&vm.rows, &target), 0);
-            let action = vm.handle_key(
-                KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
-                &ctx,
-                Some(&req),
-            );
-            assert_eq!(action, expected, "from {target:?}");
-        }
-        let chips = action_chips(
-            &ctx,
-            vm.rows.get(idx(
-                &vm.rows,
-                &RowKind::GroupHeader {
-                    name: "creds".into(),
-                },
-            )),
-        );
+    fn top_bar_registers_the_env_switch_and_both_new_buttons() {
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        let (content, hits) = render(&mut vm, &ctx);
+        assert!(content.contains("Environment: qa"), "{content}");
+        assert!(hits.rect_of(&Hit::VmEnvSwitch).is_some());
+        assert!(hits.rect_of(&Hit::VmNewVar).is_some());
+        assert!(hits.rect_of(&Hit::VmNewGroup).is_some());
+        assert!(content.contains("+ Variable"), "{content}");
+        assert!(content.contains("+ Group"), "{content}");
+        assert!(content.contains("Close (esc)"), "{content}");
         assert!(
-            chips
-                .iter()
-                .any(|(key, label, _)| *key == "a" && *label == "member"),
+            hits.rect_of(&Hit::FooterChip(Action::CloseScreen))
+                .is_some(),
+            "the close button is the mouse's way back"
         );
     }
 
     #[test]
-    fn d_on_a_member_row_asks_to_remove_it_from_the_group() {
-        let (_dir, ctx, req) = fixture();
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
-            ..Default::default()
-        };
-        vm.cursor = (
-            idx(
-                &vm.rows,
-                &RowKind::GroupMember {
-                    group: "creds".into(),
-                    name: "user_id".into(),
-                },
-            ),
-            0,
-        );
-        let action = vm.handle_key(
-            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
-            &ctx,
-            Some(&req),
-        );
-        assert_eq!(
-            action,
-            Some(Action::ConfirmRemoveGroupMember {
-                group: "creds".into(),
-                member: "user_id".into(),
-            })
-        );
+    fn the_detail_pane_asks_for_a_selection_until_a_row_is_open() {
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        let (content, _) = render(&mut vm, &ctx);
+        assert!(content.contains("select a variable or group"), "{content}");
     }
 
     #[test]
-    fn e_key_renames_and_the_chip_advertises_it() {
-        let (_dir, ctx, req) = fixture();
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
-            ..Default::default()
-        };
-        vm.cursor = (
-            idx(
-                &vm.rows,
-                &RowKind::Var {
-                    name: "base_url".into(),
-                },
-            ),
-            0,
-        );
-        let action = vm.handle_key(
-            KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE),
-            &ctx,
-            Some(&req),
-        );
-        assert_eq!(
-            action,
-            Some(Action::PromptRenameVar {
-                from: "base_url".into(),
-            })
-        );
-        let chips = action_chips(&ctx, vm.rows.get(vm.cursor.0));
-        assert!(
-            chips
-                .iter()
-                .any(|(key, label, _)| *key == "e" && *label == "rename"),
-            "the rename chip shows a character key like every other action: {chips:?}"
-        );
-    }
+    fn commands_target_the_left_selection() {
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        render(&mut vm, &ctx);
 
-    #[test]
-    fn click_name_double_on_a_var_row_opens_rename() {
-        let (_dir, ctx, req) = fixture();
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
-            ..Default::default()
-        };
-        let row = idx(
-            &vm.rows,
-            &RowKind::Var {
-                name: "base_url".into(),
-            },
-        );
-        assert_eq!(vm.click_name(row, false, &ctx), None);
-        assert_eq!(vm.cursor, (row, 0), "single click just moves the cursor");
         assert_eq!(
-            vm.click_name(row, true, &ctx),
-            Some(Action::PromptRenameVar {
-                from: "base_url".into(),
-            })
-        );
-    }
-
-    #[test]
-    fn click_name_double_on_an_expandable_row_toggles_expand() {
-        let (_dir, ctx, req) = fixture();
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
-            ..Default::default()
-        };
-        // `user` has options, so its name activation expands, not renames
-        let row = idx(
-            &vm.rows,
-            &RowKind::Var {
-                name: "user".into(),
-            },
-        );
-        assert_eq!(vm.click_name(row, true, &ctx), None);
-        assert!(vm.expanded.contains("user"));
-    }
-
-    #[test]
-    fn click_anywhere_on_the_add_rows_dispatches_the_prompts() {
-        let (_dir, ctx, req) = fixture();
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
-            ..Default::default()
-        };
-        let add_var = idx(&vm.rows, &RowKind::AddVar);
-        let add_group = idx(&vm.rows, &RowKind::AddGroup);
-        assert_eq!(
-            vm.click_name(add_var, false, &ctx),
-            Some(Action::PromptNewVar),
-            "single click on the ghost row's label"
+            vm.handle_key(key(KeyCode::Char('n')), &ctx),
+            Some(Action::PromptNewVar)
         );
         assert_eq!(
-            vm.click_cell(add_var, 1, false, &ctx, Some(&req)),
-            Some(Action::PromptNewVar),
-            "single click on any of its cells"
-        );
-        assert_eq!(
-            vm.click_cell(add_group, 0, false, &ctx, Some(&req)),
+            vm.handle_key(key(KeyCode::Char('g')), &ctx),
             Some(Action::PromptNewGroup)
         );
+
+        vm.select_row(1); // base_url
         assert_eq!(
-            vm.click_row(add_group),
-            Some(Action::PromptNewGroup),
-            "single click on the row background"
+            vm.handle_key(key(KeyCode::Char('e')), &ctx),
+            Some(Action::PromptRenameVar {
+                from: "base_url".into()
+            })
+        );
+        assert_eq!(
+            vm.handle_key(key(KeyCode::F(2)), &ctx),
+            Some(Action::PromptRenameVar {
+                from: "base_url".into()
+            })
+        );
+        assert_eq!(
+            vm.handle_key(key(KeyCode::Char('d')), &ctx),
+            Some(Action::ConfirmDeleteVar {
+                name: "base_url".into()
+            })
+        );
+        assert_eq!(
+            vm.handle_key(key(KeyCode::Char('s')), &ctx),
+            Some(Action::ToggleSecretVar {
+                name: "base_url".into()
+            })
+        );
+
+        let group_row = vm.left_rows.len() - 1;
+        vm.select_row(group_row);
+        assert_eq!(
+            vm.handle_key(key(KeyCode::Char('d')), &ctx),
+            Some(Action::ConfirmDeleteVar {
+                name: "creds".into()
+            }),
+            "delete works on a group row"
+        );
+        assert_eq!(
+            vm.handle_key(key(KeyCode::Char('e')), &ctx),
+            Some(Action::PromptRenameVar {
+                from: "creds".into()
+            }),
+            "a group renames through the same prompt a variable does"
+        );
+        assert_eq!(
+            vm.handle_key(key(KeyCode::Char('s')), &ctx),
+            None,
+            "a group has no secret flag"
         );
     }
 
     #[test]
-    fn editing_the_description_renders_in_the_description_column() {
-        let (_dir, ctx, req) = fixture();
-        let theme = Theme::for_terminal();
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
-            ..Default::default()
-        };
-        let row = idx(
-            &vm.rows,
-            &RowKind::Var {
-                name: "base_url".into(),
-            },
-        );
-        vm.cursor = (row, 0);
-        vm.activate_cursor(&ctx, Some(&req));
+    fn commands_yield_to_an_active_cell_edit_but_navigation_does_not() {
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        render(&mut vm, &ctx);
+        vm.select_row(1);
+        vm.grid.editing = Some(GridEdit {
+            row: 0,
+            col: 0,
+            input: LineInput::new(""),
+            original: String::new(),
+        });
+
+        assert_eq!(vm.handle_key(key(KeyCode::Char('n')), &ctx), None);
+        assert_eq!(vm.handle_key(key(KeyCode::Char('d')), &ctx), None);
         assert_eq!(
-            vm.editing.as_ref().expect("edit began").input.text(),
+            vm.handle_key(key(KeyCode::Esc), &ctx),
+            Some(Action::CloseScreen)
+        );
+        vm.handle_key(key(KeyCode::Down), &ctx);
+        assert_eq!(vm.detail, VmDetail::Var("api_key".into()));
+    }
+
+    #[test]
+    fn context_menu_offers_rename_duplicate_delete() {
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        render(&mut vm, &ctx);
+
+        let items = vm.context_menu(1).expect("variable menu");
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            vec!["Rename\u{2026}", "Duplicate", "Delete\u{2026}"]
+        );
+        assert_eq!(
+            items[0].action,
+            Some(Action::PromptRenameVar {
+                from: "base_url".into()
+            })
+        );
+        assert_eq!(
+            items[1].action,
+            Some(Action::DuplicateVar {
+                name: "base_url".into()
+            })
+        );
+        assert_eq!(
+            items[2].action,
+            Some(Action::ConfirmDeleteVar {
+                name: "base_url".into()
+            })
+        );
+
+        let group = vm.context_menu(vm.left_rows.len() - 1).expect("group menu");
+        assert_eq!(
+            group[0].action,
+            Some(Action::PromptRenameVar {
+                from: "creds".into()
+            }),
+            "a group's rename is live"
+        );
+        assert_eq!(
+            group[1].action, None,
+            "so is duplicate: a field can only belong to one group"
+        );
+        assert_eq!(
+            group[2].action,
+            Some(Action::ConfirmDeleteVar {
+                name: "creds".into()
+            })
+        );
+
+        assert!(vm.context_menu(0).is_none(), "no menu on a section header");
+    }
+
+    #[test]
+    fn sync_clamps_the_cursor_and_drops_a_deleted_detail() {
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        render(&mut vm, &ctx);
+        vm.left_cursor = 99;
+        vm.detail = VmDetail::Var("gone".into());
+        vm.sync(&ctx);
+        assert_eq!(vm.left_cursor, vm.left_rows.len() - 1);
+        assert_eq!(vm.detail, VmDetail::None);
+
+        vm.detail = VmDetail::Group("creds".into());
+        vm.sync(&ctx);
+        assert_eq!(vm.detail, VmDetail::Group("creds".into()));
+    }
+
+    #[test]
+    fn a_long_list_scrolls_and_draws_a_scrollbar() {
+        let (dir, _ctx) = fixture();
+        let mut decls = String::new();
+        for i in 0..40 {
+            decls.push_str(&format!("[v{i:02}]\ndefault = \"x\"\n\n"));
+        }
+        std::fs::write(dir.path().join("variables.toml"), decls).unwrap();
+        let (ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+
+        let mut vm = VarManager::default();
+        let (content, hits) = render(&mut vm, &ctx);
+        assert!(content.contains('\u{2588}'), "thumb glyph drawn: {content}");
+        assert!(
+            hits.rect_of(&Hit::ScrollbarThumb(PaneId::Sidebar))
+                .is_some()
+        );
+
+        vm.handle_scroll(5);
+        assert_eq!(vm.left_scroll, 5);
+        let (content, _) = render(&mut vm, &ctx);
+        assert!(!content.contains("v00"), "scrolled past the first row");
+
+        // The keyboard snaps the viewport back to its cursor.
+        vm.select_row(1);
+        vm.handle_key(key(KeyCode::Down), &ctx);
+        let (content, _) = render(&mut vm, &ctx);
+        assert!(content.contains("v01"), "cursor row is visible: {content}");
+    }
+
+    // --- Task 15: variable detail form -----------------------------------
+
+    /// The form's full column of rows (title, three fields, the promote/
+    /// demote button and the usage line) doesn't fit `render`'s 24-row
+    /// screen all at once — plenty tall for a real terminal, but tests that
+    /// need to see the whole column use this taller one instead.
+    fn render_with_request(
+        vm: &mut VarManager,
+        ctx: &ProjectContext,
+        open_request: Option<&HttpRequest>,
+    ) -> (String, HitMap) {
+        let theme = Theme::dark();
+        let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
+        let mut hits = HitMap::default();
+        terminal
+            .draw(|f| vm.draw(f, f.area(), &theme, ctx, open_request, &mut hits, None))
+            .unwrap();
+        (format!("{:?}", terminal.backend().buffer()), hits)
+    }
+
+    fn select_var(vm: &mut VarManager, ctx: &ProjectContext, name: &str) {
+        render(vm, ctx); // populates left_rows
+        let i = vm
+            .left_rows
+            .iter()
+            .position(|r| r == &VmRow::Var(name.into()))
+            .unwrap();
+        vm.select_row(i);
+    }
+
+    #[test]
+    fn selecting_a_var_renders_its_description_default_and_env_value() {
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        select_var(&mut vm, &ctx, "base_url");
+        let (content, hits) = render_with_request(&mut vm, &ctx, None);
+        assert!(content.contains("base_url"), "{content}");
+        assert!(content.contains("Description"), "{content}");
+        assert!(content.contains("API root"), "{content}");
+        assert!(content.contains("Default"), "{content}");
+        assert!(content.contains("http://localhost:8080"), "{content}");
+        assert!(content.contains("Value in qa"), "{content}");
+        assert!(hits.rect_of(&Hit::VmRename).is_some());
+        assert!(hits.rect_of(&Hit::VmDelete).is_some());
+        assert!(
+            hits.rect_of(&Hit::VmFormField(VmField::Description))
+                .is_some()
+        );
+        assert!(hits.rect_of(&Hit::VmFormField(VmField::Default)).is_some());
+        assert!(hits.rect_of(&Hit::VmFormField(VmField::EnvValue)).is_some());
+        assert!(content.contains("used by:"), "{content}");
+    }
+
+    #[test]
+    fn a_secret_var_hides_the_default_row_and_masks_its_value_with_a_reveal_toggle() {
+        let (dir, _ctx) = fixture();
+        let mut secrets = IndexMap::new();
+        let mut qa_secrets = IndexMap::new();
+        qa_secrets.insert("api_key".to_string(), "sk-live-secret".to_string());
+        secrets.insert("qa".to_string(), qa_secrets);
+        project::save_secrets(dir.path(), &secrets).unwrap();
+        let (ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+
+        let mut vm = VarManager::default();
+        select_var(&mut vm, &ctx, "api_key");
+        let (content, hits) = render(&mut vm, &ctx);
+        assert!(!content.contains("Default"), "{content}");
+        assert!(!content.contains("sk-live-secret"), "{content}");
+        assert!(content.contains('\u{25cf}'), "masked dots: {content}");
+        assert!(hits.rect_of(&Hit::VmRevealToggle).is_some());
+
+        vm.form.revealed = true;
+        let (content, _) = render(&mut vm, &ctx);
+        assert!(content.contains("sk-live-secret"), "{content}");
+    }
+
+    #[test]
+    fn no_active_environment_shows_a_hint_instead_of_a_value_field_target() {
+        let (_dir, mut ctx) = fixture();
+        ctx.active_env = None;
+        let mut vm = VarManager::default();
+        select_var(&mut vm, &ctx, "base_url");
+        let (content, _) = render(&mut vm, &ctx);
+        assert!(content.contains("(no environment)"), "{content}");
+    }
+
+    #[test]
+    fn selecting_a_different_var_resets_the_form_but_a_reclick_does_not() {
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        select_var(&mut vm, &ctx, "base_url");
+        vm.form.revealed = true;
+        vm.form.editing = Some((VmField::Description, LineInput::new("typing...")));
+
+        // Re-selecting the same row must not disturb an in-progress edit.
+        let same = vm
+            .left_rows
+            .iter()
+            .position(|r| r == &VmRow::Var("base_url".into()))
+            .unwrap();
+        vm.select_row(same);
+        assert!(vm.form.editing.is_some(), "same-row reselect kept the edit");
+        assert!(vm.form.revealed, "same-row reselect kept reveal");
+
+        let other = vm
+            .left_rows
+            .iter()
+            .position(|r| r == &VmRow::Var("api_key".into()))
+            .unwrap();
+        vm.select_row(other);
+        assert!(vm.form.editing.is_none(), "a new selection drops the edit");
+        assert!(!vm.form.revealed, "a new selection resets reveal");
+    }
+
+    #[test]
+    fn field_seed_text_reads_description_default_and_the_resolved_env_value() {
+        let (_dir, ctx) = fixture();
+        assert_eq!(
+            field_seed_text(&ctx, "base_url", VmField::Description),
             "API root"
         );
-
-        let backend = ratatui::backend::TestBackend::new(120, 24);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        let mut hits = HitMap::default();
-        terminal
-            .draw(|f| vm.draw(f, f.area(), &theme, &ctx, Some(&req), &mut hits, None))
-            .unwrap();
-        let y = row_y(&vm.rows, &vm.rows[row].clone());
-        let (name_text, _) = cell_at(&terminal, 0, y, NAME_W);
-        assert!(
-            name_text.contains("base_url"),
-            "the name stays visible while its description is edited: {name_text:?}"
+        assert_eq!(
+            field_seed_text(&ctx, "base_url", VmField::Default),
+            "http://localhost:8080"
         );
-        let (desc_text, _) = cell_at(&terminal, NAME_W, y, DESC_W);
-        assert!(
-            desc_text.contains("API root"),
-            "the edit input lives in the description column: {desc_text:?}"
+        // qa has no override, so the env-value seed falls back through to
+        // the resolved (default) value, matching what the field displays.
+        assert_eq!(
+            field_seed_text(&ctx, "base_url", VmField::EnvValue),
+            "http://localhost:8080"
         );
     }
 
     #[test]
-    fn draw_registers_separate_name_and_description_hits() {
-        let (_dir, ctx, req) = fixture();
-        let theme = Theme::for_terminal();
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
-            ..Default::default()
-        };
-        let row = idx(
-            &vm.rows,
-            &RowKind::Var {
+    fn var_edit_op_for_targets_the_env_or_secret_store_and_falls_back_to_default_with_no_env() {
+        let (_dir, mut ctx) = fixture();
+        assert_eq!(
+            var_edit_op_for(&ctx, "base_url", VmField::Description, "new desc".into()),
+            VarEditOp::SetDescription {
+                owner: "base_url".into(),
+                value: "new desc".into()
+            }
+        );
+        assert_eq!(
+            var_edit_op_for(&ctx, "base_url", VmField::Default, "x".into()),
+            VarEditOp::SetDefault {
                 name: "base_url".into(),
-            },
+                value: "x".into()
+            }
         );
-        let backend = ratatui::backend::TestBackend::new(120, 24);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        let mut hits = HitMap::default();
-        terminal
-            .draw(|f| vm.draw(f, f.area(), &theme, &ctx, Some(&req), &mut hits, None))
-            .unwrap();
-        let name_rect = hits
-            .rect_of(&crate::hit::Hit::VarName(row))
-            .expect("name region registered");
-        assert_eq!(name_rect.width, NAME_W);
-        let desc_rect = hits
-            .rect_of(&crate::hit::Hit::VarCell { row, col: 0 })
-            .expect("description region registered");
-        assert_eq!(desc_rect.x, name_rect.x + NAME_W);
-        assert_eq!(desc_rect.width, DESC_W);
-    }
-
-    #[test]
-    fn enter_on_the_default_cell_edits_and_commits_set_default() {
-        let (_dir, ctx, req) = fixture();
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
-            ..Default::default()
-        };
-        vm.cursor = (
-            idx(
-                &vm.rows,
-                &RowKind::Var {
-                    name: "base_url".into(),
-                },
-            ),
-            1,
-        );
-        let action = vm.activate_cursor(&ctx, Some(&req));
-        assert_eq!(action, None);
         assert_eq!(
-            vm.editing.as_ref().expect("edit began").input.text(),
-            "http://localhost:8080",
-            "seeded with the declared default"
-        );
-        vm.editing.as_mut().unwrap().input = LineInput::new("http://local:9999");
-        assert_eq!(
-            vm.commit_edit(&ctx),
-            Some(Action::VarEdit(VarEditOp::SetDefault {
+            var_edit_op_for(&ctx, "base_url", VmField::EnvValue, "y".into()),
+            VarEditOp::SetEnvValue {
+                env: "qa".into(),
                 name: "base_url".into(),
-                value: "http://local:9999".into(),
-            }))
+                value: "y".into()
+            }
         );
-    }
-
-    #[test]
-    fn default_cell_on_a_secret_var_is_not_editable() {
-        // secrets can't carry a default in variables.toml (parse rejects
-        // it), so the Default cell must not offer an edit
-        let (_dir, ctx, req) = fixture();
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
-            ..Default::default()
-        };
-        vm.cursor = (
-            idx(
-                &vm.rows,
-                &RowKind::Var {
-                    name: "api_key".into(),
-                },
-            ),
-            1,
-        );
-        assert_eq!(vm.activate_cursor(&ctx, Some(&req)), None);
-        assert!(vm.editing.is_none());
-    }
-
-    #[test]
-    fn request_var_value_edits_in_the_default_column_not_env_columns() {
-        let (_dir, ctx, req) = fixture();
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
-            ..Default::default()
-        };
-        let row = idx(
-            &vm.rows,
-            &RowKind::RequestVar {
-                name: "trace_id".into(),
+        assert_eq!(
+            var_edit_op_for(&ctx, "api_key", VmField::EnvValue, "z".into()),
+            VarEditOp::SetSecretValue {
+                env: "qa".into(),
+                name: "api_key".into(),
+                value: "z".into()
             },
-        );
-        vm.cursor = (row, 1);
-        assert_eq!(vm.activate_cursor(&ctx, Some(&req)), None);
-        assert_eq!(
-            vm.editing.as_ref().expect("edit began").input.text(),
-            "abc-123"
-        );
-        vm.editing.as_mut().unwrap().input = LineInput::new("xyz-999");
-        assert_eq!(
-            vm.commit_edit(&ctx),
-            Some(Action::VarEdit(VarEditOp::SetRequestVar {
-                name: "trace_id".into(),
-                value: "xyz-999".into(),
-            }))
+            "a secret's value never lands in the env file"
         );
 
-        vm.editing = None;
-        vm.cursor = (row, env_col(&ctx, "qa"));
+        ctx.active_env = None;
         assert_eq!(
-            vm.activate_cursor(&ctx, Some(&req)),
+            var_edit_op_for(&ctx, "base_url", VmField::EnvValue, "w".into()),
+            VarEditOp::SetDefault {
+                name: "base_url".into(),
+                value: "w".into()
+            },
+            "no active environment: the value field targets the declaration default"
+        );
+    }
+
+    fn req_with_var(name: &str, value: &str) -> HttpRequest {
+        HttpRequest::from_toml_str(&format!(
+            "url = \"https://x\"\n[variables]\n{name} = \"{value}\"\n"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn promote_demote_action_follows_whether_the_open_request_overrides_the_name() {
+        let (_dir, ctx) = fixture();
+        assert_eq!(
+            promote_demote_action(&ctx, None, "base_url"),
             None,
-            "request vars have no per-env values"
+            "no open request: neither applies"
         );
-        assert!(vm.editing.is_none());
+
+        let overriding = req_with_var("base_url", "http://elsewhere");
+        assert_eq!(
+            promote_demote_action(&ctx, Some(&overriding), "base_url").map(|(l, _)| l),
+            Some("Promote"),
+            "the open request already overrides it: offer to promote that override up"
+        );
+
+        let plain_req = HttpRequest::from_toml_str("url = \"https://x\"\n").unwrap();
+        assert_eq!(
+            promote_demote_action(&ctx, Some(&plain_req), "base_url").map(|(l, _)| l),
+            Some("Demote"),
+            "no override: offer to push the project value down"
+        );
+
+        assert_eq!(
+            promote_demote_action(&ctx, Some(&plain_req), "api_key"),
+            None,
+            "a secret can never move through either direction"
+        );
     }
 
     #[test]
-    fn header_strip_labels_the_default_and_env_columns() {
-        let (_dir, ctx, req) = fixture();
-        let (_content, term) = render(&ctx, Some(&req), BTreeSet::new(), 120, 0);
-        let header_y = LIST_TOP - 1;
-        let (default_label, _) = cell_at(&term, NAME_W + DESC_W, header_y, ENV_W);
-        assert_eq!(default_label, "Default");
-        let (dev_label, _) = cell_at(&term, env_col_x(&ctx, "dev"), header_y, ENV_W);
-        assert_eq!(dev_label, "dev");
+    fn the_promote_button_appears_only_when_its_precondition_holds() {
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        select_var(&mut vm, &ctx, "base_url");
+
+        let (content, hits) = render_with_request(&mut vm, &ctx, None);
+        assert!(hits.rect_of(&Hit::VmPromoteBtn).is_none());
+        let _ = content;
+
+        let overriding = req_with_var("base_url", "http://elsewhere");
+        let (content, hits) = render_with_request(&mut vm, &ctx, Some(&overriding));
+        assert!(content.contains("Promote"), "{content}");
+        assert!(hits.rect_of(&Hit::VmPromoteBtn).is_some());
+
+        let plain_req = HttpRequest::from_toml_str("url = \"https://x\"\n").unwrap();
+        let (content, hits) = render_with_request(&mut vm, &ctx, Some(&plain_req));
+        assert!(content.contains("Demote"), "{content}");
+        assert!(hits.rect_of(&Hit::VmPromoteBtn).is_some());
+    }
+
+    // --- Task 16: the group entries grid ---------------------------------
+
+    fn select_group(vm: &mut VarManager, ctx: &ProjectContext, name: &str) {
+        render(vm, ctx); // populates left_rows
+        let i = vm
+            .left_rows
+            .iter()
+            .position(|r| r == &VmRow::Group(name.into()))
+            .unwrap();
+        vm.select_row(i);
     }
 
     #[test]
-    fn request_var_row_shows_its_value_in_the_default_column_only() {
-        let (_dir, ctx, req) = fixture();
-        let rows = build_rows(&ctx, Some(&req), &BTreeSet::new());
-        let y = row_y(
-            &rows,
-            &RowKind::RequestVar {
-                name: "trace_id".into(),
-            },
+    fn selecting_a_group_renders_its_entries_against_the_active_envs_fields() {
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        let (content, hits) = render(&mut vm, &ctx);
+
+        assert!(content.contains("Group: creds"), "{content}");
+        // One column per declared field, one row per entry of the active
+        // environment, each cell holding that entry's value.
+        assert!(content.contains("USER_ID"), "{content}");
+        assert!(content.contains("CUSTOMER_ID"), "{content}");
+        for cell in ["alice", "1001", "c-77", "bob", "2002", "c-91"] {
+            assert!(content.contains(cell), "missing {cell}: {content}");
+        }
+        assert!(content.contains(GHOST_LABEL), "ghost row: {content}");
+        assert!(
+            content.contains(&format!("{GLYPH_RADIO_ON} = selected for qa")),
+            "legend: {content}"
         );
-        let (_content, term) = render(&ctx, Some(&req), BTreeSet::new(), 120, 0);
-        let (value, _) = cell_at(&term, NAME_W + DESC_W, y, ENV_W);
-        assert_eq!(value, "abc-123");
-        let theme = Theme::for_terminal();
-        for env in ["dev", "qa"] {
-            let (cell, fg) = cell_at(&term, env_col_x(&ctx, env), y, ENV_W);
-            assert_eq!(
-                cell, "\u{2014}",
-                "a muted dash marks that a request var can't be set per env"
+
+        for row in 0..2 {
+            assert!(
+                hits.rect_of(&Hit::VmEntryRadio(row)).is_some(),
+                "row {row} has no radio"
             );
-            assert_eq!(fg, theme.text_muted);
+            for col in 0..3 {
+                assert!(
+                    hits.rect_of(&Hit::VmEntryCell { row, col }).is_some(),
+                    "no hit for cell {row}/{col}"
+                );
+            }
+        }
+        // The ghost row's own name cell is clickable — that is the "start a
+        // new entry" gesture.
+        assert!(
+            hits.rect_of(&Hit::VmEntryCell { row: 2, col: 0 }).is_some(),
+            "ghost row cell"
+        );
+        for hit in [
+            Hit::VmNewEntry,
+            Hit::VmEditFields,
+            Hit::VmRename,
+            Hit::VmDelete,
+        ] {
+            assert!(hits.rect_of(&hit).is_some(), "{hit:?} has no button");
         }
     }
 
     #[test]
-    fn selecting_col_zero_highlights_only_the_description_region() {
-        let (_dir, ctx, req) = fixture();
-        let theme = Theme::for_terminal();
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
-            ..Default::default()
-        };
-        let row = idx(
-            &vm.rows,
-            &RowKind::Var {
-                name: "base_url".into(),
-            },
+    fn the_selected_entrys_radio_is_the_filled_one() {
+        let (_dir, mut ctx) = fixture();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        let (content, _) = render(&mut vm, &ctx);
+        assert!(
+            content.contains(GLYPH_RADIO_ON),
+            "alice is selected: {content}"
         );
-        vm.cursor = (row, 0);
-        let backend = ratatui::backend::TestBackend::new(120, 24);
-        let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        let mut hits = HitMap::default();
-        terminal
-            .draw(|f| vm.draw(f, f.area(), &theme, &ctx, Some(&req), &mut hits, None))
-            .unwrap();
-        let y = row_y(&vm.rows, &vm.rows[row].clone());
-        let buf = terminal.backend().buffer();
-        assert_eq!(
-            buf[(2u16, y)].bg,
-            theme.control_hover,
-            "name region carries only the row highlight"
-        );
-        assert_eq!(
-            buf[(NAME_W + 2, y)].bg,
-            theme.control_pressed,
-            "description region carries the cell highlight"
-        );
+        assert!(content.contains(GLYPH_RADIO_OFF), "bob is not: {content}");
+
+        // With nothing selected every radio is empty — the only filled
+        // glyph left on screen is the legend's own.
+        assert_eq!(content.matches(GLYPH_RADIO_ON).count(), 2, "{content}");
+        ctx.clear_selection_for("qa", "creds");
+        let (content, _) = render(&mut vm, &ctx);
+        assert_eq!(content.matches(GLYPH_RADIO_ON).count(), 1, "{content}");
     }
 
     #[test]
-    fn enter_on_a_simple_vars_env_cell_seeds_edit_with_the_shown_value() {
-        let (_dir, ctx, req) = fixture();
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
-            ..Default::default()
-        };
-        vm.cursor = (
-            idx(
-                &vm.rows,
-                &RowKind::Var {
-                    name: "base_url".into(),
-                },
-            ),
-            env_col(&ctx, "qa"),
-        );
-        let action = vm.activate_cursor(&ctx, Some(&req));
-        assert_eq!(action, None, "beginning an edit dispatches nothing yet");
-        let edit = vm.editing.as_ref().expect("edit began");
-        assert!(!edit.masked);
-        assert_eq!(edit.input.text(), "https://qa.example.com");
-    }
-
-    #[test]
-    fn commit_on_a_simple_vars_env_cell_dispatches_set_env_value() {
-        let (_dir, ctx, req) = fixture();
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
-            ..Default::default()
-        };
-        vm.cursor = (
-            idx(
-                &vm.rows,
-                &RowKind::Var {
-                    name: "base_url".into(),
-                },
-            ),
-            env_col(&ctx, "dev"),
-        );
-        vm.activate_cursor(&ctx, Some(&req));
-        vm.editing.as_mut().unwrap().input = LineInput::new("http://dev.local");
-        let action = vm.commit_edit(&ctx);
-        assert_eq!(
-            action,
-            Some(Action::VarEdit(VarEditOp::SetEnvValue {
-                env: "dev".into(),
-                name: "base_url".into(),
-                value: "http://dev.local".into(),
-            }))
+    fn a_group_with_no_active_environment_shows_the_hint_instead_of_a_grid() {
+        let (_dir, mut ctx) = fixture();
+        ctx.active_env = None;
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        let (content, hits) = render(&mut vm, &ctx);
+        assert!(
+            content.contains("entries live in environments"),
+            "{content}"
         );
         assert!(
-            vm.editing.is_some(),
-            "commit itself never clears editing — App does, on success"
+            hits.rect_of(&Hit::VmEntryCell { row: 0, col: 0 }).is_none(),
+            "no grid without an environment"
+        );
+        assert!(
+            hits.rect_of(&Hit::VmEnvSwitch).is_some(),
+            "the way out of that state is still on screen"
         );
     }
 
     #[test]
-    fn enter_on_a_secret_vars_env_cell_begins_a_masked_edit_seeded_with_its_value() {
-        let (_dir, ctx, req) = fixture();
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
-            ..Default::default()
-        };
-        vm.cursor = (
-            idx(
-                &vm.rows,
-                &RowKind::Var {
-                    name: "api_key".into(),
-                },
-            ),
-            env_col(&ctx, "qa"),
-        );
-        vm.activate_cursor(&ctx, Some(&req));
-        let edit = vm.editing.as_ref().expect("edit began");
-        assert!(edit.masked, "a secret cell's edit must be masked");
+    fn grid_commands_act_on_the_open_group() {
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        render(&mut vm, &ctx);
+
+        // `space` selects the entry the grid cursor is on.
+        vm.grid.cursor = (1, 0);
         assert_eq!(
-            edit.input.text(),
-            "sk-qa-secret-value",
-            "seeded with the actual value so retyping isn't required"
-        );
-    }
-
-    #[test]
-    fn commit_on_a_secret_vars_env_cell_dispatches_set_secret_value() {
-        let (_dir, ctx, req) = fixture();
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
-            ..Default::default()
-        };
-        vm.cursor = (
-            idx(
-                &vm.rows,
-                &RowKind::Var {
-                    name: "api_key".into(),
-                },
-            ),
-            env_col(&ctx, "dev"),
-        );
-        vm.activate_cursor(&ctx, Some(&req));
-        vm.editing.as_mut().unwrap().input = LineInput::new("sk-dev-new");
-        let action = vm.commit_edit(&ctx);
-        assert_eq!(
-            action,
-            Some(Action::VarEdit(VarEditOp::SetSecretValue {
-                env: "dev".into(),
-                name: "api_key".into(),
-                value: "sk-dev-new".into(),
-            }))
-        );
-    }
-
-    #[test]
-    fn r_toggles_reveal_on_a_secret_cell_without_entering_edit() {
-        let (_dir, ctx, req) = fixture();
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
-            ..Default::default()
-        };
-        vm.cursor = (
-            idx(
-                &vm.rows,
-                &RowKind::Var {
-                    name: "api_key".into(),
-                },
-            ),
-            env_col(&ctx, "qa"),
-        );
-        let ev = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE);
-        assert_eq!(vm.handle_key(ev, &ctx, Some(&req)), None);
-        assert!(vm.editing.is_none(), "reveal must not begin an edit");
-        assert_eq!(vm.revealed, Some(("api_key".to_string(), "qa".to_string())));
-        vm.handle_key(ev, &ctx, Some(&req));
-        assert_eq!(vm.revealed, None, "a second r hides it again");
-    }
-
-    #[test]
-    fn enter_on_an_enumerated_var_toggles_expand_instead_of_editing() {
-        let (_dir, ctx, req) = fixture();
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
-            ..Default::default()
-        };
-        vm.cursor = (
-            idx(
-                &vm.rows,
-                &RowKind::Var {
-                    name: "user".into(),
-                },
-            ),
-            0,
-        );
-        let action = vm.activate_cursor(&ctx, Some(&req));
-        assert_eq!(action, None);
-        assert!(vm.editing.is_none());
-        assert!(vm.expanded.contains("user"));
-        // and Enter again collapses it:
-        vm.activate_cursor(&ctx, Some(&req));
-        assert!(!vm.expanded.contains("user"));
-    }
-
-    #[test]
-    fn enter_on_a_group_header_with_options_toggles_expand() {
-        let (_dir, ctx, req) = fixture();
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
-            ..Default::default()
-        };
-        vm.cursor = (
-            idx(
-                &vm.rows,
-                &RowKind::GroupHeader {
-                    name: "creds".into(),
-                },
-            ),
-            0,
-        );
-        vm.activate_cursor(&ctx, Some(&req));
-        assert!(vm.expanded.contains("creds"));
-        assert!(vm.editing.is_none());
-    }
-
-    #[test]
-    fn enter_on_a_vars_col0_with_no_options_begins_a_description_edit() {
-        let (_dir, ctx, req) = fixture();
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
-            ..Default::default()
-        };
-        vm.cursor = (
-            idx(
-                &vm.rows,
-                &RowKind::Var {
-                    name: "base_url".into(),
-                },
-            ),
-            0,
-        );
-        vm.activate_cursor(&ctx, Some(&req));
-        let edit = vm.editing.as_ref().expect("edit began");
-        assert!(!edit.masked);
-        assert_eq!(edit.input.text(), "API root");
-        vm.editing.as_mut().unwrap().input = LineInput::new("the API's root URL");
-        let action = vm.commit_edit(&ctx);
-        assert_eq!(
-            action,
-            Some(Action::VarEdit(VarEditOp::SetDescription {
-                owner: "base_url".into(),
-                value: "the API's root URL".into(),
-            }))
-        );
-    }
-
-    #[test]
-    fn enter_on_a_variable_option_row_seeds_and_commits_set_option_value() {
-        let (_dir, ctx, req) = fixture();
-        let mut expanded = BTreeSet::new();
-        expanded.insert("user".to_string());
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, Some(&req), &expanded),
-            expanded,
-            ..Default::default()
-        };
-        vm.cursor = (
-            idx(
-                &vm.rows,
-                &RowKind::OptionRow {
-                    owner: "user".into(),
-                    key: "alice".into(),
-                },
-            ),
-            env_col(&ctx, "qa"),
-        );
-        vm.activate_cursor(&ctx, Some(&req));
-        let edit = vm.editing.as_ref().expect("edit began");
-        assert_eq!(
-            edit.input.text(),
-            "1001",
-            "seeded with the shared declared value"
-        );
-        vm.editing.as_mut().unwrap().input = LineInput::new("9999");
-        let action = vm.commit_edit(&ctx);
-        assert_eq!(
-            action,
-            Some(Action::VarEdit(VarEditOp::SetOptionValue {
+            vm.handle_key(key(KeyCode::Char(' ')), &ctx),
+            Some(Action::VarEdit(VarEditOp::SelectEntry {
                 env: "qa".into(),
-                owner: "user".into(),
-                key: "alice".into(),
-                member: None,
-                value: "9999".into(),
+                group: "creds".into(),
+                entry: "bob".into(),
             }))
         );
+        // `m` opens the field-list editor.
+        assert_eq!(
+            vm.handle_key(key(KeyCode::Char('m')), &ctx),
+            Some(Action::PromptGroupFields {
+                group: "creds".into()
+            })
+        );
+        // `o` starts a new entry in the ghost row, in place.
+        assert!(vm.handle_key(key(KeyCode::Char('o')), &ctx).is_none());
+        let edit = vm.grid.editing.as_ref().expect("ghost row is live");
+        assert_eq!((edit.row, edit.col), (2, 0));
+        assert_eq!(edit.input.text(), "");
+
+        // …and every one of them yields to a cell edit in progress.
+        assert_eq!(vm.handle_key(key(KeyCode::Char('o')), &ctx), None);
+        assert_eq!(vm.handle_key(key(KeyCode::Char('m')), &ctx), None);
+        assert_eq!(vm.handle_key(key(KeyCode::Char(' ')), &ctx), None);
     }
 
     #[test]
-    fn space_on_an_option_row_dispatches_select() {
-        let (_dir, ctx, req) = fixture();
-        let mut expanded = BTreeSet::new();
-        expanded.insert("user".to_string());
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, Some(&req), &expanded),
-            expanded,
-            ..Default::default()
-        };
-        vm.cursor = (
-            idx(
-                &vm.rows,
-                &RowKind::OptionRow {
-                    owner: "user".into(),
-                    key: "bob".into(),
-                },
-            ),
-            env_col(&ctx, "qa"),
-        );
-        let ev = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE);
-        let action = vm.handle_key(ev, &ctx, Some(&req));
+    fn start_cell_edit_seeds_the_cells_current_text() {
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        vm.start_cell_edit(&ctx, 0, 2);
+        let edit = vm.grid.editing.as_ref().unwrap();
+        assert_eq!(edit.input.text(), "c-77");
+        assert_eq!(edit.original, "c-77");
+        assert_eq!(vm.grid.cursor, (0, 2));
+
+        // A ghost-row click always lands in the name cell: there is no
+        // entry yet for a value to belong to.
+        vm.start_cell_edit(&ctx, 2, 2);
+        let edit = vm.grid.editing.as_ref().unwrap();
+        assert_eq!((edit.row, edit.col), (2, 0));
+        assert_eq!(edit.input.text(), "");
+    }
+
+    #[test]
+    fn the_entry_row_menu_offers_duplicate_rename_delete() {
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        let items = vm.entry_context_menu(&ctx, 1).expect("entry menu");
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         assert_eq!(
-            action,
-            Some(Action::VarEdit(VarEditOp::Select {
+            labels,
+            vec!["Duplicate entry", "Rename\u{2026}", "Delete\u{2026}"]
+        );
+        assert_eq!(
+            items[0].action,
+            Some(Action::VarStruct(VarStructOp::DuplicateEntry {
                 env: "qa".into(),
-                name: "user".into(),
-                key: "bob".into(),
+                group: "creds".into(),
+                name: "bob".into(),
             }))
         );
-        assert!(vm.editing.is_none(), "Select is not a text edit");
-    }
-
-    #[test]
-    fn space_on_col0_or_a_non_option_row_is_a_no_op() {
-        let (_dir, ctx, req) = fixture();
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
-            ..Default::default()
-        };
-        vm.cursor = (
-            idx(
-                &vm.rows,
-                &RowKind::Var {
-                    name: "base_url".into(),
-                },
-            ),
-            1,
-        );
-        let ev = KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE);
-        assert_eq!(vm.handle_key(ev, &ctx, Some(&req)), None);
-    }
-
-    #[test]
-    fn first_esc_cancels_the_edit_second_esc_closes_the_screen() {
-        let (_dir, ctx, req) = fixture();
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
-            ..Default::default()
-        };
-        vm.cursor = (
-            idx(
-                &vm.rows,
-                &RowKind::Var {
-                    name: "base_url".into(),
-                },
-            ),
-            1,
-        );
-        vm.activate_cursor(&ctx, Some(&req));
-        assert!(vm.editing.is_some());
-        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(
-            vm.handle_key(esc, &ctx, Some(&req)),
-            None,
-            "first Esc eats the edit"
-        );
-        assert!(vm.editing.is_none());
-        assert_eq!(
-            vm.handle_key(esc, &ctx, Some(&req)),
-            Some(Action::CloseScreen),
-            "second Esc closes the screen"
-        );
-    }
-
-    #[test]
-    fn click_cell_on_an_option_row_selects_immediately_on_a_single_click() {
-        let (_dir, ctx, req) = fixture();
-        let mut expanded = BTreeSet::new();
-        expanded.insert("user".to_string());
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, Some(&req), &expanded),
-            expanded,
-            ..Default::default()
-        };
-        let row = idx(
-            &vm.rows,
-            &RowKind::OptionRow {
-                owner: "user".into(),
-                key: "alice".into(),
-            },
-        );
-        let col = env_col(&ctx, "qa");
-        let action = vm.click_cell(row, col, false, &ctx, Some(&req));
-        assert_eq!(
-            action,
-            Some(Action::VarEdit(VarEditOp::Select {
+            items[1].action,
+            Some(Action::PromptRenameEntry {
                 env: "qa".into(),
-                name: "user".into(),
-                key: "alice".into(),
-            }))
+                group: "creds".into(),
+                from: "bob".into(),
+            })
         );
-        assert_eq!(vm.cursor, (row, col));
-    }
-
-    #[test]
-    fn click_cell_single_click_on_a_simple_var_just_moves_the_cursor() {
-        let (_dir, ctx, req) = fixture();
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
-            ..Default::default()
-        };
-        let row = idx(
-            &vm.rows,
-            &RowKind::Var {
-                name: "base_url".into(),
-            },
+        assert_eq!(
+            items[2].action,
+            Some(Action::ConfirmDeleteEntry {
+                env: "qa".into(),
+                group: "creds".into(),
+                name: "bob".into(),
+            })
         );
-        let col = env_col(&ctx, "qa");
-        let action = vm.click_cell(row, col, false, &ctx, Some(&req));
-        assert_eq!(action, None);
-        assert!(vm.editing.is_none());
-        assert_eq!(vm.cursor, (row, col));
-    }
-
-    #[test]
-    fn click_cell_double_click_on_a_simple_var_begins_edit() {
-        let (_dir, ctx, req) = fixture();
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
-            ..Default::default()
-        };
-        let row = idx(
-            &vm.rows,
-            &RowKind::Var {
-                name: "base_url".into(),
-            },
+        assert!(
+            vm.entry_context_menu(&ctx, 2).is_none(),
+            "the ghost row has nothing to act on yet"
         );
-        let col = env_col(&ctx, "qa");
-        let action = vm.click_cell(row, col, true, &ctx, Some(&req));
-        assert_eq!(action, None, "begin-edit dispatches nothing yet");
-        assert!(vm.editing.is_some(), "the double click began an edit");
-    }
-
-    #[test]
-    fn click_row_moves_the_cursor_row_and_discards_any_edit() {
-        let (_dir, ctx, req) = fixture();
-        let mut vm = VarManager {
-            rows: build_rows(&ctx, Some(&req), &BTreeSet::new()),
-            ..Default::default()
-        };
-        vm.cursor = (
-            idx(
-                &vm.rows,
-                &RowKind::Var {
-                    name: "base_url".into(),
-                },
-            ),
-            1,
-        );
-        vm.activate_cursor(&ctx, Some(&req));
-        assert!(vm.editing.is_some());
-        let target = idx(
-            &vm.rows,
-            &RowKind::Var {
-                name: "api_key".into(),
-            },
-        );
-        vm.click_row(target);
-        assert_eq!(vm.cursor.0, target);
-        assert!(vm.editing.is_none());
     }
 }

@@ -2,10 +2,12 @@ use crate::action::{Action, CopyTarget};
 use crate::components::editor::{Editor, EditorTab, SubFocus};
 use crate::components::line_input::LineInput;
 use crate::components::modal::{Modal, ModalResult, ModalStack, PromptKind};
-use crate::components::response::ResponseState;
+use crate::components::response::{ResponseState, SYNC_PRETTY_BYTES};
 use crate::components::sidebar::Row;
 use crate::components::toast::{ToastKind, Toasts};
-use crate::components::varmanager::{self, VarEditOp, VarManager, VarStructOp};
+use crate::components::varmanager::{
+    VarEditOp, VarManager, VarStructOp, VmDetail, VmFocus, var_edit_op_for,
+};
 use crate::components::{Component, sidebar::Sidebar};
 use crate::hit::{Hit, HitMap, ScrollbarSpec};
 use crate::keys::{KeyCombo, Keymap};
@@ -16,6 +18,23 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
 use std::time::Instant;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+
+/// The migration confirm modal's title (spec §3.3) — also how
+/// `prompt_migration_if_pending` recognizes its own modal already on the
+/// stack.
+const MIGRATION_TITLE: &str = "Migrate variables";
+
+/// Consecutive `Action::Tick`s (100ms apiece) the caret must rest inside a
+/// `{{token}}` before its tooltip appears.
+const CARET_TIP_TICKS: u8 = 2;
+
+/// A variable tooltip to draw: which name, and the on-screen span of the
+/// token it belongs to (the tooltip is placed against it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenTip {
+    pub name: String,
+    pub anchor: ratatui::layout::Rect,
+}
 
 /// An in-progress scrollbar drag: which pane's thumb is held, and how far
 /// down the thumb the pointer grabbed it, so the thumb keeps its position
@@ -95,8 +114,25 @@ pub struct App {
     pub hits: HitMap,
     /// The `Hit` currently under the pointer, if any, updated by
     /// `handle_mouse` on `Moved`. Read by `ui::draw` to style hovered
-    /// buttons/chips.
+    /// buttons/chips. `Hit::VarToken` overlays are deliberately skipped
+    /// here (see `HitMap::hit_at_ignoring_var_tokens`) — they are tracked
+    /// by `hovered_token` instead, so crossing a `{{token}}` never takes a
+    /// row's or a button's hover styling away from it.
     pub hovered: Option<Hit>,
+    /// The drawn `{{token}}` under the pointer as of the last motion event.
+    /// Only a redraw trigger: the tooltip itself re-resolves `pointer`
+    /// against the *current* frame's hit map, so a token that scrolled or
+    /// tabbed out from under a resting pointer takes its tooltip with it.
+    hovered_token: Option<String>,
+    /// Where the pointer last was, so the tooltip can be re-resolved every
+    /// frame rather than trusting a rect captured at motion time.
+    pointer: Option<(u16, u16)>,
+    /// The token the keyboard caret is resting in, and how many consecutive
+    /// `Action::Tick`s it has rested there. The tooltip appears at
+    /// [`CARET_TIP_TICKS`], so a caret merely passing through a token on its
+    /// way somewhere else never flashes one up.
+    caret_token: Option<String>,
+    caret_token_ticks: u8,
     /// An in-progress drag (e.g. a scrollbar thumb), if any.
     pub drag: Option<Drag>,
     /// Whether the active tab's params/headers table body is collapsed
@@ -339,13 +375,55 @@ impl App {
         app
     }
 
+    /// Offers the stage-6 → stage-7 conversion (spec §3.3) when the
+    /// project that was just opened or reloaded is still in the old
+    /// format. Idempotent: a confirm already on the stack isn't stacked
+    /// on top of, so a reload while the modal is up doesn't duplicate it.
+    fn prompt_migration_if_pending(&mut self) {
+        let Some(outcome) = self.project.pending_migration() else {
+            return;
+        };
+        if self
+            .modals
+            .iter()
+            .any(|m| matches!(m, Modal::Confirm { title, .. } if title == MIGRATION_TITLE))
+        {
+            return;
+        }
+        let mut lines = vec![
+            "This project's variables still use the old format. Convert them now? A .bak copy of each rewritten file is left beside it.".to_string(),
+        ];
+        // The confirm modal is a fixed, small box: list the first few
+        // notes and count the rest rather than overflowing it silently
+        // (every note is repeated in the toast once the migration runs).
+        const SHOWN: usize = 4;
+        lines.extend(
+            outcome
+                .notes
+                .iter()
+                .take(SHOWN)
+                .map(|n| format!("\u{2022} {n}")),
+        );
+        if let Some(rest) = outcome.notes.len().checked_sub(SHOWN).filter(|n| *n > 0) {
+            lines.push(format!("\u{2022} \u{2026} and {rest} more"));
+        }
+        self.modals.push(Modal::Confirm {
+            title: MIGRATION_TITLE.into(),
+            body: lines.join("\n"),
+            choices: vec![
+                ('n', "Not now".into(), vec![Action::DeclineMigration]),
+                ('y', "Migrate".into(), vec![Action::ApplyMigration]),
+            ],
+        });
+    }
+
     fn bare(tx: UnboundedSender<Action>, root: PathBuf) -> Self {
         let (project, warnings) = ProjectContext::open(root);
         let mut toasts = Toasts::default();
         for w in warnings {
             toasts.push(w, ToastKind::Warning);
         }
-        Self {
+        let mut app = Self {
             should_quit: false,
             focus: PaneId::Sidebar,
             screen: Screen::default(),
@@ -369,13 +447,19 @@ impl App {
             pending_terminal_action: None,
             hits: HitMap::default(),
             hovered: None,
+            hovered_token: None,
+            pointer: None,
+            caret_token: None,
+            caret_token_ticks: 0,
             drag: None,
             table_collapsed: false,
             last_click: None,
             last_action_failed: false,
             _test_rx: None,
             _test_dir: None,
-        }
+        };
+        app.prompt_migration_if_pending();
+        app
     }
 
     /// Constructs an `App` for tests, with its own channel so `tx` is
@@ -416,6 +500,14 @@ impl App {
         self.sidebar.open_dirty = self.editor.is_dirty();
         self.editor.inherited_headers = self.project.meta.default_headers.clone();
         self.editor.shadowed = self.compute_shadowed();
+        // The token-highlighting/tooltip snapshot, kept in lockstep with the
+        // project's resolved values and the open request's own `[variables]`
+        // the same way `shadowed` is.
+        let vars = crate::components::var_tokens::VarView::from_context(
+            &self.project,
+            &self.editor.variables,
+        );
+        self.editor.vars = vars;
         // The response pane always shows the open request's response;
         // whenever an action changed which request is open (any route),
         // swap in that request's cached response — or an empty one.
@@ -457,6 +549,69 @@ impl App {
             .collect()
     }
 
+    /// Opens the insert var picker, optionally with its fuzzy filter
+    /// pre-seeded (clicking an inline `{{token}}` opens the picker already
+    /// narrowed to that name — spec §7). Shared by `Action::OpenVarPicker`'s
+    /// plain path and `Action::OpenVarPickerFor`.
+    fn open_insert_var_picker(&mut self, completing: bool, seed: Option<&str>) -> bool {
+        use crate::components::modal::Modal;
+        use crate::components::var_picker::{VarPickerState, insert_entries};
+        let resolved = self.project.prepare_context().vars;
+        let entries = insert_entries(&self.project.model, &resolved, &self.editor.variables);
+        let mut state = VarPickerState::new(entries, completing);
+        if let Some(seed) = seed {
+            state.seed_filter(seed);
+        }
+        self.modals.push(Modal::VarPicker(state));
+        true
+    }
+
+    /// Per-`Tick` bookkeeping for the caret-resting tooltip: counts how long
+    /// the caret has sat inside one `{{token}}`, resetting whenever it moves
+    /// to a different token (or out of every token). Returns whether the
+    /// tooltip's visibility could have changed, so the tick redraws.
+    fn track_caret_token(&mut self) -> bool {
+        let token = self.editor.caret_token();
+        if token != self.caret_token {
+            // This tick is the first one that saw the new token, so it
+            // counts as one rest tick already.
+            let was_showing = self.caret_token_ticks >= CARET_TIP_TICKS;
+            self.caret_token_ticks = u8::from(token.is_some());
+            self.caret_token = token;
+            return was_showing;
+        }
+        if self.caret_token.is_none() || self.caret_token_ticks >= CARET_TIP_TICKS {
+            return false;
+        }
+        self.caret_token_ticks += 1;
+        self.caret_token_ticks == CARET_TIP_TICKS
+    }
+
+    /// The variable tooltip to draw this frame, if any: the token under the
+    /// pointer, or — with no hover — the one the caret has been resting in
+    /// for [`CARET_TIP_TICKS`] ticks, anchored at the span the last frame
+    /// drew for it. Suppressed while a modal is up: the tooltip draws above
+    /// everything else, and must not float over a dialog.
+    pub fn var_token_tip(&self) -> Option<TokenTip> {
+        if !self.modals.is_empty() {
+            return None;
+        }
+        if let Some((x, y)) = self.pointer
+            && let Some((name, anchor)) = self.hits.var_token_at(x, y)
+        {
+            return Some(TokenTip {
+                name: name.to_string(),
+                anchor,
+            });
+        }
+        if self.caret_token_ticks < CARET_TIP_TICKS {
+            return None;
+        }
+        let name = self.caret_token.clone()?;
+        let anchor = self.hits.rect_of(&Hit::VarToken(name.clone()))?;
+        Some(TokenTip { name, anchor })
+    }
+
     fn apply(&mut self, action: Action) -> bool {
         match action {
             Action::Quit => {
@@ -470,7 +625,8 @@ impl App {
             }
             Action::Tick => {
                 self.editor.on_tick();
-                self.toasts.on_tick() || self.in_flight_ticking()
+                let tip_changed = self.track_caret_token();
+                self.toasts.on_tick() || self.in_flight_ticking() || tip_changed
             }
             // No state change; forces a redraw. Background tasks use this
             // to wake the main loop when they've mutated state directly
@@ -489,6 +645,13 @@ impl App {
                 true
             }
             Action::ScrollPane(pane, delta) => {
+                // While the Manager screen is up its left list owns the
+                // sidebar's pane slot (see `App::scrollbar_spec`), so a
+                // click on the drawn scrollbar's track pages that list.
+                if self.screen == Screen::VarManager {
+                    self.varmanager.handle_scroll(delta);
+                    return true;
+                }
                 match pane {
                     PaneId::Sidebar => self.sidebar.handle_scroll(delta),
                     PaneId::Editor => self.editor.handle_scroll(delta),
@@ -520,6 +683,11 @@ impl App {
             }
             Action::ResponseViewMode(mode) => {
                 self.session.response.set_view_mode(mode);
+                true
+            }
+            Action::OpenResponseSearch => {
+                self.update(Action::FocusPane(PaneId::Response));
+                self.session.response.open_search();
                 true
             }
             Action::JsonRowClicked { row, toggle } => {
@@ -604,6 +772,9 @@ impl App {
                 true
             }
             Action::EditorTabSelect(i) => {
+                // Leaving a tab commits whatever cell was being typed — the
+                // reset that follows would otherwise drop it silently.
+                self.commit_table_edit();
                 self.editor.active_tab = EditorTab::from_index(i);
                 self.editor.table.reset();
                 true
@@ -611,6 +782,7 @@ impl App {
             Action::EditorTabCycle(delta) => {
                 // Cycles the on-screen order (Params → Headers → Vars →
                 // Body), not `EditorTab::index()`'s alt+1/2/3 slot numbers.
+                self.commit_table_edit();
                 let cur = self.editor.active_tab.draw_position() as i8;
                 let next = (cur + delta).rem_euclid(4);
                 self.editor.active_tab = EditorTab::from_draw_position(next as usize);
@@ -622,11 +794,11 @@ impl App {
                 true
             }
             Action::OpenMethodDropdown => {
-                use crate::components::modal::DropdownState;
+                use crate::components::modal::{DropdownState, MenuItem};
                 use postui_core::model::Method;
-                let items: Vec<(String, Action)> = Method::ALL
+                let items: Vec<MenuItem> = Method::ALL
                     .iter()
-                    .map(|&m| (m.as_str().to_string(), Action::SetMethod(m)))
+                    .map(|&m| MenuItem::new(m.as_str(), Action::SetMethod(m)))
                     .collect();
                 let current = Method::ALL.iter().position(|&m| m == self.editor.method);
                 let anchor = self
@@ -658,6 +830,10 @@ impl App {
             Action::MinifyBody => self.transform_body(postui_core::json::minify),
             Action::ToggleBodyVars => {
                 self.editor.substitute_body = !self.editor.substitute_body;
+                true
+            }
+            Action::ToggleHeaderReveal => {
+                self.editor.computed.revealed = !self.editor.computed.revealed;
                 true
             }
             // Suspending the terminal is the main loop's job; park the action
@@ -696,6 +872,9 @@ impl App {
                 true
             }
             Action::SaveRequest => {
+                // A cell still under the caret is part of the request the
+                // user means to save.
+                self.commit_table_edit();
                 match self.editor.slug.clone() {
                     Some(slug) => {
                         let req = self.editor.current_request();
@@ -756,6 +935,35 @@ impl App {
                 });
                 true
             }
+            Action::PromptNewRequestIn(folder) => {
+                self.modals.push(Modal::Prompt {
+                    title: "New request".into(),
+                    input: crate::components::line_input::LineInput::new(&format!("{folder}/")),
+                    kind: PromptKind::NewRequest,
+                    revealed: false,
+                });
+                true
+            }
+            Action::DuplicateRequest => {
+                let Some(slug) = self.sidebar.selected_slug() else {
+                    return true;
+                };
+                match postui_core::storage::duplicate_request(&self.project.root, &slug) {
+                    Ok(new_slug) => {
+                        self.refresh_sidebar();
+                        self.toasts
+                            .push(format!("Duplicated to {new_slug}"), ToastKind::Success);
+                        // Copies land next to the original and open, so the
+                        // edit that motivated the duplicate can start at once.
+                        self.apply(Action::OpenRequest(new_slug))
+                    }
+                    Err(e) => {
+                        self.toasts
+                            .push(format!("could not duplicate {slug}: {e}"), ToastKind::Error);
+                        true
+                    }
+                }
+            }
             Action::PromptRenameRequest => {
                 if let Some(slug) = self.sidebar.selected_slug() {
                     self.modals.push(Modal::Prompt {
@@ -794,6 +1002,28 @@ impl App {
                     EditorTab::Body => return true,
                 };
                 self.editor.table.delete_row(map, i);
+                true
+            }
+            Action::DuplicateTableRow(i) => {
+                let map = match self.editor.active_tab {
+                    EditorTab::Params => &mut self.editor.params,
+                    EditorTab::Headers => &mut self.editor.headers,
+                    EditorTab::Vars => &mut self.editor.variables,
+                    EditorTab::Body => return true,
+                };
+                let Some((key, entry)) = map.get_index(i).map(|(k, e)| (k.clone(), e.clone()))
+                else {
+                    return true;
+                };
+                let mut new_key = format!("{key}-copy");
+                let mut n = 2;
+                while map.contains_key(&new_key) {
+                    new_key = format!("{key}-copy-{n}");
+                    n += 1;
+                }
+                let insert_at = (i + 1).min(map.len());
+                map.shift_insert(insert_at, new_key, entry);
+                self.editor.table.selected = Some(insert_at);
                 true
             }
             Action::ConfirmDeleteRequest => {
@@ -860,11 +1090,15 @@ impl App {
                 true
             }
             Action::SaveRequestAs(name) => {
+                self.commit_table_edit();
                 let req = self.editor.current_request();
                 self.create_or_save_as(&name, move |_| req.clone());
                 true
             }
             Action::Send => {
+                // Same for sending: the typed cell is part of the request
+                // that goes out, not something to discard.
+                self.commit_table_edit();
                 if self.editor.url.text().trim().is_empty() {
                     self.toasts
                         .push("cannot send: URL is empty", ToastKind::Error);
@@ -982,7 +1216,33 @@ impl App {
                     true
                 }
             },
-            Action::ResponseArrived { generation, data } => self.session.arrived(generation, data),
+            Action::ResponseArrived { generation, data } => {
+                // A body too big to parse on the UI thread is handed to a
+                // blocking worker, whose result comes back as
+                // `PrettyParsed`. The clone happens before delivery so the
+                // response itself still moves into the session.
+                let big = (data.body.len() > SYNC_PRETTY_BYTES).then(|| data.body.clone());
+                let delivered = self.session.arrived(generation, data);
+                if delivered && let Some(body) = big {
+                    let tx = self.tx.clone();
+                    tokio::spawn(async move {
+                        let tree = tokio::task::spawn_blocking(move || {
+                            crate::components::json_tree::JsonTree::parse(&body)
+                        })
+                        .await
+                        .ok()
+                        .flatten();
+                        let _ = tx.send(Action::PrettyParsed {
+                            generation,
+                            tree: tree.map(Box::new),
+                        });
+                    });
+                }
+                delivered
+            }
+            Action::PrettyParsed { generation, tree } => {
+                self.session.tree_arrived(generation, tree.map(|t| *t))
+            }
             Action::RequestFailed { generation, error } => self.session.failed(generation, error),
             Action::InitProjectHere => {
                 match postui_core::project::init_project(&self.project.root, None) {
@@ -1096,6 +1356,7 @@ impl App {
                 for w in warnings {
                     self.toasts.push(w, ToastKind::Warning);
                 }
+                self.prompt_migration_if_pending();
                 match postui_core::storage::ensure_project(&self.project.root) {
                     Ok(()) => self.refresh_sidebar(),
                     Err(e) => {
@@ -1294,6 +1555,35 @@ impl App {
                     .push(format!("env: {label}"), ToastKind::Success);
                 true
             }
+            Action::ApplyMigration => {
+                match self.project.apply_migration() {
+                    Ok(notes) => {
+                        self.refresh_sidebar();
+                        let summary = if notes.is_empty() {
+                            "variables migrated \u{2014} a .bak of each rewritten file is beside it"
+                                .to_string()
+                        } else {
+                            format!(
+                                "variables migrated ({}) \u{2014} a .bak of each rewritten file is beside it",
+                                notes.join("; ")
+                            )
+                        };
+                        self.toasts.push(summary, ToastKind::Success);
+                    }
+                    Err(msg) => self
+                        .toasts
+                        .push(format!("could not migrate: {msg}"), ToastKind::Error),
+                }
+                true
+            }
+            Action::DeclineMigration => {
+                self.project.decline_migration();
+                self.toasts.push(
+                    "left the old variable files alone \u{2014} variables stay unavailable until they're migrated",
+                    ToastKind::Warning,
+                );
+                true
+            }
             Action::ReloadProjectFiles => {
                 let (changed, warnings) = self.project.reload_if_changed();
                 if changed {
@@ -1302,6 +1592,7 @@ impl App {
                 for w in warnings {
                     self.toasts.push(w, ToastKind::Warning);
                 }
+                self.prompt_migration_if_pending();
                 changed
             }
             Action::OpenVarPicker { completing } => {
@@ -1314,14 +1605,11 @@ impl App {
                 {
                     return self.open_select_picker(name, group);
                 }
-                let resolved = self.project.prepare_context().vars;
-                use crate::components::modal::Modal;
-                use crate::components::var_picker::{VarPickerState, insert_entries};
-                let entries =
-                    insert_entries(&self.project.model, &resolved, &self.editor.variables);
-                self.modals
-                    .push(Modal::VarPicker(VarPickerState::new(entries, completing)));
-                true
+                self.open_insert_var_picker(completing, None)
+            }
+            Action::OpenVarPickerFor(name) => {
+                self.apply(Action::ReloadProjectFiles);
+                self.open_insert_var_picker(false, Some(&name))
             }
             Action::OpenNewVariablePrompt {
                 prefill,
@@ -1379,9 +1667,8 @@ impl App {
                 true
             }
             Action::VarEdit(op) => {
-                match self.apply_var_edit(&op) {
-                    Ok(()) => self.varmanager.editing = None,
-                    Err(msg) => self.toasts.push(msg, ToastKind::Error),
+                if let Err(msg) = self.apply_var_edit(&op) {
+                    self.toasts.push(msg, ToastKind::Error);
                 }
                 true
             }
@@ -1395,77 +1682,16 @@ impl App {
                 true
             }
             Action::PromptNewGroup => {
-                self.modals.push(Modal::Prompt {
+                use crate::components::modal::PromptField;
+                self.modals.push(Modal::MultiPrompt {
                     title: "New group".into(),
-                    input: LineInput::new(""),
+                    fields: vec![
+                        PromptField::text("name", "Name", ""),
+                        PromptField::text("fields", "Fields (comma separated)", ""),
+                    ],
+                    focus: 0,
                     kind: PromptKind::NewGroup,
-                    revealed: false,
                 });
-                true
-            }
-            Action::OpenSelectDropdown {
-                owner,
-                env,
-                row,
-                col,
-            } => {
-                let env_data = if self.project.active_env.as_deref() == Some(env.as_str()) {
-                    self.project.env_data.clone()
-                } else {
-                    postui_core::project::load_environment(&self.project.root, &env)
-                        .unwrap_or_default()
-                };
-                let selections = self.project.selections_for(&env).get(&owner).cloned();
-                let entries: Vec<(String, String)> = if self.project.model.vars.contains_key(&owner)
-                {
-                    postui_core::varmodel::merged_var_options(
-                        &self.project.model,
-                        &env_data,
-                        &owner,
-                    )
-                    .iter()
-                    .map(|(k, o)| (k.clone(), format!("{k} \u{b7} {}", o.value)))
-                    .collect()
-                } else {
-                    postui_core::varmodel::merged_group_options(
-                        &self.project.model,
-                        &env_data,
-                        &owner,
-                    )
-                    .keys()
-                    .map(|k| (k.clone(), k.clone()))
-                    .collect()
-                };
-                if entries.is_empty() {
-                    return true;
-                }
-                let current = entries
-                    .iter()
-                    .position(|(k, _)| Some(k) == selections.as_ref());
-                let items: Vec<(String, Action)> = entries
-                    .into_iter()
-                    .map(|(k, label)| {
-                        (
-                            label,
-                            Action::VarEdit(VarEditOp::Select {
-                                env: env.clone(),
-                                name: owner.clone(),
-                                key: k,
-                            }),
-                        )
-                    })
-                    .collect();
-                let anchor = self
-                    .hits
-                    .rect_of(&crate::hit::Hit::VarCell { row, col })
-                    .unwrap_or_else(|| ratatui::layout::Rect::new(0, 0, 0, 0));
-                use crate::components::modal::DropdownState;
-                self.modals.push(Modal::Dropdown(DropdownState {
-                    anchor,
-                    items,
-                    selected: current.unwrap_or(0),
-                    current,
-                }));
                 true
             }
             Action::PromptAddGroupMember { group } => {
@@ -1483,7 +1709,7 @@ impl App {
                     .model
                     .groups
                     .get(&group)
-                    .map(|g| g.members.clone())
+                    .map(|g| g.fields.clone())
                     .unwrap_or_default();
                 if current.iter().any(|m| m == &member) {
                     self.toasts.push(
@@ -1492,12 +1718,9 @@ impl App {
                     );
                     return true;
                 }
-                let mut members = current;
-                members.push(member);
-                self.apply(Action::VarStruct(VarStructOp::SetMembers {
-                    group,
-                    members,
-                }));
+                let mut fields = current;
+                fields.push(member);
+                self.apply(Action::VarStruct(VarStructOp::SetFields { group, fields }));
                 true
             }
             Action::ConfirmRemoveGroupMember { group, member } => {
@@ -1519,19 +1742,31 @@ impl App {
             }
             Action::RemoveGroupMember { group, member } => {
                 // Env files first: variables.toml's validation runs against
-                // the active env, which must no longer set the member by
-                // the time the membership itself changes.
+                // the active env, whose entries must no longer carry the
+                // field by the time the group's field list changes.
+                let Some(fields) = self
+                    .project
+                    .model
+                    .groups
+                    .get(&group)
+                    .map(|g| g.fields.clone())
+                else {
+                    self.toasts
+                        .push(format!("no group \"{group}\""), ToastKind::Error);
+                    return true;
+                };
+                let remaining: Vec<String> = fields.into_iter().filter(|f| f != &member).collect();
                 let envs = postui_core::project::list_environments(&self.project.root);
                 let result = envs
                     .iter()
                     .try_for_each(|env| {
                         self.project.edit_env(env, |doc| {
-                            postui_core::varedit::strip_env_group_member(doc, &group, &member)
+                            postui_core::varedit::strip_entry_field(doc, &group, &member)
                         })
                     })
                     .and_then(|()| {
                         self.project.edit_variables(|doc| {
-                            postui_core::varedit::remove_group_member(doc, &group, &member)
+                            postui_core::varedit::upsert_group(doc, &group, None, &remaining)
                         })
                     });
                 match result {
@@ -1541,35 +1776,6 @@ impl App {
                     ),
                     Err(msg) => self.toasts.push(msg, ToastKind::Error),
                 }
-                true
-            }
-            Action::PromptNewOption { owner } => {
-                let member_names = self
-                    .project
-                    .model
-                    .groups
-                    .get(&owner)
-                    .map(|g| g.members.clone())
-                    .unwrap_or_default();
-                let title = if member_names.is_empty() {
-                    format!("New option on {owner} \u{2014} key, value")
-                } else {
-                    let fields = member_names
-                        .iter()
-                        .map(|m| format!("{m}=value"))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    format!("New option on {owner} \u{2014} key, {fields}")
-                };
-                self.modals.push(Modal::Prompt {
-                    title,
-                    input: LineInput::new(""),
-                    kind: PromptKind::NewOption {
-                        owner,
-                        member_names,
-                    },
-                    revealed: false,
-                });
                 true
             }
             Action::PromptRenameVar { from } => {
@@ -1602,7 +1808,7 @@ impl App {
                     .model
                     .groups
                     .get(&group)
-                    .map(|g| g.members.join(", "))
+                    .map(|g| g.fields.join(", "))
                     .unwrap_or_default();
                 self.modals.push(Modal::Prompt {
                     title: format!("Members of {group}"),
@@ -1610,6 +1816,15 @@ impl App {
                     kind: PromptKind::GroupMembers { group },
                     revealed: false,
                 });
+                true
+            }
+            Action::DuplicateVar { name } => {
+                if let Err(msg) = self.apply_duplicate_var(&name) {
+                    self.toasts.push(msg, ToastKind::Error);
+                    self.last_action_failed = true;
+                } else {
+                    self.varmanager.sync(&self.project);
+                }
                 true
             }
             Action::ConfirmDeleteVar { name } => {
@@ -1632,53 +1847,6 @@ impl App {
                             'y',
                             "Delete".into(),
                             vec![Action::VarStruct(VarStructOp::Delete { name })],
-                        ),
-                    ],
-                });
-                true
-            }
-            Action::ConfirmDeleteOption { owner, key } => {
-                let env_override = self.project.active_env.as_deref().is_some_and(|_| {
-                    self.project
-                        .env_data
-                        .options
-                        .get(&owner)
-                        .and_then(|m| m.get(&key))
-                        .is_some()
-                });
-                let shared_exists = self
-                    .project
-                    .model
-                    .vars
-                    .get(&owner)
-                    .is_some_and(|d| d.options.contains_key(&key))
-                    || self
-                        .project
-                        .model
-                        .groups
-                        .get(&owner)
-                        .is_some_and(|g| g.options.contains_key(&key));
-                let env_label = self.project.active_env.clone().unwrap_or_default();
-                let body = if env_override && shared_exists {
-                    format!(
-                        "Delete \"{key}\" on \"{owner}\"? This removes the {env_label} override first \u{2014} the shared option stays; delete again to remove that too. This cannot be undone."
-                    )
-                } else if env_override {
-                    format!(
-                        "Delete \"{key}\" on \"{owner}\"? Removes the {env_label} override. This cannot be undone."
-                    )
-                } else {
-                    format!("Delete \"{key}\" on \"{owner}\"? This cannot be undone.")
-                };
-                self.modals.push(Modal::Confirm {
-                    title: format!("Delete {key}"),
-                    body,
-                    choices: vec![
-                        ('n', "Cancel".into(), vec![]),
-                        (
-                            'y',
-                            "Delete".into(),
-                            vec![Action::VarStruct(VarStructOp::DeleteOption { owner, key })],
                         ),
                     ],
                 });
@@ -1739,24 +1907,19 @@ impl App {
             Action::VarStruct(op) => {
                 match self.apply_var_struct(&op) {
                     Ok(()) => {
-                        let open_request = self
-                            .editor
-                            .slug
-                            .is_some()
-                            .then(|| self.editor.current_request());
-                        let rows = varmanager::build_rows(
-                            &self.project,
-                            open_request.as_ref(),
-                            &self.varmanager.expanded,
-                        );
-                        self.varmanager.cursor.0 =
-                            self.varmanager.cursor.0.min(rows.len().saturating_sub(1));
-                        self.varmanager.cursor.1 = self
-                            .varmanager
-                            .cursor
-                            .1
-                            .min(self.project.environments.len());
-                        self.varmanager.ensure_visible = true;
+                        // A rename carries the detail pane's selection over
+                        // rather than emptying it: the user is still
+                        // looking at the same declaration, under its new
+                        // name (`sync` would otherwise drop it as gone).
+                        if let VarStructOp::Rename { from, to } = &op {
+                            let vm = &mut self.varmanager;
+                            if vm.detail == VmDetail::Var(from.clone()) {
+                                vm.detail = VmDetail::Var(to.clone());
+                            } else if vm.detail == VmDetail::Group(from.clone()) {
+                                vm.detail = VmDetail::Group(to.clone());
+                            }
+                        }
+                        self.varmanager.sync(&self.project)
                     }
                     Err(msg) => {
                         self.toasts.push(msg, ToastKind::Error);
@@ -1766,13 +1929,85 @@ impl App {
                 true
             }
 
+            // -- Task 16: the group entries grid (spec §3.4) --
+            Action::PromptGroupFields { group } => {
+                use crate::components::modal::PromptField;
+                let current = self
+                    .project
+                    .model
+                    .groups
+                    .get(&group)
+                    .map(|g| g.fields.clone())
+                    .unwrap_or_default();
+                // One slot per current field, in order — position is the
+                // identity, so an edited slot reads as a rename — plus one
+                // empty slot to add a field with.
+                let mut fields: Vec<PromptField> = current
+                    .iter()
+                    .enumerate()
+                    .map(|(i, f)| {
+                        PromptField::text(&format!("f{i}"), &format!("Field {}", i + 1), f)
+                    })
+                    .collect();
+                fields.push(PromptField::text(
+                    &format!("f{}", current.len()),
+                    "Add field",
+                    "",
+                ));
+                self.modals.push(Modal::MultiPrompt {
+                    title: format!("Fields of {group}"),
+                    fields,
+                    focus: 0,
+                    kind: PromptKind::GroupFields { group },
+                });
+                true
+            }
+            Action::ApplyGroupFields {
+                group,
+                slots,
+                confirmed,
+            } => {
+                self.apply_group_fields(group, slots, confirmed);
+                true
+            }
+            Action::PromptRenameEntry { env, group, from } => {
+                self.modals.push(Modal::Prompt {
+                    title: format!("Rename {from}"),
+                    input: LineInput::new(&from),
+                    kind: PromptKind::RenameEntry { env, group, from },
+                    revealed: false,
+                });
+                true
+            }
+            Action::ConfirmDeleteEntry { env, group, name } => {
+                self.modals.push(Modal::Confirm {
+                    title: format!("Delete {name}"),
+                    body: format!(
+                        "Delete entry \"{name}\" of \"{group}\" from {env}? Its values are removed with it."
+                    ),
+                    choices: vec![
+                        ('n', "Cancel".into(), vec![]),
+                        (
+                            'y',
+                            "Delete".into(),
+                            vec![Action::VarStruct(VarStructOp::DeleteEntry {
+                                env,
+                                group,
+                                name,
+                            })],
+                        ),
+                    ],
+                });
+                true
+            }
+
             // -- Task 17: in-context flows (spec §6) --
             Action::OpenNewOptionInlinePrompt { owner } => {
                 use crate::components::modal::PromptField;
                 self.modals.push(Modal::MultiPrompt {
-                    title: format!("Add option on {owner}"),
+                    title: format!("Add entry on {owner}"),
                     fields: vec![
-                        PromptField::text("key", "Key", ""),
+                        PromptField::text("key", "Name", ""),
                         PromptField::text("value", "Value", ""),
                         PromptField::text("description", "Description", ""),
                     ],
@@ -1814,9 +2049,16 @@ impl App {
                 value,
                 description,
             } => {
-                if !postui_core::vars::is_valid_var_name(&key) {
+                if key.is_empty() {
+                    self.toasts
+                        .push("entry name can't be empty", ToastKind::Error);
+                    return true;
+                }
+                if key == postui_core::varmodel::ENTRY_DESCRIPTION {
                     self.toasts.push(
-                        format!("\"{key}\" is not a valid option key"),
+                        format!(
+                            "\"{key}\" is reserved for an entry's own description and can't be used as an entry name"
+                        ),
                         ToastKind::Error,
                     );
                     return true;
@@ -1828,13 +2070,30 @@ impl App {
                     );
                     return true;
                 };
-                let mut fields = indexmap::IndexMap::new();
-                fields.insert("value".to_string(), value);
-                if let Some(d) = &description {
-                    fields.insert("description".to_string(), d.clone());
+                // The inline prompt collects one value, but an entry has
+                // to supply every field of its group or `validate_env`
+                // rejects it: the typed value fills the first field and
+                // the rest start empty, for the Manager to fill in.
+                let fields = self
+                    .project
+                    .model
+                    .groups
+                    .get(&owner)
+                    .map(|g| g.fields.clone())
+                    .unwrap_or_default();
+                let field_count = fields.len();
+                let mut values = indexmap::IndexMap::new();
+                for (i, field) in fields.into_iter().enumerate() {
+                    values.insert(field, if i == 0 { value.clone() } else { String::new() });
                 }
                 match self.project.edit_env(&env, |doc| {
-                    postui_core::varedit::upsert_env_option(doc, &owner, &key, &fields)
+                    postui_core::varedit::upsert_entry(
+                        doc,
+                        &owner,
+                        &key,
+                        description.as_deref(),
+                        &values,
+                    )
                 }) {
                     Ok(()) => {
                         self.project.set_selection_for(&env, &owner, &key);
@@ -1842,6 +2101,12 @@ impl App {
                             format!("{owner} \u{2192} {key} ({env})"),
                             ToastKind::Success,
                         );
+                        if field_count > 1 {
+                            self.toasts.push(
+                                "other fields left empty \u{2014} fill them in the Manager",
+                                ToastKind::Info,
+                            );
+                        }
                     }
                     Err(msg) => self.toasts.push(msg, ToastKind::Error),
                 }
@@ -1853,41 +2118,24 @@ impl App {
                 values,
                 description,
             } => {
-                let is_var = self.project.model.vars.contains_key(&owner);
-                let probe: Option<String> = if is_var {
-                    None
-                } else {
-                    values.keys().next().cloned()
+                // An entry belongs to exactly one environment, so the
+                // edit always lands in the active env's file.
+                let Some(env) = self.project.active_env.clone() else {
+                    self.toasts.push(
+                        "no active environment \u{2014} switch to one first",
+                        ToastKind::Warning,
+                    );
+                    return true;
                 };
-                let target_env = self.project.active_env.clone().filter(|env| {
-                    varmanager::option_value_is_env_override(
-                        &self.project,
-                        env,
+                let result = self.project.edit_env(&env, |doc| {
+                    postui_core::varedit::upsert_entry(
+                        doc,
                         &owner,
                         &key,
-                        probe.as_deref(),
+                        description.as_deref(),
+                        &values,
                     )
                 });
-                let result = match target_env {
-                    Some(env) => {
-                        let mut fields = values.clone();
-                        if let Some(d) = &description {
-                            fields.insert("description".to_string(), d.clone());
-                        }
-                        self.project.edit_env(&env, |doc| {
-                            postui_core::varedit::upsert_env_option(doc, &owner, &key, &fields)
-                        })
-                    }
-                    None => self.project.edit_variables(|doc| {
-                        postui_core::varedit::upsert_shared_option(
-                            doc,
-                            &owner,
-                            &key,
-                            description.as_deref(),
-                            &values,
-                        )
-                    }),
-                };
                 match result {
                     Ok(()) => self
                         .toasts
@@ -1906,6 +2154,22 @@ impl App {
                         ToastKind::Warning,
                     );
                     return true;
+                }
+                // The table-row context menu's "Extract value to variable"
+                // only ever *selects* a row (see `context_menu_for`) — it
+                // never leaves a cell genuinely under edit, which is what
+                // `focused_field_text` requires below. Promote the selected
+                // row's Value cell to a live edit here, exactly as clicking
+                // it would, so the menu path reaches the same text the
+                // direct-action/palette paths do.
+                if self.focus == PaneId::Editor
+                    && self.editor.sub_focus == SubFocus::Content
+                    && self.editor.table.editing.is_none()
+                    && let Some(row) = self.editor.table.selected
+                    && row < self.editor.table_len()
+                {
+                    self.editor
+                        .click_table_cell(row, crate::components::table_editor::Col::Value);
                 }
                 let Some(text) = self.focused_field_text().map(|(t, _)| t.to_string()) else {
                     self.toasts
@@ -1970,14 +2234,12 @@ impl App {
                         // Same namespace-collision guard as `ProjectDefault`
                         // (a group of this name would otherwise sit
                         // alongside a same-named plain variable), plus the
-                        // two `validate_env` would reject outright if we
+                        // one `validate_env` would reject outright if we
                         // wrote a flat env value anyway: a secret variable
                         // (env values for secrets are forbidden —
-                        // `ModelError::EnvValueForSecret`) and an
-                        // already-enumerated one in this env
-                        // (`ModelError::EnvValueForEnumerated`). Catching
-                        // both here — rather than letting `edit_env` fail
-                        // after the fact — keeps the refusal a clean toast
+                        // `ModelError::EnvValueForSecret`). Catching it
+                        // here — rather than letting `edit_env` fail after
+                        // the fact — keeps the refusal a clean toast
                         // instead of a write attempt against a doc that
                         // `validate_env` would then reject.
                         if self.project.model.groups.contains_key(&name) {
@@ -1990,21 +2252,6 @@ impl App {
                                 self.toasts.push(
                                     format!(
                                         "\"{name}\" is a secret variable \u{2014} can't set a plain env value for it"
-                                    ),
-                                    ToastKind::Error,
-                                );
-                                return true;
-                            }
-                            if !postui_core::varmodel::merged_var_options(
-                                &self.project.model,
-                                &self.project.env_data,
-                                &name,
-                            )
-                            .is_empty()
-                            {
-                                self.toasts.push(
-                                    format!(
-                                        "\"{name}\" is enumerated in {env} \u{2014} pick an option instead of a flat value"
                                     ),
                                     ToastKind::Error,
                                 );
@@ -2096,19 +2343,18 @@ impl App {
     }
 
     /// Whether `cursor` (a char index into `text`) sits on a `{{name}}`
-    /// token whose name is enumerated-or-group-member in the active env
+    /// token whose name is a group field in the active env
     /// (spec §6's cursor-on-token rule) — and if so, the `(name, group)`
     /// pair `PickerMode::SelectOption` wants: `name` is the token's own
-    /// name; `group` is the owning group's name for a group member,
-    /// `None` for a plain enumerated variable. `None` when the cursor
-    /// isn't on a token, or the token's name doesn't resolve to either
-    /// shape (a simple/secret/undeclared name — `ctrl+v` there falls back
-    /// to ordinary `Insert` autocomplete).
+    /// name and `group` is the owning group's. `None` when the cursor
+    /// isn't on a token, or the token's name isn't a group field (a
+    /// simple/secret/undeclared name — `ctrl+v` there falls back to
+    /// ordinary `Insert` autocomplete).
     fn selection_picker_target(
         ctx: &ProjectContext,
         text: &str,
         cursor: usize,
-    ) -> Option<(String, Option<String>)> {
+    ) -> Option<(String, String)> {
         let byte_off = text
             .char_indices()
             .nth(cursor)
@@ -2119,20 +2365,15 @@ impl App {
             .find(|t| byte_off >= t.start && byte_off <= t.end)?;
         use postui_core::varmodel::VarMeta;
         match ctx.resolved.meta.get(&token.name) {
-            Some(VarMeta::Enumerated { .. }) => Some((token.name, None)),
-            Some(VarMeta::GroupMember { group, .. }) => Some((token.name, Some(group.clone()))),
+            Some(VarMeta::GroupMember { group, .. }) => Some((token.name, group.clone())),
             Some(VarMeta::NeedsSelection) => {
-                if ctx.model.vars.contains_key(&token.name) {
-                    Some((token.name, None))
-                } else {
-                    let group = ctx
-                        .model
-                        .groups
-                        .iter()
-                        .find(|(_, g)| g.members.contains(&token.name))
-                        .map(|(n, _)| n.clone())?;
-                    Some((token.name, Some(group)))
-                }
+                let group = ctx
+                    .model
+                    .groups
+                    .iter()
+                    .find(|(_, g)| g.fields.contains(&token.name))
+                    .map(|(n, _)| n.clone())?;
+                Some((token.name, group))
             }
             _ => None,
         }
@@ -2177,78 +2418,43 @@ impl App {
     }
 
     /// Builds and opens the `SelectOption` picker (spec §6's first
-    /// context) for `name` (a group member when `group` is `Some`): rows
-    /// are the merged options for the active env, `key  description
-    /// value` for a plain variable or a full per-member preview line for
-    /// a group, current selection marked with a ✓.
-    fn open_select_picker(&mut self, name: String, group: Option<String>) -> bool {
+    /// context) for `name`, a field of `group`: rows are `group`'s entries
+    /// in the active environment, each previewed as its per-field values,
+    /// with the current selection marked with a ✓.
+    fn open_select_picker(&mut self, name: String, group: String) -> bool {
         use crate::components::modal::Modal;
         use crate::components::var_picker::{SelectEntry, VarPickerState};
         use postui_core::varmodel;
 
-        let owner = group.clone().unwrap_or_else(|| name.clone());
         let env_key = self.project.active_env.clone().unwrap_or_default();
-        let entries: Vec<SelectEntry> = if let Some(group_name) = &group {
-            let opts = varmodel::merged_group_options(
-                &self.project.model,
-                &self.project.env_data,
-                group_name,
-            );
-            let members: Vec<String> = self
-                .project
-                .model
-                .groups
-                .get(group_name)
-                .map(|g| g.members.clone())
-                .unwrap_or_default();
-            let selected_key = self
-                .project
-                .selections_for(&env_key)
-                .get(group_name)
-                .cloned();
-            opts.into_iter()
-                .map(|(key, opt)| {
-                    let mut parts: Vec<String> = Vec::new();
-                    if let Some(desc) = &opt.description {
-                        parts.push(desc.clone());
-                    }
-                    for m in &members {
-                        if let Some(v) = opt.values.get(m) {
-                            parts.push(format!("{m} {v}"));
+        let selected_key = self.project.selections_for(&env_key).get(&group).cloned();
+        let entries: Vec<SelectEntry> = varmodel::group_entries(&self.project.env_data, &group)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .map(|(key, decl)| {
+                        let mut parts: Vec<String> = Vec::new();
+                        if let Some(desc) = &decl.description {
+                            parts.push(desc.clone());
                         }
-                    }
-                    let selected = selected_key.as_deref() == Some(key.as_str());
-                    SelectEntry {
-                        key,
-                        description: opt.description.clone(),
-                        value: None,
-                        preview: Some(parts.join(" \u{b7} ")),
-                        selected,
-                        values: Some(opt.values.clone()),
-                    }
-                })
-                .collect()
-        } else {
-            let opts =
-                varmodel::merged_var_options(&self.project.model, &self.project.env_data, &name);
-            let selected_key = self.project.selections_for(&env_key).get(&name).cloned();
-            opts.into_iter()
-                .map(|(key, opt)| {
-                    let selected = selected_key.as_deref() == Some(key.as_str());
-                    SelectEntry {
-                        key,
-                        description: opt.description.clone(),
-                        value: Some(opt.value.clone()),
-                        preview: None,
-                        selected,
-                        values: None,
-                    }
-                })
-                .collect()
-        };
+                        for (field, value) in &decl.values {
+                            parts.push(format!("{field} {value}"));
+                        }
+                        SelectEntry {
+                            key: key.clone(),
+                            description: decl.description.clone(),
+                            value: None,
+                            preview: Some(parts.join(" \u{b7} ")),
+                            selected: selected_key.as_deref() == Some(key.as_str()),
+                            values: Some(decl.values.clone()),
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         if entries.is_empty() {
             self.toasts
-                .push(format!("{owner} has no options"), ToastKind::Warning);
+                .push(format!("{group} has no entries here"), ToastKind::Warning);
             return true;
         }
         self.modals
@@ -2260,9 +2466,31 @@ impl App {
 
     /// Applies one committed Variable Manager op (spec §5), writing
     /// through to whichever file owns it. `Err(msg)` is always safe to
-    /// toast (never a secret value) and, per the caller
-    /// (`Action::VarEdit`), leaves `varmanager.editing` untouched so the
-    /// typed text survives a retry.
+    /// toast (never a secret value); the caller (`Action::VarEdit`) toasts
+    /// it and leaves the originating field untouched, so the typed text
+    /// survives a retry.
+    /// Commits whatever field the variable form's [`VarFormState::editing`]
+    /// holds (click-away, click-another-field, or `Enter`): builds its
+    /// `VarEditOp` and writes it through `apply_var_edit`. A no-op with
+    /// nothing being edited. A write failure toasts and puts the edit back
+    /// exactly as it was — the typed text is never lost to a failed write
+    /// (spec §5's general write-failure rule), and a secret's value never
+    /// appears in the toast.
+    pub(crate) fn commit_var_form(&mut self) {
+        let Some((field, input)) = self.varmanager.form.editing.take() else {
+            return;
+        };
+        let VmDetail::Var(name) = self.varmanager.detail.clone() else {
+            return;
+        };
+        let value = input.text().to_string();
+        let op = var_edit_op_for(&self.project, &name, field, value);
+        if let Err(msg) = self.apply_var_edit(&op) {
+            self.varmanager.form.editing = Some((field, input));
+            self.toasts.push(msg, ToastKind::Error);
+        }
+    }
+
     fn apply_var_edit(&mut self, op: &VarEditOp) -> Result<(), String> {
         match op {
             VarEditOp::SetEnvValue { env, name, value } => self.project.edit_env(env, |doc| {
@@ -2276,15 +2504,15 @@ impl App {
                     self.project.edit_variables(|doc| {
                         postui_core::varedit::upsert_var(doc, owner, Some(value), None)
                     })
-                } else if let Some(members) = self
+                } else if let Some(fields) = self
                     .project
                     .model
                     .groups
                     .get(owner)
-                    .map(|g| g.members.clone())
+                    .map(|g| g.fields.clone())
                 {
                     self.project.edit_variables(|doc| {
-                        postui_core::varedit::upsert_group(doc, owner, Some(value), &members)
+                        postui_core::varedit::upsert_group(doc, owner, Some(value), &fields)
                     })
                 } else {
                     Err(format!("\"{owner}\" is not a declared variable or group"))
@@ -2293,31 +2521,20 @@ impl App {
             VarEditOp::SetSecretValue { env, name, value } => {
                 self.project.set_secret_for(env, name, value.clone())
             }
-            VarEditOp::SetOptionValue {
+            VarEditOp::SetEntryValue {
                 env,
-                owner,
-                key,
-                member,
+                group,
+                entry,
+                field,
                 value,
             } => {
-                let field = member.clone().unwrap_or_else(|| "value".to_string());
-                let mut fields = indexmap::IndexMap::new();
-                fields.insert(field, value.clone());
-                if varmanager::option_value_is_env_override(
-                    &self.project,
-                    env,
-                    owner,
-                    key,
-                    member.as_deref(),
-                ) {
-                    self.project.edit_env(env, |doc| {
-                        postui_core::varedit::upsert_env_option(doc, owner, key, &fields)
-                    })
-                } else {
-                    self.project.edit_variables(|doc| {
-                        postui_core::varedit::upsert_shared_option(doc, owner, key, None, &fields)
-                    })
-                }
+                // An entry's values live in one environment's file; the
+                // cell being edited is one field of that entry.
+                let mut values = indexmap::IndexMap::new();
+                values.insert(field.clone(), value.clone());
+                self.project.edit_env(env, |doc| {
+                    postui_core::varedit::upsert_entry(doc, group, entry, None, &values)
+                })
             }
             VarEditOp::SetRequestVar { name, value } => {
                 match self.editor.variables.get_mut(name) {
@@ -2334,14 +2551,14 @@ impl App {
                 }
                 Ok(())
             }
-            VarEditOp::Select { env, name, key } => {
-                self.project.set_selection_for(env, name, key);
+            VarEditOp::SelectEntry { env, group, entry } => {
+                self.project.set_selection_for(env, group, entry);
                 Ok(())
             }
         }
     }
 
-    /// `s` on a non-enumerated `Var` row (spec §3's two transitions): opens
+    /// `s` on a `Var` row (spec §3's two transitions): opens
     /// the direction-appropriate confirm. Un-marking secret shows the
     /// current value(s) for the user to copy — deliberately, per spec, the
     /// one place a secret value is displayed outside substituted request
@@ -2349,7 +2566,16 @@ impl App {
     /// values will move into `.local/secrets.toml` and be stripped from
     /// their env files.
     fn open_toggle_secret_confirm(&mut self, name: String) {
-        let is_secret = self.project.model.vars.get(&name).is_some_and(|d| d.secret);
+        let Some(decl) = self.project.model.vars.get(&name) else {
+            // A group (or a name that is not declared at all) has no
+            // secret flag to flip: only a variable declaration carries one.
+            self.toasts.push(
+                format!("\"{name}\" is not a variable; only a variable can be secret"),
+                ToastKind::Error,
+            );
+            return;
+        };
+        let is_secret = decl.secret;
         if is_secret {
             let mut lines: Vec<String> = Vec::new();
             for env in &self.project.environments {
@@ -2378,13 +2604,6 @@ impl App {
                 ],
             });
         } else {
-            if !varmanager::union_var_option_keys(&self.project, &name).is_empty() {
-                self.toasts.push(
-                    format!("\"{name}\" has options; remove them before marking it secret"),
-                    ToastKind::Error,
-                );
-                return;
-            }
             let mut envs_with_values: Vec<String> = Vec::new();
             for env in self.project.environments.clone() {
                 let env_data = if self.project.active_env.as_deref() == Some(env.as_str()) {
@@ -2422,8 +2641,8 @@ impl App {
 
     /// `P` on a `Var` row (spec §4): refuses (with a message modal, no
     /// mutation) a secret name — its resolved value would otherwise land in
-    /// a git-tracked request file — or an enumerated/group name (request
-    /// scope is simple-only per spec); otherwise opens the demote confirm,
+    /// a git-tracked request file — or a group (request scope is
+    /// simple-only per spec); otherwise opens the demote confirm,
     /// its body naming any *other* requests already referencing it.
     fn open_demote_confirm(&mut self, name: String) {
         if self.editor.slug.is_none() {
@@ -2441,14 +2660,10 @@ impl App {
             });
             return;
         }
-        let enumerated = !varmanager::union_var_option_keys(&self.project, &name).is_empty();
-        let is_group = self.project.model.groups.contains_key(&name);
-        if enumerated || is_group {
+        if self.project.model.groups.contains_key(&name) {
             self.modals.push(Modal::Message {
                 title: "Can't demote".into(),
-                body: format!(
-                    "\"{name}\" is enumerated or a group; request scope is simple values only."
-                ),
+                body: format!("\"{name}\" is a group; request scope is simple values only."),
             });
             return;
         }
@@ -2512,33 +2727,20 @@ impl App {
                     varedit::upsert_var(doc, name, description.as_deref(), None)
                 })
             }
-            VarStructOp::NewGroup { name, members } => {
+            VarStructOp::NewGroup { name, fields } => {
                 if !is_valid_var_name(name) {
                     return Err(format!("\"{name}\" is not a valid group name"));
                 }
                 if name_taken(&self.project, name) {
                     return Err(format!("\"{name}\" already exists"));
                 }
-                for m in members {
-                    if !is_valid_var_name(m) {
-                        return Err(format!("\"{m}\" is not a valid member name"));
+                for f in fields {
+                    if !is_valid_var_name(f) {
+                        return Err(format!("\"{f}\" is not a valid field name"));
                     }
                 }
                 self.project
-                    .edit_variables(|doc| varedit::upsert_group(doc, name, None, members))
-            }
-            VarStructOp::NewOption {
-                owner,
-                key,
-                description,
-                values,
-            } => {
-                if !is_valid_var_name(key) {
-                    return Err(format!("\"{key}\" is not a valid option key"));
-                }
-                self.project.edit_variables(|doc| {
-                    varedit::upsert_shared_option(doc, owner, key, description.as_deref(), values)
-                })
+                    .edit_variables(|doc| varedit::upsert_group(doc, name, None, fields))
             }
             VarStructOp::Rename { from, to } => {
                 if !is_valid_var_name(to) {
@@ -2547,15 +2749,18 @@ impl App {
                 if name_taken(&self.project, to) {
                     return Err(format!("\"{to}\" already exists"));
                 }
+                if self.project.model.groups.contains_key(from) {
+                    return self.apply_rename_group(from, to);
+                }
                 self.project
                     .edit_variables(|doc| varedit::rename_var(doc, from, to))?;
                 // `rename_var` only ever touches `variables.toml` — an
                 // active env override for `from` would otherwise silently
                 // degrade to the default post-rename (no error, no
                 // warning, just a wrong-looking resolved value). Cascade
-                // into every environment's flat pair and `[options.*]`
-                // table too; `rename_env_var` no-ops for an environment
-                // with nothing to rename.
+                // into every environment's flat pair and its
+                // `[entries.<from>]` table too; `rename_env_var` no-ops
+                // for an environment with nothing to rename.
                 for env in self.project.environments.clone() {
                     self.project
                         .edit_env(&env, |doc| varedit::rename_env_var(doc, from, to))?;
@@ -2576,10 +2781,10 @@ impl App {
                         .model
                         .groups
                         .iter()
-                        .find_map(|(gname, g)| g.members.contains(name).then(|| gname.clone()))
+                        .find_map(|(gname, g)| g.fields.contains(name).then(|| gname.clone()))
                     {
                         return Err(format!(
-                            "variable \"{name}\" is a member of group \"{gname}\"; remove it from the group first"
+                            "variable \"{name}\" is a field of group \"{gname}\"; remove it from the group first"
                         ));
                     }
                 }
@@ -2599,8 +2804,17 @@ impl App {
                 // parse-style toast" this fix removes. `delete_env_var`
                 // no-ops for an environment with nothing to remove.
                 for env in self.project.environments.clone() {
-                    self.project
-                        .edit_env(&env, |doc| varedit::delete_env_var(doc, name))?;
+                    if is_group {
+                        // The declaration's environment-side half: the whole
+                        // `[entries.<name>]` subtree, plus the recorded
+                        // selection that named one of those entries.
+                        self.project
+                            .edit_env(&env, |doc| varedit::delete_group_entries(doc, name))?;
+                        self.project.clear_selection_for(&env, name);
+                    } else {
+                        self.project
+                            .edit_env(&env, |doc| varedit::delete_env_var(doc, name))?;
+                    }
                 }
                 if is_group {
                     self.project
@@ -2611,73 +2825,449 @@ impl App {
                 }
             }
             VarStructOp::ToggleSecret { name } => self.apply_toggle_secret(name),
-            VarStructOp::SetMembers { group, members } => {
-                for m in members {
-                    if !is_valid_var_name(m) {
-                        return Err(format!("\"{m}\" is not a valid member name"));
+            VarStructOp::SetFields { group, fields } => {
+                for f in fields {
+                    if !is_valid_var_name(f) {
+                        return Err(format!("\"{f}\" is not a valid field name"));
                     }
                 }
                 self.project
-                    .edit_variables(|doc| varedit::upsert_group(doc, group, None, members))
+                    .edit_variables(|doc| varedit::upsert_group(doc, group, None, fields))
             }
             VarStructOp::Promote { name, target } => self.apply_promote(name, *target),
             VarStructOp::Demote { name } => self.apply_demote(name),
-            VarStructOp::DeleteOption { owner, key } => self.apply_delete_option(owner, key),
+            VarStructOp::NewEntry {
+                env,
+                group,
+                name,
+                description,
+                values,
+            } => self.project.edit_env(env, |doc| {
+                varedit::upsert_entry(doc, group, name, description.as_deref(), values)
+            }),
+            VarStructOp::RenameEntry {
+                env,
+                group,
+                from,
+                to,
+            } => {
+                self.project
+                    .edit_env(env, |doc| varedit::rename_entry(doc, group, from, to))?;
+                // A selection names an entry by key: carry it across the
+                // rename rather than leaving a dangling one behind.
+                if self
+                    .project
+                    .selections_for(env)
+                    .get(group)
+                    .map(String::as_str)
+                    == Some(from)
+                {
+                    self.project.set_selection_for(env, group, to);
+                }
+                Ok(())
+            }
+            VarStructOp::DeleteEntry { env, group, name } => {
+                self.apply_delete_entry(env, group, name)
+            }
+            VarStructOp::DuplicateEntry { env, group, name } => {
+                self.apply_duplicate_entry(env, group, name)
+            }
         }
     }
 
-    /// [`VarStructOp::DeleteOption`] (finding 3): location-aware option
-    /// delete. If `key` is overridden in the active environment, that
-    /// override is stripped first — leaving a shared option of the same
-    /// name (if any) intact, so a second delete then removes it. Otherwise,
-    /// if `key` is a shared option (on the variable's or group's own
-    /// table), it's removed from `variables.toml`. Neither existing is a
-    /// quiet no-op success (a stale row — nothing left to do). Also clears
-    /// any per-env selection naming the deleted key, in every environment,
-    /// so local state doesn't accumulate dead selections (`resolve_env`
-    /// already degrades a stale selection harmlessly, but there's no
-    /// reason to leave it).
-    fn apply_delete_option(&mut self, owner: &str, key: &str) -> Result<(), String> {
-        let env_override = self.project.active_env.clone().filter(|_| {
-            self.project
-                .env_data
-                .options
-                .get(owner)
-                .and_then(|m| m.get(key))
-                .is_some()
-        });
-        if let Some(env) = env_override {
-            self.project.edit_env(&env, |doc| {
-                postui_core::varedit::delete_env_option(doc, owner, key)
-            })?;
-        } else {
-            let shared_exists = self
-                .project
-                .model
-                .vars
-                .get(owner)
-                .is_some_and(|d| d.options.contains_key(key))
-                || self
-                    .project
-                    .model
-                    .groups
-                    .get(owner)
-                    .is_some_and(|g| g.options.contains_key(key));
-            if shared_exists {
-                self.project.edit_variables(|doc| {
-                    postui_core::varedit::delete_shared_option(doc, owner, key)
-                })?;
+    /// [`VarStructOp::Rename`] for a group. Both halves of the declaration
+    /// have to move at once: an environment's `[entries.<old>]` table names
+    /// a group the renamed model no longer declares, and the new name has
+    /// no entries yet — so `validate_env` refuses whichever half lands
+    /// first, in either order. `edit_variables_and_envs` builds and
+    /// validates them together, then writes.
+    ///
+    /// Selections name a group by key, so each environment's recorded
+    /// selection is carried across the rename (the same repair
+    /// [`VarStructOp::RenameEntry`] makes for an entry key) — otherwise a
+    /// renamed group would silently lose its "pick user 2" state
+    /// everywhere.
+    fn apply_rename_group(&mut self, from: &str, to: &str) -> Result<(), String> {
+        use postui_core::varedit;
+        self.project.edit_variables_and_envs(
+            |doc| varedit::rename_group(doc, from, to),
+            |doc| varedit::rename_group_entries(doc, from, to),
+        )?;
+        for env in self.project.environments.clone() {
+            if let Some(key) = self.project.selections_for(&env).get(from).cloned() {
+                self.project.clear_selection_for(&env, from);
+                self.project.set_selection_for(&env, to, &key);
             }
         }
-        for env in self.project.environments.clone() {
+        Ok(())
+    }
+
+    /// [`Action::ApplyGroupFields`]: turns the field editor's per-slot text
+    /// into renames, additions and removals, and applies all three in one
+    /// transaction across `variables.toml` and every environment.
+    ///
+    /// **Position is the identity.** Slot `i` *is* the group's current
+    /// `i`th field: changed text renames it, cleared text removes it, and a
+    /// slot past the current list adds a field. Rows are therefore never
+    /// reordered — swapping two names reads as two renames (and is refused
+    /// as a collision), which is the price of being able to rename a field
+    /// at all through a plain list of text boxes.
+    ///
+    /// Every one of the three needs both files at once: an entry must
+    /// supply exactly its group's declared fields (`validate_env`), so a
+    /// declaration whose new field list has landed alone is invalid until
+    /// the entries carry the same change.
+    fn apply_group_fields(&mut self, group: String, slots: Vec<String>, confirmed: bool) {
+        use postui_core::varedit;
+        use postui_core::vars::is_valid_var_name;
+
+        let Some(current) = self
+            .project
+            .model
+            .groups
+            .get(&group)
+            .map(|g| g.fields.clone())
+        else {
+            self.toasts.push(
+                format!("\"{group}\" is not a declared group"),
+                ToastKind::Error,
+            );
+            return;
+        };
+
+        let mut renames: Vec<(String, String)> = Vec::new();
+        let mut removals: Vec<String> = Vec::new();
+        let mut additions: Vec<String> = Vec::new();
+        let mut fields: Vec<String> = Vec::new();
+        for (i, slot) in slots.iter().enumerate() {
+            match current.get(i) {
+                Some(old) if slot.is_empty() => removals.push(old.clone()),
+                Some(old) => {
+                    if slot != old {
+                        renames.push((old.clone(), slot.clone()));
+                    }
+                    fields.push(slot.clone());
+                }
+                None if slot.is_empty() => {}
+                None => {
+                    additions.push(slot.clone());
+                    fields.push(slot.clone());
+                }
+            }
+        }
+        // A prompt with fewer slots than the group has fields drops the
+        // trailing ones (today only reachable if the field list grew
+        // between opening and confirming the modal).
+        for old in current.iter().skip(slots.len()) {
+            removals.push(old.clone());
+        }
+        if renames.is_empty() && removals.is_empty() && additions.is_empty() {
+            return;
+        }
+
+        for name in additions.iter().chain(renames.iter().map(|(_, t)| t)) {
+            if !is_valid_var_name(name) {
+                self.toasts.push(
+                    format!("\"{name}\" is not a valid field name"),
+                    ToastKind::Error,
+                );
+                return;
+            }
+            // A field belongs to exactly one group, and shares the
+            // declaration namespace with variables and groups.
+            let clash = self.project.model.groups.iter().any(|(g, decl)| {
+                g == name || (g != &group && decl.fields.iter().any(|f| f == name))
+            });
+            if clash {
+                self.toasts
+                    .push(format!("\"{name}\" already exists"), ToastKind::Error);
+                return;
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        if let Some(dup) = fields.iter().find(|f| !seen.insert((*f).clone())) {
+            self.toasts
+                .push(format!("\"{dup}\" is listed twice"), ToastKind::Error);
+            return;
+        }
+
+        // Removing a field deletes that column's values everywhere — spec
+        // §5's "destructive edits confirm first".
+        if !removals.is_empty() && !confirmed {
+            let envs: Vec<String> = self
+                .project
+                .environments
+                .clone()
+                .into_iter()
+                .filter(|env| {
+                    postui_core::varmodel::group_entries(&self.env_data_for(env), &group)
+                        .is_some_and(|e| !e.is_empty())
+                })
+                .collect();
+            let where_ = if envs.is_empty() {
+                "no environment has entries for it yet".to_string()
+            } else {
+                format!("every entry in {}", envs.join(", "))
+            };
+            self.modals.push(Modal::Confirm {
+                title: format!("Remove {} from {group}", removals.join(", ")),
+                body: format!(
+                    "Values in this column will be deleted from {where_}. This cannot be undone."
+                ),
+                choices: vec![
+                    ('n', "Cancel".into(), vec![]),
+                    (
+                        'y',
+                        "Remove".into(),
+                        vec![Action::ApplyGroupFields {
+                            group: group.clone(),
+                            slots,
+                            confirmed: true,
+                        }],
+                    ),
+                ],
+            });
+            return;
+        }
+
+        // A renamed field that has its own `[name]` declaration renames
+        // through `rename_var` (which also rewrites the group's `fields`
+        // array); one that doesn't exist as a declaration only lives in
+        // that array, which the closing `upsert_group` rewrites wholesale
+        // either way.
+        let declared: Vec<bool> = renames
+            .iter()
+            .map(|(from, _)| self.project.model.vars.contains_key(from))
+            .collect();
+        let result = self.project.edit_variables_and_envs(
+            |doc| {
+                let mut out = doc.to_string();
+                for ((from, to), declared) in renames.iter().zip(&declared) {
+                    if *declared {
+                        out = varedit::rename_var(&out, from, to)?;
+                    }
+                }
+                varedit::upsert_group(&out, &group, None, &fields)
+            },
+            |doc| {
+                let mut out = doc.to_string();
+                for (from, to) in &renames {
+                    out = varedit::rename_entry_field(&out, &group, from, to)?;
+                }
+                for field in &removals {
+                    out = varedit::strip_entry_field(&out, &group, field)?;
+                }
+                for field in &additions {
+                    out = varedit::ensure_entry_field(&out, &group, field)?;
+                }
+                Ok(out)
+            },
+        );
+        match result {
+            Ok(()) => self.varmanager.sync(&self.project),
+            Err(msg) => self.toasts.push(msg, ToastKind::Error),
+        }
+    }
+
+    /// Commits whatever cell the group grid's [`EntryGridState::editing`]
+    /// holds (click-away, click-another-cell, or `Enter`) — Task 8's rules,
+    /// on the three kinds of cell the grid has: the ghost row's name cell
+    /// creates an entry (with an empty value for every field, so the new
+    /// record validates) and continues into its first field cell, a real
+    /// entry's name cell renames it, and a field cell writes that one
+    /// value. Text that didn't change writes nothing.
+    ///
+    /// A write failure toasts and puts the edit back exactly as it was, so
+    /// the typed text survives a retry (spec §5) — including the reserved
+    /// entry name `description`, which core refuses.
+    pub(crate) fn commit_grid_edit(&mut self) {
+        let Some(edit) = self.varmanager.grid.editing.take() else {
+            return;
+        };
+        let VmDetail::Group(group) = self.varmanager.detail.clone() else {
+            return;
+        };
+        let Some(env) = self.project.active_env.clone() else {
+            return;
+        };
+        let value = edit.input.text().to_string();
+        if value == edit.original {
+            return;
+        }
+        let entries: Vec<String> =
+            postui_core::varmodel::group_entries(&self.project.env_data, &group)
+                .map(|e| e.keys().cloned().collect())
+                .unwrap_or_default();
+        let fields = self
+            .project
+            .model
+            .groups
+            .get(&group)
+            .map(|g| g.fields.clone())
+            .unwrap_or_default();
+        let ghost = edit.row >= entries.len();
+
+        let result = if ghost {
+            // Only the ghost's name cell creates anything; an emptied name
+            // creates nothing (and neither does a value typed into a row
+            // that doesn't exist yet — the caller never starts one).
+            if edit.col != 0 || value.is_empty() {
+                return;
+            }
+            let values = fields
+                .iter()
+                .map(|f| (f.clone(), String::new()))
+                .collect::<indexmap::IndexMap<_, _>>();
+            self.apply_var_struct(&VarStructOp::NewEntry {
+                env,
+                group,
+                name: value.clone(),
+                description: None,
+                values,
+            })
+        } else if edit.col == 0 {
+            // Clearing a name is not a delete: leave the entry as it was.
+            if value.is_empty() {
+                return;
+            }
+            self.apply_var_struct(&VarStructOp::RenameEntry {
+                env,
+                group,
+                from: entries[edit.row].clone(),
+                to: value,
+            })
+        } else {
+            let Some(field) = fields.get(edit.col - 1).cloned() else {
+                return;
+            };
+            self.apply_var_edit(&VarEditOp::SetEntryValue {
+                env,
+                group,
+                entry: entries[edit.row].clone(),
+                field,
+                value,
+            })
+        };
+        match result {
+            Ok(()) => {
+                self.varmanager.sync(&self.project);
+                // The ghost flow keeps going left-to-right: the row that
+                // was the ghost is now a real entry (appended, so it keeps
+                // its index) with its first field cell live.
+                if ghost && !fields.is_empty() {
+                    self.varmanager.start_cell_edit(&self.project, edit.row, 1);
+                }
+            }
+            Err(msg) => {
+                self.varmanager.grid.editing = Some(edit);
+                self.toasts.push(msg, ToastKind::Error);
+            }
+        }
+    }
+
+    /// [`VarStructOp::DuplicateEntry`]: copies one entry's description and
+    /// values to a fresh name in the same environment — `"<name> copy"`,
+    /// then `"<name> copy-2"`, … while that is taken. Nothing else moves:
+    /// the copy is unselected, and no other environment is touched.
+    fn apply_duplicate_entry(&mut self, env: &str, group: &str, name: &str) -> Result<(), String> {
+        let env_data = self.env_data_for(env);
+        let entries = postui_core::varmodel::group_entries(&env_data, group)
+            .ok_or_else(|| format!("group \"{group}\" has no entries in {env}"))?;
+        let source = entries
+            .get(name)
+            .ok_or_else(|| format!("no entry \"{name}\" in {group}"))?
+            .clone();
+        let mut copy = format!("{name} copy");
+        let mut n = 2;
+        while entries.contains_key(&copy) {
+            copy = format!("{name} copy-{n}");
+            n += 1;
+        }
+        self.project.edit_env(env, |doc| {
+            postui_core::varedit::upsert_entry(
+                doc,
+                group,
+                &copy,
+                source.description.as_deref(),
+                &source.values,
+            )
+        })
+    }
+
+    /// [`Action::DuplicateVar`]: copies a declaration under `<name>-copy`
+    /// (then `-copy-2`, …). A variable keeps its description, its default
+    /// and its secret flag; a group copies its field list only — entries
+    /// live in an environment, not in the declaration, and are left alone.
+    fn apply_duplicate_var(&mut self, name: &str) -> Result<(), String> {
+        use postui_core::varedit;
+        let mut copy = format!("{name}-copy");
+        let mut n = 2;
+        while self.project.model.vars.contains_key(&copy)
+            || self.project.model.groups.contains_key(&copy)
+        {
+            copy = format!("{name}-copy-{n}");
+            n += 1;
+        }
+        if let Some(group) = self.project.model.groups.get(name) {
+            let (fields, description) = (group.fields.clone(), group.description.clone());
+            return self.project.edit_variables(|doc| {
+                varedit::upsert_group(doc, &copy, description.as_deref(), &fields)
+            });
+        }
+        let decl = self
+            .project
+            .model
+            .vars
+            .get(name)
+            .ok_or_else(|| format!("no variable \"{name}\""))?;
+        let (description, default, secret) =
+            (decl.description.clone(), decl.default.clone(), decl.secret);
+        self.project.edit_variables(|doc| {
+            varedit::upsert_var(doc, &copy, description.as_deref(), default.as_deref())
+        })?;
+        if secret {
+            // Safe on a just-created declaration: it has no value in any
+            // environment for the flag flip to have to move.
+            self.project
+                .edit_variables(|doc| varedit::set_secret_flag(doc, &copy, true))?;
+        }
+        Ok(())
+    }
+
+    /// `env`'s data: the active environment's is already loaded on `ctx`;
+    /// any other is read fresh, degrading to empty rather than erroring.
+    fn env_data_for(&self, env: &str) -> postui_core::varmodel::EnvData {
+        if self.project.active_env.as_deref() == Some(env) {
+            self.project.env_data.clone()
+        } else {
+            postui_core::project::load_environment(&self.project.root, env).unwrap_or_default()
+        }
+    }
+
+    /// [`VarStructOp::DeleteEntry`]: deletes one entry of `group` from
+    /// `env` (entries belong to one environment each — spec §3.1). An entry
+    /// that is already gone is a quiet no-op success (a stale row — nothing
+    /// left to do). Also clears any per-env selection naming the deleted
+    /// entry, in every environment, so local state doesn't accumulate dead
+    /// selections (`resolve_env` already degrades a stale selection
+    /// harmlessly, but there's no reason to leave it).
+    fn apply_delete_entry(&mut self, env: &str, group: &str, name: &str) -> Result<(), String> {
+        let present = postui_core::varmodel::group_entries(&self.env_data_for(env), group)
+            .is_some_and(|entries| entries.contains_key(name));
+        if present {
+            self.project.edit_env(env, |doc| {
+                postui_core::varedit::delete_entry(doc, group, name)
+            })?;
+        }
+        for other in self.project.environments.clone() {
             if self
                 .project
-                .selections_for(&env)
-                .get(owner)
+                .selections_for(&other)
+                .get(group)
                 .map(String::as_str)
-                == Some(key)
+                == Some(name)
             {
-                self.project.clear_selection_for(&env, owner);
+                self.project.clear_selection_for(&other, group);
             }
         }
         Ok(())
@@ -2794,7 +3384,7 @@ impl App {
     /// declaration, and strips any flat value left behind in every
     /// environment (best-effort — an environment with nothing to strip is
     /// not an error). The caller (`open_demote_confirm`) has already
-    /// refused a secret/enumerated/group name before this ever runs.
+    /// refused a secret name or a group before this ever runs.
     fn apply_demote(&mut self, name: &str) -> Result<(), String> {
         let value = self
             .project
@@ -2883,6 +3473,116 @@ impl App {
             .append(&mut self.sidebar.pending_expand);
         let expanded = self.project.expanded.clone();
         self.sidebar.refresh(listing, &expanded);
+    }
+
+    /// Pushes a context menu anchored at the pointer: a `Modal::Dropdown`
+    /// over a 1x1 anchor at `(x, y)`, so `draw_dropdown`'s existing
+    /// flip-near-the-bottom and clamp-to-screen logic places it. Returns
+    /// `false` (opening nothing) for an empty item list, so callers can
+    /// hand over whatever they built without a guard of their own.
+    pub fn open_context_menu(
+        &mut self,
+        x: u16,
+        y: u16,
+        items: Vec<crate::components::modal::MenuItem>,
+    ) -> bool {
+        use crate::components::modal::DropdownState;
+        if items.is_empty() {
+            return false;
+        }
+        let selected = DropdownState::first_enabled(&items);
+        self.modals.push(Modal::Dropdown(DropdownState {
+            anchor: ratatui::layout::Rect::new(x, y, 1, 1),
+            items,
+            selected,
+            // Context menus are lists of commands, not of values, so no row
+            // is "the current one" and nothing gets the ✓ marker.
+            current: None,
+        }));
+        true
+    }
+
+    /// The context menu for a right-clicked `hit`, or `None` where a right
+    /// click has nothing to offer (pane backgrounds, chrome, an already-open
+    /// modal). The row-targeting flows the items dispatch
+    /// (`PromptRenameRequest`, `ConfirmDeleteRequest`, `DuplicateRequest`,
+    /// `ToggleSelectedFolder`) read `sidebar.selected`, which the right-click
+    /// handler has already moved onto the clicked row.
+    fn context_menu_for(&mut self, hit: &Hit) -> Option<Vec<crate::components::modal::MenuItem>> {
+        use crate::components::modal::MenuItem;
+        let row = match hit {
+            Hit::SidebarRow(i) | Hit::SidebarFolderArrow(i) => self.sidebar.rows.get(*i)?,
+            Hit::VmLeftRow(i) => return self.varmanager.context_menu(*i),
+            // An entry row (either half of it — the radio and the cells all
+            // belong to the same record).
+            Hit::VmEntryRadio(row) | Hit::VmEntryCell { row, .. } => {
+                return self.varmanager.entry_context_menu(&self.project, *row);
+            }
+            // A params/headers/vars row (Task 17, spec §5): the right-click
+            // handler has already re-resolved `i` past any commit and
+            // normalized the hit to `TableRow` regardless of which part of
+            // the row was clicked (see `handle_mouse`), so `i` is a live
+            // index into the active tab's map here.
+            Hit::TableRow(i) => return self.table_row_context_menu(*i),
+            _ => return None,
+        };
+        Some(match row {
+            Row::Request {
+                slug, broken: None, ..
+            } => vec![
+                MenuItem::new("Open", Action::OpenRequest(slug.clone())),
+                MenuItem::new("Duplicate", Action::DuplicateRequest),
+                MenuItem::new("Rename…", Action::PromptRenameRequest),
+                MenuItem::new("Delete…", Action::ConfirmDeleteRequest),
+            ],
+            // A request whose file doesn't parse can't be loaded into the
+            // editor, so "Open" is shown disabled rather than hidden — the
+            // menu keeps its shape and the reason is one row away.
+            Row::Request {
+                slug,
+                broken: Some(_),
+                ..
+            } => vec![
+                MenuItem::disabled("Open"),
+                MenuItem::new("Show error…", Action::ShowRequestError(slug.clone())),
+                MenuItem::new("Duplicate", Action::DuplicateRequest),
+                MenuItem::new("Rename…", Action::PromptRenameRequest),
+                MenuItem::new("Delete…", Action::ConfirmDeleteRequest),
+            ],
+            Row::Folder { path, expanded, .. } => vec![
+                MenuItem::new(
+                    "New request here…",
+                    Action::PromptNewRequestIn(path.clone()),
+                ),
+                MenuItem::new(
+                    if *expanded { "Collapse" } else { "Expand" },
+                    Action::ToggleSelectedFolder,
+                ),
+            ],
+        })
+    }
+
+    /// The right-click menu for row `i` of the active params/headers/vars
+    /// table (Task 17, spec §5): duplicate, delete, and extract its value to
+    /// a variable. `None` for the Body tab (no table there) or a row index
+    /// past the map's end (the ghost row, or one that vanished under a
+    /// commit the caller already resolved past).
+    fn table_row_context_menu(&self, i: usize) -> Option<Vec<crate::components::modal::MenuItem>> {
+        use crate::components::modal::MenuItem;
+        let (map, noun) = match self.editor.active_tab {
+            EditorTab::Params => (&self.editor.params, "param"),
+            EditorTab::Headers => (&self.editor.headers, "header"),
+            EditorTab::Vars => (&self.editor.variables, "variable"),
+            EditorTab::Body => return None,
+        };
+        if i >= map.len() {
+            return None;
+        }
+        Some(vec![
+            MenuItem::new("Duplicate row", Action::DuplicateTableRow(i)),
+            MenuItem::new(format!("Delete {noun}…"), Action::ConfirmDeleteTableRow(i)),
+            MenuItem::new("Extract value to variable…", Action::ExtractToVariable),
+        ])
     }
 
     /// Push the standard unsaved-changes confirm whose "save" path relies on
@@ -2992,6 +3692,14 @@ impl App {
                 _ => None,
             },
             CopyTarget::Url => Some((self.editor.url.text().to_string(), "Copied URL".to_string())),
+            CopyTarget::ComputedHeader(i) => self
+                .editor
+                .computed
+                .rows
+                .iter()
+                .filter(|r| r.origin != postui_core::prepare::HeaderOrigin::Request)
+                .nth(*i)
+                .map(|r| (r.value.clone(), format!("Copied {}", r.name))),
         }
     }
 
@@ -2999,6 +3707,9 @@ impl App {
     /// a spinner) and therefore needs a redraw.
     fn in_flight_ticking(&self) -> bool {
         self.session.in_flight.is_some()
+            // A background pretty-print animates its own spinner, so ticks
+            // must keep coming while one is running.
+            || self.session.response.view().is_some_and(|v| v.parsing)
     }
 
     /// Central key router. Order (each step tested):
@@ -3059,15 +3770,18 @@ impl App {
             {
                 return self.update(a);
             }
-            let open_request = self
-                .editor
-                .slug
-                .is_some()
-                .then(|| self.editor.current_request());
-            if let Some(a) = self
-                .varmanager
-                .handle_key(ev, &self.project, open_request.as_ref())
-            {
+            // A variable-form field under edit owns the keyboard: `Esc`
+            // reverts, `Enter` commits (through `commit_var_form`, which
+            // needs the mutable project access `VarManager::handle_key`'s
+            // shared `&ProjectContext` can't give it), everything else is
+            // forwarded straight to its `LineInput`.
+            if self.screen == Screen::VarManager && self.varmanager.form.editing.is_some() {
+                return self.handle_var_form_key(ev);
+            }
+            if self.screen == Screen::VarManager && self.varmanager.grid.editing.is_some() {
+                return self.handle_grid_key(ev);
+            }
+            if let Some(a) = self.varmanager.handle_key(ev, &self.project) {
                 return self.update(a);
             }
             return true; // swallowed: no fallback to the global keymap
@@ -3089,6 +3803,101 @@ impl App {
         }
 
         false
+    }
+
+    /// Keys while a variable-form field owns the keyboard (Task 8's model,
+    /// exactly): `Esc` reverts (drops the edit with nothing written —
+    /// there's nothing to restore since the form only ever reads its
+    /// resting text live from `self.project`, never caches it), `Enter`
+    /// commits via `commit_var_form`, everything else goes to the field's
+    /// own `LineInput`. Always reports a redraw, like a modal capturing
+    /// every key while it's open.
+    fn handle_var_form_key(&mut self, ev: KeyEvent) -> bool {
+        match ev.code {
+            KeyCode::Esc => {
+                self.varmanager.form.editing = None;
+            }
+            KeyCode::Enter => self.commit_var_form(),
+            _ => {
+                if let Some((_, input)) = self.varmanager.form.editing.as_mut() {
+                    input.handle_key(ev);
+                }
+            }
+        }
+        self.update(Action::Render)
+    }
+
+    /// Keys while a group-grid cell owns the keyboard — the same contract
+    /// as [`Self::handle_var_form_key`]: `Esc` reverts (nothing is written,
+    /// and the cell's resting text is read live from the project either
+    /// way), `Enter` commits, anything else goes to the cell's own
+    /// `LineInput`. `Tab` commits and steps one column right on the same
+    /// row, so a freshly created entry can be filled in without reaching
+    /// for the mouse; a commit that failed keeps its edit and stays put.
+    fn handle_grid_key(&mut self, ev: KeyEvent) -> bool {
+        match ev.code {
+            KeyCode::Esc => {
+                self.varmanager.grid.editing = None;
+            }
+            KeyCode::Enter => self.commit_grid_edit(),
+            KeyCode::Tab => self.step_grid_edit(1),
+            KeyCode::BackTab => self.step_grid_edit(-1),
+            _ => {
+                if let Some(edit) = self.varmanager.grid.editing.as_mut() {
+                    edit.input.handle_key(ev);
+                }
+            }
+        }
+        self.update(Action::Render)
+    }
+
+    /// `Tab`/`BackTab` inside a live grid cell: commit, then open the cell
+    /// one step away in reading order (Task 8's table parity) — off the end
+    /// of a row wraps to the next row's first column, and off the front of
+    /// one wraps back to the previous row's last. The ghost row is the far
+    /// end in both directions: forward stops there (it becomes a real entry
+    /// only once its name commits), and there is nothing before row 0's
+    /// name cell.
+    ///
+    /// A commit that failed keeps its own edit (spec §5) and this leaves it
+    /// exactly where it is; a ghost-row commit that already walked the edit
+    /// on into the new entry's first field is likewise left alone.
+    fn step_grid_edit(&mut self, dir: i32) {
+        let at = self
+            .varmanager
+            .grid
+            .editing
+            .as_ref()
+            .map(|e| (e.row, e.col));
+        self.commit_grid_edit();
+        let Some((row, col)) = at else { return };
+        if self.varmanager.grid.editing.is_some() {
+            return;
+        }
+        let VmDetail::Group(group) = self.varmanager.detail.clone() else {
+            return;
+        };
+        let ncols = 1 + self
+            .project
+            .model
+            .groups
+            .get(&group)
+            .map_or(0, |g| g.fields.len());
+        let last_row = postui_core::varmodel::group_entries(&self.project.env_data, &group)
+            .map_or(0, indexmap::IndexMap::len);
+        let flat = (row * ncols + col) as i32 + dir;
+        let (next_row, next_col) = match flat {
+            // Off either end of the grid: the walk stops rather than
+            // closing the edit out from under the user — the same cell
+            // re-opens, now showing what was just committed.
+            f if f < 0 => (row, col),
+            f => {
+                let (r, c) = (f as usize / ncols, f as usize % ncols);
+                if r > last_row { (row, col) } else { (r, c) }
+            }
+        };
+        self.varmanager
+            .start_cell_edit(&self.project, next_row, next_col);
     }
 
     fn focused_component_key(&mut self, ev: KeyEvent) -> Option<Action> {

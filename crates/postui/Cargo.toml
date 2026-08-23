@@ -21,6 +21,9 @@ edtui = { version = "0.11", default-features = false, features = ["syntax-highli
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 arboard = "3"
 base64 = "0.22"
+# Char display widths, for mapping body-editor clicks back onto buffer
+# columns exactly the way edtui lays the text out (it uses this same crate).
+unicode-width = "0.2"
 # Raw poll(2)/read(2) on stdin for the OSC terminal-color query
 # (theme/osc.rs). Deliberately bypasses crossterm's event machinery: on
 # unix, crossterm's own `poll`/`read` consume bytes from fd 0 into its

@@ -90,7 +90,10 @@ pub struct Keymap {
     bindings: HashMap<KeyCombo, Action>,
 }
 
-fn named_actions() -> Vec<(&'static str, Action)> {
+/// Every action a key combo can be bound to by name (`apply_overrides`'
+/// left-hand side), plus the parity test's enumeration target: `pub(crate)`
+/// so `app::tests`'s mouse-parity sweep (spec §5) can walk it too.
+pub(crate) fn named_actions() -> Vec<(&'static str, Action)> {
     vec![
         ("quit", Action::Quit),
         ("focus_next", Action::FocusNext),
@@ -100,6 +103,9 @@ fn named_actions() -> Vec<(&'static str, Action)> {
         ("editor_tab_1", Action::EditorTabSelect(0)),
         ("editor_tab_2", Action::EditorTabSelect(1)),
         ("editor_tab_3", Action::EditorTabSelect(2)),
+        // 3 == EditorTab::Vars.index(); kept a bare literal like the three
+        // rows above rather than pulling in the editor module here.
+        ("tab_vars", Action::EditorTabSelect(3)),
         ("editor_tab_next", Action::EditorTabCycle(1)),
         ("editor_tab_prev", Action::EditorTabCycle(-1)),
         ("cycle_method", Action::CycleMethod),
@@ -120,6 +126,7 @@ fn named_actions() -> Vec<(&'static str, Action)> {
         ("toggle_table_collapse", Action::ToggleTableCollapse),
         ("var_manager_open", Action::OpenVarManager),
         ("extract_to_variable", Action::ExtractToVariable),
+        ("request_duplicate", Action::DuplicateRequest),
     ]
 }
 
@@ -157,6 +164,7 @@ impl Keymap {
             ("alt+1", Action::EditorTabSelect(0)),
             ("alt+2", Action::EditorTabSelect(1)),
             ("alt+3", Action::EditorTabSelect(2)),
+            ("alt+4", Action::EditorTabSelect(3)),
             ("alt+right", Action::EditorTabCycle(1)),
             ("alt+left", Action::EditorTabCycle(-1)),
             ("alt+m", Action::CycleMethod),
@@ -178,6 +186,7 @@ impl Keymap {
             ("alt+p", Action::ToggleTableCollapse),
             ("alt+v", Action::OpenVarManager),
             ("ctrl+shift+e", Action::ExtractToVariable),
+            ("ctrl+shift+d", Action::DuplicateRequest),
         ];
         let mut map = Self {
             bindings: HashMap::new(),
@@ -291,6 +300,7 @@ mod tests {
         assert_eq!(get("alt+1"), Some(Action::EditorTabSelect(0)));
         assert_eq!(get("alt+2"), Some(Action::EditorTabSelect(1)));
         assert_eq!(get("alt+3"), Some(Action::EditorTabSelect(2)));
+        assert_eq!(get("alt+4"), Some(Action::EditorTabSelect(3)));
         assert_eq!(get("alt+right"), Some(Action::EditorTabCycle(1)));
         assert_eq!(get("alt+left"), Some(Action::EditorTabCycle(-1)));
         assert_eq!(get("alt+m"), Some(Action::CycleMethod));
