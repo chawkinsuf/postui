@@ -442,6 +442,7 @@ impl App {
                 | Hit::ModalConfirm
                 | Hit::ConfirmChoice(_)
                 | Hit::ModalBody
+                | Hit::ModalField(_)
                 | Hit::ModalOutside
                 | Hit::DropdownRow(_)
                 | Hit::ChooserRow(_)
@@ -566,7 +567,8 @@ impl App {
                 let Some(i) = self.resolve_table_row_across_commit(i) else {
                     return self.update(Action::Render);
                 };
-                self.editor.table.selected = Some(i);
+                // A toggle click is just a toggle — it must not select (or
+                // expand) the row.
                 let map = match self.editor.active_tab {
                     EditorTab::Params => &mut self.editor.params,
                     EditorTab::Headers => &mut self.editor.headers,
@@ -674,6 +676,15 @@ impl App {
             // so win first. Inert: neither closes the modal nor dispatches
             // anything.
             Hit::ModalBody => false,
+            Hit::ModalField(i) => {
+                if let Some(crate::components::modal::Modal::MultiPrompt { focus, .. }) =
+                    self.modals.top_mut()
+                {
+                    *focus = i;
+                    return self.update(Action::Render);
+                }
+                false
+            }
             // The painted Cancel/Confirm buttons deliver exactly what
             // Esc/Enter already dispatch for whichever modal is on top: a
             // synthesized key event routed through the same

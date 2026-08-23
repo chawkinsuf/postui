@@ -664,6 +664,18 @@ fn app_with_one_param() -> App {
     app
 }
 
+/// Moves the pointer onto `row_hit`'s rect so hover-revealed affordances
+/// (the row's toggle/trash buttons) get registered, then clicks `hit`.
+fn hover_row_then_click(app: &mut App, row_hit: Hit, hit: Hit) {
+    render_once(app);
+    let r = app
+        .hits
+        .rect_of(&row_hit)
+        .unwrap_or_else(|| panic!("no rect registered for {row_hit:?}"));
+    app.handle_mouse(moved(r.x + 1, r.y));
+    click_hit(app, hit);
+}
+
 /// Re-renders and clicks just inside `hit`'s rect.
 fn click_hit(app: &mut App, hit: Hit) {
     render_once(app);
@@ -796,17 +808,15 @@ fn checkbox_and_delete_clicks_during_an_edit_commit_it_first() {
     app.focus = PaneId::Editor;
     click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
     type_chars(&mut app, "9");
-    click_hit(&mut app, Hit::TableCheckbox(1));
+    hover_row_then_click(&mut app, Hit::TableRow(1), Hit::TableCheckbox(1));
     assert_eq!(app.editor.params["a"].value, "19", "the edit committed");
     assert!(!app.editor.params["b"].enabled, "and the toggle landed");
     assert!(app.editor.table.editing.is_none());
 
-    // Same for the ✕ affordance on another row.
+    // Same for the trash button on another row.
     click_hit(&mut app, Hit::TableCell { row: 0, col: 0 });
     type_chars(&mut app, "x");
-    render_once(&mut app);
-    let del = app.hits.rect_of(&Hit::TableDelete(0)).unwrap();
-    app.handle_mouse(left_down(del.x, del.y));
+    hover_row_then_click(&mut app, Hit::TableRow(1), Hit::TableDelete(1));
     assert_eq!(
         app.editor.params.get_index(0).unwrap().0,
         "ax",
@@ -850,7 +860,7 @@ fn a_collapsing_commit_reresolves_the_row_a_checkbox_click_named() {
     // Row 1 is "b" in the frame the user clicked; after the commit collapses
     // "a" into "c" it is row 0. The toggle must follow the row, not the
     // index.
-    click_hit(&mut app, Hit::TableCheckbox(1));
+    hover_row_then_click(&mut app, Hit::TableRow(1), Hit::TableCheckbox(1));
     assert_eq!(app.editor.params.len(), 2, "a collapsed into c");
     assert!(!app.editor.params["b"].enabled, "the clicked row toggled");
     assert!(app.editor.params["c"].enabled, "no neighbour was toggled");
@@ -860,21 +870,21 @@ fn a_collapsing_commit_reresolves_the_row_a_checkbox_click_named() {
 fn a_collapsing_commit_reresolves_the_row_a_delete_click_named() {
     let mut app = app_with_three_params();
     stage_a_collapsing_rename(&mut app);
-    // The ✕ sits on the row being edited; after the collapse that row *is*
-    // the surviving "c", so the confirm must name "c" — not whatever now
-    // occupies index 0 ("b").
-    render_once(&mut app);
-    let del = app.hits.rect_of(&Hit::TableDelete(0)).unwrap();
-    app.handle_mouse(left_down(del.x, del.y));
+    // The trash clicked belongs to "b" (row 1 in the frame the user saw);
+    // after the commit collapses "a" into "c", "b" is row 0 — the confirm
+    // must name "b", not whatever now occupies index 1 ("c"). (The edited
+    // row itself shows no buttons while its cell edit is live, so a stale
+    // click on it can no longer happen at all.)
+    hover_row_then_click(&mut app, Hit::TableRow(1), Hit::TableDelete(1));
     let Some(Modal::Confirm { body, .. }) = app.modals.top() else {
         panic!("expected the delete confirm");
     };
     assert!(
-        body.contains('c'),
+        body.contains('b'),
         "the confirm names the clicked row: {body}"
     );
     assert!(
-        !body.contains('b'),
+        !body.contains('c'),
         "and never the row that shifted into its index: {body}"
     );
 }
@@ -1525,6 +1535,48 @@ fn quitting_with_unsaved_changes_can_save_first() {
 }
 
 #[test]
+fn discard_changes_confirms_then_reverts_to_the_saved_request() {
+    let mut app = dirty_app(); // url edited from "https://x/r"
+    app.update(Action::ConfirmDiscardChanges);
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Confirm { .. })),
+        "discard asks first"
+    );
+    app.handle_key(&Keymap::default_bindings(), plain('d'));
+    assert!(!app.editor.is_dirty(), "reverted to the saved snapshot");
+    assert_eq!(app.editor.url.text(), "https://x/r");
+    assert!(app.modals.is_empty());
+}
+
+#[test]
+fn clicking_the_row_toggle_toggles_without_selecting() {
+    let mut app = App::new_for_test();
+    app.editor.params.insert(
+        "a".into(),
+        postui_core::model::Entry {
+            value: "1".into(),
+            enabled: true,
+        },
+    );
+    render_once(&mut app);
+    // The buttons are hover-revealed: move the pointer onto the row first,
+    // redraw so the frame registers them, then click.
+    let row = app.hits.rect_of(&crate::hit::Hit::TableRow(0)).unwrap();
+    app.handle_mouse(moved(row.x + 2, row.y));
+    render_once(&mut app);
+    let toggle = app
+        .hits
+        .rect_of(&crate::hit::Hit::TableCheckbox(0))
+        .expect("hovered row registers its toggle");
+    app.handle_mouse(left_down(toggle.x + 1, toggle.y));
+    assert!(!app.editor.params["a"].enabled, "the click toggled");
+    assert_eq!(
+        app.editor.table.selected, None,
+        "a toggle click is not a row selection"
+    );
+}
+
+#[test]
 fn quitting_clean_needs_no_confirm() {
     let mut app = App::new_for_test();
     app.update(Action::Quit);
@@ -1544,6 +1596,30 @@ fn quit_with_a_modal_already_open_stays_immediate() {
     });
     app.update(Action::Quit);
     assert!(app.should_quit);
+}
+
+#[test]
+fn clicking_a_multi_prompt_field_moves_focus_there() {
+    let mut app = App::new_for_test();
+    app.modals.push(Modal::MultiPrompt {
+        title: "New group".into(),
+        fields: vec![
+            crate::components::modal::PromptField::text("name", "Name", ""),
+            crate::components::modal::PromptField::text("fields", "Fields", ""),
+        ],
+        focus: 0,
+        kind: crate::components::modal::PromptKind::NewGroup,
+    });
+    render_once(&mut app);
+    let second = app
+        .hits
+        .rect_of(&crate::hit::Hit::ModalField(1))
+        .expect("each prompt field registers a click target");
+    assert!(app.handle_mouse(left_down(second.x + 2, second.y + 1)));
+    let Some(Modal::MultiPrompt { focus, .. }) = app.modals.top() else {
+        panic!("modal must stay open");
+    };
+    assert_eq!(*focus, 1, "the click moved focus to the second field");
 }
 
 /// An app whose response pane holds a wide non-JSON one-liner, rendered
@@ -3467,11 +3543,12 @@ fn click_table_checkbox_toggles_enabled() {
             enabled: true,
         },
     );
-    render_once(&mut app);
-    let r = app.hits.rect_of(&Hit::TableCheckbox(0)).unwrap();
-    app.handle_mouse(left_down(r.x, r.y));
+    hover_row_then_click(&mut app, Hit::TableRow(0), Hit::TableCheckbox(0));
     assert!(!app.editor.params["page"].enabled);
-    assert_eq!(app.editor.table.selected, Some(0));
+    assert_eq!(
+        app.editor.table.selected, None,
+        "a toggle click toggles — it never selects the row"
+    );
     assert_eq!(app.focus, PaneId::Editor);
 }
 

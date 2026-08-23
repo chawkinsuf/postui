@@ -1357,14 +1357,18 @@ impl Editor {
         // row — right-aligned, the same "about the whole pane" position the
         // Response pane's Copy/Save buttons use.
         let save_label = if self.is_dirty() { "save •" } else { "save" };
-        let chips: Vec<(&str, &str, Option<Action>)> = vec![
-            ("⭳", save_label, Some(Action::SaveRequest)),
-            (
-                "{{ }}",
-                "vars",
-                Some(Action::OpenVarPicker { completing: false }),
-            ),
-        ];
+        let mut chips: Vec<(&str, &str, Option<Action>)> =
+            vec![("⭳", save_label, Some(Action::SaveRequest))];
+        // Unsaved edits can be walked back, not just saved: the chip only
+        // exists while there is something to discard.
+        if self.is_dirty() {
+            chips.push(("↩", "discard", Some(Action::ConfirmDiscardChanges)));
+        }
+        chips.push((
+            "{{ }}",
+            "vars",
+            Some(Action::OpenVarPicker { completing: false }),
+        ));
         // Each chip is ` {key}` + ` {label} ` wide, with `paint_chip_row`'s
         // 2-col gap between consecutive chips.
         let chips_w: u16 = chips
@@ -2404,6 +2408,30 @@ mod tests {
         assert!(
             dirty.contains("save •"),
             "dirty editor shows the dot: {dirty}"
+        );
+    }
+
+    #[test]
+    fn discard_chip_appears_only_while_dirty() {
+        let mut e = Editor::default();
+        e.load(
+            Some("a".into()),
+            HttpRequest::from_toml_str("url = \"https://x\"\n").unwrap(),
+        );
+        let (_, hits) = draw_editor(&mut e);
+        assert!(
+            hits.rect_of(&Hit::FooterChip(Action::ConfirmDiscardChanges))
+                .is_none(),
+            "a clean editor has nothing to discard"
+        );
+
+        e.url = LineInput::new("https://x/changed");
+        let (content, hits) = draw_editor(&mut e);
+        assert!(content.contains("discard"), "{content}");
+        assert!(
+            hits.rect_of(&Hit::FooterChip(Action::ConfirmDiscardChanges))
+                .is_some(),
+            "a dirty editor offers discard next to save"
         );
     }
 

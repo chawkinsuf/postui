@@ -106,6 +106,10 @@ pub enum Action {
     /// Copy the selected sidebar request to the next free `<slug>-copy…`
     /// name and open the copy.
     DuplicateRequest,
+    /// The `discard` chip / palette: asks before reverting unsaved edits.
+    ConfirmDiscardChanges,
+    /// The confirmed revert: reload the editor from its saved snapshot.
+    DiscardChanges,
     /// Open the delete confirmation for the selected sidebar slug.
     ConfirmDeleteRequest,
     /// Delete the request at `slug` from disk.

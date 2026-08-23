@@ -153,6 +153,9 @@ pub enum Hit {
     /// clicking the modal's chrome — anywhere that isn't one of its own
     /// interactive hits — does nothing instead of closing it.
     ModalBody,
+    /// Field `i` of a `Modal::MultiPrompt` (label row + input box): click
+    /// moves the prompt's focus there.
+    ModalField(usize),
 }
 
 /// Rebuilt each frame during render; maps screen regions to typed [`Hit`]s.

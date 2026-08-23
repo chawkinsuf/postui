@@ -626,6 +626,34 @@ impl App {
                 self.dirty_gate("quit", Action::ForceQuit);
                 true
             }
+            Action::ConfirmDiscardChanges => {
+                if self.editor.is_dirty() {
+                    let current = self.editor.slug.clone().unwrap_or_default();
+                    self.modals.push(Modal::Confirm {
+                        title: "Discard changes".into(),
+                        body: format!("Revert \"{current}\" to its last saved state?"),
+                        choices: vec![(
+                            'd',
+                            "Discard changes".into(),
+                            vec![Action::DiscardChanges],
+                        )],
+                    });
+                }
+                true
+            }
+            Action::DiscardChanges => {
+                if let (slug, Some(saved)) = (self.editor.slug.clone(), self.editor.saved.clone()) {
+                    // A cell still under the caret is part of what's being
+                    // thrown away — drop it without committing, and clear
+                    // the selection so no stale row index survives the
+                    // reload.
+                    self.editor.table.editing = None;
+                    self.editor.table.selected = None;
+                    self.editor.load(slug, saved);
+                    self.toasts.push("Changes discarded", ToastKind::Info);
+                }
+                true
+            }
             Action::Quit | Action::ForceQuit => {
                 self.project
                     .persist_local_state(self.editor.slug.as_deref());

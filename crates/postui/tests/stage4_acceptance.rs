@@ -171,8 +171,22 @@ async fn stage4_mouse_only_acceptance_flow() {
     assert!(app.editor.params.contains_key("id"));
     assert!(app.editor.params["id"].enabled);
 
+    // The toggle button is hover-revealed: move the pointer onto the row
+    // first, exactly as a mouse user would.
+    let hover_row = |app: &mut App| {
+        render(app);
+        let r = app.hits.rect_of(&Hit::TableRow(0)).unwrap();
+        app.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: r.x + 1,
+            row: r.y,
+            modifiers: KeyModifiers::NONE,
+        });
+    };
+    hover_row(&mut app);
     click(&mut app, Hit::TableCheckbox(0));
     assert!(!app.editor.params["id"].enabled, "click turned it off");
+    hover_row(&mut app);
     click(&mut app, Hit::TableCheckbox(0));
     assert!(app.editor.params["id"].enabled, "click turned it back on");
 

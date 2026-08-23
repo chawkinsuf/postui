@@ -9,7 +9,7 @@ use postui_core::model::Entry;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 
 /// Which cell of a row is under edit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,24 +85,25 @@ impl TableOutcome {
 
 /// Column x-offsets (relative to the drawn area's own left edge, i.e.
 /// *before* the active row's 1-column accent-bar indent is applied).
+/// There is no checkbox column any more: enabled/disabled reads from the
+/// row's own styling (dim + struck name), and toggling happens through the
+/// hover-revealed buttons at the row's right edge.
 struct Columns {
-    check_x: u16,
     name_x: u16,
     divider_x: u16,
     value_x: u16,
 }
 
 fn columns(x0: u16, width: u16) -> Columns {
-    let check_w = 2u16.min(width);
-    let remaining = width.saturating_sub(check_w);
+    let pad = 2u16.min(width);
+    let remaining = width.saturating_sub(pad);
     let name_w = (remaining / 3)
         .max(4)
         .min(remaining.saturating_sub(2).max(4));
     Columns {
-        check_x: x0,
-        name_x: x0 + check_w,
-        divider_x: x0 + check_w + name_w,
-        value_x: x0 + check_w + name_w + 1,
+        name_x: x0 + pad,
+        divider_x: x0 + pad + name_w,
+        value_x: x0 + pad + name_w + 1,
     }
 }
 
@@ -453,7 +454,15 @@ impl TableEditorState {
             }
             KeyCode::Enter => {
                 self.editing = Some(edit);
-                self.commit(map)
+                let outcome = self.commit(map);
+                // Enter is "I'm done editing": the selection drops too, so
+                // the row collapses back to its compact line — unless the
+                // commit warned (e.g. a duplicate key resolving to another
+                // row), where the selection is the warning's pointer.
+                if outcome.warning.is_none() {
+                    self.selected = None;
+                }
+                outcome
             }
             // Up/Down leave the cell rather than falling through to
             // `LineInput` (which ignores them): they commit it and move the
@@ -623,8 +632,7 @@ impl TableEditorState {
                     vars,
                 );
             } else {
-                let hovered = hovered_row(ctx) == Some(i);
-                self.draw_plain_row(buf, hits, area, y, i, k, e, hovered, theme, vars);
+                self.draw_plain_row(buf, hits, area, y, i, k, e, ctx, vars);
                 y += 1;
             }
         }
@@ -700,6 +708,62 @@ impl TableEditorState {
         Self::register_cells(hits, cols_span(&cols, area), y, row);
     }
 
+    /// Paints the row's two right-edge buttons — the enable/disable toggle
+    /// (`●` on / `○` off) and the `🗑` delete — each in its own 3-cell
+    /// zone so the click targets are comfortable, flush against the row's
+    /// right edge with one column of margin. A directly-hovered button
+    /// inverts onto accent (error red for the trash), the same treatment
+    /// the response pane's copy pills use.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_row_buttons(
+        buf: &mut ratatui::buffer::Buffer,
+        hits: &mut HitMap,
+        right: u16,
+        y: u16,
+        i: usize,
+        enabled: bool,
+        bg: ratatui::style::Color,
+        hovered: Option<&Hit>,
+        theme: &Theme,
+    ) {
+        let trash_x = right.saturating_sub(4);
+        let toggle_x = trash_x.saturating_sub(3);
+        let toggle_hit = Hit::TableCheckbox(i);
+        let trash_hit = Hit::TableDelete(i);
+
+        let (glyph, state_fg) = if enabled {
+            (" \u{25CF} ", theme.success)
+        } else {
+            (" \u{25CB} ", theme.text_muted)
+        };
+        let (tfg, tbg) = if hovered == Some(&toggle_hit) {
+            (theme.on_accent, theme.accent)
+        } else {
+            (state_fg, bg)
+        };
+        text(buf, toggle_x, y, glyph, tfg, tbg, false);
+
+        let (dfg, dbg) = if hovered == Some(&trash_hit) {
+            (theme.on_accent, theme.error)
+        } else {
+            (theme.text_muted, bg)
+        };
+        text(buf, trash_x, y, " \u{1F5D1} ", dfg, dbg, false);
+
+        hits.register(Rect::new(toggle_x, y, 3, 1), toggle_hit);
+        hits.register(Rect::new(trash_x, y, 3, 1), trash_hit);
+    }
+
+    /// Strikes through `len` cells starting at `(x, y)` — the disabled
+    /// row's name treatment, applied after the text is painted.
+    fn strike_cells(buf: &mut ratatui::buffer::Buffer, x: u16, y: u16, len: u16) {
+        for dx in 0..len {
+            if let Some(cell) = buf.cell_mut((x + dx, y)) {
+                cell.set_style(Style::default().add_modifier(Modifier::CROSSED_OUT));
+            }
+        }
+    }
+
     /// Draws row `i` at its compact 1-line height. Returns nothing; the
     /// caller advances `y` itself by 1.
     #[allow(clippy::too_many_arguments)]
@@ -712,10 +776,11 @@ impl TableEditorState {
         i: usize,
         key: &str,
         entry: &Entry,
-        hovered: bool,
-        theme: &Theme,
+        ctx: &DrawCtx,
         vars: &VarView,
     ) {
+        let theme = ctx.theme;
+        let hovered = hovered_row(ctx) == Some(i);
         let cols = columns(area.x, area.width);
         let bg = if hovered {
             theme.control_hover
@@ -728,14 +793,11 @@ impl TableEditorState {
         } else {
             theme.text_muted
         };
-        let check = if entry.enabled {
-            "\u{2713}"
-        } else {
-            "\u{2717}"
-        };
-        text(buf, cols.check_x, y, check, fg, bg, false);
         text(buf, cols.name_x, y, key, fg, bg, false);
         text(buf, cols.value_x, y, &entry.value, fg, bg, false);
+        if !entry.enabled {
+            Self::strike_cells(buf, cols.name_x, y, key.chars().count() as u16);
+        }
         if cols.divider_x < area.right() {
             text(
                 buf,
@@ -748,11 +810,23 @@ impl TableEditorState {
             );
         }
         hits.register(Rect::new(area.x, y, area.width, 1), Hit::TableRow(i));
-        if area.width >= 3 {
-            hits.register(Rect::new(cols.check_x, y, 1, 1), Hit::TableCheckbox(i));
-        }
         Self::register_cells(hits, cols_span(&cols, area), y, i);
         paint_cell_tokens(buf, hits, &cols, area, y, key, &entry.value, vars, theme);
+        // Hover-revealed toggle/delete, painted (and registered) last so
+        // they win over the value cell underneath.
+        if hovered && area.width >= 9 {
+            Self::draw_row_buttons(
+                buf,
+                hits,
+                area.right(),
+                y,
+                i,
+                entry.enabled,
+                bg,
+                ctx.hovered,
+                theme,
+            );
+        }
     }
 
     /// Registers the key/value halves of one drawn row line. Called after
@@ -842,13 +916,6 @@ impl TableEditorState {
 
         let editing_col = self.editing.as_ref().filter(|e| e.row == i).map(|e| e.col);
 
-        let check = if entry.enabled {
-            "\u{2713}"
-        } else {
-            "\u{2717}"
-        };
-        text(buf, cols.check_x, text_row, check, fg, bg, false);
-
         match editing_col {
             Some(Col::Key) => {
                 let edit = self.editing.as_ref().expect("editing_col implies editing");
@@ -875,18 +942,15 @@ impl TableEditorState {
                 text(buf, cols.value_x, text_row, &entry.value, fg, bg, false);
             }
         }
+        if !entry.enabled && editing_col != Some(Col::Key) {
+            Self::strike_cells(buf, cols.name_x, text_row, key.chars().count() as u16);
+        }
 
         let row_height = if hint.is_some() { 4 } else { 3 };
         hits.register(
             Rect::new(area.x, y, area.width, row_height),
             Hit::TableRow(i),
         );
-        if content_w >= 3 {
-            hits.register(
-                Rect::new(cols.check_x, text_row, 1, 1),
-                Hit::TableCheckbox(i),
-            );
-        }
         Self::register_cells(hits, cols_span(&cols, area), text_row, i);
         // Only the cells drawn as plain text get token treatment: a cell
         // under edit is showing a live `LineInput` (caret and all), and
@@ -911,18 +975,22 @@ impl TableEditorState {
             vars,
             theme,
         );
-        if show_delete && area.width >= 2 {
-            let del_x = area.x + area.width - 1;
-            text(
+        // The expanded row keeps its toggle/delete visible without hover —
+        // it is the active row — except while a cell edit is live, where
+        // the buttons would paint over the input's tail. `show_delete`
+        // gates both: the ghost row has nothing to toggle or delete yet.
+        if show_delete && editing_col.is_none() && area.width >= 9 {
+            Self::draw_row_buttons(
                 buf,
-                del_x,
+                hits,
+                area.x + area.width,
                 text_row,
-                "\u{2715}",
-                theme.text_muted,
+                i,
+                entry.enabled,
                 bg,
-                false,
+                ctx.hovered,
+                theme,
             );
-            hits.register(Rect::new(del_x, text_row, 1, 1), Hit::TableDelete(i));
         }
 
         // A shadow hint replaces the pad-bottom row `PillRow` already
@@ -1195,6 +1263,39 @@ mod tests {
     }
 
     #[test]
+    fn enter_committing_an_edit_deselects_the_row() {
+        let mut map = map_of(&[("a", "1")]);
+        let mut t = TableEditorState {
+            selected: Some(0),
+            ..TableEditorState::default()
+        };
+        t.handle_key(key(KeyCode::Enter), &mut map); // begin editing the key
+        t.handle_key(key(KeyCode::Enter), &mut map); // commit — "I'm done"
+        assert!(t.editing.is_none());
+        assert_eq!(t.selected, None, "Enter after editing drops the selection");
+    }
+
+    #[test]
+    fn enter_committing_a_duplicate_key_keeps_the_resolved_row_selected() {
+        let mut map = map_of(&[("a", "1"), ("b", "2")]);
+        let mut t = TableEditorState {
+            selected: Some(2), // ghost row
+            ..TableEditorState::default()
+        };
+        t.handle_key(key(KeyCode::Enter), &mut map);
+        for c in "a".chars() {
+            t.handle_key(key(KeyCode::Char(c)), &mut map);
+        }
+        let out = t.handle_key(key(KeyCode::Enter), &mut map);
+        assert!(out.warning.is_some(), "duplicate key warns");
+        assert_eq!(
+            t.selected,
+            Some(0),
+            "the warning points at the existing row, so it stays selected"
+        );
+    }
+
+    #[test]
     fn space_toggles_and_d_requests_a_delete_confirm() {
         let mut map = map_of(&[("a", "1")]);
         let mut t = TableEditorState::default();
@@ -1332,7 +1433,7 @@ mod tests {
                 enabled: true
             }
         );
-        assert_eq!(t.selected, Some(0));
+        assert_eq!(t.selected, None, "Enter is 'done editing': deselects too");
     }
 
     #[test]
@@ -1539,9 +1640,9 @@ mod tests {
         );
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("29"), "the live input text: {content}");
-        // The delete affordance stays reachable over the value cell.
-        let del = hits.rect_of(&Hit::TableDelete(1)).unwrap();
-        assert_eq!(hits.hit_at(del.x, del.y), Some(&Hit::TableDelete(1)));
+        // While the cell edit is live, the row's toggle/trash buttons stay
+        // hidden — they would paint over the input's tail.
+        assert!(hits.rect_of(&Hit::TableDelete(1)).is_none());
         // The expanded row's own cells are registered on its text line.
         let k = hits.rect_of(&Hit::TableCell { row: 1, col: 0 }).unwrap();
         assert_eq!(k.y, row1.y + 1);
@@ -1567,6 +1668,88 @@ mod tests {
         assert!(
             hits.rect_of(&Hit::TableDelete(1)).is_none(),
             "a row that doesn't exist yet has nothing to delete"
+        );
+    }
+
+    #[test]
+    fn compact_rows_reveal_toggle_and_trash_only_on_hover() {
+        let theme = Theme::dark();
+        let map = map_of(&[("a", "1"), ("b", "2")]);
+        let t = TableEditorState::default();
+        let mut hits = HitMap::default();
+        draw_to(&t, &map, &ctx(&theme, None), &mut hits);
+        assert!(
+            hits.rect_of(&Hit::TableCheckbox(0)).is_none(),
+            "no buttons on an unhovered row"
+        );
+        assert!(hits.rect_of(&Hit::TableDelete(0)).is_none());
+
+        let hovered = Hit::TableRow(0);
+        let mut hits = HitMap::default();
+        let terminal = draw_to(&t, &map, &ctx(&theme, Some(&hovered)), &mut hits);
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            content.contains("\u{1F5D1}"),
+            "the delete button is a trash can: {content}"
+        );
+        let toggle = hits.rect_of(&Hit::TableCheckbox(0)).expect("toggle hit");
+        let trash = hits.rect_of(&Hit::TableDelete(0)).expect("delete hit");
+        assert!(
+            toggle.width >= 3 && trash.width >= 3,
+            "buttons get comfortable click targets: {toggle:?} {trash:?}"
+        );
+        assert!(toggle.x < trash.x, "toggle left of trash");
+        assert!(
+            hits.rect_of(&Hit::TableCheckbox(1)).is_none(),
+            "only the hovered row shows buttons"
+        );
+    }
+
+    #[test]
+    fn disabled_rows_read_dim_with_a_struck_name() {
+        let theme = Theme::dark();
+        let mut map = map_of(&[("a", "1")]);
+        map["a"].enabled = false;
+        let t = TableEditorState::default();
+        let mut hits = HitMap::default();
+        let terminal = draw_to(&t, &map, &ctx(&theme, None), &mut hits);
+        let buf = terminal.backend().buffer();
+        let name = hits.rect_of(&Hit::TableCell { row: 0, col: 0 }).unwrap();
+        let cell = buf.cell((name.x, name.y)).unwrap();
+        assert_eq!(cell.fg, theme.text_muted, "disabled rows dim");
+        assert!(
+            cell.modifier.contains(Modifier::CROSSED_OUT),
+            "the disabled name is struck through"
+        );
+        let value = hits.rect_of(&Hit::TableCell { row: 0, col: 1 }).unwrap();
+        let vcell = buf.cell((value.x, value.y)).unwrap();
+        assert!(
+            !vcell.modifier.contains(Modifier::CROSSED_OUT),
+            "the value only dims — striking both reads as noise"
+        );
+    }
+
+    #[test]
+    fn the_expanded_row_shows_toggle_and_trash_without_hover() {
+        let theme = Theme::dark();
+        let map = map_of(&[("a", "1")]);
+        let t = TableEditorState {
+            selected: Some(0),
+            ..TableEditorState::default()
+        };
+        let mut hits = HitMap::default();
+        let terminal = draw_to(&t, &map, &ctx(&theme, None), &mut hits);
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(hits.rect_of(&Hit::TableCheckbox(0)).is_some());
+        assert!(hits.rect_of(&Hit::TableDelete(0)).is_some());
+        assert!(content.contains("\u{1F5D1}"), "trash, not ✕: {content}");
+        assert!(
+            !content.contains('\u{2715}'),
+            "the old ✕ delete glyph is gone: {content}"
+        );
+        assert!(
+            !content.contains('\u{2713}') && !content.contains('\u{2717}'),
+            "no left check column anywhere: {content}"
         );
     }
 

@@ -1086,6 +1086,16 @@ impl ModalStack {
                         width: field_w,
                         height: FIELD_HEIGHT,
                     };
+                    // Label row + input box together: click focuses the
+                    // field (registered after ModalBody, so it wins).
+                    hits.register(
+                        Rect {
+                            y,
+                            height: 1 + FIELD_HEIGHT,
+                            ..field_area
+                        },
+                        crate::hit::Hit::ModalField(i),
+                    );
                     if field.choices.is_empty() {
                         TextField {
                             content: field.input.draw_line_windowed(
