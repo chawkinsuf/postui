@@ -97,8 +97,17 @@ impl Button<'_> {
         };
         // Cap shading follows the currently shown fill (light/dark edges of
         // whatever face is painted), so the whole control visibly reacts to
-        // hover and press — not just the label row.
-        let (light, dark) = crate::paint::face_edges(fill, theme);
+        // hover and press — not just the label row. The bevel delta matches
+        // the theme's own convention per surface family: ±0.12 around the
+        // accent, but only ±0.08 around the neutral control fill — the
+        // stronger delta pushes an already-dark Secondary face to near
+        // black and reads as a hard line rather than shading.
+        let delta = match self.kind {
+            ButtonKind::Primary => 0.12,
+            ButtonKind::Secondary => 0.08,
+        };
+        let light = crate::theme::lift_color(fill, delta);
+        let dark = crate::theme::lift_color(fill, -delta);
         let caps = match self.state {
             ControlState::Disabled => (fill, fill),
             // Pressed: sunken — dark on top, light on the bottom.
@@ -153,6 +162,26 @@ mod tests {
         assert_eq!(bottom.symbol(), "▀");
         assert_eq!(bottom.fg, theme.accent_edge_dark);
         assert_eq!(bottom.bg, theme.page);
+    }
+
+    #[test]
+    fn secondary_button_uses_the_softer_control_bevel() {
+        let theme = Theme::dark();
+        let mut term = Terminal::new(TestBackend::new(20, 3)).unwrap();
+        term.draw(|f| {
+            Button {
+                label: "Cancel",
+                kind: ButtonKind::Secondary,
+                state: ControlState::Normal,
+            }
+            .paint(f.buffer_mut(), Rect::new(0, 0, 20, 3), theme.page, &theme);
+        })
+        .unwrap();
+        // The neutral control face uses the theme's ±0.08 bevel (its
+        // edge_light/edge_dark convention), not the accent's ±0.12 — the
+        // stronger delta reads as a black line under an already-dark fill.
+        assert_eq!(buf_cell(&term, 8, 0).fg, theme.edge_light);
+        assert_eq!(buf_cell(&term, 8, 2).fg, theme.edge_dark);
     }
 
     #[test]
