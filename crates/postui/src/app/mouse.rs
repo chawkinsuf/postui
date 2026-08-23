@@ -35,8 +35,12 @@ impl App {
             // not `Moved`, so a thumb drag arrives as either depending on
             // whether the terminal tracks button state; both drive the drag.
             MouseEventKind::Moved | MouseEventKind::Drag(MouseButton::Left) => {
-                if self.drag.is_some() {
-                    return self.drag_to(m.row);
+                if let Some(drag) = self.drag.as_ref() {
+                    return if drag.horizontal {
+                        self.drag_to_h(m.column)
+                    } else {
+                        self.drag_to(m.row)
+                    };
                 }
                 if m.kind != MouseEventKind::Moved {
                     // Button-held motion with no drag of ours in progress
@@ -310,6 +314,37 @@ impl App {
         }
     }
 
+    /// Applies an in-progress horizontal thumb drag: turns the pointer's
+    /// column into a thumb left-edge within the dragged pane's bottom
+    /// track, maps that back to a column offset, and moves the pane there.
+    /// The sideways twin of `drag_to`; `thumb_geometry`/`offset_for_thumb_top`
+    /// are axis-agnostic lengths, so the same math serves both.
+    fn drag_to_h(&mut self, column: u16) -> bool {
+        let Some(drag) = self.drag.as_ref() else {
+            return false;
+        };
+        let pane = drag.pane;
+        let Some(track) = self.hits.h_track_of(pane) else {
+            return false;
+        };
+        // Only the Response pane draws a horizontal bar today.
+        let Some(spec) = (match pane {
+            PaneId::Response => self.session.response.h_scrollbar_spec(),
+            _ => None,
+        }) else {
+            return false;
+        };
+        let left = column
+            .saturating_sub(track.x)
+            .saturating_sub(drag.grab_offset)
+            .min(track.width);
+        let offset = crate::hit::offset_for_thumb_top(&spec, track.width, left);
+        if offset == spec.offset {
+            return false;
+        }
+        self.session.response.set_scroll_h(offset)
+    }
+
     /// Commits any in-progress table cell edit, surfacing its warning as a
     /// toast. The one place typing is turned into map data outside the
     /// table's own key handling — click-away, focus loss, tab switch, save
@@ -414,6 +449,8 @@ impl App {
                 | Hit::VarPickerRow(_)
                 | Hit::ScrollbarThumb(_)
                 | Hit::ScrollbarTrack(..)
+                | Hit::HScrollThumb(_)
+                | Hit::HScrollTrack(..)
                 // A token sits *on* a cell: hovering or clicking one must
                 // neither commit the cell under edit nor drop the selection.
                 | Hit::VarToken(_)
@@ -754,6 +791,7 @@ impl App {
                 self.drag = Some(Drag {
                     pane,
                     grab_offset: m.row.saturating_sub(thumb.y),
+                    horizontal: false,
                 });
                 // Redraw so the thumb picks up its dragged styling.
                 self.update(Action::Render)
@@ -761,6 +799,24 @@ impl App {
             Hit::ScrollbarTrack(pane, delta) => {
                 self.update(Action::ScrollPane(pane, delta.clamp(-30, 30)))
             }
+            Hit::HScrollThumb(pane) => {
+                let Some(thumb) = self.hits.rect_of(&Hit::HScrollThumb(pane)) else {
+                    return false;
+                };
+                self.drag = Some(Drag {
+                    pane,
+                    grab_offset: m.column.saturating_sub(thumb.x),
+                    horizontal: true,
+                });
+                self.update(Action::Render)
+            }
+            // Only the Response pane draws a horizontal bar today; a track
+            // click pages the viewport a full width toward the click.
+            Hit::HScrollTrack(PaneId::Response, delta) => {
+                self.session.response.handle_scroll_h(delta);
+                self.update(Action::Render)
+            }
+            Hit::HScrollTrack(..) => false,
             // Clicking a drawn `{{token}}` opens the var picker already
             // filtered to that name (spec §7) — the shortest path from
             // "what is this?" to the variable itself.

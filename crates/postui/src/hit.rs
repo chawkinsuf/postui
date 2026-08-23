@@ -74,6 +74,11 @@ pub enum Hit {
     ScrollbarThumb(PaneId),
     /// Signed page delta applied on click (±viewport height).
     ScrollbarTrack(PaneId, i16),
+    /// The horizontal scrollbar's thumb (bottom row of a pane whose
+    /// content is wider than its viewport — today only the Response body).
+    HScrollThumb(PaneId),
+    /// Signed page delta in columns applied on click (±viewport width).
+    HScrollTrack(PaneId, i16),
     DropdownRow(usize),
     ChooserRow(usize),
     PaletteRow(usize),
@@ -163,12 +168,14 @@ pub enum Hit {
 pub struct HitMap {
     regions: Vec<(Rect, Hit)>,
     tracks: Vec<(PaneId, Rect)>,
+    h_tracks: Vec<(PaneId, Rect)>,
 }
 
 impl HitMap {
     pub fn clear(&mut self) {
         self.regions.clear();
         self.tracks.clear();
+        self.h_tracks.clear();
     }
 
     /// Records the full scrollbar column drawn for `pane` this frame.
@@ -179,6 +186,22 @@ impl HitMap {
     /// The scrollbar track drawn for `pane` on the last frame, if any.
     pub fn track_of(&self, pane: PaneId) -> Option<Rect> {
         self.tracks
+            .iter()
+            .rev()
+            .find(|(p, _)| *p == pane)
+            .map(|(_, r)| *r)
+    }
+
+    /// Records the full horizontal scrollbar row drawn for `pane` this
+    /// frame.
+    pub fn register_h_track(&mut self, pane: PaneId, rect: Rect) {
+        self.h_tracks.push((pane, rect));
+    }
+
+    /// The horizontal scrollbar track drawn for `pane` on the last frame,
+    /// if any.
+    pub fn h_track_of(&self, pane: PaneId) -> Option<Rect> {
+        self.h_tracks
             .iter()
             .rev()
             .find(|(p, _)| *p == pane)

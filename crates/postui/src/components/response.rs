@@ -217,6 +217,18 @@ impl ReadyView {
         self.h_scroll = (self.h_scroll as i32 + delta).clamp(0, max.max(0)) as usize;
     }
 
+    /// The body viewport's width as of the last draw, in columns.
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    /// The cached widest-visible-line measure without recomputing — 0 until
+    /// a draw has run, which is fine for the drag math that reads it: the
+    /// horizontal bar it serves only exists on drawn frames.
+    fn cached_content_width(&self) -> usize {
+        self.content_width.map(|(_, _, w)| w).unwrap_or(0)
+    }
+
     /// The current view's text with nothing hidden — the corpus search runs
     /// over, and the coordinate space its match positions live in.
     fn search_corpus(&self) -> Vec<String> {
@@ -437,12 +449,40 @@ impl Response {
     }
 
     /// Moves the body viewport `delta` columns right (negative: left) — the
-    /// horizontal counterpart of `handle_scroll`, fed by shift+wheel and the
-    /// ←/→ keys.
+    /// horizontal counterpart of `handle_scroll`, fed by shift+wheel, the
+    /// ←/→ keys, and horizontal track clicks.
     pub fn handle_scroll_h(&mut self, delta: i16) {
         if let Some(view) = self.view.as_mut() {
             view.scroll_h(delta as i32);
         }
+    }
+
+    /// Jumps the body viewport to column `offset` (horizontal thumb drag),
+    /// clamped the same way the wheel is. Returns true when it moved.
+    pub fn set_scroll_h(&mut self, offset: usize) -> bool {
+        let Some(view) = self.view.as_mut() else {
+            return false;
+        };
+        let max = view.content_width().saturating_sub(view.width.max(1));
+        let next = offset.min(max);
+        let changed = next != view.h_scroll;
+        view.h_scroll = next;
+        changed
+    }
+
+    /// The horizontal scroll state the last-drawn frame's bottom bar
+    /// reflects — the same numbers `draw_h_indicator` painted from, so the
+    /// drag math and the drawn thumb can never disagree. `None` when
+    /// nothing is clipped (no bar on screen).
+    pub fn h_scrollbar_spec(&self) -> Option<ScrollbarSpec> {
+        let view = self.view.as_ref()?;
+        let spec = ScrollbarSpec {
+            pane: PaneId::Response,
+            offset: view.h_scroll,
+            content: view.cached_content_width(),
+            viewport: view.width,
+        };
+        spec.overflows().then_some(spec)
     }
 
     /// Jumps the body view to `offset` (scrollbar drag). Clamped the same way
@@ -580,6 +620,14 @@ impl Response {
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 view.move_cursor(-1);
+                Some(Action::Render)
+            }
+            KeyCode::PageDown => {
+                view.move_cursor(view.height.max(1) as i32);
+                Some(Action::Render)
+            }
+            KeyCode::PageUp => {
+                view.move_cursor(-(view.height.max(1) as i32));
                 Some(Action::Render)
             }
             KeyCode::Right => {
@@ -766,7 +814,7 @@ impl Component for Response {
             .min(content_w.saturating_sub(view.width.max(1)));
 
         if let Some(bar) = h_bar {
-            draw_h_indicator(frame, bar, view.h_scroll, content_w, t);
+            draw_h_indicator(frame, hits, bar, view.h_scroll, content_w, ctx);
         }
         // `body_lines` already starts at `view.scroll` and each line is
         // cropped by `view.h_scroll` columns, so the paragraph itself is
@@ -1124,7 +1172,15 @@ fn body_lines(
 /// muted `─` track with an accent `█` thumb, the sideways twin of
 /// [`crate::hit::draw_scrollbar`]. Read-only — the wheel and ←/→ move the
 /// viewport, the bar just shows where it is.
-fn draw_h_indicator(frame: &mut Frame, bar: Rect, offset: usize, content: usize, t: &Theme) {
+fn draw_h_indicator(
+    frame: &mut Frame,
+    hits: &mut crate::hit::HitMap,
+    bar: Rect,
+    offset: usize,
+    content: usize,
+    ctx: &DrawCtx,
+) {
+    let t = ctx.theme;
     if bar.width == 0 {
         return;
     }
@@ -1137,7 +1193,15 @@ fn draw_h_indicator(frame: &mut Frame, bar: Rect, offset: usize, content: usize,
     let (left, width) = crate::hit::thumb_geometry(&spec, bar.width);
     let mut spans = Vec::new();
     let track = Style::default().fg(t.text_muted);
-    let thumb = Style::default().fg(t.accent);
+    let thumb_hit = crate::hit::Hit::HScrollThumb(PaneId::Response);
+    // Same rationale as the vertical thumb: a full block hides its own
+    // background, so the active state brightens over accent instead of the
+    // usual inversion.
+    let thumb = if ctx.dragging || ctx.hovered == Some(&thumb_hit) {
+        Style::default().bg(t.accent).fg(t.text)
+    } else {
+        Style::default().fg(t.accent)
+    };
     spans.push(Span::styled("─".repeat(left as usize), track));
     spans.push(Span::styled("█".repeat(width as usize), thumb));
     spans.push(Span::styled(
@@ -1145,6 +1209,37 @@ fn draw_h_indicator(frame: &mut Frame, bar: Rect, offset: usize, content: usize,
         track,
     ));
     frame.render_widget(Paragraph::new(Line::from(spans)), bar);
+
+    // Page segments first so the thumb wins where they would overlap,
+    // mirroring `hit::draw_scrollbar`'s vertical layout.
+    hits.register_h_track(PaneId::Response, bar);
+    let page = spec.viewport.min(i16::MAX as usize) as i16;
+    if left > 0 {
+        hits.register(
+            Rect { width: left, ..bar },
+            crate::hit::Hit::HScrollTrack(PaneId::Response, -page),
+        );
+    }
+    let after_x = bar.x + left + width;
+    let after_w = bar.width.saturating_sub(left + width);
+    if after_w > 0 {
+        hits.register(
+            Rect {
+                x: after_x,
+                width: after_w,
+                ..bar
+            },
+            crate::hit::Hit::HScrollTrack(PaneId::Response, page),
+        );
+    }
+    hits.register(
+        Rect {
+            x: bar.x + left,
+            width,
+            ..bar
+        },
+        thumb_hit,
+    );
 }
 
 /// Drops the first `skip` display columns of `line`, keeping every span
@@ -1774,6 +1869,90 @@ mod tests {
             .filter(|l| l.trim_start().starts_with('"'))
             .map(|l| l.to_string())
             .collect()
+    }
+
+    /// Draws `resp` at 60x20 and returns the frame's hits.
+    fn render_hits(resp: &mut Response) -> crate::hit::HitMap {
+        let theme = Theme::dark();
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: None,
+            dragging: false,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| resp.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+        hits
+    }
+
+    #[test]
+    fn page_keys_move_the_cursor_by_a_viewport_page() {
+        let body = (0..100)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut r = ready(&body);
+        render(&mut r); // records the viewport height
+        let height = {
+            let v = r.view().unwrap();
+            assert_eq!(v.cursor, 0);
+            v.height
+        };
+        r.handle_key(key(KeyCode::PageDown));
+        let v = r.view().unwrap();
+        assert_eq!(v.cursor, height, "PageDown jumps a full viewport");
+        assert!(v.scroll > 0, "the viewport follows the cursor down");
+        r.handle_key(key(KeyCode::PageUp));
+        let v = r.view().unwrap();
+        assert_eq!(v.cursor, 0, "PageUp comes back and clamps at the top");
+    }
+
+    #[test]
+    fn the_horizontal_scrollbar_is_a_real_control_with_thumb_and_track_hits() {
+        let mut r = wide_raw();
+        render(&mut r);
+        r.handle_scroll_h(20); // off both edges, so both track sides exist
+        let hits = render_hits(&mut r);
+        let thumb = hits
+            .rect_of(&crate::hit::Hit::HScrollThumb(PaneId::Response))
+            .expect("the horizontal thumb must be a registered hit");
+        assert_eq!(thumb.height, 1, "the bar lives on a single row");
+        assert!(
+            hits.h_track_of(PaneId::Response).is_some(),
+            "the full bar row is recorded as the horizontal track"
+        );
+        let page = |d: i16| crate::hit::Hit::HScrollTrack(PaneId::Response, d);
+        let viewport = r.view().unwrap().width() as i16;
+        assert!(
+            hits.rect_of(&page(-viewport)).is_some(),
+            "clicking left of the thumb pages left"
+        );
+        assert!(
+            hits.rect_of(&page(viewport)).is_some(),
+            "clicking right of the thumb pages right"
+        );
+    }
+
+    #[test]
+    fn set_scroll_h_jumps_and_clamps_like_the_wheel() {
+        let mut r = wide_raw();
+        render(&mut r);
+        assert!(r.set_scroll_h(10), "moving to a new offset reports change");
+        assert_eq!(r.view().unwrap().h_scroll, 10);
+        r.set_scroll_h(10_000);
+        let v = r.view().unwrap();
+        assert!(
+            v.h_scroll > 10 && v.h_scroll < 104,
+            "clamped to the widest line minus the viewport: {}",
+            v.h_scroll
+        );
+        assert!(
+            !r.set_scroll_h(v.h_scroll),
+            "a no-op move reports no change"
+        );
     }
 
     #[test]

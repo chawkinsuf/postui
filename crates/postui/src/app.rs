@@ -37,11 +37,14 @@ pub struct TokenTip {
 }
 
 /// An in-progress scrollbar drag: which pane's thumb is held, and how far
-/// down the thumb the pointer grabbed it, so the thumb keeps its position
-/// under the cursor instead of jumping its top to the pointer.
+/// along the thumb the pointer grabbed it, so the thumb keeps its position
+/// under the cursor instead of jumping its edge to the pointer.
+/// `horizontal` picks the axis: rows down a vertical track, or columns
+/// along the bottom horizontal bar.
 pub struct Drag {
     pub pane: PaneId,
     pub grab_offset: u16,
+    pub horizontal: bool,
 }
 
 /// Which full-frame screen is showing. `ui::draw` and `App::handle_key`

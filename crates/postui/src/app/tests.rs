@@ -1491,6 +1491,65 @@ fn horizontal_wheel_over_the_response_pane_scrolls_it_sideways() {
     );
 }
 
+/// An app whose response pane holds a wide non-JSON one-liner, rendered
+/// once so the horizontal scrollbar's hits exist.
+fn app_with_wide_response() -> App {
+    let mut app = App::new_for_test();
+    let body = "x".repeat(300);
+    app.session.response.set_state(
+        crate::components::response::ResponseState::Ready(Box::new(crate::http::ResponseData {
+            status: 200,
+            headers: vec![],
+            body: body.clone(),
+            elapsed: std::time::Duration::from_millis(1),
+            size: body.len(),
+            content_type: None,
+        })),
+        0,
+    );
+    render_once(&mut app);
+    app
+}
+
+#[test]
+fn dragging_the_horizontal_thumb_scrolls_the_response_sideways() {
+    let mut app = app_with_wide_response();
+    let thumb = app
+        .hits
+        .rect_of(&crate::hit::Hit::HScrollThumb(PaneId::Response))
+        .expect("horizontal thumb hit");
+    assert!(app.handle_mouse(left_down(thumb.x + 1, thumb.y)));
+    assert!(app.handle_mouse(moved(thumb.x + 20, thumb.y)));
+    assert!(
+        app.session.response.view().unwrap().h_scroll > 0,
+        "the thumb drag moved the viewport right"
+    );
+    let offset = app.session.response.view().unwrap().h_scroll;
+    // Vertical motion while a horizontal drag is live must not scroll.
+    app.handle_mouse(moved(thumb.x + 20, thumb.y.saturating_sub(5)));
+    assert_eq!(
+        app.session.response.view().unwrap().scroll,
+        0,
+        "a horizontal drag never feeds the vertical axis"
+    );
+    assert_eq!(app.session.response.view().unwrap().h_scroll, offset);
+}
+
+#[test]
+fn clicking_the_horizontal_track_pages_sideways() {
+    let mut app = app_with_wide_response();
+    let viewport = app.session.response.view().unwrap().width() as i16;
+    let track = app
+        .hits
+        .rect_of(&crate::hit::Hit::HScrollTrack(PaneId::Response, viewport))
+        .expect("page-right track segment");
+    assert!(app.handle_mouse(left_down(track.x + 1, track.y)));
+    assert!(
+        app.session.response.view().unwrap().h_scroll > 0,
+        "a track click pages the viewport toward the click"
+    );
+}
+
 #[test]
 fn wheel_over_body_editor_forwards_to_the_editor() {
     let mut app = App::new_for_test();
