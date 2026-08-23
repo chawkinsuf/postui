@@ -326,6 +326,15 @@ fn scroll_down(x: u16, y: u16) -> ratatui::crossterm::event::MouseEvent {
     }
 }
 
+fn scroll_right(x: u16, y: u16) -> ratatui::crossterm::event::MouseEvent {
+    ratatui::crossterm::event::MouseEvent {
+        kind: ratatui::crossterm::event::MouseEventKind::ScrollRight,
+        column: x,
+        row: y,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
 /// Renders `app` once at 120x40 so `app.hits` (and any component state
 /// that records its own draw area, like the body editor) is populated.
 fn render_once(app: &mut App) {
@@ -1451,6 +1460,35 @@ fn wheel_over_pane_routes_via_pane_at_to_scroll_pane() {
     let before = app.focus;
     assert!(app.handle_mouse(scroll_down(r.x + 1, r.y + 1)));
     assert_eq!(app.focus, before, "wheel must not steal focus");
+}
+
+#[test]
+fn horizontal_wheel_over_the_response_pane_scrolls_it_sideways() {
+    let mut app = App::new_for_test();
+    // A non-JSON one-liner far wider than the response pane, so the raw
+    // view has columns to scroll to.
+    let body = "x".repeat(300);
+    app.session.response.set_state(
+        crate::components::response::ResponseState::Ready(Box::new(crate::http::ResponseData {
+            status: 200,
+            headers: vec![],
+            body: body.clone(),
+            elapsed: std::time::Duration::from_millis(1),
+            size: body.len(),
+            content_type: None,
+        })),
+        0,
+    );
+    render_once(&mut app);
+    let r = app
+        .hits
+        .rect_of(&crate::hit::Hit::Pane(PaneId::Response))
+        .unwrap();
+    assert!(app.handle_mouse(scroll_right(r.x + 1, r.y + 1)));
+    assert!(
+        app.session.response.view().unwrap().h_scroll > 0,
+        "a sideways wheel notch moves the response viewport right"
+    );
 }
 
 #[test]

@@ -836,9 +836,7 @@ impl Component for Editor {
                 // bar rows, never the other way around: those two must never
                 // be squeezed to make room for a table that wants more
                 // height than the pane has.
-                let available = inner
-                    .height
-                    .saturating_sub(ADDRESS_BAR_HEIGHT + TAB_BAR_HEIGHT + TOOLBAR_HEIGHT);
+                let available = inner.height.saturating_sub(CHROME_HEIGHT);
                 Constraint::Length(
                     (inherited + table_height(rows, active, active_hint) + computed_extra)
                         .min(available),
@@ -846,12 +844,19 @@ impl Component for Editor {
             }
         };
 
+        // The toolbar row holds the Body tab's body-only tools; every other
+        // tab starts its content directly under the tab bar.
+        let toolbar_height = if self.active_tab == EditorTab::Body {
+            TOOLBAR_HEIGHT
+        } else {
+            0
+        };
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(ADDRESS_BAR_HEIGHT), // fused address bar + its ring margins
-                Constraint::Length(TAB_BAR_HEIGHT),     // tab bar
-                Constraint::Length(TOOLBAR_HEIGHT),     // save/vars/body-tools chip row
+                Constraint::Length(TAB_BAR_HEIGHT),     // tab bar (+ right-aligned save/vars)
+                Constraint::Length(toolbar_height),     // Body-only tools chip row
                 content_constraint,                     // active tab content
             ])
             .split(inner);
@@ -877,18 +882,21 @@ pub const ADDRESS_BAR_HEIGHT: u16 = 5;
 const URL_PAD: u16 = 2;
 /// Height of the tab bar row — the second row of that split.
 pub const TAB_BAR_HEIGHT: u16 = 2;
-/// Height of the toolbar chip row — the third row of that split, holding
-/// the always-clickable save/vars chips (plus, on the Body tab, the
-/// format/minify/substitute/`$EDITOR` chips).
+/// Height of the toolbar chip row holding the Body tab's
+/// format/minify/substitute/`$EDITOR` chips — the third row of that split
+/// on the Body tab only. The other tabs have no body tools, and the
+/// request-level save/vars chips live on the tab-label row, so they skip
+/// the row entirely.
 pub const TOOLBAR_HEIGHT: u16 = 1;
 /// The Editor pane's total on-screen height when its params/headers table is
-/// collapsed: just the three fixed content rows above (address bar, tab
-/// bar, toolbar), with nothing left for a table. Panes no longer draw a
+/// collapsed: just the two fixed content rows above (address bar, tab bar),
+/// with nothing left for a table — the toolbar row is Body-only and a
+/// Body-tab editor never collapses to chrome. Panes no longer draw a
 /// border, so this is exactly their combined height — no border-row inset
 /// to add. `layout::compute_layout` sizes the Editor pane down to exactly
 /// this so the Response pane can reclaim every row the table would
 /// otherwise have used.
-pub const CHROME_HEIGHT: u16 = ADDRESS_BAR_HEIGHT + TAB_BAR_HEIGHT + TOOLBAR_HEIGHT;
+pub const CHROME_HEIGHT: u16 = ADDRESS_BAR_HEIGHT + TAB_BAR_HEIGHT;
 
 /// Cycled through (one glyph per `Action::Tick`) at the start of the Send
 /// cap's label while a request is in flight.
@@ -1292,6 +1300,47 @@ impl Editor {
             Rect::new(toggle_x, area.y, toggle_w, 1),
             crate::hit::Hit::TableCollapse,
         );
+
+        // --- save / vars chips (right-aligned, left of the toggle) ---
+        // Request-level actions: they save/parameterize the whole request,
+        // not the active tab, so they sit apart from the tabs on the same
+        // row — right-aligned, the same "about the whole pane" position the
+        // Response pane's Copy/Save buttons use.
+        let save_label = if self.is_dirty() { "save •" } else { "save" };
+        let chips: Vec<(&str, &str, Option<Action>)> = vec![
+            ("⭳", save_label, Some(Action::SaveRequest)),
+            (
+                "{{ }}",
+                "vars",
+                Some(Action::OpenVarPicker { completing: false }),
+            ),
+        ];
+        // Each chip is ` {key}` + ` {label} ` wide, with `paint_chip_row`'s
+        // 2-col gap between consecutive chips.
+        let chips_w: u16 = chips
+            .iter()
+            .map(|(key, label, _)| (key.chars().count() + label.chars().count() + 3) as u16)
+            .sum::<u16>()
+            + 2 * (chips.len().saturating_sub(1)) as u16;
+        // Right-aligned against the toggle, but never over the tab labels
+        // (or the substitute indicator after them): in a pane too narrow for
+        // everything, the chips start after the tabs instead and
+        // `paint_chip_row` drops whatever runs past the limit.
+        let tabs_end = rects
+            .last()
+            .map(|r| r.x + r.width + if self.substitute_body { 7 } else { 0 })
+            .unwrap_or(area.x);
+        let right_limit = toggle_x.saturating_sub(2);
+        crate::components::footer::paint_chip_row(
+            buf,
+            area.y,
+            right_limit.saturating_sub(chips_w).max(tabs_end + 2),
+            right_limit,
+            &chips,
+            theme,
+            hits,
+            ctx.hovered,
+        );
     }
 
     /// Rows the computed-headers section will draw: every `self.computed`
@@ -1334,12 +1383,12 @@ impl Editor {
             .collect()
     }
 
-    /// Paints the toolbar chip row: `save` (dirty-marked) and `vars` are
-    /// always present; the Body tab adds `format`/`minify`/`substitute`/
-    /// `$EDITOR` chips for the body-only actions that alt+f/alt+g/alt+b/
-    /// ctrl+e already bind, but had no mouse-reachable equivalent before —
-    /// this row is the whole point of the toolbar (spec §5: "Save gets a
-    /// visible button next to what it saves"). Chips reuse
+    /// Paints the Body tab's toolbar chip row: `format`/`minify`/
+    /// `substitute`/`$EDITOR` chips for the body-only actions that
+    /// alt+f/alt+g/alt+b/ctrl+e already bind, but had no mouse-reachable
+    /// equivalent before. Body-scoped only — the request-level save/vars
+    /// chips live on the tab-label row (`draw_tab_bar`), so this row only
+    /// exists while the Body tab is active. Chips reuse
     /// `Hit::FooterChip(Action)` and `footer::paint_chip_row`'s painting so
     /// hover/click behave exactly like the footer's own chips; `on_hit`
     /// already dispatches `FooterChip`'s action with no new `Hit` variant.
@@ -1350,33 +1399,24 @@ impl Editor {
         ctx: &DrawCtx,
         hits: &mut crate::hit::HitMap,
     ) {
-        let theme = ctx.theme;
-        let buf = frame.buffer_mut();
-        crate::paint::fill(buf, area, theme.panel);
         if area.height == 0 {
             return;
         }
+        let theme = ctx.theme;
+        let buf = frame.buffer_mut();
+        crate::paint::fill(buf, area, theme.panel);
 
-        let save_label = if self.is_dirty() { "save •" } else { "save" };
-        let mut chips: Vec<(&str, &str, Option<Action>)> = vec![
-            ("⭳", save_label, Some(Action::SaveRequest)),
-            (
-                "{{ }}",
-                "vars",
-                Some(Action::OpenVarPicker { completing: false }),
-            ),
+        let sub_label = if self.substitute_body {
+            "{{on}}"
+        } else {
+            "{{off}}"
+        };
+        let chips: Vec<(&str, &str, Option<Action>)> = vec![
+            ("align", "format", Some(Action::FormatBody)),
+            ("min", "minify", Some(Action::MinifyBody)),
+            ("sub", sub_label, Some(Action::ToggleBodyVars)),
+            ("ed", "$EDITOR", Some(Action::OpenBodyInEditor)),
         ];
-        if self.active_tab == EditorTab::Body {
-            let sub_label = if self.substitute_body {
-                "{{on}}"
-            } else {
-                "{{off}}"
-            };
-            chips.push(("align", "format", Some(Action::FormatBody)));
-            chips.push(("min", "minify", Some(Action::MinifyBody)));
-            chips.push(("sub", sub_label, Some(Action::ToggleBodyVars)));
-            chips.push(("ed", "$EDITOR", Some(Action::OpenBodyInEditor)));
-        }
 
         let right_limit = area.x + area.width;
         crate::components::footer::paint_chip_row(
@@ -2178,7 +2218,7 @@ mod tests {
     }
 
     #[test]
-    fn toolbar_row_sits_between_tab_bar_and_content_and_always_shows_save_and_vars() {
+    fn save_and_vars_sit_right_aligned_on_the_tab_label_row() {
         let mut e = Editor::default();
         let (content, hits) = draw_editor(&mut e);
         assert!(content.contains("save"), "save chip label: {content}");
@@ -2192,13 +2232,42 @@ mod tests {
                 completing: false,
             }))
             .expect("vars chip must be a registered hit");
-        // Toolbar row is the third fixed row: address bar (5) + tab bar (2).
-        assert_eq!(save_rect.y, ADDRESS_BAR_HEIGHT + TAB_BAR_HEIGHT);
-        assert_eq!(vars_rect.y, ADDRESS_BAR_HEIGHT + TAB_BAR_HEIGHT);
+        // Request-level actions live on the tab-label row (the first row of
+        // the tab bar), not on a row of their own below the tabs.
+        assert_eq!(save_rect.y, ADDRESS_BAR_HEIGHT);
+        assert_eq!(vars_rect.y, ADDRESS_BAR_HEIGHT);
         assert!(
             vars_rect.x > save_rect.x,
             "vars chip sits right of save, left to right"
         );
+        // Right-aligned, but left of the collapse toggle that keeps the far
+        // right edge of the same row.
+        let toggle = hits
+            .rect_of(&Hit::TableCollapse)
+            .expect("collapse toggle hit");
+        assert!(
+            vars_rect.x + vars_rect.width <= toggle.x,
+            "chips must not overlap the collapse toggle: vars {vars_rect:?} toggle {toggle:?}"
+        );
+        assert!(
+            save_rect.x > 60,
+            "chips are right-aligned in a 120-wide pane: {save_rect:?}"
+        );
+    }
+
+    #[test]
+    fn the_toolbar_row_exists_only_on_the_body_tab() {
+        let mut e = Editor {
+            active_tab: EditorTab::Params,
+            ..Editor::default()
+        };
+        let (_, hits) = draw_editor(&mut e);
+        // With no toolbar row outside Body, the params table starts directly
+        // under the tab bar: its NAME/VALUE header row first, then row 0.
+        let row = hits
+            .rect_of(&Hit::TableRow(0))
+            .expect("the params table's first row must be a registered hit");
+        assert_eq!(row.y, ADDRESS_BAR_HEIGHT + TAB_BAR_HEIGHT + 1);
     }
 
     #[test]
@@ -2278,11 +2347,11 @@ mod tests {
     }
 
     #[test]
-    fn chrome_height_accounts_for_the_toolbar_row() {
-        assert_eq!(
-            CHROME_HEIGHT,
-            ADDRESS_BAR_HEIGHT + TAB_BAR_HEIGHT + TOOLBAR_HEIGHT
-        );
+    fn chrome_height_excludes_the_body_only_toolbar_row() {
+        // The toolbar row only exists on the Body tab, and a Body-tab editor
+        // never collapses to chrome — so collapsed chrome is address bar +
+        // tab bar alone.
+        assert_eq!(CHROME_HEIGHT, ADDRESS_BAR_HEIGHT + TAB_BAR_HEIGHT);
     }
 
     #[test]

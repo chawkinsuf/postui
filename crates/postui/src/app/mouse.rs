@@ -222,6 +222,25 @@ impl App {
                 }
                 false
             }
+            MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => {
+                // A sideways wheel notch (shift+wheel in most terminals)
+                // moves the response viewport over its clipped columns.
+                // Modals and the Variable Manager have nothing to scroll
+                // sideways, and neither does any other pane.
+                if !self.modals.is_empty() || self.screen == Screen::VarManager {
+                    return false;
+                }
+                if self.hits.pane_at(m.column, m.row) == Some(PaneId::Response) {
+                    let d = if m.kind == MouseEventKind::ScrollLeft {
+                        -crate::components::response::H_SCROLL_STEP
+                    } else {
+                        crate::components::response::H_SCROLL_STEP
+                    };
+                    self.session.response.handle_scroll_h(d);
+                    return self.update(Action::Render);
+                }
+                false
+            }
             _ => false,
         }
     }

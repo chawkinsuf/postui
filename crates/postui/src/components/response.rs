@@ -22,6 +22,9 @@ pub const SYNC_PRETTY_BYTES: usize = 256 * 1024;
 /// Braille spinner frames, cycled while a request is in flight.
 pub const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+/// Columns moved per ←/→ key press or horizontal wheel notch.
+pub(crate) const H_SCROLL_STEP: i16 = 4;
+
 /// The response pane's lifecycle: nothing sent yet, a request in flight (and
 /// since when — used to animate a spinner), a completed response, a failed
 /// send, or a send the user cancelled.
@@ -77,10 +80,22 @@ pub struct ReadyView {
     header_lines: Vec<String>,
     pub cursor: usize,
     pub scroll: usize,
+    /// Column offset of the body viewport — verbatim lines are never
+    /// wrapped, so lines wider than the pane scroll horizontally instead.
+    pub h_scroll: usize,
     pub search: Option<SearchState>,
     /// Height of the body viewport as of the last draw, so key handling can
     /// keep the cursor on screen. A sane guess until the first frame.
     height: usize,
+    /// Width of the body viewport as of the last draw — the horizontal
+    /// counterpart of `height`, used to clamp `h_scroll`.
+    width: usize,
+    /// Cached widest visible line in display columns, keyed by the (mode,
+    /// visible line count) it was measured for — a collapse/expand or a view
+    /// switch changes the visible set, so either invalidates it. Measuring
+    /// is O(all visible lines), too much to redo per wheel tick on a
+    /// megabyte body.
+    content_width: Option<(ViewMode, usize, usize)>,
 }
 
 impl ReadyView {
@@ -119,8 +134,11 @@ impl ReadyView {
                 .collect(),
             cursor: 0,
             scroll: 0,
+            h_scroll: 0,
             search: None,
             height: 10,
+            width: 40,
+            content_width: None,
         }
     }
 
@@ -153,6 +171,50 @@ impl ReadyView {
             ViewMode::Raw => self.raw_lines.len(),
             ViewMode::Headers => self.header_lines.len().max(1),
         }
+    }
+
+    /// Widest visible line of the current view, in display columns, from
+    /// the cache when its (mode, visible count) key still matches.
+    fn content_width(&mut self) -> usize {
+        use unicode_width::UnicodeWidthStr;
+        let key = (self.mode, self.visible_len());
+        if let Some((mode, len, w)) = self.content_width
+            && (mode, len) == key
+        {
+            return w;
+        }
+        let w = match self.mode {
+            ViewMode::Pretty => self.tree.as_ref().map_or(0, |t| {
+                t.visible_lines()
+                    .iter()
+                    .map(|l| {
+                        l.indent
+                            + l.render_tokens()
+                                .iter()
+                                .map(|tok| tok.text.width())
+                                .sum::<usize>()
+                    })
+                    .max()
+                    .unwrap_or(0)
+            }),
+            ViewMode::Raw => self.raw_lines.iter().map(|l| l.width()).max().unwrap_or(0),
+            // + 3 for the ` ⧉ ` copy pill appended to each rendered row.
+            ViewMode::Headers => self
+                .header_lines
+                .iter()
+                .map(|l| l.width() + 3)
+                .max()
+                .unwrap_or(0),
+        };
+        self.content_width = Some((key.0, key.1, w));
+        w
+    }
+
+    /// Moves the viewport `delta` columns right (negative: left), clamped so
+    /// the widest visible line's end never scrolls past the right edge.
+    fn scroll_h(&mut self, delta: i32) {
+        let max = self.content_width().saturating_sub(self.width.max(1)) as i32;
+        self.h_scroll = (self.h_scroll as i32 + delta).clamp(0, max.max(0)) as usize;
     }
 
     /// The current view's text with nothing hidden — the corpus search runs
@@ -199,6 +261,7 @@ impl ReadyView {
         }
         self.cursor = 0;
         self.scroll = 0;
+        self.h_scroll = 0;
         // Match positions are per-view coordinates; the query survives, the
         // positions do not.
         self.recompute_matches();
@@ -373,6 +436,15 @@ impl Response {
         })
     }
 
+    /// Moves the body viewport `delta` columns right (negative: left) — the
+    /// horizontal counterpart of `handle_scroll`, fed by shift+wheel and the
+    /// ←/→ keys.
+    pub fn handle_scroll_h(&mut self, delta: i16) {
+        if let Some(view) = self.view.as_mut() {
+            view.scroll_h(delta as i32);
+        }
+    }
+
     /// Jumps the body view to `offset` (scrollbar drag). Clamped the same way
     /// `handle_scroll` clamps the wheel.
     pub fn set_scroll(&mut self, offset: usize) -> bool {
@@ -510,6 +582,18 @@ impl Response {
                 view.move_cursor(-1);
                 Some(Action::Render)
             }
+            KeyCode::Right => {
+                view.scroll_h(H_SCROLL_STEP.into());
+                Some(Action::Render)
+            }
+            KeyCode::Left => {
+                view.scroll_h((-H_SCROLL_STEP).into());
+                Some(Action::Render)
+            }
+            KeyCode::Home => {
+                view.h_scroll = 0;
+                Some(Action::Render)
+            }
             KeyCode::Char('g') => {
                 view.cursor = 0;
                 view.follow_cursor();
@@ -638,9 +722,24 @@ impl Component for Response {
 
         draw_header_strip(frame, hits, rows[0], data, view, ctx);
 
-        view.height = rows[1].height as usize;
         let mut body_area = rows[1];
         crate::paint::fill(frame.buffer_mut(), body_area, t.page);
+
+        // A line wider than the pane reserves the bottom row for a
+        // horizontal position indicator, mirroring how vertical overflow
+        // takes the right column.
+        let content_w = view.content_width();
+        let mut h_bar = None;
+        if content_w > body_area.width as usize && body_area.height > 1 {
+            h_bar = Some(Rect {
+                y: body_area.y + body_area.height - 1,
+                height: 1,
+                ..body_area
+            });
+            body_area.height -= 1;
+        }
+
+        view.height = body_area.height as usize;
         let spec = ScrollbarSpec {
             pane: PaneId::Response,
             offset: view.scroll,
@@ -654,10 +753,24 @@ impl Component for Response {
                 ..body_area
             };
             body_area.width -= 1;
+            if let Some(bar) = h_bar.as_mut() {
+                bar.width -= 1;
+            }
             crate::hit::draw_scrollbar(frame, hits, column, &spec, ctx.hovered, ctx.dragging, t);
         }
-        // `body_lines` already starts at `view.scroll`, so the paragraph
-        // itself is drawn unscrolled.
+        view.width = body_area.width as usize;
+        // The visible set may have shrunk (a collapse, a view switch) since
+        // the offset was set; never leave the viewport past the content.
+        view.h_scroll = view
+            .h_scroll
+            .min(content_w.saturating_sub(view.width.max(1)));
+
+        if let Some(bar) = h_bar {
+            draw_h_indicator(frame, bar, view.h_scroll, content_w, t);
+        }
+        // `body_lines` already starts at `view.scroll` and each line is
+        // cropped by `view.h_scroll` columns, so the paragraph itself is
+        // drawn unscrolled.
         let body = body_lines(view, t, ctx.focused, ctx.hovered, hits, body_area);
         frame.render_widget(Paragraph::new(body), body_area);
 
@@ -897,7 +1010,7 @@ fn body_lines(
                 current: None,
             }
         };
-        let mut line = highlighted(pieces, &hits);
+        let mut line = crop_cols(highlighted(pieces, &hits), view.h_scroll);
         if focused && i == view.cursor {
             line = line.style(cursor_bg);
         }
@@ -939,7 +1052,10 @@ fn body_lines(
                         Rect::new(area.x, y, area.width, 1),
                         crate::hit::Hit::JsonRow(i),
                     );
-                    if tree.is_container_at_visible(i) {
+                    // The arrow occupies the row's first two unscrolled
+                    // columns; once the view is scrolled right it is off
+                    // screen, and a hit would land on unrelated content.
+                    if view.h_scroll == 0 && tree.is_container_at_visible(i) {
                         let arrow_w = area.width.min(2);
                         hits.register(
                             Rect::new(area.x, y, arrow_w, 1),
@@ -985,9 +1101,13 @@ fn body_lines(
 
                 let y = area.y.saturating_add((i - start) as u16);
                 if y < area.y.saturating_add(area.height) {
-                    let glyph_x = area.x.saturating_add(text_len as u16);
-                    let glyph_w = area.width.saturating_sub(text_len as u16).min(3);
-                    if glyph_w > 0 {
+                    // The glyph's on-screen column shifts left with the
+                    // horizontal scroll; once the pill itself is cropped
+                    // away there is nothing left to click.
+                    let glyph_col = text_len.saturating_sub(view.h_scroll) as u16;
+                    let glyph_x = area.x.saturating_add(glyph_col);
+                    let glyph_w = area.width.saturating_sub(glyph_col).min(3);
+                    if glyph_w > 0 && text_len + 3 > view.h_scroll {
                         hits.register(
                             Rect::new(glyph_x, y, glyph_w, 1),
                             crate::hit::Hit::HeaderCopy(i),
@@ -998,6 +1118,70 @@ fn body_lines(
         }
     }
     out
+}
+
+/// Paints the horizontal position indicator on the reserved bottom row: a
+/// muted `─` track with an accent `█` thumb, the sideways twin of
+/// [`crate::hit::draw_scrollbar`]. Read-only — the wheel and ←/→ move the
+/// viewport, the bar just shows where it is.
+fn draw_h_indicator(frame: &mut Frame, bar: Rect, offset: usize, content: usize, t: &Theme) {
+    if bar.width == 0 {
+        return;
+    }
+    let spec = ScrollbarSpec {
+        pane: PaneId::Response,
+        offset,
+        content,
+        viewport: bar.width as usize,
+    };
+    let (left, width) = crate::hit::thumb_geometry(&spec, bar.width);
+    let mut spans = Vec::new();
+    let track = Style::default().fg(t.text_muted);
+    let thumb = Style::default().fg(t.accent);
+    spans.push(Span::styled("─".repeat(left as usize), track));
+    spans.push(Span::styled("█".repeat(width as usize), thumb));
+    spans.push(Span::styled(
+        "─".repeat(bar.width.saturating_sub(left + width) as usize),
+        track,
+    ));
+    frame.render_widget(Paragraph::new(Line::from(spans)), bar);
+}
+
+/// Drops the first `skip` display columns of `line`, keeping every span
+/// style. A double-width character straddling the cut is replaced by a
+/// space per swallowed column, so the remaining cells stay aligned.
+fn crop_cols(line: Line<'static>, skip: usize) -> Line<'static> {
+    use unicode_width::UnicodeWidthChar;
+    if skip == 0 {
+        return line;
+    }
+    let style = line.style;
+    let mut spans = Vec::new();
+    let mut remaining = skip;
+    for span in line.spans {
+        if remaining == 0 {
+            spans.push(span);
+            continue;
+        }
+        let mut kept = String::new();
+        for c in span.content.chars() {
+            if remaining == 0 {
+                kept.push(c);
+                continue;
+            }
+            let w = c.width().unwrap_or(0);
+            if w <= remaining {
+                remaining -= w;
+            } else {
+                kept.extend(std::iter::repeat_n(' ', w - remaining));
+                remaining = 0;
+            }
+        }
+        if !kept.is_empty() {
+            spans.push(Span::styled(kept, span.style));
+        }
+    }
+    Line::from(spans).style(style)
 }
 
 fn token_color(kind: TokenKind, t: &Theme) -> Color {
@@ -1573,6 +1757,118 @@ mod tests {
             "scrolling reveals later lines: {down}"
         );
         assert!(!down.contains("\"e0\""), "and hides earlier ones: {down}");
+    }
+
+    /// A one-line body that is not JSON (so the view settles on `Raw`) and
+    /// is far wider than the 60-col test viewport; "TAIL" is only visible
+    /// once the view is scrolled right.
+    fn wide_raw() -> Response {
+        ready(&format!("{}TAIL", "x".repeat(100)))
+    }
+
+    /// The buffer rows of a rendered frame, in order — `TestBackend`'s
+    /// `Debug` prints each row as its own quoted line.
+    fn buffer_rows(rendered: &str) -> Vec<String> {
+        rendered
+            .lines()
+            .filter(|l| l.trim_start().starts_with('"'))
+            .map(|l| l.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn horizontal_scroll_reveals_clipped_columns_and_clamps() {
+        let mut r = wide_raw();
+        let before = render(&mut r); // first draw records the viewport size
+        assert!(!before.contains("TAIL"), "clipped at 60 cols: {before}");
+        r.handle_scroll_h(500);
+        let after = render(&mut r);
+        assert!(
+            after.contains("TAIL"),
+            "scrolled to the line's end: {after}"
+        );
+        r.handle_scroll_h(-1000);
+        assert_eq!(r.view().unwrap().h_scroll, 0, "clamped at the left edge");
+    }
+
+    #[test]
+    fn left_right_and_home_keys_scroll_horizontally() {
+        let mut r = wide_raw();
+        render(&mut r);
+        for _ in 0..30 {
+            r.handle_key(key(KeyCode::Right));
+        }
+        let out = render(&mut r);
+        assert!(out.contains("TAIL"), "right key scrolls and clamps: {out}");
+        r.handle_key(key(KeyCode::Left));
+        assert!(r.view().unwrap().h_scroll > 0, "left steps back");
+        r.handle_key(key(KeyCode::Home));
+        assert_eq!(r.view().unwrap().h_scroll, 0, "Home jumps to column 0");
+    }
+
+    #[test]
+    fn horizontal_scroll_resets_when_the_view_mode_changes() {
+        let mut r = wide_raw();
+        render(&mut r);
+        r.handle_scroll_h(20);
+        assert!(r.view().unwrap().h_scroll > 0);
+        r.handle_key(ch('h'));
+        assert_eq!(
+            r.view().unwrap().h_scroll,
+            0,
+            "column offset is per-view state, reset on a view switch"
+        );
+    }
+
+    #[test]
+    fn a_wide_body_draws_a_horizontal_scrollbar_and_a_narrow_one_does_not() {
+        let mut r = wide_raw();
+        let wide = render(&mut r);
+        let rows = buffer_rows(&wide);
+        let bottom = rows.last().expect("rendered rows");
+        assert!(bottom.contains('█'), "thumb on the bottom row: {wide}");
+        assert!(bottom.contains('─'), "track on the bottom row: {wide}");
+
+        let mut narrow = ready("short");
+        let out = render(&mut narrow);
+        let rows = buffer_rows(&out);
+        let bottom = rows.last().expect("rendered rows");
+        assert!(
+            !bottom.contains('█') && !bottom.contains('─'),
+            "no indicator when nothing is clipped: {out}"
+        );
+    }
+
+    #[test]
+    fn json_arrow_hits_are_suppressed_while_scrolled_horizontally() {
+        let body = format!("{{\"key\": \"{}\"}}", "x".repeat(100));
+        let mut r = ready(&body);
+        let theme = Theme::dark();
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: None,
+            dragging: false,
+        };
+        let draw = |r: &mut Response| {
+            let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+            let mut hits = crate::hit::HitMap::default();
+            terminal
+                .draw(|f| r.draw(f, f.area(), &ctx, &mut hits))
+                .unwrap();
+            hits
+        };
+        let hits = draw(&mut r);
+        assert!(
+            hits.rect_of(&crate::hit::Hit::JsonArrow(0)).is_some(),
+            "the root container's arrow is clickable unscrolled"
+        );
+        r.handle_scroll_h(10);
+        let hits = draw(&mut r);
+        assert!(
+            hits.rect_of(&crate::hit::Hit::JsonArrow(0)).is_none(),
+            "the arrow has scrolled off screen, so its hit must go too"
+        );
     }
 
     #[test]
