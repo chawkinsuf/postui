@@ -262,6 +262,7 @@ fn selected_request_marker_sits_beside_the_sidebar_focus_bar() {
     let mut app = App::new_for_test();
     app.sidebar.rows.push(Row::Request {
         slug: "go".into(),
+        name: "go".into(),
         depth: 0,
         broken: None,
         method: Some(Method::Get),
@@ -310,6 +311,7 @@ fn hovering_a_row_leaves_the_sidebar_focus_bar_clean() {
     for slug in ["go", "test"] {
         app.sidebar.rows.push(Row::Request {
             slug: slug.into(),
+            name: slug.into(),
             depth: 0,
             broken: None,
             method: Some(Method::Get),

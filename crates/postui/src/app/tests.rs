@@ -1938,6 +1938,7 @@ fn sidebar_lists_requests_grouped_and_enter_opens() {
         vec![
             Row::Request {
                 slug: "ping".into(),
+                name: "ping".into(),
                 depth: 0,
                 broken: None,
                 method: Some(postui_core::model::Method::Get),
@@ -2144,6 +2145,7 @@ fn click_sidebar_row_opens_that_request() {
         app.sidebar.rows[0],
         Row::Request {
             slug: "top".into(),
+            name: "top".into(),
             depth: 0,
             broken: None,
             method: Some(postui_core::model::Method::Get),
@@ -2299,6 +2301,7 @@ fn clicking_another_row_over_dirty_editor_is_gated_by_confirm() {
         app.sidebar.rows[2],
         Row::Request {
             slug: "api/ping".into(),
+            name: "ping".into(),
             depth: 1,
             broken: None,
             method: Some(postui_core::model::Method::Get),

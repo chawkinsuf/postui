@@ -30,6 +30,9 @@ pub enum Row {
     },
     Request {
         slug: String,
+        /// The label the row paints: the request's display name, falling
+        /// back to the slug leaf for legacy/broken files.
+        name: String,
         depth: usize,
         broken: Option<String>,
         /// `None` exactly when `broken` is `Some` — a request whose file
@@ -116,6 +119,7 @@ impl Sidebar {
     ) {
         let mut folder_children: std::collections::BTreeMap<String, Vec<RequestListing>> =
             std::collections::BTreeMap::new();
+        let mut requests: Vec<&RequestListing> = Vec::new();
         for e in entries {
             let rest = &e.slug[prefix.len()..];
             if let Some((seg, _)) = rest.split_once('/') {
@@ -126,13 +130,25 @@ impl Sidebar {
                 };
                 folder_children.entry(path).or_default().push(e.clone());
             } else {
-                rows.push(Row::Request {
-                    slug: e.slug.clone(),
-                    depth,
-                    broken: e.broken.clone(),
-                    method: e.method,
-                });
+                requests.push(e);
             }
+        }
+        // This level's requests order by what the user reads — the display
+        // name — with the slug as a stable tiebreak.
+        requests.sort_by_key(|e| {
+            let leaf = e.slug.rsplit('/').next().unwrap_or(&e.slug);
+            let display = e.name.as_deref().unwrap_or(leaf);
+            (display.to_lowercase(), e.slug.clone())
+        });
+        for e in requests {
+            let leaf = e.slug.rsplit('/').next().unwrap_or(&e.slug);
+            rows.push(Row::Request {
+                name: e.name.clone().unwrap_or_else(|| leaf.to_string()),
+                slug: e.slug.clone(),
+                depth,
+                broken: e.broken.clone(),
+                method: e.method,
+            });
         }
         for (path, children) in folder_children {
             let name = path.rsplit('/').next().unwrap_or(&path).to_string();
@@ -594,6 +610,7 @@ impl Sidebar {
             }
             Row::Request {
                 slug,
+                name,
                 depth,
                 broken,
                 method,
@@ -602,7 +619,7 @@ impl Sidebar {
                 if x >= right {
                     return;
                 }
-                let basename = slug.rsplit('/').next().unwrap_or(slug.as_str());
+                let basename = name.as_str();
 
                 let content_x = match (method, broken) {
                     (Some(m), None) => {
@@ -691,6 +708,30 @@ mod tests {
     }
 
     #[test]
+    fn rows_show_display_names_sorted_by_name_not_slug() {
+        let mut s = Sidebar::default();
+        let mut l = listing(&["zeta-slug", "alpha-slug", "legacy"]);
+        // Display names deliberately invert the slug order.
+        l[0].name = Some("Aardvark".into()); // zeta-slug
+        l[1].name = Some("Zebra".into()); // alpha-slug
+        // l[2] "legacy" stays nameless -> displays its slug leaf.
+        s.refresh(l, &expanded(&[]));
+        let names: Vec<&str> = s
+            .rows
+            .iter()
+            .map(|r| match r {
+                Row::Request { name, .. } => name.as_str(),
+                Row::Folder { name, .. } => name.as_str(),
+            })
+            .collect();
+        assert_eq!(
+            names,
+            ["Aardvark", "legacy", "Zebra"],
+            "requests sort by display name, case-insensitive"
+        );
+    }
+
+    #[test]
     fn tree_builds_nested_folders_and_hides_collapsed_children() {
         let mut s = Sidebar::default();
         s.refresh(
@@ -703,6 +744,7 @@ mod tests {
             vec![
                 Row::Request {
                     slug: "top".into(),
+                    name: "top".into(),
                     depth: 0,
                     broken: None,
                     method: Some(Method::Get),
@@ -724,6 +766,7 @@ mod tests {
             vec![
                 Row::Request {
                     slug: "top".into(),
+                    name: "top".into(),
                     depth: 0,
                     broken: None,
                     method: Some(Method::Get),
@@ -736,6 +779,7 @@ mod tests {
                 },
                 Row::Request {
                     slug: "api/ping".into(),
+                    name: "ping".into(),
                     depth: 1,
                     broken: None,
                     method: Some(Method::Get),
