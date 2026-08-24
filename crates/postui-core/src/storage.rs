@@ -79,6 +79,80 @@ fn request_path(root: &Path, slug: &str) -> PathBuf {
     requests_dir(root).join(format!("{slug}.toml"))
 }
 
+/// Derives a safe filename segment from a free-form display name:
+/// lowercase, `[a-z0-9_-]` kept, every other char collapsed to a single
+/// `-`, trimmed at both ends, `"request"` when nothing survives. The
+/// result always passes [`validate_slug`] as a single segment — the user
+/// never sees or types it.
+pub fn slugify(name: &str) -> String {
+    let mut out = String::new();
+    let mut pending_dash = false;
+    for c in name.chars() {
+        let c = c.to_ascii_lowercase();
+        if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-' {
+            if pending_dash && !out.is_empty() {
+                out.push('-');
+            }
+            pending_dash = false;
+            out.push(c);
+        } else {
+            pending_dash = true;
+        }
+    }
+    let out = out.trim_matches('-').to_string();
+    if out.is_empty() || validate_slug(&out).is_err() {
+        "request".to_string()
+    } else {
+        out
+    }
+}
+
+/// Splits a typed display path into `(folder_slug_prefix, leaf_display)`:
+/// `/` still means folders, each folder segment is slugified, and the
+/// last segment — trimmed — is the free-form display name. `None` when
+/// the leaf is empty.
+pub fn split_display_path(input: &str) -> Option<(String, String)> {
+    let (folders, leaf) = match input.rsplit_once('/') {
+        Some((f, l)) => (f, l),
+        None => ("", input),
+    };
+    let leaf = leaf.trim();
+    if leaf.is_empty() {
+        return None;
+    }
+    let folder = folders
+        .split('/')
+        .filter(|s| !s.trim().is_empty())
+        .map(slugify)
+        .collect::<Vec<_>>()
+        .join("/");
+    Some((folder, leaf.to_string()))
+}
+
+/// The slug a request named `leaf_display` in `folder` should live at:
+/// `folder/slugify(leaf)`, with `-2`, `-3`, … appended while the file
+/// already exists. `exclude` is the renaming request's own slug — its
+/// file doesn't count as a collision.
+pub fn unique_slug(
+    root: &Path,
+    folder: &str,
+    leaf_display: &str,
+    exclude: Option<&str>,
+) -> String {
+    let base = if folder.is_empty() {
+        slugify(leaf_display)
+    } else {
+        format!("{folder}/{}", slugify(leaf_display))
+    };
+    let mut candidate = base.clone();
+    let mut n = 2;
+    while exclude != Some(candidate.as_str()) && request_exists(root, &candidate) {
+        candidate = format!("{base}-{n}");
+        n += 1;
+    }
+    candidate
+}
+
 /// Recursively walks `dir`, invoking `f` with each `.toml` file's path.
 fn walk_toml_files(dir: &Path, f: &mut dyn FnMut(PathBuf)) -> std::io::Result<()> {
     if !dir.is_dir() {
@@ -255,6 +329,60 @@ mod tests {
             variables: Default::default(),
             body: None,
         }
+    }
+
+    #[test]
+    fn slugify_maps_free_form_names_to_safe_segments() {
+        assert_eq!(slugify("Get user by ID!"), "get-user-by-id");
+        assert_eq!(slugify("  spaced   out  "), "spaced-out");
+        assert_eq!(slugify("keep_under-scores"), "keep_under-scores");
+        assert_eq!(slugify("???"), "request", "all-unsafe falls back");
+        assert_eq!(slugify(""), "request");
+        // Whatever comes out must be a valid single path segment.
+        for name in ["Ünïcode Näme", "a.b.c", "..", "-x-", "MiXeD Case"] {
+            let s = slugify(name);
+            assert!(
+                validate_slug(&s).is_ok() && !s.contains('/'),
+                "{name:?} -> {s:?} must validate"
+            );
+        }
+    }
+
+    #[test]
+    fn split_display_path_slugifies_folders_and_keeps_the_leaf_verbatim() {
+        assert_eq!(
+            split_display_path("API Auth/Get User"),
+            Some(("api-auth".into(), "Get User".into()))
+        );
+        assert_eq!(split_display_path("Get User"), Some(("".into(), "Get User".into())));
+        assert_eq!(
+            split_display_path("a/b/  Leaf Name  "),
+            Some(("a/b".into(), "Leaf Name".into()))
+        );
+        assert_eq!(split_display_path("folder/   "), None, "empty leaf");
+        assert_eq!(split_display_path(""), None);
+    }
+
+    #[test]
+    fn unique_slug_dedupes_against_existing_files() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_project(dir.path()).unwrap();
+        assert_eq!(unique_slug(dir.path(), "", "My Request", None), "my-request");
+        save_request(dir.path(), "my-request", &req()).unwrap();
+        assert_eq!(
+            unique_slug(dir.path(), "", "My Request", None),
+            "my-request-2"
+        );
+        // The renaming request's own slug is not a collision.
+        assert_eq!(
+            unique_slug(dir.path(), "", "My Request", Some("my-request")),
+            "my-request"
+        );
+        // Folder prefix carries through.
+        assert_eq!(
+            unique_slug(dir.path(), "auth", "My Request", None),
+            "auth/my-request"
+        );
     }
 
     #[test]
