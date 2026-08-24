@@ -1,0 +1,27 @@
+name: macOS build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    # macos-14 runners are Apple Silicon (arm64) — native aarch64 build.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release -p postui
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: postui-macos-arm64
+          path: target/release/postui
+          if-no-files-found: error
