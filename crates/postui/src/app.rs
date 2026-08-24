@@ -997,7 +997,7 @@ impl App {
                         let req = self.editor.current_request();
                         match postui_core::storage::save_request(&self.project.root, &slug, &req) {
                             Ok(()) => {
-                                self.editor.mark_saved();
+                                self.record_save_step(slug.clone());
                                 self.toasts
                                     .push(format!("Saved {slug}"), ToastKind::Success);
                                 self.refresh_sidebar();
@@ -1067,6 +1067,8 @@ impl App {
                 };
                 match postui_core::storage::duplicate_request(&self.project.root, &slug) {
                     Ok(new_slug) => {
+                        let new_path = postui_core::storage::request_path(&self.project.root, &new_slug);
+                        self.record_file_step(vec![(new_path.clone(), None)], &[new_path], None);
                         self.refresh_sidebar();
                         let display = self.request_display(&new_slug);
                         self.toasts
@@ -1183,8 +1185,16 @@ impl App {
             }
             Action::RenameRequest { from, to } => {
                 use postui_core::storage::{self, StorageError};
+                let from_path = storage::request_path(&self.project.root, &from);
+                let old_content = std::fs::read_to_string(&from_path).ok();
                 match storage::rename_request_named(&self.project.root, &from, &to) {
                     Ok((slug, leaf)) => {
+                        let to_path = storage::request_path(&self.project.root, &slug);
+                        self.record_file_step(
+                            vec![(from_path.clone(), old_content), (to_path.clone(), None)],
+                            &[from_path, to_path],
+                            None,
+                        );
                         self.refresh_sidebar();
                         if self.editor.slug.as_deref() == Some(from.as_str()) {
                             self.editor.slug = Some(slug.clone());
@@ -1219,8 +1229,14 @@ impl App {
                 true
             }
             Action::DeleteRequest(slug) => {
+                let path = postui_core::storage::request_path(&self.project.root, &slug);
+                let before = self.read_file_states(&[path.clone()]);
                 match postui_core::storage::delete_request(&self.project.root, &slug) {
                     Ok(()) => {
+                        // Recorded before refresh_sidebar/editor-clearing
+                        // reorder state: context.slug must still name the
+                        // deleted request while self.editor.slug matches it.
+                        self.record_file_step(before, &[path], None);
                         self.refresh_sidebar();
                         if self.editor.slug.as_deref() == Some(slug.as_str()) {
                             self.editor = Editor::default();
@@ -1660,10 +1676,21 @@ impl App {
                 true
             }
             Action::CreateEnv(name) => {
+                let prev_active = self.project.active_env.clone();
                 match postui_core::project::create_environment(&self.project.root, &name) {
                     Ok(()) => {
                         self.project.environments =
                             postui_core::project::list_environments(&self.project.root);
+                        let path = self
+                            .project
+                            .root
+                            .join("environments")
+                            .join(format!("{name}.toml"));
+                        self.record_file_step(
+                            vec![(path.clone(), None)],
+                            &[path],
+                            Some((prev_active, Some(name.clone()))),
+                        );
                         self.apply(Action::SwitchEnv(Some(name)));
                     }
                     Err(e) => {
@@ -3659,9 +3686,83 @@ impl App {
         let req = self.editor.current_request();
         postui_core::storage::save_request(&self.project.root, &slug, &req)
             .map_err(|e| format!("could not save {slug}: {e}"))?;
-        self.editor.mark_saved();
+        self.record_save_step(slug);
         self.refresh_sidebar();
         Ok(())
+    }
+
+    /// Records a `SaveRequest` undo step for `slug` and marks the editor
+    /// saved. `prev_saved` is read *before* `mark_saved` overwrites it, so
+    /// undoing the step can restore exactly what "saved" meant a moment
+    /// ago (spec: uniform before/after disk steps). Shared by
+    /// `Action::SaveRequest`'s slugged branch and `save_open_request`
+    /// (the latter's callers — demote/promote/extract-to-request — become
+    /// undoable disk steps for free).
+    fn record_save_step(&mut self, slug: String) {
+        let prev_saved = self.editor.saved.clone();
+        self.editor.mark_saved();
+        self.history.record_no_coalesce(crate::undo::Step {
+            kind: crate::undo::StepKind::SaveRequest {
+                slug: slug.clone(),
+                prev_saved,
+            },
+            context: crate::undo::Context {
+                slug: Some(slug),
+                cursor_before: crate::undo::CursorPos::None,
+                cursor_after: crate::undo::CursorPos::None,
+            },
+        });
+    }
+
+    /// Reads each path's current contents; an unreadable path (gone, or a
+    /// permission error) reads as absent — these are small TOML files
+    /// postui itself wrote, so "can't read it" and "it isn't there" are
+    /// treated alike.
+    fn read_file_states(&self, paths: &[PathBuf]) -> Vec<(PathBuf, Option<String>)> {
+        paths
+            .iter()
+            .map(|p| (p.clone(), std::fs::read_to_string(p).ok()))
+            .collect()
+    }
+
+    /// Reads `after_paths`' current contents, drops any pair whose content
+    /// matches the corresponding `before` entry (position-paired — callers
+    /// pass both in the same path order), and — when anything real
+    /// remains — records a `FileStates` undo step for the rest.
+    /// `record_no_coalesce`: a disk write is never a burst-coalescing
+    /// candidate and must clear the redo stack (spec: new steps invalidate
+    /// stale redo entries).
+    fn record_file_step(
+        &mut self,
+        before: Vec<(PathBuf, Option<String>)>,
+        after_paths: &[PathBuf],
+        active_env: Option<(Option<String>, Option<String>)>,
+    ) {
+        let after = self.read_file_states(after_paths);
+        debug_assert_eq!(before.len(), after.len(), "before/after paths must line up");
+        let mut kept_before = Vec::new();
+        let mut kept_after = Vec::new();
+        for (b, a) in before.into_iter().zip(after) {
+            if b.1 != a.1 {
+                kept_before.push(b);
+                kept_after.push(a);
+            }
+        }
+        if kept_before.is_empty() {
+            return;
+        }
+        self.history.record_no_coalesce(crate::undo::Step {
+            kind: crate::undo::StepKind::FileStates {
+                before: kept_before,
+                after: kept_after,
+                active_env,
+            },
+            context: crate::undo::Context {
+                slug: self.editor.slug.clone(),
+                cursor_before: crate::undo::CursorPos::None,
+                cursor_after: crate::undo::CursorPos::None,
+            },
+        });
     }
 
     /// Re-reads the project directory and rebuilds the sidebar tree,
@@ -3868,6 +3969,10 @@ impl App {
                     self.editor.load(Some(slug.clone()), saved);
                     self.editor.mark_saved();
                 }
+                // A brand-new file never existed before this write, so
+                // `before` is simply absent — no pre-read needed.
+                let path = storage::request_path(&self.project.root, &slug);
+                self.record_file_step(vec![(path.clone(), None)], &[path], None);
                 self.toasts
                     .push(format!("Saved {leaf}"), ToastKind::Success);
                 // Queue the slug's ancestor folders open, rebuild the tree
@@ -4259,6 +4364,47 @@ impl App {
         changed
     }
 
+    /// Switches the open editor to `target_slug` so an undo/redo step for a
+    /// request that isn't the one currently open can proceed — shared by
+    /// `EditorDelta`'s and `SaveRequest`'s jump-back handling. On failure
+    /// (dirty gate opened, or the open itself failed) it puts `step` back
+    /// where its caller popped it from and returns `false`; the caller
+    /// must then return `false` without applying anything else.
+    fn jump_to_request_for_undo(
+        &mut self,
+        target_slug: &str,
+        redo: bool,
+        step: &crate::undo::Step,
+    ) -> bool {
+        // Bypassing the dirty gate is safe only while capture provably
+        // missed nothing: the departing editor's state must be exactly
+        // what history last saw (the shadow, kept in lockstep with the
+        // newest recorded delta). `capture_undo` ran at the top of the
+        // Undo/Redo arm, so a mismatch here means a capture bug — degrade
+        // to the normal prompt instead of silently dropping edits.
+        let shadow_matches = self.shadow.as_ref().is_some_and(|(s, req)| {
+            *s == self.editor.slug && *req == self.editor.current_request()
+        });
+        if self.editor_holds_unsaved() && !shadow_matches {
+            self.history.push_undo_no_coalesce(step.clone()); // put it back
+            self.dirty_gate("undo", Action::Undo);
+            return false;
+        }
+        self.apply(Action::ForceOpenRequest(target_slug.to_string()));
+        if self.editor.slug.as_deref() != Some(target_slug) {
+            // The open failed (file gone/broken — ForceOpenRequest already
+            // toasted the reason); drop the step.
+            return false;
+        }
+        self.capture_undo(); // re-seed the shadow for the newly opened request
+        let display = self.request_display(target_slug);
+        self.toasts.push(
+            format!("{} edit in {display}", if redo { "Redid" } else { "Undid" }),
+            ToastKind::Info,
+        );
+        true
+    }
+
     /// Applies one popped step in the given direction and pushes it onto
     /// the opposite stack. Returns false when the step could not be
     /// applied (it is then dropped — spec: failure handling).
@@ -4276,33 +4422,9 @@ impl App {
                         );
                         return false;
                     };
-                    // Bypassing the dirty gate is safe only while capture
-                    // provably missed nothing: the departing editor's state
-                    // must be exactly what history last saw (the shadow,
-                    // kept in lockstep with the newest recorded delta).
-                    // `capture_undo` ran at the top of the Undo arm, so a
-                    // mismatch here means a capture bug — degrade to the
-                    // normal prompt instead of silently dropping edits.
-                    let shadow_matches = self.shadow.as_ref().is_some_and(|(s, req)| {
-                        *s == self.editor.slug && *req == self.editor.current_request()
-                    });
-                    if self.editor_holds_unsaved() && !shadow_matches {
-                        self.history.push_undo_no_coalesce(step.clone()); // put it back
-                        self.dirty_gate("undo", Action::Undo);
+                    if !self.jump_to_request_for_undo(&target_slug, redo, &step) {
                         return false;
                     }
-                    self.apply(Action::ForceOpenRequest(target_slug.clone()));
-                    if self.editor.slug.as_deref() != Some(target_slug.as_str()) {
-                        // The open failed (file gone/broken — ForceOpenRequest
-                        // already toasted the reason); drop the step.
-                        return false;
-                    }
-                    self.capture_undo(); // re-seed the shadow for the newly opened request
-                    let display = self.request_display(&target_slug);
-                    self.toasts.push(
-                        format!("{} edit in {display}", if redo { "Redid" } else { "Undid" }),
-                        ToastKind::Info,
-                    );
                     // fall through to the normal same-request apply below
                 }
                 let (target, cursor) = if redo {
@@ -4324,9 +4446,105 @@ impl App {
                 }
                 true
             }
-            StepKind::FileStates { .. } | StepKind::SaveRequest { .. } => {
-                debug_assert!(false, "later task");
-                false
+            StepKind::FileStates {
+                before,
+                after,
+                active_env,
+            } => {
+                let target = if redo { after } else { before };
+                for (path, content) in target {
+                    let result: std::io::Result<()> = match content {
+                        Some(text) => crate::project_ctx::atomic_write(path, text),
+                        None => std::fs::remove_file(path).or_else(|e| {
+                            if e.kind() == std::io::ErrorKind::NotFound {
+                                Ok(())
+                            } else {
+                                Err(e)
+                            }
+                        }),
+                    };
+                    if let Err(e) = result {
+                        self.toasts.push(
+                            format!("undo failed at {}: {e}", path.display()),
+                            ToastKind::Error,
+                        );
+                        return false; // step dropped; earlier writes in this step stand
+                    }
+                }
+                if let Some((before_env, after_env)) = active_env {
+                    let env = if redo { after_env } else { before_env };
+                    self.apply(Action::SwitchEnv(env.clone()));
+                }
+                // Files changed under the app: reuse the wholesale reload +
+                // refresh paths rather than guessing what the step touched.
+                self.apply(Action::ReloadProjectFiles);
+                self.refresh_sidebar();
+                // If the open request's file was deleted by this step, close
+                // it in the editor (mirroring Action::DeleteRequest's own
+                // arm):
+                if let Some(open) = self.editor.slug.clone() {
+                    let open_path = postui_core::storage::request_path(&self.project.root, &open);
+                    if target.iter().any(|(p, c)| *p == open_path && c.is_none()) {
+                        self.editor = Editor::default();
+                        self.shadow = None;
+                    }
+                }
+                let verb = if redo { "Redid" } else { "Undid" };
+                let msg = match &step.context.slug {
+                    Some(slug) => format!("{verb} file change to {}", self.request_display(slug)),
+                    None => format!("{verb} file change"),
+                };
+                self.toasts.push(msg, ToastKind::Info);
+                if redo {
+                    self.history.push_undo_no_coalesce(step.clone());
+                } else {
+                    self.history.push_redo(step.clone());
+                }
+                true
+            }
+            StepKind::SaveRequest { slug, prev_saved } => {
+                if self.editor.slug.as_deref() != Some(slug.as_str())
+                    && !self.jump_to_request_for_undo(slug, redo, &step)
+                {
+                    return false;
+                }
+                if redo {
+                    // Redoing a save re-runs it: the file gets the editor's
+                    // state written again and `saved` re-syncs. Written
+                    // directly (not via `save_open_request`, which would
+                    // record a *new* SaveRequest step here and — via
+                    // `record_no_coalesce` — wipe the rest of the redo
+                    // stack mid-replay); failures follow the same
+                    // toast-and-drop contract as the FileStates arm above.
+                    match postui_core::storage::save_request(
+                        &self.project.root,
+                        slug,
+                        &self.editor.current_request(),
+                    ) {
+                        Ok(()) => {
+                            self.editor.mark_saved();
+                            self.refresh_sidebar();
+                        }
+                        Err(e) => {
+                            self.toasts.push(
+                                format!("redo failed to save {slug}: {e}"),
+                                ToastKind::Error,
+                            );
+                            return false;
+                        }
+                    }
+                } else {
+                    self.editor.saved = prev_saved.clone();
+                }
+                let verb = if redo { "Redid" } else { "Undid" };
+                self.toasts
+                    .push(format!("{verb} save of {slug}"), ToastKind::Info);
+                if redo {
+                    self.history.push_undo_no_coalesce(step.clone());
+                } else {
+                    self.history.push_redo(step.clone());
+                }
+                true
             }
         }
     }

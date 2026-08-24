@@ -8540,7 +8540,14 @@ mod undo_tests {
         };
         assert_eq!(before.url, "");
         assert_eq!(after.url, "http");
-        assert!(app.history.pop_undo().is_none(), "one coalesced step");
+        // create's own FileStates step (Task 6) may remain beneath it, but
+        // the typing burst itself must be exactly one coalesced EditorDelta.
+        while let Some(step) = app.history.pop_undo() {
+            assert!(
+                !matches!(step.kind, crate::undo::StepKind::EditorDelta { .. }),
+                "typing burst produced more than one EditorDelta step"
+            );
+        }
     }
 
     #[test]
@@ -8665,26 +8672,137 @@ mod undo_tests {
 
     #[test]
     fn jump_back_reverts_and_redo_returns() {
+        // jb1's history: create (FileStates), url "" -> "x" (EditorDelta),
+        // a save (SaveRequest — breaks coalescing), then url "x" -> "xq"
+        // (a second, unmerged EditorDelta). "x" is distinct from both the
+        // disk-original "" and the post-edit "xq", so asserting on it can't
+        // be satisfied by undoing either too little or too much.
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("jb1".into()));
         app.capture_undo();
         app.editor.sub_focus = SubFocus::Url;
+        app.editor
+            .handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        app.capture_undo();
+        app.update(Action::SaveRequest);
+        app.capture_undo();
         app.editor
             .handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
         app.capture_undo();
         // open jb2 through the dirty gate's discard? No — undo's jump-back
         // must work even with jb1 dirty. Open jb2 by force:
         app.update(Action::CreateRequest("jb2".into()));
-        // CreateRequest replaced a dirty editor via create_or_save_as —
-        // check the real behavior: create_or_save_as loads the new request
-        // unconditionally (app.rs:3741), so jb1's unsaved 'q' lives only in
-        // history now. Undo the editor delta:
-        app.update(Action::Undo); // pops jb2 create (Task 6) or jb1 delta
+        // create_or_save_as loads the new request unconditionally, so jb1's
+        // unsaved "xq" lives only in history now.
         while app.editor.slug.as_deref() != Some("jb1") {
             app.update(Action::Undo);
         }
-        assert_eq!(app.editor.url.text(), "", "jb1's edit reverted");
+        assert_eq!(
+            app.editor.url.text(),
+            "x",
+            "jb1's edit reverted to its pre-'q' state, not past it to the disk-empty original"
+        );
         app.update(Action::Redo);
-        assert_eq!(app.editor.url.text(), "q", "redo re-applies jb1's edit");
+        assert_eq!(app.editor.url.text(), "xq", "redo re-applies jb1's edit");
+    }
+
+    #[test]
+    fn undo_restores_a_deleted_request_file_byte_identical() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("del-me".into()));
+        app.capture_undo();
+        app.editor.sub_focus = SubFocus::Url;
+        app.editor
+            .handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        app.capture_undo();
+        app.update(Action::SaveRequest);
+        app.capture_undo();
+        let path = postui_core::storage::request_path(&app.project.root, "del-me");
+        let original = std::fs::read_to_string(&path).unwrap();
+        app.update(Action::DeleteRequest("del-me".into()));
+        app.capture_undo();
+        assert!(!path.exists());
+        app.update(Action::Undo);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        app.update(Action::Redo);
+        assert!(!path.exists(), "redo deletes again");
+    }
+
+    #[test]
+    fn undo_reverts_a_rename_on_disk() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("old-name".into()));
+        app.capture_undo();
+        app.update(Action::RenameRequest {
+            from: "old-name".into(),
+            to: "new-name".into(),
+        });
+        app.capture_undo();
+        app.update(Action::Undo);
+        let root = app.project.root.clone();
+        assert!(
+            postui_core::storage::request_path(&root, "old-name").exists(),
+            "old-name restored"
+        );
+        assert!(
+            !postui_core::storage::request_path(&root, "new-name").exists(),
+            "new-name gone"
+        );
+    }
+
+    #[test]
+    fn undo_past_a_save_marks_dirty_but_keeps_the_file() {
+        // A single pre-save edit would make `prev_saved` (captured before
+        // that edit's own `mark_saved`) structurally identical to the
+        // EditorDelta's `before` — undoing both would coincidentally land
+        // `current == saved` and read as clean, which isn't what "undo
+        // reverted a save" should mean. A second, post-save edit (kept
+        // un-merged because SaveRequest breaks coalescing) avoids that:
+        // undoing back to it still leaves a real edit ("ab") standing
+        // against the reverted, pre-edit `saved` marker.
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("sv".into()));
+        app.capture_undo();
+        app.editor.sub_focus = SubFocus::Url;
+        app.editor
+            .handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        app.editor
+            .handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
+        app.capture_undo(); // one coalesced EditorDelta: "" -> "ab"
+        app.update(Action::SaveRequest); // breaks coalescing; disk now holds "ab"
+        app.capture_undo();
+        let path = postui_core::storage::request_path(&app.project.root, "sv");
+        let saved_file = std::fs::read_to_string(&path).unwrap();
+        app.editor
+            .handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+        app.capture_undo(); // a second, unmerged EditorDelta: "ab" -> "abc"
+        app.update(Action::Undo); // undoes the "abc" edit
+        assert_eq!(app.editor.url.text(), "ab");
+        app.update(Action::Undo); // undoes the save (memory only)
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            saved_file,
+            "undoing a save never touches disk"
+        );
+        assert!(
+            app.editor.is_dirty(),
+            "save's undo reverted editor.saved past the still-present 'ab' edit"
+        );
+    }
+
+    #[test]
+    fn undo_of_a_deleted_step_fails_gracefully_when_disk_changed() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("ext".into()));
+        app.capture_undo();
+        app.update(Action::DeleteRequest("ext".into()));
+        app.capture_undo();
+        app.update(Action::Undo); // restores file
+        let path = postui_core::storage::request_path(&app.project.root, "ext");
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap(); // remove_file on a dir errors
+        app.update(Action::Undo); // tries to delete "created" file -> error
+        // step dropped, no panic, history still usable:
+        app.update(Action::Undo);
     }
 }

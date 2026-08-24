@@ -74,7 +74,9 @@ fn read_or_empty(path: &Path) -> Result<String, String> {
 
 /// Atomic write via temp file + rename in `path`'s own directory, matching
 /// `storage::save_request`'s pattern (spec §5: writes atomic + immediate).
-fn atomic_write(path: &Path, contents: &str) -> std::io::Result<()> {
+/// `pub(crate)`: also used by `App::apply_undo_step` to replay a raw
+/// `FileStates` step's text onto disk.
+pub(crate) fn atomic_write(path: &Path, contents: &str) -> std::io::Result<()> {
     let parent = path.parent().expect("path always has a parent");
     std::fs::create_dir_all(parent)?;
     use std::io::Write;

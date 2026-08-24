@@ -79,7 +79,11 @@ pub fn validate_slug(slug: &str) -> Result<(), StorageError> {
     }
 }
 
-fn request_path(root: &Path, slug: &str) -> PathBuf {
+/// `root/requests/<slug>.toml` — the on-disk path for a request slug.
+/// Exposed so callers outside this module (postui's undo history, which
+/// records raw file states) can name a request's file without duplicating
+/// the layout rule.
+pub fn request_path(root: &Path, slug: &str) -> PathBuf {
     requests_dir(root).join(format!("{slug}.toml"))
 }
 
