@@ -26,7 +26,7 @@ pub enum StepKind {
     EditorDelta {
         slug: Option<String>,
         before: HttpRequest,
-        after: HttpRequest,
+        after: Box<HttpRequest>,
     },
     FileStates {
         before: Vec<(PathBuf, Option<String>)>,
@@ -271,7 +271,7 @@ mod tests {
             kind: StepKind::EditorDelta {
                 slug: Some("a".into()),
                 before: req(before),
-                after: req(after),
+                after: Box::new(req(after)),
             },
             context: Context {
                 slug: Some("a".into()),
@@ -320,7 +320,7 @@ mod tests {
                 kind: StepKind::EditorDelta {
                     slug: Some("a".into()),
                     before: req("h"),
-                    after: named,
+                    after: Box::new(named),
                 },
                 context: Context {
                     slug: Some("a".into()),

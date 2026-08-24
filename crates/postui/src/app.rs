@@ -668,7 +668,7 @@ impl App {
                         kind: crate::undo::StepKind::EditorDelta {
                             slug: current_slug.clone(),
                             before: prev.clone(),
-                            after: current.clone(),
+                            after: Box::new(current.clone()),
                         },
                         context: crate::undo::Context {
                             slug: current_slug.clone(),
@@ -1230,7 +1230,7 @@ impl App {
             }
             Action::DeleteRequest(slug) => {
                 let path = postui_core::storage::request_path(&self.project.root, &slug);
-                let before = self.read_file_states(&[path.clone()]);
+                let before = self.read_file_states(std::slice::from_ref(&path));
                 match postui_core::storage::delete_request(&self.project.root, &slug) {
                     Ok(()) => {
                         // Recorded before refresh_sidebar/editor-clearing
@@ -4491,7 +4491,7 @@ impl App {
                     // fall through to the normal same-request apply below
                 }
                 let (target, cursor) = if redo {
-                    (after.clone(), step.context.cursor_after.clone())
+                    ((**after).clone(), step.context.cursor_after.clone())
                 } else {
                     (before.clone(), step.context.cursor_before.clone())
                 };
