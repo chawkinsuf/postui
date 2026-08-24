@@ -68,6 +68,7 @@ pub enum DiskInverse {
     DeleteRequestFile { slug: String },                    // undoes create/duplicate
     RenameRequest { from: String, to: String },            // undoes rename/move
     RestoreVarFiles { files: Vec<(PathBuf, String)> },     // undoes var/env/secret edits
+    DeleteEnvFile { name: String, prev_active: String },   // undoes create-environment
     SaveRequest { prev_saved: Option<HttpRequest> },       // undoes save (memory only)
 }
 ```
@@ -78,8 +79,14 @@ file text captured at the `ProjectContext::edit_*` chokepoints. Undo works
 even though history is in-memory, at the cost of recoverability ending at
 app exit.
 
-`Context` records the request slug, focused pane/field, and cursor position
-at capture time so undo can jump back and place the cursor.
+`Context` records the request slug, focused pane/field, and cursor
+position so undo can jump back and place the cursor. Two positions are
+kept per step: the cursor as of `before` (used by undo) and as of `after`
+(used by redo); coalescing keeps the merged step's `before` cursor and
+takes the newest `after` cursor. Table-cell fields are addressed by key,
+not row index, so cursor restore still lands on the right cell after
+intervening row insertions/deletions; if the key no longer exists, focus
+falls back to the pane without a cell selection.
 
 ## Capture
 
@@ -94,6 +101,11 @@ mouse), the main loop calls `app.capture_undo()`:
 2. If different, push `EditorDelta { before: shadow, after: current }` and
    update the shadow.
 3. If unchanged, do nothing.
+
+Performance note: compare before cloning — `PartialEq` short-circuits on
+the first differing field, and a clone happens only when a change is
+detected. Large bodies make the equality check a memcmp-speed string
+compare, not a per-keystroke clone.
 
 The hook sits in `main.rs` after `handle_key` / `handle_mouse` return, so
 it catches both the Action path and the direct-mutation path with no
@@ -128,6 +140,7 @@ call; pushed only if the storage call succeeds:
 | Create / duplicate request | `DeleteRequestFile` |
 | Rename / move request | `RenameRequest` reversed |
 | Var / env / secret edits | old file text from `ProjectContext::edit_*` → `RestoreVarFiles` |
+| Create environment | `DeleteEnvFile { name }` (delete the new env file; if it was the active env, revert active env to the previous one) |
 | Save request | previous `editor.saved` snapshot → `SaveRequest` |
 
 **Not recorded** (deliberately out of history): `.local/state.toml` writes
@@ -154,6 +167,13 @@ path):
   reconstructible from the stack — every change to it was captured, and
   the newest delta's `after` is exactly its latest state, so redo walks
   back to it. Toast: "Undid edit in <name>".
+
+  Belt-and-braces guard: the bypass is only valid if capture never missed
+  a change. Before jumping, if the departing editor `is_dirty()` and its
+  current state does not equal the newest history delta's `after` for that
+  slug (or no such delta exists), fall back to the normal dirty-gate
+  prompt instead of bypassing. A capture bug then degrades to a UX
+  annoyance, never silent data loss.
 
 **`DiskOp`**: replay the stored inverse through the existing storage
 functions (atomic writes, same error handling), then trigger the existing
