@@ -2461,6 +2461,59 @@ fn new_request_same_display_name_toasts_and_creates_nothing() {
 }
 
 #[test]
+fn rename_flow_speaks_display_names_and_regenerates_the_slug() {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("Get User".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("get-user"));
+
+    // The prompt prefills the display name, not the slug.
+    app.sidebar.select_slug("get-user");
+    app.refresh_sidebar();
+    app.sidebar.select_slug("get-user");
+    app.update(Action::PromptRenameRequest);
+    let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
+        panic!("expected the rename prompt");
+    };
+    assert_eq!(input.text(), "Get User");
+    app.modals.pop();
+
+    // Renaming (with a sloppy trailing space) regenerates the slug and
+    // rewrites the name.
+    app.update(Action::RenameRequest {
+        from: "get-user".into(),
+        to: "Get User v2 ".into(),
+    });
+    assert_eq!(app.editor.slug.as_deref(), Some("get-user-v2"));
+    assert_eq!(app.editor.name.as_deref(), Some("Get User v2"));
+    assert_eq!(app.sidebar.open_slug.as_deref(), Some("get-user-v2"));
+    let loaded =
+        postui_core::storage::load_request(&app.project.root, "get-user-v2").unwrap();
+    assert_eq!(loaded.name.as_deref(), Some("Get User v2"));
+}
+
+#[test]
+fn delete_confirm_and_duplicate_toast_show_display_names() {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("Fancy Name!".into()));
+    app.sidebar.select_slug("fancy-name");
+    app.refresh_sidebar();
+    app.sidebar.select_slug("fancy-name");
+
+    app.update(Action::ConfirmDeleteRequest);
+    let Some(Modal::Confirm { body, .. }) = app.modals.top() else {
+        panic!("expected the delete confirm");
+    };
+    assert!(body.contains("Fancy Name!"), "display name in confirm: {body}");
+    app.modals.pop();
+
+    app.update(Action::DuplicateRequest);
+    assert!(
+        rendered_text(&mut app).contains("Duplicated to Fancy Name! copy"),
+        "duplicate toast names the copy"
+    );
+}
+
+#[test]
 fn saving_a_legacy_request_does_not_invent_a_name() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();

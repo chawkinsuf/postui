@@ -988,8 +988,9 @@ impl App {
                 match postui_core::storage::duplicate_request(&self.project.root, &slug) {
                     Ok(new_slug) => {
                         self.refresh_sidebar();
+                        let display = self.request_display(&new_slug);
                         self.toasts
-                            .push(format!("Duplicated to {new_slug}"), ToastKind::Success);
+                            .push(format!("Duplicated to {display}"), ToastKind::Success);
                         // Copies land next to the original and open, so the
                         // edit that motivated the duplicate can start at once.
                         self.apply(Action::OpenRequest(new_slug))
@@ -1003,9 +1004,17 @@ impl App {
             }
             Action::PromptRenameRequest => {
                 if let Some(slug) = self.sidebar.selected_slug() {
+                    // Prefill what the user reads: the display name, under
+                    // its folder's slug path (never the leaf slug).
+                    let prefill = match slug.rsplit_once('/') {
+                        Some((folder, _)) => {
+                            format!("{folder}/{}", self.request_display(&slug))
+                        }
+                        None => self.request_display(&slug),
+                    };
                     self.modals.push(Modal::Prompt {
                         title: "Rename request".into(),
-                        input: crate::components::line_input::LineInput::new(&slug),
+                        input: crate::components::line_input::LineInput::new(&prefill),
                         kind: PromptKind::RenameRequest { from: slug },
                         revealed: false,
                     });
@@ -1065,9 +1074,10 @@ impl App {
             }
             Action::ConfirmDeleteRequest => {
                 if let Some(slug) = self.sidebar.selected_slug() {
+                    let display = self.request_display(&slug);
                     self.modals.push(Modal::Confirm {
                         title: "Delete request".into(),
-                        body: format!("Delete \"{slug}\"? This cannot be undone."),
+                        body: format!("Delete \"{display}\"? This cannot be undone."),
                         choices: vec![
                             ('y', "Delete".into(), vec![Action::DeleteRequest(slug)]),
                             ('n', "Keep".into(), vec![]),
@@ -1090,24 +1100,38 @@ impl App {
                 true
             }
             Action::RenameRequest { from, to } => {
-                if postui_core::storage::validate_slug(&to).is_err() {
-                    self.toasts.push(
-                        "invalid name: lowercase letters, digits, - _ and / only",
-                        ToastKind::Error,
-                    );
-                    return true;
-                }
-                match postui_core::storage::rename_request(&self.project.root, &from, &to) {
-                    Ok(()) => {
+                use postui_core::storage::{self, StorageError};
+                match storage::rename_request_named(&self.project.root, &from, &to) {
+                    Ok((slug, leaf)) => {
                         self.refresh_sidebar();
                         if self.editor.slug.as_deref() == Some(from.as_str()) {
-                            self.editor.slug = Some(to.clone());
-                            self.sidebar.open_slug = Some(to);
+                            self.editor.slug = Some(slug.clone());
+                            // The rename wrote the new display name to
+                            // disk; mirror it in both the live fields and
+                            // the saved snapshot so a rename alone never
+                            // reads as dirty.
+                            self.editor.name = Some(leaf.clone());
+                            if let Some(saved) = self.editor.saved.as_mut() {
+                                saved.name = Some(leaf);
+                            }
+                            self.sidebar.open_slug = Some(slug);
                         }
                     }
-                    Err(e) => {
+                    Err(StorageError::AlreadyExists(taken)) => {
+                        self.toasts.push(
+                            format!("a request named {taken:?} already exists here"),
+                            ToastKind::Error,
+                        );
+                    }
+                    Err(StorageError::InvalidSlug(_)) => {
                         self.toasts
-                            .push(format!("could not rename {from}: {e}"), ToastKind::Error);
+                            .push("request name cannot be empty", ToastKind::Error);
+                    }
+                    Err(e) => {
+                        self.toasts.push(
+                            format!("could not rename {}: {e}", self.request_display(&from)),
+                            ToastKind::Error,
+                        );
                     }
                 }
                 true
@@ -3693,6 +3717,16 @@ impl App {
     /// today's callers ignore it.
     /// Returns whether the request was actually saved, so callers with a
     /// deferred follow-up (the scratch gate) only proceed on success.
+    /// The display name of the request at `slug` — its `name` field when
+    /// the file parses and has one, otherwise the slug leaf (legacy and
+    /// broken files).
+    fn request_display(&self, slug: &str) -> String {
+        postui_core::storage::load_request(&self.project.root, slug)
+            .ok()
+            .and_then(|r| r.name)
+            .unwrap_or_else(|| slug.rsplit('/').next().unwrap_or(slug).to_string())
+    }
+
     fn create_or_save_as(
         &mut self,
         name: &str,
