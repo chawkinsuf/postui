@@ -119,6 +119,12 @@ async fn run(
             }
             redraw = true;
         }
+
+        // Diffs the open request against its shadow copy once per loop
+        // iteration, after both the event branch and the terminal-action
+        // branch have had their chance to mutate it — the one place
+        // keystroke- and mouse-path edits get captured as undo steps.
+        redraw |= app.capture_undo();
     }
     Ok(())
 }

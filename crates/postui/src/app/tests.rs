@@ -8522,4 +8522,57 @@ mod undo_tests {
         app.editor.restore_cursor(&pos);
         assert_eq!(app.editor.table.selected, Some(0));
     }
+
+    #[test]
+    fn url_typing_is_captured_and_coalesced() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("cap".into()));
+        app.capture_undo(); // seed shadow
+        app.editor.sub_focus = SubFocus::Url;
+        for c in ['h', 't', 't', 'p'] {
+            app.editor
+                .handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+            app.capture_undo();
+        }
+        let step = app.history.pop_undo().expect("typing recorded");
+        let crate::undo::StepKind::EditorDelta { before, after, .. } = step.kind else {
+            panic!()
+        };
+        assert_eq!(before.url, "");
+        assert_eq!(after.url, "http");
+        assert!(app.history.pop_undo().is_none(), "one coalesced step");
+    }
+
+    #[test]
+    fn opening_another_request_reseeds_without_recording() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("one".into()));
+        app.capture_undo();
+        app.update(Action::CreateRequest("two".into()));
+        app.capture_undo();
+        // create itself may record FileStates steps (Task 6), but must not
+        // record an EditorDelta for the editor being swapped out.
+        while let Some(step) = app.history.pop_undo() {
+            assert!(
+                !matches!(step.kind, crate::undo::StepKind::EditorDelta { .. }),
+                "request switch must not record an EditorDelta"
+            );
+        }
+    }
+
+    #[test]
+    fn format_body_stands_alone_mid_burst() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("fmt".into()));
+        app.capture_undo();
+        app.editor.set_body_text("{\"a\":1}");
+        app.capture_undo();
+        app.update(Action::FormatBody);
+        app.capture_undo();
+        let mut steps = 0;
+        while app.history.pop_undo().is_some() {
+            steps += 1;
+        }
+        assert!(steps >= 2, "format must not merge into the typing step");
+    }
 }

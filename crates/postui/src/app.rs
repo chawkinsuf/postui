@@ -171,6 +171,23 @@ pub struct App {
     /// Owns (and, on drop, removes) the throwaway project directory made by
     /// `App::new_for_test()`. Always `None` outside of tests.
     _test_dir: Option<tempfile::TempDir>,
+    /// The undo/redo stacks. Populated by `capture_undo` and by later
+    /// tasks' Undo/Redo apply arms.
+    pub history: crate::undo::History,
+    /// The open request as of the last `capture_undo` call (with its slug),
+    /// diffed against the live editor each call to detect edits that never
+    /// went through an `Action`. `None` before the first request is open.
+    shadow: Option<(Option<String>, postui_core::model::HttpRequest)>,
+    /// The cursor position captured alongside `shadow`, so a recorded step's
+    /// `cursor_before` reflects where the cursor sat before this burst of
+    /// edits began, not just before the immediately preceding keystroke.
+    shadow_cursor: crate::undo::CursorPos,
+    /// Set by wholesale-change arms (format/minify, discard, method change,
+    /// insert-var, `$EDITOR` round-trip, table row delete/duplicate) so the
+    /// next `capture_undo` records a standalone, non-coalescing step and
+    /// clears redo, even mid-typing-burst. Consumed (reset to `false`) by
+    /// `capture_undo` on every call.
+    no_coalesce: bool,
 }
 
 /// What to do with the chosen startup root once its source is known.
@@ -473,6 +490,10 @@ impl App {
             last_action_failed: false,
             _test_rx: None,
             _test_dir: None,
+            history: crate::undo::History::new(),
+            shadow: None,
+            shadow_cursor: crate::undo::CursorPos::None,
+            no_coalesce: false,
         };
         app.prompt_migration_if_pending();
         app
@@ -628,6 +649,54 @@ impl App {
         Some(TokenTip { name, anchor })
     }
 
+    /// Diffs the open request against the shadow copy and records an undo
+    /// step for any change. Runs once per input event from the main loop —
+    /// the one place keystroke- and mouse-path edits (which never become
+    /// Actions) get captured. Returns whether a step was recorded.
+    pub fn capture_undo(&mut self) -> bool {
+        let current_slug = self.editor.slug.clone();
+        let cursor = self.editor.cursor_pos();
+        match &self.shadow {
+            // Which request is open changed (open/create/delete/rename/
+            // save-as): re-seed, never record — the transition itself is
+            // not an edit (its disk half is captured as its own step).
+            Some((slug, _)) if *slug != current_slug => {}
+            Some((_, prev)) => {
+                let current = self.editor.current_request();
+                if *prev != current {
+                    let step = crate::undo::Step {
+                        kind: crate::undo::StepKind::EditorDelta {
+                            slug: current_slug.clone(),
+                            before: prev.clone(),
+                            after: current.clone(),
+                        },
+                        context: crate::undo::Context {
+                            slug: current_slug.clone(),
+                            cursor_before: std::mem::replace(
+                                &mut self.shadow_cursor,
+                                cursor.clone(),
+                            ),
+                            cursor_after: cursor.clone(),
+                        },
+                    };
+                    if std::mem::take(&mut self.no_coalesce) {
+                        self.history.record_no_coalesce(step);
+                    } else {
+                        self.history.record(step, std::time::Instant::now());
+                    }
+                    self.shadow = Some((current_slug, current));
+                    self.shadow_cursor = cursor;
+                    return true;
+                }
+            }
+            None => {}
+        }
+        self.no_coalesce = false;
+        self.shadow = Some((current_slug, self.editor.current_request()));
+        self.shadow_cursor = cursor;
+        false
+    }
+
     fn apply(&mut self, action: Action) -> bool {
         match action {
             // An unsaved request gates quitting behind the same confirm as
@@ -655,6 +724,7 @@ impl App {
                 true
             }
             Action::DiscardChanges => {
+                self.no_coalesce = true;
                 if let (slug, Some(saved)) = (self.editor.slug.clone(), self.editor.saved.clone()) {
                     // A cell still under the caret is part of what's being
                     // thrown away — drop it without committing, and clear
@@ -827,6 +897,7 @@ impl App {
                 true
             }
             Action::CycleMethod => {
+                self.no_coalesce = true;
                 self.editor.method = self.editor.method.cycle();
                 true
             }
@@ -851,6 +922,7 @@ impl App {
                 true
             }
             Action::SetMethod(m) => {
+                self.no_coalesce = true;
                 self.editor.method = m;
                 true
             }
@@ -863,9 +935,16 @@ impl App {
                 self.table_collapsed = !self.table_collapsed;
                 true
             }
-            Action::FormatBody => self.transform_body(postui_core::json::format),
-            Action::MinifyBody => self.transform_body(postui_core::json::minify),
+            Action::FormatBody => {
+                self.no_coalesce = true;
+                self.transform_body(postui_core::json::format)
+            }
+            Action::MinifyBody => {
+                self.no_coalesce = true;
+                self.transform_body(postui_core::json::minify)
+            }
             Action::ToggleBodyVars => {
+                self.no_coalesce = true;
                 self.editor.substitute_body = !self.editor.substitute_body;
                 true
             }
@@ -876,6 +955,7 @@ impl App {
             // Suspending the terminal is the main loop's job; park the action
             // and let it pick this up after the current key is handled.
             Action::OpenBodyInEditor => {
+                self.no_coalesce = true;
                 self.pending_terminal_action = Some(Action::OpenBodyInEditor);
                 true
             }
@@ -1041,6 +1121,7 @@ impl App {
                 true
             }
             Action::DeleteTableRow(i) => {
+                self.no_coalesce = true;
                 let map = match self.editor.active_tab {
                     EditorTab::Params => &mut self.editor.params,
                     EditorTab::Headers => &mut self.editor.headers,
@@ -1051,6 +1132,7 @@ impl App {
                 true
             }
             Action::DuplicateTableRow(i) => {
+                self.no_coalesce = true;
                 let map = match self.editor.active_tab {
                     EditorTab::Params => &mut self.editor.params,
                     EditorTab::Headers => &mut self.editor.headers,
@@ -1420,6 +1502,8 @@ impl App {
                 true
             }
             Action::ForceSwitchProject(target) => {
+                self.history.clear();
+                self.shadow = None;
                 self.project
                     .persist_local_state(self.editor.slug.as_deref());
                 // Slugs are project-relative: a cached response carried
@@ -1707,6 +1791,7 @@ impl App {
                 true
             }
             Action::InsertVarText(text) => {
+                self.no_coalesce = true;
                 if self.focus == PaneId::Editor && self.editor.sub_focus == SubFocus::Url {
                     self.editor.url.insert_str(&text);
                 } else if self.focus == PaneId::Editor

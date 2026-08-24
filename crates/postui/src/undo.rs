@@ -198,6 +198,21 @@ impl History {
         self.coalescing = false;
     }
 
+    /// Records `step` as a fresh, non-coalescing undo step and clears the
+    /// redo stack — unlike `push_undo_no_coalesce`, which deliberately
+    /// leaves redo alone for undo/redo apply push-backs. Used when a new
+    /// (not replayed) step must not merge with what came before *and* must
+    /// invalidate any stale redo entries (spec's linear-history rule).
+    pub fn record_no_coalesce(&mut self, step: Step) {
+        self.redo.clear();
+        self.undo.push(step);
+        if self.undo.len() > MAX_STEPS {
+            self.undo.remove(0);
+        }
+        self.last_record = Some(Instant::now());
+        self.coalescing = false;
+    }
+
     /// Clears both stacks and coalescing state.
     pub fn clear(&mut self) {
         self.undo.clear();
@@ -314,6 +329,17 @@ mod tests {
         let s = h.pop_undo().unwrap();
         h.push_redo(s);
         h.record(delta("", "x"), t0 + Duration::from_secs(5));
+        assert!(h.pop_redo().is_none());
+    }
+
+    #[test]
+    fn record_no_coalesce_clears_redo() {
+        let mut h = History::new();
+        let t0 = Instant::now();
+        h.record(delta("", "h"), t0);
+        let s = h.pop_undo().unwrap();
+        h.push_redo(s);
+        h.record_no_coalesce(delta("", "x"));
         assert!(h.pop_redo().is_none());
     }
 
