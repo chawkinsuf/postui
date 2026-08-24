@@ -181,6 +181,16 @@ pub fn all_commands() -> Vec<Command> {
             action: Action::ExtractToVariable,
         },
         Command {
+            id: "undo",
+            name: "Undo",
+            action: Action::Undo,
+        },
+        Command {
+            id: "redo",
+            name: "Redo",
+            action: Action::Redo,
+        },
+        Command {
             id: "quit",
             name: "Quit",
             action: Action::Quit,

@@ -73,16 +73,25 @@ impl KeyCombo {
     }
 
     pub fn from_event(ev: &KeyEvent) -> Self {
-        // SHIFT is implicit in the char itself for printable keys.
+        // SHIFT is implicit in the char itself for printable keys under a
+        // plain terminal, which delivers the already-shifted char. Under the
+        // kitty keyboard protocol, though, crossterm can report the base
+        // char (e.g. `Char('z')`) with SHIFT still set alongside CONTROL —
+        // stripping SHIFT there would collapse ctrl+shift+z into ctrl+z. So
+        // uppercase the char first (a no-op if it's already the shifted
+        // form) and then strip SHIFT either way.
         // Also strip SHIFT from BackTab since terminals deliver it with SHIFT still set.
-        let mods = match ev.code {
-            KeyCode::Char(_) | KeyCode::BackTab => ev.modifiers.difference(KeyModifiers::SHIFT),
-            _ => ev.modifiers,
+        let (code, mods) = match ev.code {
+            KeyCode::Char(c) if ev.modifiers.contains(KeyModifiers::SHIFT) => (
+                KeyCode::Char(c.to_ascii_uppercase()),
+                ev.modifiers.difference(KeyModifiers::SHIFT),
+            ),
+            KeyCode::Char(_) | KeyCode::BackTab => {
+                (ev.code, ev.modifiers.difference(KeyModifiers::SHIFT))
+            }
+            _ => (ev.code, ev.modifiers),
         };
-        Self {
-            code: ev.code,
-            modifiers: mods,
-        }
+        Self { code, modifiers: mods }
     }
 }
 
@@ -127,6 +136,8 @@ pub(crate) fn named_actions() -> Vec<(&'static str, Action)> {
         ("var_manager_open", Action::OpenVarManager),
         ("extract_to_variable", Action::ExtractToVariable),
         ("request_duplicate", Action::DuplicateRequest),
+        ("undo", Action::Undo),
+        ("redo", Action::Redo),
     ]
 }
 
@@ -187,6 +198,9 @@ impl Keymap {
             ("alt+v", Action::OpenVarManager),
             ("ctrl+shift+e", Action::ExtractToVariable),
             ("ctrl+shift+d", Action::DuplicateRequest),
+            ("ctrl+z", Action::Undo),
+            ("ctrl+shift+z", Action::Redo),
+            ("ctrl+y", Action::Redo),
         ];
         let mut map = Self {
             bindings: HashMap::new(),
@@ -322,6 +336,9 @@ mod tests {
             Some(Action::OpenVarPicker { completing: false })
         );
         assert_eq!(get("alt+v"), Some(Action::OpenVarManager));
+        assert_eq!(get("ctrl+z"), Some(Action::Undo));
+        assert_eq!(get("ctrl+shift+z"), Some(Action::Redo));
+        assert_eq!(get("ctrl+y"), Some(Action::Redo));
     }
 
     #[test]
@@ -441,6 +458,17 @@ mod tests {
     fn from_event_strips_shift_on_chars() {
         let ev = KeyEvent::new(KeyCode::Char('Q'), KeyModifiers::SHIFT);
         assert_eq!(KeyCombo::from_event(&ev).modifiers, KeyModifiers::NONE);
+    }
+
+    #[test]
+    fn from_event_uppercases_before_stripping_shift_for_kitty_protocol() {
+        // Under DISAMBIGUATE_ESCAPE_CODES, crossterm can report the base
+        // char with SHIFT|CONTROL rather than the pre-shifted char.
+        let ev = KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        assert_eq!(
+            KeyCombo::from_event(&ev),
+            KeyCombo::parse("ctrl+shift+z").unwrap()
+        );
     }
 
     #[test]

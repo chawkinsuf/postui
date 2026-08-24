@@ -6,7 +6,8 @@ use postui::keys::Keymap;
 use postui::ui;
 use ratatui::crossterm::event::{
     DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture, Event,
-    EventStream, KeyEventKind,
+    EventStream, KeyEventKind, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::execute;
 use std::time::Duration;
@@ -26,7 +27,12 @@ async fn main() -> anyhow::Result<()> {
     enable_mouse_and_wrap_panic_hook();
 
     let result = run(&mut terminal, cli_root).await;
-    let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableFocusChange);
+    let _ = execute!(
+        std::io::stdout(),
+        PopKeyboardEnhancementFlags,
+        DisableMouseCapture,
+        DisableFocusChange
+    );
     ratatui::restore();
     result
 }
@@ -39,9 +45,25 @@ async fn main() -> anyhow::Result<()> {
 /// drives `Action::ReloadProjectFiles` on `Event::FocusGained`.
 fn enable_mouse_and_wrap_panic_hook() {
     let _ = execute!(std::io::stdout(), EnableMouseCapture, EnableFocusChange);
+    // Ctrl+Shift+Z is only distinguishable from Ctrl+Z with the kitty
+    // keyboard protocol; without it Ctrl+Y is the redo binding that works.
+    if matches!(
+        ratatui::crossterm::terminal::supports_keyboard_enhancement(),
+        Ok(true)
+    ) {
+        let _ = execute!(
+            std::io::stdout(),
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        );
+    }
     let prev_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableFocusChange);
+        let _ = execute!(
+            std::io::stdout(),
+            PopKeyboardEnhancementFlags,
+            DisableMouseCapture,
+            DisableFocusChange
+        );
         prev_hook(info);
     }));
 }
@@ -162,7 +184,12 @@ fn edit_body_externally(
     let program = parts.next().unwrap_or("vi").to_string();
     let args: Vec<&str> = parts.collect();
 
-    let _ = execute!(std::io::stdout(), DisableMouseCapture, DisableFocusChange);
+    let _ = execute!(
+        std::io::stdout(),
+        PopKeyboardEnhancementFlags,
+        DisableMouseCapture,
+        DisableFocusChange
+    );
     ratatui::restore();
 
     let status = std::process::Command::new(&program)

@@ -470,4 +470,12 @@ pub enum Action {
     /// The migration confirm modal's "Not now": leaves the files as they
     /// are; the project stays open with its variables inert.
     DeclineMigration,
+
+    // -- Undo/redo (spec: docs/superpowers/specs/2026-08-24-undo-redo-design.md) --
+    /// Undo the last recorded change, wherever it happened. Inert while a
+    /// modal is open.
+    Undo,
+    /// Re-apply the most recently undone change. Same modality rules as
+    /// [`Action::Undo`].
+    Redo,
 }

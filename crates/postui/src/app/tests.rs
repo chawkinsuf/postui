@@ -8575,4 +8575,69 @@ mod undo_tests {
         }
         assert!(steps >= 2, "format must not merge into the typing step");
     }
+
+    #[test]
+    fn undo_reverts_url_typing_and_redo_restores() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("uz".into()));
+        app.capture_undo();
+        app.editor.sub_focus = SubFocus::Url;
+        for c in "abc".chars() {
+            app.editor
+                .handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+            app.capture_undo();
+        }
+        app.update(Action::Undo);
+        assert_eq!(app.editor.url.text(), "");
+        app.update(Action::Redo);
+        assert_eq!(app.editor.url.text(), "abc");
+    }
+
+    #[test]
+    fn empty_stacks_toast_quietly() {
+        let mut app = App::new_for_test();
+        app.update(Action::Undo);
+        let msgs = app.toasts.messages();
+        assert!(
+            msgs.iter().any(|m| m.contains("Nothing to undo")),
+            "expected a 'Nothing to undo' toast: {msgs:?}"
+        );
+        app.update(Action::Redo);
+        let msgs = app.toasts.messages();
+        assert!(
+            msgs.iter().any(|m| m.contains("Nothing to redo")),
+            "expected a 'Nothing to redo' toast: {msgs:?}"
+        );
+    }
+
+    #[test]
+    fn undo_is_inert_while_a_modal_is_open() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("modal".into()));
+        app.capture_undo();
+        app.editor.sub_focus = SubFocus::Url;
+        app.editor
+            .handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        app.capture_undo();
+        app.update(Action::PromptNewRequest); // opens a modal
+        app.update(Action::Undo);
+        assert_eq!(app.editor.url.text(), "x", "no undo under a modal");
+    }
+
+    #[test]
+    fn edit_after_undo_clears_redo() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("lin".into()));
+        app.capture_undo();
+        app.editor.sub_focus = SubFocus::Url;
+        app.editor
+            .handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        app.capture_undo();
+        app.update(Action::Undo);
+        app.editor
+            .handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+        app.capture_undo();
+        app.update(Action::Redo);
+        assert_eq!(app.editor.url.text(), "z", "redo stack cleared by new edit");
+    }
 }

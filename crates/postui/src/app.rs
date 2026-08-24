@@ -1751,6 +1751,47 @@ impl App {
                 );
                 true
             }
+            Action::Undo => {
+                if !self.modals.is_empty() {
+                    return true;
+                }
+                // A live cell edit is part of what's being undone: commit it
+                // so it becomes a step, then capture any pending delta.
+                self.commit_table_edit();
+                self.capture_undo();
+                match self.history.pop_undo() {
+                    None => {
+                        self.toasts.push("Nothing to undo", ToastKind::Info);
+                    }
+                    Some(step) => {
+                        if self.apply_undo_step(step, false) {
+                            self.history.break_coalescing();
+                        }
+                    }
+                }
+                true
+            }
+            Action::Redo => {
+                if !self.modals.is_empty() {
+                    return true;
+                }
+                self.commit_table_edit();
+                // A pending uncaptured edit means the user changed something
+                // after the last undo; capturing it clears the redo stack,
+                // which is exactly the linear-history contract.
+                self.capture_undo();
+                match self.history.pop_redo() {
+                    None => {
+                        self.toasts.push("Nothing to redo", ToastKind::Info);
+                    }
+                    Some(step) => {
+                        if self.apply_undo_step(step, true) {
+                            self.history.break_coalescing();
+                        }
+                    }
+                }
+                true
+            }
             Action::ReloadProjectFiles => {
                 let (changed, warnings) = self.project.reload_if_changed();
                 if changed {
@@ -4217,6 +4258,47 @@ impl App {
         }
         changed
     }
+
+    /// Applies one popped step in the given direction and pushes it onto
+    /// the opposite stack. Returns false when the step could not be
+    /// applied (it is then dropped — spec: failure handling).
+    fn apply_undo_step(&mut self, step: crate::undo::Step, redo: bool) -> bool {
+        use crate::undo::StepKind;
+        match &step.kind {
+            StepKind::EditorDelta { slug, before, after } => {
+                if *slug != self.editor.slug {
+                    // Task 5: jump-back. Until then: discard with a toast.
+                    self.toasts.push(
+                        "cannot undo: that request is no longer open",
+                        ToastKind::Error,
+                    );
+                    return false;
+                }
+                let (target, cursor) = if redo {
+                    (after.clone(), step.context.cursor_after.clone())
+                } else {
+                    (before.clone(), step.context.cursor_before.clone())
+                };
+                self.editor.apply_snapshot(&target);
+                self.editor.restore_cursor(&cursor);
+                self.focus = PaneId::Editor;
+                // The applied state IS the new shadow; without this the
+                // capture hook would record the undo as a fresh edit.
+                self.shadow = Some((self.editor.slug.clone(), target));
+                self.shadow_cursor = cursor;
+                if redo {
+                    self.history.push_undo_no_coalesce(step.clone());
+                } else {
+                    self.history.push_redo(step.clone());
+                }
+                true
+            }
+            StepKind::FileStates { .. } | StepKind::SaveRequest { .. } => {
+                debug_assert!(false, "later task");
+                false
+            }
+        }
+    }
 }
 
 /// The only global actions a modified (ctrl/alt) combo may still trigger
@@ -4232,7 +4314,12 @@ impl App {
 fn screen_escape_whitelist(action: &Action) -> bool {
     matches!(
         action,
-        Action::OpenPalette | Action::OpenVarManager | Action::CloseScreen | Action::Quit
+        Action::OpenPalette
+            | Action::OpenVarManager
+            | Action::CloseScreen
+            | Action::Quit
+            | Action::Undo
+            | Action::Redo
     )
 }
 
