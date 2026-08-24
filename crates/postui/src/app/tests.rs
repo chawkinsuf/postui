@@ -1683,9 +1683,9 @@ fn a_failing_gate_save_does_not_run_the_deferred_action() {
     let keymap = Keymap::default_bindings();
     app.update(Action::Quit);
     app.handle_key(&keymap, plain('s'));
-    // An invalid name: the save fails with a toast, so quitting now would
+    // A blank name: the save fails with a toast, so quitting now would
     // still lose the content.
-    for c in "Bad Name!".chars() {
+    for c in "   ".chars() {
         app.handle_key(&keymap, plain(c));
     }
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -2406,24 +2406,74 @@ fn new_request_prompt_flow_creates_file_and_opens_it() {
 }
 
 #[test]
-fn new_request_invalid_name_toasts_and_creates_nothing() {
+fn new_request_accepts_free_form_names_and_derives_the_slug() {
     let mut app = App::new_for_test();
     let keymap = Keymap::default_bindings();
     app.update(Action::PromptNewRequest);
-    for c in "Bad Name".chars() {
+    for c in "My Request!".chars() {
         app.handle_key(&keymap, plain(c));
     }
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.editor.slug.as_deref(), Some("my-request"));
+    assert_eq!(app.editor.name.as_deref(), Some("My Request!"));
+    let loaded = postui_core::storage::load_request(&app.project.root, "my-request").unwrap();
+    assert_eq!(loaded.name.as_deref(), Some("My Request!"));
     assert!(
-        app.modals.is_empty(),
-        "modal closes even though the save is rejected"
+        rendered_text(&mut app).contains("Saved My Request!"),
+        "toast names the request, not the slug"
     );
-    assert!(!app.toasts.is_empty(), "an invalid name must toast");
+}
+
+#[test]
+fn new_request_blank_name_toasts_and_creates_nothing() {
+    let mut app = App::new_for_test();
+    let keymap = Keymap::default_bindings();
+    app.update(Action::PromptNewRequest);
+    for c in "folder/   ".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(!app.toasts.is_empty(), "a blank name must toast");
     assert!(
         postui_core::storage::list_requests(&app.project.root)
             .0
             .is_empty()
     );
+}
+
+#[test]
+fn new_request_same_display_name_toasts_and_creates_nothing() {
+    let mut app = App::new_for_test();
+    app.update(Action::CreateRequest("My Request!".into()));
+    assert_eq!(
+        postui_core::storage::list_requests(&app.project.root).0.len(),
+        1
+    );
+    app.update(Action::CreateRequest("my request!".into()));
+    assert_eq!(
+        postui_core::storage::list_requests(&app.project.root).0.len(),
+        1,
+        "case-insensitive duplicate display name is rejected"
+    );
+    // A different name that merely collides on slug is fine and dedupes.
+    app.update(Action::CreateRequest("My Request?".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("my-request-2"));
+}
+
+#[test]
+fn saving_a_legacy_request_does_not_invent_a_name() {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::storage::ensure_project(dir.path()).unwrap();
+    postui_core::storage::save_request(dir.path(), "legacy", &req("https://x/a")).unwrap();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("legacy".into()));
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Url;
+    app.handle_key(&Keymap::default_bindings(), plain('/'));
+    app.update(Action::SaveRequest);
+    let loaded = postui_core::storage::load_request(dir.path(), "legacy").unwrap();
+    assert_eq!(loaded.name, None, "no name field appears uninvited");
 }
 
 #[test]

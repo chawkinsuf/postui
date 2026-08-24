@@ -3698,35 +3698,38 @@ impl App {
         name: &str,
         build: impl FnOnce(&str) -> postui_core::model::HttpRequest,
     ) -> bool {
-        if postui_core::storage::validate_slug(name).is_err() {
-            self.toasts.push(
-                "invalid name: lowercase letters, digits, - _ and / only",
-                ToastKind::Error,
-            );
-            return false;
-        }
-        if postui_core::storage::request_exists(&self.project.root, name) {
-            self.toasts.push(
-                format!("request already exists: {name:?}"),
-                ToastKind::Error,
-            );
-            return false;
-        }
+        use postui_core::storage::{self, StorageError};
         let req = build(name);
-        match postui_core::storage::save_request(&self.project.root, name, &req) {
-            Ok(()) => {
-                self.editor.load(Some(name.to_string()), req);
-                self.editor.mark_saved();
+        match storage::create_request_named(&self.project.root, name, req) {
+            Ok((slug, leaf)) => {
+                // Reload from disk so the editor holds exactly what was
+                // written (display name included).
+                if let Ok(saved) = storage::load_request(&self.project.root, &slug) {
+                    self.editor.load(Some(slug.clone()), saved);
+                    self.editor.mark_saved();
+                }
                 self.toasts
-                    .push(format!("Saved {name}"), ToastKind::Success);
-                // Queue name's ancestor folders open, rebuild the tree with
-                // them expanded (so the new row exists at all), then select
-                // it now that it's actually visible.
-                self.sidebar.select_slug(name);
+                    .push(format!("Saved {leaf}"), ToastKind::Success);
+                // Queue the slug's ancestor folders open, rebuild the tree
+                // with them expanded (so the new row exists at all), then
+                // select it now that it's actually visible.
+                self.sidebar.select_slug(&slug);
                 self.refresh_sidebar();
-                self.sidebar.select_slug(name);
+                self.sidebar.select_slug(&slug);
                 self.apply(Action::PersistLocalState);
                 true
+            }
+            Err(StorageError::AlreadyExists(taken)) => {
+                self.toasts.push(
+                    format!("a request named {taken:?} already exists here"),
+                    ToastKind::Error,
+                );
+                false
+            }
+            Err(StorageError::InvalidSlug(_)) => {
+                self.toasts
+                    .push("request name cannot be empty", ToastKind::Error);
+                false
             }
             Err(e) => {
                 self.toasts
