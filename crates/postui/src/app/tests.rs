@@ -8907,4 +8907,78 @@ mod undo_tests {
             "failed op recorded nothing"
         );
     }
+
+    /// Reviewer finding: `commit_var_form` (the Variable Manager detail
+    /// form's click-away/Enter commit) is called directly from `handle_key`
+    /// — it never routes through `Action::VarEdit`/`self.apply`, so the
+    /// arm-level wrapping alone misses it. Mirrors
+    /// `clicking_the_env_value_field_typing_and_clicking_away_writes_the_env_file`,
+    /// then drives it through Undo/Redo.
+    #[test]
+    fn undo_reverts_a_var_form_commit_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        var_project(dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_root(tx, dir.path().to_path_buf());
+        goto_row(&mut app, |r| {
+            r == &crate::components::varmanager::VmRow::Var("base_url".into())
+        });
+
+        let env_path = dir.path().join("environments/qa.toml");
+        let before_text = std::fs::read_to_string(&env_path).unwrap();
+
+        let r = field_rect(&mut app, VmField::EnvValue);
+        app.handle_mouse(left_down(r.x + 1, r.y + 1));
+        let keymap = Keymap::default_bindings();
+        app.handle_key(&keymap, plain('9'));
+        // Click away commits (Task 8's commit-first rule).
+        let row = app.varmanager.left_cursor;
+        let left_rect = app.hits.rect_of(&crate::hit::Hit::VmLeftRow(row)).unwrap();
+        app.handle_mouse(left_down(left_rect.x + 1, left_rect.y + 1));
+
+        assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+        let with_9 = std::fs::read_to_string(&env_path).unwrap();
+        assert!(with_9.contains("https://qa.example.com9"), "{with_9}");
+        assert_ne!(with_9, before_text);
+
+        app.update(Action::Undo);
+        assert_eq!(std::fs::read_to_string(&env_path).unwrap(), before_text);
+        app.update(Action::Redo);
+        assert_eq!(std::fs::read_to_string(&env_path).unwrap(), with_9);
+    }
+
+    /// Reviewer finding: `commit_grid_edit` (the group entries grid's
+    /// click-away/Enter commit) has the same gap as `commit_var_form` —
+    /// called directly from `handle_key`, never through
+    /// `Action::VarStruct`/`Action::VarEdit`. Mirrors
+    /// `editing_a_field_cell_and_clicking_away_rewrites_the_env_file`.
+    #[test]
+    fn undo_reverts_a_grid_cell_commit_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        var_project(dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_root(tx, dir.path().to_path_buf());
+        goto_group(&mut app, "user");
+
+        let env_path = dir.path().join("environments/qa.toml");
+        let before_text = std::fs::read_to_string(&env_path).unwrap();
+
+        let r = cell_rect(&mut app, 0, 1);
+        app.handle_mouse(left_down(r.x, r.y));
+        let keymap = Keymap::default_bindings();
+        app.handle_key(&keymap, plain('9'));
+        // Clicking a different cell commits the first one.
+        let other = cell_rect(&mut app, 1, 1);
+        app.handle_mouse(left_down(other.x, other.y));
+
+        assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+        let with_9 = std::fs::read_to_string(&env_path).unwrap();
+        assert!(with_9.contains("10019"), "{with_9}");
+        assert_ne!(with_9, before_text);
+
+        app.update(Action::Undo);
+        assert_eq!(std::fs::read_to_string(&env_path).unwrap(), before_text);
+        app.update(Action::Redo);
+        assert_eq!(std::fs::read_to_string(&env_path).unwrap(), with_9);
+    }
 }

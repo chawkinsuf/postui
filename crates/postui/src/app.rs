@@ -2753,9 +2753,16 @@ impl App {
         };
         let value = input.text().to_string();
         let op = var_edit_op_for(&self.project, &name, field, value);
-        if let Err(msg) = self.apply_var_edit(&op) {
-            self.varmanager.form.editing = Some((field, input));
-            self.toasts.push(msg, ToastKind::Error);
+        // This commit never routes through `self.apply` — it's called
+        // directly from `handle_key` (click-away/Enter), so it needs its
+        // own capture rather than relying on `Action::VarEdit`'s wrap.
+        let before = self.read_file_states(&self.project.var_file_paths());
+        match self.apply_var_edit(&op) {
+            Ok(()) => self.record_var_file_step(before),
+            Err(msg) => {
+                self.varmanager.form.editing = Some((field, input));
+                self.toasts.push(msg, ToastKind::Error);
+            }
         }
     }
 
@@ -3375,6 +3382,9 @@ impl App {
             .unwrap_or_default();
         let ghost = edit.row >= entries.len();
 
+        // Same as `commit_var_form`: called directly from `handle_key`,
+        // never through `self.apply`, so it needs its own capture.
+        let before = self.read_file_states(&self.project.var_file_paths());
         let result = if ghost {
             // Only the ghost's name cell creates anything; an emptied name
             // creates nothing (and neither does a value typed into a row
@@ -3419,6 +3429,7 @@ impl App {
         match result {
             Ok(()) => {
                 self.varmanager.sync(&self.project);
+                self.record_var_file_step(before);
                 // The ghost flow keeps going left-to-right: the row that
                 // was the ghost is now a real entry (appended, so it keeps
                 // its index) with its first field cell live.
