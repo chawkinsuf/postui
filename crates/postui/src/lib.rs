@@ -12,4 +12,5 @@ pub mod project_ctx;
 pub mod session;
 pub mod theme;
 pub mod ui;
+pub mod undo;
 pub mod usage;
