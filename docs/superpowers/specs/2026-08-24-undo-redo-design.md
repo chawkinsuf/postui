@@ -59,25 +59,28 @@ pub enum StepKind {
         after: HttpRequest,
         coalesce: CoalesceKey,   // field id + timestamp
     },
-    // Write-through op: inverse captured at dispatch time
-    DiskOp(DiskInverse),
-}
-
-pub enum DiskInverse {
-    RestoreRequestFile { slug: String, content: String },  // undoes delete
-    DeleteRequestFile { slug: String },                    // undoes create/duplicate
-    RenameRequest { from: String, to: String },            // undoes rename/move
-    RestoreVarFiles { files: Vec<(PathBuf, String)> },     // undoes var/env/secret edits
-    DeleteEnvFile { name: String, prev_active: String },   // undoes create-environment
-    SaveRequest { prev_saved: Option<HttpRequest> },       // undoes save (memory only)
+    // Write-through op: before/after file states captured around the op
+    FileStates {
+        // (path, text) pairs; None = file absent. Undo writes `before`,
+        // redo writes `after` — one apply function, no per-op variants,
+        // multi-file ops (rename = two paths, group reshape = vars +
+        // every env file) handled uniformly.
+        before: Vec<(PathBuf, Option<String>)>,
+        after: Vec<(PathBuf, Option<String>)>,
+        // create-environment also switches the active env; undo/redo
+        // restores it alongside the files when set.
+        active_env: Option<(Option<String>, Option<String>)>, // (before, after)
+    },
+    // Undoes a request save: memory only — restores the previous
+    // `editor.saved`, so `is_dirty()` flips back on and the file keeps
+    // its saved content.
+    SaveRequest { slug: String, prev_saved: Option<HttpRequest> },
 }
 ```
 
-Disk inverses store *content*, not descriptions: undoing a delete rewrites
-the file from stored TOML text; undoing a variable edit restores the old
-file text captured at the `ProjectContext::edit_*` chokepoints. Undo works
-even though history is in-memory, at the cost of recoverability ending at
-app exit.
+Disk steps store *content*, not descriptions: the touched files' full text
+is read just before and just after the operation. Undo works even though
+history is in-memory, at the cost of recoverability ending at app exit.
 
 `Context` records the request slug, focused pane/field, and cursor
 position so undo can jump back and place the cursor. Two positions are
@@ -131,17 +134,18 @@ their own step.
 
 ### Disk-op inverses
 
-Captured inside `App::apply` in each mutating arm, before the storage
-call; pushed only if the storage call succeeds:
+Captured inside `App::apply` in each mutating arm: the touched files are
+read into `before` ahead of the storage call and into `after` once it
+succeeds; the step is pushed only on success:
 
-| Operation | Inverse captured |
+| Operation | Files captured |
 |---|---|
-| Delete request | read file content first → `RestoreRequestFile` |
-| Create / duplicate request | `DeleteRequestFile` |
-| Rename / move request | `RenameRequest` reversed |
-| Var / env / secret edits | old file text from `ProjectContext::edit_*` → `RestoreVarFiles` |
-| Create environment | `DeleteEnvFile { name }` (delete the new env file; if it was the active env, revert active env to the previous one) |
-| Save request | previous `editor.saved` snapshot → `SaveRequest` |
+| Delete request | the request file (`after` = absent) |
+| Create / duplicate request | the new request file (`before` = absent) |
+| Rename / move request | both paths (old: content→absent, new: absent→content) |
+| Var / env / secret edits | `variables.toml`, `environments/*.toml`, `.local/secrets.toml` — whichever the op touches (a shared snapshot helper reads them all; identical before/after entries are dropped) |
+| Create environment | the new env file (`before` = absent), plus the active-env transition |
+| Save request | none — `SaveRequest { prev_saved }` step, memory only |
 
 **Not recorded** (deliberately out of history): `.local/state.toml` writes
 (expanded folders, selections, active-env switch — navigation, not edits),
@@ -175,13 +179,14 @@ path):
   prompt instead of bypassing. A capture bug then degrades to a UX
   annoyance, never silent data loss.
 
-**`DiskOp`**: replay the stored inverse through the existing storage
-functions (atomic writes, same error handling), then trigger the existing
-refresh paths (sidebar rebuild for request-file ops, varmanager/resolved
-refresh for variable ops). The forward inverse for the redo stack is
-captured at undo time the same way the original was. `SaveRequest` undo
-touches no files: it restores the previous `editor.saved`, so `is_dirty()`
-flips back on.
+**`FileStates`**: undo writes every `before` entry (content via the
+existing atomic writer; `None` deletes the file), redo writes every
+`after` entry — the same apply function both ways, nothing re-derived at
+undo time. Then the existing refresh paths run: sidebar rebuild for
+request-file steps, project-file reload + varmanager refresh for
+variable steps, and the active-env transition is restored when the step
+carries one. `SaveRequest` undo touches no files: it restores the
+previous `editor.saved`, so `is_dirty()` flips back on.
 
 **Failure handling.** A file may have changed or vanished outside the app
 between capture and undo. Every apply is fallible; on failure the step is
@@ -226,7 +231,7 @@ bursts, mouse-driven table edits, `$EDITOR` round-trip.
 | `crates/postui/src/action.rs` | `Undo`, `Redo` variants + palette metadata |
 | `crates/postui/src/keys.rs` | Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y bindings |
 | `crates/postui/src/components/editor.rs` | snapshot-apply (decompose into fields, restore cursor) |
-| `crates/postui/src/project_ctx.rs` | `edit_*` methods return old file text |
+| `crates/postui/src/project_ctx.rs` | var-file snapshot helper (reads `variables.toml` + env files + secrets as `(PathBuf, Option<String>)` pairs) |
 | `crates/postui/src/app/tests.rs` | new test module |
 
 `postui-core` is unchanged except possibly a small storage helper. Input
