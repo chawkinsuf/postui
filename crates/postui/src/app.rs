@@ -1387,16 +1387,22 @@ impl App {
                 true
             }
             Action::CancelSend => self.session.cancel(),
-            Action::SetSecret { name, value } => match self.project.set_secret(&name, value) {
-                Ok(()) => self.apply(Action::ForceSend),
-                Err(e) => {
-                    self.toasts.push(
-                        format!("could not save secret {name}: {e}"),
-                        ToastKind::Error,
-                    );
-                    true
+            Action::SetSecret { name, value } => {
+                let before = self.read_file_states(&self.project.var_file_paths());
+                match self.project.set_secret(&name, value) {
+                    Ok(()) => {
+                        self.record_var_file_step(before);
+                        self.apply(Action::ForceSend)
+                    }
+                    Err(e) => {
+                        self.toasts.push(
+                            format!("could not save secret {name}: {e}"),
+                            ToastKind::Error,
+                        );
+                        true
+                    }
                 }
-            },
+            }
             Action::ResponseArrived { generation, data } => {
                 // A body too big to parse on the UI thread is handed to a
                 // blocking worker, whose result comes back as
@@ -1750,8 +1756,10 @@ impl App {
                 true
             }
             Action::ApplyMigration => {
+                let before = self.read_file_states(&self.project.var_file_paths());
                 match self.project.apply_migration() {
                     Ok(notes) => {
+                        self.record_var_file_step(before);
                         self.refresh_sidebar();
                         let summary = if notes.is_empty() {
                             "variables migrated \u{2014} a .bak of each rewritten file is beside it"
@@ -1903,8 +1911,10 @@ impl App {
                 true
             }
             Action::VarEdit(op) => {
-                if let Err(msg) = self.apply_var_edit(&op) {
-                    self.toasts.push(msg, ToastKind::Error);
+                let before = self.read_file_states(&self.project.var_file_paths());
+                match self.apply_var_edit(&op) {
+                    Ok(()) => self.record_var_file_step(before),
+                    Err(msg) => self.toasts.push(msg, ToastKind::Error),
                 }
                 true
             }
@@ -1991,6 +2001,7 @@ impl App {
                         .push(format!("no group \"{group}\""), ToastKind::Error);
                     return true;
                 };
+                let before = self.read_file_states(&self.project.var_file_paths());
                 let remaining: Vec<String> = fields.into_iter().filter(|f| f != &member).collect();
                 let envs = postui_core::project::list_environments(&self.project.root);
                 let result = envs
@@ -2006,10 +2017,13 @@ impl App {
                         })
                     });
                 match result {
-                    Ok(()) => self.toasts.push(
-                        format!("removed \"{member}\" from {group}"),
-                        ToastKind::Info,
-                    ),
+                    Ok(()) => {
+                        self.record_var_file_step(before);
+                        self.toasts.push(
+                            format!("removed \"{member}\" from {group}"),
+                            ToastKind::Info,
+                        );
+                    }
                     Err(msg) => self.toasts.push(msg, ToastKind::Error),
                 }
                 true
@@ -2141,6 +2155,7 @@ impl App {
                 true
             }
             Action::VarStruct(op) => {
+                let before = self.read_file_states(&self.project.var_file_paths());
                 match self.apply_var_struct(&op) {
                     Ok(()) => {
                         // A rename carries the detail pane's selection over
@@ -2155,7 +2170,8 @@ impl App {
                                 vm.detail = VmDetail::Group(to.clone());
                             }
                         }
-                        self.varmanager.sync(&self.project)
+                        self.varmanager.sync(&self.project);
+                        self.record_var_file_step(before);
                     }
                     Err(msg) => {
                         self.toasts.push(msg, ToastKind::Error);
@@ -2203,7 +2219,9 @@ impl App {
                 slots,
                 confirmed,
             } => {
+                let before = self.read_file_states(&self.project.var_file_paths());
                 self.apply_group_fields(group, slots, confirmed);
+                self.record_var_file_step(before);
                 true
             }
             Action::PromptRenameEntry { env, group, from } => {
@@ -2322,6 +2340,7 @@ impl App {
                 for (i, field) in fields.into_iter().enumerate() {
                     values.insert(field, if i == 0 { value.clone() } else { String::new() });
                 }
+                let before = self.read_file_states(&self.project.var_file_paths());
                 match self.project.edit_env(&env, |doc| {
                     postui_core::varedit::upsert_entry(
                         doc,
@@ -2332,6 +2351,7 @@ impl App {
                     )
                 }) {
                     Ok(()) => {
+                        self.record_var_file_step(before);
                         self.project.set_selection_for(&env, &owner, &key);
                         self.toasts.push(
                             format!("{owner} \u{2192} {key} ({env})"),
@@ -2363,6 +2383,7 @@ impl App {
                     );
                     return true;
                 };
+                let before = self.read_file_states(&self.project.var_file_paths());
                 let result = self.project.edit_env(&env, |doc| {
                     postui_core::varedit::upsert_entry(
                         doc,
@@ -2373,9 +2394,11 @@ impl App {
                     )
                 });
                 match result {
-                    Ok(()) => self
-                        .toasts
-                        .push(format!("{key} updated"), ToastKind::Success),
+                    Ok(()) => {
+                        self.record_var_file_step(before);
+                        self.toasts
+                            .push(format!("{key} updated"), ToastKind::Success);
+                    }
                     Err(msg) => self.toasts.push(msg, ToastKind::Error),
                 }
                 true
@@ -2448,6 +2471,7 @@ impl App {
                         .push("focus a text field first", ToastKind::Warning);
                     return true;
                 };
+                let before = self.read_file_states(&self.project.var_file_paths());
                 use crate::action::ExtractDestination;
                 let write_result: Result<(), String> = match destination {
                     ExtractDestination::ProjectDefault => {
@@ -2530,6 +2554,14 @@ impl App {
                 let wrote_to_request = matches!(destination, ExtractDestination::Request);
                 match write_result {
                     Ok(()) => {
+                        // The var-file half of the gesture (ProjectDefault/
+                        // ActiveEnv write variables.toml/an env file; a
+                        // Request destination touches neither, so this is a
+                        // no-op there). `save_open_request` below records
+                        // its own SaveRequest step — two steps for one
+                        // gesture is correct here (spec: undo peels the
+                        // token-replacement/save, then the declaration).
+                        self.record_var_file_step(before);
                         self.replace_focused_field_with_token(&name);
                         // Finding 2, same ruling as demote/promote: the
                         // `Request` destination's write only exists so far
@@ -3765,6 +3797,25 @@ impl App {
         });
     }
 
+    /// The var-manager arms' capture helper: `before` is a
+    /// `read_file_states(&self.project.var_file_paths())` snapshot taken
+    /// before the op ran. `var_file_paths` is re-listed from disk, so an op
+    /// that creates or deletes an environment file changes the path set
+    /// between `before` and now — `record_file_step` position-pairs
+    /// before/after, so this extends `before` with a `None` entry for any
+    /// current path it doesn't already cover (i.e. the union of the
+    /// before- and after-side path sets) before handing both to
+    /// `record_file_step`.
+    fn record_var_file_step(&mut self, mut before: Vec<(PathBuf, Option<String>)>) {
+        for path in self.project.var_file_paths() {
+            if !before.iter().any(|(p, _)| *p == path) {
+                before.push((path, None));
+            }
+        }
+        let all_paths: Vec<PathBuf> = before.iter().map(|(p, _)| p.clone()).collect();
+        self.record_file_step(before, &all_paths, None);
+    }
+
     /// Re-reads the project directory and rebuilds the sidebar tree,
     /// merging any ancestor folders `select_slug` needs opened into
     /// `project.expanded` first. Replaces every previous
@@ -4480,6 +4531,13 @@ impl App {
                 // refresh paths rather than guessing what the step touched.
                 self.apply(Action::ReloadProjectFiles);
                 self.refresh_sidebar();
+                // Mirrors `Action::VarStruct`'s success path: the Variable
+                // Manager grid/form cache the current declarations and
+                // won't otherwise notice a var/env/secrets file an undo or
+                // redo just rewrote out from under them.
+                if self.screen == Screen::VarManager {
+                    self.varmanager.sync(&self.project);
+                }
                 // If the open request's file went absent in this step, it
                 // either moved (a rename — another entry in the same
                 // `target` gained content) or was genuinely deleted. A

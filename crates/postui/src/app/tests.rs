@@ -8830,4 +8830,81 @@ mod undo_tests {
         // step dropped, no panic, history still usable:
         app.update(Action::Undo);
     }
+
+    #[test]
+    fn undo_reverts_a_variable_value_edit_on_disk() {
+        let mut app = App::new_for_test();
+        app.update(Action::VarStruct(VarStructOp::NewVar {
+            name: "tok".into(),
+            description: None,
+        }));
+        app.update(Action::VarEdit(VarEditOp::SetDefault {
+            name: "tok".into(),
+            value: "v1".into(),
+        }));
+        app.capture_undo();
+        let vars_path = app.project.root.join("variables.toml");
+        let with_v1 = std::fs::read_to_string(&vars_path).unwrap();
+        assert!(with_v1.contains("v1"), "{with_v1}");
+
+        app.update(Action::VarEdit(VarEditOp::SetDefault {
+            name: "tok".into(),
+            value: "v2".into(),
+        }));
+        app.capture_undo();
+        assert!(std::fs::read_to_string(&vars_path)
+            .unwrap()
+            .contains("v2"));
+
+        app.update(Action::Undo);
+        assert_eq!(std::fs::read_to_string(&vars_path).unwrap(), with_v1);
+        app.update(Action::Redo);
+        assert!(std::fs::read_to_string(&vars_path)
+            .unwrap()
+            .contains("v2"));
+    }
+
+    #[test]
+    fn undo_reverts_create_environment_and_active_env() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateEnv("staging".into()));
+        app.capture_undo();
+        assert_eq!(app.project.active_env.as_deref(), Some("staging"));
+        let env_path = app.project.root.join("environments/staging.toml");
+        assert!(env_path.exists());
+        app.update(Action::Undo);
+        assert!(!env_path.exists());
+        assert_eq!(app.project.active_env, None);
+        app.update(Action::Redo);
+        assert!(env_path.exists());
+        assert_eq!(app.project.active_env.as_deref(), Some("staging"));
+    }
+
+    #[test]
+    fn failed_var_edit_records_no_step() {
+        let mut app = App::new_for_test();
+        app.update(Action::VarStruct(VarStructOp::NewVar {
+            name: "a".into(),
+            description: None,
+        }));
+        app.update(Action::VarStruct(VarStructOp::NewVar {
+            name: "b".into(),
+            description: None,
+        }));
+        app.capture_undo();
+        let before = app.history.undo_len();
+
+        // "b" already exists, so renaming "a" to "b" fails validation and
+        // must record nothing.
+        app.update(Action::VarStruct(VarStructOp::Rename {
+            from: "a".into(),
+            to: "b".into(),
+        }));
+        assert!(!app.toasts.is_empty(), "rename collision must toast");
+        assert_eq!(
+            app.history.undo_len(),
+            before,
+            "failed op recorded nothing"
+        );
+    }
 }

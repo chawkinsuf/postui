@@ -226,6 +226,19 @@ impl History {
     pub fn break_coalescing(&mut self) {
         self.coalescing = false;
     }
+
+    /// Number of steps on the undo stack. Test-only: production code
+    /// drives undo/redo through `pop_undo`/`pop_redo`, never by counting.
+    #[cfg(test)]
+    pub fn undo_len(&self) -> usize {
+        self.undo.len()
+    }
+
+    /// Number of steps on the redo stack. Test-only, see `undo_len`.
+    #[cfg(test)]
+    pub fn redo_len(&self) -> usize {
+        self.redo.len()
+    }
 }
 
 impl Default for History {

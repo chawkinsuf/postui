@@ -644,6 +644,22 @@ impl ProjectContext {
         self.local_open_request.clone()
     }
 
+    /// Every on-disk file the variable manager can rewrite: `variables.toml`,
+    /// every environment override, and the (git-ignored) secrets file.
+    /// Environments are re-listed from disk on every call — not read from
+    /// `self.environments` — so an op that creates or deletes an
+    /// environment file is picked up the moment it's on disk, including
+    /// when called on the "after" side of an undo capture, before
+    /// `self.environments` itself has been refreshed.
+    pub fn var_file_paths(&self) -> Vec<PathBuf> {
+        let mut paths = vec![self.root.join("variables.toml")];
+        for env in postui_core::project::list_environments(&self.root) {
+            paths.push(env_path(&self.root, &env));
+        }
+        paths.push(self.root.join(".local").join("secrets.toml"));
+        paths
+    }
+
     /// Applies `f` to `variables.toml`'s current text (missing file =
     /// empty), validates the result against the active env (if any) so a
     /// bad edit is rejected instead of persisted, writes atomically, and
