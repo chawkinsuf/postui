@@ -8733,11 +8733,17 @@ mod undo_tests {
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("old-name".into()));
         app.capture_undo();
+        assert_eq!(app.editor.slug.as_deref(), Some("old-name"));
         app.update(Action::RenameRequest {
             from: "old-name".into(),
             to: "new-name".into(),
         });
         app.capture_undo();
+        // The forward rename retitles the still-open editor in place
+        // (doesn't close it) — undo/redo of the FileStates step it
+        // records must do the same, not treat the moved-away path as a
+        // delete and close the editor (reviewer finding).
+        assert_eq!(app.editor.slug.as_deref(), Some("new-name"));
         app.update(Action::Undo);
         let root = app.project.root.clone();
         assert!(
@@ -8747,6 +8753,25 @@ mod undo_tests {
         assert!(
             !postui_core::storage::request_path(&root, "new-name").exists(),
             "new-name gone"
+        );
+        assert_eq!(
+            app.editor.slug.as_deref(),
+            Some("old-name"),
+            "undo retitles the open editor back, rather than closing it"
+        );
+        app.update(Action::Redo);
+        assert!(
+            postui_core::storage::request_path(&root, "new-name").exists(),
+            "new-name restored"
+        );
+        assert!(
+            !postui_core::storage::request_path(&root, "old-name").exists(),
+            "old-name gone"
+        );
+        assert_eq!(
+            app.editor.slug.as_deref(),
+            Some("new-name"),
+            "redo retitles the open editor forward again"
         );
     }
 

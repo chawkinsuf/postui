@@ -3694,10 +3694,10 @@ impl App {
     /// Records a `SaveRequest` undo step for `slug` and marks the editor
     /// saved. `prev_saved` is read *before* `mark_saved` overwrites it, so
     /// undoing the step can restore exactly what "saved" meant a moment
-    /// ago (spec: uniform before/after disk steps). Shared by
-    /// `Action::SaveRequest`'s slugged branch and `save_open_request`
-    /// (the latter's callers — demote/promote/extract-to-request — become
-    /// undoable disk steps for free).
+    /// ago (spec: uniform before/after disk steps — this one memory-only).
+    /// Shared by `Action::SaveRequest`'s slugged branch and
+    /// `save_open_request` (the latter's callers —
+    /// demote/promote/extract-to-request — gain undo history for free).
     fn record_save_step(&mut self, slug: String) {
         let prev_saved = self.editor.saved.clone();
         self.editor.mark_saved();
@@ -4375,6 +4375,7 @@ impl App {
         target_slug: &str,
         redo: bool,
         step: &crate::undo::Step,
+        noun: &str,
     ) -> bool {
         // Bypassing the dirty gate is safe only while capture provably
         // missed nothing: the departing editor's state must be exactly
@@ -4399,7 +4400,7 @@ impl App {
         self.capture_undo(); // re-seed the shadow for the newly opened request
         let display = self.request_display(target_slug);
         self.toasts.push(
-            format!("{} edit in {display}", if redo { "Redid" } else { "Undid" }),
+            format!("{} {noun} in {display}", if redo { "Redid" } else { "Undid" }),
             ToastKind::Info,
         );
         true
@@ -4422,7 +4423,7 @@ impl App {
                         );
                         return false;
                     };
-                    if !self.jump_to_request_for_undo(&target_slug, redo, &step) {
+                    if !self.jump_to_request_for_undo(&target_slug, redo, &step, "edit") {
                         return false;
                     }
                     // fall through to the normal same-request apply below
@@ -4479,14 +4480,42 @@ impl App {
                 // refresh paths rather than guessing what the step touched.
                 self.apply(Action::ReloadProjectFiles);
                 self.refresh_sidebar();
-                // If the open request's file was deleted by this step, close
-                // it in the editor (mirroring Action::DeleteRequest's own
-                // arm):
+                // If the open request's file went absent in this step, it
+                // either moved (a rename — another entry in the same
+                // `target` gained content) or was genuinely deleted. A
+                // move retitles in place, following the forward rename's
+                // own behavior, rather than closing a still-open editor;
+                // only a true delete closes it (mirroring
+                // Action::DeleteRequest's own arm).
                 if let Some(open) = self.editor.slug.clone() {
                     let open_path = postui_core::storage::request_path(&self.project.root, &open);
-                    if target.iter().any(|(p, c)| *p == open_path && c.is_none()) {
-                        self.editor = Editor::default();
-                        self.shadow = None;
+                    let went_absent = target.iter().any(|(p, c)| *p == open_path && c.is_none());
+                    if went_absent {
+                        let moved_to = target
+                            .iter()
+                            .find(|(p, c)| *p != open_path && c.is_some())
+                            .and_then(|(p, _)| {
+                                postui_core::storage::slug_for_path(&self.project.root, p)
+                            });
+                        match moved_to {
+                            Some(new_slug) => {
+                                self.editor.slug = Some(new_slug.clone());
+                                if let Ok(reloaded) = postui_core::storage::load_request(
+                                    &self.project.root,
+                                    &new_slug,
+                                ) {
+                                    self.editor.name = reloaded.name.clone();
+                                    if let Some(saved) = self.editor.saved.as_mut() {
+                                        saved.name = reloaded.name;
+                                    }
+                                }
+                                self.sidebar.open_slug = Some(new_slug);
+                            }
+                            None => {
+                                self.editor = Editor::default();
+                                self.shadow = None;
+                            }
+                        }
                     }
                 }
                 let verb = if redo { "Redid" } else { "Undid" };
@@ -4504,7 +4533,7 @@ impl App {
             }
             StepKind::SaveRequest { slug, prev_saved } => {
                 if self.editor.slug.as_deref() != Some(slug.as_str())
-                    && !self.jump_to_request_for_undo(slug, redo, &step)
+                    && !self.jump_to_request_for_undo(slug, redo, &step, "save")
                 {
                     return false;
                 }

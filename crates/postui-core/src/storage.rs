@@ -87,6 +87,17 @@ pub fn request_path(root: &Path, slug: &str) -> PathBuf {
     requests_dir(root).join(format!("{slug}.toml"))
 }
 
+/// Inverse of [`request_path`]: the slug `path` names, when it sits under
+/// `root/requests/` with a `.toml` extension. `None` for anything else
+/// (a path from a different kind of step, e.g. an environment file) —
+/// exposed for the same undo-history caller as `request_path`, to follow
+/// a request's file to its new slug after a move.
+pub fn slug_for_path(root: &Path, path: &Path) -> Option<String> {
+    let rel = path.strip_prefix(requests_dir(root)).ok()?;
+    let rel = rel.to_str()?.strip_suffix(".toml")?;
+    Some(rel.replace(std::path::MAIN_SEPARATOR, "/"))
+}
+
 /// Derives a safe filename segment from a free-form display name:
 /// lowercase, `[a-z0-9_-]` kept, every other char collapsed to a single
 /// `-`, trimmed at both ends, `"request"` when nothing survives. The
