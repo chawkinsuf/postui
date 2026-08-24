@@ -264,6 +264,81 @@ impl Editor {
         self.computed.revealed = false;
     }
 
+    /// Swaps in `req`'s fields the way `load` does, for undo/redo stepping
+    /// through history rather than opening a different request: leaves
+    /// `slug`, `saved`, and `computed.revealed` untouched (the request
+    /// identity and dirty baseline don't change, and reveal state is a
+    /// per-request gesture unrelated to which snapshot is showing). Also
+    /// drops any live table cell edit and selection — mirroring
+    /// `Action::DiscardChanges` — so a snapshot swap can't leave a stale
+    /// in-progress edit pointed at fields that just got replaced.
+    pub fn apply_snapshot(&mut self, req: &HttpRequest) {
+        self.name = req.name.clone();
+        self.method = req.method;
+        self.url = LineInput::new(&req.url);
+        self.substitute_body = req.substitute_body;
+        self.params = req.params.clone();
+        self.headers = req.headers.clone();
+        self.variables = req.variables.clone();
+        self.set_body_text(match &req.body {
+            Some(Body::Json { text }) => text,
+            None => "",
+        });
+        self.table.editing = None;
+        self.table.selected = None;
+    }
+
+    /// Where the caret sits right now, for `undo::Context::cursor_before`/
+    /// `cursor_after`. `None` covers every focus state a step doesn't know
+    /// how to restore (Method/Tabs/None sub-focus, or a table tab with
+    /// nothing selected).
+    pub fn cursor_pos(&self) -> crate::undo::CursorPos {
+        use crate::undo::CursorPos;
+        match self.sub_focus {
+            SubFocus::Url => CursorPos::Url(self.url.cursor()),
+            SubFocus::Content if self.active_tab == EditorTab::Body => CursorPos::Body {
+                row: self.body.cursor.row,
+                col: self.body.cursor.col,
+            },
+            SubFocus::Content => match self.table.selected.and_then(|i| self.table_key_at(i)) {
+                Some(key) => CursorPos::Cell {
+                    tab: self.active_tab,
+                    key,
+                },
+                None => CursorPos::None,
+            },
+            _ => CursorPos::None,
+        }
+    }
+
+    /// Restores a caret position captured by [`Self::cursor_pos`], clamping
+    /// against whatever the fields now hold (an undo/redo step may have
+    /// shortened the URL, dropped a body line, or removed a table key).
+    /// `CursorPos::None` leaves focus exactly as it is.
+    pub fn restore_cursor(&mut self, pos: &crate::undo::CursorPos) {
+        use crate::undo::CursorPos;
+        match pos {
+            CursorPos::Url(i) => {
+                self.sub_focus = SubFocus::Url;
+                self.url.set_cursor(*i);
+            }
+            CursorPos::Body { row, col } => {
+                self.sub_focus = SubFocus::Content;
+                self.active_tab = EditorTab::Body;
+                let rows = self.body.lines.len();
+                let row = (*row).min(rows.saturating_sub(1));
+                let col = (*col).min(self.body.lines.len_col(row).unwrap_or(0));
+                self.body.cursor = edtui::Index2::new(row, col);
+            }
+            CursorPos::Cell { tab, key } => {
+                self.active_tab = *tab;
+                self.sub_focus = SubFocus::Content;
+                self.table.selected = self.table_index_of(key);
+            }
+            CursorPos::None => {}
+        }
+    }
+
     /// Builds an `HttpRequest` from the editor's current field values.
     pub fn current_request(&self) -> HttpRequest {
         HttpRequest {

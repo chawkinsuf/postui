@@ -8459,3 +8459,67 @@ fn every_named_action_is_mouse_reachable() {
         );
     }
 }
+
+mod undo_tests {
+    use super::*;
+    use crate::undo::CursorPos;
+    use postui_core::model::Entry;
+
+    #[test]
+    fn apply_snapshot_swaps_fields_but_not_saved() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("snap-test".into()));
+        let saved_before = app.editor.saved.clone();
+        let mut req = app.editor.current_request();
+        req.url = "https://example.com".into();
+        app.editor.apply_snapshot(&req);
+        assert_eq!(app.editor.url.text(), "https://example.com");
+        assert_eq!(app.editor.saved, saved_before, "saved snapshot untouched");
+        assert!(app.editor.is_dirty());
+    }
+
+    #[test]
+    fn cursor_roundtrip_url() {
+        let mut app = App::new_for_test();
+        app.editor.sub_focus = SubFocus::Url;
+        app.editor.url = LineInput::new("hello");
+        app.editor.url.set_cursor(3);
+        let pos = app.editor.cursor_pos();
+        app.editor.url = LineInput::new("hello world");
+        app.editor.restore_cursor(&pos);
+        assert_eq!(app.editor.cursor_pos(), pos);
+    }
+
+    #[test]
+    fn restore_cursor_cell_key_survives_row_shift() {
+        let mut app = App::new_for_test();
+        app.editor.active_tab = EditorTab::Params;
+        app.editor.sub_focus = SubFocus::Content;
+        app.editor.params.insert(
+            "a".into(),
+            Entry {
+                value: "1".into(),
+                enabled: true,
+            },
+        );
+        app.editor.params.insert(
+            "b".into(),
+            Entry {
+                value: "2".into(),
+                enabled: true,
+            },
+        );
+        app.editor.table.selected = Some(1); // key "b"
+        let pos = app.editor.cursor_pos();
+        assert_eq!(
+            pos,
+            CursorPos::Cell {
+                tab: EditorTab::Params,
+                key: "b".into()
+            }
+        );
+        app.editor.params.shift_remove("a"); // "b" is now index 0
+        app.editor.restore_cursor(&pos);
+        assert_eq!(app.editor.table.selected, Some(0));
+    }
+}
