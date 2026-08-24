@@ -678,6 +678,7 @@ mod tests {
         slugs
             .iter()
             .map(|s| RequestListing {
+                name: None,
                 slug: s.to_string(),
                 broken: None,
                 method: Some(Method::Get),
@@ -1054,11 +1055,13 @@ mod tests {
         s.refresh(
             vec![
                 RequestListing {
+                    name: None,
                     slug: "ping".into(),
                     broken: None,
                     method: Some(Method::Get),
                 },
                 RequestListing {
+                    name: None,
                     slug: "pong".into(),
                     broken: None,
                     method: Some(Method::Get),
@@ -1092,6 +1095,7 @@ mod tests {
         let mut s = Sidebar::default();
         s.refresh(
             vec![RequestListing {
+                name: None,
                 slug: "bad".into(),
                 broken: Some("parse error".into()),
                 method: None,

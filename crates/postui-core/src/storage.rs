@@ -39,6 +39,10 @@ pub struct RequestListing {
     /// detection. `None` exactly when `broken` is `Some` — a file that
     /// failed to parse has no method to show.
     pub method: Option<Method>,
+    /// The request's display name, parsed in the same pass. `None` for
+    /// legacy files without one (and for broken files) — display falls
+    /// back to the slug leaf.
+    pub name: Option<String>,
 }
 
 /// The default project directory: `<config dir>/<APP_NAME>/default`.
@@ -129,6 +133,54 @@ pub fn split_display_path(input: &str) -> Option<(String, String)> {
     Some((folder, leaf.to_string()))
 }
 
+/// Whether a request in `folder` already answers to `leaf_display`
+/// (case-insensitive string equality; a legacy file's display name is its
+/// slug leaf). `exclude_slug` is the renaming request itself.
+pub fn sibling_name_taken(
+    root: &Path,
+    folder: &str,
+    leaf_display: &str,
+    exclude_slug: Option<&str>,
+) -> bool {
+    let wanted = leaf_display.to_lowercase();
+    let (listing, _) = list_requests(root);
+    listing.iter().any(|l| {
+        if exclude_slug == Some(l.slug.as_str()) {
+            return false;
+        }
+        let (dir, leaf) = match l.slug.rsplit_once('/') {
+            Some((d, f)) => (d, f),
+            None => ("", l.slug.as_str()),
+        };
+        if dir != folder {
+            return false;
+        }
+        let display = l.name.as_deref().unwrap_or(leaf);
+        display.to_lowercase() == wanted
+    })
+}
+
+/// Creates a request from a typed display path ("Folder/My Request!"):
+/// validates the leaf, rejects a sibling with the same display name,
+/// derives + dedupes the slug, and saves `req` with `name` set. Returns
+/// `(slug, leaf_display)`.
+pub fn create_request_named(
+    root: &Path,
+    display_path: &str,
+    mut req: HttpRequest,
+) -> Result<(String, String), StorageError> {
+    let Some((folder, leaf)) = split_display_path(display_path) else {
+        return Err(StorageError::InvalidSlug(display_path.to_string()));
+    };
+    if sibling_name_taken(root, &folder, &leaf, None) {
+        return Err(StorageError::AlreadyExists(leaf));
+    }
+    let slug = unique_slug(root, &folder, &leaf, None);
+    req.name = Some(leaf.clone());
+    save_request(root, &slug, &req)?;
+    Ok((slug, leaf))
+}
+
 /// The slug a request named `leaf_display` in `folder` should live at:
 /// `folder/slugify(leaf)`, with `-2`, `-3`, … appended while the file
 /// already exists. `exclude` is the renaming request's own slug — its
@@ -186,17 +238,18 @@ pub fn list_requests(root: &Path) -> (Vec<RequestListing>, Option<String>) {
         let slug = slug
             .to_string_lossy()
             .replace(std::path::MAIN_SEPARATOR, "/");
-        let (method, broken) = match std::fs::read_to_string(&path) {
+        let (method, name, broken) = match std::fs::read_to_string(&path) {
             Ok(contents) => match HttpRequest::from_toml_str(&contents) {
-                Ok(req) => (Some(req.method), None),
-                Err(e) => (None, Some(e.to_string())),
+                Ok(req) => (Some(req.method), req.name, None),
+                Err(e) => (None, None, Some(e.to_string())),
             },
-            Err(e) => (None, Some(e.to_string())),
+            Err(e) => (None, None, Some(e.to_string())),
         };
         out.push(RequestListing {
             slug,
             broken,
             method,
+            name,
         });
     })
     .err()
@@ -361,6 +414,56 @@ mod tests {
         );
         assert_eq!(split_display_path("folder/   "), None, "empty leaf");
         assert_eq!(split_display_path(""), None);
+    }
+
+    #[test]
+    fn create_request_named_derives_dedupes_and_stores_the_display_name() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_project(dir.path()).unwrap();
+        let (slug, leaf) = create_request_named(dir.path(), "My Request!", req()).unwrap();
+        assert_eq!((slug.as_str(), leaf.as_str()), ("my-request", "My Request!"));
+        let loaded = load_request(dir.path(), "my-request").unwrap();
+        assert_eq!(loaded.name.as_deref(), Some("My Request!"));
+
+        // A *different* display name that slugifies identically dedupes.
+        let (slug2, _) = create_request_named(dir.path(), "My Request?", req()).unwrap();
+        assert_eq!(slug2, "my-request-2");
+
+        // The *same* display name (case-insensitive) is rejected.
+        let err = create_request_named(dir.path(), "my request!", req()).unwrap_err();
+        assert!(matches!(err, StorageError::AlreadyExists(_)), "{err:?}");
+
+        // Empty leaf is invalid.
+        assert!(create_request_named(dir.path(), "folder/  ", req()).is_err());
+    }
+
+    #[test]
+    fn listing_carries_display_names_and_legacy_leafs_count_as_taken() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_project(dir.path()).unwrap();
+        create_request_named(dir.path(), "Fancy Name", req()).unwrap();
+        save_request(dir.path(), "legacy-file", &req()).unwrap(); // no name field
+
+        let (listing, err) = list_requests(dir.path());
+        assert!(err.is_none());
+        let by_slug = |s: &str| listing.iter().find(|l| l.slug == s).unwrap();
+        assert_eq!(by_slug("fancy-name").name.as_deref(), Some("Fancy Name"));
+        assert_eq!(by_slug("legacy-file").name, None);
+
+        // A legacy file's slug leaf is its display name for uniqueness
+        // (case-insensitive string equality — "Legacy File" is a
+        // different name and stays allowed).
+        assert!(sibling_name_taken(dir.path(), "", "LEGACY-FILE", None));
+        assert!(!sibling_name_taken(dir.path(), "", "Legacy File", None));
+        assert!(sibling_name_taken(dir.path(), "", "fancy name", None));
+        assert!(!sibling_name_taken(dir.path(), "", "Unrelated", None));
+        // Excluding a slug frees its own name (rename-onto-itself).
+        assert!(!sibling_name_taken(
+            dir.path(),
+            "",
+            "Fancy Name",
+            Some("fancy-name")
+        ));
     }
 
     #[test]

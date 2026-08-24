@@ -1154,6 +1154,7 @@ fn dragging_the_sidebar_thumb_scrolls_and_release_ends_the_drag() {
     let mut app = App::new_for_test();
     let slugs: Vec<postui_core::storage::RequestListing> = (0..60)
         .map(|i| postui_core::storage::RequestListing {
+            name: None,
             slug: format!("r{i:02}"),
             broken: None,
             method: Some(postui_core::model::Method::Get),
@@ -1206,6 +1207,7 @@ fn dragging_the_sidebar_thumb_with_drag_events_scrolls_the_same_as_moved() {
     let mut app = App::new_for_test();
     let slugs: Vec<postui_core::storage::RequestListing> = (0..60)
         .map(|i| postui_core::storage::RequestListing {
+            name: None,
             slug: format!("r{i:02}"),
             broken: None,
             method: Some(postui_core::model::Method::Get),
