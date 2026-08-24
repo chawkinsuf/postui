@@ -8640,4 +8640,51 @@ mod undo_tests {
         app.update(Action::Redo);
         assert_eq!(app.editor.url.text(), "z", "redo stack cleared by new edit");
     }
+
+    #[test]
+    fn undo_jumps_back_to_the_edited_request() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("aaa".into()));
+        app.capture_undo();
+        app.editor.sub_focus = SubFocus::Url;
+        app.editor
+            .handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        app.capture_undo();
+        app.update(Action::SaveRequest); // save so switching away is clean
+        app.capture_undo();
+        app.update(Action::CreateRequest("bbb".into()));
+        app.capture_undo();
+        // History top is bbb's create (a FileStates step once Task 6 lands);
+        // undo past it back to aaa's edit. Before Task 6, the top IS aaa's
+        // save/edit — pop accordingly. Final state to assert:
+        while app.editor.slug.as_deref() != Some("aaa") {
+            app.update(Action::Undo);
+        }
+        assert_eq!(app.editor.slug.as_deref(), Some("aaa"));
+    }
+
+    #[test]
+    fn jump_back_reverts_and_redo_returns() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("jb1".into()));
+        app.capture_undo();
+        app.editor.sub_focus = SubFocus::Url;
+        app.editor
+            .handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        app.capture_undo();
+        // open jb2 through the dirty gate's discard? No — undo's jump-back
+        // must work even with jb1 dirty. Open jb2 by force:
+        app.update(Action::CreateRequest("jb2".into()));
+        // CreateRequest replaced a dirty editor via create_or_save_as —
+        // check the real behavior: create_or_save_as loads the new request
+        // unconditionally (app.rs:3741), so jb1's unsaved 'q' lives only in
+        // history now. Undo the editor delta:
+        app.update(Action::Undo); // pops jb2 create (Task 6) or jb1 delta
+        while app.editor.slug.as_deref() != Some("jb1") {
+            app.update(Action::Undo);
+        }
+        assert_eq!(app.editor.url.text(), "", "jb1's edit reverted");
+        app.update(Action::Redo);
+        assert_eq!(app.editor.url.text(), "q", "redo re-applies jb1's edit");
+    }
 }

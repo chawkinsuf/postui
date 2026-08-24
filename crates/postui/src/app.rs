@@ -4267,12 +4267,43 @@ impl App {
         match &step.kind {
             StepKind::EditorDelta { slug, before, after } => {
                 if *slug != self.editor.slug {
-                    // Task 5: jump-back. Until then: discard with a toast.
+                    let Some(target_slug) = slug.clone() else {
+                        // A scratch request has no slug to reopen; once it's
+                        // been replaced its steps are unusable.
+                        self.toasts.push(
+                            "cannot undo: that unsaved request is gone",
+                            ToastKind::Error,
+                        );
+                        return false;
+                    };
+                    // Bypassing the dirty gate is safe only while capture
+                    // provably missed nothing: the departing editor's state
+                    // must be exactly what history last saw (the shadow,
+                    // kept in lockstep with the newest recorded delta).
+                    // `capture_undo` ran at the top of the Undo arm, so a
+                    // mismatch here means a capture bug — degrade to the
+                    // normal prompt instead of silently dropping edits.
+                    let shadow_matches = self.shadow.as_ref().is_some_and(|(s, req)| {
+                        *s == self.editor.slug && *req == self.editor.current_request()
+                    });
+                    if self.editor_holds_unsaved() && !shadow_matches {
+                        self.history.push_undo_no_coalesce(step.clone()); // put it back
+                        self.dirty_gate("undo", Action::Undo);
+                        return false;
+                    }
+                    self.apply(Action::ForceOpenRequest(target_slug.clone()));
+                    if self.editor.slug.as_deref() != Some(target_slug.as_str()) {
+                        // The open failed (file gone/broken — ForceOpenRequest
+                        // already toasted the reason); drop the step.
+                        return false;
+                    }
+                    self.capture_undo(); // re-seed the shadow for the newly opened request
+                    let display = self.request_display(&target_slug);
                     self.toasts.push(
-                        "cannot undo: that request is no longer open",
-                        ToastKind::Error,
+                        format!("{} edit in {display}", if redo { "Redid" } else { "Undid" }),
+                        ToastKind::Info,
                     );
-                    return false;
+                    // fall through to the normal same-request apply below
                 }
                 let (target, cursor) = if redo {
                     (after.clone(), step.context.cursor_after.clone())
