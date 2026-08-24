@@ -181,6 +181,38 @@ pub fn create_request_named(
     Ok((slug, leaf))
 }
 
+/// Renames a request to a new typed display path: validates the leaf,
+/// rejects a sibling with the same display name, derives + dedupes the
+/// new slug (the request's own file never counts as a collision), moves
+/// the file when the slug changed, and rewrites `name` when the file
+/// parses (a broken file just moves — its display falls back to the new
+/// slug leaf). Returns the new `(slug, leaf_display)`.
+pub fn rename_request_named(
+    root: &Path,
+    from_slug: &str,
+    display_path: &str,
+) -> Result<(String, String), StorageError> {
+    validate_slug(from_slug)?;
+    if !request_path(root, from_slug).is_file() {
+        return Err(StorageError::NotFound(from_slug.to_string()));
+    }
+    let Some((folder, leaf)) = split_display_path(display_path) else {
+        return Err(StorageError::InvalidSlug(display_path.to_string()));
+    };
+    if sibling_name_taken(root, &folder, &leaf, Some(from_slug)) {
+        return Err(StorageError::AlreadyExists(leaf));
+    }
+    let slug = unique_slug(root, &folder, &leaf, Some(from_slug));
+    rename_request(root, from_slug, &slug)?;
+    if let Ok(mut req) = load_request(root, &slug)
+        && req.name.as_deref() != Some(leaf.as_str())
+    {
+        req.name = Some(leaf.clone());
+        save_request(root, &slug, &req)?;
+    }
+    Ok((slug, leaf))
+}
+
 /// The slug a request named `leaf_display` in `folder` should live at:
 /// `folder/slugify(leaf)`, with `-2`, `-3`, … appended while the file
 /// already exists. `exclude` is the renaming request's own slug — its
@@ -340,6 +372,31 @@ pub fn duplicate_request(root: &Path, slug: &str) -> Result<String, StorageError
     // Read the original file as bytes
     let contents = std::fs::read(&source_path).map_err(io_err(&source_path))?;
 
+    // A parsable source gets a proper display name — "<name> copy",
+    // "<name> copy 2", … — with the copy's slug derived from it. A broken
+    // file falls through to the byte-copy path below (nothing to name).
+    if let Ok(req) = std::str::from_utf8(&contents)
+        .map_err(|e| e.to_string())
+        .and_then(|s| HttpRequest::from_toml_str(s).map_err(|e| e.to_string()))
+    {
+        let (folder, leaf) = match slug.rsplit_once('/') {
+            Some((d, f)) => (d, f),
+            None => ("", slug),
+        };
+        let base = req.name.clone().unwrap_or_else(|| leaf.to_string());
+        let mut copy_name = format!("{base} copy");
+        let mut n = 2;
+        while sibling_name_taken(root, folder, &copy_name, None) {
+            copy_name = format!("{base} copy {n}");
+            n += 1;
+        }
+        let mut copy = req;
+        copy.name = Some(copy_name);
+        let new_slug = unique_slug(root, folder, copy.name.as_deref().unwrap(), None);
+        save_request(root, &new_slug, &copy)?;
+        return Ok(new_slug);
+    }
+
     // Find the next available copy slug
     let mut new_slug = format!("{slug}-copy");
     let mut counter = 2;
@@ -464,6 +521,63 @@ mod tests {
             "Fancy Name",
             Some("fancy-name")
         ));
+    }
+
+    #[test]
+    fn rename_request_named_regenerates_slug_and_rewrites_name() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_project(dir.path()).unwrap();
+        create_request_named(dir.path(), "Get User", req()).unwrap();
+
+        let (slug, leaf) =
+            rename_request_named(dir.path(), "get-user", "Get User v2").unwrap();
+        assert_eq!((slug.as_str(), leaf.as_str()), ("get-user-v2", "Get User v2"));
+        assert!(!request_exists(dir.path(), "get-user"));
+        let loaded = load_request(dir.path(), "get-user-v2").unwrap();
+        assert_eq!(loaded.name.as_deref(), Some("Get User v2"));
+
+        // Renaming onto its own current name is a no-op Ok.
+        let (slug, _) =
+            rename_request_named(dir.path(), "get-user-v2", "Get User v2").unwrap();
+        assert_eq!(slug, "get-user-v2");
+
+        // A slug collision with a *different* request dedupes.
+        create_request_named(dir.path(), "Other", req()).unwrap();
+        let (slug, _) =
+            rename_request_named(dir.path(), "other", "Get User v2!").unwrap();
+        assert_eq!(slug, "get-user-v2-2");
+
+        // But the same display name as a sibling errors... note the names
+        // above differ ("Get User v2" vs "Get User v2!").
+        let err = rename_request_named(dir.path(), "get-user-v2-2", "get user V2");
+        assert!(matches!(err, Err(StorageError::AlreadyExists(_))), "{err:?}");
+    }
+
+    #[test]
+    fn rename_request_named_moves_broken_files_without_parsing() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_project(dir.path()).unwrap();
+        let path = requests_dir(dir.path()).join("broken.toml");
+        std::fs::write(&path, "not = valid = toml").unwrap();
+        let (slug, _) = rename_request_named(dir.path(), "broken", "Still Broken").unwrap();
+        assert_eq!(slug, "still-broken");
+        assert!(requests_dir(dir.path()).join("still-broken.toml").is_file());
+    }
+
+    #[test]
+    fn duplicate_names_the_copy_and_derives_its_slug() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_project(dir.path()).unwrap();
+        create_request_named(dir.path(), "Get User", req()).unwrap();
+
+        let copy = duplicate_request(dir.path(), "get-user").unwrap();
+        assert_eq!(copy, "get-user-copy");
+        let loaded = load_request(dir.path(), &copy).unwrap();
+        assert_eq!(loaded.name.as_deref(), Some("Get User copy"));
+
+        let copy2 = duplicate_request(dir.path(), "get-user").unwrap();
+        let loaded2 = load_request(dir.path(), &copy2).unwrap();
+        assert_eq!(loaded2.name.as_deref(), Some("Get User copy 2"));
     }
 
     #[test]
@@ -645,7 +759,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_request_creates_copy_with_identical_bytes() {
+    fn duplicate_request_preserves_content_and_names_the_copy() {
         let dir = tempfile::tempdir().unwrap();
         ensure_project(dir.path()).unwrap();
         save_request(dir.path(), "users/list", &req()).unwrap();
@@ -653,9 +767,12 @@ mod tests {
         let new_slug = duplicate_request(dir.path(), "users/list").unwrap();
 
         assert_eq!(new_slug, "users/list-copy");
-        let original_bytes = std::fs::read(dir.path().join("requests/users/list.toml")).unwrap();
-        let copy_bytes = std::fs::read(dir.path().join("requests/users/list-copy.toml")).unwrap();
-        assert_eq!(original_bytes, copy_bytes, "copy should be byte-identical");
+        let copy = load_request(dir.path(), &new_slug).unwrap();
+        // Everything but the display name is identical to the source.
+        assert_eq!(copy.name.as_deref(), Some("list copy"));
+        let mut nameless = copy;
+        nameless.name = None;
+        assert_eq!(nameless, req());
     }
 
     #[test]
@@ -669,6 +786,22 @@ mod tests {
 
         let second_copy = duplicate_request(dir.path(), "users/list").unwrap();
         assert_eq!(second_copy, "users/list-copy-2");
+        assert_eq!(
+            load_request(dir.path(), &second_copy).unwrap().name.as_deref(),
+            Some("list copy 2")
+        );
+    }
+
+    #[test]
+    fn duplicate_of_a_broken_file_falls_back_to_a_byte_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_project(dir.path()).unwrap();
+        let path = requests_dir(dir.path()).join("broken.toml");
+        std::fs::write(&path, "not = valid = toml").unwrap();
+        let new_slug = duplicate_request(dir.path(), "broken").unwrap();
+        assert_eq!(new_slug, "broken-copy");
+        let copy = std::fs::read(requests_dir(dir.path()).join("broken-copy.toml")).unwrap();
+        assert_eq!(copy, b"not = valid = toml");
     }
 
     #[test]
