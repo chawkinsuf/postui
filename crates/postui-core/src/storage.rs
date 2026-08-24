@@ -246,6 +246,7 @@ mod tests {
 
     fn req() -> HttpRequest {
         HttpRequest {
+            name: None,
             method: Method::Get,
             url: "https://x.test".into(),
             substitute_body: false,

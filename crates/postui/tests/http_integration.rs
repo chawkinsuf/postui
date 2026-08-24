@@ -8,6 +8,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn req_to(url: String) -> HttpRequest {
     HttpRequest {
+        name: None,
         method: Method::Post,
         url,
         substitute_body: false,
@@ -210,6 +211,7 @@ async fn a_multi_megabyte_json_body_is_pretty_printed_in_the_background() {
 async fn connection_refused_yields_readable_error() {
     let (prepared, _) = prepare(
         &HttpRequest {
+            name: None,
             method: Method::Get,
             url: "http://127.0.0.1:1/".into(),
             substitute_body: false,

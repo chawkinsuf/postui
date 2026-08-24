@@ -1638,6 +1638,7 @@ tier = "g-1"
             enabled: true,
         };
         crate::model::HttpRequest {
+            name: None,
             method: Method::Get,
             url: url.to_string(),
             substitute_body: false,

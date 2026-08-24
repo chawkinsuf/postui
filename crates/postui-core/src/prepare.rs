@@ -626,6 +626,7 @@ mod tests {
 
     fn base(url: &str) -> HttpRequest {
         HttpRequest {
+            name: None,
             method: Method::Get,
             url: url.into(),
             substitute_body: false,

@@ -56,6 +56,7 @@ fn press(app: &mut App, hit: Hit, make: fn(u16, u16) -> MouseEvent) -> ratatui::
 
 fn seed(app: &mut App, slugs: &[&str]) {
     let req = postui_core::model::HttpRequest {
+        name: None,
         method: postui_core::model::Method::Get,
         url: "https://example.test/x".into(),
         substitute_body: false,

@@ -103,6 +103,10 @@ pub enum SubFocus {
 
 pub struct Editor {
     pub slug: Option<String>,
+    /// The open request's display name (free-form; the slug is derived
+    /// from it). `None` for scratch requests and legacy files, which
+    /// display as the slug leaf.
+    pub name: Option<String>,
     pub saved: Option<HttpRequest>,
     pub method: Method,
     pub url: LineInput,
@@ -207,6 +211,7 @@ impl Default for Editor {
     fn default() -> Self {
         Self {
             slug: None,
+            name: None,
             saved: None,
             method: Method::Get,
             url: LineInput::new(""),
@@ -244,6 +249,7 @@ impl Editor {
     /// scoped reveal already does.
     pub fn load(&mut self, slug: Option<String>, req: HttpRequest) {
         self.slug = slug;
+        self.name = req.name.clone();
         self.method = req.method;
         self.url = LineInput::new(&req.url);
         self.substitute_body = req.substitute_body;
@@ -261,6 +267,7 @@ impl Editor {
     /// Builds an `HttpRequest` from the editor's current field values.
     pub fn current_request(&self) -> HttpRequest {
         HttpRequest {
+            name: self.name.clone(),
             method: self.method,
             url: self.url.text().to_string(),
             substitute_body: self.substitute_body,

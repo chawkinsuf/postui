@@ -172,6 +172,12 @@ pub enum Body {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HttpRequest {
+    /// The user-facing display name of this request (free-form; spaces and
+    /// punctuation welcome). The filename is a slug *derived* from it —
+    /// never typed and never shown — so `None` (legacy files) simply
+    /// displays as the slug leaf.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[serde(default)]
     pub method: Method,
     pub url: String,
@@ -201,6 +207,9 @@ impl HttpRequest {
     pub fn to_toml_string(&self) -> String {
         use toml_edit::{DocumentMut, Item, Table, Value, value};
         let mut doc = DocumentMut::new();
+        if let Some(name) = &self.name {
+            doc["name"] = value(name);
+        }
         doc["method"] = value(self.method.as_str());
         doc["url"] = value(&self.url);
         if self.substitute_body {
@@ -269,6 +278,7 @@ mod tests {
             },
         );
         HttpRequest {
+            name: None,
             method: Method::Post,
             url: "https://api.example.com/users".into(),
             substitute_body: false,
@@ -279,6 +289,27 @@ mod tests {
                 text: "{ \"broken\": ".into(),
             }), // invalid JSON must round-trip
         }
+    }
+
+    #[test]
+    fn display_name_round_trips_and_leads_the_document() {
+        let mut req = sample();
+        req.name = Some("Get user by ID!".into());
+        let out = req.to_toml_string();
+        assert!(
+            out.starts_with("name = \"Get user by ID!\"\n"),
+            "name leads the file:\n{out}"
+        );
+        let back = HttpRequest::from_toml_str(&out).unwrap();
+        assert_eq!(back.name.as_deref(), Some("Get user by ID!"));
+    }
+
+    #[test]
+    fn nameless_request_emits_no_name_line_and_parses_as_none() {
+        let out = sample().to_toml_string();
+        assert!(!out.contains("name ="), "no name line:\n{out}");
+        let back = HttpRequest::from_toml_str(&out).unwrap();
+        assert_eq!(back.name, None);
     }
 
     #[test]

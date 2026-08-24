@@ -1078,6 +1078,7 @@ impl App {
             }
             Action::CreateRequest(name) => {
                 self.create_or_save_as(&name, |_| postui_core::model::HttpRequest {
+                    name: None,
                     method: postui_core::model::Method::Get,
                     url: String::new(),
                     substitute_body: false,
