@@ -8831,6 +8831,131 @@ mod undo_tests {
         app.update(Action::Undo);
     }
 
+    /// Final-review finding: `jump_to_request_for_undo`'s dirty-gate
+    /// fallback ignored its `redo` parameter and always pushed the step
+    /// back onto the undo stack with an `Action::Undo` retry, so a tripped
+    /// guard on a *redo* silently turned Ctrl+Y into an undo. Forces the
+    /// guard by editing the open request directly (bypassing
+    /// `capture_undo`) so the editor is dirty and the shadow is stale,
+    /// then hands `apply_undo_step` a step targeting a *different*,
+    /// unopened request so `jump_to_request_for_undo` runs.
+    #[test]
+    fn jump_guard_trip_retries_in_the_direction_it_was_pushed() {
+        for redo in [false, true] {
+            let mut app = App::new_for_test();
+            app.update(Action::CreateRequest("one".into()));
+            app.capture_undo();
+            app.update(Action::CreateRequest("two".into()));
+            app.capture_undo(); // shadow now matches saved "two"
+
+            // Dirty the open editor without recapturing: `is_dirty()` goes
+            // true and the shadow (still "two"'s saved snapshot) no longer
+            // matches `editor.current_request()`.
+            app.editor.sub_focus = SubFocus::Url;
+            app.editor
+                .handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+            assert!(app.editor.is_dirty());
+
+            // A step targeting "one" (not the open "two") forces the jump
+            // path, which must hit the guard given the state above.
+            let step = crate::undo::Step {
+                kind: crate::undo::StepKind::EditorDelta {
+                    slug: Some("one".into()),
+                    before: req("https://before"),
+                    after: Box::new(req("https://after")),
+                },
+                context: crate::undo::Context {
+                    slug: Some("one".into()),
+                    cursor_before: CursorPos::None,
+                    cursor_after: CursorPos::None,
+                },
+            };
+
+            let before_undo_len = app.history.undo_len();
+            let before_redo_len = app.history.redo_len();
+            let applied = app.apply_undo_step(step, redo);
+            assert!(!applied, "guard trip must report failure");
+
+            if redo {
+                assert_eq!(
+                    app.history.redo_len(),
+                    before_redo_len + 1,
+                    "redo direction: step must land back on the redo stack"
+                );
+                assert_eq!(app.history.undo_len(), before_undo_len);
+            } else {
+                assert_eq!(
+                    app.history.undo_len(),
+                    before_undo_len + 1,
+                    "undo direction: step must land back on the undo stack"
+                );
+                assert_eq!(app.history.redo_len(), before_redo_len);
+            }
+
+            match app.modals.top() {
+                Some(Modal::Confirm { choices, .. }) => {
+                    let retry = choices
+                        .iter()
+                        .find(|(key, _, _)| *key == 's')
+                        .expect("dirty gate offers a save-and-retry choice");
+                    let expects_redo = retry.2.contains(&Action::Redo);
+                    let expects_undo = retry.2.contains(&Action::Undo);
+                    assert_eq!(
+                        expects_redo, redo,
+                        "retry action must match the direction the step was pushed in"
+                    );
+                    assert_eq!(expects_undo, !redo);
+                }
+                Some(_) => panic!("expected the dirty-gate confirm modal, got a different one"),
+                None => panic!("expected the dirty-gate confirm modal, got none"),
+            }
+        }
+    }
+
+    /// Final-review finding: a mid-loop failure applying a multi-file
+    /// `FileStates` step returned early *before* the reload/refresh block,
+    /// so a write that landed (earlier in the loop) before the one that
+    /// failed never showed up in the sidebar. Builds a two-path step where
+    /// the first write succeeds (creates a brand-new request file) and the
+    /// second targets a path that's actually a directory, forcing a
+    /// mid-loop failure, then asserts the successfully-written request is
+    /// visible in the sidebar despite the step being dropped.
+    #[test]
+    fn failed_multi_file_step_still_refreshes_the_sidebar() {
+        let mut app = App::new_for_test();
+        let new_path = postui_core::storage::request_path(&app.project.root, "brand-new");
+        let blocked_path = app.project.root.join("blocked.toml");
+        std::fs::create_dir_all(&blocked_path).unwrap(); // a dir where a file write is expected
+
+        let step = crate::undo::Step {
+            kind: crate::undo::StepKind::FileStates {
+                before: vec![(new_path.clone(), None), (blocked_path.clone(), Some("x".into()))],
+                after: vec![
+                    (new_path.clone(), Some(req("https://brand-new").to_toml_string())),
+                    (blocked_path.clone(), Some("y".into())),
+                ],
+                active_env: None,
+            },
+            context: crate::undo::Context {
+                slug: None,
+                cursor_before: CursorPos::None,
+                cursor_after: CursorPos::None,
+            },
+        };
+
+        let applied = app.apply_undo_step(step, true); // redo direction
+        assert!(!applied, "the blocked second write must fail the step");
+        assert!(new_path.exists(), "the first write in the step must stand");
+        assert!(
+            app.sidebar
+                .rows
+                .iter()
+                .any(|r| matches!(r, Row::Request { slug, .. } if slug == "brand-new")),
+            "sidebar must be refreshed to reflect the write that landed before the failure: {:?}",
+            app.sidebar.rows
+        );
+    }
+
     #[test]
     fn undo_reverts_a_variable_value_edit_on_disk() {
         let mut app = App::new_for_test();
@@ -8862,6 +8987,36 @@ mod undo_tests {
         assert!(std::fs::read_to_string(&vars_path)
             .unwrap()
             .contains("v2"));
+    }
+
+    /// Final-review finding: `Action::DuplicateVar` wrote variables.toml
+    /// (twice, for a secret) with no capture wrap at all. Cloned from
+    /// `undo_reverts_a_variable_value_edit_on_disk`.
+    #[test]
+    fn undo_reverts_a_duplicate_var_on_disk() {
+        let mut app = App::new_for_test();
+        app.update(Action::VarStruct(VarStructOp::NewVar {
+            name: "tok".into(),
+            description: None,
+        }));
+        app.capture_undo();
+        let vars_path = app.project.root.join("variables.toml");
+        let before_dup = std::fs::read_to_string(&vars_path).unwrap();
+
+        app.update(Action::DuplicateVar { name: "tok".into() });
+        app.capture_undo();
+        let with_dup = std::fs::read_to_string(&vars_path).unwrap();
+        assert_ne!(with_dup, before_dup, "duplicate must change variables.toml");
+        assert!(with_dup.contains("tok-copy"));
+
+        app.update(Action::Undo);
+        assert_eq!(
+            std::fs::read_to_string(&vars_path).unwrap(),
+            before_dup,
+            "undo must byte-for-byte revert the duplicate"
+        );
+        app.update(Action::Redo);
+        assert_eq!(std::fs::read_to_string(&vars_path).unwrap(), with_dup);
     }
 
     #[test]

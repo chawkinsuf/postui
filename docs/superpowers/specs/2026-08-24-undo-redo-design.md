@@ -191,8 +191,12 @@ previous `editor.saved`, so `is_dirty()` flips back on.
 **Failure handling.** A file may have changed or vanished outside the app
 between capture and undo. Every apply is fallible; on failure the step is
 discarded, an error toast explains, and the rest of history stays usable.
-A failed undo never half-applies: disk steps are single-file atomic
-writes, editor steps are pure memory.
+Each file write within a step is individually atomic, but a multi-file
+`FileStates` step can still fail partway through: on a mid-step failure,
+the writes that already succeeded stand, the UI (sidebar, project reload,
+Variable Manager) is refreshed to match what's now on disk, and the step
+itself is dropped rather than retried. Editor steps are pure memory and
+either fully apply or not at all.
 
 **Empty stack**: quiet "Nothing to undo" / "Nothing to redo" toast.
 

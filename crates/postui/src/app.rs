@@ -2069,10 +2069,12 @@ impl App {
                 true
             }
             Action::DuplicateVar { name } => {
+                let before = self.read_file_states(&self.project.var_file_paths());
                 if let Err(msg) = self.apply_duplicate_var(&name) {
                     self.toasts.push(msg, ToastKind::Error);
                     self.last_action_failed = true;
                 } else {
+                    self.record_var_file_step(before);
                     self.varmanager.sync(&self.project);
                 }
                 true
@@ -4449,8 +4451,16 @@ impl App {
             *s == self.editor.slug && *req == self.editor.current_request()
         });
         if self.editor_holds_unsaved() && !shadow_matches {
-            self.history.push_undo_no_coalesce(step.clone()); // put it back
-            self.dirty_gate("undo", Action::Undo);
+            // Put the step back on the stack matching its own direction —
+            // a tripped guard on a redo must retry as a redo, or Ctrl+Y
+            // would silently become an undo.
+            if redo {
+                self.history.push_redo(step.clone());
+                self.dirty_gate("redo", Action::Redo);
+            } else {
+                self.history.push_undo_no_coalesce(step.clone());
+                self.dirty_gate("undo", Action::Undo);
+            }
             return false;
         }
         self.apply(Action::ForceOpenRequest(target_slug.to_string()));
@@ -4531,6 +4541,16 @@ impl App {
                             format!("undo failed at {}: {e}", path.display()),
                             ToastKind::Error,
                         );
+                        // Earlier writes in this step stand — the sidebar
+                        // and Variable Manager must reflect them (and drop
+                        // any stale pre-undo cache) even though the step
+                        // itself is dropped, or the UI shows a state that
+                        // no longer matches disk.
+                        self.apply(Action::ReloadProjectFiles);
+                        self.refresh_sidebar();
+                        if self.screen == Screen::VarManager {
+                            self.varmanager.sync(&self.project);
+                        }
                         return false; // step dropped; earlier writes in this step stand
                     }
                 }
