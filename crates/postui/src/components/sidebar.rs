@@ -84,8 +84,8 @@ pub struct Sidebar {
 
 impl Sidebar {
     /// Rebuilds `rows` as a tree from a fresh listing: at each level, this
-    /// level's requests come first (sorted by slug), then its subfolders
-    /// (sorted by name); a folder's children are emitted only when
+    /// level's requests come first (sorted by display name), then its
+    /// subfolders (sorted by name); a folder's children are emitted only when
     /// `expanded` contains its path. Preserves the current selection by row
     /// identity (folder path or request slug) across the rebuild; a
     /// selection whose row vanished clears rather than sliding onto an
@@ -107,9 +107,10 @@ impl Sidebar {
     }
 
     /// Builds the rows for one folder level (`prefix`, possibly empty for
-    /// the root): direct requests first, in slug order, then subfolders in
-    /// name order, recursing into each expanded one. `entries` must already
-    /// be sorted by slug and every entry must start with `prefix`.
+    /// the root): direct requests first, in display-name order, then
+    /// subfolders in name order, recursing into each expanded one.
+    /// `entries` must already be sorted by slug (the folder grouping walks
+    /// slug paths) and every entry must start with `prefix`.
     fn build_rows(
         entries: &[RequestListing],
         prefix: &str,
