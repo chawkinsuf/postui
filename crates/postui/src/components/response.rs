@@ -786,9 +786,14 @@ impl Response {
                         ViewMode::Pretty => ViewMode::Raw,
                         _ => ViewMode::Pretty,
                     };
-                    view.set_mode(next);
+                    // Dispatched as an action rather than mutated here so it
+                    // funnels through `app.rs`'s `Action::ResponseViewMode`
+                    // arm — the one place the animated tab underline is
+                    // retargeted — exactly like a tab click.
+                    Some(Action::ResponseViewMode(next))
+                } else {
+                    Some(Action::Render)
                 }
-                Some(Action::Render)
             }
             KeyCode::Char('c') if view.mode == ViewMode::Headers => Some(Action::CopyToClipboard(
                 CopyTarget::ResponseHeader(view.cursor),
@@ -799,8 +804,7 @@ impl Response {
                 } else {
                     ViewMode::Headers
                 };
-                view.set_mode(next);
-                Some(Action::Render)
+                Some(Action::ResponseViewMode(next))
             }
             KeyCode::Down if ev.modifiers.contains(KeyModifiers::SHIFT) => {
                 view.select_line_extend(1);
@@ -1718,6 +1722,14 @@ mod tests {
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
+    /// Presses a key and applies a resulting `ResponseViewMode` action the
+    /// way `app.rs` would — the component itself no longer mutates the mode.
+    fn press(r: &mut Response, ev: KeyEvent) {
+        if let Some(Action::ResponseViewMode(mode)) = r.handle_key(ev) {
+            r.set_view_mode(mode);
+        }
+    }
+
     fn ch(c: char) -> KeyEvent {
         key(KeyCode::Char(c))
     }
@@ -2108,14 +2120,14 @@ mod tests {
         let body = "{\"a\": 1,\n     \"b\": 2}";
         let mut r = ready(body);
         assert!(render(&mut r).contains("  \"a\": 1,"), "pretty re-indents");
-        assert_eq!(r.handle_key(ch('r')), Some(Action::Render));
+        press(&mut r, ch('r'));
         let out = render(&mut r);
         assert!(out.contains("{\"a\": 1,"), "raw is verbatim: {out}");
         assert!(
             out.contains("     \"b\": 2}"),
             "raw keeps original spacing: {out}"
         );
-        assert_eq!(r.handle_key(ch('r')), Some(Action::Render));
+        press(&mut r, ch('r'));
         assert!(
             render(&mut r).contains("  \"a\": 1,"),
             "toggles back to pretty"
@@ -2211,10 +2223,10 @@ mod tests {
     #[test]
     fn headers_view_toggles_and_renders_a_header() {
         let mut r = ready(r#"{"a": 1}"#);
-        assert_eq!(r.handle_key(ch('h')), Some(Action::Render));
+        press(&mut r, ch('h'));
         let out = render(&mut r);
         assert!(out.contains("content-type: application/json"), "{out}");
-        assert_eq!(r.handle_key(ch('h')), Some(Action::Render));
+        press(&mut r, ch('h'));
         assert!(
             render(&mut r).contains("\"a\""),
             "h again returns to the body view"
@@ -2453,7 +2465,7 @@ mod tests {
         render(&mut r);
         r.handle_scroll_h(20);
         assert!(r.view().unwrap().h_scroll > 0);
-        r.handle_key(ch('h'));
+        press(&mut r, ch('h'));
         assert_eq!(
             r.view().unwrap().h_scroll,
             0,
@@ -2697,6 +2709,23 @@ mod tests {
     }
 
     #[test]
+    fn r_and_h_dispatch_response_view_mode_actions() {
+        // Through the action, not a direct mutation: `app.rs`'s
+        // `Action::ResponseViewMode` arm is what retargets the animated
+        // tab underline, so the keyboard path must funnel through it
+        // exactly like a tab click does.
+        let mut r = ready(r#"{"a": 1}"#);
+        assert_eq!(
+            r.handle_key(ch('r')),
+            Some(Action::ResponseViewMode(ViewMode::Raw))
+        );
+        assert_eq!(
+            r.handle_key(ch('h')),
+            Some(Action::ResponseViewMode(ViewMode::Headers))
+        );
+    }
+
+    #[test]
     fn set_view_mode_switches_the_view() {
         let mut r = ready(r#"{"a": 1}"#);
         r.set_view_mode(ViewMode::Headers);
@@ -2738,7 +2767,7 @@ mod tests {
         let mut r = ready("{\"a\": 1,\n \"b\": 2}");
         r.handle_key(ch('G'));
         assert_eq!(r.view().unwrap().cursor, 3, "last pretty line");
-        r.handle_key(ch('r'));
+        press(&mut r, ch('r'));
         assert_eq!(
             r.view().unwrap().cursor,
             0,
