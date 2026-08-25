@@ -147,6 +147,9 @@ pub struct UiSettings {
     pub osc52_limit: usize,
     /// Which palette source to seed the theme from; see [`ThemeChoice`].
     pub theme: ThemeChoice,
+    /// Whether eased transitions (tab underline, hover, modal open, ...)
+    /// play, or every animated value jumps straight to its target.
+    pub animations: bool,
 }
 
 impl Default for UiSettings {
@@ -155,14 +158,15 @@ impl Default for UiSettings {
             clipboard_cmd: None,
             osc52_limit: 65536,
             theme: ThemeChoice::default(),
+            animations: true,
         }
     }
 }
 
 /// Reads the top-level `clipboard_cmd` (string), `osc52_limit` (integer),
-/// and `theme` (string) keys from `config.toml`. Never errors: a missing
-/// file, corrupt TOML, or a mistyped key degrades that piece to its
-/// default. An unrecognized `theme` value degrades to
+/// `theme` (string), and `animations` (bool) keys from `config.toml`. Never
+/// errors: a missing file, corrupt TOML, or a mistyped key degrades that
+/// piece to its default. An unrecognized `theme` value degrades to
 /// [`ThemeChoice::Terminal`] and is reported in the returned warnings, for
 /// the caller to surface as a startup toast (the same pattern
 /// `ProjectContext::open` uses).
@@ -191,6 +195,9 @@ pub fn load_ui_settings(path: &Path) -> (UiSettings, Vec<String>) {
                 "unknown theme {raw:?} in config.toml; using terminal"
             ));
         }
+    }
+    if let Some(b) = value.get("animations").and_then(|v| v.as_bool()) {
+        settings.animations = b;
     }
 
     (settings, warnings)
@@ -400,6 +407,17 @@ mod tests {
         assert_eq!(s.theme, ThemeChoice::Terminal);
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("sepia"));
+    }
+
+    #[test]
+    fn animations_key_parses_and_defaults_true() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        std::fs::write(&p, "animations = false\n").unwrap();
+        let (s, warnings) = load_ui_settings(&p);
+        assert!(!s.animations);
+        assert!(warnings.is_empty());
+        assert!(UiSettings::default().animations);
     }
 
     #[test]

@@ -501,9 +501,48 @@ pub fn lift_color(c: Color, delta_l: f32) -> Color {
     }
 }
 
+/// Blends `a` toward `b` in Oklab space by `t`, clamped to `[0, 1]`.
+/// `t <= 0.0` returns `a` and `t >= 1.0` returns `b` exactly (an Oklab
+/// roundtrip can drift a channel by ±1, so the endpoints are short-circuited
+/// rather than computed). Only `Rgb` carries the truecolor components this
+/// needs; if either `a` or `b` has no RGB form (`Indexed`, a named ANSI
+/// color, `Reset`, ...), this degrades to returning `b`, same posture as
+/// [`Theme::tint`].
+pub fn mix(a: Color, b: Color, t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    if t <= 0.0 {
+        return a;
+    }
+    if t >= 1.0 {
+        return b;
+    }
+    let (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) = (a, b) else {
+        return b;
+    };
+    let (al, aa, ab_) = oklab((ar, ag, ab));
+    let (bl, ba, bb_) = oklab((br, bg, bb));
+    let (r, g, b) = oklab_to_rgb((
+        al + (bl - al) * t,
+        aa + (ba - aa) * t,
+        ab_ + (bb_ - ab_) * t,
+    ));
+    Color::Rgb(r, g, b)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mix_endpoints_and_midpoint() {
+        let a = Color::Rgb(0, 0, 0);
+        let b = Color::Rgb(200, 100, 50);
+        assert_eq!(crate::theme::mix(a, b, 0.0), a);
+        assert_eq!(crate::theme::mix(a, b, 1.0), b);
+        let m = crate::theme::mix(a, b, 0.5);
+        let Color::Rgb(r, ..) = m else { panic!() };
+        assert!(r > 0 && r < 200);
+    }
 
     #[test]
     fn dark_theme_tokens_are_rgb() {
