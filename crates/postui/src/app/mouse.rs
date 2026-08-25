@@ -525,7 +525,10 @@ impl App {
         // after; modal and scrollbar hits are excluded above so an open
         // popup or a scroll never blurs the input under it.
         let keeps_editor_input = keeps_table_selection
-            || matches!(hit, Hit::UrlBar | Hit::BodyEditor | Hit::VarToken(_));
+            || matches!(
+                hit,
+                Hit::UrlBar | Hit::BodyEditor | Hit::VarToken(_) | Hit::CopyUrl
+            );
         if !keeps_editor_input {
             self.editor.sub_focus = SubFocus::None;
         }
@@ -848,6 +851,7 @@ impl App {
             }
             Hit::ResponseSearchNext => self.step_response_search(1),
             Hit::ResponseSearchPrev => self.step_response_search(-1),
+            Hit::CopyUrl => self.update(Action::CopyToClipboard(CopyTarget::Url)),
             Hit::CopyBodyButton => self.update(Action::CopyToClipboard(CopyTarget::ResponseBody)),
             Hit::SaveBodyButton => self.update(Action::PromptSaveBody),
             Hit::HeaderCopy(i) => {

@@ -50,6 +50,15 @@ impl DrawCtx<'_> {
     pub fn hover_t(&self) -> f32 {
         self.anims.value_or(AnimKey::Hover, self.now, 1.0)
     }
+
+    /// The 0→1 eased progress of the current focus fade: 0 the instant a
+    /// control gains keyboard focus, easing to 1 over the fade's duration.
+    /// Defaults to `1.0` (fully faded in), same convention as
+    /// [`DrawCtx::hover_t`], so a focused control drawn before any focus
+    /// change ever occurred still gets its full focused fill.
+    pub fn focus_t(&self) -> f32 {
+        self.anims.value_or(AnimKey::FocusFade, self.now, 1.0)
+    }
 }
 
 pub trait Component {

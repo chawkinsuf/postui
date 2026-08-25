@@ -947,6 +947,7 @@ impl App {
             Action::FocusUrl => {
                 self.focus = PaneId::Editor;
                 self.editor.sub_focus = SubFocus::Url;
+                self.begin_focus_fade();
                 true
             }
             Action::ToggleTableCollapse => {
@@ -4231,6 +4232,19 @@ impl App {
         self.anims.snap(AnimKey::Hover, 0.0);
         self.anims
             .retarget(AnimKey::Hover, 1.0, Duration::from_millis(70), now);
+    }
+
+    /// Starts the focus fade over from 0: snaps `AnimKey::FocusFade` to 0
+    /// and retargets it to 1 over 90ms. Called wherever keyboard focus
+    /// actually moves onto a control the address bar animates (today, just
+    /// `Action::FocusUrl` — the single entry point both the URL keyboard
+    /// shortcut and clicking `Hit::UrlBar` go through), so the newly
+    /// focused control's lifted fill eases in rather than jumping.
+    pub(crate) fn begin_focus_fade(&mut self) {
+        let now = Instant::now();
+        self.anims.snap(AnimKey::FocusFade, 0.0);
+        self.anims
+            .retarget(AnimKey::FocusFade, 1.0, Duration::from_millis(90), now);
     }
 
     /// Central key router. Order (each step tested):

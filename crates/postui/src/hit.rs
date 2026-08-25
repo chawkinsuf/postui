@@ -27,6 +27,12 @@ pub enum Hit {
     /// The address bar's URL segment: click focuses the URL line and places
     /// the caret at the clicked column.
     UrlBar,
+    /// The `⧉` copy-URL chip at the right edge of the URL well: click copies
+    /// the URL text to the clipboard (`Action::CopyToClipboard(CopyTarget::Url)`,
+    /// the same path the palette's "Request: copy URL" command uses).
+    /// Registered on top of `UrlBar` so it wins the hit test over the well
+    /// behind it.
+    CopyUrl,
     /// 0 = Params, 1 = Headers, 2 = Body.
     EditorTab(usize),
     /// A table row's background: hover and right-click target. The row's

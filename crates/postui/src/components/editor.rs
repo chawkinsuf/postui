@@ -1254,6 +1254,9 @@ pub const ADDRESS_BAR_HEIGHT: u16 = 5;
 /// Columns of padding between the method segment and the URL text, so the
 /// text isn't flush against the method button.
 const URL_PAD: u16 = 2;
+/// Fixed width, in cells, of the `⧉` copy-URL chip at the URL well's right
+/// edge (`" ⧉ "` — one glyph column, one padding column each side).
+const COPY_CHIP_WIDTH: u16 = 3;
 /// Height of the tab bar row — the second row of that split.
 pub const TAB_BAR_HEIGHT: u16 = 2;
 /// Height of the toolbar chip row holding the Body tab's
@@ -1292,7 +1295,8 @@ impl Editor {
         ctx: &DrawCtx,
         hits: &mut crate::hit::HitMap,
     ) {
-        use crate::paint::{face_edges, fill, half_cap_bottom, half_cap_top, text};
+        use crate::paint::{bevel_bottom, bevel_top, fill, text};
+        use crate::theme::{lift_color, mix};
 
         let theme = ctx.theme;
         // Focus styling must track where keys actually go: the URL only
@@ -1327,11 +1331,12 @@ impl Editor {
         let method_area = cols[0];
         let url_area = cols[1];
         let send_area = cols[2];
-        // Shaded cap rows above and below the centered text row.
+        // Thin bevel rows above and below the centered text row, all three
+        // on the control's own fill — the same 3-row solid anatomy `Button`
+        // and `TextField` use.
         let text_y = bar.y + 1;
-        let cap_top_row = |r: Rect| Rect::new(r.x, r.y, r.width, 1);
-        let text_row = |r: Rect| Rect::new(r.x, r.y + 1, r.width, 1);
-        let cap_bottom_row = |r: Rect| Rect::new(r.x, r.y + r.height - 1, r.width, 1);
+        let top_row = |r: Rect| Rect::new(r.x, r.y, r.width, 1);
+        let bottom_row = |r: Rect| Rect::new(r.x, r.y + r.height - 1, r.width, 1);
 
         let buf = frame.buffer_mut();
 
@@ -1339,19 +1344,29 @@ impl Editor {
         // Focus reuses hover's lift color: the badge has no pressed state,
         // so the lift is unambiguous, and hover/focus rarely coexist (a
         // deliberate choice over a ring — see the focus-outline sweep).
+        // Both hover and focus ease in from the resting face rather than
+        // snapping, via the shared `Hover`/`FocusFade` fade timers (hover:
+        // `App::begin_hover_fade`, on every hover-hit change; focus:
+        // `App::begin_focus_fade`, on `Action::FocusUrl`) — at rest (no fade
+        // in flight) `hover_t`/`focus_t` default to 1.0, so the steady-state
+        // colors below are unchanged from before.
         let method_face = theme.method_color(self.method);
+        let method_lifted = lift_color(method_face, 0.12);
         let method_hovered = ctx.hovered == Some(&crate::hit::Hit::MethodSelector);
-        let method_fill = if method_hovered || method_focused {
-            face_edges(method_face, theme).0
+        let method_fill = if method_hovered {
+            mix(method_face, method_lifted, ctx.hover_t())
+        } else if method_focused {
+            mix(method_face, method_lifted, ctx.focus_t())
         } else {
             method_face
         };
-        // Caps follow the currently shown fill so the whole segment lifts
-        // on hover, matching `Button`'s convention.
-        let (m_light, m_dark) = face_edges(method_fill, theme);
-        half_cap_top(buf, cap_top_row(method_area), m_light, theme.page);
-        fill(buf, text_row(method_area), method_fill);
-        half_cap_bottom(buf, cap_bottom_row(method_area), m_dark, theme.page);
+        // The bevel follows the currently shown fill so the whole segment
+        // lifts on hover/focus, matching `Button`'s convention.
+        let m_light = lift_color(method_fill, 0.12);
+        let m_dark = lift_color(method_fill, -0.12);
+        fill(buf, method_area, method_fill);
+        bevel_top(buf, top_row(method_area), m_light, method_fill);
+        bevel_bottom(buf, bottom_row(method_area), m_dark, method_fill);
         let method_label = format!("{} ▾", self.method.as_str());
         let label_w = method_label.chars().count() as u16;
         let start_x = method_area.x + method_area.width.saturating_sub(label_w) / 2;
@@ -1377,25 +1392,38 @@ impl Editor {
         // --- URL segment -------------------------------------------------
         // Focus lifts the fill two hover-steps up — a stronger step than
         // `control_hover`, because the URL well is large and dark and a
-        // single step is nearly invisible. Caps follow the lifted fill.
+        // single step is nearly invisible (same lift `TextField`'s Focused
+        // state uses). The bevel follows the lifted fill, but at the
+        // softer ±0.08 delta `TextField` uses around its own fill —
+        // ±0.12 (the method badge's colored-face delta) reads as a hard
+        // black line on the already-dark neutral control fill.
+        let url_lifted = lift_color(theme.control, 0.12);
         let url_fill = if url_focused {
-            crate::theme::lift_color(theme.control, 0.12)
+            mix(theme.control, url_lifted, ctx.focus_t())
         } else {
             theme.control
         };
         let (u_light, u_dark) = if url_focused {
-            face_edges(url_fill, theme)
+            (lift_color(url_fill, 0.08), lift_color(url_fill, -0.08))
         } else {
             (theme.edge_light, theme.edge_dark)
         };
-        half_cap_top(buf, cap_top_row(url_area), u_light, theme.page);
-        fill(buf, text_row(url_area), url_fill);
-        half_cap_bottom(buf, cap_bottom_row(url_area), u_dark, theme.page);
+        fill(buf, url_area, url_fill);
+        bevel_top(buf, top_row(url_area), u_light, url_fill);
+        bevel_bottom(buf, bottom_row(url_area), u_dark, url_fill);
+        hits.register(url_area, crate::hit::Hit::UrlBar);
+        // The copy-URL chip claims a fixed slice at the well's right edge;
+        // the text window is narrowed to leave room for it so the two never
+        // overlap.
+        let chip_w = COPY_CHIP_WIDTH.min(url_area.width);
         // The text is inset URL_PAD columns from the method segment so it
         // isn't flush against the badge.
         let url_text_area = Rect {
             x: url_area.x + URL_PAD.min(url_area.width),
-            width: url_area.width.saturating_sub(URL_PAD),
+            width: url_area
+                .width
+                .saturating_sub(URL_PAD)
+                .saturating_sub(chip_w),
             ..url_area
         };
         let mut url_line = self
@@ -1403,7 +1431,6 @@ impl Editor {
             .draw_line_windowed(url_focused, theme, url_text_area.width);
         url_line.style = Style::default().bg(url_fill).patch(url_line.style);
         buf.set_line(url_text_area.x, text_y, &url_line, url_text_area.width);
-        hits.register(url_area, crate::hit::Hit::UrlBar);
         // Token tinting paints over the text just drawn, and registers its
         // spans on top of `UrlBar` so a click lands on the token.
         crate::components::var_tokens::paint_var_tokens(
@@ -1420,6 +1447,44 @@ impl Editor {
             height: 1,
             ..url_text_area
         });
+
+        // --- copy-URL chip ---------------------------------------------
+        // A `Chip`-style tinted pill at the well's right edge; hover tints
+        // it toward the well's accent-tinted color, blending in over the
+        // shared hover fade like every other hovered control here. Drawn
+        // (and registered) after the URL text/token painting above, so it
+        // sits on top and wins the hit test over `UrlBar` beneath it.
+        let chip_area = Rect {
+            x: url_area.x + url_area.width.saturating_sub(chip_w),
+            y: text_y,
+            width: chip_w,
+            height: 1,
+        };
+        if chip_area.width > 0 {
+            let chip_hovered = ctx.hovered == Some(&crate::hit::Hit::CopyUrl);
+            let chip_tinted = theme.tint(theme.accent, url_fill);
+            let chip_bg = if chip_hovered {
+                mix(url_fill, chip_tinted, ctx.hover_t())
+            } else {
+                url_fill
+            };
+            let chip_fg = if chip_hovered {
+                theme.text
+            } else {
+                theme.text_muted
+            };
+            fill(buf, chip_area, chip_bg);
+            text(
+                buf,
+                chip_area.x + chip_area.width / 2,
+                chip_area.y,
+                "⧉",
+                chip_fg,
+                chip_bg,
+                false,
+            );
+            hits.register(chip_area, crate::hit::Hit::CopyUrl);
+        }
 
         // --- Send cap ------------------------------------------------------
         // In flight is a distinct state from disabled: the mouse-first
@@ -1458,24 +1523,32 @@ impl Editor {
         } else if send_hovered {
             (
                 "Send".to_string(),
-                theme.accent_edge_light,
+                mix(theme.accent, theme.accent_edge_light, ctx.hover_t()),
                 theme.on_accent,
                 true,
             )
         } else {
             ("Send".to_string(), theme.accent, theme.on_accent, true)
         };
-        // Caps follow the currently shown fill (matching `Button`'s
-        // convention: the whole control reacts to hover/pulse), except
-        // disabled, which goes flat in the control fill.
-        let (s_light, s_dark) = if disabled {
-            (theme.control, theme.control)
-        } else {
-            face_edges(send_fill, theme)
-        };
-        half_cap_top(buf, cap_top_row(send_area), s_light, theme.page);
-        fill(buf, text_row(send_area), send_fill);
-        half_cap_bottom(buf, cap_bottom_row(send_area), s_dark, theme.page);
+        // The bevel follows the currently shown fill (matching `Button`'s
+        // convention: the whole control reacts to hover/pulse), at the
+        // accent delta `Button`'s Primary kind uses; disabled drops the
+        // bevel entirely (flat fill, no edges), same as a disabled `Button`.
+        fill(buf, send_area, send_fill);
+        if !disabled {
+            bevel_top(
+                buf,
+                top_row(send_area),
+                lift_color(send_fill, 0.12),
+                send_fill,
+            );
+            bevel_bottom(
+                buf,
+                bottom_row(send_area),
+                lift_color(send_fill, -0.12),
+                send_fill,
+            );
+        }
         let send_label_w = label.chars().count() as u16;
         let send_start_x = send_area.x + send_area.width.saturating_sub(send_label_w) / 2;
         text(buf, send_start_x, text_y, &label, label_fg, send_fill, bold);
@@ -3100,23 +3173,28 @@ url = "https://api.example.com/users""#,
             cell.bg, method_face,
             "method cell bg must be the GET method color"
         );
-        // Shaded caps above and below: light "▄" on top, dark "▀" below,
-        // so the bar reads as 2 text lines with a raised bevel.
+        // Thin bevel rows above and below, on the segment's own fill: light
+        // "▔" on top, dark "▁" below, so the bar reads as a 3-row solid
+        // with a raised edge (the anatomy `Button`/`TextField` use).
         let (m_light, m_dark) = crate::paint::face_edges(method_face, &theme);
         let top_cap = buf.cell((method_area.x, method_area.y)).unwrap();
-        assert_eq!(top_cap.symbol(), "▄", "method top cap: {top_cap:?}");
+        assert_eq!(top_cap.symbol(), "▔", "method top cap: {top_cap:?}");
         assert_eq!(top_cap.fg, m_light);
+        assert_eq!(
+            top_cap.bg, method_face,
+            "cap sits on the segment's own fill"
+        );
         let bottom_cap = buf.cell((method_area.x, text_y + 1)).unwrap();
         assert_eq!(
             bottom_cap.symbol(),
-            "▀",
+            "▁",
             "method bottom cap: {bottom_cap:?}"
         );
         assert_eq!(bottom_cap.fg, m_dark);
         let url_cap = buf
             .cell((method_area.x + method_area.width + 2, text_y + 1))
             .unwrap();
-        assert_eq!(url_cap.symbol(), "▀", "url cap row: {url_cap:?}");
+        assert_eq!(url_cap.symbol(), "▁", "url cap row: {url_cap:?}");
         assert_eq!(url_cap.fg, theme.edge_dark);
 
         // The URL text is drawn on the same row as the method label -- the
@@ -3138,6 +3216,129 @@ url = "https://api.example.com/users""#,
             })
             .collect();
         assert_eq!(gap, "  ", "2 columns of left padding before the URL text");
+    }
+
+    /// Draws the address bar with an explicit `anims`/`now` (rather than
+    /// `test_anims()`'s permanently-settled clock), so a fade can be
+    /// sampled mid-flight.
+    fn draw_for_bar_test_at(
+        e: &mut Editor,
+        hovered: Option<&crate::hit::Hit>,
+        anims: &crate::anim::Anims,
+        now: std::time::Instant,
+    ) -> (Terminal<TestBackend>, crate::hit::HitMap) {
+        let theme = Theme::dark();
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered,
+            dragging: false,
+            anims,
+            now,
+        };
+        let backend = TestBackend::new(60, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+        (terminal, hits)
+    }
+
+    #[test]
+    fn hovering_the_method_badge_blends_in_the_hover_fill_over_the_fade() {
+        use crate::anim::AnimKey;
+        use std::time::Duration;
+
+        let mut e = Editor::default();
+        let theme = Theme::dark();
+        let method_face = theme.method_color(postui_core::model::Method::Get);
+        let method_lifted = crate::theme::lift_color(method_face, 0.12);
+
+        // Mid-flight: half-eased toward the hover fill, not there yet.
+        let mut anims = crate::anim::Anims::new(true);
+        let t0 = std::time::Instant::now();
+        anims.snap(AnimKey::Hover, 0.0);
+        anims.retarget(AnimKey::Hover, 1.0, Duration::from_millis(70), t0);
+        let mid = t0 + Duration::from_millis(35);
+        let (terminal, hits) =
+            draw_for_bar_test_at(&mut e, Some(&crate::hit::Hit::MethodSelector), &anims, mid);
+        let method_area = hits.rect_of(&crate::hit::Hit::MethodSelector).unwrap();
+        let cell = terminal
+            .backend()
+            .buffer()
+            .cell((method_area.x, method_area.y + 1))
+            .unwrap();
+        assert_ne!(
+            cell.bg, method_face,
+            "must have eased away from the resting face"
+        );
+        assert_ne!(
+            cell.bg, method_lifted,
+            "must not have reached the fully hovered fill yet"
+        );
+
+        // Settled: the fade has finished, so the fill reaches the target
+        // exactly — the same value hover always painted before the fade
+        // existed.
+        let done = t0 + Duration::from_millis(70);
+        let (terminal, hits) =
+            draw_for_bar_test_at(&mut e, Some(&crate::hit::Hit::MethodSelector), &anims, done);
+        let method_area = hits.rect_of(&crate::hit::Hit::MethodSelector).unwrap();
+        let cell = terminal
+            .backend()
+            .buffer()
+            .cell((method_area.x, method_area.y + 1))
+            .unwrap();
+        assert_eq!(
+            cell.bg, method_lifted,
+            "settles on the same hover fill as before"
+        );
+    }
+
+    #[test]
+    fn focusing_the_url_well_blends_in_the_focus_lift_over_the_fade() {
+        use crate::anim::AnimKey;
+        use std::time::Duration;
+
+        let mut e = Editor::default();
+        e.load(
+            Some("a".into()),
+            HttpRequest::from_toml_str(r#"url = "https://x""#).unwrap(),
+        );
+        e.sub_focus = SubFocus::Url;
+        let theme = Theme::dark();
+        let focused_fill = crate::theme::lift_color(theme.control, 0.12);
+
+        let mut anims = crate::anim::Anims::new(true);
+        let t0 = std::time::Instant::now();
+        anims.snap(AnimKey::FocusFade, 0.0);
+        anims.retarget(AnimKey::FocusFade, 1.0, Duration::from_millis(90), t0);
+        let mid = t0 + Duration::from_millis(45);
+        let (terminal, hits) = draw_for_bar_test_at(&mut e, None, &anims, mid);
+        let method_area = hits.rect_of(&crate::hit::Hit::MethodSelector).unwrap();
+        let url_x = method_area.x + method_area.width;
+        let text_y = method_area.y + 1;
+        let well = terminal.backend().buffer().cell((url_x, text_y)).unwrap();
+        assert_ne!(
+            well.bg, theme.control,
+            "must have eased away from the resting fill"
+        );
+        assert_ne!(
+            well.bg, focused_fill,
+            "must not have reached the fully focused fill yet"
+        );
+
+        let done = t0 + Duration::from_millis(90);
+        let (terminal, hits) = draw_for_bar_test_at(&mut e, None, &anims, done);
+        let method_area = hits.rect_of(&crate::hit::Hit::MethodSelector).unwrap();
+        let url_x = method_area.x + method_area.width;
+        let text_y = method_area.y + 1;
+        let well = terminal.backend().buffer().cell((url_x, text_y)).unwrap();
+        assert_eq!(
+            well.bg, focused_fill,
+            "settles on the same focus lift as before"
+        );
     }
 
     #[test]
@@ -3275,10 +3476,13 @@ url = "https://api.example.com/users""#,
             "the focused URL well brightens past control_hover: {well:?}"
         );
         assert_ne!(lifted, theme.control_hover, "focus must outshine hover");
-        // Caps follow the lifted fill.
+        // The bevel follows the lifted fill, at the softer ±0.08 delta
+        // `TextField`'s Focused state uses around its own fill (not the
+        // method badge's ±0.12) — the stronger delta reads as a hard line
+        // on the neutral control fill.
         let cap = buf.cell((url_x, method_area.y)).unwrap();
-        assert_eq!(cap.symbol(), "▄", "url top cap: {cap:?}");
-        assert_eq!(cap.fg, crate::paint::face_edges(lifted, &theme).0);
+        assert_eq!(cap.symbol(), "▔", "url top cap: {cap:?}");
+        assert_eq!(cap.fg, crate::theme::lift_color(lifted, 0.08));
         // No ring: the bar's old top-left ring corner cell stays plain.
         let corner = buf
             .cell((

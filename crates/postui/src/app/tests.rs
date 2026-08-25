@@ -4573,6 +4573,38 @@ fn copy_body_with_no_response_toasts_nothing_to_copy_and_leaves_clipboard_untouc
     assert!(rendered_text(&mut app).contains("nothing to copy — send a request first"));
 }
 
+#[test]
+fn address_bar_copy_chip_is_clickable_and_copies_url() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.txt");
+    let cmd = format!("cat > {}", out.to_string_lossy());
+    let mut app = App::new_for_test();
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
+        Some(cmd),
+        65536,
+        false,
+    ));
+    app.editor.url = crate::components::line_input::LineInput::new("https://example.com/x");
+
+    render_once(&mut app);
+    assert!(
+        app.hits.rect_of(&Hit::CopyUrl).is_some(),
+        "the address bar must register a CopyUrl hit for its chip"
+    );
+    click_hit(&mut app, Hit::CopyUrl);
+
+    assert_eq!(
+        std::fs::read_to_string(&out).unwrap(),
+        "https://example.com/x",
+        "the chip must copy via the same clipboard path the palette's \
+         \"Request: copy URL\" command uses"
+    );
+    assert!(
+        rendered_text(&mut app).contains("Copied URL"),
+        "toast confirms the copy, same as the palette command"
+    );
+}
+
 // --- Task 9: Screen enum + Variable Manager shell (spec §5) ---------------
 
 #[test]
