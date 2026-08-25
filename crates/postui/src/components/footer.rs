@@ -317,12 +317,23 @@ mod tests {
             .expect("new-request chip hit registered");
         let buf = terminal.backend().buffer();
         // First cell of the chip is the pill's leading space, then the key
-        // glyph, bold and accent-colored, on the accent-tinted pill fill —
-        // not a flat `theme.control` fill.
+        // glyph, bold, on the accent-tinted pill fill — not a flat
+        // `theme.control` fill. The glyph's own color is a contrast pick
+        // against that fill (checkpoint-2: `theme.accent` is itself light
+        // enough that the tinted fill reads light too, so painting the
+        // key in `theme.accent` unconditionally would be light-on-light).
         let key_cell = buf.cell((rect.x + 1, rect.y)).unwrap();
         assert_eq!(key_cell.symbol(), "n");
-        assert_eq!(key_cell.fg, theme.accent);
-        assert_eq!(key_cell.bg, theme.tint(theme.accent, theme.control));
+        let fill = theme.tint(theme.accent, theme.control);
+        assert_eq!(key_cell.bg, fill);
+        if crate::theme::is_light(fill) {
+            assert!(
+                !crate::theme::is_light(key_cell.fg),
+                "light fill needs dark key text: {key_cell:?}"
+            );
+        } else {
+            assert_eq!(key_cell.fg, theme.accent);
+        }
         assert!(key_cell.modifier.contains(ratatui::style::Modifier::BOLD));
         // The label follows right after the pill (" n " is 3 cells), muted,
         // not bold, and sitting on the plain panel — no chip fill of its

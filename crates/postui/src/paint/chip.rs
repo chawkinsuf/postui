@@ -16,11 +16,28 @@ pub struct Chip<'a> {
 impl Chip<'_> {
     /// Paints `" label "` at `(x, y)` on top of surface `on`. Returns the
     /// width (in columns) painted, so callers can lay out subsequent chips.
+    ///
+    /// The label's own text color is `self.color` only when that reads
+    /// legibly against the tinted fill; when the fill lands light (e.g. an
+    /// accent-tinted pill on a light-accent theme), the text switches to a
+    /// dark color instead of painting light-on-light. This is a contrast
+    /// pick on the *fill*, not on `self.color` directly — a light
+    /// `self.color` still yields a light (but tinted-down) fill most of
+    /// the time, since `tint` only blends 22% toward the surface.
     pub fn paint(&self, buf: &mut Buffer, x: u16, y: u16, on: Color, theme: &Theme) -> u16 {
         let s = format!(" {} ", self.label);
         let width = s.chars().count() as u16;
         let bg = theme.tint(self.color, on);
-        text(buf, x, y, &s, self.color, bg, true);
+        // A dark lift of the fill itself, rather than `theme.page`, so
+        // this stays correct in a light theme too — `theme.page` is
+        // itself light there, which would just repeat the same
+        // light-on-light problem this is fixing.
+        let fg = if crate::theme::is_light(bg) {
+            crate::theme::lift_color(bg, -0.55)
+        } else {
+            self.color
+        };
+        text(buf, x, y, &s, fg, bg, true);
         width
     }
 }
@@ -169,6 +186,74 @@ mod tests {
 
     fn buf_cell(term: &Terminal<TestBackend>, x: u16, y: u16) -> &ratatui::buffer::Cell {
         term.backend().buffer().cell((x, y)).unwrap()
+    }
+
+    /// Regression for the checkpoint-2 report: `theme.accent` in the
+    /// built-in dark theme is itself a fairly light blue (chosen for
+    /// visibility on the dark page), so a 22%-tinted key pill
+    /// (`theme.tint(accent, control)`) reads as `is_light` too — painting
+    /// the label in that same light accent color was light-on-light.
+    /// `Chip::paint` must switch to a dark fg in that case.
+    #[test]
+    fn key_pill_text_switches_to_dark_when_the_tinted_fill_is_light() {
+        let theme = Theme::dark();
+        let on = theme.control;
+        let fill = theme.tint(theme.accent, on);
+        assert!(
+            crate::theme::is_light(fill),
+            "fixture assumption: the dark theme's accent-tinted pill fill is light \
+             (this is exactly the bug being fixed): {fill:?}"
+        );
+
+        let mut term = Terminal::new(TestBackend::new(12, 1)).unwrap();
+        term.draw(|f| {
+            Chip {
+                label: "ed",
+                color: theme.accent,
+            }
+            .paint(f.buffer_mut(), 0, 0, on, &theme);
+        })
+        .unwrap();
+        let c = buf_cell(&term, 1, 0);
+        assert_eq!(c.bg, fill);
+        assert_ne!(
+            c.fg, theme.accent,
+            "label text must not stay the same light accent as the light fill: {c:?}"
+        );
+        assert!(
+            !crate::theme::is_light(c.fg),
+            "label text must be a dark color against the light fill: {c:?}"
+        );
+    }
+
+    /// The counterpart case: when the tinted fill lands dark (e.g. a
+    /// low-chroma color tinted onto a dark surface), the label keeps the
+    /// pill's own `color` as before — no unnecessary flip.
+    #[test]
+    fn key_pill_text_keeps_the_pill_color_when_the_tinted_fill_is_dark() {
+        let theme = Theme::dark();
+        let on = theme.page;
+        let dark_accent = Color::Rgb(20, 30, 40);
+        let fill = theme.tint(dark_accent, on);
+        assert!(
+            !crate::theme::is_light(fill),
+            "fixture: fill is dark: {fill:?}"
+        );
+
+        let mut term = Terminal::new(TestBackend::new(12, 1)).unwrap();
+        term.draw(|f| {
+            Chip {
+                label: "ed",
+                color: dark_accent,
+            }
+            .paint(f.buffer_mut(), 0, 0, on, &theme);
+        })
+        .unwrap();
+        let c = buf_cell(&term, 1, 0);
+        assert_eq!(
+            c.fg, dark_accent,
+            "unchanged: dark fill keeps the pill's own color"
+        );
     }
 
     #[test]

@@ -310,6 +310,14 @@ fn derive_fg_from_bg(bg: (u8, u8, u8)) -> (u8, u8, u8) {
     }
 }
 
+/// Whether `c` reads as a light color (Oklab lightness >= 0.5) — used to
+/// pick a legible text color for content painted directly on `c` (e.g. a
+/// key-pill's fill), rather than assuming the fill is always dark the way
+/// most of this dark-first theme's surfaces are.
+pub(crate) fn is_light(c: Color) -> bool {
+    oklab_l(rgb_of(c)) >= 0.5
+}
+
 /// Extracts the `(r, g, b)` components from a truecolor [`Color`]. Non-RGB
 /// variants (already-indexed colors) fall back to black, since callers only
 /// ever feed this the truecolor tokens produced by [`Theme::generate`].
@@ -570,6 +578,15 @@ mod tests {
                 "token must be truecolor: {c:?}"
             );
         }
+    }
+
+    #[test]
+    fn is_light_reports_lightness_directly() {
+        assert!(is_light(Color::Rgb(255, 255, 255)), "white is light");
+        assert!(!is_light(Color::Rgb(0, 0, 0)), "black is dark");
+        // The dark theme's accent is itself a light blue — this is the
+        // fixture behind the chip key-pill contrast fix.
+        assert!(is_light(Theme::dark().accent));
     }
 
     #[test]
