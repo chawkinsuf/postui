@@ -141,6 +141,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         &app.theme,
         &mut hits,
         app.hovered.as_ref(),
+        &app.keymap,
     );
     app.hits = hits;
 

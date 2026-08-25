@@ -3,13 +3,13 @@ use super::palette::fuzzy_match;
 use crate::action::Action;
 use crate::components::toast::ToastKind;
 use crate::components::varmanager::VarEditOp;
-use crate::paint::{self, Chip, ControlState, FIELD_HEIGHT, PillRow, RowHighlight, TextField};
+use crate::paint::{self, ControlState, FIELD_HEIGHT, ListRow, RowHighlight, TextField};
 use crate::theme::Theme;
 use indexmap::IndexMap;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
 /// Which of the three name sources an Insert-mode [`VarEntry`] comes from
@@ -179,6 +179,18 @@ pub struct VarPickerState {
     /// `ensure_visible` contract this mirrors.
     scroll: usize,
     ensure_visible: bool,
+}
+
+/// Replicates [`ListRow::paint`]'s own fill computation (sidebar's
+/// `Sidebar::resolve_fill`, without the zebra term this list never uses) so
+/// text painted as a second pass on top of a row knows what background it
+/// actually landed on.
+fn row_fill(theme: &Theme, highlight: RowHighlight, base: Color, hover_t: f32) -> Color {
+    match highlight {
+        RowHighlight::None => base,
+        RowHighlight::Hover => crate::theme::mix(base, theme.control, hover_t),
+        RowHighlight::Selected => theme.selection,
+    }
 }
 
 impl VarPickerState {
@@ -450,7 +462,7 @@ impl VarPickerState {
     ) {
         let width = 60.min(screen.width);
         const CHROME: u16 = 10;
-        let content_rows = (self.row_count() as u16).clamp(1, 10) * 2;
+        let content_rows = (self.row_count() as u16).clamp(1, 10);
         let height = (CHROME + content_rows).clamp(13, 26).min(screen.height);
         let area = super::modal::centered_rect(screen, width, height);
         hits.register(area, crate::hit::Hit::ModalBody);
@@ -495,7 +507,7 @@ impl VarPickerState {
             width: area.width.saturating_sub(2),
             height: area.height.saturating_sub(CHROME),
         };
-        let list_h = (list_area.height / 2) as usize;
+        let list_h = list_area.height as usize;
         if self.ensure_visible {
             if list_h > 0 {
                 if self.selected < self.scroll {
@@ -509,9 +521,14 @@ impl VarPickerState {
             self.ensure_visible = false;
         }
 
+        // No hover-fade animation is wired for popup lists (transient
+        // surfaces — see the task report); a hovered row shows its full
+        // hover fill immediately, same convention as `DrawCtx::hover_t`'s
+        // own documented default when no fade is in flight.
+        let hover_t = 1.0;
         let row_count = self.row_count();
         for i in (self.scroll..row_count).take(list_h.max(1)) {
-            let text_row = list_area.y + ((i - self.scroll) as u16) * 2;
+            let text_row = list_area.y + (i - self.scroll) as u16;
             let selected = i == self.selected;
             let row_hovered = hovered == Some(&crate::hit::Hit::VarPickerRow(i));
             let highlight = if selected {
@@ -521,20 +538,20 @@ impl VarPickerState {
             } else {
                 RowHighlight::None
             };
-            let row_fill = match highlight {
-                RowHighlight::None => theme.panel,
-                RowHighlight::Hover => theme.control,
-                RowHighlight::Selected => theme.control_hover,
-            };
-            PillRow { highlight }.paint(
+            ListRow {
+                highlight,
+                zebra: None,
+            }
+            .paint(
                 frame.buffer_mut(),
                 text_row,
                 list_area.x,
                 list_area.width,
-                area,
                 theme.panel,
+                hover_t,
                 theme,
             );
+            let row_fill = row_fill(theme, highlight, theme.panel, hover_t);
 
             let right = list_area.x + list_area.width;
             let mut x = list_area.x + 1;
@@ -568,12 +585,22 @@ impl VarPickerState {
             match &self.mode {
                 PickerMode::Insert => {
                     let entry = &self.entries[self.filtered[i]];
-                    let badge_w = Chip {
-                        label: entry.scope.badge(),
-                        color: theme.text_muted,
-                    }
-                    .paint(frame.buffer_mut(), x, text_row, row_fill, theme);
-                    x += badge_w;
+                    // A fixed left column (wide enough for "proj", the
+                    // longest origin tag) of quiet colored text — no chip
+                    // fill — so every row's name starts at the same column
+                    // regardless of which scope declared it.
+                    const ORIGIN_COL_W: u16 = 5;
+                    let tag = format!("{:<4} ", entry.scope.badge());
+                    paint::text(
+                        frame.buffer_mut(),
+                        x,
+                        text_row,
+                        &tag,
+                        theme.text_muted,
+                        row_fill,
+                        false,
+                    );
+                    x += ORIGIN_COL_W;
                     if entry.secret {
                         // The lock glyph is double-width in most terminals
                         // (unlike the ✓ used elsewhere in this file) — use
@@ -924,7 +951,7 @@ mod tests {
     }
 
     #[test]
-    fn selected_row_is_a_control_hover_pill_with_an_accent_bar() {
+    fn selected_row_is_a_dense_selection_fill_with_an_accent_bar() {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
@@ -941,14 +968,14 @@ mod tests {
         let bar = buffer[(row0.x, row0.y)].clone();
         assert_eq!(
             bar.symbol(),
-            "\u{2588}",
-            "the selected (row 0) row must carry the full-block accent bar in its first column"
+            "\u{258c}",
+            "the selected (row 0) row must carry the dense accent bar in its first column"
         );
         assert_eq!(bar.fg, theme.accent);
         let right_edge = buffer[(row0.x + row0.width - 1, row0.y)].clone();
         assert_eq!(
-            right_edge.bg, theme.control_hover,
-            "the selected row's pill fill must span the full row width"
+            right_edge.bg, theme.selection,
+            "the selected row's dense fill must span the full row width"
         );
     }
 
@@ -1137,7 +1164,7 @@ mod tests {
     }
 
     #[test]
-    fn rows_sit_on_the_sidebar_s_two_line_pitch() {
+    fn rows_sit_on_a_dense_one_line_pitch() {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
@@ -1152,8 +1179,54 @@ mod tests {
         let row0 = hits.rect_of(&crate::hit::Hit::VarPickerRow(0)).unwrap();
         let row1 = hits.rect_of(&crate::hit::Hit::VarPickerRow(1)).unwrap();
         let row2 = hits.rect_of(&crate::hit::Hit::VarPickerRow(2)).unwrap();
-        assert_eq!(row1.y - row0.y, 2, "rows sit on a 2-row pitch");
-        assert_eq!(row2.y - row1.y, 2, "rows sit on a 2-row pitch");
+        assert_eq!(row1.y - row0.y, 1, "rows sit on a dense 1-row pitch");
+        assert_eq!(row2.y - row1.y, 1, "rows sit on a dense 1-row pitch");
+    }
+
+    #[test]
+    fn origin_tags_sit_in_a_fixed_column_regardless_of_scope_label_width() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        // "proj" (4 chars) is the longest origin tag; "req"/"grp" (3 chars)
+        // must still leave every entry's name starting at the same column.
+        let mut p = VarPickerState::new(
+            vec![
+                VarEntry {
+                    name: "a".into(),
+                    description: None,
+                    value: None,
+                    scope: VarScope::Project,
+                    secret: false,
+                },
+                VarEntry {
+                    name: "b".into(),
+                    description: None,
+                    value: None,
+                    scope: VarScope::Group,
+                    secret: false,
+                },
+            ],
+            false,
+        );
+        let theme = Theme::dark();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None))
+            .unwrap();
+        let row0 = hits.rect_of(&crate::hit::Hit::VarPickerRow(0)).unwrap();
+        let row1 = hits.rect_of(&crate::hit::Hit::VarPickerRow(1)).unwrap();
+        let buffer = terminal.backend().buffer();
+        // Column x = list_area.x + 1 (row inset) + 5 (fixed origin column).
+        let name_col = row0.x + 1 + 5;
+        assert_eq!(buffer[(name_col, row0.y)].symbol(), "a");
+        assert_eq!(buffer[(name_col, row1.y)].symbol(), "b");
+        // The origin tag itself is plain colored text, not a filled chip:
+        // row 1 (unselected, unhovered) shows the tag on the plain panel
+        // fill, not a tinted chip color.
+        assert_eq!(buffer[(row1.x + 1, row1.y)].bg, theme.panel);
     }
 
     // --- Task 17: in-context flows (spec §6) -------------------------------

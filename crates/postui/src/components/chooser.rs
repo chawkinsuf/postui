@@ -1,11 +1,11 @@
 use super::palette::fuzzy_match;
 use crate::action::Action;
-use crate::paint::{self, ControlState, FIELD_HEIGHT, PillRow, RowHighlight, TextField};
+use crate::paint::{self, ControlState, FIELD_HEIGHT, ListRow, RowHighlight, TextField};
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
 /// One selectable entry in a `ChooserState`: a label, an optional detail
@@ -36,6 +36,18 @@ pub struct ChooserState {
     /// `draw` scrolls it back into view; wheel scrolling clears it so a free
     /// scroll survives the following draw untouched.
     ensure_visible: bool,
+}
+
+/// Replicates [`ListRow::paint`]'s own fill computation (sidebar's
+/// `Sidebar::resolve_fill`, without the zebra term this list never uses) so
+/// text painted as a second pass on top of a row knows what background it
+/// actually landed on.
+fn row_fill(theme: &Theme, highlight: RowHighlight, base: Color, hover_t: f32) -> Color {
+    match highlight {
+        RowHighlight::None => base,
+        RowHighlight::Hover => crate::theme::mix(base, theme.control, hover_t),
+        RowHighlight::Selected => theme.selection,
+    }
 }
 
 impl ChooserState {
@@ -161,7 +173,7 @@ impl ChooserState {
         // Chrome (everything but the list): 1 pad + 1 title + 1 ring-margin
         // gap + 3-row field + 1 ring-margin gap + 1 gap + 1 footer + 1 pad.
         const CHROME: u16 = 10;
-        let content_rows = (self.filtered.len() as u16).clamp(1, 10) * 2;
+        let content_rows = (self.filtered.len() as u16).clamp(1, 10);
         let height = (CHROME + content_rows).clamp(13, 26).min(screen.height);
         let area = super::modal::centered_rect(screen, width, height);
         hits.register(area, crate::hit::Hit::ModalBody);
@@ -200,7 +212,7 @@ impl ChooserState {
             width: area.width.saturating_sub(2),
             height: area.height.saturating_sub(CHROME),
         };
-        let list_h = (list_area.height / 2) as usize;
+        let list_h = list_area.height as usize;
         if self.ensure_visible {
             if list_h > 0 {
                 if self.selected < self.scroll {
@@ -214,6 +226,11 @@ impl ChooserState {
             self.ensure_visible = false;
         }
 
+        // No hover-fade animation is wired for popup lists (transient
+        // surfaces — see the task report); a hovered row shows its full
+        // hover fill immediately, same convention as `DrawCtx::hover_t`'s
+        // own documented default when no fade is in flight.
+        let hover_t = 1.0;
         for (i, &idx) in self
             .filtered
             .iter()
@@ -222,7 +239,7 @@ impl ChooserState {
             .take(list_h.max(1))
         {
             let item = &self.items[idx];
-            let text_row = list_area.y + ((i - self.scroll) as u16) * 2;
+            let text_row = list_area.y + (i - self.scroll) as u16;
             let selected = i == self.selected;
             let row_hovered = hovered == Some(&crate::hit::Hit::ChooserRow(i));
             let highlight = if selected {
@@ -232,20 +249,20 @@ impl ChooserState {
             } else {
                 RowHighlight::None
             };
-            let row_fill = match highlight {
-                RowHighlight::None => theme.panel,
-                RowHighlight::Hover => theme.control,
-                RowHighlight::Selected => theme.control_hover,
-            };
-            PillRow { highlight }.paint(
+            ListRow {
+                highlight,
+                zebra: None,
+            }
+            .paint(
                 frame.buffer_mut(),
                 text_row,
                 list_area.x,
                 list_area.width,
-                area,
                 theme.panel,
+                hover_t,
                 theme,
             );
+            let row_fill = row_fill(theme, highlight, theme.panel, hover_t);
 
             let text_x = list_area.x + 1;
             let mut x = text_x;
@@ -407,7 +424,7 @@ mod tests {
     }
 
     #[test]
-    fn selected_row_is_a_control_hover_pill_with_an_accent_bar() {
+    fn selected_row_is_a_dense_selection_fill_with_an_accent_bar() {
         let mut c = ChooserState::new("Projects", items(&["svc", "web", "auth"]));
         let theme = Theme::dark();
         let backend = TestBackend::new(80, 24);
@@ -421,14 +438,14 @@ mod tests {
         let bar = buffer[(row0.x, row0.y)].clone();
         assert_eq!(
             bar.symbol(),
-            "\u{2588}",
-            "the selected (row 0) row must carry the full-block accent bar in its first column"
+            "\u{258c}",
+            "the selected (row 0) row must carry the dense accent bar in its first column"
         );
         assert_eq!(bar.fg, theme.accent);
         let right_edge = buffer[(row0.x + row0.width - 1, row0.y)].clone();
         assert_eq!(
-            right_edge.bg, theme.control_hover,
-            "the selected row's pill fill must span the full row width"
+            right_edge.bg, theme.selection,
+            "the selected row's dense fill must span the full row width"
         );
     }
 
@@ -489,7 +506,7 @@ mod tests {
     }
 
     #[test]
-    fn rows_sit_on_the_sidebar_s_two_line_pitch() {
+    fn rows_sit_on_a_dense_one_line_pitch() {
         let mut c = ChooserState::new("Projects", items(&["svc", "web", "auth"]));
         let theme = Theme::dark();
         let backend = TestBackend::new(80, 24);
@@ -501,7 +518,30 @@ mod tests {
         let row0 = hits.rect_of(&crate::hit::Hit::ChooserRow(0)).unwrap();
         let row1 = hits.rect_of(&crate::hit::Hit::ChooserRow(1)).unwrap();
         let row2 = hits.rect_of(&crate::hit::Hit::ChooserRow(2)).unwrap();
-        assert_eq!(row1.y - row0.y, 2, "rows sit on a 2-row pitch");
-        assert_eq!(row2.y - row1.y, 2, "rows sit on a 2-row pitch");
+        assert_eq!(row1.y - row0.y, 1, "rows sit on a dense 1-row pitch");
+        assert_eq!(row2.y - row1.y, 1, "rows sit on a dense 1-row pitch");
+    }
+
+    /// A dense chooser should fit noticeably more rows in the same modal
+    /// height than the old 2-line-pitch pill list did — the point of this
+    /// task. 13 items at a plain 80×24 terminal must all be reachable via
+    /// scroll without the modal's height cap swallowing the tail.
+    #[test]
+    fn thirteen_items_all_scroll_into_view() {
+        let labels: Vec<String> = (0..13).map(|i| format!("item-{i}")).collect();
+        let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let mut c = ChooserState::new("Projects", items(&label_refs));
+        let theme = Theme::dark();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        c.select(12);
+        terminal
+            .draw(|f| c.draw(f, f.area(), &theme, &mut hits, None))
+            .unwrap();
+        assert!(
+            hits.rect_of(&crate::hit::Hit::ChooserRow(12)).is_some(),
+            "scrolling to the last of 13 items must bring it into view"
+        );
     }
 }

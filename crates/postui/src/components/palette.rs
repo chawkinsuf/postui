@@ -1,12 +1,12 @@
 use super::chooser::clip;
 use crate::action::{Action, CopyTarget};
 use crate::layout::PaneId;
-use crate::paint::{self, ControlState, FIELD_HEIGHT, PillRow, RowHighlight, TextField};
+use crate::paint::{self, ControlState, FIELD_HEIGHT, ListRow, RowHighlight, TextField};
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
 #[derive(Clone)]
@@ -15,6 +15,9 @@ pub struct Command {
     /// used as the key for palette frecency stats (`UsageStore`).
     pub id: &'static str,
     pub name: &'static str,
+    /// A one-line muted caption painted on the row directly under `name`
+    /// (spec: "bold title + muted description", two-line dense entries).
+    pub description: &'static str,
     pub action: Action,
 }
 
@@ -23,179 +26,250 @@ pub fn all_commands() -> Vec<Command> {
         Command {
             id: "focus-sidebar",
             name: "Focus: request tree",
+            description: "Move keyboard focus to the sidebar",
             action: Action::FocusPane(PaneId::Sidebar),
         },
         Command {
             id: "focus-editor",
             name: "Focus: editor",
+            description: "Move keyboard focus to the request editor",
             action: Action::FocusPane(PaneId::Editor),
         },
         Command {
             id: "focus-response",
             name: "Focus: response",
+            description: "Move keyboard focus to the response pane",
             action: Action::FocusPane(PaneId::Response),
         },
         Command {
             id: "about",
             name: "Help: about postui",
+            description: "Show version and app info",
             action: Action::ShowAbout,
         },
         Command {
             id: "send",
             name: "Send request",
+            description: "Send the open request",
             action: Action::Send,
         },
         Command {
             id: "request-new",
             name: "Request: new",
+            description: "Create a new request in the current folder",
             action: Action::PromptNewRequest,
         },
         Command {
             id: "request-save",
             name: "Request: save",
+            description: "Save the open request to disk",
             action: Action::SaveRequest,
         },
         Command {
             id: "request-rename",
             name: "Request: rename",
+            description: "Rename the open request",
             action: Action::PromptRenameRequest,
         },
         Command {
             id: "request-duplicate",
             name: "Request: duplicate",
+            description: "Copy the open request under a new name",
             action: Action::DuplicateRequest,
         },
         Command {
             id: "request-delete",
             name: "Request: delete",
+            description: "Delete the open request, with confirmation",
             action: Action::ConfirmDeleteRequest,
         },
         Command {
             id: "method-cycle",
             name: "Method: cycle",
+            description: "Step to the next HTTP method",
             action: Action::CycleMethod,
         },
         Command {
             id: "method-choose",
             name: "Method: choose…",
+            description: "Pick an HTTP method from a list",
             action: Action::OpenMethodDropdown,
         },
         Command {
             id: "body-format",
             name: "Body: format JSON",
+            description: "Pretty-print the request body",
             action: Action::FormatBody,
         },
         Command {
             id: "body-minify",
             name: "Body: minify JSON",
+            description: "Collapse the request body to one line",
             action: Action::MinifyBody,
         },
         Command {
             id: "body-external-editor",
             name: "Body: open in $EDITOR",
+            description: "Edit the body in your external editor",
             action: Action::OpenBodyInEditor,
         },
         Command {
             id: "body-toggle-vars",
             name: "Body: toggle {{var}} substitution",
+            description: "Enable or disable variable substitution in the body",
             action: Action::ToggleBodyVars,
         },
         Command {
             id: "project-choose",
             name: "Project: choose…",
+            description: "Switch to another registered project",
             action: Action::OpenProjectChooser,
         },
         Command {
             id: "project-next",
             name: "Project: next",
+            description: "Cycle to the next registered project",
             action: Action::CycleProject,
         },
         Command {
             id: "project-open-path",
             name: "Project: open by path…",
+            description: "Open a project directory by typing its path",
             action: Action::PromptOpenProjectPath,
         },
         Command {
             id: "project-new",
             name: "Project: new…",
+            description: "Create a new project",
             action: Action::PromptNewProject,
         },
         Command {
             id: "env-choose",
             name: "Environment: choose…",
+            description: "Switch to another environment",
             action: Action::OpenEnvChooser,
         },
         Command {
             id: "env-next",
             name: "Environment: next",
+            description: "Cycle to the next environment",
             action: Action::CycleEnv,
         },
         Command {
             id: "env-new",
             name: "Environment: new…",
+            description: "Create a new environment",
             action: Action::OpenNewEnvPrompt,
         },
         Command {
             id: "vars-insert",
             name: "Variables: insert…",
+            description: "Insert a {{variable}} token at the cursor",
             action: Action::OpenVarPicker { completing: false },
         },
         Command {
             id: "response-copy-body",
             name: "Response: copy body",
+            description: "Copy the response body to the clipboard",
             action: Action::CopyToClipboard(CopyTarget::ResponseBody),
         },
         Command {
             id: "request-copy-url",
             name: "Request: copy URL",
+            description: "Copy the resolved request URL to the clipboard",
             action: Action::CopyToClipboard(CopyTarget::Url),
         },
         Command {
             id: "response-save-body",
             name: "Response: save body to file…",
+            description: "Save the response body to a file on disk",
             action: Action::PromptSaveBody,
         },
         Command {
             id: "response-search",
             name: "Response: search",
+            description: "Search within the response body",
             action: Action::OpenResponseSearch,
         },
         Command {
             id: "var-manager",
             name: "Variable Manager",
+            description: "Open the full variable/environment manager",
             action: Action::OpenVarManager,
         },
         Command {
             id: "vars-new-variable",
             name: "Variables: new variable…",
+            description: "Declare a new project variable",
             action: Action::PromptNewVar,
         },
         Command {
             id: "vars-new-group",
             name: "Variables: new group…",
+            description: "Declare a new variable group",
             action: Action::PromptNewGroup,
         },
         Command {
             id: "vars-extract",
             name: "Extract to variable",
+            description: "Turn the selected text into a variable",
             action: Action::ExtractToVariable,
         },
         Command {
             id: "undo",
             name: "Undo",
+            description: "Undo the last change",
             action: Action::Undo,
         },
         Command {
             id: "redo",
             name: "Redo",
+            description: "Redo the last undone change",
             action: Action::Redo,
         },
         Command {
             id: "quit",
             name: "Quit",
+            description: "Exit postui",
             action: Action::Quit,
         },
     ]
+}
+
+/// Maps a palette [`Command::id`] to the corresponding [`crate::keys::
+/// named_actions`] name, where one exists, so `draw` can ask
+/// [`crate::keys::Keymap::combo_for`] for its bound combo. The two
+/// namespaces are independent by design (`Command::id` is the frecency
+/// key, stable across a command's display `name`; the keymap's names are
+/// the rebind-by-name TOML keys) and happen to describe several of the
+/// same actions under different spellings — this table is the one place
+/// that reconciles them. Commands with no entry here (most of them: focus
+/// moves, prompts, the palette itself has no self-referential binding,
+/// …) simply show no keybinding column, which is correct — they have none.
+fn keymap_action_name(command_id: &str) -> Option<&'static str> {
+    match command_id {
+        "quit" => Some("quit"),
+        "send" => Some("send"),
+        "request-save" => Some("save"),
+        "request-duplicate" => Some("request_duplicate"),
+        "method-cycle" => Some("cycle_method"),
+        "method-choose" => Some("method_choose"),
+        "body-format" => Some("format_body"),
+        "body-minify" => Some("minify_body"),
+        "body-external-editor" => Some("open_body_editor"),
+        "body-toggle-vars" => Some("toggle_body_vars"),
+        "project-choose" => Some("project_choose"),
+        "project-next" => Some("project_cycle"),
+        "project-new" => Some("project_new"),
+        "env-choose" => Some("env_choose"),
+        "env-next" => Some("env_cycle"),
+        "vars-insert" => Some("pick_variable"),
+        "var-manager" => Some("var_manager_open"),
+        "vars-extract" => Some("extract_to_variable"),
+        "undo" => Some("undo"),
+        "redo" => Some("redo"),
+        _ => None,
+    }
 }
 
 pub fn fuzzy_match(needle: &str, haystack: &str) -> bool {
@@ -219,6 +293,18 @@ pub struct PaletteState {
     /// `ensure_visible` contract this mirrors.
     scroll: usize,
     ensure_visible: bool,
+}
+
+/// Replicates [`ListRow::paint`]'s own fill computation (sidebar's
+/// `Sidebar::resolve_fill`, without the zebra term this list never uses) so
+/// text painted as a second pass on top of a row knows what background it
+/// actually landed on.
+fn row_fill(theme: &Theme, highlight: RowHighlight, base: Color, hover_t: f32) -> Color {
+    match highlight {
+        RowHighlight::None => base,
+        RowHighlight::Hover => crate::theme::mix(base, theme.control, hover_t),
+        RowHighlight::Selected => theme.selection,
+    }
 }
 
 impl PaletteState {
@@ -338,6 +424,7 @@ impl PaletteState {
         theme: &Theme,
         hits: &mut crate::hit::HitMap,
         hovered: Option<&crate::hit::Hit>,
+        keymap: &crate::keys::Keymap,
     ) {
         let width = 50.min(screen.width);
         const CHROME: u16 = 10;
@@ -394,10 +481,11 @@ impl PaletteState {
             self.ensure_visible = false;
         }
 
-        // NOTE: the spec calls for a right-aligned muted keybinding column
-        // on each row, matching a bound key to the command. `Command` (and
-        // `Keymap`) currently expose no reverse action->combo lookup, so
-        // there is no data to paint there yet; see the task report.
+        // No hover-fade animation is wired for popup lists (transient
+        // surfaces — see the task report); a hovered row shows its full
+        // hover fill immediately, same convention as `DrawCtx::hover_t`'s
+        // own documented default when no fade is in flight.
+        let hover_t = 1.0;
         for (i, c) in self
             .filtered
             .iter()
@@ -405,7 +493,8 @@ impl PaletteState {
             .skip(self.scroll)
             .take(list_h.max(1))
         {
-            let text_row = list_area.y + ((i - self.scroll) as u16) * 2;
+            let title_row = list_area.y + ((i - self.scroll) as u16) * 2;
+            let desc_row = title_row + 1;
             let selected = i == self.selected;
             let row_hovered = hovered == Some(&crate::hit::Hit::PaletteRow(i));
             let highlight = if selected {
@@ -415,38 +504,67 @@ impl PaletteState {
             } else {
                 RowHighlight::None
             };
-            let row_fill = match highlight {
-                RowHighlight::None => theme.panel,
-                RowHighlight::Hover => theme.control,
-                RowHighlight::Selected => theme.control_hover,
-            };
-            PillRow { highlight }.paint(
-                frame.buffer_mut(),
-                text_row,
-                list_area.x,
-                list_area.width,
-                area,
-                theme.panel,
-                theme,
-            );
+            for row_y in [title_row, desc_row] {
+                ListRow {
+                    highlight,
+                    zebra: None,
+                }
+                .paint(
+                    frame.buffer_mut(),
+                    row_y,
+                    list_area.x,
+                    list_area.width,
+                    theme.panel,
+                    hover_t,
+                    theme,
+                );
+            }
+            let row_fill = row_fill(theme, highlight, theme.panel, hover_t);
 
             let right = list_area.x + list_area.width;
             let x = list_area.x + 1;
+            let combo = keymap_action_name(c.id).and_then(|name| keymap.combo_for(name));
+            let combo_w = combo
+                .as_ref()
+                .map(|s| s.chars().count() as u16 + 1)
+                .unwrap_or(0);
+            let title_right = right.saturating_sub(combo_w);
             paint::text(
                 frame.buffer_mut(),
                 x,
-                text_row,
-                clip(c.name, right.saturating_sub(x)),
+                title_row,
+                clip(c.name, title_right.saturating_sub(x)),
                 theme.text,
                 row_fill,
-                selected,
+                true,
+            );
+            if let Some(combo) = &combo {
+                let combo_x = right.saturating_sub(combo.chars().count() as u16);
+                paint::text(
+                    frame.buffer_mut(),
+                    combo_x,
+                    title_row,
+                    combo,
+                    theme.text_muted,
+                    row_fill,
+                    false,
+                );
+            }
+            paint::text(
+                frame.buffer_mut(),
+                x,
+                desc_row,
+                clip(c.description, right.saturating_sub(x)),
+                theme.text_muted,
+                row_fill,
+                false,
             );
 
             let row_rect = Rect {
                 x: list_area.x,
-                y: text_row,
+                y: title_row,
                 width: list_area.width,
-                height: 1,
+                height: 2,
             };
             hits.register(row_rect, crate::hit::Hit::PaletteRow(i));
         }
@@ -659,11 +777,12 @@ mod tests {
 
         let mut p = PaletteState::new(&crate::usage::UsageStore::default(), 0);
         let theme = Theme::dark();
+        let keymap = crate::keys::Keymap::default_bindings();
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
-            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None))
+            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, &keymap))
             .unwrap();
         let area = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
         let title_y = area.y + 1;
@@ -691,6 +810,7 @@ mod tests {
 
         let mut p = PaletteState::new(&crate::usage::UsageStore::default(), 0);
         let theme = Theme::dark();
+        let keymap = crate::keys::Keymap::default_bindings();
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
@@ -704,6 +824,7 @@ mod tests {
                     &theme,
                     &mut hits,
                     Some(&crate::hit::Hit::PaletteRow(1)),
+                    &keymap,
                 )
             })
             .unwrap();
@@ -716,6 +837,103 @@ mod tests {
         assert_eq!(
             buffer[right_edge].bg, theme.control,
             "the pill fill must span the full row width, not just the label glyphs"
+        );
+    }
+
+    #[test]
+    fn entries_sit_on_a_dense_two_line_pitch_with_zero_gap() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut p = PaletteState::new(&crate::usage::UsageStore::default(), 0);
+        let theme = Theme::dark();
+        let keymap = crate::keys::Keymap::default_bindings();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, &keymap))
+            .unwrap();
+        let row0 = hits.rect_of(&crate::hit::Hit::PaletteRow(0)).unwrap();
+        let row1 = hits.rect_of(&crate::hit::Hit::PaletteRow(1)).unwrap();
+        assert_eq!(row0.height, 2, "each entry's hit box covers both its lines");
+        assert_eq!(
+            row1.y - row0.y,
+            2,
+            "consecutive entries sit back-to-back with no gap row between them"
+        );
+    }
+
+    #[test]
+    fn selected_entry_paints_the_accent_bar_and_selection_fill_on_both_lines() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut p = PaletteState::new(&crate::usage::UsageStore::default(), 0);
+        let theme = Theme::dark();
+        let keymap = crate::keys::Keymap::default_bindings();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, &keymap))
+            .unwrap();
+        let row0 = hits.rect_of(&crate::hit::Hit::PaletteRow(0)).unwrap();
+        let buffer = terminal.backend().buffer();
+        for dy in [0u16, 1] {
+            let cell = &buffer[(row0.x, row0.y + dy)];
+            assert_eq!(cell.symbol(), "\u{258c}", "accent bar on line {dy}");
+            assert_eq!(cell.fg, theme.accent);
+            assert_eq!(
+                buffer[(row0.x + row0.width - 1, row0.y + dy)].bg,
+                theme.selection,
+                "selection fill spans the full row width on line {dy}"
+            );
+        }
+    }
+
+    #[test]
+    fn title_line_shows_bold_name_and_description_line_shows_muted_text() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut p = PaletteState::new(&crate::usage::UsageStore::default(), 0);
+        let theme = Theme::dark();
+        let keymap = crate::keys::Keymap::default_bindings();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, &keymap))
+            .unwrap();
+        let content = format!("{:?}", terminal.backend().buffer());
+        let first = p.filtered()[0].clone();
+        assert!(content.contains(first.name), "{content}");
+        assert!(content.contains(first.description), "{content}");
+    }
+
+    #[test]
+    fn keybinding_column_shows_the_bound_combo_right_aligned() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut p = PaletteState::new(&crate::usage::UsageStore::default(), 0);
+        for c in "quit".chars() {
+            p.handle_key(key(KeyCode::Char(c)));
+        }
+        select_id(&mut p, "quit");
+        let theme = Theme::dark();
+        let keymap = crate::keys::Keymap::default_bindings();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, &keymap))
+            .unwrap();
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            content.contains("ctrl+c"),
+            "the quit row's bound combo must render: {content}"
         );
     }
 }

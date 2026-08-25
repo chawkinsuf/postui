@@ -265,6 +265,63 @@ impl Keymap {
         }
         map
     }
+
+    /// Reverse lookup for the palette's keybinding column: the first combo
+    /// (in `format_combo`-sorted order, for a deterministic pick when more
+    /// than one is bound — e.g. `redo`'s default `ctrl+shift+z`/`ctrl+y`)
+    /// bound to the action named `action_id` in [`named_actions`], formatted
+    /// the way the footer renders combos (lowercase, `+`-joined, e.g.
+    /// `"ctrl+p"`, `"alt+shift+m"`). `None` when `action_id` isn't a known
+    /// action name or nothing in this keymap is bound to it — most palette
+    /// commands have no keybinding at all, which is an expected, silent
+    /// outcome here, not an error.
+    pub fn combo_for(&self, action_id: &str) -> Option<String> {
+        let target = named_actions()
+            .into_iter()
+            .find(|(name, _)| *name == action_id)
+            .map(|(_, action)| action)?;
+        self.bindings
+            .iter()
+            .filter(|(_, action)| **action == target)
+            .map(|(combo, _)| format_combo(combo))
+            .min()
+    }
+}
+
+/// Formats a `KeyCombo` the way the footer displays a combo: lowercase,
+/// `+`-joined modifiers (`ctrl`, `alt`, `shift`, in that order) before the
+/// key name. The inverse of the modifier-folding half of [`KeyCombo::
+/// parse`] — a shifted letter (stored as its uppercase `char` with `SHIFT`
+/// already folded away) prints back out as `shift+<lowercase>`, and
+/// `BackTab` (parsed from `shift+tab`) prints as `shift+tab`.
+fn format_combo(combo: &KeyCombo) -> String {
+    let mut parts = Vec::new();
+    if combo.modifiers.contains(KeyModifiers::CONTROL) {
+        parts.push("ctrl".to_string());
+    }
+    if combo.modifiers.contains(KeyModifiers::ALT) {
+        parts.push("alt".to_string());
+    }
+    let (implicit_shift, key) = match combo.code {
+        KeyCode::Char(c) if c.is_ascii_uppercase() => (true, c.to_ascii_lowercase().to_string()),
+        KeyCode::Char(c) => (false, c.to_string()),
+        KeyCode::BackTab => (true, "tab".to_string()),
+        KeyCode::Esc => (false, "esc".to_string()),
+        KeyCode::Enter => (false, "enter".to_string()),
+        KeyCode::Tab => (false, "tab".to_string()),
+        KeyCode::Backspace => (false, "backspace".to_string()),
+        KeyCode::Up => (false, "up".to_string()),
+        KeyCode::Down => (false, "down".to_string()),
+        KeyCode::Left => (false, "left".to_string()),
+        KeyCode::Right => (false, "right".to_string()),
+        KeyCode::F(n) => (false, format!("f{n}")),
+        other => (false, format!("{other:?}").to_lowercase()),
+    };
+    if implicit_shift || combo.modifiers.contains(KeyModifiers::SHIFT) {
+        parts.push("shift".to_string());
+    }
+    parts.push(key);
+    parts.join("+")
 }
 
 #[cfg(test)]
@@ -469,6 +526,51 @@ mod tests {
             KeyCombo::from_event(&ev),
             KeyCombo::parse("ctrl+shift+z").unwrap()
         );
+    }
+
+    #[test]
+    fn combo_for_reverse_looks_up_a_bound_combo() {
+        let m = Keymap::default_bindings();
+        assert_eq!(m.combo_for("open_palette"), Some("ctrl+p".to_string()));
+        assert_eq!(m.combo_for("undo"), Some("ctrl+z".to_string()));
+    }
+
+    #[test]
+    fn combo_for_returns_none_for_unknown_or_unbound_actions() {
+        let m = Keymap::default_bindings();
+        assert_eq!(m.combo_for("not_a_real_action"), None);
+    }
+
+    #[test]
+    fn combo_for_finds_a_freshly_bound_combo() {
+        let mut m = Keymap::default_bindings();
+        m.bind(KeyCombo::parse("f9").unwrap(), Action::OpenVarManager);
+        // f9 is a second combo alongside the default alt+v; both resolve.
+        let combo = m.combo_for("var_manager_open").unwrap();
+        assert!(combo == "f9" || combo == "alt+v", "got {combo:?}");
+    }
+
+    #[test]
+    fn combo_for_picks_the_lexicographically_first_combo_when_several_are_bound() {
+        // redo's defaults are ctrl+shift+z and ctrl+y — "ctrl+shift+z" sorts
+        // before "ctrl+y" ('s' < 'y'), so that's the deterministic pick.
+        let m = Keymap::default_bindings();
+        assert_eq!(m.combo_for("redo"), Some("ctrl+shift+z".to_string()));
+    }
+
+    #[test]
+    fn format_combo_renders_shifted_and_named_keys() {
+        assert_eq!(format_combo(&KeyCombo::parse("ctrl+p").unwrap()), "ctrl+p");
+        assert_eq!(
+            format_combo(&KeyCombo::parse("alt+shift+m").unwrap()),
+            "alt+shift+m"
+        );
+        assert_eq!(
+            format_combo(&KeyCombo::parse("shift+tab").unwrap()),
+            "shift+tab"
+        );
+        assert_eq!(format_combo(&KeyCombo::parse("f4").unwrap()), "f4");
+        assert_eq!(format_combo(&KeyCombo::parse("esc").unwrap()), "esc");
     }
 
     #[test]

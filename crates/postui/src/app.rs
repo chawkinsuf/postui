@@ -116,6 +116,12 @@ pub struct App {
     /// `Instant::now()` themselves — so `Anims` stays fully deterministic
     /// and testable.
     pub anims: Anims,
+    /// The active key bindings (defaults + `keys.toml` overrides), used at
+    /// draw time for the palette's keybinding column (`keys::combo_for`).
+    /// `main.rs`'s event loop loads its own copy for `handle_key` — this one
+    /// exists purely for read-only lookups during drawing, since `App`
+    /// otherwise has no way to reach the keymap from inside `Component::draw`.
+    pub keymap: crate::keys::Keymap,
     /// Palette command frecency stats (recency + count per command id),
     /// loaded from `ui.toml` at startup and saved back on quit.
     pub usage: crate::usage::UsageStore,
@@ -329,6 +335,7 @@ impl App {
             app.apply_ui_settings(ui_settings, theme);
             app.usage = usage;
             app.usage_path = usage_path;
+            app.keymap = crate::keys::Keymap::load();
             for w in ui_warnings {
                 app.toasts.push(w, ToastKind::Warning);
             }
@@ -348,6 +355,7 @@ impl App {
         app.apply_ui_settings(ui_settings, theme);
         app.usage = usage;
         app.usage_path = usage_path;
+        app.keymap = crate::keys::Keymap::load();
         for w in ui_warnings {
             app.toasts.push(w, ToastKind::Warning);
         }
@@ -518,6 +526,7 @@ impl App {
             clipboard: crate::clipboard::Clipboard::new(&crate::config::UiSettings::default()),
             ui_settings: crate::config::UiSettings::default(),
             anims: Anims::new(crate::config::UiSettings::default().animations),
+            keymap: crate::keys::Keymap::default_bindings(),
             usage: crate::usage::UsageStore::default(),
             usage_path: None,
             client: crate::http::client(),

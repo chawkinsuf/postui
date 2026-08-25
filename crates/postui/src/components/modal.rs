@@ -760,6 +760,7 @@ impl ModalStack {
         theme: &Theme,
         hits: &mut crate::hit::HitMap,
         hovered: Option<&crate::hit::Hit>,
+        keymap: &crate::keys::Keymap,
     ) {
         let Some(top) = self.stack.last_mut() else {
             return;
@@ -963,7 +964,7 @@ impl ModalStack {
                 let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
                 draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered);
             }
-            Modal::Palette(state) => state.draw(frame, screen, theme, hits, hovered),
+            Modal::Palette(state) => state.draw(frame, screen, theme, hits, hovered, keymap),
             Modal::Chooser(state) => state.draw(frame, screen, theme, hits, hovered),
             Modal::VarPicker(state) => state.draw(frame, screen, theme, hits, hovered),
             Modal::NewProject {
@@ -1407,10 +1408,11 @@ mod tests {
         });
 
         let theme = Theme::for_terminal();
+        let keymap = crate::keys::Keymap::default_bindings();
         let mut hits = crate::hit::HitMap::default();
         let mut terminal = Terminal::new(TestBackend::new(screen.width, screen.height)).unwrap();
         terminal
-            .draw(|f| m.draw(f, screen, &theme, &mut hits, None))
+            .draw(|f| m.draw(f, screen, &theme, &mut hits, None, &keymap))
             .unwrap();
 
         let body = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
@@ -1512,11 +1514,12 @@ mod tests {
             body: "hello world".into(),
         });
         let theme = Theme::dark();
+        let keymap = crate::keys::Keymap::default_bindings();
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
-            .draw(|f| m.draw(f, f.area(), &theme, &mut hits, None))
+            .draw(|f| m.draw(f, f.area(), &theme, &mut hits, None, &keymap))
             .unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("About"));
@@ -1531,6 +1534,7 @@ mod tests {
             body: "hello world".into(),
         });
         let theme = Theme::dark();
+        let keymap = crate::keys::Keymap::default_bindings();
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
@@ -1541,7 +1545,7 @@ mod tests {
                 // something non-default to blend toward black.
                 let area = f.area();
                 crate::paint::fill(f.buffer_mut(), area, theme.page);
-                m.draw(f, area, &theme, &mut hits, None)
+                m.draw(f, area, &theme, &mut hits, None, &keymap)
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
@@ -1571,11 +1575,12 @@ mod tests {
             ],
         });
         let theme = Theme::dark();
+        let keymap = crate::keys::Keymap::default_bindings();
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
-            .draw(|f| m.draw(f, f.area(), &theme, &mut hits, None))
+            .draw(|f| m.draw(f, f.area(), &theme, &mut hits, None, &keymap))
             .unwrap();
         let buffer = terminal.backend().buffer();
 
@@ -1600,31 +1605,39 @@ mod tests {
     }
 
     #[test]
-    fn palette_row_matches_the_selected_pill_and_accent_bar() {
+    fn palette_row_matches_the_selected_row_and_accent_bar() {
         let mut m = ModalStack::default();
         m.push(Modal::Palette(
             crate::components::palette::PaletteState::new(&crate::usage::UsageStore::default(), 0),
         ));
         let theme = Theme::dark();
+        let keymap = crate::keys::Keymap::default_bindings();
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
-            .draw(|f| m.draw(f, f.area(), &theme, &mut hits, None))
+            .draw(|f| m.draw(f, f.area(), &theme, &mut hits, None, &keymap))
             .unwrap();
         let buffer = terminal.backend().buffer();
         let row0 = hits.rect_of(&crate::hit::Hit::PaletteRow(0)).unwrap();
         assert_eq!(
             buffer[(row0.x, row0.y)].bg,
-            theme.control_hover,
-            "the selected row's pill fill must be theme.control_hover"
+            theme.selection,
+            "the selected row's dense fill must be theme.selection"
         );
         assert_eq!(
             buffer[(row0.x, row0.y)].symbol(),
-            "\u{2588}",
-            "the selected row must carry the full-block accent bar in its first column"
+            "\u{258c}",
+            "the selected row must carry the dense accent bar in its first column"
         );
         assert_eq!(buffer[(row0.x, row0.y)].fg, theme.accent);
+        // The accent bar spans both content lines of the two-line entry.
+        assert_eq!(
+            buffer[(row0.x, row0.y + 1)].symbol(),
+            "\u{258c}",
+            "the accent bar must also cover the description line"
+        );
+        assert_eq!(buffer[(row0.x, row0.y + 1)].fg, theme.accent);
     }
 
     #[test]
