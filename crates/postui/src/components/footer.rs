@@ -139,12 +139,12 @@ pub fn paint_chip_row(
 ) -> u16 {
     let mut x = start_x;
     for (key, label, action) in chips {
-        // Total footprint is the same either way — `" key"` + `" label "`
-        // (3 extra columns beyond key+label) — so a clickable chip's
-        // tinted key pill (`" key "`, its own +2) is offset by dropping the
-        // plain entry's label-leading space (`"label "` instead of
-        // `" label "`), and layout math never has to branch on `action`.
-        let width = key.chars().count() as u16 + label.chars().count() as u16 + 3;
+        // Total footprint is the same either way — 4 extra columns beyond
+        // key+label — so layout math never has to branch on `action`: a
+        // clickable chip is `" key "` (the tinted pill, +2) + `" label "`,
+        // and a plain entry is `" key"` + `" label "` with one trailing pad
+        // column making up the difference.
+        let width = key.chars().count() as u16 + label.chars().count() as u16 + 4;
         if x + width > right_limit {
             break;
         }
@@ -166,7 +166,7 @@ pub fn paint_chip_row(
                     color: theme.accent,
                 }
                 .paint(buf, x, y, on, theme);
-                let label_text = format!("{label} ");
+                let label_text = format!(" {label} ");
                 text(
                     buf,
                     x + pill_w,
@@ -180,7 +180,7 @@ pub fn paint_chip_row(
             }
             None => {
                 let key_text = format!(" {key}");
-                let label_text = format!(" {label} ");
+                let label_text = format!(" {label}  ");
                 text(buf, x, y, &key_text, theme.accent, theme.panel, true);
                 text(
                     buf,
@@ -226,14 +226,14 @@ mod tests {
     #[test]
     fn editor_focus_shows_editor_hints() {
         let content = render(PaneId::Editor);
-        assert!(content.contains("ctrl+r send"));
+        assert!(content.contains("ctrl+r  send"));
     }
 
     #[test]
     fn response_focus_shows_response_hints() {
         let content = render(PaneId::Response);
-        assert!(content.contains("r raw"));
-        assert!(content.contains("/ search"));
+        assert!(content.contains("r  raw"));
+        assert!(content.contains("/  search"));
     }
 
     /// Task 17, spec §5: the Response pane's `r`/`h`/`/` chips used to be
@@ -335,10 +335,10 @@ mod tests {
             assert_eq!(key_cell.fg, theme.accent);
         }
         assert!(key_cell.modifier.contains(ratatui::style::Modifier::BOLD));
-        // The label follows right after the pill (" n " is 3 cells), muted,
-        // not bold, and sitting on the plain panel — no chip fill of its
-        // own.
-        let label_cell = buf.cell((rect.x + 3, rect.y)).unwrap();
+        // The label follows one gap column after the pill (" n " is 3
+        // cells, then the label's own leading space), muted, not bold, and
+        // sitting on the plain panel — no chip fill of its own.
+        let label_cell = buf.cell((rect.x + 4, rect.y)).unwrap();
         assert_eq!(label_cell.symbol(), "n"); // first letter of "new"
         assert_eq!(label_cell.fg, theme.text_muted);
         assert_eq!(label_cell.bg, theme.panel);

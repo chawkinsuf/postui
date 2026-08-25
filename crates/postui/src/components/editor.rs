@@ -1815,22 +1815,22 @@ impl Editor {
         // Response pane's Copy/Save buttons use.
         let save_label = if self.is_dirty() { "save •" } else { "save" };
         let mut chips: Vec<(&str, &str, Option<Action>)> =
-            vec![("⭳", save_label, Some(Action::SaveRequest))];
+            vec![("ctrl+s", save_label, Some(Action::SaveRequest))];
         // Unsaved edits can be walked back, not just saved: the chip only
         // exists while there is something to discard.
         if self.is_dirty() {
             chips.push(("↩", "discard", Some(Action::ConfirmDiscardChanges)));
         }
         chips.push((
-            "{{ }}",
+            "ctrl+v",
             "vars",
             Some(Action::OpenVarPicker { completing: false }),
         ));
-        // Each chip is ` {key}` + ` {label} ` wide, with `paint_chip_row`'s
+        // Each chip is ` {key} ` + ` {label} ` wide, with `paint_chip_row`'s
         // 2-col gap between consecutive chips.
         let chips_w: u16 = chips
             .iter()
-            .map(|(key, label, _)| (key.chars().count() + label.chars().count() + 3) as u16)
+            .map(|(key, label, _)| (key.chars().count() + label.chars().count() + 4) as u16)
             .sum::<u16>()
             + 2 * (chips.len().saturating_sub(1)) as u16;
         // Right-aligned against the toggle, but never over the tab labels
@@ -1918,15 +1918,15 @@ impl Editor {
         crate::paint::fill(buf, area, theme.panel);
 
         let sub_label = if self.substitute_body {
-            "{{on}}"
+            "substitute {{on}}"
         } else {
-            "{{off}}"
+            "substitute {{off}}"
         };
         let chips: Vec<(&str, &str, Option<Action>)> = vec![
-            ("align", "format", Some(Action::FormatBody)),
-            ("min", "minify", Some(Action::MinifyBody)),
-            ("sub", sub_label, Some(Action::ToggleBodyVars)),
-            ("ed", "$EDITOR", Some(Action::OpenBodyInEditor)),
+            ("alt+f", "format", Some(Action::FormatBody)),
+            ("alt+g", "minify", Some(Action::MinifyBody)),
+            ("alt+b", sub_label, Some(Action::ToggleBodyVars)),
+            ("ctrl+e", "$EDITOR", Some(Action::OpenBodyInEditor)),
         ];
 
         let right_limit = area.x + area.width;
