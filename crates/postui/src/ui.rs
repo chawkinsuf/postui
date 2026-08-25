@@ -146,6 +146,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         layout.footer,
         &app.theme,
         focus,
+        app.shift_enter_send,
         &mut hits,
         app.hovered.as_ref(),
     );

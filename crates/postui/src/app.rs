@@ -164,6 +164,11 @@ pub struct App {
     /// by `hovered_token` instead, so crossing a `{{token}}` never takes a
     /// row's or a button's hover styling away from it.
     pub hovered: Option<Hit>,
+    /// Whether the terminal can report Shift+Enter (kitty keyboard
+    /// protocol). Set once by `main` after probing; only affects which
+    /// send key the footer advertises — the bindings themselves are
+    /// always active.
+    pub shift_enter_send: bool,
     /// The drawn `{{token}}` under the pointer as of the last motion event.
     /// Only a redraw trigger: the tooltip itself re-resolves `pointer`
     /// against the *current* frame's hit map, so a token that scrolled or
@@ -569,6 +574,7 @@ impl App {
             pending_terminal_action: None,
             hits: HitMap::default(),
             hovered: None,
+            shift_enter_send: false,
             hovered_token: None,
             sidebar_menu_revert: None,
             last_pointer_shape: PointerShape::Default,
@@ -4887,6 +4893,18 @@ impl App {
 
         // 4. Modified combos prefer the global keymap (app shortcuts beat editors).
         if modified && let Some(a) = global {
+            return self.update(a);
+        }
+
+        // 4b. A bound Shift+Enter (send, by default) also beats the focused
+        // component: plain Enter belongs to editors (newline/commit), but
+        // the shifted chord is a global. Only terminals speaking the kitty
+        // keyboard protocol can report it; elsewhere it arrives as plain
+        // Enter and the ctrl+r/ctrl+enter bindings are the ones that work.
+        if ev.code == KeyCode::Enter
+            && ev.modifiers.contains(KeyModifiers::SHIFT)
+            && let Some(a) = global.clone()
+        {
             return self.update(a);
         }
 

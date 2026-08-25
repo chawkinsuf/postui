@@ -188,6 +188,7 @@ impl Keymap {
             ("ctrl+s", Action::SaveRequest),
             ("ctrl+r", Action::Send),
             ("ctrl+enter", Action::Send),
+            ("shift+enter", Action::Send),
             ("ctrl+o", Action::OpenProjectChooser),
             ("alt+o", Action::CycleProject),
             ("alt+n", Action::PromptNewProject),
@@ -393,6 +394,7 @@ mod tests {
         assert_eq!(get("ctrl+e"), Some(Action::OpenBodyInEditor));
         assert_eq!(get("ctrl+r"), Some(Action::Send));
         assert_eq!(get("ctrl+enter"), Some(Action::Send));
+        assert_eq!(get("shift+enter"), Some(Action::Send));
         assert_eq!(get("ctrl+o"), Some(Action::OpenProjectChooser));
         assert_eq!(get("alt+o"), Some(Action::CycleProject));
         assert_eq!(get("alt+n"), Some(Action::PromptNewProject));

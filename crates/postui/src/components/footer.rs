@@ -21,7 +21,10 @@ pub const FOOTER_HEIGHT: u16 = 3;
 /// (see `PALETTE_CHIP` / `draw_footer`). `pub(crate)` so `app::tests`'s
 /// mouse-parity sweep (spec §5) can enumerate the same actions
 /// `draw_footer` paints as chips, rather than a copy of this list.
-pub(crate) fn footer_chips(focus: PaneId) -> Vec<(&'static str, &'static str, Option<Action>)> {
+pub(crate) fn footer_chips(
+    focus: PaneId,
+    shift_enter_send: bool,
+) -> Vec<(&'static str, &'static str, Option<Action>)> {
     let chips: Vec<(&'static str, &'static str, Option<Action>)> = match focus {
         PaneId::Sidebar => vec![
             ("enter", "open", None),
@@ -30,7 +33,14 @@ pub(crate) fn footer_chips(focus: PaneId) -> Vec<(&'static str, &'static str, Op
             ("d", "delete", Some(Action::ConfirmDeleteRequest)),
         ],
         PaneId::Editor => vec![
-            ("^R", "send", Some(Action::Send)),
+            // Shift+Enter is only reportable under the kitty keyboard
+            // protocol; where the terminal can't deliver it, ^R is the
+            // advertised send key (both bindings stay active regardless).
+            (
+                if shift_enter_send { "⇧enter" } else { "^R" },
+                "send",
+                Some(Action::Send),
+            ),
             ("^S", "save", Some(Action::SaveRequest)),
             // Arrows are the primary route (method ← URL ↓ tabs ↓ content);
             // alt+1/2/3 still work where the terminal passes them through.
@@ -72,6 +82,7 @@ pub fn draw_footer(
     area: Rect,
     theme: &Theme,
     focus: PaneId,
+    shift_enter_send: bool,
     hits: &mut HitMap,
     hovered: Option<&Hit>,
 ) {
@@ -122,7 +133,7 @@ pub fn draw_footer(
     // Per-pane chips stop one column shy of the palette chip so the two
     // never collide.
     let right_limit = palette_x.saturating_sub(1);
-    let chips = footer_chips(focus);
+    let chips = footer_chips(focus, shift_enter_send);
     paint_chip_row(
         buf,
         mid_y,
@@ -232,9 +243,17 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
-            .draw(|f| draw_footer(f, f.area(), &theme, focus, &mut hits, None))
+            .draw(|f| draw_footer(f, f.area(), &theme, focus, false, &mut hits, None))
             .unwrap();
         format!("{:?}", terminal.backend().buffer())
+    }
+
+    #[test]
+    fn send_chip_advertises_shift_enter_only_when_the_terminal_reports_it() {
+        let with = footer_chips(PaneId::Editor, true);
+        assert!(with.iter().any(|(k, l, _)| *k == "⇧enter" && *l == "send"));
+        let without = footer_chips(PaneId::Editor, false);
+        assert!(without.iter().any(|(k, l, _)| *k == "^R" && *l == "send"));
     }
 
     #[test]
@@ -268,7 +287,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
-            .draw(|f| draw_footer(f, f.area(), &theme, PaneId::Response, &mut hits, None))
+            .draw(|f| draw_footer(f, f.area(), &theme, PaneId::Response, false, &mut hits, None))
             .unwrap();
         use crate::components::response::ViewMode;
         assert!(
@@ -294,7 +313,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
-            .draw(|f| draw_footer(f, f.area(), &theme, PaneId::Sidebar, &mut hits, None))
+            .draw(|f| draw_footer(f, f.area(), &theme, PaneId::Sidebar, false, &mut hits, None))
             .unwrap();
         assert!(
             hits.rect_of(&Hit::FooterChip(Action::PromptNewRequest))
@@ -323,7 +342,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
-            .draw(|f| draw_footer(f, f.area(), &theme, PaneId::Sidebar, &mut hits, None))
+            .draw(|f| draw_footer(f, f.area(), &theme, PaneId::Sidebar, false, &mut hits, None))
             .unwrap();
         let buf = terminal.backend().buffer();
         // Top and bottom rows are flat panel fill, no chip content.
@@ -341,7 +360,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
-            .draw(|f| draw_footer(f, f.area(), &theme, PaneId::Sidebar, &mut hits, None))
+            .draw(|f| draw_footer(f, f.area(), &theme, PaneId::Sidebar, false, &mut hits, None))
             .unwrap();
         let rect = hits
             .rect_of(&Hit::FooterChip(Action::PromptNewRequest))
@@ -387,7 +406,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
-            .draw(|f| draw_footer(f, f.area(), &theme, PaneId::Sidebar, &mut hits, None))
+            .draw(|f| draw_footer(f, f.area(), &theme, PaneId::Sidebar, false, &mut hits, None))
             .unwrap();
         let buf = terminal.backend().buffer();
 
@@ -422,7 +441,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
-            .draw(|f| draw_footer(f, f.area(), &theme, PaneId::Sidebar, &mut hits, None))
+            .draw(|f| draw_footer(f, f.area(), &theme, PaneId::Sidebar, false, &mut hits, None))
             .unwrap();
         let rect = hits
             .rect_of(&Hit::FooterChip(Action::Quit))
@@ -451,7 +470,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
-            .draw(|f| draw_footer(f, f.area(), &theme, PaneId::Sidebar, &mut hits, None))
+            .draw(|f| draw_footer(f, f.area(), &theme, PaneId::Sidebar, false, &mut hits, None))
             .unwrap();
         let buf = terminal.backend().buffer();
         let bottom = buf.cell((3, FOOTER_HEIGHT - 1)).unwrap();

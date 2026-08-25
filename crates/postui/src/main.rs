@@ -109,6 +109,13 @@ async fn run(
 ) -> anyhow::Result<()> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Action>();
     let mut app = App::new(tx, cli_root);
+    // Same probe `enable_mouse_and_wrap_panic_hook` keys the enhancement
+    // push off: where the terminal can report Shift+Enter, advertise it as
+    // the send key; elsewhere the footer keeps showing ^R.
+    app.shift_enter_send = matches!(
+        ratatui::crossterm::terminal::supports_keyboard_enhancement(),
+        Ok(true)
+    );
     let mut events = EventStream::new();
     let keymap = Keymap::load();
 

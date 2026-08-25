@@ -3177,6 +3177,26 @@ async fn force_send_with_empty_url_toasts_and_does_not_spawn() {
 }
 
 #[tokio::test]
+async fn shift_enter_sends_even_while_the_body_editor_has_focus() {
+    // Shift+Enter is a global Send shortcut that must win over the focused
+    // component — plain Enter in the body editor still inserts a newline.
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
+    app.update(Action::SetMethod(postui_core::model::Method::Post));
+    app.editor.url = crate::components::line_input::LineInput::new("http://127.0.0.1:9");
+    app.focus = PaneId::Editor;
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.sub_focus = crate::components::editor::SubFocus::Content;
+    app.editor.set_body_text("{}");
+
+    let keymap = Keymap::default_bindings();
+    let ev = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
+    app.handle_key(&keymap, ev);
+    assert!(app.session.in_flight.is_some(), "shift+enter sent");
+    assert_eq!(app.editor.body_text(), "{}", "no newline leaked into the body");
+}
+
+#[tokio::test]
 async fn force_send_spawns_a_task_and_marks_response_in_flight() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
@@ -9076,7 +9096,7 @@ fn every_named_action_is_mouse_reachable() {
     let mut mouse_reachable: Vec<Action> = vec![Action::Quit, Action::OpenPalette];
     for pane in [PaneId::Sidebar, PaneId::Editor, PaneId::Response] {
         mouse_reachable.extend(
-            crate::components::footer::footer_chips(pane)
+            crate::components::footer::footer_chips(pane, false)
                 .into_iter()
                 .filter_map(|(_, _, a)| a),
         );
