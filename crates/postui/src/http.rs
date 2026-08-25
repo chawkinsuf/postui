@@ -18,24 +18,25 @@ pub struct ResponseData {
     pub content_type: Option<String>,
 }
 
-/// Builds the client used for all requests: a 30 second total timeout,
-/// nothing more exotic. Delegates to [`client_with_timeout`] so the two
-/// stay in lockstep.
+/// Builds the client used for all requests. Deliberately no timeout of any
+/// kind: a slow request stays in flight until the server answers or the
+/// user cancels it (Esc) — the UI warns when a request has been waiting a
+/// long time instead of killing it.
 pub fn client() -> reqwest::Client {
-    client_with_timeout(Duration::from_secs(30))
-}
-
-/// Same as [`client`] but with an explicit total timeout, for tests that
-/// need to force a timeout quickly rather than wait 30 seconds.
-pub fn client_with_timeout(timeout: Duration) -> reqwest::Client {
     // `Client::builder().build()` does not need a running Tokio reactor —
     // it only sets up connection pooling/TLS config, and does not touch I/O
     // until the first request is actually sent. Verified with a plain
     // `#[test]` (no `#[tokio::test]`) below.
+    reqwest::Client::new()
+}
+
+/// Like [`client`] but with a total timeout, for tests that need a request
+/// to die quickly on its own (the real client never times out).
+pub fn client_with_timeout(timeout: Duration) -> reqwest::Client {
     // `build()` can only fail on TLS backend initialization; with the config
-    // above (no custom certs/proxies) that's practically unreachable. Fall
+    // here (no custom certs/proxies) that's practically unreachable. Fall
     // back to the plain default client rather than panicking if it ever
-    // does — a client without our timeout beats no client at all.
+    // does.
     reqwest::Client::builder()
         .timeout(timeout)
         .build()

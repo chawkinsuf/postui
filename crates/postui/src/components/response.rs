@@ -22,6 +22,11 @@ pub const SYNC_PRETTY_BYTES: usize = 256 * 1024;
 /// Braille spinner frames, cycled while a request is in flight.
 pub const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
+/// How long a request may sit in flight before the in-flight view adds its
+/// "taking a while" warning line. There is deliberately no client timeout —
+/// the user cancels with Esc when they've waited long enough.
+const LONG_WAIT_WARNING_AFTER: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Columns moved per ←/→ key press or horizontal wheel notch.
 pub(crate) const H_SCROLL_STEP: i16 = 4;
 
@@ -958,14 +963,24 @@ impl Component for Response {
                     ResponseState::InFlight { started } => {
                         let e = started.elapsed();
                         let frame_i = (e.subsec_millis() / 100) as usize % SPINNER.len();
-                        vec![
+                        let mut lines = vec![
                             Line::raw(""),
                             Line::styled(
                                 format!("{} sending… {}", SPINNER[frame_i], human_elapsed(e)),
                                 muted,
                             ),
                             Line::styled("esc to cancel", muted),
-                        ]
+                        ];
+                        // No client timeout exists (the user decides when to
+                        // give up), so a slow server warns instead of dying.
+                        if e >= LONG_WAIT_WARNING_AFTER {
+                            lines.push(Line::raw(""));
+                            lines.push(Line::styled(
+                                "this is taking a while — the server hasn't responded yet",
+                                Style::default().fg(t.warning),
+                            ));
+                        }
+                        lines
                     }
                     ResponseState::Failed(err) => vec![
                         Line::raw(""),
@@ -2677,6 +2692,30 @@ mod tests {
             "a spinner glyph: {out}"
         );
         assert!(out.contains("esc to cancel"), "{out}");
+    }
+
+    #[test]
+    fn a_long_in_flight_wait_shows_a_warning_line() {
+        // There is no client timeout any more — the user decides when to
+        // give up — so a slow request warns instead of dying at 30s.
+        let mut r = Response::default();
+        r.set_state(
+            ResponseState::InFlight {
+                started: Instant::now() - std::time::Duration::from_secs(11),
+            },
+            0,
+        );
+        let out = render(&mut r);
+        assert!(out.contains("taking a while"), "{out}");
+
+        r.set_state(
+            ResponseState::InFlight {
+                started: Instant::now(),
+            },
+            0,
+        );
+        let out = render(&mut r);
+        assert!(!out.contains("taking a while"), "no warning early on: {out}");
     }
 
     #[test]
