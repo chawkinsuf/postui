@@ -1,10 +1,10 @@
-//! A painted, mouse-clickable button: a centered label row between two
-//! shaded half-block cap rows (light above, dark below), reading as 2 text
-//! lines tall on the surface behind it.
+//! A painted, mouse-clickable button: a 3-row solid fill with a thin bevel
+//! edge on the top/bottom rows (light above, dark below) and a centered
+//! bold label on the middle row — the same anatomy `TextField` uses.
 
 use ratatui::{buffer::Buffer, layout::Rect, style::Color};
 
-use crate::paint::{ControlState, fill, half_cap_bottom, half_cap_top, text};
+use crate::paint::{ControlState, bevel_bottom, bevel_top, fill, text};
 use crate::theme::Theme;
 
 /// Which visual family a button belongs to: `Primary` is the accent-filled
@@ -23,9 +23,9 @@ pub struct Button<'a> {
     pub state: ControlState,
 }
 
-/// Buttons are always exactly this many rows tall: a half-block cap row
-/// above, the label row, a half-block cap row below. The caps fill only
-/// half their cell, so the button reads as 2 text lines.
+/// Buttons are always exactly this many rows tall: a thin bevel row on top,
+/// the label row, a thin bevel row on the bottom — all three rows are the
+/// button's own solid fill.
 pub const BUTTON_HEIGHT: u16 = 3;
 
 /// The minimum width a button needs to show `label` without truncation: the
@@ -38,28 +38,31 @@ pub fn button_min_width(label: &str) -> u16 {
 struct Face {
     fill: Color,
     label_fg: Color,
-    /// `(top, bottom)` cap colors: a light/dark pair straddling the fill
-    /// for the raised bevel look (swapped when Pressed), or the focus ring
-    /// color on both when Focused, or the flat fill when Disabled.
-    caps: (Color, Color),
+    /// `(top, bottom)` bevel edge colors: a light/dark pair straddling the
+    /// fill for the raised look (swapped when Pressed), or `None` when
+    /// Disabled (flat fill, no edges).
+    edges: Option<(Color, Color)>,
 }
 
 impl Button<'_> {
     /// Paints this button into `area`, which must be exactly
-    /// [`BUTTON_HEIGHT`] rows tall, on top of surface color `on`. The label
-    /// is centered on the middle row; the cap rows above/below carry the
-    /// light/dark shading.
-    pub fn paint(&self, buf: &mut Buffer, area: Rect, on: Color, theme: &Theme) {
+    /// [`BUTTON_HEIGHT`] rows tall. The whole area is filled with the
+    /// button's own face color; the label is centered bold on the middle
+    /// row, and the top/bottom rows carry a thin bevel edge on that same
+    /// fill (skipped when Disabled).
+    pub fn paint(&self, buf: &mut Buffer, area: Rect, _on: Color, theme: &Theme) {
         let face = self.face(theme);
+
+        fill(buf, area, face.fill);
 
         let top = Rect::new(area.x, area.y, area.width, 1);
         let mid = Rect::new(area.x, area.y + 1, area.width, 1);
         let bottom = Rect::new(area.x, area.y + area.height - 1, area.width, 1);
 
-        let (cap_top, cap_bottom) = face.caps;
-        half_cap_top(buf, top, cap_top, on);
-        fill(buf, mid, face.fill);
-        half_cap_bottom(buf, bottom, cap_bottom, on);
+        if let Some((light, dark)) = face.edges {
+            bevel_top(buf, top, light, face.fill);
+            bevel_bottom(buf, bottom, dark, face.fill);
+        }
 
         let width = self.label.chars().count() as u16;
         let start_x = area.x + area.width.saturating_sub(width) / 2;
@@ -95,7 +98,7 @@ impl Button<'_> {
             (ButtonKind::Primary, _) => theme.on_accent,
             (ButtonKind::Secondary, _) => theme.text,
         };
-        // Cap shading follows the currently shown fill (light/dark edges of
+        // Bevel edges follow the currently shown fill (light/dark edges of
         // whatever face is painted), so the whole control visibly reacts to
         // hover and press — not just the label row. The bevel delta matches
         // the theme's own convention per surface family: ±0.12 around the
@@ -108,16 +111,16 @@ impl Button<'_> {
         };
         let light = crate::theme::lift_color(fill, delta);
         let dark = crate::theme::lift_color(fill, -delta);
-        let caps = match self.state {
-            ControlState::Disabled => (fill, fill),
+        let edges = match self.state {
+            ControlState::Disabled => None,
             // Pressed: sunken — dark on top, light on the bottom.
-            ControlState::Pressed => (dark, light),
-            _ => (light, dark),
+            ControlState::Pressed => Some((dark, light)),
+            _ => Some((light, dark)),
         };
         Face {
             fill,
             label_fg,
-            caps,
+            edges,
         }
     }
 }
@@ -133,35 +136,34 @@ mod tests {
     }
 
     #[test]
-    fn primary_button_centers_label_between_shaded_half_caps() {
+    fn primary_button_centers_label_between_thin_bevel_edges() {
         let theme = Theme::dark();
         let mut term = Terminal::new(TestBackend::new(20, 5)).unwrap();
         term.draw(|f| {
-            let area = Rect::new(0, 1, 20, 3);
             Button {
                 label: "Send",
                 kind: ButtonKind::Primary,
                 state: ControlState::Normal,
             }
-            .paint(f.buffer_mut(), area, theme.page, &theme);
+            .paint(f.buffer_mut(), Rect::new(0, 1, 20, 3), theme.page, &theme);
         })
         .unwrap();
-        // Top cap: lower-half block in the lightened fill over the surface.
         let top = buf_cell(&term, 8, 1);
-        assert_eq!(top.symbol(), "▄");
-        assert_eq!(top.fg, theme.accent_edge_light);
-        assert_eq!(top.bg, theme.page);
-        // Label centered on the middle row, bold on the accent fill.
-        let mid = buf_cell(&term, 8, 2); // "Send" centered in 20 cols starts at 8
+        assert_eq!(top.symbol(), "▔");
+        assert_eq!(top.fg, crate::theme::lift_color(theme.accent, 0.12));
+        assert_eq!(
+            top.bg, theme.accent,
+            "edge rows sit on the button's own fill"
+        );
+        let mid = buf_cell(&term, 8, 2);
         assert_eq!(mid.symbol(), "S");
         assert_eq!(mid.bg, theme.accent);
         assert_eq!(mid.fg, theme.on_accent);
         assert!(mid.modifier.contains(ratatui::style::Modifier::BOLD));
-        // Bottom cap: upper-half block in the darkened fill.
         let bottom = buf_cell(&term, 8, 3);
-        assert_eq!(bottom.symbol(), "▀");
-        assert_eq!(bottom.fg, theme.accent_edge_dark);
-        assert_eq!(bottom.bg, theme.page);
+        assert_eq!(bottom.symbol(), "▁");
+        assert_eq!(bottom.fg, crate::theme::lift_color(theme.accent, -0.12));
+        assert_eq!(bottom.bg, theme.accent);
     }
 
     #[test]
@@ -177,11 +179,19 @@ mod tests {
             .paint(f.buffer_mut(), Rect::new(0, 0, 20, 3), theme.page, &theme);
         })
         .unwrap();
-        // The neutral control face uses the theme's ±0.08 bevel (its
-        // edge_light/edge_dark convention), not the accent's ±0.12 — the
-        // stronger delta reads as a black line under an already-dark fill.
-        assert_eq!(buf_cell(&term, 8, 0).fg, theme.edge_light);
-        assert_eq!(buf_cell(&term, 8, 2).fg, theme.edge_dark);
+        // The neutral control face uses the theme's ±0.08 bevel around its
+        // own fill — the stronger ±0.12 delta reads as a black line under
+        // an already-dark fill.
+        assert_eq!(
+            buf_cell(&term, 8, 0).fg,
+            crate::theme::lift_color(theme.control, 0.08)
+        );
+        assert_eq!(buf_cell(&term, 8, 0).bg, theme.control);
+        assert_eq!(
+            buf_cell(&term, 8, 2).fg,
+            crate::theme::lift_color(theme.control, -0.08)
+        );
+        assert_eq!(buf_cell(&term, 8, 2).bg, theme.control);
     }
 
     #[test]
@@ -198,11 +208,18 @@ mod tests {
         })
         .unwrap();
         // Sunken: the pressed fill's dark edge on top, its light edge on
-        // the bottom.
-        let (p_light, p_dark) = crate::paint::face_edges(theme.accent_edge_dark, &theme);
-        assert_eq!(buf_cell(&term, 8, 0).fg, p_dark);
+        // the bottom — both drawn on the pressed fill itself.
+        let light = crate::theme::lift_color(theme.accent_edge_dark, 0.12);
+        let dark = crate::theme::lift_color(theme.accent_edge_dark, -0.12);
+        let top = buf_cell(&term, 8, 0);
+        assert_eq!(top.symbol(), "▔");
+        assert_eq!(top.fg, dark);
+        assert_eq!(top.bg, theme.accent_edge_dark);
         assert_eq!(buf_cell(&term, 8, 1).symbol(), "S");
-        assert_eq!(buf_cell(&term, 8, 2).fg, p_light);
+        let bottom = buf_cell(&term, 8, 2);
+        assert_eq!(bottom.symbol(), "▁");
+        assert_eq!(bottom.fg, light);
+        assert_eq!(bottom.bg, theme.accent_edge_dark);
     }
 
     #[test]
@@ -218,12 +235,15 @@ mod tests {
             .paint(f.buffer_mut(), Rect::new(0, 0, 20, 3), theme.page, &theme);
         })
         .unwrap();
-        // The whole control reacts to hover: the caps are the light/dark
-        // edges of the *hovered* fill, not the base accent's pinned pair.
-        let (h_light, h_dark) = crate::paint::face_edges(theme.accent_edge_light, &theme);
+        // The whole control reacts to hover: the edges are the light/dark
+        // shades of the *hovered* fill, not the base accent's pinned pair.
+        let light = crate::theme::lift_color(theme.accent_edge_light, 0.12);
+        let dark = crate::theme::lift_color(theme.accent_edge_light, -0.12);
         assert_eq!(buf_cell(&term, 8, 1).bg, theme.accent_edge_light);
-        assert_eq!(buf_cell(&term, 8, 0).fg, h_light);
-        assert_eq!(buf_cell(&term, 8, 2).fg, h_dark);
+        assert_eq!(buf_cell(&term, 8, 0).fg, light);
+        assert_eq!(buf_cell(&term, 8, 0).bg, theme.accent_edge_light);
+        assert_eq!(buf_cell(&term, 8, 2).fg, dark);
+        assert_eq!(buf_cell(&term, 8, 2).bg, theme.accent_edge_light);
     }
 
     #[test]
@@ -240,9 +260,10 @@ mod tests {
         })
         .unwrap();
         // Focus is the same surface lift hover uses — fill up one step,
-        // caps following the shown fill; no special edge recolor.
+        // edges following the shown fill; no special edge recolor.
         assert_eq!(buf_cell(&term, 8, 1).bg, theme.accent_edge_light);
-        let (light, dark) = crate::paint::face_edges(theme.accent_edge_light, &theme);
+        let light = crate::theme::lift_color(theme.accent_edge_light, 0.12);
+        let dark = crate::theme::lift_color(theme.accent_edge_light, -0.12);
         assert_eq!(buf_cell(&term, 8, 0).fg, light);
         assert_eq!(buf_cell(&term, 8, 2).fg, dark);
     }
@@ -261,8 +282,12 @@ mod tests {
         })
         .unwrap();
         assert_eq!(buf_cell(&term, 8, 1).fg, theme.text_disabled);
-        // Flat: both caps in the plain control fill, no light/dark pair.
-        assert_eq!(buf_cell(&term, 8, 0).fg, theme.control);
-        assert_eq!(buf_cell(&term, 8, 2).fg, theme.control);
+        // Flat: no bevel glyphs at all — top/bottom rows are plain fill.
+        let top = buf_cell(&term, 8, 0);
+        assert_eq!(top.symbol(), " ");
+        assert_eq!(top.bg, theme.control);
+        let bottom = buf_cell(&term, 8, 2);
+        assert_eq!(bottom.symbol(), " ");
+        assert_eq!(bottom.bg, theme.control);
     }
 }

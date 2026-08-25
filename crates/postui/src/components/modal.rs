@@ -1582,8 +1582,8 @@ mod tests {
         let cancel = hits.rect_of(&crate::hit::Hit::ConfirmChoice('n')).unwrap();
         assert_eq!(
             buffer[(cancel.x, cancel.y + 2)].symbol(),
-            "\u{2580}",
-            "the Cancel button's bottom row must be its half-block cap"
+            "\u{2581}",
+            "the Cancel button's bottom row must be its thin bevel edge"
         );
         assert_eq!(
             buffer[(cancel.x + 1, cancel.y + 1)].bg,
@@ -1594,8 +1594,8 @@ mod tests {
         let confirm = hits.rect_of(&crate::hit::Hit::ConfirmChoice('y')).unwrap();
         assert_eq!(
             buffer[(confirm.x, confirm.y + 2)].symbol(),
-            "\u{2580}",
-            "the confirm button's bottom row must be its half-block cap"
+            "\u{2581}",
+            "the confirm button's bottom row must be its thin bevel edge"
         );
     }
 

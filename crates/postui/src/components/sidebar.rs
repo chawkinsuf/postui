@@ -992,8 +992,8 @@ mod tests {
         let buf = terminal.backend().buffer();
         assert_eq!(
             buf[(button_rect.x, button_rect.y + 2)].symbol(),
-            "\u{2580}",
-            "button's bottom row is its half-block cap"
+            "\u{2581}",
+            "button's bottom row is its thin bevel edge"
         );
 
         // rows[0] = "top", rows[1] = folder "api" (expanded), rows[2] = "api/ping"
