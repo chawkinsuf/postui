@@ -4,6 +4,7 @@ use postui::app::App;
 use postui::components::toast::ToastKind;
 use postui::keys::Keymap;
 use postui::ui;
+use ratatui::crossterm::SynchronizedUpdate;
 use ratatui::crossterm::event::{
     DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture, Event,
     EventStream, KeyEventKind, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
@@ -85,9 +86,25 @@ async fn run(
     let mut redraw = true;
     while !app.should_quit {
         if redraw {
-            terminal.draw(|frame| {
-                ui::draw(frame, &mut app);
-            })?;
+            // Wrapped in a synchronized-update guard (crossterm's BSU/ESU,
+            // `\x1b[?2026h`/`l`): without it, a terminal that samples the
+            // screen mid-write can paint a partially-applied frame — the
+            // multi-cell regions an animation repaints every tick (like
+            // the list-travel band) are exactly where that tearing shows.
+            // Terminals that don't support the mode simply ignore the
+            // escape sequences, so this is a no-op fallback everywhere
+            // else. Writes straight to stdout rather than through the
+            // backend's own writer: both land on the same fd, and BSU is
+            // flushed (queued then `execute!`d) before `terminal.draw`
+            // writes anything, with ESU flushed only after `draw`
+            // returns, so ordering on the single-threaded fd is preserved
+            // either way.
+            std::io::stdout().sync_update(|_| -> anyhow::Result<()> {
+                terminal.draw(|frame| {
+                    ui::draw(frame, &mut app);
+                })?;
+                Ok(())
+            })??;
             redraw = false;
         }
 
@@ -125,11 +142,13 @@ async fn run(
             Some(action) = rx.recv() => {
                 redraw |= app.update(action);
             }
-            // Adaptive tick period: ~30fps while an animation is easing so
-            // motion reads as smooth, ~10fps the rest of the time so an
+            // Adaptive tick period: ~60fps while an animation is easing so
+            // motion reads as smooth (a short, eased move sampled at 33ms
+            // could collapse into one or two visible steps — task 8e's
+            // list-travel flicker), ~10fps the rest of the time so an
             // idle app costs almost nothing.
             _ = tokio::time::sleep(if app.animating() {
-                Duration::from_millis(33)
+                Duration::from_millis(16)
             } else {
                 Duration::from_millis(100)
             }) => {
