@@ -9003,10 +9003,11 @@ fn every_named_action_is_mouse_reachable() {
     ];
 
     // Group A: footer/toolbar chips — the same function `draw_footer`
-    // paints from. The always-present quit chip is registered separately
-    // in `draw_footer` itself (`QUIT_LABEL`, not part of `footer_chips`),
-    // so it's added by hand here.
-    let mut mouse_reachable: Vec<Action> = vec![Action::Quit];
+    // paints from. The always-present quit hint and palette chip are
+    // registered separately in `draw_footer` itself (`QUIT_LABEL` /
+    // `PALETTE_CHIP`, not part of `footer_chips`), so they're added by
+    // hand here.
+    let mut mouse_reachable: Vec<Action> = vec![Action::Quit, Action::OpenPalette];
     for pane in [PaneId::Sidebar, PaneId::Editor, PaneId::Response] {
         mouse_reachable.extend(
             crate::components::footer::footer_chips(pane)

@@ -1815,14 +1815,14 @@ impl Editor {
         // Response pane's Copy/Save buttons use.
         let save_label = if self.is_dirty() { "save •" } else { "save" };
         let mut chips: Vec<(&str, &str, Option<Action>)> =
-            vec![("ctrl+s", save_label, Some(Action::SaveRequest))];
+            vec![("^S", save_label, Some(Action::SaveRequest))];
         // Unsaved edits can be walked back, not just saved: the chip only
         // exists while there is something to discard.
         if self.is_dirty() {
             chips.push(("↩", "discard", Some(Action::ConfirmDiscardChanges)));
         }
         chips.push((
-            "ctrl+v",
+            "^V",
             "vars",
             Some(Action::OpenVarPicker { completing: false }),
         ));
@@ -1926,7 +1926,7 @@ impl Editor {
             ("alt+f", "format", Some(Action::FormatBody)),
             ("alt+g", "minify", Some(Action::MinifyBody)),
             ("alt+b", sub_label, Some(Action::ToggleBodyVars)),
-            ("ctrl+e", "$EDITOR", Some(Action::OpenBodyInEditor)),
+            ("^E", "$EDITOR", Some(Action::OpenBodyInEditor)),
         ];
 
         let right_limit = area.x + area.width;

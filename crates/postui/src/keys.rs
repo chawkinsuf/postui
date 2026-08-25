@@ -288,17 +288,16 @@ impl Keymap {
     }
 }
 
-/// Formats a `KeyCombo` the way the footer displays a combo: lowercase,
-/// `+`-joined modifiers (`ctrl`, `alt`, `shift`, in that order) before the
-/// key name. The inverse of the modifier-folding half of [`KeyCombo::
-/// parse`] — a shifted letter (stored as its uppercase `char` with `SHIFT`
-/// already folded away) prints back out as `shift+<lowercase>`, and
-/// `BackTab` (parsed from `shift+tab`) prints as `shift+tab`.
+/// Formats a `KeyCombo` the way the footer displays a combo: `ctrl` as
+/// compact caret notation glued to the key (`^P`, `^Enter` — uppercase
+/// for single letters), remaining modifiers lowercase and `+`-joined
+/// (`alt`, `shift`, in that order) before it. The display inverse of the
+/// modifier-folding half of [`KeyCombo::parse`] — a shifted letter
+/// (stored as its uppercase `char` with `SHIFT` already folded away)
+/// prints back out as `shift+<lowercase>`, and `BackTab` (parsed from
+/// `shift+tab`) prints as `shift+tab`.
 fn format_combo(combo: &KeyCombo) -> String {
     let mut parts = Vec::new();
-    if combo.modifiers.contains(KeyModifiers::CONTROL) {
-        parts.push("ctrl".to_string());
-    }
     if combo.modifiers.contains(KeyModifiers::ALT) {
         parts.push("alt".to_string());
     }
@@ -320,6 +319,18 @@ fn format_combo(combo: &KeyCombo) -> String {
     if implicit_shift || combo.modifiers.contains(KeyModifiers::SHIFT) {
         parts.push("shift".to_string());
     }
+    let key = if combo.modifiers.contains(KeyModifiers::CONTROL) {
+        // Caret notation: uppercase a single letter (`^P`), capitalize a
+        // named key (`^Enter`) so the caret always reads as one token.
+        let mut chars = key.chars();
+        let capped = match chars.next() {
+            Some(c) => c.to_ascii_uppercase().to_string() + chars.as_str(),
+            None => key,
+        };
+        format!("^{capped}")
+    } else {
+        key
+    };
     parts.push(key);
     parts.join("+")
 }
@@ -531,8 +542,8 @@ mod tests {
     #[test]
     fn combo_for_reverse_looks_up_a_bound_combo() {
         let m = Keymap::default_bindings();
-        assert_eq!(m.combo_for("open_palette"), Some("ctrl+p".to_string()));
-        assert_eq!(m.combo_for("undo"), Some("ctrl+z".to_string()));
+        assert_eq!(m.combo_for("open_palette"), Some("^P".to_string()));
+        assert_eq!(m.combo_for("undo"), Some("^Z".to_string()));
     }
 
     #[test]
@@ -552,15 +563,24 @@ mod tests {
 
     #[test]
     fn combo_for_picks_the_lexicographically_first_combo_when_several_are_bound() {
-        // redo's defaults are ctrl+shift+z and ctrl+y — "ctrl+shift+z" sorts
-        // before "ctrl+y" ('s' < 'y'), so that's the deterministic pick.
+        // redo's defaults are ctrl+shift+z and ctrl+y — rendered "shift+^Z"
+        // and "^Y", and '^' sorts before 's', so "^Y" is the deterministic
+        // pick.
         let m = Keymap::default_bindings();
-        assert_eq!(m.combo_for("redo"), Some("ctrl+shift+z".to_string()));
+        assert_eq!(m.combo_for("redo"), Some("^Y".to_string()));
     }
 
     #[test]
     fn format_combo_renders_shifted_and_named_keys() {
-        assert_eq!(format_combo(&KeyCombo::parse("ctrl+p").unwrap()), "ctrl+p");
+        assert_eq!(format_combo(&KeyCombo::parse("ctrl+p").unwrap()), "^P");
+        assert_eq!(
+            format_combo(&KeyCombo::parse("ctrl+shift+z").unwrap()),
+            "shift+^Z"
+        );
+        assert_eq!(
+            format_combo(&KeyCombo::parse("ctrl+enter").unwrap()),
+            "^Enter"
+        );
         assert_eq!(
             format_combo(&KeyCombo::parse("alt+shift+m").unwrap()),
             "alt+shift+m"

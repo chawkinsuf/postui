@@ -926,8 +926,8 @@ mod tests {
             .unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(
-            content.contains("ctrl+c"),
-            "the quit row's bound combo must render: {content}"
+            content.contains("^C"),
+            "the quit row's bound combo must render in caret notation: {content}"
         );
     }
 }

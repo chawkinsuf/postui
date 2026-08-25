@@ -12,15 +12,17 @@ use ratatui::layout::Rect;
 /// the bottom — the same painted 3-row rhythm as the header app bar.
 pub const FOOTER_HEIGHT: u16 = 3;
 
-/// The context-sensitive chips for the focused pane, plus the palette chip
-/// always appended at the end. Each entry is `(key, label, action)`; `None`
-/// actions render as plain (unregistered, muted) text on the panel
-/// background rather than a filled chip — they describe a binding with no
-/// single dispatchable `Action` (e.g. multi-key hints). `pub(crate)` so
-/// `app::tests`'s mouse-parity sweep (spec §5) can enumerate the same
-/// actions `draw_footer` paints as chips, rather than a copy of this list.
+/// The context-sensitive chips for the focused pane. Each entry is `(key,
+/// label, action)`; `None` actions render as plain (unregistered, muted)
+/// text on the panel background rather than a filled chip — they describe
+/// a binding with no single dispatchable `Action` (e.g. multi-key hints).
+/// The always-present palette chip is NOT part of this list: like the quit
+/// hint, it never varies with focus, so it lives right-aligned beside quit
+/// (see `PALETTE_CHIP` / `draw_footer`). `pub(crate)` so `app::tests`'s
+/// mouse-parity sweep (spec §5) can enumerate the same actions
+/// `draw_footer` paints as chips, rather than a copy of this list.
 pub(crate) fn footer_chips(focus: PaneId) -> Vec<(&'static str, &'static str, Option<Action>)> {
-    let mut chips: Vec<(&'static str, &'static str, Option<Action>)> = match focus {
+    let chips: Vec<(&'static str, &'static str, Option<Action>)> = match focus {
         PaneId::Sidebar => vec![
             ("enter", "open", None),
             ("n", "new", Some(Action::PromptNewRequest)),
@@ -28,8 +30,8 @@ pub(crate) fn footer_chips(focus: PaneId) -> Vec<(&'static str, &'static str, Op
             ("d", "delete", Some(Action::ConfirmDeleteRequest)),
         ],
         PaneId::Editor => vec![
-            ("ctrl+r", "send", Some(Action::Send)),
-            ("ctrl+s", "save", Some(Action::SaveRequest)),
+            ("^R", "send", Some(Action::Send)),
+            ("^S", "save", Some(Action::SaveRequest)),
             // Arrows are the primary route (method ← URL ↓ tabs ↓ content);
             // alt+1/2/3 still work where the terminal passes them through.
             ("↑↓←→", "navigate", None),
@@ -52,9 +54,13 @@ pub(crate) fn footer_chips(focus: PaneId) -> Vec<(&'static str, &'static str, Op
             ("/", "search", Some(Action::OpenResponseSearch)),
         ],
     };
-    chips.push(("^P", "commands", Some(Action::OpenPalette)));
     chips
 }
+
+/// The command-palette chip: always present regardless of focus, so it
+/// sits right-aligned next to the quit hint rather than trailing the
+/// per-pane chips.
+const PALETTE_CHIP: (&str, &str, Option<Action>) = ("^P", "commands", Some(Action::OpenPalette));
 
 /// `" q "` + `"quit "` — the always-present, right-aligned quit hint. Kept
 /// separate from `footer_chips` since it never varies with focus and paints
@@ -98,8 +104,24 @@ pub fn draw_footer(
         Hit::FooterChip(Action::Quit),
     );
 
-    // Chips stop one column shy of the quit hint so the two never collide.
-    let right_limit = quit_x.saturating_sub(1);
+    // The palette chip sits right-aligned, one gap column left of quit.
+    let (pk, pl, _) = PALETTE_CHIP;
+    let palette_w = (pk.chars().count() + pl.chars().count() + 4) as u16;
+    let palette_x = quit_x.saturating_sub(palette_w + 1);
+    paint_chip_row(
+        buf,
+        mid_y,
+        palette_x,
+        quit_x,
+        &[PALETTE_CHIP],
+        theme,
+        hits,
+        hovered,
+    );
+
+    // Per-pane chips stop one column shy of the palette chip so the two
+    // never collide.
+    let right_limit = palette_x.saturating_sub(1);
     let chips = footer_chips(focus);
     paint_chip_row(
         buf,
@@ -226,7 +248,7 @@ mod tests {
     #[test]
     fn editor_focus_shows_editor_hints() {
         let content = render(PaneId::Editor);
-        assert!(content.contains("ctrl+r  send"));
+        assert!(content.contains("^R  send"));
     }
 
     #[test]
@@ -278,11 +300,20 @@ mod tests {
             hits.rect_of(&Hit::FooterChip(Action::PromptNewRequest))
                 .is_some()
         );
+        // The palette chip is right-aligned: after the last per-pane chip,
+        // one gap column before the quit hint.
+        let palette = hits
+            .rect_of(&Hit::FooterChip(Action::OpenPalette))
+            .expect("palette chip registered");
+        let quit = hits.rect_of(&Hit::FooterChip(Action::Quit)).unwrap();
+        let delete = hits
+            .rect_of(&Hit::FooterChip(Action::ConfirmDeleteRequest))
+            .unwrap();
+        assert_eq!(palette.x + palette.width + 1, quit.x);
         assert!(
-            hits.rect_of(&Hit::FooterChip(Action::OpenPalette))
-                .is_some()
+            delete.x + delete.width < palette.x,
+            "per-pane chips stay left of the palette chip"
         );
-        assert!(hits.rect_of(&Hit::FooterChip(Action::Quit)).is_some());
     }
 
     #[test]
