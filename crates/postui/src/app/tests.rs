@@ -2453,7 +2453,7 @@ fn click_after_keyboard_nav_snaps_the_travel_band_to_the_clicked_row() {
 /// Same regression, for the folder-arrow click path (which sets
 /// `sidebar.selected` on its own line, separate from `Hit::SidebarRow`).
 #[test]
-fn folder_arrow_click_after_keyboard_nav_snaps_the_travel_band() {
+fn folder_arrow_click_moves_only_the_cursor_not_the_travel_band() {
     let (mut app, _dir) = sidebar_test_app();
     render_once(&mut app);
 
@@ -2473,36 +2473,74 @@ fn folder_arrow_click_after_keyboard_nav_snaps_the_travel_band() {
     app.handle_mouse(left_down(r.x, r.y));
 
     assert_eq!(app.sidebar.selected, Some(1));
+    // The selection band tracks the OPEN request, and nothing is open
+    // here: neither the keyboard nav nor the folder-arrow click may seed
+    // or move the travel anim.
     let now = std::time::Instant::now();
     let key = crate::anim::AnimKey::ListTravel(crate::anim::ListId::Sidebar);
     assert_eq!(
         app.anims.value(key, now),
-        Some(1.0),
-        "folder-arrow click also snaps the travel anim, not just row clicks"
+        None,
+        "cursor moves must leave the open-request travel band untouched"
     );
 }
 
+/// Right-clicking a different request moves the cursor onto it only while
+/// its context menu is open: dismissing the menu without choosing anything
+/// restores the previous selection (both the click-off `Action::Close`
+/// route and the Esc key route), so a row the user never acted on isn't
+/// left looking targeted.
+#[test]
+fn dismissed_sidebar_context_menu_restores_the_previous_selection() {
+    let (mut app, _dir) = sidebar_test_app_three_flat_rows();
+    render_once(&mut app);
+    // Open "alpha" (row 0): cursor and band both land on it.
+    app.update(Action::ForceOpenRequest("alpha".into()));
+    assert_eq!(app.sidebar.selected, Some(0));
+    render_once(&mut app);
+
+    // Right-click "gamma" (row 2): its menu opens and the cursor moves.
+    let r = app.hits.rect_of(&crate::hit::Hit::SidebarRow(2)).unwrap();
+    app.handle_mouse(right_down(r.x, r.y));
+    assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))));
+    assert_eq!(app.sidebar.selected, Some(2));
+
+    // Click off (Hit::ModalOutside dispatches Action::Close).
+    app.update(Action::Close);
+    assert_eq!(
+        app.sidebar.selected,
+        Some(0),
+        "dismissing the menu must undo the right-click's pre-selection"
+    );
+
+    // Same restore through the Esc key path.
+    render_once(&mut app);
+    let r = app.hits.rect_of(&crate::hit::Hit::SidebarRow(2)).unwrap();
+    app.handle_mouse(right_down(r.x, r.y));
+    assert_eq!(app.sidebar.selected, Some(2));
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.sidebar.selected, Some(0), "Esc dismissal restores too");
+}
+
 /// Regression test for the ghost-travel-band bug: `refresh_sidebar` can
-/// re-map `selected` to a different index (a row above it disappearing)
-/// without moving the selection itself. If the `ListTravel` anim isn't
-/// snapped to match, it keeps easing toward the OLD index forever
-/// (`settled` never becomes true), painting a stale selection band/accent
-/// bar alongside the real one.
+/// re-map the OPEN request's row to a different index (a row above it
+/// disappearing) without the open request itself changing. If the
+/// `ListTravel` anim isn't snapped to match, it keeps easing toward the
+/// OLD index forever (`settled` never becomes true), painting a stale
+/// selection band/accent bar alongside the real one.
 #[test]
 fn deleting_a_row_above_the_selection_snaps_the_travel_band_not_a_ghost() {
     let (mut app, _dir) = sidebar_test_app_three_flat_rows();
     render_once(&mut app);
 
-    // Keyboard-select down to row 2 ("gamma").
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    // Open "gamma" (row 2) — the selection band anchors to it.
+    app.update(Action::ForceOpenRequest("gamma".into()));
     assert_eq!(app.sidebar.selected, Some(2));
     render_once(&mut app); // let the travel anim settle at row 2
 
-    // Delete "alpha" (row 0, above the selection) -- "gamma" is still
-    // selected, but its row index shifts from 2 to 1.
+    // Delete "alpha" (row 0, above it) -- "gamma" is still the open
+    // request, but its row index shifts from 2 to 1.
     app.update(Action::DeleteRequest("alpha".into()));
     assert_eq!(
         app.sidebar.selected,

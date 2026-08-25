@@ -127,7 +127,10 @@ impl App {
             // selection there first (so the menu's flows, which all read the
             // selection, act on what was clicked), then opens whatever menu
             // that hit offers. Hits with no menu still get the selection
-            // move — right-clicking a row selects it, menu or not.
+            // move — right-clicking a row selects it, menu or not. For
+            // sidebar rows the move is provisional: dismissing the menu
+            // without choosing anything restores the previous selection
+            // (see `App::sidebar_menu_revert`).
             MouseEventKind::Down(MouseButton::Right) => {
                 // Tokens are a left-click affordance only: a right click
                 // belongs to the row/cell under them and its context menu.
@@ -174,10 +177,15 @@ impl App {
                 // `resolve_table_row_across_commit` re-numbers `i` past
                 // whatever commit just landed — see its own doc comment.
                 let mut menu_hit = hit.clone();
+                // For sidebar rows: the selection to restore if the menu
+                // opens and is then dismissed without choosing anything
+                // (see `App::sidebar_menu_revert`).
+                let mut menu_revert = None;
                 match &hit {
                     Hit::SidebarRow(i) | Hit::SidebarFolderArrow(i) => {
                         changed |= self.update(Action::FocusPane(PaneId::Sidebar));
                         changed |= self.sidebar.selected != Some(*i);
+                        menu_revert = Some(self.sidebar.selected);
                         self.set_sidebar_selected(*i);
                     }
                     Hit::VmLeftRow(i) => {
@@ -219,7 +227,13 @@ impl App {
                     _ => {}
                 }
                 match self.context_menu_for(&menu_hit) {
-                    Some(items) => self.open_context_menu(m.column, m.row, items) || changed,
+                    Some(items) => {
+                        let opened = self.open_context_menu(m.column, m.row, items);
+                        if opened {
+                            self.sidebar_menu_revert = menu_revert;
+                        }
+                        opened || changed
+                    }
                     None => changed,
                 }
             }

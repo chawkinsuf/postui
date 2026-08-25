@@ -169,6 +169,14 @@ pub struct App {
     /// against the *current* frame's hit map, so a token that scrolled or
     /// tabbed out from under a resting pointer takes its tooltip with it.
     hovered_token: Option<String>,
+    /// Set when a sidebar right-click moved `sidebar.selected` onto the
+    /// clicked row to open its context menu: the selection to restore
+    /// (`Some(prev)`, itself possibly `None`) if that menu is dismissed
+    /// without choosing anything — clicking off / Esc must not leave the
+    /// cursor marker stranded on a row the user never acted on. Cleared
+    /// whenever any dropdown closes; a menu item actually chosen keeps the
+    /// moved selection, since its flow acts on (and usually re-points) it.
+    pub(crate) sidebar_menu_revert: Option<Option<usize>>,
     /// The terminal pointer shape last emitted (Kitty OSC 22, task 8d).
     /// Starts at `Default` — the terminal's own cursor is already that, so
     /// startup emits nothing until the pointer first moves onto something
@@ -562,6 +570,7 @@ impl App {
             hits: HitMap::default(),
             hovered: None,
             hovered_token: None,
+            sidebar_menu_revert: None,
             last_pointer_shape: PointerShape::Default,
             pointer: None,
             caret_token: None,
@@ -982,7 +991,17 @@ impl App {
                 true
             }
             Action::Close => {
-                let popped = self.modals.pop().is_some();
+                let popped_modal = self.modals.pop();
+                let popped = popped_modal.is_some();
+                // A dismissed context menu (clicked off / Close with
+                // nothing chosen) undoes the sidebar pre-selection its
+                // right-click made — same rule as `apply_modal_result`'s
+                // empty-actions branch.
+                if matches!(popped_modal, Some(Modal::Dropdown(_)))
+                    && let Some(prev) = self.sidebar_menu_revert.take()
+                {
+                    self.sidebar.selected = prev;
+                }
                 // Overlay close is always instant — no motion rule
                 // exception for either open-settle key. Snapping
                 // `ModalOpen` here also sets the next panel modal's open
@@ -1184,7 +1203,7 @@ impl App {
                         // diverge from the open request. Queue ancestor
                         // folders open, rebuild so the row exists, then
                         // select it now that it's visible.
-                        let prev = self.sidebar.selected;
+                        let prev = self.sidebar.open_row();
                         self.sidebar.select_slug(&slug);
                         self.refresh_sidebar();
                         self.sidebar.select_slug(&slug);
@@ -4055,12 +4074,12 @@ impl App {
             .append(&mut self.sidebar.pending_expand);
         let expanded = self.project.expanded.clone();
         self.sidebar.refresh(listing, &expanded);
-        // `refresh` can re-map `selected` to a different index (rows
-        // added/removed/reordered above it) without moving the selection
-        // itself -- snap `ListTravel`'s value to match, or it keeps easing
-        // toward the old index and paints a ghost selection band there
-        // alongside the real one.
-        if let Some(i) = self.sidebar.selected {
+        // `refresh` can re-map the open request's row to a different index
+        // (rows added/removed/reordered above it) without the open request
+        // itself changing -- snap `ListTravel`'s value to match, or it
+        // keeps easing toward the old index and paints a ghost selection
+        // band there alongside the real one.
+        if let Some(i) = self.sidebar.open_row() {
             self.anims
                 .snap(AnimKey::ListTravel(ListId::Sidebar), i as f32);
         }
@@ -4260,7 +4279,7 @@ impl App {
                 // Queue the slug's ancestor folders open, rebuild the tree
                 // with them expanded (so the new row exists at all), then
                 // select it now that it's actually visible.
-                let prev = self.sidebar.selected;
+                let prev = self.sidebar.open_row();
                 self.sidebar.select_slug(&slug);
                 self.refresh_sidebar();
                 self.sidebar.select_slug(&slug);
@@ -4962,10 +4981,11 @@ impl App {
     fn focused_component_key(&mut self, ev: KeyEvent) -> Option<Action> {
         match self.focus {
             PaneId::Sidebar => {
-                let prev = self.sidebar.selected;
-                let action = self.sidebar.handle_key(ev);
-                self.retarget_sidebar_travel(prev);
-                action
+                // Arrow-key browsing moves only the cursor; the selection
+                // band stays put on the open request (an Enter that opens
+                // the cursor's row retargets the band via
+                // `ForceOpenRequest`).
+                self.sidebar.handle_key(ev)
             }
             PaneId::Editor => {
                 let was_content =
@@ -4982,17 +5002,21 @@ impl App {
         }
     }
 
-    /// Retargets `AnimKey::ListTravel(Sidebar)` from `prev`'s row toward
-    /// the sidebar's current selection, over the config-tunable
-    /// `ui_settings.anim_ms.list_travel` (100ms by default), whenever the
-    /// selection actually moved. Called after every sidebar mutation that
-    /// can change `selected`: keyboard navigation (`focused_component_key`)
-    /// and the `select_slug` calls that follow opening/creating a request.
-    /// A no-op when the selection didn't move, or when nothing ended up
-    /// selected (`draw`'s own fallback already snaps to the current
-    /// selection whenever the anim has no tracked value).
+    /// Retargets `AnimKey::ListTravel(Sidebar)` from `prev`'s row (the row
+    /// the selection band was on — the previously OPEN request) toward the
+    /// newly open request's row, over the config-tunable
+    /// `ui_settings.anim_ms.list_travel` (100ms by default). The band
+    /// tracks the OPEN request, not the keyboard cursor, so this is called
+    /// only after mutations that change which request is open (the
+    /// `ForceOpenRequest`/create-request flows). A no-op when the open row
+    /// didn't move, or when nothing is open (`draw`'s own fallback already
+    /// snaps to the open row whenever the anim has no tracked value).
     fn retarget_sidebar_travel(&mut self, prev: Option<usize>) {
-        let Some(cur) = self.sidebar.selected else {
+        // `sidebar.open_slug` is normally synced from the editor after the
+        // full action applies (see `update`); the callers sit mid-arm, so
+        // sync it here first to compute the band's real destination.
+        self.sidebar.open_slug = self.editor.slug.clone();
+        let Some(cur) = self.sidebar.open_row() else {
             return;
         };
         if prev == Some(cur) {
@@ -5087,20 +5111,13 @@ impl App {
             .retarget_with(right_key, (*x + *w) as f32, dur, now, Easing::InOutCubic);
     }
 
-    /// Sets `sidebar.selected` to row `i` and snaps
-    /// `AnimKey::ListTravel(Sidebar)` straight there, with no easing. Every
-    /// mouse path that sets `sidebar.selected` directly (a row/folder-arrow
-    /// click, the right-click menu's pre-selection) must go through this
-    /// rather than assigning the field itself: a click is a hard jump, not
-    /// a keyboard-driven glide, so the travel band must never animate in
-    /// from wherever it last settled — without the snap, `draw`'s band
-    /// would keep painting the *previous* selected row (wherever the anim
-    /// last came to rest) while the just-clicked row got no fill/bar at
-    /// all, silently desyncing the two.
+    /// Sets `sidebar.selected` (the keyboard cursor / menu target) to row
+    /// `i`. The selection band and its `ListTravel` anim track the OPEN
+    /// request, not this cursor, so no anim bookkeeping happens here — the
+    /// cursor's own marker (a steady control fill) just moves on the next
+    /// draw.
     fn set_sidebar_selected(&mut self, i: usize) {
         self.sidebar.selected = Some(i);
-        self.anims
-            .snap(AnimKey::ListTravel(ListId::Sidebar), i as f32);
     }
 
     /// Pops the top modal on `close` and dispatches each of `res`'s
@@ -5117,10 +5134,23 @@ impl App {
     fn apply_modal_result(&mut self, res: ModalResult) -> bool {
         let mut changed = res.close;
         if res.close {
-            self.modals.pop();
+            let popped = self.modals.pop();
             // Overlay close is always instant.
             self.anims.snap(AnimKey::DropdownOpen, 1.0);
             self.anims.snap(AnimKey::ModalOpen, 1.0);
+            // A dropdown that closes without dispatching anything (clicked
+            // off, Esc) undoes the sidebar pre-selection its right-click
+            // made — the cursor marker must not stay stranded on a row the
+            // user never acted on. A chosen item (`actions` non-empty)
+            // keeps the moved selection instead: its flow reads it.
+            if matches!(popped, Some(Modal::Dropdown(_))) {
+                let revert = self.sidebar_menu_revert.take();
+                if res.actions.is_empty()
+                    && let Some(prev) = revert
+                {
+                    self.sidebar.selected = prev;
+                }
+            }
         }
         if let Some(id) = &res.usage {
             self.usage.record(id, crate::usage::now());
