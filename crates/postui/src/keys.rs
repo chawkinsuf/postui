@@ -200,7 +200,6 @@ impl Keymap {
             ("ctrl+shift+d", Action::DuplicateRequest),
             ("ctrl+z", Action::Undo),
             ("ctrl+shift+z", Action::Redo),
-            ("ctrl+y", Action::Redo),
         ];
         let mut map = Self {
             bindings: HashMap::new(),
@@ -268,10 +267,10 @@ impl Keymap {
 
     /// Reverse lookup for the palette's keybinding column: the first combo
     /// (in `format_combo`-sorted order, for a deterministic pick when more
-    /// than one is bound — e.g. `redo`'s default `ctrl+shift+z`/`ctrl+y`)
-    /// bound to the action named `action_id` in [`named_actions`], formatted
-    /// the way the footer renders combos (lowercase, `+`-joined, e.g.
-    /// `"ctrl+p"`, `"alt+shift+m"`). `None` when `action_id` isn't a known
+    /// than one is bound — e.g. `quit`'s default `q`/`ctrl+c`) bound to
+    /// the action named `action_id` in [`named_actions`], formatted the
+    /// way the footer renders combos (caret ctrl, `+`-joined, e.g.
+    /// `"^P"`, `"alt+shift+m"`). `None` when `action_id` isn't a known
     /// action name or nothing in this keymap is bound to it — most palette
     /// commands have no keybinding at all, which is an expected, silent
     /// outcome here, not an error.
@@ -406,7 +405,7 @@ mod tests {
         assert_eq!(get("alt+v"), Some(Action::OpenVarManager));
         assert_eq!(get("ctrl+z"), Some(Action::Undo));
         assert_eq!(get("ctrl+shift+z"), Some(Action::Redo));
-        assert_eq!(get("ctrl+y"), Some(Action::Redo));
+        assert_eq!(get("ctrl+y"), None, "ctrl+y is deliberately unbound");
     }
 
     #[test]
@@ -563,11 +562,10 @@ mod tests {
 
     #[test]
     fn combo_for_picks_the_lexicographically_first_combo_when_several_are_bound() {
-        // redo's defaults are ctrl+shift+z and ctrl+y — rendered "shift+^Z"
-        // and "^Y", and '^' sorts before 's', so "^Y" is the deterministic
-        // pick.
+        // quit's defaults are q and ctrl+c — rendered "q" and "^C", and
+        // '^' sorts before 'q', so "^C" is the deterministic pick.
         let m = Keymap::default_bindings();
-        assert_eq!(m.combo_for("redo"), Some("^Y".to_string()));
+        assert_eq!(m.combo_for("quit"), Some("^C".to_string()));
     }
 
     #[test]
