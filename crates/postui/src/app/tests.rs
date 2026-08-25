@@ -5247,7 +5247,7 @@ fn manager_screen_replaces_the_three_panes_but_keeps_header_and_footer() {
         "footer hint stays / manager hint shows"
     );
     assert!(
-        !content.contains("REQUESTS"),
+        !content.contains("New request"),
         "the sidebar pane is replaced by the full-frame Manager"
     );
 }

@@ -24,7 +24,7 @@ fn stage1_acceptance_flow() {
     // border/title of their own — the response pane's empty-state hint
     // identifies it instead.
     let frame = render(&mut app);
-    assert!(frame.contains("REQUESTS") && frame.contains("response will appear here"));
+    assert!(frame.contains("New request") && frame.contains("response will appear here"));
 
     // 2. Focus cycling reaches every pane.
     app.update(Action::FocusNext);

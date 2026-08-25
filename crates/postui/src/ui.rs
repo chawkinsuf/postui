@@ -287,7 +287,8 @@ mod tests {
     fn full_frame_shows_all_panes_and_chrome() {
         let mut app = App::new_for_test();
         let content = render(&mut app);
-        assert!(content.contains("REQUESTS")); // sidebar title
+        assert!(!content.contains("REQUESTS")); // no sidebar header; the button is the identity
+        assert!(content.contains("New request")); // sidebar's + New request button
         assert!(content.contains("postui")); // header bar app name
         assert!(content.contains("no env")); // header env selector placeholder
         assert!(content.contains("quit")); // footer hint mentions quit key
