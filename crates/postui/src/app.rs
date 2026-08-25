@@ -878,7 +878,13 @@ impl App {
                 )));
                 true
             }
-            Action::Close => self.modals.pop().is_some(),
+            Action::Close => {
+                let popped = self.modals.pop().is_some();
+                // Overlay close is always instant — no motion rule
+                // exception for the dropdown open-settle.
+                self.anims.snap(AnimKey::DropdownOpen, 1.0);
+                popped
+            }
             Action::ShowToast(msg, kind) => {
                 self.toasts.push(msg, kind);
                 true
@@ -1012,6 +1018,7 @@ impl App {
                     selected: current.unwrap_or(0),
                     current,
                 }));
+                self.begin_dropdown_open();
                 true
             }
             Action::SetMethod(m) => {
@@ -3970,6 +3977,7 @@ impl App {
             // is "the current one" and nothing gets the ✓ marker.
             current: None,
         }));
+        self.begin_dropdown_open();
         true
     }
 
@@ -4327,6 +4335,24 @@ impl App {
         self.anims.snap(AnimKey::FocusFade, 0.0);
         self.anims
             .retarget(AnimKey::FocusFade, 1.0, self.ui_settings.anim_ms.focus, now);
+    }
+
+    /// Starts a dropdown's open-settle over from 0: snaps `AnimKey::DropdownOpen`
+    /// to 0 and retargets it to 1 over `ui_settings.anim_ms.dropdown_open`
+    /// (90ms by default, config-tunable). Called by both `Modal::Dropdown`
+    /// push sites (`Action::OpenMethodDropdown` and `open_context_menu`) so
+    /// the popup's panel fill grows in from its own top edge rather than
+    /// appearing instantly. Closing is always instant — every modal-pop
+    /// path snaps this key straight to 1 instead of retargeting it.
+    pub(crate) fn begin_dropdown_open(&mut self) {
+        let now = Instant::now();
+        self.anims.snap(AnimKey::DropdownOpen, 0.0);
+        self.anims.retarget(
+            AnimKey::DropdownOpen,
+            1.0,
+            self.ui_settings.anim_ms.dropdown_open,
+            now,
+        );
     }
 
     /// Drives every looping motion demo on the hidden testbed screen
@@ -4770,7 +4796,17 @@ impl App {
                 self.retarget_sidebar_travel(prev);
                 action
             }
-            PaneId::Editor => self.editor.handle_key(ev),
+            PaneId::Editor => {
+                let was_content =
+                    self.editor.sub_focus == crate::components::editor::SubFocus::Content;
+                let action = self.editor.handle_key(ev);
+                if !was_content
+                    && self.editor.sub_focus == crate::components::editor::SubFocus::Content
+                {
+                    self.begin_focus_fade();
+                }
+                action
+            }
             PaneId::Response => self.session.response.handle_key(ev),
         }
     }
@@ -4911,6 +4947,8 @@ impl App {
         let mut changed = res.close;
         if res.close {
             self.modals.pop();
+            // Overlay close is always instant.
+            self.anims.snap(AnimKey::DropdownOpen, 1.0);
         }
         if let Some(id) = &res.usage {
             self.usage.record(id, crate::usage::now());

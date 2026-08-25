@@ -142,6 +142,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         &mut hits,
         app.hovered.as_ref(),
         &app.keymap,
+        &app.anims,
+        std::time::Instant::now(),
     );
     app.hits = hits;
 

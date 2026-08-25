@@ -113,7 +113,15 @@ impl App {
                 } else {
                     Some((hit.clone(), now))
                 };
-                self.on_hit(hit, clicks, m)
+                let was_content =
+                    self.editor.sub_focus == crate::components::editor::SubFocus::Content;
+                let changed = self.on_hit(hit, clicks, m);
+                if !was_content
+                    && self.editor.sub_focus == crate::components::editor::SubFocus::Content
+                {
+                    self.begin_focus_fade();
+                }
+                changed
             }
             // A right click targets the row under the pointer: it moves the
             // selection there first (so the menu's flows, which all read the
@@ -756,6 +764,8 @@ impl App {
                     return false;
                 };
                 self.modals.pop();
+                // Overlay close is always instant.
+                self.anims.snap(AnimKey::DropdownOpen, 1.0);
                 self.update(action)
             }
             Hit::ModalOutside => self.update(Action::Close),

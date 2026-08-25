@@ -2052,7 +2052,20 @@ impl Editor {
                 }
             }
             EditorTab::Body => {
-                let mut area = area;
+                // A 1-cell gutter all around hosts the focus ring (painted
+                // below, only while `SubFocus::Content`) — reserved
+                // unconditionally so the body's own geometry never shifts
+                // as focus moves in and out; `body_cursor_for_click` and
+                // friends read the click math straight back out of
+                // `last_body_area`, so shrinking this once here is the only
+                // place that needs to change for the ring to have room.
+                let ring_area = area;
+                let mut area = Rect {
+                    x: area.x + 1,
+                    y: area.y + 1,
+                    width: area.width.saturating_sub(2),
+                    height: area.height.saturating_sub(2),
+                };
                 // The bar takes the last column before edtui is told about
                 // the area, so its own screen_area (which mouse routing is
                 // resolved against) never overlaps the bar.
@@ -2081,6 +2094,16 @@ impl Editor {
                 }
                 self.last_body_area = Some(area);
                 hits.register(area, crate::hit::Hit::BodyEditor);
+                if focused {
+                    // Fades in via the shared `AnimKey::FocusFade` (the URL
+                    // well's own focus lift retargets the same key — see
+                    // `App::begin_focus_fade`'s doc comment) — `on` matches
+                    // the gutter's own resting fill (`theme.page`, painted
+                    // by `pane_surface`) so at t=0 the ring color equals its
+                    // background and reads as not there yet.
+                    let ring_color = crate::theme::mix(theme.page, theme.focus_ring, ctx.focus_t());
+                    crate::paint::ring(frame.buffer_mut(), ring_area, ring_color, theme.page);
+                }
                 let highlighter = json_highlighter(theme);
                 let mut edtui_theme = EditorTheme::default()
                     .base(Style::default().bg(theme.page).fg(theme.text))
@@ -3082,7 +3105,12 @@ x-a = "1"
             anims: test_anims(),
             now: std::time::Instant::now(),
         };
-        let backend = TestBackend::new(60, 10);
+        // A couple of rows taller than the other 60x10 body-tab tests: the
+        // body content area now reserves a 1-cell gutter on every side for
+        // the focus ring (Task 12), so the old 10-row terminal left the
+        // body exactly zero rows once the chrome above it (address bar, tab
+        // bar, toolbar) was accounted for.
+        let backend = TestBackend::new(60, 12);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
@@ -3092,6 +3120,77 @@ x-a = "1"
         assert!(
             content.contains("marker"),
             "body text must render: {content}"
+        );
+    }
+
+    /// The body content's accent ring (Task 12) shows exactly when
+    /// `SubFocus::Content` — no ring on any other sub-focus (or with the
+    /// pane itself unfocused), and once `focus_t` has settled (`test_anims`
+    /// is a disabled/instant `Anims`), a full-strength `theme.focus_ring`
+    /// ring stroke. Checks the exact gutter cell just left of the recorded
+    /// `last_body_area` (its left edge stroke, `▕`) rather than scanning
+    /// the whole buffer for a ring glyph — the address bar's own bevel caps
+    /// reuse the same eighth-block glyphs elsewhere on screen.
+    #[test]
+    fn body_ring_shows_exactly_when_content_focused() {
+        let theme = Theme::dark();
+        let render = |sub_focus: SubFocus, pane_focused: bool| -> (Terminal<TestBackend>, Rect) {
+            let mut e = Editor {
+                active_tab: EditorTab::Body,
+                sub_focus,
+                ..Editor::default()
+            };
+            e.set_body_text("{}");
+            let ctx = DrawCtx {
+                theme: &theme,
+                focused: pane_focused,
+                hovered: None,
+                dragging: false,
+                anims: test_anims(),
+                now: std::time::Instant::now(),
+            };
+            let backend = TestBackend::new(60, 12);
+            let mut terminal = Terminal::new(backend).unwrap();
+            let mut hits = crate::hit::HitMap::default();
+            terminal
+                .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
+                .unwrap();
+            let body_area = e.last_body_area.expect("body area recorded");
+            (terminal, body_area)
+        };
+        let left_edge_cell = |terminal: &Terminal<TestBackend>, body_area: Rect| {
+            terminal
+                .backend()
+                .buffer()
+                .cell((body_area.x - 1, body_area.y + 1))
+                .unwrap()
+                .clone()
+        };
+
+        let (terminal, body_area) = render(SubFocus::Content, true);
+        let cell = left_edge_cell(&terminal, body_area);
+        assert_eq!(cell.symbol(), "▕", "content focused: ring shows");
+        assert_eq!(cell.fg, theme.focus_ring);
+
+        let (terminal, body_area) = render(SubFocus::Content, false);
+        assert_ne!(
+            left_edge_cell(&terminal, body_area).symbol(),
+            "▕",
+            "pane not focused: no ring even on Content sub-focus"
+        );
+
+        let (terminal, body_area) = render(SubFocus::Url, true);
+        assert_ne!(
+            left_edge_cell(&terminal, body_area).symbol(),
+            "▕",
+            "url sub-focus: no ring"
+        );
+
+        let (terminal, body_area) = render(SubFocus::None, true);
+        assert_ne!(
+            left_edge_cell(&terminal, body_area).symbol(),
+            "▕",
+            "no sub-focus: no ring"
         );
     }
 

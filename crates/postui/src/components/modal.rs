@@ -342,12 +342,13 @@ impl ModalStack {
     pub fn focused_input(&self) -> Option<&LineInput> {
         match self.stack.last()? {
             Modal::Prompt { input, .. } => Some(input),
-            Modal::NewProject { name, path, on_path, .. } => {
-                Some(if *on_path { path } else { name })
-            }
-            Modal::MultiPrompt { fields, focus, .. } => {
-                fields.get(*focus).map(|f| &f.input)
-            }
+            Modal::NewProject {
+                name,
+                path,
+                on_path,
+                ..
+            } => Some(if *on_path { path } else { name }),
+            Modal::MultiPrompt { fields, focus, .. } => fields.get(*focus).map(|f| &f.input),
             _ => None,
         }
     }
@@ -753,6 +754,7 @@ impl ModalStack {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
         frame: &mut Frame,
@@ -761,6 +763,8 @@ impl ModalStack {
         hits: &mut crate::hit::HitMap,
         hovered: Option<&crate::hit::Hit>,
         keymap: &crate::keys::Keymap,
+        anims: &crate::anim::Anims,
+        now: std::time::Instant,
     ) {
         let Some(top) = self.stack.last_mut() else {
             return;
@@ -1057,7 +1061,9 @@ impl ModalStack {
                 let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
                 draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered);
             }
-            Modal::Dropdown(state) => draw_dropdown(frame, screen, theme, hits, hovered, state),
+            Modal::Dropdown(state) => {
+                draw_dropdown(frame, screen, theme, hits, hovered, state, anims, now)
+            }
             Modal::MultiPrompt {
                 title,
                 fields,
@@ -1176,6 +1182,7 @@ impl ModalStack {
 /// 1-line pitch (not the 2-line pill pitch the centered overlays use) —
 /// anchored dropdowns are compact menus, and long lists (many methods,
 /// many projects) need every row they can get.
+#[allow(clippy::too_many_arguments)]
 fn draw_dropdown(
     frame: &mut Frame,
     screen: Rect,
@@ -1183,6 +1190,8 @@ fn draw_dropdown(
     hits: &mut crate::hit::HitMap,
     hovered: Option<&crate::hit::Hit>,
     state: &DropdownState,
+    anims: &crate::anim::Anims,
+    now: std::time::Instant,
 ) {
     let max_label = state
         .items
@@ -1223,7 +1232,35 @@ fn draw_dropdown(
         height,
     };
     hits.register(area, crate::hit::Hit::ModalBody);
-    paint::floating_panel(frame.buffer_mut(), area, screen, theme);
+
+    // Open-settle: the popup's panel fill grows down from its own top edge
+    // over `AnimKey::DropdownOpen` (retargeted 0→1 in `app.rs` on open,
+    // snapped straight to 1 on every close path — closing is always
+    // instant). `frac_vspan` paints the whole covered rows solid and gives
+    // the partial row at the growing edge its fractional glyph; at t=0 the
+    // edge sits exactly on `area`'s top row with zero coverage, which
+    // `frac_vspan`'s negligible-coverage skip leaves untouched (no flash of
+    // `on` on the very first frame).
+    let t = anims
+        .value_or(crate::anim::AnimKey::DropdownOpen, now, 1.0)
+        .clamp(0.0, 1.0);
+    let settle_bottom = area.top() as f32 + area.height as f32 * t;
+    paint::frac_vspan(
+        frame.buffer_mut(),
+        area.x,
+        area.right(),
+        area.top() as f32,
+        settle_bottom,
+        theme.panel,
+        theme.page,
+    );
+    // The drop shadow reads as noise while the popup is still growing in,
+    // so it only appears once settled (a 90ms window by default — this
+    // simply skips it for that brief span rather than scaling it too).
+    if t >= 1.0 {
+        paint::floating_panel(frame.buffer_mut(), area, screen, theme);
+    }
+    paint::ring(frame.buffer_mut(), area, theme.accent, theme.panel);
 
     let inner = Rect {
         x: area.x + 2,
@@ -1231,6 +1268,7 @@ fn draw_dropdown(
         width: area.width.saturating_sub(4),
         height: area.height.saturating_sub(4),
     };
+    let visible_bottom = (settle_bottom.floor() as u16).clamp(area.top(), area.bottom());
 
     for (i, item) in state.items.iter().enumerate() {
         if i as u16 >= inner.height {
@@ -1243,24 +1281,61 @@ fn draw_dropdown(
             width: inner.width,
             height: 1,
         };
+        // The hit registers at its final position regardless of the
+        // open-settle animation's progress — a click landing mid-animation
+        // (the 90ms window is easy to beat with a fast double-click, and
+        // tests draw a single frame at whatever `now` they pass) must
+        // resolve exactly as it would once settled. Only the *paint* below
+        // is conditional on visibility.
+        hits.register(row_area, crate::hit::Hit::DropdownRow(i));
+        // The still-growing tail of rows below the settle edge doesn't
+        // paint yet — they reveal as the panel fill grows down past them.
+        if row_area.y >= visible_bottom {
+            continue;
+        }
         let enabled = item.is_enabled();
         let selected = enabled && i == state.selected;
         let row_hovered = enabled && hovered == Some(&crate::hit::Hit::DropdownRow(i));
         // A disabled row takes no fill at all: no cursor highlight, no hover
         // response — the only affordance it has is looking muted.
-        let row_fill = if selected {
-            theme.control_hover
+        let highlight = if selected {
+            paint::RowHighlight::Selected
         } else if row_hovered {
-            theme.control
+            paint::RowHighlight::Hover
         } else {
-            theme.panel
+            paint::RowHighlight::None
         };
-        paint::fill(frame.buffer_mut(), row_area, row_fill);
+        // No hover-fade animation is wired for popup lists (transient
+        // surfaces), same convention as the var-picker/palette/chooser
+        // popups: a hovered row shows its full hover fill immediately.
+        let hover_t = 1.0;
+        paint::ListRow {
+            highlight,
+            zebra: None,
+        }
+        .paint(
+            frame.buffer_mut(),
+            row_area.y,
+            row_area.x,
+            row_area.width,
+            theme.panel,
+            hover_t,
+            theme,
+        );
+        let row_fill = match highlight {
+            paint::RowHighlight::None => theme.panel,
+            paint::RowHighlight::Hover => theme.control,
+            paint::RowHighlight::Selected => theme.selection,
+        };
 
         // `current` (the value already in effect) gets the checkmark;
         // `selected` (the keyboard cursor) gets its own bold/accent
         // highlight — the two can differ once arrow keys move the cursor
-        // away from the current value.
+        // away from the current value. Painted from `row_area.x` — the
+        // same column `ListRow::Selected` would otherwise put its own left
+        // accent bar on — so the marker glyph (or its leading blank) simply
+        // overwrites that column: menus show a full-width selection fill
+        // with no left bar, unlike the sidebar/palette lists that keep one.
         let marker = if state.current == Some(i) {
             "\u{2713} "
         } else {
@@ -1282,7 +1357,6 @@ fn draw_dropdown(
             row_fill,
             selected,
         );
-        hits.register(row_area, crate::hit::Hit::DropdownRow(i));
     }
 }
 
@@ -1378,6 +1452,16 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
+    /// A disabled (instantly-jumping) `Anims` shared by every test's draw
+    /// call, so a dropdown's open-settle animation never intrudes on
+    /// geometry/behavior assertions that don't care about it — untracked
+    /// keys (never `retarget`ed here) read as fully settled via
+    /// `value_or`'s default.
+    fn test_anims() -> &'static crate::anim::Anims {
+        static ANIMS: std::sync::OnceLock<crate::anim::Anims> = std::sync::OnceLock::new();
+        ANIMS.get_or_init(|| crate::anim::Anims::new(false))
+    }
+
     #[test]
     fn centered_rect_is_centered_and_clamped() {
         let screen = Rect::new(0, 0, 100, 40);
@@ -1412,7 +1496,18 @@ mod tests {
         let mut hits = crate::hit::HitMap::default();
         let mut terminal = Terminal::new(TestBackend::new(screen.width, screen.height)).unwrap();
         terminal
-            .draw(|f| m.draw(f, screen, &theme, &mut hits, None, &keymap))
+            .draw(|f| {
+                m.draw(
+                    f,
+                    screen,
+                    &theme,
+                    &mut hits,
+                    None,
+                    &keymap,
+                    test_anims(),
+                    std::time::Instant::now(),
+                )
+            })
             .unwrap();
 
         let body = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
@@ -1519,7 +1614,18 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
-            .draw(|f| m.draw(f, f.area(), &theme, &mut hits, None, &keymap))
+            .draw(|f| {
+                m.draw(
+                    f,
+                    f.area(),
+                    &theme,
+                    &mut hits,
+                    None,
+                    &keymap,
+                    test_anims(),
+                    std::time::Instant::now(),
+                )
+            })
             .unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("About"));
@@ -1545,7 +1651,16 @@ mod tests {
                 // something non-default to blend toward black.
                 let area = f.area();
                 crate::paint::fill(f.buffer_mut(), area, theme.page);
-                m.draw(f, area, &theme, &mut hits, None, &keymap)
+                m.draw(
+                    f,
+                    area,
+                    &theme,
+                    &mut hits,
+                    None,
+                    &keymap,
+                    test_anims(),
+                    std::time::Instant::now(),
+                )
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
@@ -1580,7 +1695,18 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
-            .draw(|f| m.draw(f, f.area(), &theme, &mut hits, None, &keymap))
+            .draw(|f| {
+                m.draw(
+                    f,
+                    f.area(),
+                    &theme,
+                    &mut hits,
+                    None,
+                    &keymap,
+                    test_anims(),
+                    std::time::Instant::now(),
+                )
+            })
             .unwrap();
         let buffer = terminal.backend().buffer();
 
@@ -1616,7 +1742,18 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
-            .draw(|f| m.draw(f, f.area(), &theme, &mut hits, None, &keymap))
+            .draw(|f| {
+                m.draw(
+                    f,
+                    f.area(),
+                    &theme,
+                    &mut hits,
+                    None,
+                    &keymap,
+                    test_anims(),
+                    std::time::Instant::now(),
+                )
+            })
             .unwrap();
         let buffer = terminal.backend().buffer();
         let row0 = hits.rect_of(&crate::hit::Hit::PaletteRow(0)).unwrap();
@@ -1725,7 +1862,18 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
-            .draw(|f| draw_dropdown(f, screen, &Theme::dark(), &mut hits, None, &state))
+            .draw(|f| {
+                draw_dropdown(
+                    f,
+                    screen,
+                    &Theme::dark(),
+                    &mut hits,
+                    None,
+                    &state,
+                    test_anims(),
+                    std::time::Instant::now(),
+                )
+            })
             .unwrap();
         let row0 = hits
             .rect_of(&crate::hit::Hit::DropdownRow(0))
@@ -1754,7 +1902,18 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
-            .draw(|f| draw_dropdown(f, screen, &Theme::dark(), &mut hits, None, &state))
+            .draw(|f| {
+                draw_dropdown(
+                    f,
+                    screen,
+                    &Theme::dark(),
+                    &mut hits,
+                    None,
+                    &state,
+                    test_anims(),
+                    std::time::Instant::now(),
+                )
+            })
             .unwrap();
         let body = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
         let row0 = hits.rect_of(&crate::hit::Hit::DropdownRow(0)).unwrap();
@@ -1804,6 +1963,8 @@ mod tests {
                     &mut hits,
                     Some(&crate::hit::Hit::DropdownRow(1)),
                     &state,
+                    test_anims(),
+                    std::time::Instant::now(),
                 )
             })
             .unwrap();
@@ -1818,7 +1979,7 @@ mod tests {
         );
         assert_eq!(
             buffer[(row0.x, row0.y)].bg,
-            theme.control_hover,
+            theme.selection,
             "the selected row (index 0) keeps its own selected fill"
         );
         assert_eq!(
@@ -1848,6 +2009,181 @@ mod tests {
             state.current,
             Some(0),
             "checkmark stays on the original row"
+        );
+    }
+
+    #[test]
+    fn dropdown_draws_an_accent_ring_around_the_settled_popup() {
+        let screen = Rect::new(0, 0, 80, 24);
+        let state = DropdownState {
+            anchor: Rect::new(10, 5, 8, 1),
+            items: dropdown_items(),
+            selected: 0,
+            current: Some(0),
+        };
+        let theme = Theme::dark();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| {
+                draw_dropdown(
+                    f,
+                    screen,
+                    &theme,
+                    &mut hits,
+                    None,
+                    &state,
+                    test_anims(),
+                    std::time::Instant::now(),
+                )
+            })
+            .unwrap();
+        let body = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
+        let buffer = terminal.backend().buffer();
+        // Top edge stroke, corner excluded.
+        let top_cell = &buffer[(body.x + 1, body.y)];
+        assert_eq!(top_cell.symbol(), "▁");
+        assert_eq!(top_cell.fg, theme.accent);
+        // Left edge stroke, corner excluded.
+        let left_cell = &buffer[(body.x, body.y + 1)];
+        assert_eq!(left_cell.symbol(), "▕");
+        assert_eq!(left_cell.fg, theme.accent);
+        // Top-left corner.
+        let corner = &buffer[(body.x, body.y)];
+        assert_eq!(corner.fg, theme.accent);
+    }
+
+    #[test]
+    fn dropdown_rows_are_dense_single_line_pitch_on_consecutive_rows() {
+        // A window of N rows sits on consecutive screen lines (1-line
+        // pitch), not the 2-line pill pitch — `ListRow`, not `PillRow`.
+        let screen = Rect::new(0, 0, 80, 24);
+        let items: Vec<MenuItem> = (0..5)
+            .map(|i| MenuItem::new(format!("Item {i}"), Action::Render))
+            .collect();
+        let state = DropdownState {
+            anchor: Rect::new(10, 5, 8, 1),
+            items,
+            selected: 0,
+            current: None,
+        };
+        let theme = Theme::dark();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| {
+                draw_dropdown(
+                    f,
+                    screen,
+                    &theme,
+                    &mut hits,
+                    None,
+                    &state,
+                    test_anims(),
+                    std::time::Instant::now(),
+                )
+            })
+            .unwrap();
+        let rows: Vec<Rect> = (0..5)
+            .map(|i| hits.rect_of(&crate::hit::Hit::DropdownRow(i)).unwrap())
+            .collect();
+        for w in rows.windows(2) {
+            assert_eq!(
+                w[1].y,
+                w[0].y + 1,
+                "rows sit on a dense, consecutive 1-line pitch"
+            );
+        }
+    }
+
+    #[test]
+    fn dropdown_selected_row_has_no_left_accent_bar() {
+        let screen = Rect::new(0, 0, 80, 24);
+        let state = DropdownState {
+            anchor: Rect::new(10, 5, 8, 1),
+            items: dropdown_items(),
+            selected: 0,
+            current: None,
+        };
+        let theme = Theme::dark();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| {
+                draw_dropdown(
+                    f,
+                    screen,
+                    &theme,
+                    &mut hits,
+                    None,
+                    &state,
+                    test_anims(),
+                    std::time::Instant::now(),
+                )
+            })
+            .unwrap();
+        let row0 = hits.rect_of(&crate::hit::Hit::DropdownRow(0)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let leading = &buffer[(row0.x, row0.y)];
+        assert_ne!(
+            leading.symbol(),
+            "▌",
+            "menus don't keep the list-row left accent bar"
+        );
+        assert_eq!(leading.bg, theme.selection);
+    }
+
+    #[test]
+    fn dropdown_open_settle_grows_from_the_top_and_snaps_open_when_settled() {
+        // At t=0 the popup shows nothing yet (frac_vspan's negligible-edge
+        // skip leaves the page underneath alone); at t=1 (this module's
+        // `test_anims()` default) it's fully drawn, ring included.
+        let screen = Rect::new(0, 0, 80, 24);
+        let state = DropdownState {
+            anchor: Rect::new(10, 5, 8, 1),
+            items: dropdown_items(),
+            selected: 0,
+            current: Some(0),
+        };
+        let theme = Theme::dark();
+
+        let mut anims = crate::anim::Anims::new(true);
+        let now = std::time::Instant::now();
+        anims.snap(crate::anim::AnimKey::DropdownOpen, 0.0);
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| {
+                crate::paint::fill(f.buffer_mut(), screen, theme.page);
+                draw_dropdown(f, screen, &theme, &mut hits, None, &state, &anims, now)
+            })
+            .unwrap();
+        let body = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(
+            buffer[(body.x + 1, body.y + 1)].bg,
+            theme.page,
+            "t=0: nothing painted yet, the page underneath still shows"
+        );
+
+        anims.snap(crate::anim::AnimKey::DropdownOpen, 1.0);
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| {
+                crate::paint::fill(f.buffer_mut(), screen, theme.page);
+                draw_dropdown(f, screen, &theme, &mut hits, None, &state, &anims, now)
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(
+            buffer[(body.x + 1, body.y + 1)].bg,
+            theme.panel,
+            "t=1: fully settled, panel fill covers the whole popup"
         );
     }
 }

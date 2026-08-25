@@ -1982,6 +1982,49 @@ fn click_in_body_area_places_cursor_and_focuses_content() {
     assert_eq!(app.editor.body.cursor.row, 1, "clicked the second line");
 }
 
+/// Clicking into the body content starts the same `AnimKey::FocusFade` the
+/// URL well's own focus lift uses (Task 12 controller amendment) — one
+/// mechanism, retargeted wherever keyboard focus actually lands on
+/// something that fades in on focus.
+#[test]
+fn click_in_body_area_starts_the_focus_fade() {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.set_body_text("hello\nworld");
+    render_once(&mut app);
+    let area = app.editor.last_body_area.expect("body area recorded");
+    // Settle any fade a prior focus move left in flight, so this click is
+    // unambiguously what (re)starts it.
+    app.anims.snap(AnimKey::FocusFade, 1.0);
+    app.handle_mouse(left_down(area.x + 4, area.y + 1));
+    assert_eq!(app.editor.sub_focus, SubFocus::Content);
+    let now = std::time::Instant::now();
+    assert!(
+        app.anims.value(AnimKey::FocusFade, now).unwrap() < 1.0,
+        "clicking into the body content restarts the focus fade from 0"
+    );
+}
+
+/// Tabbing keyboard focus into the body content (from the tab strip) starts
+/// the same fade the mouse-click path does.
+#[test]
+fn tab_into_body_content_starts_the_focus_fade() {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.set_body_text("hello");
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Tabs;
+    app.anims.snap(AnimKey::FocusFade, 1.0);
+    let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
+    app.handle_key(&Keymap::default_bindings(), down);
+    assert_eq!(app.editor.sub_focus, SubFocus::Content);
+    let now = std::time::Instant::now();
+    assert!(
+        app.anims.value(AnimKey::FocusFade, now).unwrap() < 1.0,
+        "tabbing into the body content restarts the focus fade from 0"
+    );
+}
+
 #[test]
 fn dragging_in_the_body_selects_and_ctrl_c_copies_it() {
     let dir = tempfile::tempdir().unwrap();
@@ -4363,6 +4406,53 @@ fn click_method_selector_opens_dropdown_then_click_row_sets_method() {
     app.handle_mouse(left_down(row3.x, row3.y));
     assert_eq!(app.editor.method, postui_core::model::Method::Patch);
     assert!(app.modals.is_empty());
+}
+
+/// Opening the method dropdown retargets `AnimKey::DropdownOpen` 0→1 over
+/// `ui_settings.anim_ms.dropdown_open` (90ms by default); every close path
+/// then snaps it straight back to 1 — overlay close is always instant, no
+/// exception for this popup's own open-settle motion.
+#[test]
+fn method_dropdown_open_settles_then_every_close_path_snaps_instantly() {
+    let mut app = App::new_for_test();
+    render_once(&mut app);
+    let badge = app.hits.rect_of(&Hit::MethodSelector).unwrap();
+
+    // Open: the animation starts short of 1 (still easing in).
+    app.handle_mouse(left_down(badge.x, badge.y));
+    let now = std::time::Instant::now();
+    assert!(
+        app.anims.value(AnimKey::DropdownOpen, now).unwrap() < 1.0,
+        "opening starts the settle animation short of 1"
+    );
+
+    // Close via Esc (`Action::Close`): snaps instantly.
+    app.update(Action::Close);
+    assert_eq!(app.anims.value(AnimKey::DropdownOpen, now), Some(1.0));
+
+    // Re-open, then close by clicking a row (`Hit::DropdownRow`'s own pop).
+    // Freshly rendered first so the click resolves against this frame's
+    // hits — a stale `HitMap` from the still-open popup still has
+    // `ModalOutside` covering the badge, same as any real redraw cadence
+    // would refresh before the next click lands.
+    render_once(&mut app);
+    app.handle_mouse(left_down(badge.x, badge.y));
+    assert!(app.anims.value(AnimKey::DropdownOpen, now).unwrap() < 1.0);
+    render_once(&mut app);
+    let row0 = app.hits.rect_of(&Hit::DropdownRow(0)).unwrap();
+    app.handle_mouse(left_down(row0.x, row0.y));
+    assert_eq!(app.anims.value(AnimKey::DropdownOpen, now), Some(1.0));
+
+    // Re-open, then close by clicking outside (`Hit::ModalOutside` →
+    // `Action::Close`, via `apply_modal_result`'s Esc-key twin path is
+    // covered above; this exercises the `on_hit` `ModalOutside` arm).
+    render_once(&mut app);
+    app.handle_mouse(left_down(badge.x, badge.y));
+    assert!(app.anims.value(AnimKey::DropdownOpen, now).unwrap() < 1.0);
+    render_once(&mut app);
+    app.handle_mouse(left_down(0, 0));
+    assert!(app.modals.is_empty());
+    assert_eq!(app.anims.value(AnimKey::DropdownOpen, now), Some(1.0));
 }
 
 #[test]

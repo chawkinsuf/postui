@@ -12,6 +12,7 @@ pub mod chip;
 pub mod field;
 pub mod frac;
 pub mod panel;
+pub mod ring;
 pub mod rows;
 
 pub use button::{BUTTON_HEIGHT, Button, ButtonKind, button_min_width};
@@ -19,6 +20,7 @@ pub use chip::{Chip, TabStrip};
 pub use field::{FIELD_HEIGHT, TextField};
 pub use frac::frac_vspan;
 pub use panel::{dim_backdrop, floating_panel};
+pub use ring::ring;
 pub use rows::{ListRow, PillRow, RowHighlight};
 
 /// How far a Disabled control's label/content blends toward its own fill
