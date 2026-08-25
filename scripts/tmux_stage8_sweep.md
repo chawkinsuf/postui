@@ -351,6 +351,15 @@ No result recorded here — this needs the user's own eyes on a real
 Ghostty window at checkpoint 2, same as the MOTION section's live-motion
 caveat in §1.
 
+## 13. Ring corner-glyph font coverage — manual-check item
+
+- Verify the ring's `U+1FB7C`–`U+1FB7F` corner glyphs (Legacy Computing
+  block-sextant corners, seen framing the method dropdown/modals in §3/§5)
+  render as actual corner shapes — not tofu/a missing-glyph box — in the
+  user's own terminal font; the straight `▁▔▕▏` edges degrade gracefully on
+  a font lacking Legacy Computing coverage, but the corners have no
+  fallback and need that block specifically.
+
 ## Summary
 
 | # | Surface | Capture | Result |
