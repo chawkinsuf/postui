@@ -11,6 +11,7 @@ use ratatui::crossterm::event::{
     PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::execute;
+use ratatui::crossterm::terminal::EndSynchronizedUpdate;
 use std::time::Duration;
 
 #[tokio::main]
@@ -59,6 +60,19 @@ fn enable_mouse_and_wrap_panic_hook() {
     }
     let prev_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        // `stdout().sync_update(...)` around `terminal.draw` (main.rs's
+        // event loop) sends EndSynchronizedUpdate only when its closure
+        // *returns* — a panic inside `terminal.draw` unwinds straight past
+        // that, so the terminal is left in synchronized-update mode with
+        // no other code path to clear it. Neither `ratatui::restore()` nor
+        // the rest of this hook's own escape sequences touch that mode, so
+        // without this the terminal would come back from a draw panic
+        // frozen on its last synced frame. Cleared first, before the other
+        // restores, on the same reasoning as those: nothing else in this
+        // hook depends on sync mode being on or off, so order among them
+        // doesn't matter, but doing it up front means every restore that
+        // follows is unambiguously outside a synchronized update.
+        let _ = execute!(std::io::stdout(), EndSynchronizedUpdate);
         let _ = execute!(
             std::io::stdout(),
             PopKeyboardEnhancementFlags,
