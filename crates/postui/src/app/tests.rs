@@ -334,6 +334,36 @@ fn tick_requests_redraw_while_toast_visible() {
 }
 
 #[test]
+fn apply_ui_settings_wires_animations_into_anims() {
+    // Regression: `App::new`'s two branches (resolved root / no-root
+    // fallback) must both route a loaded `UiSettings.animations` into
+    // `App.anims` — easy to forget when a new UiSettings-derived field is
+    // added to one branch's block of assignments but not the other's.
+    // `App::new` itself reads the real user config file, so it isn't
+    // unit-testable here; `apply_ui_settings` is the single place both
+    // branches delegate to, so exercising it directly covers the wiring.
+    let mut app = App::new_for_test();
+    assert!(app.anims.enabled, "new_for_test defaults to animations on");
+
+    let settings = crate::config::UiSettings {
+        animations: false,
+        ..crate::config::UiSettings::default()
+    };
+    app.apply_ui_settings(settings, crate::theme::Theme::dark());
+    assert!(
+        !app.anims.enabled,
+        "animations = false in UiSettings must disable App.anims"
+    );
+
+    let settings = crate::config::UiSettings {
+        animations: true,
+        ..crate::config::UiSettings::default()
+    };
+    app.apply_ui_settings(settings, crate::theme::Theme::dark());
+    assert!(app.anims.enabled, "animations = true re-enables App.anims");
+}
+
+#[test]
 fn hover_change_starts_a_hover_fade_and_tick_redraws_while_animating() {
     let mut app = App::new_for_test();
     app.begin_hover_fade();

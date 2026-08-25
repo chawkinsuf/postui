@@ -305,10 +305,7 @@ impl App {
             let mut app = Self::bare(tx, PathBuf::new());
             app.registry = registry;
             app.registry_path = registry_path;
-            app.clipboard = crate::clipboard::Clipboard::new(&ui_settings);
-            app.anims = Anims::new(ui_settings.animations);
-            app.ui_settings = ui_settings;
-            app.theme = theme;
+            app.apply_ui_settings(ui_settings, theme);
             app.usage = usage;
             app.usage_path = usage_path;
             for w in ui_warnings {
@@ -324,9 +321,7 @@ impl App {
         let mut app = Self::with_root(tx, root);
         app.registry = registry;
         app.registry_path = registry_path;
-        app.clipboard = crate::clipboard::Clipboard::new(&ui_settings);
-        app.ui_settings = ui_settings;
-        app.theme = theme;
+        app.apply_ui_settings(ui_settings, theme);
         app.usage = usage;
         app.usage_path = usage_path;
         for w in ui_warnings {
@@ -455,6 +450,20 @@ impl App {
                 ('y', "Migrate".into(), vec![Action::ApplyMigration]),
             ],
         });
+    }
+
+    /// Applies a freshly loaded `UiSettings` (and the `Theme` derived from
+    /// it) to every field that depends on it: the clipboard tier, the
+    /// animation state, and `ui_settings`/`theme` themselves. Both of
+    /// `App::new`'s branches (a resolved project root, and the no-root
+    /// fallback) call this instead of assigning each dependent field
+    /// separately, so a new `UiSettings`-derived field can't be wired into
+    /// one branch and silently forgotten in the other.
+    fn apply_ui_settings(&mut self, ui_settings: crate::config::UiSettings, theme: Theme) {
+        self.clipboard = crate::clipboard::Clipboard::new(&ui_settings);
+        self.anims = Anims::new(ui_settings.animations);
+        self.theme = theme;
+        self.ui_settings = ui_settings;
     }
 
     fn bare(tx: UnboundedSender<Action>, root: PathBuf) -> Self {
