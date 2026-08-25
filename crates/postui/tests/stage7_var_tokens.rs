@@ -454,12 +454,16 @@ fn a_resting_caret_raises_the_same_tooltip_after_two_ticks() {
     );
     app.update(Action::Tick);
     draw(&mut app);
-    assert!(app.var_token_tip().is_none(), "one tick is not resting");
+    assert!(app.var_token_tip().is_none(), "no dwell yet is not resting");
+    // The dwell is wall-clock (see `App::track_caret_token`), not
+    // tick-counted -- real time is fine here, matching the sleep-based
+    // settle precedent elsewhere in the app-level tests.
+    std::thread::sleep(std::time::Duration::from_millis(250));
     app.update(Action::Tick);
     draw(&mut app);
     let tip = app
         .var_token_tip()
-        .expect("two ticks of rest raise the tip");
+        .expect("resting past the dwell raises the tip");
     assert_eq!(tip.name, "base_url");
     let frame = dump(&mut app);
     assert!(frame.contains("base_url = http://qa.test"), "{frame}");

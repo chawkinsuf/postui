@@ -38,9 +38,11 @@ fn stage1_acceptance_flow() {
         ToastKind::Info,
     ));
     assert!(render(&mut app).contains("Welcome to postui"));
-    for _ in 0..40 {
-        app.update(Action::Tick);
-    }
+    // A toast's lifetime is wall-clock (3s), not tick-counted (see
+    // `components::toast`) -- real time is fine here, matching the
+    // sleep-based settle precedent elsewhere in the app-level tests.
+    std::thread::sleep(std::time::Duration::from_millis(3100));
+    app.update(Action::Tick);
     assert!(!render(&mut app).contains("Welcome to postui"));
 
     // 4. Palette opens as a modal and renders.
