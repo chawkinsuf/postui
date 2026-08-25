@@ -144,7 +144,7 @@ impl Theme {
         let focus_ring = accent;
         // 35% accent over the background: visibly "the accent's" selection
         // without fighting the text drawn on top of it.
-        let selection = blend(accent, bg, 0.35);
+        let selection = blend(bg, accent, 0.35);
 
         let mut text = fg;
         let text_muted = blend(fg, bg, 0.55);
