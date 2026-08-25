@@ -1567,6 +1567,39 @@ fn hover_change_requests_redraw_and_same_hover_does_not() {
 }
 
 #[test]
+fn pointer_shape_update_emits_only_on_change() {
+    let mut app = App::new_for_test();
+    render_once(&mut app);
+
+    // Nothing hovered yet: already `Default`, the shape it starts at.
+    assert_eq!(app.pointer_shape_update(), None);
+
+    let chip = app
+        .hits
+        .rect_of(&crate::hit::Hit::FooterChip(Action::OpenPalette))
+        .unwrap();
+    app.handle_mouse(moved(chip.x, chip.y));
+    assert_eq!(
+        app.pointer_shape_update(),
+        Some(crate::hit::PointerShape::Pointer),
+        "hovering a clickable hit emits the new shape"
+    );
+    // Still hovering the same button: no repeat emission.
+    assert_eq!(app.pointer_shape_update(), None);
+
+    let sidebar = app
+        .hits
+        .rect_of(&crate::hit::Hit::Pane(PaneId::Sidebar))
+        .unwrap();
+    app.handle_mouse(moved(sidebar.x, sidebar.y));
+    assert_eq!(
+        app.pointer_shape_update(),
+        Some(crate::hit::PointerShape::Default),
+        "moving back over background emits the reset"
+    );
+}
+
+#[test]
 fn wheel_over_pane_routes_via_pane_at_to_scroll_pane() {
     let mut app = App::new_for_test();
     render_once(&mut app);

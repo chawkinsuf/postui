@@ -10,7 +10,7 @@ use crate::components::varmanager::{
     VarEditOp, VarManager, VarStructOp, VmDetail, VmFocus, var_edit_op_for,
 };
 use crate::components::{Component, sidebar::Sidebar};
-use crate::hit::{Hit, HitMap, ScrollbarSpec};
+use crate::hit::{Hit, HitMap, PointerShape, ScrollbarSpec};
 use crate::keys::{KeyCombo, Keymap};
 use crate::layout::PaneId;
 use crate::project_ctx::ProjectContext;
@@ -150,6 +150,11 @@ pub struct App {
     /// against the *current* frame's hit map, so a token that scrolled or
     /// tabbed out from under a resting pointer takes its tooltip with it.
     hovered_token: Option<String>,
+    /// The terminal pointer shape last emitted (Kitty OSC 22, task 8d).
+    /// Starts at `Default` — the terminal's own cursor is already that, so
+    /// startup emits nothing until the pointer first moves onto something
+    /// else. Read and updated only by `pointer_shape_update` (`app/mouse.rs`).
+    last_pointer_shape: PointerShape,
     /// Where the pointer last was, so the tooltip can be re-resolved every
     /// frame rather than trusting a rect captured at motion time.
     pointer: Option<(u16, u16)>,
@@ -521,6 +526,7 @@ impl App {
             hits: HitMap::default(),
             hovered: None,
             hovered_token: None,
+            last_pointer_shape: PointerShape::Default,
             pointer: None,
             caret_token: None,
             caret_token_ticks: 0,

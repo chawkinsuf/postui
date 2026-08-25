@@ -164,6 +164,55 @@ pub enum Hit {
     ModalField(usize),
 }
 
+/// A terminal pointer-shape hint (Kitty's OSC 22 protocol, `\x1b]22;{shape}\x07`),
+/// computed from the [`Hit`] under the mouse. Terminals that don't support
+/// the protocol simply ignore the escape sequence, so this is a no-op
+/// enhancement everywhere else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointerShape {
+    /// The terminal's own cursor: background, chrome the mouse can't act on,
+    /// and modal-dismiss regions (`ModalOutside`/`ModalBody`, which behave
+    /// like background rather than a button).
+    Default,
+    /// The hand cursor: anything `on_hit` actually dispatches a click
+    /// through — buttons, tabs, chips, rows, cells, scrollbars, dropdown
+    /// rows.
+    Pointer,
+    /// The I-beam cursor: free-text entry surfaces. Only `UrlBar` and
+    /// `BodyEditor` qualify — both are cleanly distinguishable `Hit`
+    /// variants dedicated to placing a text caret, unlike the in-place
+    /// table/form cell edits (`TableCell`, `VmFormField`, `VmEntryCell`),
+    /// which are first a *click* to select/open before any typing starts
+    /// and so stay `Pointer`.
+    Text,
+}
+
+impl PointerShape {
+    /// The shape name OSC 22 expects (`pointer`, `default`, `text`, …).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PointerShape::Default => "default",
+            PointerShape::Pointer => "pointer",
+            PointerShape::Text => "text",
+        }
+    }
+
+    /// Maps the currently hovered hit (mirroring `App::hovered`) to the
+    /// shape the pointer should show. A blanket "everything but background
+    /// chrome is clickable" rule rather than an exhaustive per-variant
+    /// match: `Hit` gains new clickable kinds far more often than new
+    /// non-interactive ones, and every existing non-interactive kind is
+    /// named here explicitly.
+    pub fn for_hit(hit: Option<&Hit>) -> Self {
+        match hit {
+            None => PointerShape::Default,
+            Some(Hit::UrlBar | Hit::BodyEditor) => PointerShape::Text,
+            Some(Hit::Pane(_) | Hit::ModalOutside | Hit::ModalBody) => PointerShape::Default,
+            Some(_) => PointerShape::Pointer,
+        }
+    }
+}
+
 /// Rebuilt each frame during render; maps screen regions to typed [`Hit`]s.
 ///
 /// It also carries each frame's scrollbar *track* rects. Those are not
@@ -521,6 +570,62 @@ mod tests {
         assert_eq!(active.bg, theme.accent);
         assert_eq!(active.fg, theme.text);
         assert_ne!(active.fg, theme.page, "must not vanish into the pane");
+    }
+
+    #[test]
+    fn pointer_shape_maps_background_and_modal_dismiss_regions_to_default() {
+        assert_eq!(PointerShape::for_hit(None), PointerShape::Default);
+        assert_eq!(
+            PointerShape::for_hit(Some(&Hit::Pane(PaneId::Sidebar))),
+            PointerShape::Default
+        );
+        assert_eq!(
+            PointerShape::for_hit(Some(&Hit::ModalOutside)),
+            PointerShape::Default
+        );
+        assert_eq!(
+            PointerShape::for_hit(Some(&Hit::ModalBody)),
+            PointerShape::Default
+        );
+    }
+
+    #[test]
+    fn pointer_shape_maps_text_entry_surfaces_to_text() {
+        assert_eq!(
+            PointerShape::for_hit(Some(&Hit::UrlBar)),
+            PointerShape::Text
+        );
+        assert_eq!(
+            PointerShape::for_hit(Some(&Hit::BodyEditor)),
+            PointerShape::Text
+        );
+    }
+
+    #[test]
+    fn pointer_shape_maps_clickable_hits_to_pointer() {
+        for hit in [
+            Hit::SendButton,
+            Hit::MethodSelector,
+            Hit::SidebarRow(0),
+            Hit::EditorTab(0),
+            Hit::TableCell { row: 0, col: 0 },
+            Hit::ScrollbarThumb(PaneId::Sidebar),
+            Hit::DropdownRow(0),
+            Hit::ModalConfirm,
+        ] {
+            assert_eq!(
+                PointerShape::for_hit(Some(&hit)),
+                PointerShape::Pointer,
+                "{hit:?} should be Pointer"
+            );
+        }
+    }
+
+    #[test]
+    fn pointer_shape_as_str_matches_kitty_names() {
+        assert_eq!(PointerShape::Default.as_str(), "default");
+        assert_eq!(PointerShape::Pointer.as_str(), "pointer");
+        assert_eq!(PointerShape::Text.as_str(), "text");
     }
 
     #[test]

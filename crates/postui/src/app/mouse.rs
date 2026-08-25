@@ -277,6 +277,23 @@ impl App {
         }
     }
 
+    /// Recomputes the pointer shape (task 8d) from `self.hovered` — the same
+    /// hover state `ui::draw` already styles from, so this piggybacks on the
+    /// existing hover-change path rather than running its own hit test.
+    /// Returns the new shape only when it differs from the one last emitted,
+    /// which the caller (main.rs's event loop) writes as a Kitty OSC 22
+    /// escape after the frame draws; `None` means nothing to write this
+    /// frame. Pure aside from updating `last_pointer_shape`, so it's
+    /// testable without a terminal.
+    pub fn pointer_shape_update(&mut self) -> Option<PointerShape> {
+        let shape = PointerShape::for_hit(self.hovered.as_ref());
+        if shape == self.last_pointer_shape {
+            return None;
+        }
+        self.last_pointer_shape = shape;
+        Some(shape)
+    }
+
     /// The scroll state `pane` would draw a scrollbar from right now — the
     /// same [`ScrollbarSpec`] its `draw` builds, so drag math and the drawn
     /// thumb can never disagree. `None` when the pane has nothing scrollable

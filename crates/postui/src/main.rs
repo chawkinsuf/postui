@@ -29,6 +29,7 @@ async fn main() -> anyhow::Result<()> {
     enable_mouse_and_wrap_panic_hook();
 
     let result = run(&mut terminal, cli_root).await;
+    reset_pointer_shape();
     let _ = execute!(
         std::io::stdout(),
         PopKeyboardEnhancementFlags,
@@ -37,6 +38,24 @@ async fn main() -> anyhow::Result<()> {
     );
     ratatui::restore();
     result
+}
+
+/// Writes a Kitty pointer-shape hint (OSC 22, task 8d): `\x1b]22;{shape}\x07`,
+/// BEL-terminated exactly as Textual's own writer uses. Ignored outright by
+/// terminals that don't support the protocol, so this has no fallback path
+/// to maintain.
+fn write_pointer_shape(shape: postui::hit::PointerShape) {
+    use std::io::Write;
+    let _ = write!(std::io::stdout(), "\x1b]22;{}\x07", shape.as_str());
+}
+
+/// Resets the pointer to the terminal's own default shape. Called from the
+/// normal shutdown path and the panic hook, mirroring their existing
+/// `let _ = execute!/write` restore pattern — a crash must not leave a
+/// hand cursor hanging over whatever the terminal shows next.
+fn reset_pointer_shape() {
+    write_pointer_shape(postui::hit::PointerShape::Default);
+    let _ = std::io::Write::flush(&mut std::io::stdout());
 }
 
 /// Enables mouse capture and re-wraps the panic hook `ratatui::init()` just
@@ -73,6 +92,7 @@ fn enable_mouse_and_wrap_panic_hook() {
         // doesn't matter, but doing it up front means every restore that
         // follows is unambiguously outside a synchronized update.
         let _ = execute!(std::io::stdout(), EndSynchronizedUpdate);
+        reset_pointer_shape();
         let _ = execute!(
             std::io::stdout(),
             PopKeyboardEnhancementFlags,
@@ -117,6 +137,14 @@ async fn run(
                 terminal.draw(|frame| {
                     ui::draw(frame, &mut app);
                 })?;
+                // Kitty pointer-shape hint (task 8d): piggybacks on the hover
+                // state `ui::draw` just styled from, and only writes when it
+                // changed. Harmless inside the synchronized-update window —
+                // OSC 22 has no effect on layout — and keeping it there means
+                // the hint lands atomically with the frame it matches.
+                if let Some(shape) = app.pointer_shape_update() {
+                    write_pointer_shape(shape);
+                }
                 Ok(())
             })??;
             redraw = false;
