@@ -20,6 +20,12 @@ use ratatui::Frame;
 /// instead, while the header and footer stay exactly as they are on
 /// `Main`.
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    // Sampled once and threaded through the whole frame -- matching
+    // `DrawCtx::now`'s own documented invariant -- rather than resampling
+    // `Instant::now()` at each of this function's several draw calls,
+    // which could otherwise see an animation at very slightly different
+    // points within the same frame.
+    let now = std::time::Instant::now();
     let editor_collapsed_to_chrome = app.table_collapsed
         && matches!(
             app.editor.active_tab,
@@ -32,7 +38,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // value at `now` is what actually drives the row split — falling back
     // to the settled bool (as a plain 0.0/1.0) only for the very first
     // frame, before `update` has ever run and started the anim.
-    let now = std::time::Instant::now();
     let collapse_t = app.anims.value_or(
         crate::anim::AnimKey::PaneCollapse,
         now,
@@ -80,7 +85,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             let dragged_pane = app.drag.as_ref().map(|d| d.pane);
             // Destructured so each component can be borrowed mutably
             // alongside the shared theme reference its DrawCtx holds.
-            let now = std::time::Instant::now();
             let App {
                 theme,
                 sidebar,
@@ -131,7 +135,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 hovered: app.hovered.as_ref(),
                 dragging: false,
                 anims: &app.anims,
-                now: std::time::Instant::now(),
+                now,
             };
             crate::components::testbed::draw_testbed(frame, layout.body, &ctx);
         }
@@ -145,13 +149,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         &mut hits,
         app.hovered.as_ref(),
     );
-    app.toasts.draw(
-        frame,
-        frame.area(),
-        &app.theme,
-        &app.anims,
-        std::time::Instant::now(),
-    );
+    app.toasts
+        .draw(frame, frame.area(), &app.theme, &app.anims, now);
     app.modals.draw(
         frame,
         frame.area(),
@@ -160,7 +159,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         app.hovered.as_ref(),
         &app.keymap,
         &app.anims,
-        std::time::Instant::now(),
+        now,
     );
     app.hits = hits;
 
