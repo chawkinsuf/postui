@@ -116,6 +116,13 @@ impl Toasts {
                 anims.retarget(AnimKey::ToastFade(t.id), 0.0, TOAST_FADE_DUR, now);
             }
         }
+        // Drop the expiring toasts' own `AnimKey::ToastFade(id)` entries
+        // along with the toasts themselves -- otherwise every toast ever
+        // pushed leaves a permanently-done (but never-removed) `Anim` in
+        // `Anims`'s map for the life of the process.
+        for t in self.entries.iter().filter(|t| t.remaining_ticks == 0) {
+            anims.clear(AnimKey::ToastFade(t.id));
+        }
         self.entries.retain(|t| t.remaining_ticks > 0);
         was_visible
     }
@@ -235,6 +242,48 @@ mod tests {
         assert!(!t.is_empty(), "alive one tick before expiry");
         t.on_tick(&mut anims, Instant::now());
         assert!(t.is_empty(), "expired at lifetime");
+    }
+
+    /// A toast's `AnimKey::ToastFade(id)` entry must not outlive the toast
+    /// itself -- `on_tick` must drop it (not just leave it `done`) the same
+    /// tick the toast expires, so `Anims`'s map doesn't grow unbounded over
+    /// a long-running app's lifetime.
+    #[test]
+    fn expiring_a_toast_clears_its_anim_entry() {
+        let mut anims = Anims::new(true);
+        let mut t = Toasts::default();
+        t.push("Saved", ToastKind::Success);
+        let now = Instant::now();
+        assert!(
+            anims
+                .value(AnimKey::ToastFade(FIRST_TOAST_ID), now)
+                .is_none(),
+            "start_pending_anims hasn't run yet in this bare-Toasts test"
+        );
+        anims.snap(AnimKey::ToastFade(FIRST_TOAST_ID), 0.0);
+        anims.retarget(
+            AnimKey::ToastFade(FIRST_TOAST_ID),
+            1.0,
+            Duration::from_millis(100),
+            now,
+        );
+        assert!(
+            anims
+                .value(AnimKey::ToastFade(FIRST_TOAST_ID), now)
+                .is_some(),
+            "the anim entry exists before expiry"
+        );
+
+        for _ in 0..TOAST_LIFETIME_TICKS {
+            t.on_tick(&mut anims, now);
+        }
+        assert!(t.is_empty(), "the toast has expired");
+        assert!(
+            anims
+                .value(AnimKey::ToastFade(FIRST_TOAST_ID), now)
+                .is_none(),
+            "the expired toast's anim entry must be cleared, not just left done"
+        );
     }
 
     #[test]
