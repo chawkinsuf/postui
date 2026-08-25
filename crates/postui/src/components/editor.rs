@@ -472,6 +472,44 @@ impl Editor {
         text.is_empty() || postui_core::json::validate(&text).is_ok()
     }
 
+    /// `t`'s tab-strip label text: its name, plus a live entry count for
+    /// Params/Headers/Vars once non-empty (Body never carries a count).
+    /// Shared by [`Self::draw_tab_bar`] and [`Self::tab_strip_spans`] so
+    /// the two can never drift apart on the counts that drive each tab's
+    /// on-screen width.
+    fn tab_label_text(&self, t: EditorTab) -> String {
+        let count = match t {
+            EditorTab::Params => self.params.len(),
+            EditorTab::Headers => self.headers.len(),
+            EditorTab::Vars => self.variables.len(),
+            EditorTab::Body => 0,
+        };
+        if count > 0 {
+            format!("{} · {count}", t.label())
+        } else {
+            t.label().to_string()
+        }
+    }
+
+    /// The tab strip's current per-tab spans (see [`crate::paint::TabStrip::spans`]),
+    /// in [`DRAW_ORDER`]. Used by `app.rs` to compute where the underline
+    /// animation (Task 10) should retarget to on a tab switch, without
+    /// needing a `Theme` — badge *presence* (Body only) affects a span's
+    /// width, but badge color never does, so this stands in a fixed color
+    /// where [`Self::draw_tab_bar`] uses the real validity color.
+    pub fn tab_strip_spans(&self) -> Vec<(u16, u16)> {
+        let labels: Vec<(String, Option<(char, ratatui::style::Color)>)> = DRAW_ORDER
+            .iter()
+            .map(|t| {
+                let label = self.tab_label_text(*t);
+                let badge =
+                    matches!(t, EditorTab::Body).then_some(('_', ratatui::style::Color::Reset));
+                (label, badge)
+            })
+            .collect();
+        crate::paint::TabStrip::spans(&labels)
+    }
+
     /// The body buffer's scroll state, as of the last draw. `None` unless the
     /// Body tab is showing (the other tabs have nothing scrollable wired up).
     ///
@@ -1661,17 +1699,7 @@ impl Editor {
         let tab_strip: Vec<(String, Option<(char, ratatui::style::Color)>)> = tabs
             .iter()
             .map(|t| {
-                let count = match t {
-                    EditorTab::Params => self.params.len(),
-                    EditorTab::Headers => self.headers.len(),
-                    EditorTab::Vars => self.variables.len(),
-                    EditorTab::Body => 0,
-                };
-                let label = if count > 0 {
-                    format!("{} · {count}", t.label())
-                } else {
-                    t.label().to_string()
-                };
+                let label = self.tab_label_text(*t);
                 let badge = match t {
                     EditorTab::Body => Some(if self.body_is_valid() {
                         ('✓', theme.success)
@@ -1692,10 +1720,26 @@ impl Editor {
 
         let strip_area = Rect { height: 2, ..area };
         let spans = crate::paint::TabStrip::spans(&tab_strip);
-        let underline = spans
+        let (static_left, static_width) = spans
             .get(active)
             .map(|(x, w)| (*x as f32, *w as f32))
             .unwrap_or((0.0, 0.0));
+        // Independently animated left/right edges (Task 10): each key falls
+        // back to this tab's own static edge when untracked, so the very
+        // first draw of the strip snaps straight there with no slide-in
+        // from zero — `app.rs`'s tab-switch handling is what actually sets
+        // these keys in motion on a later switch.
+        let left = ctx.anims.value_or(
+            crate::anim::AnimKey::TabUnderline(crate::anim::StripId::EditorTabs),
+            ctx.now,
+            static_left,
+        );
+        let right = ctx.anims.value_or(
+            crate::anim::AnimKey::TabUnderlineWidth(crate::anim::StripId::EditorTabs),
+            ctx.now,
+            static_left + static_width,
+        );
+        let underline = (left, right - left);
         let rects = {
             let buf = frame.buffer_mut();
             crate::paint::TabStrip {

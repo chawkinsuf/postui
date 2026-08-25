@@ -8,6 +8,39 @@ pub fn ease_out_cubic(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
 }
 
+/// Symmetric in-out cubic: slow start, fast middle, slow finish. Used only
+/// by the tab-strip underline slide (Task 10, controller amendment 2) — the
+/// reference app's stretchy leading-edge motion reads better eased in-out
+/// than the default ease-out every other animation uses.
+pub fn ease_in_out_cubic(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    if t < 0.5 {
+        4.0 * t * t * t
+    } else {
+        1.0 - (-2.0 * t + 2.0).powi(3) / 2.0
+    }
+}
+
+/// Which easing curve an [`Anim`] eases through. Defaults to `OutCubic`
+/// (every existing call site, via [`Anims::retarget`]); `InOutCubic` is
+/// opt-in via [`Anims::retarget_with`] — currently only the tab-strip
+/// underline slide (Task 10).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Easing {
+    #[default]
+    OutCubic,
+    InOutCubic,
+}
+
+impl Easing {
+    fn apply(self, t: f32) -> f32 {
+        match self {
+            Easing::OutCubic => ease_out_cubic(t),
+            Easing::InOutCubic => ease_in_out_cubic(t),
+        }
+    }
+}
+
 /// Identifies which horizontal tab strip an animation belongs to.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum StripId {
@@ -29,7 +62,17 @@ pub enum ListId {
 /// Identifies a single animated value tracked by [`Anims`].
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum AnimKey {
+    /// The tab strip's accent segment LEFT edge, in fractional columns
+    /// relative to the strip's own origin. Task 10 controller amendment:
+    /// originally planned as a `(left, width)` pair, reinterpreted as two
+    /// independently animated edges — paired with `TabUnderlineWidth`,
+    /// which (despite its name, kept for continuity with the original
+    /// plan) now holds the segment's RIGHT edge, not a width. Animating
+    /// the edges independently lets the segment stretch instead of just
+    /// translating, reproducing the reference app's leading-edge slide.
     TabUnderline(StripId),
+    /// The tab strip's accent segment RIGHT edge — see [`AnimKey::TabUnderline`]'s
+    /// doc comment for the reinterpretation.
     TabUnderlineWidth(StripId),
     ListTravel(ListId),
     Hover,
@@ -46,6 +89,7 @@ struct Anim {
     target: f32,
     started: Instant,
     dur: Duration,
+    easing: Easing,
 }
 
 impl Anim {
@@ -54,7 +98,7 @@ impl Anim {
             return self.target;
         }
         let t = now.saturating_duration_since(self.started).as_secs_f32() / self.dur.as_secs_f32();
-        self.start + (self.target - self.start) * ease_out_cubic(t)
+        self.start + (self.target - self.start) * self.easing.apply(t)
     }
     fn done(&self, now: Instant) -> bool {
         now.saturating_duration_since(self.started) >= self.dur
@@ -87,6 +131,7 @@ impl Anims {
                 target: value,
                 started: Instant::now() - Duration::from_secs(1),
                 dur: Duration::ZERO,
+                easing: Easing::OutCubic,
             },
         );
     }
@@ -94,7 +139,23 @@ impl Anims {
     /// Starts `key` easing toward `target` over `dur`, beginning from its
     /// current value at `now` (so reversing mid-flight doesn't jump). When
     /// animations are disabled, or `dur` is zero, the value jumps instantly.
+    /// Always eases out-cubic; use [`Anims::retarget_with`] for a different
+    /// curve.
     pub fn retarget(&mut self, key: AnimKey, target: f32, dur: Duration, now: Instant) {
+        self.retarget_with(key, target, dur, now, Easing::OutCubic);
+    }
+
+    /// Like [`Anims::retarget`], but with an explicit easing curve. Used by
+    /// the tab-strip underline slide (Task 10) for its `InOutCubic` motion;
+    /// every other call site keeps using `retarget`'s default `OutCubic`.
+    pub fn retarget_with(
+        &mut self,
+        key: AnimKey,
+        target: f32,
+        dur: Duration,
+        now: Instant,
+        easing: Easing,
+    ) {
         let start = self.value(key, now).unwrap_or(target);
         let dur = if self.enabled { dur } else { Duration::ZERO };
         self.entries.insert(
@@ -104,6 +165,7 @@ impl Anims {
                 target,
                 started: now,
                 dur,
+                easing,
             },
         );
     }
@@ -225,6 +287,47 @@ mod tests {
         assert!(
             !a.is_done(AnimKey::Hover, done_at),
             "the hold itself is still active until its own duration elapses"
+        );
+    }
+
+    #[test]
+    fn ease_in_out_cubic_is_symmetric_and_slow_at_both_ends() {
+        assert_eq!(ease_in_out_cubic(0.0), 0.0);
+        assert_eq!(ease_in_out_cubic(1.0), 1.0);
+        assert_eq!(ease_in_out_cubic(0.5), 0.5, "symmetric at the midpoint");
+        // Slow start: at t=0.25 the eased value is well under a linear 0.25.
+        let quarter = ease_in_out_cubic(0.25);
+        assert!(quarter < 0.25, "slow start, got {quarter}");
+        // Slow finish: at t=0.75 the eased value is well over a linear 0.75.
+        let three_quarter = ease_in_out_cubic(0.75);
+        assert!(three_quarter > 0.75, "slow finish, got {three_quarter}");
+        // Clamped outside [0, 1].
+        assert_eq!(ease_in_out_cubic(-1.0), 0.0);
+        assert_eq!(ease_in_out_cubic(2.0), 1.0);
+    }
+
+    #[test]
+    fn retarget_with_uses_the_given_easing_curve() {
+        let t0 = Instant::now();
+        let mut a = Anims::new(true);
+        a.snap(AnimKey::Hover, 0.0);
+        a.retarget_with(
+            AnimKey::Hover,
+            1.0,
+            Duration::from_millis(100),
+            t0,
+            Easing::InOutCubic,
+        );
+        let quarter = a
+            .value(AnimKey::Hover, t0 + Duration::from_millis(25))
+            .unwrap();
+        assert!(
+            quarter < 0.25,
+            "in-out cubic starts slow, got {quarter} at t=0.25"
+        );
+        assert_eq!(
+            a.value(AnimKey::Hover, t0 + Duration::from_millis(100)),
+            Some(1.0)
         );
     }
 

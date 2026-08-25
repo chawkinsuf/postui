@@ -1104,16 +1104,7 @@ fn draw_header_strip(
 
     // Row 1 (right) + row 2 (its underline): the response tabs,
     // right-aligned.
-    let mut tabs: Vec<(String, Option<(char, ratatui::style::Color)>)> = Vec::new();
-    let mut modes: Vec<ViewMode> = Vec::new();
-    if view.has_tree_view() {
-        tabs.push(("Tree".to_string(), None));
-        modes.push(ViewMode::Pretty);
-    }
-    tabs.push(("Raw".to_string(), None));
-    modes.push(ViewMode::Raw);
-    tabs.push(("Headers".to_string(), None));
-    modes.push(ViewMode::Headers);
+    let (tabs, modes) = response_tab_defs(view);
 
     let tabs_width = tabstrip_width(&tabs);
     let tabs_x = area.right().saturating_sub(tabs_width).max(area.x);
@@ -1124,10 +1115,26 @@ fn draw_header_strip(
     };
     let tabstrip_area = Rect::new(tabs_x, row1_y, tabs_width, 2);
     let spans = crate::paint::TabStrip::spans(&tabs);
-    let underline = spans
+    let (static_left, static_width) = spans
         .get(active)
         .map(|(x, w)| (*x as f32, *w as f32))
         .unwrap_or((0.0, 0.0));
+    // Independently animated left/right edges (Task 10): each key falls
+    // back to this tab's own static edge when untracked, so the very first
+    // draw of the strip snaps straight there with no slide-in from zero —
+    // `app.rs`'s `Action::ResponseViewMode` handling is what actually sets
+    // these keys in motion on a later switch.
+    let left = ctx.anims.value_or(
+        crate::anim::AnimKey::TabUnderline(crate::anim::StripId::ResponseTabs),
+        ctx.now,
+        static_left,
+    );
+    let right = ctx.anims.value_or(
+        crate::anim::AnimKey::TabUnderlineWidth(crate::anim::StripId::ResponseTabs),
+        ctx.now,
+        static_left + static_width,
+    );
+    let underline = (left, right - left);
     let rects = crate::paint::TabStrip {
         tabs: &tabs,
         active,
@@ -1141,6 +1148,29 @@ fn draw_header_strip(
     for (rect, mode) in rects.into_iter().zip(modes) {
         hits.register(rect, crate::hit::Hit::ResponseTab(mode));
     }
+}
+
+/// A [`crate::paint::TabStrip::tabs`]-shaped label list: `(text, badge)`
+/// per tab, where a badge is a trailing colored glyph.
+type TabLabels = Vec<(String, Option<(char, ratatui::style::Color)>)>;
+
+/// The response tab strip's labels and the [`ViewMode`] each one selects,
+/// in on-screen order: `Tree` (only while `view.has_tree_view()`), `Raw`,
+/// `Headers`. Shared by [`draw_header_strip`] and `app.rs`'s tab-switch
+/// handling (Task 10), so the underline animation's retarget geometry can
+/// never drift from what's actually painted.
+pub fn response_tab_defs(view: &ReadyView) -> (TabLabels, Vec<ViewMode>) {
+    let mut tabs: TabLabels = Vec::new();
+    let mut modes: Vec<ViewMode> = Vec::new();
+    if view.has_tree_view() {
+        tabs.push(("Tree".to_string(), None));
+        modes.push(ViewMode::Pretty);
+    }
+    tabs.push(("Raw".to_string(), None));
+    modes.push(ViewMode::Raw);
+    tabs.push(("Headers".to_string(), None));
+    modes.push(ViewMode::Headers);
+    (tabs, modes)
 }
 
 /// The horizontal span [`crate::paint::TabStrip::paint`] occupies for

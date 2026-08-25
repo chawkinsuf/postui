@@ -1,9 +1,9 @@
 use crate::action::{Action, CopyTarget};
-use crate::anim::{AnimKey, Anims, ListId};
+use crate::anim::{AnimKey, Anims, Easing, ListId, StripId};
 use crate::components::editor::{Editor, EditorTab, SubFocus};
 use crate::components::line_input::LineInput;
 use crate::components::modal::{Modal, ModalResult, ModalStack, PromptKind};
-use crate::components::response::{ResponseState, SYNC_PRETTY_BYTES};
+use crate::components::response::{ResponseState, SYNC_PRETTY_BYTES, ViewMode};
 use crate::components::sidebar::Row;
 use crate::components::toast::{ToastKind, Toasts};
 use crate::components::varmanager::{
@@ -575,6 +575,16 @@ impl App {
         app
     }
 
+    /// Like [`Self::new_for_test`], but with `self.anims` freshly built as
+    /// `Anims::new(enabled)` — needed by tests that exercise an animated
+    /// retarget (e.g. the tab-underline slide, Task 10) with animations
+    /// deliberately on, regardless of `UiSettings::default().animations`.
+    pub fn new_for_test_with_anims(enabled: bool) -> Self {
+        let mut app = Self::new_for_test();
+        app.anims = Anims::new(enabled);
+        app
+    }
+
     /// Swaps in a test-configured clipboard (e.g. `Clipboard::new_for_test`)
     /// so copy tests can exercise the cmd/OSC-52 tiers deterministically.
     /// Gated on the `test-util` feature (see `Clipboard::new_for_test`) so
@@ -873,7 +883,9 @@ impl App {
                 true
             }
             Action::ResponseViewMode(mode) => {
+                let prev_mode = self.session.response.view().map(|v| v.mode);
                 self.session.response.set_view_mode(mode);
+                self.retarget_response_tab_underline(prev_mode);
                 true
             }
             Action::OpenResponseSearch => {
@@ -950,18 +962,22 @@ impl App {
                 // Leaving a tab commits whatever cell was being typed — the
                 // reset that follows would otherwise drop it silently.
                 self.commit_table_edit();
+                let prev = self.editor.active_tab;
                 self.editor.active_tab = EditorTab::from_index(i);
                 self.editor.table.reset();
+                self.retarget_editor_tab_underline(prev);
                 true
             }
             Action::EditorTabCycle(delta) => {
                 // Cycles the on-screen order (Params → Headers → Vars →
                 // Body), not `EditorTab::index()`'s alt+1/2/3 slot numbers.
                 self.commit_table_edit();
+                let prev = self.editor.active_tab;
                 let cur = self.editor.active_tab.draw_position() as i8;
                 let next = (cur + delta).rem_euclid(4);
                 self.editor.active_tab = EditorTab::from_draw_position(next as usize);
                 self.editor.table.reset();
+                self.retarget_editor_tab_underline(prev);
                 true
             }
             Action::CycleMethod => {
@@ -4779,6 +4795,80 @@ impl App {
         }
         self.anims
             .retarget(key, cur as f32, self.ui_settings.anim_ms.list_travel, now);
+    }
+
+    /// Retargets `AnimKey::TabUnderline`/`TabUnderlineWidth(EditorTabs)`
+    /// (Task 10: the strip's independent left/right edges — see the
+    /// reinterpretation note on `AnimKey::TabUnderline`) from `prev`'s span
+    /// toward the now-active tab's span, over the config-tunable
+    /// `ui_settings.anim_ms.tab_slide` (250ms by default) with in-out-cubic
+    /// easing. Called from both `Action::EditorTabSelect` and
+    /// `Action::EditorTabCycle` — the single place both keyboard cycling
+    /// and the click dispatch in `app/mouse.rs` funnel through — right
+    /// after `self.editor.active_tab` has already moved to the new tab, so
+    /// `prev` is the caller's only way to know where the strip glides from.
+    fn retarget_editor_tab_underline(&mut self, prev: EditorTab) {
+        let spans = self.editor.tab_strip_spans();
+        let now = Instant::now();
+        let left_key = AnimKey::TabUnderline(StripId::EditorTabs);
+        let right_key = AnimKey::TabUnderlineWidth(StripId::EditorTabs);
+        // An untracked pair has no "current position" to chain from (e.g.
+        // the very first switch of the session) — seed both edges at
+        // `prev`'s span first, exactly like `retarget_sidebar_travel` seeds
+        // `ListTravel`; a move already in flight instead continues smoothly
+        // from wherever it actually is.
+        if self.anims.value(left_key, now).is_none()
+            && let Some((x, w)) = spans.get(prev.draw_position())
+        {
+            self.anims.snap(left_key, *x as f32);
+            self.anims.snap(right_key, (*x + *w) as f32);
+        }
+        let Some((x, w)) = spans.get(self.editor.active_tab.draw_position()) else {
+            return;
+        };
+        let dur = self.ui_settings.anim_ms.tab_slide;
+        self.anims
+            .retarget_with(left_key, *x as f32, dur, now, Easing::InOutCubic);
+        self.anims
+            .retarget_with(right_key, (*x + *w) as f32, dur, now, Easing::InOutCubic);
+    }
+
+    /// Like [`Self::retarget_editor_tab_underline`], but for
+    /// `AnimKey::TabUnderline`/`TabUnderlineWidth(ResponseTabs)`, called
+    /// from `Action::ResponseViewMode` (the single action both keyboard
+    /// switching and `app/mouse.rs`'s click dispatch on `Hit::ResponseTab`
+    /// funnel through). `prev_mode` is `None` either pre-response (nothing
+    /// to glide from) or on the very first response of a session; either
+    /// way the untracked-pair seed below falls back to the newly active
+    /// tab's own span, so the strip simply snaps rather than sliding from
+    /// nowhere.
+    fn retarget_response_tab_underline(&mut self, prev_mode: Option<ViewMode>) {
+        let Some(view) = self.session.response.view() else {
+            return;
+        };
+        let (tabs, modes) = crate::components::response::response_tab_defs(view);
+        let spans = crate::paint::TabStrip::spans(&tabs);
+        let active_idx = modes.iter().position(|m| *m == view.mode).unwrap_or(0);
+        let now = Instant::now();
+        let left_key = AnimKey::TabUnderline(StripId::ResponseTabs);
+        let right_key = AnimKey::TabUnderlineWidth(StripId::ResponseTabs);
+        if self.anims.value(left_key, now).is_none() {
+            let prev_idx = prev_mode
+                .and_then(|m| modes.iter().position(|mm| *mm == m))
+                .unwrap_or(active_idx);
+            if let Some((x, w)) = spans.get(prev_idx) {
+                self.anims.snap(left_key, *x as f32);
+                self.anims.snap(right_key, (*x + *w) as f32);
+            }
+        }
+        let Some((x, w)) = spans.get(active_idx) else {
+            return;
+        };
+        let dur = self.ui_settings.anim_ms.tab_slide;
+        self.anims
+            .retarget_with(left_key, *x as f32, dur, now, Easing::InOutCubic);
+        self.anims
+            .retarget_with(right_key, (*x + *w) as f32, dur, now, Easing::InOutCubic);
     }
 
     /// Sets `sidebar.selected` to row `i` and snaps

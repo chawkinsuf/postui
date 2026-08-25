@@ -1084,6 +1084,45 @@ fn switching_editor_tabs_commits_the_cell_under_edit() {
     assert!(app.editor.table.editing.is_none());
 }
 
+/// Task 10: switching editor tabs (Params -> Headers) retargets the
+/// underline slide's independent left/right edges toward the new tab's
+/// span, easing over `ui_settings.anim_ms.tab_slide`.
+#[test]
+fn switching_editor_tabs_retargets_the_underline_slide() {
+    let mut app = App::new_for_test_with_anims(true);
+    assert_eq!(app.editor.active_tab, EditorTab::Params);
+    let left_key = AnimKey::TabUnderline(StripId::EditorTabs);
+    let right_key = AnimKey::TabUnderlineWidth(StripId::EditorTabs);
+    let before = Instant::now();
+    assert!(
+        app.anims.value(left_key, before).is_none(),
+        "untouched before any switch"
+    );
+
+    app.update(Action::EditorTabSelect(EditorTab::Headers.index()));
+    assert_eq!(app.editor.active_tab, EditorTab::Headers);
+
+    let now = Instant::now();
+    assert!(
+        app.anims.active(now),
+        "the underline is easing right after the switch"
+    );
+
+    let spans = app.editor.tab_strip_spans();
+    let (x, w) = spans[EditorTab::Headers.draw_position()];
+    let done_at = now + app.ui_settings.anim_ms.tab_slide + Duration::from_millis(5);
+    assert_eq!(
+        app.anims.value(left_key, done_at),
+        Some(x as f32),
+        "left edge settles on the Headers span's left edge"
+    );
+    assert_eq!(
+        app.anims.value(right_key, done_at),
+        Some((x + w) as f32),
+        "right edge settles on the Headers span's right edge"
+    );
+}
+
 #[test]
 fn up_from_a_cell_under_edit_commits_and_never_desyncs_the_focus() {
     let mut app = app_with_one_param();
