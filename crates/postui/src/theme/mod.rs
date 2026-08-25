@@ -127,7 +127,7 @@ impl Theme {
         // Zebra stripe: same unconditional-offset family as `edge_light`
         // (an absolute lightening relative to its base, regardless of theme
         // polarity), so it stays lighter than `panel` in both themes.
-        let zebra_alt = lift(panel, 0.02);
+        let zebra_alt = lift(panel, 0.045);
         // Hairline divider: same unconditional-offset family as `edge_dark`
         // (an absolute darkening relative to its base, regardless of theme
         // polarity), just a subtler step than a full bevel edge.
