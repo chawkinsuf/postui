@@ -460,7 +460,6 @@ impl Component for Sidebar {
             );
         }
 
-        let zebra = self.zebra_parities();
         let hover_t = ctx.hover_t();
 
         // The open request's band crossfade: while `ListTravel` is still
@@ -557,7 +556,7 @@ impl Component for Sidebar {
             // the bar keeps its half-cell width through the whole fade.
             let row_fill = if let Some(a) = band_alpha {
                 let base =
-                    Self::resolve_fill(theme, RowHighlight::None, zebra[i], theme.panel, hover_t);
+                    Self::resolve_fill(theme, RowHighlight::None, theme.panel, hover_t);
                 let blended = crate::theme::mix(base, theme.selection, a);
                 fill(
                     buf,
@@ -572,7 +571,7 @@ impl Component for Sidebar {
             } else {
                 ListRow {
                     highlight,
-                    zebra: zebra[i],
+                    zebra: None,
                 }
                 .paint(
                     buf,
@@ -583,7 +582,7 @@ impl Component for Sidebar {
                     hover_t,
                     theme,
                 );
-                Self::resolve_fill(theme, highlight, zebra[i], theme.panel, hover_t)
+                Self::resolve_fill(theme, highlight, theme.panel, hover_t)
             };
 
             self.paint_row(buf, row, text_row, list_area, row_fill, is_open, theme);
@@ -641,51 +640,14 @@ impl Sidebar {
         }
     }
 
-    /// One zebra-parity slot per row in `self.rows`: `Some(bool)` for a
-    /// request row (alternating within its group), `None` for a folder row
-    /// (folder rows keep no zebra fill of their own — they're the block
-    /// separators). The parity counter restarts at 0 every time a
-    /// top-level (depth 0) folder row is crossed, so each top-level
-    /// folder's expanded subtree reads as its own zebra-striped group;
-    /// nested folder rows don't reset it, since they're inside the same
-    /// group as their siblings.
-    fn zebra_parities(&self) -> Vec<Option<bool>> {
-        let mut out = Vec::with_capacity(self.rows.len());
-        let mut counter = 0usize;
-        for row in &self.rows {
-            match row {
-                Row::Folder { depth: 0, .. } => {
-                    counter = 0;
-                    out.push(None);
-                }
-                Row::Folder { .. } => out.push(None),
-                Row::Request { .. } => {
-                    out.push(Some(counter % 2 == 1));
-                    counter += 1;
-                }
-            }
-        }
-        out
-    }
-
     /// Replicates [`ListRow::paint`]'s own fill computation, so a row
     /// painted through it can be asked separately what color its content
     /// (text) should sit on — needed because `paint_row` sits *outside*
     /// `ListRow`, painted as a second pass on top of it.
-    fn resolve_fill(
-        theme: &Theme,
-        highlight: RowHighlight,
-        zebra: Option<bool>,
-        base: Color,
-        hover_t: f32,
-    ) -> Color {
-        let zebra_fill = match zebra {
-            Some(true) => theme.zebra_alt,
-            Some(false) | None => base,
-        };
+    fn resolve_fill(theme: &Theme, highlight: RowHighlight, base: Color, hover_t: f32) -> Color {
         match highlight {
-            RowHighlight::None => zebra_fill,
-            RowHighlight::Hover => crate::theme::mix(zebra_fill, theme.control, hover_t),
+            RowHighlight::None => base,
+            RowHighlight::Hover => crate::theme::mix(base, theme.control, hover_t),
             RowHighlight::Cursor => theme.control_hover,
             RowHighlight::Selected => theme.selection,
         }
@@ -1354,10 +1316,9 @@ mod tests {
     #[test]
     fn request_row_paints_a_method_tag() {
         let mut s = Sidebar::default();
-        // Two rows, neither selected/hovered/open: row 0 sits on the base
-        // fill (zebra parity false), row 1 on the zebra stripe (parity
-        // true) — check the tag's colors against the surface it actually
-        // sits on.
+        // Two rows, neither selected/hovered/open: both sit on the flat
+        // panel fill (the request list keeps no zebra striping) — check
+        // the tag's colors against the surface it actually sits on.
         s.refresh(
             vec![
                 RequestListing {
@@ -1394,8 +1355,8 @@ mod tests {
             "tag text is colored by method, not filled"
         );
         assert_eq!(
-            tag_cell.bg, theme.zebra_alt,
-            "tag sits directly on the row's own (zebra) fill"
+            tag_cell.bg, theme.panel,
+            "tag sits directly on the row's flat panel fill"
         );
     }
 
@@ -1423,31 +1384,6 @@ mod tests {
         assert_eq!(Sidebar::visible_rows(7), 7);
         assert_eq!(Sidebar::visible_rows(0), 0);
         assert_eq!(Sidebar::visible_rows(1), 1);
-    }
-
-    #[test]
-    fn zebra_parity_restarts_at_each_top_level_folder_and_skips_folder_rows() {
-        let mut s = Sidebar::default();
-        // top-level requests "a","b","c" (parity false,true,false), then a
-        // top-level folder "grp" (no zebra of its own) whose two expanded
-        // children restart the parity at false.
-        s.refresh(
-            listing(&["a", "b", "c", "grp/x", "grp/y"]),
-            &expanded(&["grp"]),
-        );
-        let zebra = s.zebra_parities();
-        // rows: [a, b, c, grp(folder), grp/x, grp/y]
-        assert_eq!(
-            zebra,
-            vec![
-                Some(false), // a
-                Some(true),  // b
-                Some(false), // c
-                None,        // grp (folder, no zebra of its own)
-                Some(false), // grp/x — restarted, not continuing c's parity
-                Some(true),  // grp/y
-            ]
-        );
     }
 
     #[test]
@@ -1531,7 +1467,6 @@ mod tests {
             let bg = buf[(r.x + r.width - 2, r.y)].bg;
             assert_ne!(bg, theme.selection, "mid-fade fill is not full strength");
             assert_ne!(bg, theme.panel, "mid-fade fill is not the resting surface");
-            assert_ne!(bg, theme.zebra_alt, "mid-fade fill is not the zebra surface");
         }
         // No fractional-height glyphs anywhere in the list's bar column
         // (three rows: "a", "b", "c").
