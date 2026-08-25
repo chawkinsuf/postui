@@ -178,12 +178,14 @@ pub enum PointerShape {
     /// through — buttons, tabs, chips, rows, cells, scrollbars, dropdown
     /// rows.
     Pointer,
-    /// The I-beam cursor: free-text entry surfaces. Only `UrlBar` and
-    /// `BodyEditor` qualify — both are cleanly distinguishable `Hit`
-    /// variants dedicated to placing a text caret, unlike the in-place
-    /// table/form cell edits (`TableCell`, `VmFormField`, `VmEntryCell`),
-    /// which are first a *click* to select/open before any typing starts
-    /// and so stay `Pointer`.
+    /// The I-beam cursor: surfaces where a click places a text caret or
+    /// anchors a text selection. `UrlBar` and `BodyEditor` (free-text
+    /// entry), plus the response pane's selectable content — its bare
+    /// background (`Pane(Response)`, the Raw/Headers views) and the Pretty
+    /// view's `JsonRow` lines, whose clicks all anchor a selection sweep.
+    /// The in-place table/form cell edits (`TableCell`, `VmFormField`,
+    /// `VmEntryCell`) are first a *click* to select/open before any typing
+    /// starts and so stay `Pointer`.
     Text,
 }
 
@@ -206,7 +208,10 @@ impl PointerShape {
     pub fn for_hit(hit: Option<&Hit>) -> Self {
         match hit {
             None => PointerShape::Default,
-            Some(Hit::UrlBar | Hit::BodyEditor) => PointerShape::Text,
+            Some(Hit::UrlBar | Hit::BodyEditor | Hit::JsonRow(_)) => PointerShape::Text,
+            // The response pane's bare content is selectable text (a click
+            // anchors a selection sweep), so it I-beams like the editors.
+            Some(Hit::Pane(PaneId::Response)) => PointerShape::Text,
             Some(Hit::Pane(_) | Hit::ModalOutside | Hit::ModalBody) => PointerShape::Default,
             Some(_) => PointerShape::Pointer,
         }
@@ -597,6 +602,17 @@ mod tests {
         );
         assert_eq!(
             PointerShape::for_hit(Some(&Hit::BodyEditor)),
+            PointerShape::Text
+        );
+        // The response pane's selectable content: bare background
+        // (Raw/Headers) and the Pretty view's rows — a click on either
+        // anchors a selection sweep, so both I-beam.
+        assert_eq!(
+            PointerShape::for_hit(Some(&Hit::Pane(PaneId::Response))),
+            PointerShape::Text
+        );
+        assert_eq!(
+            PointerShape::for_hit(Some(&Hit::JsonRow(3))),
             PointerShape::Text
         );
     }
