@@ -4269,19 +4269,21 @@ impl App {
     }
 
     /// Starts the hover fade over from 0: snaps `AnimKey::Hover` to 0 and
-    /// retargets it to 1 over 70ms. Called whenever `self.hovered`'s hit
+    /// retargets it to 1 over `ui_settings.anim_ms.hover` (70ms by
+    /// default, config-tunable). Called whenever `self.hovered`'s hit
     /// *changes* (see `app/mouse.rs`), so the newly hovered control's fill
     /// eases in rather than jumping.
     pub(crate) fn begin_hover_fade(&mut self) {
         let now = Instant::now();
         self.anims.snap(AnimKey::Hover, 0.0);
         self.anims
-            .retarget(AnimKey::Hover, 1.0, Duration::from_millis(70), now);
+            .retarget(AnimKey::Hover, 1.0, self.ui_settings.anim_ms.hover, now);
     }
 
     /// Starts the focus fade over from 0: snaps `AnimKey::FocusFade` to 0
-    /// and retargets it to 1 over 90ms. Called wherever keyboard focus
-    /// actually moves onto a control the address bar animates (today, just
+    /// and retargets it to 1 over `ui_settings.anim_ms.focus` (90ms by
+    /// default, config-tunable). Called wherever keyboard focus actually
+    /// moves onto a control the address bar animates (today, just
     /// `Action::FocusUrl` — the single entry point both the URL keyboard
     /// shortcut and clicking `Hit::UrlBar` go through), so the newly
     /// focused control's lifted fill eases in rather than jumping.
@@ -4289,7 +4291,7 @@ impl App {
         let now = Instant::now();
         self.anims.snap(AnimKey::FocusFade, 0.0);
         self.anims
-            .retarget(AnimKey::FocusFade, 1.0, Duration::from_millis(90), now);
+            .retarget(AnimKey::FocusFade, 1.0, self.ui_settings.anim_ms.focus, now);
     }
 
     /// Drives every looping motion demo on the hidden testbed screen
@@ -4353,25 +4355,32 @@ impl App {
             now,
         );
         // Send breathe: the in-flight breathe from the motion catalog, at
-        // its plan duration (700ms per pole) — continuous, no dwell
-        // between poles.
+        // its config-tunable plan duration (700ms/pole by default) —
+        // continuous, no dwell between poles. Not a duration comparison
+        // (there's only ever one copy), so it reads straight from
+        // `ui_settings.anim_ms` rather than a literal, keeping the field
+        // from going dead ahead of the tasks that wire the rest.
         self.drive_testbed_pingpong(
             AnimKey::SendBreathe,
             0.0,
             1.0,
-            Duration::from_millis(700),
+            self.ui_settings.anim_ms.send_breathe,
             Duration::ZERO,
             now,
         );
-        // List travel: the plan duration (100ms/row) alongside one
-        // alternative (250ms/row) — not synced to each other (each has
-        // its own dwell-then-step cadence; a shared clock isn't needed to
-        // compare a *stepped* motion the way it is for a continuous ease).
+        // List travel: the plan duration alongside one alternative
+        // (250ms/row) — not synced to each other (each has its own
+        // dwell-then-step cadence; a shared clock isn't needed to compare
+        // a *stepped* motion the way it is for a continuous ease). The
+        // plan row reads `ui_settings.anim_ms.list_travel` (100ms by
+        // default) rather than a literal, for the same reason as the
+        // breathe demo above; the 250ms alternative stays a literal since
+        // it exists purely to be compared against the plan value.
         let mut plan_dir = self.testbed_list_dir_plan;
         self.tick_testbed_list_travel(
             AnimKey::ListTravel(ListId::Sidebar),
             &mut plan_dir,
-            Duration::from_millis(100),
+            self.ui_settings.anim_ms.list_travel,
             Duration::from_millis(900),
             now,
         );

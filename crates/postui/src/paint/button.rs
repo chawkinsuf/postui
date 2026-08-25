@@ -94,7 +94,13 @@ impl Button<'_> {
             (ButtonKind::Secondary, ControlState::Pressed) => theme.control_pressed,
         };
         let label_fg = match (self.kind, self.state) {
-            (_, ControlState::Disabled) => theme.text_disabled,
+            // Blended toward the control's own fill rather than the flat
+            // `text_disabled` token — reads clearly dimmer than a resting
+            // muted label, matching the same treatment `TextField` uses so
+            // disabled controls read consistently across the app.
+            (_, ControlState::Disabled) => {
+                crate::theme::mix(fill, theme.text_muted, crate::paint::DISABLED_LABEL_MIX)
+            }
             (ButtonKind::Primary, _) => theme.on_accent,
             (ButtonKind::Secondary, _) => theme.text,
         };
@@ -281,7 +287,15 @@ mod tests {
             .paint(f.buffer_mut(), Rect::new(0, 0, 20, 3), theme.page, &theme);
         })
         .unwrap();
-        assert_eq!(buf_cell(&term, 8, 1).fg, theme.text_disabled);
+        assert_eq!(
+            buf_cell(&term, 8, 1).fg,
+            crate::theme::mix(
+                theme.control,
+                theme.text_muted,
+                crate::paint::DISABLED_LABEL_MIX
+            ),
+            "disabled label blends text_muted toward the fill, dimmer than a resting muted label"
+        );
         // Flat: no bevel glyphs at all — top/bottom rows are plain fill.
         let top = buf_cell(&term, 8, 0);
         assert_eq!(top.symbol(), " ");

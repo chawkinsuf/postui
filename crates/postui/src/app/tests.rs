@@ -8556,14 +8556,30 @@ fn testbed_renders_a_bevel_and_an_underline() {
     use ratatui::backend::TestBackend;
 
     let mut app = App::new_for_test_with_testbed(true);
+    let accent = app.theme.accent;
+    let focus_ring = app.theme.focus_ring;
     let backend = TestBackend::new(160, 60);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
-    let content = format!("{:?}", terminal.backend().buffer());
+    let buf = terminal.backend().buffer();
+    let content = format!("{buf:?}");
     assert!(content.contains('▔'), "no bevel glyph found: {content}");
+    // The tab-strip underline segment shares its glyph (`━`, box-drawing
+    // heavy horizontal) with the plain hairline rule under it — distinguished
+    // only by color — so this checks for an accent-colored `━` cell, not
+    // just the glyph's presence, to avoid a false positive on the
+    // hairline.
+    let width = buf.area.width;
+    let height = buf.area.height;
+    let has_accent_underline = (0..height).any(|y| {
+        (0..width).any(|x| {
+            let cell = buf.cell((x, y)).unwrap();
+            cell.symbol() == "━" && (cell.fg == accent || cell.fg == focus_ring)
+        })
+    });
     assert!(
-        content.contains('▂'),
-        "no tab-strip underline glyph found: {content}"
+        has_accent_underline,
+        "no accent-colored tab-strip underline segment found"
     );
 }
 

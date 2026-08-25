@@ -21,6 +21,12 @@ pub use frac::frac_vspan;
 pub use panel::{dim_backdrop, floating_panel};
 pub use rows::{ListRow, PillRow, RowHighlight};
 
+/// How far a Disabled control's label/content blends toward its own fill
+/// from `theme.text_muted` (via `theme::mix`). Shared by [`Button`] and
+/// [`TextField`] so both controls' disabled text reads at the same,
+/// clearly-dimmer-than-resting-muted contrast.
+pub const DISABLED_LABEL_MIX: f32 = 0.55;
+
 /// The interaction state of a painted control. Determines which face/edge
 /// colors a control paints with.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

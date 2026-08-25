@@ -55,13 +55,20 @@ impl TextField<'_> {
         let width = area.width.saturating_sub(2);
 
         let line = if self.state == ControlState::Disabled {
+            // Blended toward the field's own fill rather than the flat
+            // `text_disabled` token — matches `Button`'s disabled label
+            // treatment so both controls' disabled text reads at the same,
+            // clearly dimmer contrast.
+            let disabled_fg = crate::theme::mix(
+                face.fill,
+                theme.text_muted,
+                crate::paint::DISABLED_LABEL_MIX,
+            );
             Line::from(
                 self.content
                     .spans
                     .iter()
-                    .map(|s| {
-                        Span::styled(s.content.clone(), Style::default().fg(theme.text_disabled))
-                    })
+                    .map(|s| Span::styled(s.content.clone(), Style::default().fg(disabled_fg)))
                     .collect::<Vec<_>>(),
             )
         } else {
@@ -189,6 +196,14 @@ mod tests {
         })
         .unwrap();
         assert_eq!(buf_cell(&term, 0, 0).symbol(), " ");
-        assert_eq!(buf_cell(&term, 2, 1).fg, theme.text_disabled);
+        assert_eq!(
+            buf_cell(&term, 2, 1).fg,
+            crate::theme::mix(
+                theme.control,
+                theme.text_muted,
+                crate::paint::DISABLED_LABEL_MIX
+            ),
+            "disabled content blends text_muted toward the fill, matching Button"
+        );
     }
 }

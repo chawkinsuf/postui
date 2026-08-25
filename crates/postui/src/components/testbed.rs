@@ -607,7 +607,7 @@ mod tests {
     use crate::theme::Theme;
     use ratatui::{Terminal, backend::TestBackend};
 
-    /// The bevel-glyph (`▔`) and tab-underline-glyph (`▂`) assertions live
+    /// The bevel-glyph (`▔`) and tab-underline-glyph (`━`, accent-colored)
     /// once, at the app level, in `app::tests::testbed_renders_a_bevel_and_an_underline`
     /// (rendered through `ui::draw`, the real entry point) — this test
     /// covers what that one doesn't: every section is present and labeled
@@ -705,9 +705,13 @@ mod tests {
     }
 
     /// At `t = 0` every underline duration row must actually be painting
-    /// its thin `▂` bar — confirming each row's own `AnimKey` (borrowed
-    /// `ToastFade` ids) is read and painted, not just the shared strip
-    /// geometry underneath.
+    /// its thin accent-colored `━` bar — confirming each row's own
+    /// `AnimKey` (borrowed `ToastFade` ids) is read and painted, not just
+    /// the shared strip geometry underneath. The bar shares its glyph with
+    /// the plain hairline rule under it (Task 8c: box-drawing heavy
+    /// horizontal, distinguished by color only), so a symbol-only scan of
+    /// the Debug dump can no longer tell rows apart — this walks the
+    /// actual cell grid and checks `fg == theme.accent` instead.
     #[test]
     fn every_underline_duration_row_paints_at_rest() {
         let theme = Theme::dark();
@@ -730,23 +734,32 @@ mod tests {
             draw_testbed(f, area, &ctx);
         })
         .unwrap();
-        let content = format!("{:?}", term.backend().buffer());
-        // Each buffer row is its own quoted line in the Debug output (see
-        // `ratatui_core::buffer::Buffer`'s `Debug` impl), so counting
-        // *lines* containing the glyph — not raw character occurrences,
-        // which would overcount a single row's multi-column bar — gives
-        // the number of distinct rows painting one. Restricted to the
-        // MOTION section itself: the earlier TAB STRIP section also
-        // paints `▂` bars of its own (on 2 rows), and this assertion is
-        // specifically about the 4 duration-comparison rows.
-        let motion_start = content
-            .find("MOTION")
+        let buf = term.backend().buffer();
+        let width = buf.area.width;
+        let height = buf.area.height;
+        let row_text = |y: u16| -> String {
+            (0..width)
+                .map(|x| buf.cell((x, y)).unwrap().symbol())
+                .collect()
+        };
+        // Restricted to the MOTION section itself: the earlier TAB STRIP
+        // section also paints accent-colored underline bars (on 2 rows),
+        // and this assertion is specifically about the 4 duration-
+        // comparison rows.
+        let motion_y = (0..height)
+            .find(|&y| row_text(y).contains("MOTION"))
             .expect("MOTION section label missing");
-        let motion_content = &content[motion_start..];
-        let rows_with_bar = motion_content.lines().filter(|l| l.contains('▂')).count();
+        let rows_with_bar = (motion_y..height)
+            .filter(|&y| {
+                (0..width).any(|x| {
+                    let cell = buf.cell((x, y)).unwrap();
+                    cell.symbol() == "━" && cell.fg == theme.accent
+                })
+            })
+            .count();
         assert!(
             rows_with_bar >= 4,
-            "expected a `▂` bar on each of the 4 underline duration rows, found {rows_with_bar}: {motion_content}"
+            "expected an accent-colored `━` bar on each of the 4 underline duration rows, found {rows_with_bar}"
         );
     }
 }

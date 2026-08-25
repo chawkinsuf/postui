@@ -4,6 +4,7 @@
 
 use crate::theme::ThemeChoice;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// The set of known projects plus the configured root and last-used project,
 /// as stored under `[projects]` in the global config file.
@@ -138,6 +139,52 @@ impl ProjectsRegistry {
     }
 }
 
+/// Config-tunable eased-transition durations for the motion catalog,
+/// parsed from the optional `[animation_ms]` table in `config.toml` (each
+/// key an integer count of milliseconds). Missing keys take these
+/// defaults; an unknown key degrades to being ignored and is reported in
+/// the returned warnings, the same posture `theme` uses for a bad value.
+/// This table only tunes *how long* an eased transition takes; the
+/// top-level `animations` bool on [`UiSettings`] remains the separate,
+/// all-or-nothing kill switch for whether it eases at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AnimDurations {
+    /// The tab-underline slide, e.g. switching between Params/Headers/Body.
+    pub tab_slide: Duration,
+    /// A hovered control's fill/edges easing in.
+    pub hover: Duration,
+    /// A focused control's fill/edges easing in.
+    pub focus: Duration,
+    /// A scrollable list's selection band sliding row-to-row.
+    pub list_travel: Duration,
+    /// A modal dialog's open transition.
+    pub modal_open: Duration,
+    /// A dropdown's open transition.
+    pub dropdown_open: Duration,
+    /// A collapsing pane's transition.
+    pub pane_collapse: Duration,
+    /// A toast's fade.
+    pub toast: Duration,
+    /// The in-flight Send button's breathe, per pole.
+    pub send_breathe: Duration,
+}
+
+impl Default for AnimDurations {
+    fn default() -> Self {
+        Self {
+            tab_slide: Duration::from_millis(250),
+            hover: Duration::from_millis(70),
+            focus: Duration::from_millis(90),
+            list_travel: Duration::from_millis(100),
+            modal_open: Duration::from_millis(100),
+            dropdown_open: Duration::from_millis(90),
+            pane_collapse: Duration::from_millis(120),
+            toast: Duration::from_millis(100),
+            send_breathe: Duration::from_millis(700),
+        }
+    }
+}
+
 /// Mouse-first-GUI UI settings stored at the top level of `config.toml`:
 /// the tiered clipboard's optional external command and the OSC 52 size
 /// threshold.
@@ -150,6 +197,9 @@ pub struct UiSettings {
     /// Whether eased transitions (tab underline, hover, modal open, ...)
     /// play, or every animated value jumps straight to its target.
     pub animations: bool,
+    /// Per-transition durations, tunable via the optional `[animation_ms]`
+    /// table; see [`AnimDurations`].
+    pub anim_ms: AnimDurations,
 }
 
 impl Default for UiSettings {
@@ -159,6 +209,7 @@ impl Default for UiSettings {
             osc52_limit: 65536,
             theme: ThemeChoice::default(),
             animations: true,
+            anim_ms: AnimDurations::default(),
         }
     }
 }
@@ -198,6 +249,44 @@ pub fn load_ui_settings(path: &Path) -> (UiSettings, Vec<String>) {
     }
     if let Some(b) = value.get("animations").and_then(|v| v.as_bool()) {
         settings.animations = b;
+    }
+
+    if let Some(table) = value.get("animation_ms").and_then(|v| v.as_table()) {
+        const KNOWN_KEYS: [&str; 9] = [
+            "tab_slide",
+            "hover",
+            "focus",
+            "list_travel",
+            "modal_open",
+            "dropdown_open",
+            "pane_collapse",
+            "toast",
+            "send_breathe",
+        ];
+        let set_ms = |key: &str, field: &mut std::time::Duration| {
+            if let Some(ms) = table.get(key).and_then(|v| v.as_integer())
+                && let Ok(ms) = u64::try_from(ms)
+            {
+                *field = std::time::Duration::from_millis(ms);
+            }
+        };
+        set_ms("tab_slide", &mut settings.anim_ms.tab_slide);
+        set_ms("hover", &mut settings.anim_ms.hover);
+        set_ms("focus", &mut settings.anim_ms.focus);
+        set_ms("list_travel", &mut settings.anim_ms.list_travel);
+        set_ms("modal_open", &mut settings.anim_ms.modal_open);
+        set_ms("dropdown_open", &mut settings.anim_ms.dropdown_open);
+        set_ms("pane_collapse", &mut settings.anim_ms.pane_collapse);
+        set_ms("toast", &mut settings.anim_ms.toast);
+        set_ms("send_breathe", &mut settings.anim_ms.send_breathe);
+
+        for key in table.keys() {
+            if !KNOWN_KEYS.contains(&key.as_str()) {
+                warnings.push(format!(
+                    "unknown key {key:?} in [animation_ms] section of config.toml"
+                ));
+            }
+        }
     }
 
     (settings, warnings)
@@ -418,6 +507,89 @@ mod tests {
         assert!(!s.animations);
         assert!(warnings.is_empty());
         assert!(UiSettings::default().animations);
+    }
+
+    #[test]
+    fn animation_ms_defaults_without_a_table() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        let (s, warnings) = load_ui_settings(&p);
+        assert_eq!(s.anim_ms, AnimDurations::default());
+        assert_eq!(s.anim_ms.tab_slide, Duration::from_millis(250));
+        assert_eq!(s.anim_ms.hover, Duration::from_millis(70));
+        assert_eq!(s.anim_ms.focus, Duration::from_millis(90));
+        assert_eq!(s.anim_ms.list_travel, Duration::from_millis(100));
+        assert_eq!(s.anim_ms.modal_open, Duration::from_millis(100));
+        assert_eq!(s.anim_ms.dropdown_open, Duration::from_millis(90));
+        assert_eq!(s.anim_ms.pane_collapse, Duration::from_millis(120));
+        assert_eq!(s.anim_ms.toast, Duration::from_millis(100));
+        assert_eq!(s.anim_ms.send_breathe, Duration::from_millis(700));
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn animation_ms_table_overrides_one_key_and_defaults_the_rest() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        std::fs::write(&p, "[animation_ms]\ntab_slide = 400\n").unwrap();
+        let (s, warnings) = load_ui_settings(&p);
+        assert_eq!(s.anim_ms.tab_slide, Duration::from_millis(400));
+        assert_eq!(s.anim_ms.hover, Duration::from_millis(70));
+        assert_eq!(s.anim_ms.focus, Duration::from_millis(90));
+        assert_eq!(s.anim_ms.list_travel, Duration::from_millis(100));
+        assert_eq!(s.anim_ms.modal_open, Duration::from_millis(100));
+        assert_eq!(s.anim_ms.dropdown_open, Duration::from_millis(90));
+        assert_eq!(s.anim_ms.pane_collapse, Duration::from_millis(120));
+        assert_eq!(s.anim_ms.toast, Duration::from_millis(100));
+        assert_eq!(s.anim_ms.send_breathe, Duration::from_millis(700));
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn animation_ms_table_can_override_every_key() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        std::fs::write(
+            &p,
+            "[animation_ms]\n\
+             tab_slide = 1\n\
+             hover = 2\n\
+             focus = 3\n\
+             list_travel = 4\n\
+             modal_open = 5\n\
+             dropdown_open = 6\n\
+             pane_collapse = 7\n\
+             toast = 8\n\
+             send_breathe = 9\n",
+        )
+        .unwrap();
+        let (s, warnings) = load_ui_settings(&p);
+        assert_eq!(
+            s.anim_ms,
+            AnimDurations {
+                tab_slide: Duration::from_millis(1),
+                hover: Duration::from_millis(2),
+                focus: Duration::from_millis(3),
+                list_travel: Duration::from_millis(4),
+                modal_open: Duration::from_millis(5),
+                dropdown_open: Duration::from_millis(6),
+                pane_collapse: Duration::from_millis(7),
+                toast: Duration::from_millis(8),
+                send_breathe: Duration::from_millis(9),
+            }
+        );
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn animation_ms_unknown_key_warns_and_is_ignored() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        std::fs::write(&p, "[animation_ms]\nbogus = 5\n").unwrap();
+        let (s, warnings) = load_ui_settings(&p);
+        assert_eq!(s.anim_ms, AnimDurations::default());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("bogus"));
     }
 
     #[test]

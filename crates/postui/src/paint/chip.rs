@@ -99,11 +99,14 @@ impl TabStrip<'_> {
             rects.push(Rect::new(x, labels_y, *width, 2));
         }
 
-        // Row 1: the full-width hairline rule, then the accent segment on
-        // top of it, rounded to whole cells.
+        // Row 1: the full-width hairline rule (box-drawing heavy
+        // horizontal, matching the reference app's own Bar renderable),
+        // then the accent segment on top of it. The segment is
+        // distinguished from the rest of the rule by color alone, not a
+        // thicker glyph — both track and highlight are the same `━`.
         for x in area.x..area.right() {
             if let Some(cell) = buf.cell_mut((x, rule_y)) {
-                cell.set_symbol("▁");
+                cell.set_symbol("━");
                 cell.set_fg(theme.hairline);
                 cell.set_bg(on);
             }
@@ -115,16 +118,41 @@ impl TabStrip<'_> {
         };
         let (left, width) = self.underline;
         if width > 0.0 {
-            let start = (left + 0.5).floor().max(0.0) as u16;
-            let end = (left + width - 0.5).floor().max(0.0) as u16;
-            for x in area.x.saturating_add(start)..=area.x.saturating_add(end) {
-                if x >= area.right() {
-                    break;
-                }
-                if let Some(cell) = buf.cell_mut((x, rule_y)) {
-                    cell.set_symbol("▂");
-                    cell.set_fg(accent);
-                    cell.set_bg(on);
+            let right = left + width;
+            // Snapped to the nearest half-cell (not whole cell) so a
+            // segment mid-slide between columns still reads precisely: a
+            // boundary that lands mid-cell paints a half-covered box-
+            // drawing glyph (`╺` right-half, `╸` left-half) instead of
+            // rounding the whole cell in or out.
+            let l2 = (left * 2.0).round() as i64;
+            let r2 = (right * 2.0).round() as i64;
+            if r2 > l2 {
+                let first_cell = l2.div_euclid(2);
+                let last_cell = (r2 - 1).div_euclid(2);
+                for cell in first_cell..=last_cell {
+                    let Ok(cell_u16) = u16::try_from(cell) else {
+                        continue;
+                    };
+                    let x = area.x.saturating_add(cell_u16);
+                    if x >= area.right() {
+                        break;
+                    }
+                    let cell_start = cell * 2;
+                    let cell_end = cell_start + 2;
+                    let overlap_start = l2.max(cell_start);
+                    let overlap_end = r2.min(cell_end);
+                    let glyph = if overlap_end - overlap_start >= 2 {
+                        "━"
+                    } else if overlap_start == cell_start {
+                        "╸" // left half of the cell covered
+                    } else {
+                        "╺" // right half of the cell covered
+                    };
+                    if let Some(buf_cell) = buf.cell_mut((x, rule_y)) {
+                        buf_cell.set_symbol(glyph);
+                        buf_cell.set_fg(accent);
+                        buf_cell.set_bg(on);
+                    }
                 }
             }
         }
@@ -187,11 +215,11 @@ mod tests {
         assert_eq!(buf_cell(&term, rects[1].x + 1, 0).fg, theme.text_muted);
         // underline row: accent segment under the active tab...
         let under_active = buf_cell(&term, rects[0].x + 1, 1);
-        assert_eq!(under_active.symbol(), "▂");
+        assert_eq!(under_active.symbol(), "━");
         assert_eq!(under_active.fg, theme.accent);
         // ...hairline rule elsewhere
         let under_inactive = buf_cell(&term, rects[1].x + 1, 1);
-        assert_eq!(under_inactive.symbol(), "▁");
+        assert_eq!(under_inactive.symbol(), "━");
         assert_eq!(under_inactive.fg, theme.hairline);
     }
 
@@ -216,7 +244,7 @@ mod tests {
         })
         .unwrap();
         let under_active = buf_cell(&term, rects[0].x + 1, 1);
-        assert_eq!(under_active.symbol(), "▂");
+        assert_eq!(under_active.symbol(), "━");
         assert_eq!(
             under_active.fg, theme.focus_ring,
             "focus recolors the segment"
@@ -244,14 +272,74 @@ mod tests {
         // own span, not at its left edge.
         let shifted_x = rects2[0].x + 3;
         let cell = buf_cell(&term2, shifted_x, 1);
-        assert_eq!(cell.symbol(), "▂");
+        assert_eq!(cell.symbol(), "━");
+        assert_eq!(
+            cell.fg, theme.accent,
+            "the shifted segment is still accent-colored, distinguishing it \
+             from the plain hairline it shares a glyph with"
+        );
         let at_old_left = buf_cell(&term2, rects2[0].x, 1);
         assert_eq!(
             at_old_left.symbol(),
-            "▁",
+            "━",
             "the tab's own left edge is now bare hairline — the segment \
              tracks the caller-given offset, not the active tab index"
         );
+        assert_eq!(
+            at_old_left.fg, theme.hairline,
+            "bare hairline, not the accent segment"
+        );
+    }
+
+    /// A fractional edge that rounds to a half-cell (not a whole one) paints
+    /// the box-drawing half glyph there instead of snapping the whole cell
+    /// in or out: `╺` (right half) at the left boundary, `╸` (left half) at
+    /// the right boundary — matching the reference app's own Bar
+    /// renderable, whose track and highlight share one glyph family and
+    /// differ only by color.
+    #[test]
+    fn tabstrip_underline_half_cell_boundaries_use_box_drawing_half_glyphs() {
+        let theme = Theme::dark();
+        let tabs = vec![("Params".to_string(), None), ("Headers".to_string(), None)];
+        let mut term = Terminal::new(TestBackend::new(40, 2)).unwrap();
+        let mut rects = Vec::new();
+        term.draw(|f| {
+            rects = TabStrip {
+                tabs: &tabs,
+                active: 0,
+                hovered: None,
+                focused: false,
+                // Left edge at column 2.5, right edge at column 6.5: both
+                // boundaries land mid-cell.
+                underline: (2.5, 4.0),
+            }
+            .paint(f.buffer_mut(), Rect::new(0, 0, 40, 2), theme.panel, &theme);
+        })
+        .unwrap();
+        let x0 = rects[0].x;
+        let left_boundary = buf_cell(&term, x0 + 2, 1);
+        assert_eq!(
+            left_boundary.symbol(),
+            "╺",
+            "left boundary shows only its right half"
+        );
+        assert_eq!(left_boundary.fg, theme.accent);
+        for x in 3..=5 {
+            let full = buf_cell(&term, x0 + x, 1);
+            assert_eq!(full.symbol(), "━", "interior cell {x} stays full");
+            assert_eq!(full.fg, theme.accent);
+        }
+        let right_boundary = buf_cell(&term, x0 + 6, 1);
+        assert_eq!(
+            right_boundary.symbol(),
+            "╸",
+            "right boundary shows only its left half"
+        );
+        assert_eq!(right_boundary.fg, theme.accent);
+        // Just outside the segment on either side: bare hairline.
+        assert_eq!(buf_cell(&term, x0 + 1, 1).symbol(), "━");
+        assert_eq!(buf_cell(&term, x0 + 1, 1).fg, theme.hairline);
+        assert_eq!(buf_cell(&term, x0 + 7, 1).fg, theme.hairline);
     }
 
     #[test]

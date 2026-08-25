@@ -3149,7 +3149,7 @@ url = "https://api.example.com/users""#,
         let tab0 = hits.rect_of(&crate::hit::Hit::EditorTab(0)).unwrap();
         let buf = terminal.backend().buffer();
         let underline = buf.cell((tab0.x + 1, tab0.y + 1)).unwrap();
-        assert_eq!(underline.symbol(), "▂");
+        assert_eq!(underline.symbol(), "━");
         assert_eq!(
             underline.fg, theme.focus_ring,
             "focused strip: the active tab's underline recolors to focus_ring"
