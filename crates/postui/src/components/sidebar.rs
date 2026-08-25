@@ -513,11 +513,14 @@ impl Component for Sidebar {
             if text_row >= area.y + area.height {
                 break;
             }
-            // Two separate things can mark a row: the accent pill sits on
-            // the OPEN request (the one loaded in the editor) and stays put
-            // while the user browses, painted immediately with no travel of
-            // its own; the arrow-key cursor is the animated selection band
-            // above, painted only while the pane actually has the keyboard.
+            // Two separate things can mark a row, and they stay visually
+            // distinct: the keyboard cursor (`self.selected`) gets the full
+            // `Selected` treatment — fill + `▌` bar, animated by the travel
+            // band above — while the OPEN request (the one loaded in the
+            // editor) gets no fill/bar of its own at all, just its name in
+            // `theme.accent`, painted below. When the two coincide (the
+            // common case right after Enter) the cursor's fill simply wins
+            // and the name stays normal-colored on top of it.
             let is_open = matches!(
                 row,
                 Row::Request { slug, .. } if self.open_slug.as_deref() == Some(slug.as_str())
@@ -527,16 +530,21 @@ impl Component for Sidebar {
             let text_row_f = text_row as f32;
             let intersects_band =
                 band_range.is_some_and(|(y0, y1)| y0 < text_row_f + 1.0 && y1 > text_row_f);
+            let is_cursor_selected = is_cursor_row && settled;
+            let row_selected_visual = intersects_band || is_cursor_selected;
 
             let highlight = if intersects_band {
                 RowHighlight::None
-            } else if is_open || (is_cursor_row && settled) {
+            } else if is_cursor_selected {
                 RowHighlight::Selected
             } else if is_hovered {
                 RowHighlight::Hover
             } else {
                 RowHighlight::None
             };
+            // The open marker only shows once it isn't already subsumed by
+            // the cursor's own selection fill.
+            let open_accent = is_open && !row_selected_visual;
 
             // The list's own inset keeps column `area.x` free for the pane
             // focus bar, so every row — selected or hover — spans the full
@@ -567,7 +575,16 @@ impl Component for Sidebar {
                 Self::resolve_fill(theme, highlight, zebra[i], theme.panel, hover_t)
             };
 
-            self.paint_row(buf, row, text_row, list_area, row_fill, is_open, theme);
+            self.paint_row(
+                buf,
+                row,
+                text_row,
+                list_area,
+                row_fill,
+                is_open,
+                open_accent,
+                theme,
+            );
 
             // Hit math is a direct `y - list_top` on the 1-line pitch now —
             // no half-pad rows to fold in.
@@ -703,7 +720,11 @@ impl Sidebar {
     /// Paints one row's text-row content (method tag/disclosure + name) at
     /// `text_row`, on top of the fill already painted there (by `ListRow`
     /// or the travel band). `row_fill` is that fill — the surface the tag
-    /// text and name sit on.
+    /// text and name sit on. `open` marks the OPEN request (bolds its
+    /// name); `open_accent` is `open` further narrowed to "and not already
+    /// shown via the cursor's own selection fill" — when set, the name
+    /// paints in `theme.accent` instead of `theme.text` since it has no
+    /// fill/bar of its own to carry that signal.
     #[allow(clippy::too_many_arguments)]
     fn paint_row(
         &self,
@@ -713,6 +734,7 @@ impl Sidebar {
         list_area: Rect,
         row_fill: Color,
         open: bool,
+        open_accent: bool,
         theme: &Theme,
     ) {
         let right = list_area.x + list_area.width;
@@ -812,6 +834,8 @@ impl Sidebar {
                 }
                 let name_fg = if broken.is_some() {
                     theme.error
+                } else if open_accent {
+                    theme.accent
                 } else {
                     theme.text
                 };
@@ -1198,15 +1222,15 @@ mod tests {
         );
     }
 
-    /// The accent bar marks BOTH the OPEN request (stays put while the
-    /// user browses) and the keyboard cursor row (`self.selected`, once
-    /// its travel animation has settled — which it has here: the test's
-    /// `Anims` is disabled, so `draw` degenerates straight to the static
-    /// selected row with no `frac_vspan` band in play). They share the
-    /// same `ListRow::Selected` treatment; on two different rows, both get
-    /// it independently.
+    /// The keyboard cursor row (`self.selected`, once its travel animation
+    /// has settled — which it has here: the test's `Anims` is disabled, so
+    /// `draw` degenerates straight to the static selected row with no
+    /// `frac_vspan` band in play) keeps the full `▌` bar + `theme.selection`
+    /// fill. The OPEN request, on a *different* row, gets none of that —
+    /// only its name colored `theme.accent` — so the two stay visually
+    /// distinct rather than reading as the same "selected" row twice.
     #[test]
-    fn open_row_and_settled_cursor_row_both_get_the_selection_highlight() {
+    fn open_row_and_cursor_row_stay_visually_distinct() {
         let mut s = Sidebar::default();
         // Rows sort by slug: row 0 is "next", row 1 is "top".
         s.refresh(listing(&["top", "next"]), &expanded(&[]));
@@ -1222,30 +1246,85 @@ mod tests {
             .unwrap();
         let buf = terminal.backend().buffer();
 
-        // Row 0 ("next", open): accent bar + selection fill.
+        // Row 0 ("next", open, not cursor): no bar, no selection fill —
+        // just its name in `theme.accent`. The tag column is `TAG_WIDTH`
+        // (5) chars wide plus a 1-column gap after the reserved bar column,
+        // so the name starts at `row.x + 1 (bar lane) + 1 (text_x) + 6`.
         let row0 = hits.rect_of(&Hit::SidebarRow(0)).unwrap();
         let bar_cell = buf[(row0.x, row0.y)].clone();
-        // Far right of the row, past the tag/name text, where only the
-        // row's plain fill (not glyph content) is painted.
         let fill_cell = buf[(row0.x + row0.width - 2, row0.y)].clone();
-        assert_eq!(bar_cell.symbol(), "\u{258c}", "accent bar on the open row");
-        assert_eq!(bar_cell.fg, theme.accent);
-        assert_eq!(
+        let name_cell = buf[(row0.x + 7, row0.y)].clone();
+        assert_ne!(
+            bar_cell.symbol(),
+            "\u{258c}",
+            "no accent bar on the open-but-not-cursor row"
+        );
+        assert_ne!(
             fill_cell.bg, theme.selection,
-            "open row fills with the selection color"
+            "no selection fill on the open-but-not-cursor row"
+        );
+        assert_eq!(
+            name_cell.symbol(),
+            "n",
+            "sanity: sampled the name cell (\"next\")"
+        );
+        assert_eq!(
+            name_cell.fg, theme.accent,
+            "open row's name is accent-colored in place of a fill/bar"
         );
 
-        // Row 1 ("top", settled cursor): the same accent bar + fill.
+        // Row 1 ("top", cursor, not open): the ordinary `▌` bar + selection
+        // fill, and its name is NOT accent-colored (it's not the open row).
         let row1 = hits.rect_of(&Hit::SidebarRow(1)).unwrap();
         let bar_cell = buf[(row1.x, row1.y)].clone();
         let fill_cell = buf[(row1.x + row1.width - 2, row1.y)].clone();
+        let name_cell = buf[(row1.x + 7, row1.y)].clone();
         assert_eq!(
             bar_cell.symbol(),
             "\u{258c}",
-            "accent bar on the settled cursor row too"
+            "accent bar on the cursor row"
         );
         assert_eq!(bar_cell.fg, theme.accent);
         assert_eq!(fill_cell.bg, theme.selection);
+        assert_eq!(
+            name_cell.symbol(),
+            "t",
+            "sanity: sampled \"top\"'s name cell"
+        );
+        assert_eq!(
+            name_cell.fg, theme.text,
+            "cursor row's name stays normal-colored; the fill/bar already carries the signal"
+        );
+    }
+
+    /// When the cursor lands on the open request itself (the common case
+    /// right after Enter), the cursor's selection fill simply wins — no
+    /// separate open-accent styling layered underneath it.
+    #[test]
+    fn cursor_on_the_open_row_shows_plain_selection_not_accent_name() {
+        let mut s = Sidebar::default();
+        s.refresh(listing(&["only"]), &expanded(&[]));
+        s.open_slug = Some("only".into());
+        s.selected = Some(0);
+        let theme = Theme::dark();
+        let ctx = draw_ctx(&theme, None);
+        let backend = ratatui::backend::TestBackend::new(30, 12);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut hits = HitMap::default();
+        terminal
+            .draw(|f| s.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let row0 = hits.rect_of(&Hit::SidebarRow(0)).unwrap();
+        let bar_cell = buf[(row0.x, row0.y)].clone();
+        let fill_cell = buf[(row0.x + row0.width - 2, row0.y)].clone();
+        let name_cell = buf[(row0.x + 7, row0.y)].clone();
+        assert_eq!(bar_cell.symbol(), "\u{258c}");
+        assert_eq!(fill_cell.bg, theme.selection);
+        assert_eq!(
+            name_cell.fg, theme.text,
+            "coinciding open+cursor: the selection fill wins, name stays normal-colored"
+        );
     }
 
     #[test]
