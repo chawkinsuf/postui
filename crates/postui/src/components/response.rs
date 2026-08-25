@@ -655,7 +655,7 @@ impl Response {
         view.set_mode(mode);
     }
 
-    /// Opens the in-pane search, exactly as `/` does (the `Find` button).
+    /// Opens the in-pane search, exactly as `/` does (the `🔍` button).
     pub fn open_search(&mut self) -> bool {
         let Some(view) = self.view.as_mut() else {
             return false;
@@ -1099,7 +1099,7 @@ fn draw_header_strip(
     }
     .paint(buf, area.x, area.y, t.panel, t);
 
-    // Row 0 (right): Find / Copy body / Save to file, right-aligned — the
+    // Row 0 (right): 🔍 / Copy body / Save to file, right-aligned — the
     // row's only other content is the short status chip, so there's no risk
     // of the buttons colliding with it at any pane width worth supporting.
     draw_header_actions(frame, hits, area, ctx);
@@ -1203,7 +1203,7 @@ fn tabstrip_width(tabs: &[(String, Option<(char, ratatui::style::Color)>)]) -> u
         .unwrap_or(0)
 }
 
-/// The header strip's plain painted actions — `Find` (open search), `Copy
+/// The header strip's plain painted actions — `🔍` (open search), `Copy
 /// body`, `Save to file` — right-aligned in `area` on its `theme.panel`
 /// fill. Overflows leftward when `area` is too narrow rather than off its
 /// right edge.
@@ -1213,17 +1213,19 @@ fn draw_header_actions(
     area: Rect,
     ctx: &DrawCtx,
 ) {
+    use unicode_width::UnicodeWidthStr;
     let actions = [
-        (" Find ".to_string(), crate::hit::Hit::ResponseSearchButton),
+        (" 🔍 ".to_string(), crate::hit::Hit::ResponseSearchButton),
         (" Copy body ".to_string(), crate::hit::Hit::CopyBodyButton),
         (
             " Save to file ".to_string(),
             crate::hit::Hit::SaveBodyButton,
         ),
     ];
+    // Display width, not char count — the magnifier is a 2-column glyph.
     let widths: Vec<u16> = actions
         .iter()
-        .map(|(label, _)| label.chars().count() as u16)
+        .map(|(label, _)| label.width() as u16)
         .collect();
     // One blank column between neighbours, the group flush to the right.
     let total: u16 = widths.iter().sum::<u16>() + widths.len().saturating_sub(1) as u16;
@@ -2766,12 +2768,12 @@ mod tests {
     }
 
     #[test]
-    fn search_button_is_labeled_find() {
-        // The `⌕` glyph reads as a refresh arrow in many fonts; a plain
-        // text label can't be misread.
+    fn search_button_is_the_magnifying_glass() {
+        // The `⌕` glyph reads as a refresh arrow in many fonts; the emoji
+        // magnifier can't be misread.
         let mut r = ready(r#"{"a": 1}"#);
         let out = render(&mut r);
-        assert!(out.contains("Find"), "{out}");
+        assert!(out.contains("🔍"), "{out}");
         assert!(!out.contains("⌕"), "{out}");
     }
 

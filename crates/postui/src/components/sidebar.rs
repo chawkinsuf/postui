@@ -364,7 +364,9 @@ impl Component for Sidebar {
             return;
         }
 
-        let button_top = area.y;
+        // One blank row above the button keeps it aligned with the other
+        // panes' top padding (the old REQUESTS header row, kept as space).
+        let button_top = (area.y + 1).min(area.y + area.height);
         let button_height = BUTTON_HEIGHT.min(area.y + area.height - button_top);
         if button_height == BUTTON_HEIGHT {
             // Inset one column each side, like the other panes' content:
@@ -1025,9 +1027,10 @@ mod tests {
         assert_eq!(thumb.x, 29);
         let track = hits.track_of(PaneId::Sidebar).expect("track rect");
         assert_eq!(track.x, thumb.x);
-        // 12-row pane: button(3) + spacer(1) = 4 rows overhead, leaving 8
-        // lines for the list -> 8 rows fit on the dense 1-line pitch.
-        let viewport = 8i16;
+        // 12-row pane: pad(1) + button(3) + spacer(1) = 5 rows overhead,
+        // leaving 7 lines for the list -> 7 rows fit on the dense 1-line
+        // pitch.
+        let viewport = 7i16;
         assert!(
             thumb.height < track.height,
             "30 rows in a 7-row viewport is a short thumb"
@@ -1107,8 +1110,8 @@ mod tests {
             }
         }
         assert_eq!(
-            button_rect.y, 0,
-            "button sits at the very top of the pane (no header label)"
+            button_rect.y, 1,
+            "button sits below the pane's blank top padding row"
         );
         assert_eq!(button_rect.height, 3, "the paint-layer button is 3 rows");
         let buf = terminal.backend().buffer();
@@ -1119,9 +1122,9 @@ mod tests {
         );
 
         // rows[0] = "top", rows[1] = folder "api" (expanded), rows[2] = "api/ping"
-        // list starts at y = button(3) + spacer(1) = 4.
+        // list starts at y = pad(1) + button(3) + spacer(1) = 5.
         let row0 = hits.rect_of(&Hit::SidebarRow(0)).expect("row 0 hit");
-        assert_eq!(row0.y, 4, "row 0 sits right at the list top, 1-line pitch");
+        assert_eq!(row0.y, 5, "row 0 sits right at the list top, 1-line pitch");
         let row1 = hits.rect_of(&Hit::SidebarRow(1)).expect("row 1 hit");
         let row2 = hits.rect_of(&Hit::SidebarRow(2)).expect("row 2 hit");
         assert_eq!(row1.y - row0.y, 1, "rows sit on a 1-line pitch");

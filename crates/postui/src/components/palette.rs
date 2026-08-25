@@ -417,9 +417,9 @@ impl PaletteState {
         t: f32,
     ) {
         let width = 50.min(screen.width);
-        const CHROME: u16 = 8;
+        const CHROME: u16 = 10;
         let content_rows = (self.filtered.len() as u16).clamp(1, 10) * 2;
-        let height = (CHROME + content_rows).clamp(11, 24).min(screen.height);
+        let height = (CHROME + content_rows).clamp(13, 26).min(screen.height);
         let area = super::modal::centered_rect(screen, width, height);
         hits.register(area, crate::hit::Hit::ModalBody);
         paint::floating_panel_settling(frame.buffer_mut(), area, screen, theme, t);

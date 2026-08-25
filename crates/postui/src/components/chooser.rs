@@ -160,10 +160,11 @@ impl ChooserState {
     ) {
         let width = 60.min(screen.width);
         // Chrome (everything but the list): 1 pad + 1 title + 1 ring-margin
-        // gap + 3-row field + 1 ring-margin gap + 1 pad.
-        const CHROME: u16 = 8;
+        // gap + 3-row field + 1 ring-margin gap + 3 bottom pad (the old
+        // hint-row space, kept so the shell doesn't crowd the list).
+        const CHROME: u16 = 10;
         let content_rows = (self.filtered.len() as u16).clamp(1, 10);
-        let height = (CHROME + content_rows).clamp(11, 24).min(screen.height);
+        let height = (CHROME + content_rows).clamp(13, 26).min(screen.height);
         let area = super::modal::centered_rect(screen, width, height);
         hits.register(area, crate::hit::Hit::ModalBody);
         paint::floating_panel_settling(frame.buffer_mut(), area, screen, theme, t);

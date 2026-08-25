@@ -959,12 +959,10 @@ impl ModalStack {
                 revealed,
             } => {
                 let masked = kind.is_secret() && !*revealed;
-                // The secret prompt keeps a hint row for the reveal toggle
-                // (ctrl+r isn't discoverable); every other prompt's
-                // Enter/Esc behavior is implied, so no hint row and two
-                // rows less chrome.
-                let height = if kind.is_secret() { 14 } else { 12 };
-                let area = centered_rect(screen, 60.min(screen.width), height.min(screen.height));
+                // Height unchanged from the hint-row days — the secret
+                // prompt still uses that row for its reveal toggle hint,
+                // and everywhere else the space keeps the shell airy.
+                let area = centered_rect(screen, 60.min(screen.width), 14.min(screen.height));
                 hits.register(area, crate::hit::Hit::ModalBody);
                 paint::floating_panel_settling(frame.buffer_mut(), area, screen, theme, t);
                 if t < 1.0 {
@@ -1030,7 +1028,7 @@ impl ModalStack {
                 on_path,
                 ..
             } => {
-                let area = centered_rect(screen, 60.min(screen.width), 17.min(screen.height));
+                let area = centered_rect(screen, 60.min(screen.width), 19.min(screen.height));
                 hits.register(area, crate::hit::Hit::ModalBody);
                 paint::floating_panel_settling(frame.buffer_mut(), area, screen, theme, t);
                 if t < 1.0 {
