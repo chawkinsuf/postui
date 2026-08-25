@@ -72,20 +72,16 @@ fn seed(app: &mut App, slugs: &[&str]) {
 
 /// One full render walk over the stage-8 landmarks: the address bar's
 /// bevel, the tab strip's accent underline (`━` family, distinguished by
-/// fg color from the hairline rest of the rule), the sidebar's zebra
-/// parity, the dropdown's ring edge geometry (full-width top edge owning
+/// fg color from the hairline rest of the rule), the sidebar's flat
+/// (unstriped) row fill, the dropdown's ring edge geometry (full-width top edge owning
 /// the corner, shortened verticals), and the absence of the deleted
 /// `PillRow`-era pad glyphs (`█`/`▀`) in a dense list.
 #[test]
 fn stage8_landmarks_render_walk() {
     let mut app = App::new_for_test();
     seed(&mut app, &["a", "b", "c"]);
-    let (t_panel, t_zebra_alt, t_accent, t_hairline) = (
-        app.theme.panel,
-        app.theme.zebra_alt,
-        app.theme.accent,
-        app.theme.hairline,
-    );
+    let (t_panel, t_accent, t_hairline) =
+        (app.theme.panel, app.theme.accent, app.theme.hairline);
 
     // --- address bar: a "▔" bevel cap on the method/URL row -------------
     let buf = render(&mut app);
@@ -118,18 +114,17 @@ fn stage8_landmarks_render_walk() {
         "elsewhere the rule stays the hairline color: {under_other:?}"
     );
 
-    // --- sidebar zebra parity: three flat top-level requests alternate
-    // theme.panel / t_zebra_alt starting at parity 0 (theme.panel) --
+    // --- sidebar rows: the request list keeps a flat panel fill (no
+    // zebra striping — dropped in the stage-8 feedback rounds) ----------
     let row0 = app.hits.rect_of(&Hit::SidebarRow(0)).unwrap();
     let row1 = app.hits.rect_of(&Hit::SidebarRow(1)).unwrap();
     let row2 = app.hits.rect_of(&Hit::SidebarRow(2)).unwrap();
     let bg0 = buf.cell((row0.x + 1, row0.y)).unwrap().bg;
     let bg1 = buf.cell((row1.x + 1, row1.y)).unwrap().bg;
     let bg2 = buf.cell((row2.x + 1, row2.y)).unwrap().bg;
-    assert_eq!(bg0, t_panel, "row 0 sits on the base fill");
-    assert_eq!(bg1, t_zebra_alt, "row 1 is the zebra stripe");
-    assert_eq!(bg2, t_panel, "row 2 alternates back");
-    assert_ne!(bg0, bg1, "zebra parity is actually visible, not a no-op");
+    assert_eq!(bg0, t_panel, "row 0 sits on the flat panel fill");
+    assert_eq!(bg1, t_panel, "row 1 matches — no zebra stripe");
+    assert_eq!(bg2, t_panel, "row 2 matches — no zebra stripe");
 
     // --- no PillRow-era pad glyphs in the dense sidebar list ------------
     let sidebar_pane = app.hits.rect_of(&Hit::Pane(PaneId::Sidebar)).unwrap();
@@ -185,7 +180,7 @@ fn animations_disabled_renders_identically_at_rest() {
     // Skip the header row: each app's `new_for_test` gets its own tempdir,
     // so the project-name chip differs by construction, not by animation
     // state. Everything else — including every animated surface (bevels,
-    // tab underline, sidebar zebra) — must match exactly.
+    // tab underline, sidebar rows) — must match exactly.
     let rows = |buf: &ratatui::buffer::Buffer| -> Vec<String> {
         (0..buf.area.height)
             .filter(|y| *y != 1)
