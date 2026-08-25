@@ -1691,6 +1691,11 @@ impl Editor {
             .map(|(i, _)| i);
 
         let strip_area = Rect { height: 2, ..area };
+        let spans = crate::paint::TabStrip::spans(&tab_strip);
+        let underline = spans
+            .get(active)
+            .map(|(x, w)| (*x as f32, *w as f32))
+            .unwrap_or((0.0, 0.0));
         let rects = {
             let buf = frame.buffer_mut();
             crate::paint::TabStrip {
@@ -1698,6 +1703,7 @@ impl Editor {
                 active,
                 hovered,
                 focused: ctx.focused && self.sub_focus == SubFocus::Tabs,
+                underline,
             }
             .paint(buf, strip_area, theme.page, theme)
         };
@@ -3133,7 +3139,7 @@ url = "https://api.example.com/users""#,
     }
 
     #[test]
-    fn tab_strip_focus_solidifies_the_active_tabs_cap() {
+    fn tab_strip_focus_recolors_the_underline_to_the_focus_ring() {
         let mut e = Editor {
             sub_focus: SubFocus::Tabs,
             ..Editor::default()
@@ -3142,12 +3148,12 @@ url = "https://api.example.com/users""#,
         let (terminal, hits) = draw_for_bar_test(&mut e);
         let tab0 = hits.rect_of(&crate::hit::Hit::EditorTab(0)).unwrap();
         let buf = terminal.backend().buffer();
-        let cap = buf.cell((tab0.x, tab0.y + 1)).unwrap();
+        let underline = buf.cell((tab0.x + 1, tab0.y + 1)).unwrap();
+        assert_eq!(underline.symbol(), "▂");
         assert_eq!(
-            cap.bg, theme.accent,
-            "focused strip: the active tab's cap is a solid accent row"
+            underline.fg, theme.focus_ring,
+            "focused strip: the active tab's underline recolors to focus_ring"
         );
-        assert_eq!(cap.symbol(), " ");
     }
 
     #[test]

@@ -3,7 +3,7 @@
 
 use ratatui::{buffer::Buffer, layout::Rect, style::Color};
 
-use crate::paint::{fill, half_cap_bottom, text};
+use crate::paint::text;
 use crate::theme::Theme;
 
 /// A single-row tinted pill: `" label "` with a bg tinted toward the chip's
@@ -25,53 +25,65 @@ impl Chip<'_> {
     }
 }
 
-/// A horizontal strip of GUI-style tabs: each tab is a padded filled block
-/// (`" label "`) with a half-block cap row below, like a segmented control.
-/// The active tab is accent-filled; inactive tabs sit on `theme.control`
-/// and lift to `theme.control_hover` under the mouse. Each tuple is
-/// `(label, badge)` — a badge renders a trailing colored glyph (e.g. the
-/// Body tab's JSON-validity `✓`/`✗`) inside the tab's block.
+/// A horizontal strip of flat GUI-style tabs: labels sit directly on
+/// surface `on` (no block fills) over a full-width hairline rule, with an
+/// accent segment sliding under the active tab. Each tuple is `(label,
+/// badge)` — a badge renders a trailing colored glyph (e.g. the Body tab's
+/// JSON-validity `✓`/`✗`) after the label.
 pub struct TabStrip<'a> {
     pub tabs: &'a [(String, Option<(char, Color)>)],
     pub active: usize,
     /// The index of the tab currently under the mouse, if any.
     pub hovered: Option<usize>,
     /// Whether the strip itself holds keyboard focus (arrow keys switch
-    /// tabs). Recolors the active tab's cap in the focus-ring color.
+    /// tabs). Recolors the underline segment in the focus-ring color.
     pub focused: bool,
+    /// The underline segment in fractional columns relative to `area.x`:
+    /// `(left, width)`. Callers animate this (Task 10); pass the active
+    /// tab's own span (from [`TabStrip::spans`]) for a static strip.
+    pub underline: (f32, f32),
 }
 
 impl TabStrip<'_> {
-    /// Paints the strip into the top 2 rows of `area` on top of surface
-    /// `on`. Returns each tab's full 2-row block [`Rect`], for hit
-    /// registration by the caller.
-    pub fn paint(&self, buf: &mut Buffer, area: Rect, on: Color, theme: &Theme) -> Vec<Rect> {
-        let labels_y = area.y;
-        let cap_y = area.y + 1;
-        let mut x = area.x;
-        let mut rects = Vec::with_capacity(self.tabs.len());
-
-        for (i, (label, badge)) in self.tabs.iter().enumerate() {
+    /// Pure geometry: each tab's `(x_offset, width)` span on the label row,
+    /// relative to the strip's own origin, using the same `" label "` (+2
+    /// for a badge) padding and 2-column inter-tab gap that [`Self::paint`]
+    /// lays out with. Callers use this to compute underline animation
+    /// targets and hit rects without painting.
+    pub fn spans(tabs: &[(String, Option<(char, Color)>)]) -> Vec<(u16, u16)> {
+        let mut x = 0u16;
+        let mut spans = Vec::with_capacity(tabs.len());
+        for (label, badge) in tabs {
             let label_w = label.chars().count() as u16;
             let width = label_w + 2 + badge.map_or(0, |_| 2);
+            spans.push((x, width));
+            x += width + 2; // 2-column gap between tabs
+        }
+        spans
+    }
+
+    /// Paints into the top 2 rows of `area` on top of surface `on`: row 0
+    /// is flat labels (no fills), row 1 is a full-width hairline rule with
+    /// the accent underline segment on top. Returns each tab's 2-row hit
+    /// [`Rect`] (label span + the underline row), for hit registration by
+    /// the caller.
+    pub fn paint(&self, buf: &mut Buffer, area: Rect, on: Color, theme: &Theme) -> Vec<Rect> {
+        let labels_y = area.y;
+        let rule_y = area.y + 1;
+        let spans = Self::spans(self.tabs);
+        let mut rects = Vec::with_capacity(self.tabs.len());
+
+        for (i, ((label, badge), (offset, width))) in self.tabs.iter().zip(&spans).enumerate() {
+            let x = area.x + offset;
             let active = i == self.active;
-            let face = if active {
-                theme.accent
-            } else if self.hovered == Some(i) {
-                theme.control_hover
-            } else {
-                theme.control
-            };
-            let fg = if active {
-                theme.on_accent
-            } else if self.hovered == Some(i) {
+            let fg = if active || self.hovered == Some(i) {
                 theme.text
             } else {
                 theme.text_muted
             };
+            let label_w = label.chars().count() as u16;
 
-            fill(buf, Rect::new(x, labels_y, width, 1), face);
-            text(buf, x + 1, labels_y, label, fg, face, active);
+            text(buf, x + 1, labels_y, label, fg, on, active);
             if let Some((glyph, color)) = badge {
                 text(
                     buf,
@@ -79,22 +91,42 @@ impl TabStrip<'_> {
                     labels_y,
                     &format!(" {glyph}"),
                     *color,
-                    face,
+                    on,
                     true,
                 );
             }
-            // Keyboard focus shows as a SHAPE change on the active tab:
-            // its half-cap thickens into a solid accent row. A recolor
-            // can't work here — focus_ring and accent are the same color,
-            // so a "focus-colored" cap is indistinguishable from normal.
-            if active && self.focused {
-                fill(buf, Rect::new(x, cap_y, width, 1), face);
-            } else {
-                half_cap_bottom(buf, Rect::new(x, cap_y, width, 1), face, on);
-            }
 
-            rects.push(Rect::new(x, labels_y, width, 2));
-            x += width + 1; // 1-column gap between tabs
+            rects.push(Rect::new(x, labels_y, *width, 2));
+        }
+
+        // Row 1: the full-width hairline rule, then the accent segment on
+        // top of it, rounded to whole cells.
+        for x in area.x..area.right() {
+            if let Some(cell) = buf.cell_mut((x, rule_y)) {
+                cell.set_symbol("▁");
+                cell.set_fg(theme.hairline);
+                cell.set_bg(on);
+            }
+        }
+        let accent = if self.focused {
+            theme.focus_ring
+        } else {
+            theme.accent
+        };
+        let (left, width) = self.underline;
+        if width > 0.0 {
+            let start = (left + 0.5).floor().max(0.0) as u16;
+            let end = (left + width - 0.5).floor().max(0.0) as u16;
+            for x in area.x.saturating_add(start)..=area.x.saturating_add(end) {
+                if x >= area.right() {
+                    break;
+                }
+                if let Some(cell) = buf.cell_mut((x, rule_y)) {
+                    cell.set_symbol("▂");
+                    cell.set_fg(accent);
+                    cell.set_bg(on);
+                }
+            }
         }
 
         rects
@@ -130,83 +162,112 @@ mod tests {
     }
 
     #[test]
-    fn tabstrip_paints_block_tabs_with_accent_active_fill_and_half_cap() {
+    fn tabstrip_paints_flat_labels_with_accent_underline_under_active() {
         let theme = Theme::dark();
         let mut term = Terminal::new(TestBackend::new(40, 2)).unwrap();
+        let tabs = vec![("Params".to_string(), None), ("Headers".to_string(), None)];
+        let spans = TabStrip::spans(&tabs);
         let mut rects = Vec::new();
         term.draw(|f| {
             rects = TabStrip {
-                tabs: &[("Params".to_string(), None), ("Headers".to_string(), None)],
+                tabs: &tabs,
                 active: 0,
                 hovered: None,
                 focused: false,
+                underline: (spans[0].0 as f32, spans[0].1 as f32),
             }
             .paint(f.buffer_mut(), Rect::new(0, 0, 40, 2), theme.panel, &theme);
         })
         .unwrap();
-        // Each tab is a padded filled block " label ", 2 rows tall.
-        assert_eq!(rects[0].width, " Params ".chars().count() as u16);
-        assert_eq!(rects[0].height, 2, "tab hit covers both rows");
-        // Active tab: accent fill, on_accent bold label, accent half-cap.
-        let active_cell = buf_cell(&term, rects[0].x, 0);
-        assert_eq!(active_cell.bg, theme.accent);
-        let label_cell = buf_cell(&term, rects[0].x + 1, 0);
-        assert_eq!(label_cell.symbol(), "P");
-        assert_eq!(label_cell.fg, theme.on_accent);
-        assert!(label_cell.modifier.contains(Modifier::BOLD));
-        let cap = buf_cell(&term, rects[0].x, 1);
-        assert_eq!(cap.symbol(), "▀");
-        assert_eq!(cap.fg, theme.accent);
-        assert_eq!(cap.bg, theme.panel);
-        // Inactive tab: control fill, muted label, control half-cap.
-        let inactive_cell = buf_cell(&term, rects[1].x, 0);
-        assert_eq!(inactive_cell.bg, theme.control);
+        let label = buf_cell(&term, rects[0].x + 1, 0);
+        assert_eq!(label.symbol(), "P");
+        assert_eq!(label.fg, theme.text);
+        assert_eq!(label.bg, theme.panel, "flat: no block fill behind labels");
+        assert!(label.modifier.contains(Modifier::BOLD));
         assert_eq!(buf_cell(&term, rects[1].x + 1, 0).fg, theme.text_muted);
-        assert_eq!(buf_cell(&term, rects[1].x, 1).fg, theme.control);
+        // underline row: accent segment under the active tab...
+        let under_active = buf_cell(&term, rects[0].x + 1, 1);
+        assert_eq!(under_active.symbol(), "▂");
+        assert_eq!(under_active.fg, theme.accent);
+        // ...hairline rule elsewhere
+        let under_inactive = buf_cell(&term, rects[1].x + 1, 1);
+        assert_eq!(under_inactive.symbol(), "▁");
+        assert_eq!(under_inactive.fg, theme.hairline);
     }
 
     #[test]
-    fn focused_tabstrip_marks_the_active_tab_with_the_focus_ring_color() {
+    fn focused_tabstrip_recolors_underline_and_mid_slide_underline_straddles_tabs() {
         let theme = Theme::dark();
+        let tabs = vec![("Params".to_string(), None), ("Headers".to_string(), None)];
+        let spans = TabStrip::spans(&tabs);
+
+        // focused: segment fg == theme.focus_ring
         let mut term = Terminal::new(TestBackend::new(40, 2)).unwrap();
         let mut rects = Vec::new();
         term.draw(|f| {
             rects = TabStrip {
-                tabs: &[("Params".to_string(), None), ("Headers".to_string(), None)],
+                tabs: &tabs,
                 active: 0,
                 hovered: None,
                 focused: true,
+                underline: (spans[0].0 as f32, spans[0].1 as f32),
             }
             .paint(f.buffer_mut(), Rect::new(0, 0, 40, 2), theme.panel, &theme);
         })
         .unwrap();
-        // The indicator must be a SHAPE change, not a recolor: focus_ring
-        // and accent are the same color in the default themes, so a
-        // half-cap recolored "to focus_ring" is indistinguishable from the
-        // normal active cap.
-        let cap = buf_cell(&term, rects[0].x, 1);
+        let under_active = buf_cell(&term, rects[0].x + 1, 1);
+        assert_eq!(under_active.symbol(), "▂");
         assert_eq!(
-            cap.bg, theme.accent,
-            "keyboard focus thickens the active tab's half-cap into a \
-             solid accent row, so the strip visibly holds the arrow keys"
+            under_active.fg, theme.focus_ring,
+            "focus recolors the segment"
         );
-        assert_eq!(cap.symbol(), " ", "solid row, no half-block glyph");
-        let inactive_cap = buf_cell(&term, rects[1].x, 1);
-        assert_eq!(inactive_cap.symbol(), "▀", "inactive tabs keep half-caps");
-        assert_eq!(inactive_cap.fg, theme.control);
+
+        // underline (spans[0].0 + 3.0, w): segment paints at the given
+        // offset, not under either tab exactly — proves the caller-driven
+        // position (mid-slide between the two tabs, not snapped to one).
+        let (left0, width0) = spans[0];
+        let mut term2 = Terminal::new(TestBackend::new(40, 2)).unwrap();
+        let mut rects2 = Vec::new();
+        term2
+            .draw(|f| {
+                rects2 = TabStrip {
+                    tabs: &tabs,
+                    active: 0,
+                    hovered: None,
+                    focused: false,
+                    underline: (left0 as f32 + 3.0, width0 as f32),
+                }
+                .paint(f.buffer_mut(), Rect::new(0, 0, 40, 2), theme.panel, &theme);
+            })
+            .unwrap();
+        // The segment now starts 3 columns into what was the active tab's
+        // own span, not at its left edge.
+        let shifted_x = rects2[0].x + 3;
+        let cell = buf_cell(&term2, shifted_x, 1);
+        assert_eq!(cell.symbol(), "▂");
+        let at_old_left = buf_cell(&term2, rects2[0].x, 1);
+        assert_eq!(
+            at_old_left.symbol(),
+            "▁",
+            "the tab's own left edge is now bare hairline — the segment \
+             tracks the caller-given offset, not the active tab index"
+        );
     }
 
     #[test]
-    fn tabstrip_badge_appends_colored_glyph_inside_the_tab() {
+    fn tabstrip_badge_appends_colored_glyph_after_the_label() {
         let theme = Theme::dark();
         let mut term = Terminal::new(TestBackend::new(40, 2)).unwrap();
+        let tabs = vec![("Body".to_string(), Some(('✓', theme.success)))];
+        let spans = TabStrip::spans(&tabs);
         let mut rects = Vec::new();
         term.draw(|f| {
             rects = TabStrip {
-                tabs: &[("Body".to_string(), Some(('✓', theme.success)))],
+                tabs: &tabs,
                 active: 0,
                 hovered: None,
                 focused: false,
+                underline: (spans[0].0 as f32, spans[0].1 as f32),
             }
             .paint(f.buffer_mut(), Rect::new(0, 0, 40, 2), theme.panel, &theme);
         })
@@ -215,33 +276,41 @@ mod tests {
         let glyph = buf_cell(&term, rects[0].x + 6, 0);
         assert_eq!(glyph.symbol(), "✓");
         assert_eq!(glyph.fg, theme.success, "badge keeps its own color");
-        assert_eq!(glyph.bg, theme.accent, "badge sits inside the tab's fill");
+        assert_eq!(glyph.bg, theme.panel, "flat: badge sits on the surface");
     }
 
     #[test]
-    fn tabstrip_hover_lifts_only_the_hovered_inactive_tab() {
+    fn tabstrip_hover_lifts_only_the_hovered_inactive_labels_color() {
         let theme = Theme::dark();
+        let tabs = vec![("Params".to_string(), None), ("Headers".to_string(), None)];
+        let spans = TabStrip::spans(&tabs);
         let mut term = Terminal::new(TestBackend::new(40, 2)).unwrap();
         let mut rects = Vec::new();
         term.draw(|f| {
             rects = TabStrip {
-                tabs: &[("Params".to_string(), None), ("Headers".to_string(), None)],
+                tabs: &tabs,
                 active: 0,
                 hovered: Some(1),
                 focused: false,
+                underline: (spans[0].0 as f32, spans[0].1 as f32),
             }
             .paint(f.buffer_mut(), Rect::new(0, 0, 40, 2), theme.panel, &theme);
         })
         .unwrap();
-        let hovered_cell = buf_cell(&term, rects[1].x, 0);
+        let hovered_cell = buf_cell(&term, rects[1].x + 1, 0);
         assert_eq!(
-            hovered_cell.bg, theme.control_hover,
-            "the hovered inactive tab's fill lifts to control_hover"
+            hovered_cell.fg, theme.text,
+            "the hovered inactive tab's label lifts to theme.text"
         );
-        let non_hovered_cell = buf_cell(&term, rects[0].x, 0);
+        let active_cell = buf_cell(&term, rects[0].x + 1, 0);
         assert_eq!(
-            non_hovered_cell.bg, theme.accent,
-            "the active tab keeps its accent fill"
+            active_cell.fg, theme.text,
+            "the active tab stays theme.text"
+        );
+        assert!(active_cell.modifier.contains(Modifier::BOLD));
+        assert!(
+            !hovered_cell.modifier.contains(Modifier::BOLD),
+            "hover alone isn't bold — only the active tab is"
         );
     }
 }

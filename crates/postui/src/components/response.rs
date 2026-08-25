@@ -1123,6 +1123,11 @@ fn draw_header_strip(
         _ => None,
     };
     let tabstrip_area = Rect::new(tabs_x, row1_y, tabs_width, 2);
+    let spans = crate::paint::TabStrip::spans(&tabs);
+    let underline = spans
+        .get(active)
+        .map(|(x, w)| (*x as f32, *w as f32))
+        .unwrap_or((0.0, 0.0));
     let rects = crate::paint::TabStrip {
         tabs: &tabs,
         active,
@@ -1130,6 +1135,7 @@ fn draw_header_strip(
         // Response tabs are switched by plain keys (r/h), not by focusing
         // the strip, so it never claims keyboard focus of its own.
         focused: false,
+        underline,
     }
     .paint(buf, tabstrip_area, t.panel, t);
     for (rect, mode) in rects.into_iter().zip(modes) {
@@ -1141,12 +1147,10 @@ fn draw_header_strip(
 /// `tabs`, mirroring its own padded-block-width + 1-column-gap layout so
 /// callers can right-align the strip without painting it first.
 fn tabstrip_width(tabs: &[(String, Option<(char, ratatui::style::Color)>)]) -> u16 {
-    let widths: Vec<u16> = tabs
-        .iter()
-        .map(|(label, badge)| label.chars().count() as u16 + 2 + badge.map_or(0, |_| 2))
-        .collect();
-    let sum: u16 = widths.iter().sum();
-    sum + widths.len().saturating_sub(1) as u16
+    crate::paint::TabStrip::spans(tabs)
+        .last()
+        .map(|(x, w)| x + w)
+        .unwrap_or(0)
 }
 
 /// The header strip's plain painted actions — `⌕` (open search), `Copy
