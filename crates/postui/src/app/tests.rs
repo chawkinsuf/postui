@@ -8583,6 +8583,54 @@ fn esc_quits_the_app_from_the_testbed_screen() {
     assert!(app.should_quit, "Esc must quit from the testbed screen");
 }
 
+/// Review finding: the header/footer chrome is drawn (and hit-registered)
+/// unconditionally on every screen, `Testbed` included — unlike the keyboard
+/// path, mouse dispatch (`App::on_hit`, via `handle_mouse`) had no
+/// `Screen::Testbed` guard, so a click on e.g. the project/env/vars chips or
+/// a footer action chip could open a chooser, a modal, or navigate into
+/// `Screen::VarManager` right out from under the showcase, with no way back
+/// short of quitting. Every click but the footer's own quit chip must be a
+/// pure no-op here.
+#[test]
+fn testbed_screen_ignores_every_mouse_click_except_the_quit_chip() {
+    let mut app = App::new_for_test_with_testbed(true);
+
+    click_hit(&mut app, Hit::HeaderProject);
+    assert_eq!(app.screen, crate::app::Screen::Testbed);
+    assert!(
+        app.modals.is_empty(),
+        "a header-chip click must not open the project chooser from the testbed"
+    );
+
+    click_hit(&mut app, Hit::HeaderVars);
+    assert_eq!(
+        app.screen,
+        crate::app::Screen::Testbed,
+        "a header-chip click must not navigate into the Variable Manager"
+    );
+
+    click_hit(&mut app, Hit::FooterChip(Action::OpenPalette));
+    assert!(
+        app.modals.is_empty(),
+        "a footer-chip click (other than quit) must not open the palette"
+    );
+
+    assert!(
+        !app.should_quit,
+        "none of the inert clicks above should have quit the app"
+    );
+}
+
+#[test]
+fn testbed_screen_quit_chip_still_quits_via_mouse() {
+    let mut app = App::new_for_test_with_testbed(true);
+    click_hit(&mut app, Hit::FooterChip(Action::Quit));
+    assert!(
+        app.should_quit,
+        "the footer's own quit chip must still work on the testbed"
+    );
+}
+
 mod undo_tests {
     use super::*;
     use crate::undo::CursorPos;

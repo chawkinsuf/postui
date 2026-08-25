@@ -84,6 +84,17 @@ impl App {
                 let Some(hit) = self.hits.hit_at(m.column, m.row).cloned() else {
                     return false;
                 };
+                // The testbed is a dead end for the mouse exactly like it is
+                // for the keyboard (see `App::handle_key`'s `Screen::Testbed`
+                // branch): every click is inert except the footer's quit
+                // chip. Without this, the header/footer chrome — drawn and
+                // hit-registered unconditionally on every screen — would let
+                // a click open the palette, a project/env chooser, or the
+                // Variable Manager from underneath the showcase, with no way
+                // back short of quitting.
+                if self.screen == Screen::Testbed && hit != Hit::FooterChip(Action::Quit) {
+                    return false;
+                }
                 let now = std::time::Instant::now();
                 let clicks = match &self.last_click {
                     Some((last_hit, at))
