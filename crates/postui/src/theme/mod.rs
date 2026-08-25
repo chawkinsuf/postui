@@ -124,9 +124,10 @@ impl Theme {
         let control_pressed = lift(bg, step * -0.02);
         let edge_light = lift(control, 0.08);
         let edge_dark = lift(control, -0.08);
-        // Zebra stripe: one small ladder step past `panel`, continuing the
-        // same direction the page->panel->control ladder already moves in.
-        let zebra_alt = lift(panel, step * 0.02);
+        // Zebra stripe: same unconditional-offset family as `edge_light`
+        // (an absolute lightening relative to its base, regardless of theme
+        // polarity), so it stays lighter than `panel` in both themes.
+        let zebra_alt = lift(panel, 0.02);
         // Hairline divider: same unconditional-offset family as `edge_dark`
         // (an absolute darkening relative to its base, regardless of theme
         // polarity), just a subtler step than a full bevel edge.
@@ -647,6 +648,15 @@ mod tests {
         let l = |c: Color| oklab_l(rgb_of(c));
         assert!(l(t.zebra_alt) > l(t.panel));
         assert!(l(t.zebra_alt) > l(t.page));
+        // `hairline`-style cross-polarity coverage: `zebra_alt` stays
+        // lighter than `panel` regardless of theme polarity (unconditional
+        // offset, same family as `edge_light`). It is not asserted against
+        // `page` here — `panel` itself sits below `page` for light seeds
+        // (see `generator_ladder_inverts_for_light_seeds`), so "lighter
+        // than page" is a dark-seeds-only consequence of the ladder, not
+        // part of `zebra_alt`'s own contract.
+        let t = Theme::light();
+        assert!(l(t.zebra_alt) > l(t.panel));
     }
 
     #[test]
