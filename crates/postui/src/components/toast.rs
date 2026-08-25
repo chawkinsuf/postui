@@ -14,26 +14,19 @@ pub enum ToastKind {
     Warning,
 }
 
-const TOAST_LIFETIME_TICKS: u32 = 30; // 3 s at the 100 ms tick
+/// Total wall-clock lifetime of a toast, from `push` to removal.
+const TOAST_LIFETIME: Duration = Duration::from_secs(3);
 
 /// Total on-screen height (in rows) of one painted toast: a filled `panel`
 /// rect with its message vertically centered on the middle row.
 const TOAST_HEIGHT: u16 = 3;
 
-/// How many of a toast's final lifetime ticks are spent easing out via
-/// `AnimKey::ToastFade` — 5 ticks is 500ms at the nominal 100ms tick period
-/// [`TOAST_LIFETIME_TICKS`]'s own doc comment assumes, matching
-/// [`TOAST_FADE_DUR`] and the testbed's "500ms (current demo)" comparison
-/// row. The tick period is actually adaptive (faster while any animation,
-/// including this fade, is in flight — see `main.rs`), so the fade's own
-/// color easing (wall-clock, via `Anims`) may finish before the toast's
-/// tick-counted removal in that case; a fade cut a little short by a busy
-/// frame reads fine, and the removal timing itself is untouched from
-/// before this task.
-const TOAST_FADE_TICKS: u32 = 5;
-
-/// Wall-clock duration of the fade-out eased via `AnimKey::ToastFade`, once
-/// a toast enters its final [`TOAST_FADE_TICKS`] ticks.
+/// How much of a toast's final lifetime is spent easing out via
+/// `AnimKey::ToastFade`, matching [`TOAST_FADE_DUR`] and the testbed's
+/// "500ms (current demo)" comparison row. Wall-clock, like
+/// [`TOAST_LIFETIME`] — unaffected by the tick period being adaptive
+/// (faster while any animation, including this fade, is in flight — see
+/// `main.rs`).
 const TOAST_FADE_DUR: Duration = Duration::from_millis(500);
 
 /// First id handed to a real toast's `AnimKey::ToastFade(id)`. The
@@ -45,7 +38,19 @@ const FIRST_TOAST_ID: u64 = 1000;
 struct Toast {
     message: String,
     kind: ToastKind,
-    remaining_ticks: u32,
+    /// When this toast should be removed. `None` until stamped by whichever
+    /// of `start_pending_anims`/`on_tick` observes it first — both receive
+    /// an injected `now`, so `push`'s ~100 call sites across `app.rs` don't
+    /// need `Instant::now()` threaded through. Mirrors how
+    /// `start_pending_anims` already lazily starts each toast's own
+    /// `AnimKey::ToastFade(id)` slide-in.
+    expires_at: Option<Instant>,
+    /// Whether the fade-out retarget (`expires_at - TOAST_FADE_DUR` →
+    /// `expires_at`) has already fired for this toast. Wall-clock ticks
+    /// arrive at irregular, adaptive intervals (see `main.rs`), so this
+    /// flag — rather than comparing two consecutive samples — is what
+    /// guarantees the retarget happens exactly once.
+    fade_started: bool,
     /// This toast's stable id, keying its own `AnimKey::ToastFade(id)` —
     /// see [`FIRST_TOAST_ID`].
     id: u64,
@@ -72,9 +77,23 @@ impl Toasts {
         self.entries.push(Toast {
             message: message.into(),
             kind,
-            remaining_ticks: TOAST_LIFETIME_TICKS,
+            expires_at: None,
+            fade_started: false,
             id,
         });
+    }
+
+    /// Stamps `expires_at` (`now + TOAST_LIFETIME`) on every toast that
+    /// doesn't have one yet -- i.e. every toast pushed since the last call
+    /// to this or `on_tick`. Not done in `push` itself, so the ~100
+    /// `Toasts::push` call sites across `app.rs` don't each need `now`
+    /// threaded through.
+    fn stamp_pending(&mut self, now: Instant) {
+        for t in &mut self.entries {
+            if t.expires_at.is_none() {
+                t.expires_at = Some(now + TOAST_LIFETIME);
+            }
+        }
     }
 
     /// Starts the slide-in ease (`AnimKey::ToastFade(id)`, 0 → 1 over
@@ -85,7 +104,11 @@ impl Toasts {
     /// `Toasts::push` call sites across `app.rs` don't each need `&mut
     /// Anims`/`now`/the config duration threaded through. Idempotent: a
     /// toast already tracked (mid-slide, settled, or fading) is untouched.
-    pub fn start_pending_anims(&self, anims: &mut Anims, now: Instant, slide_dur: Duration) {
+    /// Also stamps `expires_at` for the same newly-pushed toasts (see
+    /// `stamp_pending`) — the two are lazily initialized together since
+    /// they're both keyed off "have I seen this toast before".
+    pub fn start_pending_anims(&mut self, anims: &mut Anims, now: Instant, slide_dur: Duration) {
+        self.stamp_pending(now);
         for t in &self.entries {
             if anims.value(AnimKey::ToastFade(t.id), now).is_none() {
                 anims.snap(AnimKey::ToastFade(t.id), 0.0);
@@ -94,14 +117,15 @@ impl Toasts {
         }
     }
 
-    /// Advances every toast's countdown by one tick and drops any that
-    /// expired. Returns `true` while any toast is still visible/animating
-    /// (i.e. a redraw is needed), `false` when idle. The instant a toast's
-    /// countdown crosses into its final `TOAST_FADE_TICKS` ticks, retargets
-    /// its `AnimKey::ToastFade(id)` from wherever it sits (1.0, if it's
-    /// already settled from its slide-in) down to 0.0 over
-    /// `TOAST_FADE_DUR` — exactly once, since the crossing only happens on
-    /// one tick per toast.
+    /// Drops any toast whose wall-clock `expires_at` has passed. Returns
+    /// `true` while any toast is still visible/animating (i.e. a redraw is
+    /// needed), `false` when idle. The instant a toast's remaining life
+    /// drops to `TOAST_FADE_DUR` or less, retargets its
+    /// `AnimKey::ToastFade(id)` from wherever it sits (1.0, if it's already
+    /// settled from its slide-in) down to 0.0 over `TOAST_FADE_DUR` —
+    /// exactly once (guarded by `fade_started`), since ticks arrive at
+    /// irregular, adaptive intervals (see `main.rs`) rather than a fixed
+    /// period a single crossing check could rely on.
     pub fn on_tick(&mut self, anims: &mut Anims, now: Instant) -> bool {
         // Captured before pruning: on the tick where the last toast expires,
         // `entries` goes from non-empty to empty, and that transition is
@@ -109,10 +133,12 @@ impl Toasts {
         // toast. Returning based on the post-prune state would swallow that
         // frame and leave the toast painted until the next keypress.
         let was_visible = !self.entries.is_empty();
+        self.stamp_pending(now);
         for t in &mut self.entries {
-            let was_above_fade_window = t.remaining_ticks > TOAST_FADE_TICKS;
-            t.remaining_ticks = t.remaining_ticks.saturating_sub(1);
-            if was_above_fade_window && t.remaining_ticks <= TOAST_FADE_TICKS {
+            let expires_at = t.expires_at.expect("stamped above");
+            let fade_start = expires_at - TOAST_FADE_DUR;
+            if !t.fade_started && now >= fade_start {
+                t.fade_started = true;
                 anims.retarget(AnimKey::ToastFade(t.id), 0.0, TOAST_FADE_DUR, now);
             }
         }
@@ -120,10 +146,15 @@ impl Toasts {
         // along with the toasts themselves -- otherwise every toast ever
         // pushed leaves a permanently-done (but never-removed) `Anim` in
         // `Anims`'s map for the life of the process.
-        for t in self.entries.iter().filter(|t| t.remaining_ticks == 0) {
+        for t in self
+            .entries
+            .iter()
+            .filter(|t| now >= t.expires_at.expect("stamped above"))
+        {
             anims.clear(AnimKey::ToastFade(t.id));
         }
-        self.entries.retain(|t| t.remaining_ticks > 0);
+        self.entries
+            .retain(|t| now < t.expires_at.expect("stamped above"));
         was_visible
     }
 
@@ -151,8 +182,8 @@ impl Toasts {
     /// while sliding in (the first `ui_settings.anim_ms.toast` after
     /// `push`, `t` easing 0 → 1), it offsets the toast rightward off its
     /// resting position by `(1 - t)` of its own width, so it slides in
-    /// from the edge; while fading out (the final `TOAST_FADE_TICKS`
-    /// ticks, `t` easing back 1 → 0), the offset is pinned to 0 (the fade
+    /// from the edge; while fading out (the final `TOAST_FADE_DUR` of its
+    /// life, `t` easing back 1 → 0), the offset is pinned to 0 (the fade
     /// doesn't also creep back off-screen) and every painted color instead
     /// blends toward `theme.page` by `theme::mix(_, theme.page, 1 - t)` —
     /// replacing the old hard cutoff with a continuous fade. Reusing `t`
@@ -178,7 +209,12 @@ impl Toasts {
             let rest_x = screen.right().saturating_sub(width.saturating_add(1));
 
             let t = anims.value_or(AnimKey::ToastFade(toast.id), now, 1.0);
-            let fading = toast.remaining_ticks <= TOAST_FADE_TICKS;
+            // `expires_at` may still be unstamped here only in a bare
+            // `Toasts` test that draws before ever calling `on_tick`/
+            // `start_pending_anims` -- treat that as "freshly pushed, not
+            // fading yet", matching the real app (where `App::update`
+            // always stamps it before the first draw).
+            let fading = toast.expires_at.is_some_and(|e| now + TOAST_FADE_DUR >= e);
             let x_offset = if fading {
                 0
             } else {
@@ -231,16 +267,17 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     #[test]
-    fn toast_expires_after_lifetime_ticks() {
+    fn toast_expires_after_lifetime() {
         let mut anims = Anims::new(true);
         let mut t = Toasts::default();
+        let base = Instant::now();
         t.push("Saved", ToastKind::Success);
         assert!(!t.is_empty());
-        for _ in 0..TOAST_LIFETIME_TICKS - 1 {
-            t.on_tick(&mut anims, Instant::now());
-        }
-        assert!(!t.is_empty(), "alive one tick before expiry");
-        t.on_tick(&mut anims, Instant::now());
+        // First on_tick stamps expires_at = base + TOAST_LIFETIME.
+        t.on_tick(&mut anims, base);
+        t.on_tick(&mut anims, base + TOAST_LIFETIME - Duration::from_millis(1));
+        assert!(!t.is_empty(), "alive one millisecond before expiry");
+        t.on_tick(&mut anims, base + TOAST_LIFETIME);
         assert!(t.is_empty(), "expired at lifetime");
     }
 
@@ -274,9 +311,8 @@ mod tests {
             "the anim entry exists before expiry"
         );
 
-        for _ in 0..TOAST_LIFETIME_TICKS {
-            t.on_tick(&mut anims, now);
-        }
+        t.on_tick(&mut anims, now); // stamps expires_at = now + TOAST_LIFETIME
+        t.on_tick(&mut anims, now + TOAST_LIFETIME);
         assert!(t.is_empty(), "the toast has expired");
         assert!(
             anims
@@ -290,20 +326,23 @@ mod tests {
     fn on_tick_returns_true_on_the_expiring_tick_and_false_after() {
         let mut anims = Anims::new(true);
         let mut t = Toasts::default();
+        let base = Instant::now();
         t.push("bye", ToastKind::Info);
-        for _ in 0..TOAST_LIFETIME_TICKS - 1 {
-            assert!(
-                t.on_tick(&mut anims, Instant::now()),
-                "still visible while counting down"
-            );
-        }
         assert!(
-            t.on_tick(&mut anims, Instant::now()),
+            t.on_tick(&mut anims, base),
+            "still visible right after stamping"
+        );
+        assert!(
+            t.on_tick(&mut anims, base + TOAST_LIFETIME - Duration::from_millis(1)),
+            "still visible one millisecond before expiry"
+        );
+        assert!(
+            t.on_tick(&mut anims, base + TOAST_LIFETIME),
             "the expiring tick must still request a redraw to erase it"
         );
         assert!(t.is_empty(), "the toast is gone after the expiring tick");
         assert!(
-            !t.on_tick(&mut anims, Instant::now()),
+            !t.on_tick(&mut anims, base + TOAST_LIFETIME + Duration::from_millis(1)),
             "the tick after expiry is idle: no redraw needed"
         );
     }
@@ -312,19 +351,67 @@ mod tests {
     fn multiple_toasts_expire_independently() {
         let mut anims = Anims::new(true);
         let mut t = Toasts::default();
+        let base = Instant::now();
         t.push("first", ToastKind::Info);
-        for _ in 0..10 {
-            t.on_tick(&mut anims, Instant::now());
-        }
+        t.on_tick(&mut anims, base); // stamps "first"'s expires_at = base + TOAST_LIFETIME
+
+        let midpoint = base + Duration::from_secs(1);
         t.push("second", ToastKind::Error);
-        for _ in 0..TOAST_LIFETIME_TICKS - 10 {
-            t.on_tick(&mut anims, Instant::now());
-        }
+        t.on_tick(&mut anims, midpoint); // stamps "second"'s expires_at = midpoint + TOAST_LIFETIME
+
+        t.on_tick(&mut anims, base + TOAST_LIFETIME);
         assert!(!t.is_empty(), "second toast still alive");
-        for _ in 0..10 {
-            t.on_tick(&mut anims, Instant::now());
-        }
+        assert_eq!(t.messages(), vec!["second"]);
+
+        t.on_tick(&mut anims, midpoint + TOAST_LIFETIME);
         assert!(t.is_empty());
+    }
+
+    /// The fade-out retarget fires wall-clock, at exactly
+    /// `TOAST_LIFETIME - TOAST_FADE_DUR` after push — not tick-counted —
+    /// and only once, even across ticks that land past that boundary.
+    #[test]
+    fn fade_retarget_fires_once_at_the_wall_clock_fade_window() {
+        let mut anims = Anims::new(true);
+        let mut t = Toasts::default();
+        let base = Instant::now();
+        t.push("fading", ToastKind::Info);
+        // Stamps expires_at and starts (then settles) the slide-in anim, the
+        // same as `App::update` does after every `apply(action)`.
+        t.start_pending_anims(&mut anims, base, Duration::from_millis(1));
+        let fade_start = base + TOAST_LIFETIME - TOAST_FADE_DUR;
+
+        t.on_tick(&mut anims, fade_start - Duration::from_millis(1));
+        let before = anims.value(AnimKey::ToastFade(FIRST_TOAST_ID), fade_start);
+        assert_eq!(
+            before,
+            Some(1.0),
+            "still fully settled just before the fade window"
+        );
+
+        t.on_tick(&mut anims, fade_start);
+        let just_after = anims.value_or(
+            AnimKey::ToastFade(FIRST_TOAST_ID),
+            fade_start + Duration::from_millis(1),
+            -1.0,
+        );
+        assert!(
+            just_after < 1.0,
+            "fade must have started retargeting toward 0.0 at fade_start: {just_after}"
+        );
+
+        // A later tick landing well past fade_start must not re-retarget
+        // (which would restart the ease from wherever it had drifted to).
+        t.on_tick(&mut anims, fade_start + Duration::from_millis(50));
+        let after_second_tick = anims.value_or(
+            AnimKey::ToastFade(FIRST_TOAST_ID),
+            fade_start + Duration::from_millis(51),
+            -1.0,
+        );
+        assert!(
+            after_second_tick <= just_after,
+            "fade must keep easing monotonically toward 0, not restart"
+        );
     }
 
     #[test]
