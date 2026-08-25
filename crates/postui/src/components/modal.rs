@@ -2082,7 +2082,7 @@ mod tests {
     #[test]
     fn dropdown_rows_are_dense_single_line_pitch_on_consecutive_rows() {
         // A window of N rows sits on consecutive screen lines (1-line
-        // pitch), not the 2-line pill pitch — `ListRow`, not `PillRow`.
+        // pitch), painted with `ListRow`.
         let screen = Rect::new(0, 0, 80, 24);
         let items: Vec<MenuItem> = (0..5)
             .map(|i| MenuItem::new(format!("Item {i}"), Action::Render))

@@ -251,12 +251,10 @@ fn ellipsize(s: &str, max: usize) -> String {
 /// padding column, so Tab's current target is always visible at a glance.
 /// Painted after the pane's own draw, and glyph/fg only — each cell keeps
 /// the background under it (the sidebar's row highlights run to column 0).
-/// The sidebar's selected-row marker (`PillRow`'s accent pill) lives in
-/// this same column and is the stronger mark, so the bar keeps the pill's
-/// full-block `█` text row. Only that row: the pill's `▄`/`▀` cap glyphs
-/// are half-height and cannot coexist with a vertical bar in one cell —
-/// letting them through reads as a gap in the bar, so they are flattened
-/// into it and the marker shows as a single full-block cell.
+/// The sidebar's selected-row marker (`ListRow`'s accent bar) lives in this
+/// same column and is the stronger mark, so the focus bar leaves it alone —
+/// both use the same `▌` glyph, so a selected row already reads as the
+/// focus bar continuing through it.
 fn focus_bar(
     buf: &mut ratatui::buffer::Buffer,
     pane: ratatui::layout::Rect,
@@ -264,7 +262,7 @@ fn focus_bar(
 ) {
     for y in pane.y..pane.y + pane.height {
         if let Some(cell) = buf.cell_mut((pane.x, y)) {
-            if cell.symbol() == "█" && cell.fg == theme.accent {
+            if cell.symbol() == "▌" && cell.fg == theme.accent {
                 continue;
             }
             cell.set_symbol("▌");

@@ -17,7 +17,7 @@ use crate::components::line_input::LineInput;
 use crate::hit::{Hit, HitMap, ScrollbarSpec};
 use crate::layout::PaneId;
 use crate::paint::{
-    BUTTON_HEIGHT, Button, ButtonKind, ControlState, FIELD_HEIGHT, PillRow, RowHighlight,
+    BUTTON_HEIGHT, Button, ButtonKind, ControlState, FIELD_HEIGHT, ListRow, RowHighlight,
     TextField, button_min_width, fill, text,
 };
 use crate::project_ctx::ProjectContext;
@@ -1015,11 +1015,10 @@ impl VarManager {
         })
     }
 
-    /// Number of 2-line rows that fit in a list `height` lines tall: a
-    /// trailing odd line still fits one more row's text line (its bottom pad
-    /// is clipped), so this rounds up. Mirrors `Sidebar::visible_rows`.
+    /// Number of 1-line rows that fit in a list `height` lines tall.
+    /// Mirrors `Sidebar::visible_rows`.
     fn rows_that_fit(height: u16) -> usize {
-        (height as usize).div_ceil(2)
+        height as usize
     }
 
     /// Paints the screen: the top bar (environment switcher + `+ Variable` /
@@ -1722,7 +1721,7 @@ impl VarManager {
         }
 
         // Rows keep a 1-column inset each side: the left column is the
-        // selected pill's accent lane, the right one hosts the scrollbar.
+        // selected row's accent lane, the right one hosts the scrollbar.
         let list = Rect {
             x: left.x + 1,
             y: left.y,
@@ -1761,7 +1760,7 @@ impl VarManager {
             .take(self.visible_rows.max(1))
             .enumerate()
         {
-            let y = list.y + (pos as u16) * 2;
+            let y = list.y + pos as u16;
             if y >= left.y + left.height {
                 break;
             }
@@ -1776,18 +1775,23 @@ impl VarManager {
             } else {
                 RowHighlight::None
             };
-            let row_bg = match highlight {
-                RowHighlight::None => theme.panel,
-                RowHighlight::Hover => theme.control,
-                RowHighlight::Selected => theme.control_hover,
-            };
+            // Popup/master-detail convention (matches chooser/palette/var
+            // picker): no zebra — the left list is section-divided and
+            // typically short, so a stripe would add noise without the
+            // long-uniform-list payoff zebra earns in the sidebar.
+            let hover_t = 1.0;
+            let row_bg = ListRow::resolve_fill(theme, highlight, theme.panel, hover_t);
             if row.is_stop() {
-                PillRow { highlight }.paint(buf, y, list.x, list.width, left, theme.panel, theme);
+                ListRow {
+                    highlight,
+                    zebra: None,
+                }
+                .paint(buf, y, list.x, list.width, theme.panel, hover_t, theme);
             }
             paint_left_row(buf, ctx, row, y, list, row_bg, theme);
 
-            let hit_top = y.saturating_sub(1).max(left.y);
-            let hit_bottom = (y + 2).min(left.y + left.height);
+            let hit_top = y.max(left.y);
+            let hit_bottom = (y + 1).min(left.y + left.height);
             hits.register(
                 Rect {
                     x: list.x,
@@ -1813,7 +1817,7 @@ fn paint_left_row(
     theme: &Theme,
 ) {
     let x = list.x + 1;
-    // One column of inset on the left (the selected pill's accent bar) —
+    // One column of inset on the left (the selected row's accent bar) —
     // the label may run to the list's right edge.
     let width = list.width.saturating_sub(1);
     match row {

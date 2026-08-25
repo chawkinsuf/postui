@@ -6,7 +6,7 @@ use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 #[derive(Clone)]
@@ -295,18 +295,6 @@ pub struct PaletteState {
     ensure_visible: bool,
 }
 
-/// Replicates [`ListRow::paint`]'s own fill computation (sidebar's
-/// `Sidebar::resolve_fill`, without the zebra term this list never uses) so
-/// text painted as a second pass on top of a row knows what background it
-/// actually landed on.
-fn row_fill(theme: &Theme, highlight: RowHighlight, base: Color, hover_t: f32) -> Color {
-    match highlight {
-        RowHighlight::None => base,
-        RowHighlight::Hover => crate::theme::mix(base, theme.control, hover_t),
-        RowHighlight::Selected => theme.selection,
-    }
-}
-
 impl PaletteState {
     /// Builds the palette's base (frecency-sorted) order from `usage`/
     /// `now_secs` and opens with an empty query, so `filtered()` starts out
@@ -524,7 +512,7 @@ impl PaletteState {
                     theme,
                 );
             }
-            let row_fill = row_fill(theme, highlight, theme.panel, hover_t);
+            let row_fill = ListRow::resolve_fill(theme, highlight, theme.panel, hover_t);
 
             let right = list_area.x + list_area.width;
             let x = list_area.x + 1;

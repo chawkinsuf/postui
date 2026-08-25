@@ -1,7 +1,7 @@
 use crate::action::Action;
 use crate::hit::{Hit, HitMap};
 use crate::layout::PaneId;
-use crate::paint::{fill, text};
+use crate::paint::{Chip, fill, text};
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -115,14 +115,17 @@ pub fn draw_footer(
 
 /// Paints a left-to-right row of `(key, label, action)` chips starting at
 /// `start_x` on row `y`, stopping before drawing one that would cross
-/// `right_limit`. Each chip with `Some(action)` is a `theme.control`-filled
-/// pill (lifting to `theme.control_hover` under the mouse per `hovered`)
-/// registering `Hit::FooterChip(action)`; a `None` action renders as plain
-/// (unregistered, muted) text directly on the caller's background instead —
-/// the fill IS the clickability signal, so a hint with no single
-/// dispatchable action never visually promises a click it can't honor.
-/// Shared by the footer's own hint row and the editor toolbar. Returns the
-/// x position just past the last chip painted.
+/// `right_limit`. Each chip with `Some(action)` is a quiet chip: the key
+/// combo sits in a small `Chip`-style pill tinted `theme.accent` on
+/// `theme.control` (lifting to `theme.control_hover` under the mouse per
+/// `hovered`), with the label following in plain `theme.text_muted` text
+/// beside it — registering `Hit::FooterChip(action)` over the combined
+/// span. A `None` action renders as fully plain (unregistered, muted) text
+/// directly on the caller's background instead — the pill IS the
+/// clickability signal, so a hint with no single dispatchable action never
+/// visually promises a click it can't honor. Shared by the footer's own
+/// hint row and the editor toolbar. Returns the x position just past the
+/// last chip painted.
 #[allow(clippy::too_many_arguments)]
 pub fn paint_chip_row(
     buf: &mut Buffer,
@@ -136,9 +139,12 @@ pub fn paint_chip_row(
 ) -> u16 {
     let mut x = start_x;
     for (key, label, action) in chips {
-        let key_text = format!(" {key}");
-        let label_text = format!(" {label} ");
-        let width = key_text.chars().count() as u16 + label_text.chars().count() as u16;
+        // Total footprint is the same either way — `" key"` + `" label "`
+        // (3 extra columns beyond key+label) — so a clickable chip's
+        // tinted key pill (`" key "`, its own +2) is offset by dropping the
+        // plain entry's label-leading space (`"label "` instead of
+        // `" label "`), and layout math never has to branch on `action`.
+        let width = key.chars().count() as u16 + label.chars().count() as u16 + 3;
         if x + width > right_limit {
             break;
         }
@@ -148,29 +154,44 @@ pub fn paint_chip_row(
             width,
             height: 1,
         };
-        let chip_bg = match action {
-            Some(a) if hovered == Some(&Hit::FooterChip(a.clone())) => {
-                fill(buf, chip_area, theme.control_hover);
-                theme.control_hover
+        match action {
+            Some(a) => {
+                let on = if hovered == Some(&Hit::FooterChip(a.clone())) {
+                    theme.control_hover
+                } else {
+                    theme.control
+                };
+                let pill_w = Chip {
+                    label: key,
+                    color: theme.accent,
+                }
+                .paint(buf, x, y, on, theme);
+                let label_text = format!("{label} ");
+                text(
+                    buf,
+                    x + pill_w,
+                    y,
+                    &label_text,
+                    theme.text_muted,
+                    theme.panel,
+                    false,
+                );
+                hits.register(chip_area, Hit::FooterChip(a.clone()));
             }
-            Some(_) => {
-                fill(buf, chip_area, theme.control);
-                theme.control
+            None => {
+                let key_text = format!(" {key}");
+                let label_text = format!(" {label} ");
+                text(buf, x, y, &key_text, theme.accent, theme.panel, true);
+                text(
+                    buf,
+                    x + key_text.chars().count() as u16,
+                    y,
+                    &label_text,
+                    theme.text_muted,
+                    theme.panel,
+                    false,
+                );
             }
-            None => theme.panel,
-        };
-        text(buf, x, y, &key_text, theme.accent, chip_bg, true);
-        text(
-            buf,
-            x + key_text.chars().count() as u16,
-            y,
-            &label_text,
-            theme.text_muted,
-            chip_bg,
-            false,
-        );
-        if let Some(action) = action {
-            hits.register(chip_area, Hit::FooterChip(action.clone()));
         }
         x += width + 2;
     }
@@ -283,7 +304,7 @@ mod tests {
     }
 
     #[test]
-    fn chip_paints_accent_bold_key_and_muted_label_on_control_fill() {
+    fn chip_paints_accent_bold_key_in_a_tinted_pill_and_muted_label_beside_it() {
         let theme = Theme::for_terminal();
         let backend = TestBackend::new(120, FOOTER_HEIGHT);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -295,26 +316,30 @@ mod tests {
             .rect_of(&Hit::FooterChip(Action::PromptNewRequest))
             .expect("new-request chip hit registered");
         let buf = terminal.backend().buffer();
-        // First cell of the chip is a leading space, then the key glyph.
+        // First cell of the chip is the pill's leading space, then the key
+        // glyph, bold and accent-colored, on the accent-tinted pill fill —
+        // not a flat `theme.control` fill.
         let key_cell = buf.cell((rect.x + 1, rect.y)).unwrap();
         assert_eq!(key_cell.symbol(), "n");
         assert_eq!(key_cell.fg, theme.accent);
-        assert_eq!(key_cell.bg, theme.control);
+        assert_eq!(key_cell.bg, theme.tint(theme.accent, theme.control));
         assert!(key_cell.modifier.contains(ratatui::style::Modifier::BOLD));
-        // The label follows on the same control fill, muted and not bold.
+        // The label follows right after the pill (" n " is 3 cells), muted,
+        // not bold, and sitting on the plain panel — no chip fill of its
+        // own.
         let label_cell = buf.cell((rect.x + 3, rect.y)).unwrap();
         assert_eq!(label_cell.symbol(), "n"); // first letter of "new"
         assert_eq!(label_cell.fg, theme.text_muted);
-        assert_eq!(label_cell.bg, theme.control);
+        assert_eq!(label_cell.bg, theme.panel);
         assert!(!label_cell.modifier.contains(ratatui::style::Modifier::BOLD));
     }
 
-    /// Controller ruling: the chip fill IS the clickability signal.
+    /// Controller ruling: the chip pill IS the clickability signal.
     /// Non-clickable (`None`-action) entries must render as plain text
     /// directly on the panel — no fill, no hover — while clickable entries
-    /// keep their `control` chip fill.
+    /// keep their tinted key pill.
     #[test]
-    fn only_clickable_entries_get_the_control_chip_fill() {
+    fn only_clickable_entries_get_the_tinted_key_pill() {
         let theme = Theme::for_terminal();
         let backend = TestBackend::new(120, FOOTER_HEIGHT);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -336,14 +361,15 @@ mod tests {
         );
         assert_eq!(plain_cell.fg, theme.accent);
 
-        // "n new" (PromptNewRequest) IS clickable: control-filled chip.
+        // "n new" (PromptNewRequest) IS clickable: tinted key pill.
         let rect = hits
             .rect_of(&Hit::FooterChip(Action::PromptNewRequest))
             .expect("new-request chip hit registered");
         let chip_cell = buf.cell((rect.x + 1, rect.y)).unwrap();
         assert_eq!(
-            chip_cell.bg, theme.control,
-            "clickable entry keeps its chip fill"
+            chip_cell.bg,
+            theme.tint(theme.accent, theme.control),
+            "clickable entry keeps its tinted key pill"
         );
     }
 

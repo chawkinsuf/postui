@@ -2,7 +2,7 @@ use super::DrawCtx;
 use super::line_input::LineInput;
 use super::var_tokens::{VarView, paint_var_tokens};
 use crate::hit::{Hit, HitMap};
-use crate::paint::{PillRow, RowHighlight, fill, text};
+use crate::paint::{ListRow, RowHighlight, fill, text};
 use crate::theme::Theme;
 use indexmap::IndexMap;
 use postui_core::model::Entry;
@@ -867,16 +867,22 @@ impl TableEditorState {
         }
     }
 
-    /// Draws row `i` expanded to 3 lines (pad/text/pad) with the full-row
-    /// pill treatment — 4 (pad/text/hint/pad) when `hint` is `Some`, adding
-    /// a dim shadow line ("overrides qa: 1001") right under the value row.
-    /// `show_delete` gates the `✕` affordance (the ghost row has nothing to
-    /// delete yet). Returns the next `y`.
+    /// Draws row `i` expanded to 3 lines (pad/text/pad) — 4 (pad/text/hint/
+    /// pad) when `hint` is `Some`, adding a dim shadow line ("overrides qa:
+    /// 1001") right under the value row. `show_delete` gates the `✕`
+    /// affordance (the ghost row has nothing to delete yet). Returns the
+    /// next `y`.
     ///
     /// The expansion itself persists when the pane loses focus (it feeds
     /// `table_geometry`, so collapsing would shift the layout every focus
     /// change, and its affordances stay mouse-usable) — but the cursor
     /// styling demotes: no accent bar, resting fill instead of the lift.
+    /// The text row's own fill/bar comes from `ListRow` (`Selected` while
+    /// focused, `Hover` otherwise — which, base and target both being
+    /// `theme.control`, paints as a flat `theme.control` regardless of
+    /// `hover_t`, matching the old resting-fill demotion exactly); the pad
+    /// rows above/below just carry that same resolved fill flat, with no
+    /// half-block cap glyph.
     #[allow(clippy::too_many_arguments)]
     fn draw_active_row(
         &self,
@@ -895,33 +901,38 @@ impl TableEditorState {
     ) -> u16 {
         let theme = ctx.theme;
         let text_row = y + 1;
-        PillRow {
-            highlight: if ctx.focused {
-                RowHighlight::Selected
-            } else {
-                RowHighlight::Hover
-            },
+        let highlight = if ctx.focused {
+            RowHighlight::Selected
+        } else {
+            RowHighlight::Hover
+        };
+        let hover_t = ctx.hover_t();
+        let bg = ListRow::resolve_fill(theme, highlight, theme.control, hover_t);
+        if y < bottom {
+            fill(buf, Rect::new(area.x, y, area.width, 1), bg);
+        }
+        ListRow {
+            highlight,
+            zebra: None,
         }
         .paint(
             buf,
             text_row,
             area.x,
             area.width,
-            area,
             theme.control,
+            hover_t,
             theme,
         );
+        if text_row + 1 < bottom {
+            fill(buf, Rect::new(area.x, text_row + 1, area.width, 1), bg);
+        }
 
         // The accent bar occupies column `area.x`; cell content is indented
         // one column past it.
         let content_x = area.x + 1;
         let content_w = area.width.saturating_sub(1);
         let cols = columns(content_x, content_w);
-        let bg = if ctx.focused {
-            theme.control_hover
-        } else {
-            theme.control
-        };
         let fg = if entry.enabled {
             theme.text
         } else {
@@ -1029,10 +1040,10 @@ impl TableEditorState {
             );
         }
 
-        // A shadow hint replaces the pad-bottom row `PillRow` already
-        // painted (`text_row + 1`) with a dim "overrides <env>: <value>"
-        // line on the same fill, then adds one more flat row to close the
-        // block — one row taller overall (4 instead of 3).
+        // A shadow hint replaces the pad-bottom row already flat-filled
+        // above (`text_row + 1`) with a dim "overrides <env>: <value>" line
+        // on the same fill, then adds one more flat row to close the block —
+        // one row taller overall (4 instead of 3).
         if let Some(hint) = hint {
             let hint_row = text_row + 1;
             if hint_row < bottom {

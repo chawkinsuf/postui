@@ -21,7 +21,7 @@ pub use field::{FIELD_HEIGHT, TextField};
 pub use frac::frac_vspan;
 pub use panel::{dim_backdrop, floating_panel, floating_panel_settling};
 pub use ring::ring;
-pub use rows::{ListRow, PillRow, RowHighlight};
+pub use rows::{ListRow, RowHighlight};
 
 /// How far a Disabled control's label/content blends toward its own fill
 /// from `theme.text_muted` (via `theme::mix`). Shared by [`Button`] and
@@ -70,31 +70,6 @@ pub fn bevel_bottom(buf: &mut Buffer, row: Rect, fg: Color, bg: Color) {
     for x in row.left()..row.right() {
         if let Some(cell) = buf.cell_mut((x, row.top())) {
             cell.set_symbol("▁");
-            cell.set_fg(fg);
-            cell.set_bg(bg);
-        }
-    }
-}
-
-/// Paints a run of `"▀"` (upper half block) across `row`: the bottom cap of
-/// a 1.5-line control, showing the control's `fg` fill in the row's upper
-/// half over the surrounding surface `bg`.
-pub fn half_cap_bottom(buf: &mut Buffer, row: Rect, fg: Color, bg: Color) {
-    for x in row.left()..row.right() {
-        if let Some(cell) = buf.cell_mut((x, row.top())) {
-            cell.set_symbol("▀");
-            cell.set_fg(fg);
-            cell.set_bg(bg);
-        }
-    }
-}
-
-/// Paints a run of `"▄"` (lower half block) across `row`: the top cap of a
-/// pressed (pushed-down) 1.5-line control.
-pub fn half_cap_top(buf: &mut Buffer, row: Rect, fg: Color, bg: Color) {
-    for x in row.left()..row.right() {
-        if let Some(cell) = buf.cell_mut((x, row.top())) {
-            cell.set_symbol("▄");
             cell.set_fg(fg);
             cell.set_bg(bg);
         }

@@ -3313,7 +3313,7 @@ url = "https://api.example.com/users""#,
     }
 
     #[test]
-    fn fused_bar_centers_text_between_shaded_half_caps() {
+    fn fused_bar_centers_text_between_shaded_bevel_edges() {
         let mut e = Editor::default();
         e.load(
             Some("a".into()),

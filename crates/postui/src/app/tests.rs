@@ -1451,7 +1451,9 @@ fn the_manager_left_list_lists_variables_then_groups() {
         .hits
         .rect_of(&crate::hit::Hit::VmLeftRow(group_row))
         .expect("left row registered");
-    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    // 1-line pitch: the row's hit rect is exactly one row tall now, so the
+    // click must land on its own `y`, not `y + 1` (the next row's).
+    app.handle_mouse(left_down(r.x + 1, r.y));
     assert_eq!(app.varmanager.detail, VmDetail::Group("user".into()));
 }
 
@@ -1472,7 +1474,8 @@ fn right_clicking_a_left_row_opens_its_rename_duplicate_delete_menu() {
         .position(|r| r == &VmRow::Var("base_url".into()))
         .unwrap();
     let r = app.hits.rect_of(&crate::hit::Hit::VmLeftRow(row)).unwrap();
-    app.handle_mouse(right_down(r.x + 1, r.y + 1));
+    // 1-line pitch: click on the row's own `y`, not `y + 1`.
+    app.handle_mouse(right_down(r.x + 1, r.y));
 
     let Some(Modal::Dropdown(menu)) = app.modals.top() else {
         panic!("expected a context menu");

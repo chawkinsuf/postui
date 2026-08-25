@@ -9,7 +9,7 @@ use indexmap::IndexMap;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 /// Which of the three name sources an Insert-mode [`VarEntry`] comes from
@@ -179,18 +179,6 @@ pub struct VarPickerState {
     /// `ensure_visible` contract this mirrors.
     scroll: usize,
     ensure_visible: bool,
-}
-
-/// Replicates [`ListRow::paint`]'s own fill computation (sidebar's
-/// `Sidebar::resolve_fill`, without the zebra term this list never uses) so
-/// text painted as a second pass on top of a row knows what background it
-/// actually landed on.
-fn row_fill(theme: &Theme, highlight: RowHighlight, base: Color, hover_t: f32) -> Color {
-    match highlight {
-        RowHighlight::None => base,
-        RowHighlight::Hover => crate::theme::mix(base, theme.control, hover_t),
-        RowHighlight::Selected => theme.selection,
-    }
 }
 
 impl VarPickerState {
@@ -555,7 +543,7 @@ impl VarPickerState {
                 hover_t,
                 theme,
             );
-            let row_fill = row_fill(theme, highlight, theme.panel, hover_t);
+            let row_fill = ListRow::resolve_fill(theme, highlight, theme.panel, hover_t);
 
             let right = list_area.x + list_area.width;
             let mut x = list_area.x + 1;

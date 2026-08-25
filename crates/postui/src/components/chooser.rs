@@ -5,7 +5,7 @@ use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 /// One selectable entry in a `ChooserState`: a label, an optional detail
@@ -36,18 +36,6 @@ pub struct ChooserState {
     /// `draw` scrolls it back into view; wheel scrolling clears it so a free
     /// scroll survives the following draw untouched.
     ensure_visible: bool,
-}
-
-/// Replicates [`ListRow::paint`]'s own fill computation (sidebar's
-/// `Sidebar::resolve_fill`, without the zebra term this list never uses) so
-/// text painted as a second pass on top of a row knows what background it
-/// actually landed on.
-fn row_fill(theme: &Theme, highlight: RowHighlight, base: Color, hover_t: f32) -> Color {
-    match highlight {
-        RowHighlight::None => base,
-        RowHighlight::Hover => crate::theme::mix(base, theme.control, hover_t),
-        RowHighlight::Selected => theme.selection,
-    }
 }
 
 impl ChooserState {
@@ -266,7 +254,7 @@ impl ChooserState {
                 hover_t,
                 theme,
             );
-            let row_fill = row_fill(theme, highlight, theme.panel, hover_t);
+            let row_fill = ListRow::resolve_fill(theme, highlight, theme.panel, hover_t);
 
             let text_x = list_area.x + 1;
             let mut x = text_x;
