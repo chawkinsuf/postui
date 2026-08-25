@@ -56,7 +56,7 @@ pub enum Hit {
     ResponseTab(crate::components::response::ViewMode),
     CopyBodyButton,
     SaveBodyButton,
-    /// The `⌕` button on the response header strip: opens the in-pane
+    /// The `Find` button on the response header strip: opens the in-pane
     /// search, exactly as `/` does.
     ResponseSearchButton,
     /// The `▼`/`▲` buttons beside the search footer: step to the next /

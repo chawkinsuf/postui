@@ -650,7 +650,7 @@ impl Response {
         view.set_mode(mode);
     }
 
-    /// Opens the in-pane search, exactly as `/` does (the `⌕` button).
+    /// Opens the in-pane search, exactly as `/` does (the `Find` button).
     pub fn open_search(&mut self) -> bool {
         let Some(view) = self.view.as_mut() else {
             return false;
@@ -1084,7 +1084,7 @@ fn draw_header_strip(
     }
     .paint(buf, area.x, area.y, t.panel, t);
 
-    // Row 0 (right): ⌕ / Copy body / Save to file, right-aligned — the
+    // Row 0 (right): Find / Copy body / Save to file, right-aligned — the
     // row's only other content is the short status chip, so there's no risk
     // of the buttons colliding with it at any pane width worth supporting.
     draw_header_actions(frame, hits, area, ctx);
@@ -1187,7 +1187,7 @@ fn tabstrip_width(tabs: &[(String, Option<(char, ratatui::style::Color)>)]) -> u
         .unwrap_or(0)
 }
 
-/// The header strip's plain painted actions — `⌕` (open search), `Copy
+/// The header strip's plain painted actions — `Find` (open search), `Copy
 /// body`, `Save to file` — right-aligned in `area` on its `theme.panel`
 /// fill. Overflows leftward when `area` is too narrow rather than off its
 /// right edge.
@@ -1198,7 +1198,7 @@ fn draw_header_actions(
     ctx: &DrawCtx,
 ) {
     let actions = [
-        (" ⌕ ".to_string(), crate::hit::Hit::ResponseSearchButton),
+        (" Find ".to_string(), crate::hit::Hit::ResponseSearchButton),
         (" Copy body ".to_string(), crate::hit::Hit::CopyBodyButton),
         (
             " Save to file ".to_string(),
@@ -2723,6 +2723,16 @@ mod tests {
             r.handle_key(ch('h')),
             Some(Action::ResponseViewMode(ViewMode::Headers))
         );
+    }
+
+    #[test]
+    fn search_button_is_labeled_find() {
+        // The `⌕` glyph reads as a refresh arrow in many fonts; a plain
+        // text label can't be misread.
+        let mut r = ready(r#"{"a": 1}"#);
+        let out = render(&mut r);
+        assert!(out.contains("Find"), "{out}");
+        assert!(!out.contains("⌕"), "{out}");
     }
 
     #[test]

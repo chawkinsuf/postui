@@ -4326,7 +4326,7 @@ fn the_search_button_opens_the_response_search() {
     let r = app
         .hits
         .rect_of(&Hit::ResponseSearchButton)
-        .expect("⌕ button");
+        .expect("Find button");
     app.handle_mouse(left_down(r.x, r.y));
     let search = app
         .session

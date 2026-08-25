@@ -270,7 +270,7 @@ pub enum Action {
     /// Switch the response pane's view (the tabs row's click target).
     ResponseViewMode(crate::components::response::ViewMode),
     /// Opens the response pane's in-pane search (Task 17, spec §5): the
-    /// dispatchable form of the `⌕` button / `/` key, so the footer's
+    /// dispatchable form of the `Find` button / `/` key, so the footer's
     /// Response-pane search chip and the palette can reach it too.
     OpenResponseSearch,
     /// Click on a JSON-tree body row: moves the cursor there, and — when
