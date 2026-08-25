@@ -841,7 +841,7 @@ impl ModalStack {
                     kind: ButtonKind::Primary,
                     state: btn_state,
                 }
-                .paint(frame.buffer_mut(), btn_area, theme.panel, theme);
+                .paint(frame.buffer_mut(), btn_area, theme);
                 hits.register(btn_area, crate::hit::Hit::ModalConfirm);
             }
             Modal::Confirm {
@@ -906,7 +906,7 @@ impl ModalStack {
                         kind: ButtonKind::Secondary,
                         state: choice_state,
                     }
-                    .paint(frame.buffer_mut(), btn_area, theme.panel, theme);
+                    .paint(frame.buffer_mut(), btn_area, theme);
                     hits.register(btn_area, crate::hit::Hit::ConfirmChoice(*c));
                     x += w + 2;
                 }
@@ -1439,7 +1439,7 @@ fn draw_cancel_confirm_row(
         } else {
             ControlState::Normal
         };
-        Button { label, kind, state }.paint(frame.buffer_mut(), btn_area, theme.panel, theme);
+        Button { label, kind, state }.paint(frame.buffer_mut(), btn_area, theme);
         hits.register(btn_area, hit);
         x += w + 2;
     }

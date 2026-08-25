@@ -250,7 +250,6 @@ fn disabled_labels_are_dimmed_by_the_control_mix_formula() {
         .paint(
             f.buffer_mut(),
             ratatui::layout::Rect::new(0, 0, 20, 3),
-            theme.page,
             &theme,
         );
     })

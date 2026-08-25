@@ -379,7 +379,7 @@ impl Component for Sidebar {
                 kind: ButtonKind::Primary,
                 state,
             }
-            .paint(buf, button_area, theme.panel, theme);
+            .paint(buf, button_area, theme);
             hits.register(button_area, Hit::SidebarNewRequest);
         }
 

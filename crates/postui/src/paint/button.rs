@@ -50,7 +50,7 @@ impl Button<'_> {
     /// button's own face color; the label is centered bold on the middle
     /// row, and the top/bottom rows carry a thin bevel edge on that same
     /// fill (skipped when Disabled).
-    pub fn paint(&self, buf: &mut Buffer, area: Rect, _on: Color, theme: &Theme) {
+    pub fn paint(&self, buf: &mut Buffer, area: Rect, theme: &Theme) {
         let face = self.face(theme);
 
         fill(buf, area, face.fill);
@@ -151,7 +151,7 @@ mod tests {
                 kind: ButtonKind::Primary,
                 state: ControlState::Normal,
             }
-            .paint(f.buffer_mut(), Rect::new(0, 1, 20, 3), theme.page, &theme);
+            .paint(f.buffer_mut(), Rect::new(0, 1, 20, 3), &theme);
         })
         .unwrap();
         let top = buf_cell(&term, 8, 1);
@@ -182,7 +182,7 @@ mod tests {
                 kind: ButtonKind::Secondary,
                 state: ControlState::Normal,
             }
-            .paint(f.buffer_mut(), Rect::new(0, 0, 20, 3), theme.page, &theme);
+            .paint(f.buffer_mut(), Rect::new(0, 0, 20, 3), &theme);
         })
         .unwrap();
         // The neutral control face uses the theme's ±0.08 bevel around its
@@ -210,7 +210,7 @@ mod tests {
                 kind: ButtonKind::Primary,
                 state: ControlState::Pressed,
             }
-            .paint(f.buffer_mut(), Rect::new(0, 0, 20, 3), theme.page, &theme);
+            .paint(f.buffer_mut(), Rect::new(0, 0, 20, 3), &theme);
         })
         .unwrap();
         // Sunken: the pressed fill's dark edge on top, its light edge on
@@ -238,7 +238,7 @@ mod tests {
                 kind: ButtonKind::Primary,
                 state: ControlState::Hover,
             }
-            .paint(f.buffer_mut(), Rect::new(0, 0, 20, 3), theme.page, &theme);
+            .paint(f.buffer_mut(), Rect::new(0, 0, 20, 3), &theme);
         })
         .unwrap();
         // The whole control reacts to hover: the edges are the light/dark
@@ -262,7 +262,7 @@ mod tests {
                 kind: ButtonKind::Primary,
                 state: ControlState::Focused,
             }
-            .paint(f.buffer_mut(), Rect::new(0, 0, 20, 3), theme.page, &theme);
+            .paint(f.buffer_mut(), Rect::new(0, 0, 20, 3), &theme);
         })
         .unwrap();
         // Focus is the same surface lift hover uses — fill up one step,
@@ -284,7 +284,7 @@ mod tests {
                 kind: ButtonKind::Secondary,
                 state: ControlState::Disabled,
             }
-            .paint(f.buffer_mut(), Rect::new(0, 0, 20, 3), theme.page, &theme);
+            .paint(f.buffer_mut(), Rect::new(0, 0, 20, 3), &theme);
         })
         .unwrap();
         assert_eq!(

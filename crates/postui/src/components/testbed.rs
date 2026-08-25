@@ -100,7 +100,7 @@ pub fn draw_testbed(frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
             kind: ButtonKind::Primary,
             state: *state,
         }
-        .paint(buf, rect, theme.page, theme);
+        .paint(buf, rect, theme);
     }
     y += BUTTON_HEIGHT;
 
@@ -125,7 +125,7 @@ pub fn draw_testbed(frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
             kind: ButtonKind::Secondary,
             state: *state,
         }
-        .paint(buf, rect, theme.page, theme);
+        .paint(buf, rect, theme);
     }
     y += BUTTON_HEIGHT + 1;
 

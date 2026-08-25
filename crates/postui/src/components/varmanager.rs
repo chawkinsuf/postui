@@ -1149,7 +1149,7 @@ impl VarManager {
                     kind,
                     state,
                 }
-                .paint(buf, rect, theme.page, theme);
+                .paint(buf, rect, theme);
                 hits.register(rect, hit);
             }
             y += BUTTON_HEIGHT + 1;
@@ -1388,7 +1388,7 @@ impl VarManager {
                     kind: ButtonKind::Secondary,
                     state: state_of(&hit),
                 }
-                .paint(buf, rect, theme.page, theme);
+                .paint(buf, rect, theme);
                 hits.register(rect, hit);
             }
             y += BUTTON_HEIGHT + 1;
@@ -1522,7 +1522,7 @@ impl VarManager {
                 kind: ButtonKind::Secondary,
                 state: state_of(&hit),
             }
-            .paint(buf, rect, theme.page, theme);
+            .paint(buf, rect, theme);
             hits.register(rect, hit);
             y += BUTTON_HEIGHT + 1;
         }
@@ -1670,7 +1670,7 @@ impl VarManager {
             kind: ButtonKind::Secondary,
             state: state_of(&Hit::VmEnvSwitch),
         }
-        .paint(buf, env_area, theme.panel, theme);
+        .paint(buf, env_area, theme);
         hits.register(env_area, Hit::VmEnvSwitch);
 
         // Right-aligned group, laid out from the bar's right edge inward so
@@ -1700,7 +1700,7 @@ impl VarManager {
                 height: BUTTON_HEIGHT,
             };
             let state = state_of(&hit);
-            Button { label, kind, state }.paint(buf, rect, theme.panel, theme);
+            Button { label, kind, state }.paint(buf, rect, theme);
             hits.register(rect, hit);
         }
     }
