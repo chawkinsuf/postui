@@ -19,7 +19,7 @@ pub use button::{BUTTON_HEIGHT, Button, ButtonKind, button_min_width};
 pub use chip::{Chip, TabStrip};
 pub use field::{FIELD_HEIGHT, TextField};
 pub use frac::frac_vspan;
-pub use panel::{dim_backdrop, floating_panel};
+pub use panel::{dim_backdrop, floating_panel, floating_panel_settling};
 pub use ring::ring;
 pub use rows::{ListRow, PillRow, RowHighlight};
 

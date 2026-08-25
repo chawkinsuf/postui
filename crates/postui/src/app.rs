@@ -384,7 +384,7 @@ impl App {
                     Some(fallback) => vec![Action::SwitchProject(fallback)],
                     None => vec![],
                 };
-                app.modals.push(Modal::Confirm {
+                app.push_modal(Modal::Confirm {
                     title: "Not a postui project".into(),
                     body: format!("{path} has no project.toml — create one here?"),
                     choices: vec![
@@ -478,7 +478,7 @@ impl App {
         if let Some(rest) = outcome.notes.len().checked_sub(SHOWN).filter(|n| *n > 0) {
             lines.push(format!("\u{2022} \u{2026} and {rest} more"));
         }
-        self.modals.push(Modal::Confirm {
+        self.push_modal(Modal::Confirm {
             title: MIGRATION_TITLE.into(),
             body: lines.join("\n"),
             choices: vec![
@@ -680,7 +680,7 @@ impl App {
         if let Some(seed) = seed {
             state.seed_filter(seed);
         }
-        self.modals.push(Modal::VarPicker(state));
+        self.push_modal(Modal::VarPicker(state));
         true
     }
 
@@ -792,7 +792,7 @@ impl App {
             Action::ConfirmDiscardChanges => {
                 if self.editor.is_dirty() {
                     let current = self.editor.slug.clone().unwrap_or_default();
-                    self.modals.push(Modal::Confirm {
+                    self.push_modal(Modal::Confirm {
                         title: "Discard changes".into(),
                         body: format!("Revert \"{current}\" to its last saved state?"),
                         choices: vec![(
@@ -872,7 +872,7 @@ impl App {
             Action::OpenPalette => {
                 use crate::components::modal::Modal;
                 use crate::components::palette::PaletteState;
-                self.modals.push(Modal::Palette(PaletteState::new(
+                self.push_modal(Modal::Palette(PaletteState::new(
                     &self.usage,
                     crate::usage::now(),
                 )));
@@ -881,8 +881,12 @@ impl App {
             Action::Close => {
                 let popped = self.modals.pop().is_some();
                 // Overlay close is always instant — no motion rule
-                // exception for the dropdown open-settle.
+                // exception for either open-settle key. Snapping
+                // `ModalOpen` here also sets the next panel modal's open
+                // baseline to 1 for when the stack goes empty→non-empty
+                // again (see `push_modal`).
                 self.anims.snap(AnimKey::DropdownOpen, 1.0);
+                self.anims.snap(AnimKey::ModalOpen, 1.0);
                 popped
             }
             Action::ShowToast(msg, kind) => {
@@ -891,7 +895,7 @@ impl App {
             }
             Action::ShowAbout => {
                 use crate::components::modal::Modal;
-                self.modals.push(Modal::Message {
+                self.push_modal(Modal::Message {
                     title: "postui".into(),
                     body: "A fast, local-first terminal HTTP client.\n\nText selection: hold Shift while dragging (mouse capture is on).".into(),
                 });
@@ -943,7 +947,7 @@ impl App {
                     "txt"
                 };
                 let prefill = format!("~/Downloads/{slug}-response.{ext}");
-                self.modals.push(Modal::Prompt {
+                self.push_modal(Modal::Prompt {
                     title: "Save response body".into(),
                     input: crate::components::line_input::LineInput::new(&prefill),
                     kind: PromptKind::SaveBodyAs,
@@ -1012,7 +1016,7 @@ impl App {
                     .editor
                     .last_method_area
                     .unwrap_or_else(|| ratatui::layout::Rect::new(0, 0, 0, 0));
-                self.modals.push(Modal::Dropdown(DropdownState {
+                self.push_modal(Modal::Dropdown(DropdownState {
                     anchor,
                     items,
                     selected: current.unwrap_or(0),
@@ -1112,7 +1116,7 @@ impl App {
                         }
                     }
                     None => {
-                        self.modals.push(Modal::Prompt {
+                        self.push_modal(Modal::Prompt {
                             title: "Save request as".into(),
                             input: crate::components::line_input::LineInput::new(""),
                             kind: PromptKind::SaveAs,
@@ -1136,7 +1140,7 @@ impl App {
                         _ => None,
                     })
                     .unwrap_or_else(|| "unknown error".to_string());
-                self.modals.push(Modal::Message {
+                self.push_modal(Modal::Message {
                     title: format!("{slug}: parse error"),
                     body,
                 });
@@ -1147,7 +1151,7 @@ impl App {
                 true
             }
             Action::PromptNewRequest => {
-                self.modals.push(Modal::Prompt {
+                self.push_modal(Modal::Prompt {
                     title: "New request".into(),
                     input: crate::components::line_input::LineInput::new(""),
                     kind: PromptKind::NewRequest,
@@ -1156,7 +1160,7 @@ impl App {
                 true
             }
             Action::PromptNewRequestIn(folder) => {
-                self.modals.push(Modal::Prompt {
+                self.push_modal(Modal::Prompt {
                     title: "New request".into(),
                     input: crate::components::line_input::LineInput::new(&format!("{folder}/")),
                     kind: PromptKind::NewRequest,
@@ -1198,7 +1202,7 @@ impl App {
                         }
                         None => self.request_display(&slug),
                     };
-                    self.modals.push(Modal::Prompt {
+                    self.push_modal(Modal::Prompt {
                         title: "Rename request".into(),
                         input: crate::components::line_input::LineInput::new(&prefill),
                         kind: PromptKind::RenameRequest { from: slug },
@@ -1215,7 +1219,7 @@ impl App {
                     EditorTab::Body => return true,
                 };
                 if let Some((key, _)) = map.get_index(i) {
-                    self.modals.push(Modal::Confirm {
+                    self.push_modal(Modal::Confirm {
                         title: format!("Delete {noun}"),
                         body: format!("Delete {noun} \"{key}\"?"),
                         choices: vec![
@@ -1263,7 +1267,7 @@ impl App {
             Action::ConfirmDeleteRequest => {
                 if let Some(slug) = self.sidebar.selected_slug() {
                     let display = self.request_display(&slug);
-                    self.modals.push(Modal::Confirm {
+                    self.push_modal(Modal::Confirm {
                         title: "Delete request".into(),
                         body: format!("Delete \"{display}\"? This cannot be undone."),
                         choices: vec![
@@ -1361,7 +1365,7 @@ impl App {
             }
             Action::PromptSaveScratch(then) => {
                 self.commit_table_edit();
-                self.modals.push(Modal::Prompt {
+                self.push_modal(Modal::Prompt {
                     title: "Save request as".into(),
                     input: crate::components::line_input::LineInput::new(""),
                     kind: PromptKind::SaveAsThen(then),
@@ -1391,7 +1395,7 @@ impl App {
                 }
                 let body = self.editor.body_text();
                 if !body.is_empty() && postui_core::json::validate(&body).is_err() {
-                    self.modals.push(Modal::Confirm {
+                    self.push_modal(Modal::Confirm {
                         title: "Invalid body".into(),
                         body: "Body is not valid JSON — send anyway?".into(),
                         choices: vec![
@@ -1430,7 +1434,7 @@ impl App {
                             (*cause == postui_core::prepare::UnresolvedCause::MissingSecret)
                                 .then(|| name.clone())
                         }) {
-                            self.modals.push(Modal::Prompt {
+                            self.push_modal(Modal::Prompt {
                                 title: format!(
                                     "Value for `{name}` (secret, env `{}`)",
                                     self.project.env_label()
@@ -1677,7 +1681,7 @@ impl App {
                 true
             }
             Action::PromptOpenProjectPath => {
-                self.modals.push(Modal::Prompt {
+                self.push_modal(Modal::Prompt {
                     title: "Open project at path".into(),
                     input: crate::components::line_input::LineInput::new(""),
                     kind: PromptKind::OpenProjectPath,
@@ -1691,7 +1695,7 @@ impl App {
                     self.apply(Action::SwitchProject(path));
                 } else {
                     let display = path.display().to_string();
-                    self.modals.push(Modal::Confirm {
+                    self.push_modal(Modal::Confirm {
                         title: "Not a postui project".into(),
                         body: format!("create project at {display}?"),
                         choices: vec![
@@ -1714,7 +1718,7 @@ impl App {
             }
             Action::PromptNewProject => {
                 let prefill = format!("{}/", self.registry.default_root().display());
-                self.modals.push(Modal::NewProject {
+                self.push_modal(Modal::NewProject {
                     name: crate::components::line_input::LineInput::new(""),
                     path: crate::components::line_input::LineInput::new(&prefill),
                     on_path: false,
@@ -1777,7 +1781,7 @@ impl App {
                 true
             }
             Action::OpenNewEnvPrompt => {
-                self.modals.push(Modal::Prompt {
+                self.push_modal(Modal::Prompt {
                     title: "New environment (a-z 0-9 - _)".into(),
                     input: crate::components::line_input::LineInput::new(""),
                     kind: PromptKind::NewEnvironment,
@@ -1962,7 +1966,7 @@ impl App {
                 prefill,
                 completing,
             } => {
-                self.modals.push(Modal::Prompt {
+                self.push_modal(Modal::Prompt {
                     title: "New variable".into(),
                     input: LineInput::new(&prefill),
                     kind: PromptKind::NewVariableAndInsert { completing },
@@ -2023,7 +2027,7 @@ impl App {
                 true
             }
             Action::PromptNewVar => {
-                self.modals.push(Modal::Prompt {
+                self.push_modal(Modal::Prompt {
                     title: "New variable".into(),
                     input: LineInput::new(""),
                     kind: PromptKind::NewVariable,
@@ -2033,7 +2037,7 @@ impl App {
             }
             Action::PromptNewGroup => {
                 use crate::components::modal::PromptField;
-                self.modals.push(Modal::MultiPrompt {
+                self.push_modal(Modal::MultiPrompt {
                     title: "New group".into(),
                     fields: vec![
                         PromptField::text("name", "Name", ""),
@@ -2045,7 +2049,7 @@ impl App {
                 true
             }
             Action::PromptAddGroupMember { group } => {
-                self.modals.push(Modal::Prompt {
+                self.push_modal(Modal::Prompt {
                     title: format!("Add member to {group}"),
                     input: LineInput::new(""),
                     kind: PromptKind::AddGroupMember { group },
@@ -2074,7 +2078,7 @@ impl App {
                 true
             }
             Action::ConfirmRemoveGroupMember { group, member } => {
-                self.modals.push(Modal::Confirm {
+                self.push_modal(Modal::Confirm {
                     title: format!("Remove {member}"),
                     body: format!(
                         "Remove \"{member}\" from group \"{group}\"? Its values in the group's options are removed too."
@@ -2148,7 +2152,7 @@ impl App {
                         usage.join(", ")
                     )
                 };
-                self.modals.push(Modal::Prompt {
+                self.push_modal(Modal::Prompt {
                     title,
                     input: LineInput::new(&from),
                     kind: PromptKind::RenameVariable { from },
@@ -2164,7 +2168,7 @@ impl App {
                     .get(&group)
                     .map(|g| g.fields.join(", "))
                     .unwrap_or_default();
-                self.modals.push(Modal::Prompt {
+                self.push_modal(Modal::Prompt {
                     title: format!("Members of {group}"),
                     input: LineInput::new(&seed),
                     kind: PromptKind::GroupMembers { group },
@@ -2194,7 +2198,7 @@ impl App {
                         usage.join(", ")
                     )
                 };
-                self.modals.push(Modal::Confirm {
+                self.push_modal(Modal::Confirm {
                     title: format!("Delete {name}"),
                     body,
                     choices: vec![
@@ -2222,7 +2226,7 @@ impl App {
                 // refusal. Refuse up front instead, mirroring
                 // `open_demote_confirm`'s refusal modals.
                 if self.project.model.vars.get(&name).is_some_and(|d| d.secret) {
-                    self.modals.push(Modal::Message {
+                    self.push_modal(Modal::Message {
                         title: "Can't promote".into(),
                         body: format!(
                             "\"{name}\" is already declared as a secret; promoting a plain value onto it would either commit a secret to variables.toml or make the declaration invalid."
@@ -2249,7 +2253,7 @@ impl App {
                     ));
                 }
                 choices.push(('c', "Cancel".to_string(), vec![]));
-                self.modals.push(Modal::Confirm {
+                self.push_modal(Modal::Confirm {
                     title: format!("Promote {name}"),
                     body: "Where should the value land?".into(),
                     choices,
@@ -2312,7 +2316,7 @@ impl App {
                     "Add field",
                     "",
                 ));
-                self.modals.push(Modal::MultiPrompt {
+                self.push_modal(Modal::MultiPrompt {
                     title: format!("Fields of {group}"),
                     fields,
                     focus: 0,
@@ -2331,7 +2335,7 @@ impl App {
                 true
             }
             Action::PromptRenameEntry { env, group, from } => {
-                self.modals.push(Modal::Prompt {
+                self.push_modal(Modal::Prompt {
                     title: format!("Rename {from}"),
                     input: LineInput::new(&from),
                     kind: PromptKind::RenameEntry { env, group, from },
@@ -2340,7 +2344,7 @@ impl App {
                 true
             }
             Action::ConfirmDeleteEntry { env, group, name } => {
-                self.modals.push(Modal::Confirm {
+                self.push_modal(Modal::Confirm {
                     title: format!("Delete {name}"),
                     body: format!(
                         "Delete entry \"{name}\" of \"{group}\" from {env}? Its values are removed with it."
@@ -2364,7 +2368,7 @@ impl App {
             // -- Task 17: in-context flows (spec §6) --
             Action::OpenNewOptionInlinePrompt { owner } => {
                 use crate::components::modal::PromptField;
-                self.modals.push(Modal::MultiPrompt {
+                self.push_modal(Modal::MultiPrompt {
                     title: format!("Add entry on {owner}"),
                     fields: vec![
                         PromptField::text("key", "Name", ""),
@@ -2395,7 +2399,7 @@ impl App {
                     "Description",
                     description.as_deref().unwrap_or(""),
                 ));
-                self.modals.push(Modal::MultiPrompt {
+                self.push_modal(Modal::MultiPrompt {
                     title: format!("Edit {key} on {owner}"),
                     fields,
                     focus: 0,
@@ -2549,7 +2553,7 @@ impl App {
                     return true;
                 }
                 use crate::components::modal::PromptField;
-                self.modals.push(Modal::MultiPrompt {
+                self.push_modal(Modal::MultiPrompt {
                     title: "Extract to variable".into(),
                     fields: vec![
                         PromptField::text("name", "Name", ""),
@@ -2972,7 +2976,7 @@ impl App {
                     lines.join("\n")
                 )
             };
-            self.modals.push(Modal::Confirm {
+            self.push_modal(Modal::Confirm {
                 title: format!("Un-mark {name} as secret"),
                 body,
                 choices: vec![
@@ -3005,7 +3009,7 @@ impl App {
                     envs_with_values.join(", ")
                 )
             };
-            self.modals.push(Modal::Confirm {
+            self.push_modal(Modal::Confirm {
                 title: format!("Mark {name} as secret"),
                 body,
                 choices: vec![
@@ -3033,7 +3037,7 @@ impl App {
         }
         let is_secret = self.project.model.vars.get(&name).is_some_and(|d| d.secret);
         if is_secret {
-            self.modals.push(Modal::Message {
+            self.push_modal(Modal::Message {
                 title: "Can't demote".into(),
                 body: format!(
                     "\"{name}\" is secret; its value can't be written into a request file."
@@ -3042,7 +3046,7 @@ impl App {
             return;
         }
         if self.project.model.groups.contains_key(&name) {
-            self.modals.push(Modal::Message {
+            self.push_modal(Modal::Message {
                 title: "Can't demote".into(),
                 body: format!("\"{name}\" is a group; request scope is simple values only."),
             });
@@ -3062,7 +3066,7 @@ impl App {
                 others.join(", ")
             )
         };
-        self.modals.push(Modal::Confirm {
+        self.push_modal(Modal::Confirm {
             title: format!("Demote {name}"),
             body,
             choices: vec![
@@ -3390,7 +3394,7 @@ impl App {
             } else {
                 format!("every entry in {}", envs.join(", "))
             };
-            self.modals.push(Modal::Confirm {
+            self.push_modal(Modal::Confirm {
                 title: format!("Remove {} from {group}", removals.join(", ")),
                 body: format!(
                     "Values in this column will be deleted from {where_}. This cannot be undone."
@@ -3969,7 +3973,7 @@ impl App {
             return false;
         }
         let selected = DropdownState::first_enabled(&items);
-        self.modals.push(Modal::Dropdown(DropdownState {
+        self.push_modal(Modal::Dropdown(DropdownState {
             anchor: ratatui::layout::Rect::new(x, y, 1, 1),
             items,
             selected,
@@ -4077,7 +4081,7 @@ impl App {
     /// the Save-as prompt, with `then` deferred until that save succeeds.
     fn dirty_gate(&mut self, verb: &str, then: Action) {
         if self.editor.slug.is_none() {
-            self.modals.push(Modal::Confirm {
+            self.push_modal(Modal::Confirm {
                 title: "Unsaved request".into(),
                 body: "This request has never been saved.".into(),
                 choices: vec![
@@ -4092,7 +4096,7 @@ impl App {
             return;
         }
         let current = self.editor.slug.clone().unwrap_or_default();
-        self.modals.push(Modal::Confirm {
+        self.push_modal(Modal::Confirm {
             title: "Unsaved changes".into(),
             body: format!("\"{current}\" has unsaved changes."),
             choices: vec![
@@ -4353,6 +4357,36 @@ impl App {
             self.ui_settings.anim_ms.dropdown_open,
             now,
         );
+    }
+
+    /// Pushes `modal` onto the modal stack, driving `AnimKey::ModalOpen`
+    /// (the panel-style shell's open-settle): an empty→non-empty push
+    /// retargets it from 0 to 1 over `ui_settings.anim_ms.modal_open`
+    /// (100ms by default, config-tunable) so the panel fades/settles in;
+    /// pushing an additional modal onto an already non-empty stack snaps it
+    /// straight to 1 instead — no re-animation for a modal opened on top of
+    /// another. A `Modal::Dropdown` push is exempted entirely: dropdowns
+    /// settle via their own `AnimKey::DropdownOpen` (started separately by
+    /// `begin_dropdown_open` at their two push sites), and often land on
+    /// top of an existing modal stack, so touching `ModalOpen` for them
+    /// would either double-animate or wrongly snap a panel modal's own
+    /// baseline mid-flight.
+    pub(crate) fn push_modal(&mut self, modal: Modal) {
+        if !matches!(modal, Modal::Dropdown(_)) {
+            let now = Instant::now();
+            if self.modals.is_empty() {
+                self.anims.snap(AnimKey::ModalOpen, 0.0);
+                self.anims.retarget(
+                    AnimKey::ModalOpen,
+                    1.0,
+                    self.ui_settings.anim_ms.modal_open,
+                    now,
+                );
+            } else {
+                self.anims.snap(AnimKey::ModalOpen, 1.0);
+            }
+        }
+        self.modals.push(modal);
     }
 
     /// Drives every looping motion demo on the hidden testbed screen
@@ -4949,6 +4983,7 @@ impl App {
             self.modals.pop();
             // Overlay close is always instant.
             self.anims.snap(AnimKey::DropdownOpen, 1.0);
+            self.anims.snap(AnimKey::ModalOpen, 1.0);
         }
         if let Some(id) = &res.usage {
             self.usage.record(id, crate::usage::now());

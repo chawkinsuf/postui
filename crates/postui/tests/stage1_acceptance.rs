@@ -14,6 +14,10 @@ fn render(app: &mut App) -> String {
 #[test]
 fn stage1_acceptance_flow() {
     let mut app = App::new_for_test();
+    // Modal-open settle (Task 13) is real-time-driven; this acceptance flow
+    // asserts on modal content immediately after opening, so disable anims
+    // for determinism (matches the app-level test convention elsewhere).
+    app.anims.enabled = false;
 
     // 1. Initial frame: all chrome present, sidebar focused. Panes carry no
     // border/title of their own — the response pane's empty-state hint

@@ -374,7 +374,15 @@ fn app_in_project(files: &[(&str, &str)]) -> TestApp {
         std::fs::write(path, body).unwrap();
     }
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    (App::with_root(tx, dir.path().to_path_buf()), dir, rx)
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    // Modal-open settle (Task 13) is real-time-driven; these scenarios
+    // click into modal content immediately after opening, so disable anims
+    // for determinism. `with_root` may already have pushed a migration
+    // Confirm modal (with the real duration, before `enabled` flips here),
+    // so also snap its settle straight to done.
+    app.anims.enabled = false;
+    app.anims.snap(postui::anim::AnimKey::ModalOpen, 1.0);
+    (app, dir, rx)
 }
 
 /// Clicks a request's sidebar row, which is how a mouse-only user opens it.

@@ -168,6 +168,7 @@ impl ChooserState {
         theme: &Theme,
         hits: &mut crate::hit::HitMap,
         hovered: Option<&crate::hit::Hit>,
+        t: f32,
     ) {
         let width = 60.min(screen.width);
         // Chrome (everything but the list): 1 pad + 1 title + 1 ring-margin
@@ -177,7 +178,10 @@ impl ChooserState {
         let height = (CHROME + content_rows).clamp(13, 26).min(screen.height);
         let area = super::modal::centered_rect(screen, width, height);
         hits.register(area, crate::hit::Hit::ModalBody);
-        paint::floating_panel(frame.buffer_mut(), area, screen, theme);
+        paint::floating_panel_settling(frame.buffer_mut(), area, screen, theme, t);
+        if t < 1.0 {
+            return;
+        }
 
         let title_y = area.y + 1;
         paint::text(
@@ -414,7 +418,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
-            .draw(|f| c.draw(f, f.area(), &theme, &mut hits, None))
+            .draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0))
             .unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("Projects"), "title should render");
@@ -431,7 +435,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
-            .draw(|f| c.draw(f, f.area(), &theme, &mut hits, None))
+            .draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0))
             .unwrap();
         let row0 = hits.rect_of(&crate::hit::Hit::ChooserRow(0)).unwrap();
         let buffer = terminal.backend().buffer();
@@ -464,6 +468,7 @@ mod tests {
                     &theme,
                     &mut hits,
                     Some(&crate::hit::Hit::ChooserRow(1)),
+                    1.0,
                 )
             })
             .unwrap();
@@ -484,7 +489,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
-            .draw(|f| c.draw(f, f.area(), &theme, &mut hits, None))
+            .draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0))
             .unwrap();
         let area = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
         let title_y = area.y + 1;
@@ -513,7 +518,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
-            .draw(|f| c.draw(f, f.area(), &theme, &mut hits, None))
+            .draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0))
             .unwrap();
         let row0 = hits.rect_of(&crate::hit::Hit::ChooserRow(0)).unwrap();
         let row1 = hits.rect_of(&crate::hit::Hit::ChooserRow(1)).unwrap();
@@ -537,7 +542,7 @@ mod tests {
         let mut hits = crate::hit::HitMap::default();
         c.select(12);
         terminal
-            .draw(|f| c.draw(f, f.area(), &theme, &mut hits, None))
+            .draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0))
             .unwrap();
         assert!(
             hits.rect_of(&crate::hit::Hit::ChooserRow(12)).is_some(),

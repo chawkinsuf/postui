@@ -417,6 +417,7 @@ impl PaletteState {
         None
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
         frame: &mut Frame,
@@ -425,6 +426,7 @@ impl PaletteState {
         hits: &mut crate::hit::HitMap,
         hovered: Option<&crate::hit::Hit>,
         keymap: &crate::keys::Keymap,
+        t: f32,
     ) {
         let width = 50.min(screen.width);
         const CHROME: u16 = 10;
@@ -432,7 +434,10 @@ impl PaletteState {
         let height = (CHROME + content_rows).clamp(13, 26).min(screen.height);
         let area = super::modal::centered_rect(screen, width, height);
         hits.register(area, crate::hit::Hit::ModalBody);
-        paint::floating_panel(frame.buffer_mut(), area, screen, theme);
+        paint::floating_panel_settling(frame.buffer_mut(), area, screen, theme, t);
+        if t < 1.0 {
+            return;
+        }
 
         let title_y = area.y + 1;
         paint::text(
@@ -782,7 +787,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
-            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, &keymap))
+            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, &keymap, 1.0))
             .unwrap();
         let area = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
         let title_y = area.y + 1;
@@ -825,6 +830,7 @@ mod tests {
                     &mut hits,
                     Some(&crate::hit::Hit::PaletteRow(1)),
                     &keymap,
+                    1.0,
                 )
             })
             .unwrap();
@@ -852,7 +858,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
-            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, &keymap))
+            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, &keymap, 1.0))
             .unwrap();
         let row0 = hits.rect_of(&crate::hit::Hit::PaletteRow(0)).unwrap();
         let row1 = hits.rect_of(&crate::hit::Hit::PaletteRow(1)).unwrap();
@@ -876,7 +882,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
-            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, &keymap))
+            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, &keymap, 1.0))
             .unwrap();
         let row0 = hits.rect_of(&crate::hit::Hit::PaletteRow(0)).unwrap();
         let buffer = terminal.backend().buffer();
@@ -904,7 +910,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
-            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, &keymap))
+            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, &keymap, 1.0))
             .unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         let first = p.filtered()[0].clone();
@@ -928,7 +934,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
-            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, &keymap))
+            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, &keymap, 1.0))
             .unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(

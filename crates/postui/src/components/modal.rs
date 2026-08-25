@@ -772,8 +772,18 @@ impl ModalStack {
         // Every variant dims the backdrop except Dropdown: it's a small
         // anchored popup (e.g. the method selector), not a screen-owning
         // modal, so dimming everything behind it would be jarring.
-        if !matches!(top, Modal::Dropdown(_)) {
-            paint::dim_backdrop(frame.buffer_mut(), screen);
+        let is_dropdown = matches!(top, Modal::Dropdown(_));
+        // `AnimKey::ModalOpen` is the panel-style shell's own open-settle —
+        // a `Dropdown` keeps only its `DropdownOpen` settle (see
+        // `App::push_modal`, which never retargets `ModalOpen` for a
+        // `Dropdown` push), so it always reads as fully open here.
+        let t = if is_dropdown {
+            1.0
+        } else {
+            anims.value_or(crate::anim::AnimKey::ModalOpen, now, 1.0)
+        };
+        if !is_dropdown {
+            paint::dim_backdrop(frame.buffer_mut(), screen, t);
         }
         // Registered before the modal's own hits so any click landing
         // outside them (topmost-wins in `HitMap`) closes the modal, same as
@@ -783,7 +793,10 @@ impl ModalStack {
             Modal::Message { title, body } => {
                 let area = centered_rect(screen, 60.min(screen.width), 13.min(screen.height));
                 hits.register(area, crate::hit::Hit::ModalBody);
-                paint::floating_panel(frame.buffer_mut(), area, screen, theme);
+                paint::floating_panel_settling(frame.buffer_mut(), area, screen, theme, t);
+                if t < 1.0 {
+                    return;
+                }
 
                 let title_y = area.y + 1;
                 paint::text(
@@ -838,7 +851,10 @@ impl ModalStack {
             } => {
                 let area = centered_rect(screen, 60.min(screen.width), 13.min(screen.height));
                 hits.register(area, crate::hit::Hit::ModalBody);
-                paint::floating_panel(frame.buffer_mut(), area, screen, theme);
+                paint::floating_panel_settling(frame.buffer_mut(), area, screen, theme, t);
+                if t < 1.0 {
+                    return;
+                }
 
                 let title_y = area.y + 1;
                 paint::text(
@@ -915,7 +931,10 @@ impl ModalStack {
                 let masked = kind.is_secret() && !*revealed;
                 let area = centered_rect(screen, 60.min(screen.width), 14.min(screen.height));
                 hits.register(area, crate::hit::Hit::ModalBody);
-                paint::floating_panel(frame.buffer_mut(), area, screen, theme);
+                paint::floating_panel_settling(frame.buffer_mut(), area, screen, theme, t);
+                if t < 1.0 {
+                    return;
+                }
 
                 let title_y = area.y + 1;
                 paint::text(
@@ -968,9 +987,9 @@ impl ModalStack {
                 let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
                 draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered);
             }
-            Modal::Palette(state) => state.draw(frame, screen, theme, hits, hovered, keymap),
-            Modal::Chooser(state) => state.draw(frame, screen, theme, hits, hovered),
-            Modal::VarPicker(state) => state.draw(frame, screen, theme, hits, hovered),
+            Modal::Palette(state) => state.draw(frame, screen, theme, hits, hovered, keymap, t),
+            Modal::Chooser(state) => state.draw(frame, screen, theme, hits, hovered, t),
+            Modal::VarPicker(state) => state.draw(frame, screen, theme, hits, hovered, t),
             Modal::NewProject {
                 name,
                 path,
@@ -979,7 +998,10 @@ impl ModalStack {
             } => {
                 let area = centered_rect(screen, 60.min(screen.width), 19.min(screen.height));
                 hits.register(area, crate::hit::Hit::ModalBody);
-                paint::floating_panel(frame.buffer_mut(), area, screen, theme);
+                paint::floating_panel_settling(frame.buffer_mut(), area, screen, theme, t);
+                if t < 1.0 {
+                    return;
+                }
 
                 let title_y = area.y + 1;
                 paint::text(
@@ -1082,7 +1104,10 @@ impl ModalStack {
                     .min(screen.height);
                 let area = centered_rect(screen, 60.min(screen.width), height);
                 hits.register(area, crate::hit::Hit::ModalBody);
-                paint::floating_panel(frame.buffer_mut(), area, screen, theme);
+                paint::floating_panel_settling(frame.buffer_mut(), area, screen, theme, t);
+                if t < 1.0 {
+                    return;
+                }
 
                 let title_y = area.y + 1;
                 paint::text(

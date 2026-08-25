@@ -103,6 +103,10 @@ async fn stage4_mouse_only_acceptance_flow() {
     let dir = tempfile::tempdir().unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
+    // Modal-open settle (Task 13) is real-time-driven; this acceptance flow
+    // clicks into modal content immediately after opening, so disable anims
+    // for determinism.
+    app.anims.enabled = false;
     let keymap = Keymap::default_bindings();
 
     let out = dir.path().join("clipboard-out.txt");

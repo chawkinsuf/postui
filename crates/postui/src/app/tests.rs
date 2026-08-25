@@ -3682,6 +3682,7 @@ fn body_insert_autoenables_substitution() {
 #[test]
 fn the_vars_chip_keeps_the_url_focused_so_the_picker_can_insert() {
     let mut app = app_with_vars();
+    app.anims.enabled = false;
     app.update(Action::FocusUrl);
     assert_eq!(app.editor.sub_focus, SubFocus::Url);
 
@@ -3709,6 +3710,7 @@ fn the_vars_chip_keeps_the_url_focused_so_the_picker_can_insert() {
 #[test]
 fn the_vars_chip_inserts_into_a_table_cell_under_edit() {
     let mut app = app_with_vars();
+    app.anims.enabled = false;
     click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
     type_chars(&mut app, "x");
     click_hit(
@@ -3731,6 +3733,7 @@ fn picker_with_no_declared_vars_still_offers_the_new_variable_row() {
     // variable…" row makes it a creation flow too, so opening it with an
     // empty project stays open on that one row instead of toasting.
     let mut app = App::new_for_test();
+    app.anims.enabled = false;
     app.update(Action::OpenVarPicker { completing: false });
     assert!(app.modals.top().is_some());
     let content = rendered_text(&mut app);
@@ -3766,6 +3769,7 @@ fields = ["user_id", "customer_id"]
 
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.anims.enabled = false;
     app.update(Action::ForceOpenRequest("r".into()));
     app.update(Action::OpenVarPicker { completing: false });
 
@@ -3800,6 +3804,7 @@ fn insert_picker_marks_secret_vars_with_the_lock_badge_and_never_shows_the_value
 
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.anims.enabled = false;
     app.update(Action::OpenVarPicker { completing: false });
 
     let content = rendered_text(&mut app);
@@ -4455,9 +4460,81 @@ fn method_dropdown_open_settles_then_every_close_path_snaps_instantly() {
     assert_eq!(app.anims.value(AnimKey::DropdownOpen, now), Some(1.0));
 }
 
+/// `AnimKey::ModalOpen` — the panel-style shell's own open-settle — only
+/// retargets from 0 on an empty→non-empty push; pushing a second modal on
+/// top of an already-open one snaps it straight to 1 instead (no
+/// re-animation of an already-visible shell). Every close path then snaps
+/// it back to 1, same convention as `AnimKey::DropdownOpen`.
+#[test]
+fn modal_open_retargets_only_on_empty_to_non_empty_push() {
+    let mut app = App::new_for_test();
+    let now = std::time::Instant::now();
+
+    // First push (empty -> non-empty): starts the settle animation short
+    // of 1 — still easing in.
+    app.update(Action::OpenPalette);
+    assert!(
+        app.anims.value(AnimKey::ModalOpen, now).unwrap() < 1.0,
+        "opening the first modal on an empty stack starts the settle animation short of 1"
+    );
+
+    // Second push onto the now non-empty stack: snaps straight to 1, no
+    // re-animation.
+    app.update(Action::ShowAbout);
+    assert_eq!(
+        app.anims.value(AnimKey::ModalOpen, now),
+        Some(1.0),
+        "a modal pushed on top of another must not re-trigger the settle"
+    );
+
+    // Close (pop back to the palette): instant, snaps to 1.
+    app.update(Action::Close);
+    assert!(!app.modals.is_empty(), "the palette is still on the stack");
+    assert_eq!(app.anims.value(AnimKey::ModalOpen, now), Some(1.0));
+
+    // Close again (stack now empty): still instant.
+    app.update(Action::Close);
+    assert!(app.modals.is_empty());
+    assert_eq!(app.anims.value(AnimKey::ModalOpen, now), Some(1.0));
+}
+
+/// A `Modal::Dropdown` push must never touch `AnimKey::ModalOpen` — it
+/// settles only via its own `AnimKey::DropdownOpen` (see
+/// `method_dropdown_open_settles_then_every_close_path_snaps_instantly`).
+/// Pushing a dropdown on top of an *empty* stack (no panel modal open) must
+/// leave `ModalOpen` untouched, and pushing one on top of an *already open*
+/// panel modal must not snap its still-animating settle to 1 early.
+#[test]
+fn dropdown_push_never_touches_modal_open() {
+    let mut app = App::new_for_test();
+    let now = std::time::Instant::now();
+
+    // Dropdown pushed onto an empty stack: `ModalOpen` stays untouched
+    // (never set at all).
+    app.update(Action::OpenMethodDropdown);
+    assert_eq!(app.anims.value(AnimKey::ModalOpen, now), None);
+    app.update(Action::Close);
+
+    // A panel modal opens and is still mid-settle...
+    app.update(Action::OpenPalette);
+    let mid_settle = app.anims.value(AnimKey::ModalOpen, now).unwrap();
+    assert!(mid_settle < 1.0);
+
+    // ...then a dropdown (e.g. a right-click context menu) pushes on top:
+    // `ModalOpen`'s own in-flight settle must be left exactly as it was,
+    // not snapped to 1.
+    app.update(Action::OpenMethodDropdown);
+    assert_eq!(
+        app.anims.value(AnimKey::ModalOpen, now),
+        Some(mid_settle),
+        "a Dropdown push must not perturb ModalOpen's own in-flight settle"
+    );
+}
+
 #[test]
 fn click_palette_row_runs_immediately() {
     let mut app = App::new_for_test();
+    app.anims.enabled = false;
     app.update(Action::OpenPalette);
     for c in "quit".chars() {
         app.handle_key(&Keymap::default_bindings(), plain(c));
@@ -4502,6 +4579,7 @@ fn click_chooser_row_selects_then_click_again_confirms() {
 #[test]
 fn click_outside_the_palette_closes_it_with_no_action() {
     let mut app = App::new_for_test();
+    app.anims.enabled = false;
     app.update(Action::OpenPalette);
     render_once(&mut app);
     let palette_row = app.hits.rect_of(&Hit::PaletteRow(0)).unwrap();
@@ -4523,6 +4601,7 @@ fn click_confirm_choice_chip_deletes_the_request() {
     postui_core::storage::ensure_project(dir.path()).unwrap();
     postui_core::storage::save_request(dir.path(), "ping", &req("https://x/ping")).unwrap();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.anims.enabled = false;
     app.sidebar.selected = Some(0);
     app.update(Action::ConfirmDeleteRequest);
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
@@ -4540,6 +4619,7 @@ fn click_confirm_choice_chip_deletes_the_request() {
 #[test]
 fn click_message_ok_button_closes_it_same_as_enter() {
     let mut app = App::new_for_test();
+    app.anims.enabled = false;
     app.update(Action::ShowAbout);
     assert!(matches!(app.modals.top(), Some(Modal::Message { .. })));
 
@@ -4555,6 +4635,7 @@ fn click_message_ok_button_closes_it_same_as_enter() {
 #[test]
 fn click_prompt_cancel_button_closes_without_creating_a_request() {
     let mut app = App::new_for_test();
+    app.anims.enabled = false;
     let keymap = Keymap::default_bindings();
     app.update(Action::PromptNewRequest);
     for c in "api/ping".chars() {
@@ -4578,6 +4659,7 @@ fn click_prompt_cancel_button_closes_without_creating_a_request() {
 #[test]
 fn click_prompt_confirm_button_creates_the_request_like_enter() {
     let mut app = App::new_for_test();
+    app.anims.enabled = false;
     let keymap = Keymap::default_bindings();
     app.update(Action::PromptNewRequest);
     for c in "api/ping".chars() {
@@ -4596,6 +4678,7 @@ fn click_prompt_confirm_button_creates_the_request_like_enter() {
 #[test]
 fn click_new_project_cancel_button_closes_without_creating() {
     let mut app = App::new_for_test();
+    app.anims.enabled = false;
     let root = tempfile::tempdir().unwrap();
     app.registry.root = Some(root.path().to_path_buf());
     let keymap = Keymap::default_bindings();
@@ -4619,6 +4702,7 @@ fn click_new_project_cancel_button_closes_without_creating() {
 #[test]
 fn click_new_project_confirm_button_creates_the_project_like_enter() {
     let mut app = App::new_for_test();
+    app.anims.enabled = false;
     let root = tempfile::tempdir().unwrap();
     app.registry.root = Some(root.path().to_path_buf());
     let keymap = Keymap::default_bindings();
@@ -6717,6 +6801,7 @@ fn secret_prompt_input_renders_masked_dots_not_the_typed_text() {
     two_secret_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.anims.enabled = false;
     app.update(Action::SwitchEnv(Some("qa".into())));
     app.editor.url = LineInput::new("http://example.invalid/x");
     let keymap = Keymap::default_bindings();
