@@ -1829,6 +1829,8 @@ impl Editor {
                     focused,
                     hovered: ctx.hovered,
                     dragging: ctx.dragging,
+                    anims: ctx.anims,
+                    now: ctx.now,
                 };
                 self.table.draw(
                     frame,
@@ -1850,6 +1852,8 @@ impl Editor {
                     focused,
                     hovered: ctx.hovered,
                     dragging: ctx.dragging,
+                    anims: ctx.anims,
+                    now: ctx.now,
                 };
                 self.table.draw(
                     frame,
@@ -1907,6 +1911,8 @@ impl Editor {
                     focused,
                     hovered: ctx.hovered,
                     dragging: ctx.dragging,
+                    anims: ctx.anims,
+                    now: ctx.now,
                 };
                 self.table.draw(
                     frame,
@@ -2150,6 +2156,14 @@ mod tests {
 
     fn key(c: KeyCode) -> KeyEvent {
         KeyEvent::new(c, KeyModifiers::NONE)
+    }
+
+    /// A disabled (instantly-jumping) `Anims` shared by every test's
+    /// `DrawCtx`, so tests stay deterministic without threading an owned
+    /// `Anims` through each call site.
+    fn test_anims() -> &'static crate::anim::Anims {
+        static ANIMS: std::sync::OnceLock<crate::anim::Anims> = std::sync::OnceLock::new();
+        ANIMS.get_or_init(|| crate::anim::Anims::new(false))
     }
 
     #[test]
@@ -2653,6 +2667,8 @@ mod tests {
             focused: true,
             hovered: None,
             dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
         };
         let backend = TestBackend::new(120, 14);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -2857,6 +2873,8 @@ mod tests {
                 focused: true,
                 hovered: None,
                 dragging: false,
+                anims: test_anims(),
+                now: std::time::Instant::now(),
             };
             let backend = TestBackend::new(60, 10);
             let mut terminal = Terminal::new(backend).unwrap();
@@ -2894,6 +2912,8 @@ x-a = "1"
             focused: true,
             hovered: None,
             dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
         };
         let backend = TestBackend::new(80, 14);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -2936,6 +2956,8 @@ x-a = "1"
             focused: true,
             hovered: None,
             dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
         };
         let backend = TestBackend::new(60, 10);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -2967,6 +2989,8 @@ url = "https://api.example.com/users""#,
             focused: true,
             hovered: None,
             dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
         };
         // Wide enough that the fused bar's URL segment (bar width minus the
         // fixed 10-wide method segment and 24-wide Send cap) still fits the
@@ -2998,6 +3022,8 @@ url = "https://api.example.com/users""#,
             focused: true,
             hovered: None,
             dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
         };
         let backend = TestBackend::new(60, 10);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -3185,6 +3211,8 @@ url = "https://api.example.com/users""#,
             focused: true,
             hovered: Some(&crate::hit::Hit::SendButton),
             dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
         };
         let backend = TestBackend::new(60, 10);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -3308,6 +3336,8 @@ url = "https://api.example.com/users""#,
             focused: true,
             hovered: None,
             dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
         };
         let backend = TestBackend::new(70, 14);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -3415,6 +3445,8 @@ url = "https://api.example.com/users""#,
             focused: true,
             hovered: None,
             dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
         };
         let backend = TestBackend::new(80, 14);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -3497,6 +3529,8 @@ url = "https://api.example.com/users""#,
             focused: true,
             hovered: None,
             dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
         };
         let backend = TestBackend::new(80, 14);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -3539,6 +3573,8 @@ url = "https://api.example.com/users""#,
             focused: true,
             hovered: None,
             dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
         };
         let backend = TestBackend::new(80, 14);
         let mut terminal = Terminal::new(backend).unwrap();

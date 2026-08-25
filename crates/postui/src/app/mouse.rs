@@ -71,9 +71,13 @@ impl App {
                 // The pointer's exact position (recorded above) is not part
                 // of "changed": the tooltip is anchored at the token's own
                 // drawn rect, so moving within one token changes nothing.
-                let changed = hit != self.hovered || token != self.hovered_token;
+                let hit_changed = hit != self.hovered;
+                let changed = hit_changed || token != self.hovered_token;
                 self.hovered = hit;
                 self.hovered_token = token;
+                if hit_changed {
+                    self.begin_hover_fade();
+                }
                 changed
             }
             MouseEventKind::Down(MouseButton::Left) => {

@@ -1688,6 +1688,14 @@ mod tests {
         key(KeyCode::Char(c))
     }
 
+    /// A disabled (instantly-jumping) `Anims` shared by every test's
+    /// `DrawCtx`, so tests stay deterministic without threading an owned
+    /// `Anims` through each call site.
+    fn test_anims() -> &'static crate::anim::Anims {
+        static ANIMS: std::sync::OnceLock<crate::anim::Anims> = std::sync::OnceLock::new();
+        ANIMS.get_or_init(|| crate::anim::Anims::new(false))
+    }
+
     fn data(body: &str) -> crate::http::ResponseData {
         crate::http::ResponseData {
             status: 200,
@@ -1725,6 +1733,8 @@ mod tests {
             focused: true,
             hovered: None,
             dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
         };
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
         let mut hits = crate::hit::HitMap::default();
@@ -1743,6 +1753,8 @@ mod tests {
             focused: true,
             hovered: None,
             dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
         };
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
         let mut hits = crate::hit::HitMap::default();
@@ -1876,6 +1888,8 @@ mod tests {
             focused: true,
             hovered: None,
             dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
         };
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
         let mut hits = crate::hit::HitMap::default();
@@ -1908,6 +1922,8 @@ mod tests {
             focused: true,
             hovered: None,
             dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
         };
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
         let mut hits = crate::hit::HitMap::default();
@@ -1948,6 +1964,8 @@ mod tests {
             focused: true,
             hovered: None,
             dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
         };
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
         let mut hits = crate::hit::HitMap::default();
@@ -1991,6 +2009,8 @@ mod tests {
             focused: true,
             hovered: Some(&hovered),
             dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
         };
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
         let mut hits = crate::hit::HitMap::default();
@@ -2027,6 +2047,8 @@ mod tests {
             focused: true,
             hovered: None,
             dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
         };
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
         let mut hits = crate::hit::HitMap::default();
@@ -2254,6 +2276,8 @@ mod tests {
             focused: true,
             hovered: None,
             dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
         };
         let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
         let mut hits = crate::hit::HitMap::default();
@@ -2432,6 +2456,8 @@ mod tests {
             focused: true,
             hovered: None,
             dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
         };
         let draw = |r: &mut Response| {
             let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();

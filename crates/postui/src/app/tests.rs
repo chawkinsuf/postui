@@ -334,6 +334,17 @@ fn tick_requests_redraw_while_toast_visible() {
 }
 
 #[test]
+fn hover_change_starts_a_hover_fade_and_tick_redraws_while_animating() {
+    let mut app = App::new_for_test();
+    app.begin_hover_fade();
+    assert!(app.animating(), "hover fade counts as a live animation");
+    assert!(
+        app.update(Action::Tick),
+        "ticks redraw while an animation is live"
+    );
+}
+
+#[test]
 fn render_action_requests_redraw() {
     let mut app = App::new_for_test();
     assert!(app.update(Action::Render));

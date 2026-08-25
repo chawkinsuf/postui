@@ -15,12 +15,14 @@ pub mod var_tokens;
 pub mod varmanager;
 
 use crate::action::Action;
+use crate::anim::{AnimKey, Anims};
 use crate::paint::fill;
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::Rect;
+use std::time::Instant;
 
 pub struct DrawCtx<'a> {
     pub theme: &'a Theme,
@@ -29,6 +31,25 @@ pub struct DrawCtx<'a> {
     /// True while this pane's scrollbar thumb is being dragged, so the thumb
     /// keeps its active styling even when the pointer leaves the column.
     pub dragging: bool,
+    /// The live animation state, sampled at `now`. Surfaces blend toward a
+    /// hovered control's fill via [`DrawCtx::hover_t`]; later tasks read
+    /// other `AnimKey`s directly through this handle.
+    pub anims: &'a Anims,
+    /// The instant this frame is being drawn at — threaded through rather
+    /// than sampled internally, so a whole frame's animated values are
+    /// consistent and tests stay deterministic.
+    pub now: Instant,
+}
+
+impl DrawCtx<'_> {
+    /// The 0→1 eased progress of the current hover fade: 0 the instant a
+    /// new control is hovered, easing to 1 over the fade's duration.
+    /// Defaults to `1.0` (fully faded in) when no hover fade is in flight,
+    /// so a hovered control drawn before any hover change ever occurred
+    /// still gets its full hover fill rather than none.
+    pub fn hover_t(&self) -> f32 {
+        self.anims.value_or(AnimKey::Hover, self.now, 1.0)
+    }
 }
 
 pub trait Component {

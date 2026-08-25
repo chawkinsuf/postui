@@ -75,7 +75,6 @@ async fn run(
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Action>();
     let mut app = App::new(tx, cli_root);
     let mut events = EventStream::new();
-    let mut tick = tokio::time::interval(Duration::from_millis(100));
     let keymap = Keymap::load();
 
     app.update(Action::ShowToast(
@@ -126,7 +125,14 @@ async fn run(
             Some(action) = rx.recv() => {
                 redraw |= app.update(action);
             }
-            _ = tick.tick() => {
+            // Adaptive tick period: ~30fps while an animation is easing so
+            // motion reads as smooth, ~10fps the rest of the time so an
+            // idle app costs almost nothing.
+            _ = tokio::time::sleep(if app.animating() {
+                Duration::from_millis(33)
+            } else {
+                Duration::from_millis(100)
+            }) => {
                 redraw |= app.update(Action::Tick);
             }
         }

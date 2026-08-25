@@ -69,11 +69,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             let dragged_pane = app.drag.as_ref().map(|d| d.pane);
             // Destructured so each component can be borrowed mutably
             // alongside the shared theme reference its DrawCtx holds.
+            let now = std::time::Instant::now();
             let App {
                 theme,
                 sidebar,
                 editor,
                 session,
+                anims,
                 ..
             } = app;
             let response = &mut session.response;
@@ -82,6 +84,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 focused: focus == pane,
                 hovered,
                 dragging: dragged_pane == Some(pane),
+                anims,
+                now,
             };
             sidebar.draw(frame, layout.sidebar, &ctx(PaneId::Sidebar), &mut hits);
             editor.draw(frame, layout.editor, &ctx(PaneId::Editor), &mut hits);

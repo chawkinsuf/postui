@@ -1,4 +1,5 @@
 use crate::action::{Action, CopyTarget};
+use crate::anim::{AnimKey, Anims};
 use crate::components::editor::{Editor, EditorTab, SubFocus};
 use crate::components::line_input::LineInput;
 use crate::components::modal::{Modal, ModalResult, ModalStack, PromptKind};
@@ -16,7 +17,7 @@ use crate::project_ctx::ProjectContext;
 use crate::theme::Theme;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 /// The migration confirm modal's title (spec §3.3) — also how
@@ -103,6 +104,12 @@ pub struct App {
     /// Mouse-first-GUI UI settings (clipboard command, OSC 52 threshold),
     /// loaded from the same `config.toml` the registry uses.
     pub ui_settings: crate::config::UiSettings,
+    /// Eased animated values (tab underline, hover fade, ...), constructed
+    /// from `ui_settings.animations`. Time is always passed in by the
+    /// caller — `Action::Tick`'s handler and `DrawCtx::now` both sample
+    /// `Instant::now()` themselves — so `Anims` stays fully deterministic
+    /// and testable.
+    pub anims: Anims,
     /// Palette command frecency stats (recency + count per command id),
     /// loaded from `ui.toml` at startup and saved back on quit.
     pub usage: crate::usage::UsageStore,
@@ -299,6 +306,7 @@ impl App {
             app.registry = registry;
             app.registry_path = registry_path;
             app.clipboard = crate::clipboard::Clipboard::new(&ui_settings);
+            app.anims = Anims::new(ui_settings.animations);
             app.ui_settings = ui_settings;
             app.theme = theme;
             app.usage = usage;
@@ -472,6 +480,7 @@ impl App {
             registry_path: None,
             clipboard: crate::clipboard::Clipboard::new(&crate::config::UiSettings::default()),
             ui_settings: crate::config::UiSettings::default(),
+            anims: Anims::new(crate::config::UiSettings::default().animations),
             usage: crate::usage::UsageStore::default(),
             usage_path: None,
             client: crate::http::client(),
@@ -749,7 +758,7 @@ impl App {
             Action::Tick => {
                 self.editor.on_tick();
                 let tip_changed = self.track_caret_token();
-                self.toasts.on_tick() || self.in_flight_ticking() || tip_changed
+                self.toasts.on_tick() || self.in_flight_ticking() || tip_changed || self.animating()
             }
             // No state change; forces a redraw. Background tasks use this
             // to wake the main loop when they've mutated state directly
@@ -4194,6 +4203,25 @@ impl App {
             // A background pretty-print animates its own spinner, so ticks
             // must keep coming while one is running.
             || self.session.response.view().is_some_and(|v| v.parsing)
+    }
+
+    /// Whether any tracked animation is still easing toward its target right
+    /// now. Drives `Action::Tick`'s redraw decision and the main loop's
+    /// adaptive tick period — both sample `Instant::now()` themselves so
+    /// `Anims` stays deterministic and this stays cheap to call every frame.
+    pub fn animating(&self) -> bool {
+        self.anims.active(Instant::now())
+    }
+
+    /// Starts the hover fade over from 0: snaps `AnimKey::Hover` to 0 and
+    /// retargets it to 1 over 70ms. Called whenever `self.hovered`'s hit
+    /// *changes* (see `app/mouse.rs`), so the newly hovered control's fill
+    /// eases in rather than jumping.
+    pub(crate) fn begin_hover_fade(&mut self) {
+        let now = Instant::now();
+        self.anims.snap(AnimKey::Hover, 0.0);
+        self.anims
+            .retarget(AnimKey::Hover, 1.0, Duration::from_millis(70), now);
     }
 
     /// Central key router. Order (each step tested):

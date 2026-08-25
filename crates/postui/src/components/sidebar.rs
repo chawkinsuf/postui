@@ -823,12 +823,7 @@ mod tests {
         assert_eq!(s.scroll, 10);
         // drawing must NOT snap back to the selection
         let theme = Theme::dark();
-        let ctx = DrawCtx {
-            theme: &theme,
-            focused: true,
-            hovered: None,
-            dragging: false,
-        };
+        let ctx = draw_ctx(&theme, None);
         let backend = ratatui::backend::TestBackend::new(30, 10);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
@@ -857,12 +852,22 @@ mod tests {
         assert!(s.pending_expand.contains("a") && s.pending_expand.contains("a/b"));
     }
 
+    /// A disabled (instantly-jumping) `Anims` shared by every test's
+    /// `DrawCtx`, so tests stay deterministic without threading an owned
+    /// `Anims` through each call site.
+    fn test_anims() -> &'static crate::anim::Anims {
+        static ANIMS: std::sync::OnceLock<crate::anim::Anims> = std::sync::OnceLock::new();
+        ANIMS.get_or_init(|| crate::anim::Anims::new(false))
+    }
+
     fn draw_ctx<'a>(theme: &'a Theme, hovered: Option<&'a Hit>) -> DrawCtx<'a> {
         DrawCtx {
             theme,
             focused: true,
             hovered,
             dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
         }
     }
 
