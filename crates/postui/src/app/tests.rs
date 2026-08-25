@@ -2447,6 +2447,62 @@ fn folder_arrow_click_after_keyboard_nav_snaps_the_travel_band() {
     );
 }
 
+/// Regression test for the ghost-travel-band bug: `refresh_sidebar` can
+/// re-map `selected` to a different index (a row above it disappearing)
+/// without moving the selection itself. If the `ListTravel` anim isn't
+/// snapped to match, it keeps easing toward the OLD index forever
+/// (`settled` never becomes true), painting a stale selection band/accent
+/// bar alongside the real one.
+#[test]
+fn deleting_a_row_above_the_selection_snaps_the_travel_band_not_a_ghost() {
+    let (mut app, _dir) = sidebar_test_app_three_flat_rows();
+    render_once(&mut app);
+
+    // Keyboard-select down to row 2 ("gamma").
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(app.sidebar.selected, Some(2));
+    render_once(&mut app); // let the travel anim settle at row 2
+
+    // Delete "alpha" (row 0, above the selection) -- "gamma" is still
+    // selected, but its row index shifts from 2 to 1.
+    app.update(Action::DeleteRequest("alpha".into()));
+    assert_eq!(
+        app.sidebar.selected,
+        Some(1),
+        "gamma re-maps to row 1 once alpha is gone"
+    );
+
+    let now = std::time::Instant::now();
+    let key = crate::anim::AnimKey::ListTravel(crate::anim::ListId::Sidebar);
+    assert_eq!(
+        app.anims.value(key, now),
+        Some(1.0),
+        "the travel anim must snap to the re-mapped index, not keep \
+         easing toward the old (now out-of-range-meaning) index 2"
+    );
+
+    // Only the real selected row (now row 1, "gamma") paints the accent
+    // bar -- no ghost band left behind at the old row 2's position.
+    render_once(&mut app);
+    let backend = ratatui::backend::TestBackend::new(120, 40);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let buf = terminal.backend().buffer();
+    let row1 = app.hits.rect_of(&crate::hit::Hit::SidebarRow(1)).unwrap();
+    assert_eq!(
+        buf[(row1.x, row1.y)].symbol(),
+        "\u{258c}",
+        "accent bar on gamma's new row"
+    );
+    let bar_count = (0..buf.area.height)
+        .filter(|&y| buf[(row1.x, y)].symbol() == "\u{258c}")
+        .count();
+    assert_eq!(bar_count, 1, "exactly one row carries the accent bar");
+}
+
 #[test]
 fn single_click_folder_name_selects_only_double_click_expands() {
     let (mut app, _dir) = sidebar_test_app();

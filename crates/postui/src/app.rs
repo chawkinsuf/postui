@@ -4030,6 +4030,15 @@ impl App {
             .append(&mut self.sidebar.pending_expand);
         let expanded = self.project.expanded.clone();
         self.sidebar.refresh(listing, &expanded);
+        // `refresh` can re-map `selected` to a different index (rows
+        // added/removed/reordered above it) without moving the selection
+        // itself -- snap `ListTravel`'s value to match, or it keeps easing
+        // toward the old index and paints a ghost selection band there
+        // alongside the real one.
+        if let Some(i) = self.sidebar.selected {
+            self.anims
+                .snap(AnimKey::ListTravel(ListId::Sidebar), i as f32);
+        }
     }
 
     /// Pushes a context menu anchored at the pointer: a `Modal::Dropdown`
