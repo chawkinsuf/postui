@@ -902,6 +902,7 @@ impl App {
                     self.editor.table.editing = None;
                     self.editor.table.selected = None;
                     self.editor.load(slug, saved);
+                    self.leave_disabled_body_tab();
                     self.toasts.push("Changes discarded", ToastKind::Info);
                 }
                 true
@@ -1100,11 +1101,15 @@ impl App {
                 true
             }
             Action::EditorTabSelect(i) => {
+                let target = EditorTab::from_index(i);
+                if target == EditorTab::Body && self.editor.body_tab_disabled() {
+                    return false;
+                }
                 // Leaving a tab commits whatever cell was being typed — the
                 // reset that follows would otherwise drop it silently.
                 self.commit_table_edit();
                 let prev = self.editor.active_tab;
-                self.editor.active_tab = EditorTab::from_index(i);
+                self.editor.active_tab = target;
                 self.editor.table.reset();
                 self.retarget_editor_tab_underline(prev);
                 true
@@ -1114,8 +1119,12 @@ impl App {
                 // Body), not `EditorTab::index()`'s alt+1/2/3 slot numbers.
                 self.commit_table_edit();
                 let prev = self.editor.active_tab;
-                let cur = self.editor.active_tab.draw_position() as i8;
-                let next = (cur + delta).rem_euclid(4);
+                let mut next = (prev.draw_position() as i8 + delta).rem_euclid(4);
+                if EditorTab::from_draw_position(next as usize) == EditorTab::Body
+                    && self.editor.body_tab_disabled()
+                {
+                    next = (next + delta.signum()).rem_euclid(4);
+                }
                 self.editor.active_tab = EditorTab::from_draw_position(next as usize);
                 self.editor.table.reset();
                 self.retarget_editor_tab_underline(prev);
@@ -1124,6 +1133,7 @@ impl App {
             Action::CycleMethod => {
                 self.no_coalesce = true;
                 self.editor.method = self.editor.method.cycle();
+                self.leave_disabled_body_tab();
                 true
             }
             Action::OpenMethodDropdown => {
@@ -1150,6 +1160,7 @@ impl App {
             Action::SetMethod(m) => {
                 self.no_coalesce = true;
                 self.editor.method = m;
+                self.leave_disabled_body_tab();
                 true
             }
             Action::FocusUrl => {
@@ -1206,6 +1217,7 @@ impl App {
                 match postui_core::storage::load_request(&self.project.root, &slug) {
                     Ok(req) => {
                         self.editor.load(Some(slug.clone()), req);
+                        self.leave_disabled_body_tab();
                         // Every open route (click, Enter, palette, restore)
                         // drags the sidebar selection along so it can't
                         // diverge from the open request. Queue ancestor
@@ -5048,6 +5060,21 @@ impl App {
             .retarget(key, cur as f32, self.ui_settings.anim_ms.list_travel, now);
     }
 
+    /// If the active editor tab just became disabled (the method changed
+    /// to GET/HEAD while Body was showing), hops to Params through the
+    /// same commit-and-retarget path a normal tab switch takes. Called
+    /// after every path that can change the method (cycle, dropdown
+    /// select, request load, undo snapshot).
+    fn leave_disabled_body_tab(&mut self) {
+        if self.editor.active_tab == EditorTab::Body && self.editor.body_tab_disabled() {
+            self.commit_table_edit();
+            let prev = self.editor.active_tab;
+            self.editor.active_tab = EditorTab::Params;
+            self.editor.table.reset();
+            self.retarget_editor_tab_underline(prev);
+        }
+    }
+
     /// Retargets `AnimKey::TabUnderline`/`TabUnderlineWidth(EditorTabs)`
     /// (Task 10: the strip's independent left/right edges — see the
     /// reinterpretation note on `AnimKey::TabUnderline`) from `prev`'s span
@@ -5262,6 +5289,7 @@ impl App {
                 };
                 self.editor.apply_snapshot(&target);
                 self.editor.restore_cursor(&cursor);
+                self.leave_disabled_body_tab();
                 self.focus = PaneId::Editor;
                 // The applied state IS the new shadow; without this the
                 // capture hook would record the undo as a fresh edit.

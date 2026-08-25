@@ -1147,6 +1147,7 @@ fn draw_header_strip(
         // the strip, so it never claims keyboard focus of its own.
         focused: false,
         underline,
+        disabled: None,
     }
     .paint(buf, tabstrip_area, t.panel, t);
     for (rect, mode) in rects.into_iter().zip(modes) {

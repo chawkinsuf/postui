@@ -217,7 +217,11 @@ pub fn prepare(
             .map(|(k, e)| (sub(k), sub(&e.value))),
     );
 
-    let mut body = req.body.as_ref().map(|Body::Json { text }| text.clone());
+    let mut body = req
+        .method
+        .sends_body()
+        .then(|| req.body.as_ref().map(|Body::Json { text }| text.clone()))
+        .flatten();
     if req.substitute_body {
         body = body.map(|b| sub(&b));
     }
@@ -349,7 +353,11 @@ pub fn computed_headers(
         });
     }
 
-    let body = req.body.as_ref().map(|Body::Json { text }| text.clone());
+    let body = req
+        .method
+        .sends_body()
+        .then(|| req.body.as_ref().map(|Body::Json { text }| text.clone()))
+        .flatten();
     let sends_content_type = rows.iter().any(|r| {
         r.origin != HeaderOrigin::DefaultHeader { suppressed: true }
             && r.name.eq_ignore_ascii_case("content-type")
@@ -451,8 +459,36 @@ mod tests {
     }
 
     #[test]
+    fn get_and_head_send_no_body() {
+        // The stored body text survives on the request (it's still there
+        // when the method switches back) but nothing goes on the wire.
+        for m in [Method::Get, Method::Head] {
+            let mut r = base("http://x.test");
+            r.method = m;
+            r.body = Some(Body::Json { text: "{}".into() });
+            let c = ctx(&[], &[]);
+            let (p, _) = prepare(&r, &c).unwrap();
+            assert_eq!(p.body, None, "{m:?} must not send a body");
+            assert!(
+                !p.headers
+                    .iter()
+                    .any(|(k, _)| k.eq_ignore_ascii_case("content-type")),
+                "{m:?} must not auto-add Content-Type"
+            );
+            let rows = computed_headers(&r, &c, false);
+            assert!(
+                !rows
+                    .iter()
+                    .any(|r| r.name == "Content-Type" || r.name == "Content-Length"),
+                "{m:?} computed headers carry no body rows"
+            );
+        }
+    }
+
+    #[test]
     fn body_substitution_is_opt_in() {
         let mut r = base("http://x.test");
+        r.method = Method::Post;
         r.body = Some(Body::Json {
             text: r#"{"t": "{{tok}}"}"#.into(),
         });
@@ -471,6 +507,7 @@ mod tests {
     #[test]
     fn unresolved_variables_error_and_body_tokens_only_count_when_opted_in() {
         let mut r = base("http://x.test/{{gone}}");
+        r.method = Method::Post;
         r.body = Some(Body::Json {
             text: "{{also_gone}}".into(),
         });
@@ -701,6 +738,7 @@ mod tests {
     #[test]
     fn headers_filter_disabled_and_json_body_auto_adds_content_type() {
         let mut r = base("https://x.test");
+        r.method = Method::Post;
         r.headers.insert("A".into(), on("1"));
         r.headers.insert("B".into(), off("2"));
         r.body = Some(Body::Json { text: "{}".into() });
@@ -796,6 +834,7 @@ mod tests {
     #[test]
     fn computed_headers_adds_auto_content_type_only_with_a_body_and_no_explicit_one() {
         let mut req = base("https://x.test");
+        req.method = Method::Post;
         assert!(
             !computed_headers(&req, &PrepareContext::default(), false)
                 .iter()
@@ -833,6 +872,7 @@ mod tests {
     #[test]
     fn computed_headers_client_rows_carry_host_and_content_length() {
         let mut req = base("https://{{host}}:8443/v1/users?q=1#frag");
+        req.method = Method::Post;
         req.body = Some(Body::Json {
             text: "{\"a\": \"{{tok}}\"}".into(),
         });
@@ -853,6 +893,7 @@ mod tests {
     #[test]
     fn computed_headers_content_length_ignores_masking_and_the_substitution_flag() {
         let mut req = base("https://x.test");
+        req.method = Method::Post;
         req.body = Some(Body::Json {
             text: "{{api_key}}".into(),
         });
@@ -910,6 +951,7 @@ mod tests {
     #[test]
     fn computed_headers_are_in_send_order_and_skip_disabled_request_rows() {
         let mut req = base("https://x.test");
+        req.method = Method::Post;
         req.headers.insert("X-A".into(), on("1"));
         req.headers.insert("X-Skip".into(), off("2"));
         req.body = Some(Body::Json { text: "{}".into() });

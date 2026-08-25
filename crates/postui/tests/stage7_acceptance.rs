@@ -446,6 +446,7 @@ fn clicking_a_body_line_puts_the_caret_at_that_lines_end() {
     let mut app = App::new_for_test();
     seed(&mut app, &["ping"]);
     open_request(&mut app, "ping");
+    app.update(Action::SetMethod(postui_core::model::Method::Post));
 
     // Draw position 3 is the Body tab (Params, Headers, Vars, Body).
     click(&mut app, Hit::EditorTab(3));
@@ -487,6 +488,7 @@ fn the_headers_tab_shows_defaults_auto_content_type_and_host_resolved() {
     seed(&mut app, &["ping"]);
     open_request(&mut app, "ping");
     app.editor.url = postui::components::line_input::LineInput::new("https://api.example.test/v1");
+    app.update(Action::SetMethod(postui_core::model::Method::Post));
     app.editor.set_body_text("{\"a\": 1}");
     click(&mut app, Hit::EditorTab(1));
 

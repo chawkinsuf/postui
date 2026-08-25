@@ -481,6 +481,14 @@ impl Editor {
 
     /// `t`'s tab-strip label text: its name, plus a live entry count for
     /// Params/Headers/Vars once non-empty (Body never carries a count).
+    /// Whether the Body tab is disabled: GET and HEAD requests send no
+    /// body, so the tab can't be selected while one of them is the method.
+    /// The body *text* is untouched — switching back to a body-sending
+    /// method finds it exactly as it was.
+    pub fn body_tab_disabled(&self) -> bool {
+        !self.method.sends_body()
+    }
+
     /// Shared by [`Self::draw_tab_bar`] and [`Self::tab_strip_spans`] so
     /// the two can never drift apart on the counts that drive each tab's
     /// on-screen width.
@@ -1758,6 +1766,9 @@ impl Editor {
                 hovered,
                 focused: ctx.focused && self.sub_focus == SubFocus::Tabs,
                 underline,
+                disabled: self
+                    .body_tab_disabled()
+                    .then(|| EditorTab::Body.draw_position()),
             }
             .paint(buf, strip_area, theme.page, theme)
         };
@@ -2369,6 +2380,7 @@ mod tests {
     #[test]
     fn tab_cycle_backward_wraps() {
         let mut app = App::new_for_test();
+        app.update(Action::SetMethod(postui_core::model::Method::Post));
         assert_eq!(app.editor.active_tab, EditorTab::Params);
         app.update(Action::EditorTabCycle(-1));
         assert_eq!(
@@ -2839,6 +2851,45 @@ mod tests {
             .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
             .unwrap();
         (format!("{:?}", terminal.backend().buffer()), hits)
+    }
+
+    #[test]
+    fn body_tab_label_paints_disabled_for_get_and_normal_for_post() {
+        let draw = |e: &mut Editor| {
+            let theme = Theme::dark();
+            let ctx = DrawCtx {
+                theme: &theme,
+                focused: true,
+                hovered: None,
+                dragging: false,
+                anims: test_anims(),
+                now: std::time::Instant::now(),
+            };
+            let backend = TestBackend::new(120, 14);
+            let mut terminal = Terminal::new(backend).unwrap();
+            let mut hits = crate::hit::HitMap::default();
+            terminal
+                .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
+                .unwrap();
+            let body_rect = hits
+                .rect_of(&crate::hit::Hit::EditorTab(EditorTab::Body.draw_position()))
+                .expect("body tab hit");
+            terminal.backend().buffer()[(body_rect.x + 1, body_rect.y)].fg
+        };
+        let theme = Theme::dark();
+        let mut e = Editor::default();
+        assert_eq!(e.method, postui_core::model::Method::Get);
+        assert_eq!(
+            draw(&mut e),
+            theme.text_disabled,
+            "GET: Body label in the disabled color"
+        );
+        e.method = postui_core::model::Method::Post;
+        assert_eq!(
+            draw(&mut e),
+            theme.text_muted,
+            "POST: Body label back to the normal inactive color"
+        );
     }
 
     #[test]
@@ -4036,6 +4087,7 @@ url = "https://api.example.com/users""#,
     #[test]
     fn headers_tab_shows_auto_content_type_with_a_body() {
         let mut app = App::new_for_test();
+        app.update(Action::SetMethod(postui_core::model::Method::Post));
         app.editor.active_tab = EditorTab::Headers;
         app.editor.set_body_text(r#"{"a":1}"#);
         app.update(Action::Render);

@@ -662,6 +662,8 @@ fn duplicate_table_row_resolves_collisions_like_duplicate_request() {
 #[test]
 fn editor_tab_cycle_order_is_params_headers_vars_body() {
     let mut app = App::new_for_test();
+    // Body is only reachable for a method that sends one.
+    app.update(Action::SetMethod(postui_core::model::Method::Post));
     assert_eq!(app.editor.active_tab, EditorTab::Params);
     app.update(Action::EditorTabCycle(1));
     assert_eq!(app.editor.active_tab, EditorTab::Headers);
@@ -682,6 +684,7 @@ fn alt_1_2_3_still_select_params_headers_body_with_vars_inserted() {
     // Task 13: "alt+1/2/3 aliases unaffected" — Vars is reachable by click
     // or EditorTabCycle only, not by these three shortcuts.
     let mut app = App::new_for_test();
+    app.update(Action::SetMethod(postui_core::model::Method::Post));
     let keymap = Keymap::default_bindings();
     app.editor.active_tab = EditorTab::Body;
     app.handle_key(&keymap, alt('1'));
@@ -689,6 +692,47 @@ fn alt_1_2_3_still_select_params_headers_body_with_vars_inserted() {
     app.handle_key(&keymap, alt('2'));
     assert_eq!(app.editor.active_tab, EditorTab::Headers);
     app.handle_key(&keymap, alt('3'));
+    assert_eq!(app.editor.active_tab, EditorTab::Body);
+}
+
+#[test]
+fn body_tab_is_unreachable_for_get_and_head() {
+    // GET/HEAD send no body, so the Body tab is disabled: direct select is
+    // a no-op and cycling skips over it in both directions.
+    let mut app = App::new_for_test();
+    assert_eq!(app.editor.method, postui_core::model::Method::Get);
+    app.update(Action::EditorTabSelect(2));
+    assert_eq!(app.editor.active_tab, EditorTab::Params, "select is a no-op");
+    app.update(Action::EditorTabSelect(3)); // Vars, the tab before Body
+    app.update(Action::EditorTabCycle(1));
+    assert_eq!(app.editor.active_tab, EditorTab::Params, "forward skips Body");
+    app.update(Action::EditorTabCycle(-1));
+    assert_eq!(app.editor.active_tab, EditorTab::Vars, "backward skips Body");
+
+    app.update(Action::SetMethod(postui_core::model::Method::Head));
+    app.update(Action::EditorTabSelect(2));
+    assert_eq!(app.editor.active_tab, EditorTab::Vars, "HEAD: still a no-op");
+
+    app.update(Action::SetMethod(postui_core::model::Method::Post));
+    app.update(Action::EditorTabSelect(2));
+    assert_eq!(app.editor.active_tab, EditorTab::Body, "POST re-enables it");
+}
+
+#[test]
+fn switching_to_a_bodyless_method_hops_off_the_body_tab() {
+    let mut app = App::new_for_test();
+    app.update(Action::SetMethod(postui_core::model::Method::Post));
+    app.update(Action::EditorTabSelect(2));
+    assert_eq!(app.editor.active_tab, EditorTab::Body);
+    app.update(Action::SetMethod(postui_core::model::Method::Get));
+    assert_eq!(
+        app.editor.active_tab,
+        EditorTab::Params,
+        "GET can't sit on a disabled tab"
+    );
+    // The body text itself survives the round trip.
+    app.update(Action::SetMethod(postui_core::model::Method::Put));
+    app.update(Action::EditorTabSelect(2));
     assert_eq!(app.editor.active_tab, EditorTab::Body);
 }
 
@@ -4084,8 +4128,9 @@ fn click_editor_tab_selects_it() {
     assert_eq!(app.editor.active_tab, EditorTab::Vars);
     assert_eq!(app.focus, PaneId::Editor);
 
-    // Position 3 (Body) still maps correctly too.
+    // Position 3 (Body) still maps correctly too (for a method that has one).
     let mut app = App::new_for_test();
+    app.update(Action::SetMethod(postui_core::model::Method::Post));
     render_once(&mut app);
     let r = app.hits.rect_of(&Hit::EditorTab(3)).unwrap();
     app.handle_mouse(left_down(r.x, r.y));
@@ -9351,6 +9396,7 @@ fn toggle_table_collapse_retargets_pane_collapse_instead_of_snapping() {
 #[test]
 fn switching_off_a_collapsed_table_tab_also_eases_pane_collapse() {
     let mut app = App::new_for_test_with_anims(true);
+    app.update(Action::SetMethod(postui_core::model::Method::Post));
     app.editor.active_tab = EditorTab::Params;
     app.update(Action::ToggleTableCollapse);
     assert!(app.table_collapsed);

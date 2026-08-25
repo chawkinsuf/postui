@@ -59,6 +59,10 @@ pub struct TabStrip<'a> {
     /// `(left, width)`. Callers animate this (Task 10); pass the active
     /// tab's own span (from [`TabStrip::spans`]) for a static strip.
     pub underline: (f32, f32),
+    /// A tab that can't currently be selected (e.g. Body while the method
+    /// is GET/HEAD): label and badge paint in `theme.text_disabled` and
+    /// hover has no effect on it.
+    pub disabled: Option<usize>,
 }
 
 impl TabStrip<'_> {
@@ -93,7 +97,10 @@ impl TabStrip<'_> {
         for (i, ((label, badge), (offset, width))) in self.tabs.iter().zip(&spans).enumerate() {
             let x = area.x + offset;
             let active = i == self.active;
-            let fg = if active || self.hovered == Some(i) {
+            let disabled = self.disabled == Some(i);
+            let fg = if disabled {
+                theme.text_disabled
+            } else if active || self.hovered == Some(i) {
                 theme.text
             } else {
                 theme.text_muted
@@ -102,12 +109,13 @@ impl TabStrip<'_> {
 
             text(buf, x + 1, labels_y, label, fg, on, active);
             if let Some((glyph, color)) = badge {
+                let color = if disabled { theme.text_disabled } else { *color };
                 text(
                     buf,
                     x + 1 + label_w,
                     labels_y,
                     &format!(" {glyph}"),
-                    *color,
+                    color,
                     on,
                     true,
                 );
@@ -288,6 +296,7 @@ mod tests {
                 hovered: None,
                 focused: false,
                 underline: (spans[0].0 as f32, spans[0].1 as f32),
+                disabled: None,
             }
             .paint(f.buffer_mut(), Rect::new(0, 0, 40, 2), theme.panel, &theme);
         })
@@ -324,6 +333,7 @@ mod tests {
                 hovered: None,
                 focused: true,
                 underline: (spans[0].0 as f32, spans[0].1 as f32),
+                disabled: None,
             }
             .paint(f.buffer_mut(), Rect::new(0, 0, 40, 2), theme.panel, &theme);
         })
@@ -349,6 +359,7 @@ mod tests {
                     hovered: None,
                     focused: false,
                     underline: (left0 as f32 + 3.0, width0 as f32),
+                    disabled: None,
                 }
                 .paint(f.buffer_mut(), Rect::new(0, 0, 40, 2), theme.panel, &theme);
             })
@@ -397,6 +408,7 @@ mod tests {
                 // Left edge at column 2.5, right edge at column 6.5: both
                 // boundaries land mid-cell.
                 underline: (2.5, 4.0),
+                disabled: None,
             }
             .paint(f.buffer_mut(), Rect::new(0, 0, 40, 2), theme.panel, &theme);
         })
@@ -441,6 +453,7 @@ mod tests {
                 hovered: None,
                 focused: false,
                 underline: (spans[0].0 as f32, spans[0].1 as f32),
+                disabled: None,
             }
             .paint(f.buffer_mut(), Rect::new(0, 0, 40, 2), theme.panel, &theme);
         })
@@ -466,6 +479,7 @@ mod tests {
                 hovered: Some(1),
                 focused: false,
                 underline: (spans[0].0 as f32, spans[0].1 as f32),
+                disabled: None,
             }
             .paint(f.buffer_mut(), Rect::new(0, 0, 40, 2), theme.panel, &theme);
         })

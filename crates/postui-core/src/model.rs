@@ -40,6 +40,13 @@ impl Method {
         }
     }
 
+    /// Whether a request with this method puts its body on the wire. GET
+    /// and HEAD requests keep any body text *stored* (it's still there when
+    /// the method switches back) but never send it.
+    pub fn sends_body(self) -> bool {
+        !matches!(self, Method::Get | Method::Head)
+    }
+
     pub fn cycle(self) -> Method {
         let i = Method::ALL.iter().position(|m| *m == self).unwrap_or(0);
         Method::ALL[(i + 1) % Method::ALL.len()]
