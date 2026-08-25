@@ -25,9 +25,13 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 /// stack.
 const MIGRATION_TITLE: &str = "Migrate variables";
 
-/// Consecutive `Action::Tick`s (100ms apiece) the caret must rest inside a
-/// `{{token}}` before its tooltip appears.
-const CARET_TIP_TICKS: u8 = 2;
+/// Wall-clock dwell the caret must rest inside a `{{token}}` before its
+/// tooltip appears -- matching the original 2 ticks @ the tick's nominal
+/// 100ms period. Wall-clock rather than tick-counted because the tick
+/// period is adaptive (16ms while anything animates, 100ms otherwise --
+/// see `main.rs`), so a tick count would race up to ~6x fast whenever
+/// something else on screen was mid-animation.
+const CARET_TIP_DWELL: Duration = Duration::from_millis(200);
 
 /// A variable tooltip to draw: which name, and the on-screen span of the
 /// token it belongs to (the tooltip is placed against it).
@@ -164,12 +168,18 @@ pub struct App {
     /// Where the pointer last was, so the tooltip can be re-resolved every
     /// frame rather than trusting a rect captured at motion time.
     pointer: Option<(u16, u16)>,
-    /// The token the keyboard caret is resting in, and how many consecutive
-    /// `Action::Tick`s it has rested there. The tooltip appears at
-    /// [`CARET_TIP_TICKS`], so a caret merely passing through a token on its
-    /// way somewhere else never flashes one up.
+    /// The token the keyboard caret is resting in, and when it started
+    /// resting there. The tooltip appears once it's been resting
+    /// [`CARET_TIP_DWELL`], so a caret merely passing through a token on
+    /// its way somewhere else never flashes one up.
     caret_token: Option<String>,
-    caret_token_ticks: u8,
+    caret_token_since: Option<Instant>,
+    /// Whether the tooltip for `caret_token` has already crossed
+    /// [`CARET_TIP_DWELL`] and is showing -- tracked separately from
+    /// `caret_token_since` so `track_caret_token` can report the one tick
+    /// the dwell threshold is crossed (for the redraw) without re-reporting
+    /// it on every later tick while still resting in the same token.
+    caret_tip_shown: bool,
     /// An in-progress drag (e.g. a scrollbar thumb), if any.
     pub drag: Option<Drag>,
     /// A live text-selection sweep (which surface it is over), or `None`.
@@ -545,7 +555,8 @@ impl App {
             last_pointer_shape: PointerShape::Default,
             pointer: None,
             caret_token: None,
-            caret_token_ticks: 0,
+            caret_token_since: None,
+            caret_tip_shown: false,
             drag: None,
             text_drag: None,
             table_collapsed: false,
@@ -736,31 +747,37 @@ impl App {
         true
     }
 
-    /// Per-`Tick` bookkeeping for the caret-resting tooltip: counts how long
-    /// the caret has sat inside one `{{token}}`, resetting whenever it moves
-    /// to a different token (or out of every token). Returns whether the
-    /// tooltip's visibility could have changed, so the tick redraws.
-    fn track_caret_token(&mut self) -> bool {
+    /// Per-`Tick` bookkeeping for the caret-resting tooltip: tracks how long
+    /// (wall-clock) the caret has sat inside one `{{token}}`, resetting
+    /// whenever it moves to a different token (or out of every token).
+    /// Returns whether the tooltip's visibility could have changed, so the
+    /// tick redraws.
+    fn track_caret_token(&mut self, now: Instant) -> bool {
         let token = self.editor.caret_token();
         if token != self.caret_token {
-            // This tick is the first one that saw the new token, so it
-            // counts as one rest tick already.
-            let was_showing = self.caret_token_ticks >= CARET_TIP_TICKS;
-            self.caret_token_ticks = u8::from(token.is_some());
+            let was_showing = self.caret_tip_shown;
+            self.caret_token_since = token.is_some().then_some(now);
             self.caret_token = token;
+            self.caret_tip_shown = false;
             return was_showing;
         }
-        if self.caret_token.is_none() || self.caret_token_ticks >= CARET_TIP_TICKS {
+        if self.caret_token.is_none() || self.caret_tip_shown {
             return false;
         }
-        self.caret_token_ticks += 1;
-        self.caret_token_ticks == CARET_TIP_TICKS
+        let Some(since) = self.caret_token_since else {
+            return false;
+        };
+        if now.duration_since(since) >= CARET_TIP_DWELL {
+            self.caret_tip_shown = true;
+            return true;
+        }
+        false
     }
 
     /// The variable tooltip to draw this frame, if any: the token under the
     /// pointer, or — with no hover — the one the caret has been resting in
-    /// for [`CARET_TIP_TICKS`] ticks, anchored at the span the last frame
-    /// drew for it. Suppressed while a modal is up: the tooltip draws above
+    /// for [`CARET_TIP_DWELL`], anchored at the span the last frame drew
+    /// for it. Suppressed while a modal is up: the tooltip draws above
     /// everything else, and must not float over a dialog.
     pub fn var_token_tip(&self) -> Option<TokenTip> {
         if !self.modals.is_empty() {
@@ -774,7 +791,7 @@ impl App {
                 anchor,
             });
         }
-        if self.caret_token_ticks < CARET_TIP_TICKS {
+        if !self.caret_tip_shown {
             return None;
         }
         let name = self.caret_token.clone()?;
@@ -880,8 +897,8 @@ impl App {
                 true
             }
             Action::Tick => {
-                let tip_changed = self.track_caret_token();
                 let now = Instant::now();
+                let tip_changed = self.track_caret_token(now);
                 // The testbed's looping motion demos self-drive from here,
                 // never from any other screen's tick path — see
                 // `tick_testbed_demos`.

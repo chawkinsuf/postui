@@ -9220,6 +9220,37 @@ fn switching_off_a_collapsed_table_tab_also_eases_pane_collapse() {
     );
 }
 
+/// The caret-resting variable tooltip must dwell for `CARET_TIP_DWELL`
+/// (wall-clock) before it appears -- not a fixed tick count, since the
+/// tick period is adaptive (16ms while anything else animates) and a
+/// tick-counted dwell would otherwise fire up to ~6x fast.
+#[test]
+fn caret_resting_in_a_token_shows_its_tooltip_only_after_the_wall_clock_dwell() {
+    let mut app = App::new_for_test();
+    app.editor.sub_focus = SubFocus::Url;
+    app.editor.url = crate::components::line_input::LineInput::new("{{base}}");
+    app.editor.url.set_cursor(3); // inside the token
+    // The tooltip's anchor comes from `Hit::VarToken`, registered by a real
+    // draw pass (`components::var_tokens`) -- not by `update` itself.
+    render_once(&mut app);
+    app.update(Action::Tick);
+    assert!(
+        app.var_token_tip().is_none(),
+        "must not show immediately -- the dwell hasn't elapsed"
+    );
+
+    // Real time is fine here -- the dwell is 200ms and `var_token_tip`
+    // tolerates being sampled well past it.
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    app.update(Action::Tick);
+    let tip = app.var_token_tip();
+    assert_eq!(
+        tip.map(|t| t.name),
+        Some("base".to_string()),
+        "must show once the caret has rested past the dwell"
+    );
+}
+
 mod undo_tests {
     use super::*;
     use crate::undo::CursorPos;
