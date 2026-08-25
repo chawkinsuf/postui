@@ -313,6 +313,44 @@ question is about — visible clearly under "── auto ──" as `x-team:
 payments` with a line straight through it, right below the live (un­struck)
 override row.
 
+## 12. Pointer-shape hints (OSC 22) — manual-check item
+
+**Manual-check item (structurally invisible to the ansi2png capture
+pipeline, same as §1's MOTION note):** task 8d wired Kitty's OSC 22
+pointer-shape protocol (`\x1b]22;{shape}\x07`, `main.rs::write_pointer_shape`,
+piggybacked onto the synchronized-update frame so it lands atomically
+with the paint it matches) — this changes the terminal's own mouse
+cursor icon, which is drawn by the terminal emulator itself, entirely
+outside the character grid `capture-pane` reads. No amount of ANSI
+capture or ansi2html/playwright rendering can show it; it has to be
+eyeballed live in a terminal that implements OSC 22 (Ghostty does).
+
+Checklist for a live Ghostty session (`./target/debug/postui <project>`,
+no tmux involved — tmux's own pane does not forward OSC 22 to the host
+terminal):
+
+- Hover a **button, tab, or sidebar row** (anything `PointerShape::for_hit`
+  maps to `Pointer` — i.e. any registered `Hit` that isn't a text-entry
+  surface or a background/dismiss region) → the OS cursor changes to a
+  **pointer** (hand) icon.
+- Hover the **URL bar text or the Body editor** (`Hit::UrlBar` /
+  `Hit::BodyEditor`, mapped to `PointerShape::Text`) → the cursor becomes
+  an **I-beam**.
+- Hover empty **pane background**, a modal's dismiss-outside region, or
+  nothing registered at all (`Hit::Pane(_)`, `Hit::ModalOutside`,
+  `Hit::ModalBody`, or no hit) → the cursor is the terminal's **default**
+  arrow.
+- **Quit the app** (`q`/`ctrl+c`) while the cursor is still shaped as
+  something other than default (e.g. leave the mouse over a button, then
+  quit) → the cursor must reset to **default** on exit
+  (`main.rs` writes `PointerShape::Default` once, unconditionally, before
+  the alternate screen tears down) rather than leaving the terminal's
+  prompt stuck with a pointer/I-beam cursor.
+
+No result recorded here — this needs the user's own eyes on a real
+Ghostty window at checkpoint 2, same as the MOTION section's live-motion
+caveat in §1.
+
 ## Summary
 
 | # | Surface | Capture | Result |
@@ -329,6 +367,7 @@ override row.
 | 9 | `animations = false` | sweep-12 | done — confirms idle-tick question in §4 is moot when disabled |
 | 10 | `theme = light` (incl. zebra direction) | sweep-13 | done |
 | 11 | Suppressed-header strikethrough | sweep-14 | done — checkpoint-2 capture |
+| 12 | Pointer-shape hints (OSC 22) | — | manual-check only — needs live Ghostty, no capture possible |
 
 No source paper cuts were found or fixed this sweep — every landmark
 painted exactly as the acceptance test and the spec describe. The one
