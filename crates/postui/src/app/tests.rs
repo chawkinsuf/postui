@@ -141,6 +141,41 @@ fn tick_does_not_quit() {
     assert!(!app.should_quit);
 }
 
+/// Regression for the idle-tick redraw bug: an animation's very last tick
+/// always sees `animating() == false` (its duration has just elapsed by the
+/// time that tick runs), so a redraw decision based only on "is anything
+/// animating right now" misses exactly the tick that needs to redraw one
+/// more time to reveal whatever was gated on the animation reaching t==1.0
+/// (a modal's contents, a dropdown's shadow). `Action::Tick` must still
+/// report a redraw on that active→finished transition, then fall quiet on
+/// the next (truly idle) tick.
+#[test]
+fn tick_redraws_once_more_when_an_animation_finishes_between_ticks() {
+    let mut app = App::new_for_test();
+    app.ui_settings.anim_ms.modal_open = std::time::Duration::from_millis(1);
+    app.update(Action::OpenPalette);
+
+    // Still mid-flight: this tick is expected to redraw.
+    assert!(app.update(Action::Tick), "mid-flight tick should redraw");
+
+    // Let the 1ms open-settle duration fully elapse before the next tick
+    // samples `Instant::now()` — `animating()` now reads false, exactly
+    // like the very last real tick of any settle animation.
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    assert!(
+        app.update(Action::Tick),
+        "the tick that observes the animation just finished must still \
+         redraw once more, or the settled frame (e.g. a modal's gated \
+         contents) never gets painted without further input"
+    );
+
+    // Now genuinely idle: no further redraw is owed.
+    assert!(
+        !app.update(Action::Tick),
+        "a subsequent tick with nothing animating shouldn't force a redraw"
+    );
+}
+
 #[test]
 fn focus_next_moves_focus() {
     let mut app = App::new_for_test();

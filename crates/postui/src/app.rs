@@ -120,6 +120,15 @@ pub struct App {
     /// `Instant::now()` themselves — so `Anims` stays fully deterministic
     /// and testable.
     pub anims: Anims,
+    /// Whether [`Self::animating`] was still true as of the *previous*
+    /// `Action::Tick`. An animation's very last tick always sees
+    /// `animating() == false` by the time it runs (its duration has just
+    /// elapsed), so `Action::Tick`'s redraw decision can't rely on
+    /// `animating()` alone without missing that final settle frame — the
+    /// one where a gated modal/dropdown finally reveals its contents (see
+    /// `Action::Tick`'s handler). Tracking the prior tick's reading lets
+    /// that transition (active → finished) still force one more redraw.
+    animating_last_tick: bool,
     /// The active key bindings (defaults + `keys.toml` overrides), used at
     /// draw time for the palette's keybinding column (`keys::combo_for`).
     /// `main.rs`'s event loop loads its own copy for `handle_key` — this one
@@ -543,6 +552,7 @@ impl App {
             clipboard: crate::clipboard::Clipboard::new(&crate::config::UiSettings::default()),
             ui_settings: crate::config::UiSettings::default(),
             anims: Anims::new(crate::config::UiSettings::default().animations),
+            animating_last_tick: false,
             keymap: crate::keys::Keymap::default_bindings(),
             usage: crate::usage::UsageStore::default(),
             usage_path: None,
@@ -911,10 +921,25 @@ impl App {
                     // between them is safe — see the testbed's own doc).
                     self.tick_send_breathe(now);
                 }
+                // `self.animating()` alone misses an animation's very last
+                // tick: by the moment a tick fires at or after its
+                // duration's end, `done()` already reads true, so
+                // `animating()` reports false on the exact tick that needs
+                // to redraw one final time to reveal whatever was gated on
+                // it reaching t==1.0 (a modal's contents, a dropdown's
+                // shadow — see `paint::floating_panel_settling` and
+                // `components::modal::draw_dropdown`). OR-ing in whether it
+                // was still active as of the previous tick catches that
+                // active→finished transition without keeping ticks flowing
+                // once truly idle.
+                let now_animating = self.animating();
+                let was_animating = self.animating_last_tick;
+                self.animating_last_tick = now_animating;
                 self.toasts.on_tick(&mut self.anims, now)
                     || self.in_flight_ticking()
                     || tip_changed
-                    || self.animating()
+                    || now_animating
+                    || was_animating
             }
             // No state change; forces a redraw. Background tasks use this
             // to wake the main loop when they've mutated state directly
