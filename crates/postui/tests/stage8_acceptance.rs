@@ -22,6 +22,19 @@ fn render(app: &mut App) -> ratatui::buffer::Buffer {
     terminal.backend().buffer().clone()
 }
 
+/// Like `render`, but WITHOUT settling every in-flight animation first --
+/// captures whatever the frame actually looks like right now (mid-flight,
+/// if anything just retargeted). `render` itself can't double as this: its
+/// `finish_all` is deliberate everywhere else `render` is used (those
+/// assertions want the settled landmark, not a timing-dependent one), so a
+/// separate helper keeps that at-rest convenience without smuggling in a
+/// settle where the test explicitly wants to catch motion in progress.
+fn render_no_settle(app: &mut App) -> ratatui::buffer::Buffer {
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    terminal.draw(|f| postui::ui::draw(f, app)).unwrap();
+    terminal.backend().buffer().clone()
+}
+
 fn left_down(x: u16, y: u16) -> MouseEvent {
     MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -181,6 +194,36 @@ fn animations_disabled_renders_identically_at_rest() {
         rows(&a),
         rows(&b),
         "animations=false must not change the at-rest frame"
+    );
+
+    // At-rest equality alone doesn't prove the kill switch actually kills
+    // motion -- `render`'s own `finish_all()` settles the animated side
+    // too, so the comparison above never observes it mid-flight. Drive a
+    // real transition (switching the active editor tab, which retargets
+    // `AnimKey::TabUnderline`/`TabUnderlineWidth`) on each app, then
+    // compare the very next frame WITHOUT settling first.
+    use postui::components::editor::EditorTab;
+    animated.update(Action::EditorTabSelect(EditorTab::Headers.index()));
+    still.update(Action::EditorTabSelect(EditorTab::Headers.index()));
+    let a_mid = render_no_settle(&mut animated);
+    let b_mid = render_no_settle(&mut still);
+    assert_ne!(
+        rows(&a_mid),
+        rows(&b_mid),
+        "animations=true must actually be mid-motion right after a tab \
+         switch, differing from the animations=false frame which jumps \
+         straight to the settled position"
+    );
+
+    // The disabled app itself must be motion-free: its own frame right
+    // after the switch already matches its fully-settled frame (nothing
+    // left to finish).
+    let b_settled = render(&mut still);
+    assert_eq!(
+        rows(&b_mid),
+        rows(&b_settled),
+        "animations=false must render the settled frame immediately, with \
+         no in-between motion to catch"
     );
 }
 
