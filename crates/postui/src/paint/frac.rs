@@ -27,11 +27,21 @@ pub fn frac_vspan(buf: &mut Buffer, x0: u16, x1: u16, y0: f32, y1: f32, fill: Co
         let coverage = 1.0 - y0_frac;
         let glyph_index = (coverage * 8.0).round() as usize;
         let glyph_index = glyph_index.min(8);
-        for x in x0..x1.min(buf.area().right()) {
-            if let Some(cell) = buf.cell_mut((x, y0_int)) {
-                cell.set_symbol(GLYPHS[glyph_index]);
-                cell.set_fg(fill);
-                cell.set_bg(on);
+        // A glyph index of 0 rounds down to imperceptible coverage — a
+        // literal space filled with `on`. Skipping the write here leaves
+        // whatever was already painted underneath (e.g. a caller's own
+        // zebra stripe) alone instead of flattening it to `on` for a
+        // frame; `on` is a fixed color the caller passes in and isn't
+        // guaranteed to match a striped row's actual resting background,
+        // so stomping it every frame the band's edge merely grazes that
+        // row reads as a flicker distinct from the band's own motion.
+        if glyph_index > 0 {
+            for x in x0..x1.min(buf.area().right()) {
+                if let Some(cell) = buf.cell_mut((x, y0_int)) {
+                    cell.set_symbol(GLYPHS[glyph_index]);
+                    cell.set_fg(fill);
+                    cell.set_bg(on);
+                }
             }
         }
     }
@@ -54,11 +64,14 @@ pub fn frac_vspan(buf: &mut Buffer, x0: u16, x1: u16, y0: f32, y1: f32, fill: Co
         // Coverage is from y1_int to y1, which is y1_frac
         let glyph_index = (y1_frac * 8.0).round() as usize;
         let glyph_index = glyph_index.min(8);
-        for x in x0..x1.min(buf.area().right()) {
-            if let Some(cell) = buf.cell_mut((x, y1_int)) {
-                cell.set_symbol(GLYPHS[glyph_index]);
-                cell.set_fg(on);
-                cell.set_bg(fill);
+        // Same imperceptible-coverage skip as the top edge above.
+        if glyph_index > 0 {
+            for x in x0..x1.min(buf.area().right()) {
+                if let Some(cell) = buf.cell_mut((x, y1_int)) {
+                    cell.set_symbol(GLYPHS[glyph_index]);
+                    cell.set_fg(on);
+                    cell.set_bg(fill);
+                }
             }
         }
     } else if y1_frac > 0.0 && y1_int == y0_int {
@@ -67,11 +80,13 @@ pub fn frac_vspan(buf: &mut Buffer, x0: u16, x1: u16, y0: f32, y1: f32, fill: Co
         let top_coverage = 1.0 - y0_frac;
         let glyph_index = (top_coverage * 8.0).round() as usize;
         let glyph_index = glyph_index.min(8);
-        for x in x0..x1.min(buf.area().right()) {
-            if let Some(cell) = buf.cell_mut((x, y0_int)) {
-                cell.set_symbol(GLYPHS[glyph_index]);
-                cell.set_fg(fill);
-                cell.set_bg(on);
+        if glyph_index > 0 {
+            for x in x0..x1.min(buf.area().right()) {
+                if let Some(cell) = buf.cell_mut((x, y0_int)) {
+                    cell.set_symbol(GLYPHS[glyph_index]);
+                    cell.set_fg(fill);
+                    cell.set_bg(on);
+                }
             }
         }
     }
@@ -152,5 +167,40 @@ mod tests {
         assert_eq!(c(1, 1).symbol(), "▂"); // top-fraction wins: 30% coverage
         assert_eq!(c(1, 1).fg, theme.accent);
         assert_eq!(c(1, 1).bg, theme.panel);
+    }
+
+    #[test]
+    fn negligible_edge_coverage_leaves_the_row_underneath_untouched() {
+        // Regression for the list-travel flicker (task 8e): a fractional
+        // edge whose coverage rounds to the empty glyph used to still
+        // stomp the cell to `on` (a flat color the caller passes in,
+        // fixed regardless of what's actually painted there). On a
+        // zebra-striped list this visibly flattened a stripe's tint to
+        // `on` for the one frame the band's edge merely grazed that row,
+        // then the next frame's own repaint restored the stripe —
+        // alternating content is exactly what reads as flicker. The fix:
+        // skip the write when rounded coverage is zero, leaving whatever
+        // the caller already painted (here, a distinct "stripe" color)
+        // alone.
+        let theme = Theme::dark();
+        let stripe = theme.zebra_alt;
+        let mut term = Terminal::new(TestBackend::new(4, 4)).unwrap();
+        term.draw(|f| {
+            paint::fill(f.buffer_mut(), Rect::new(0, 0, 4, 4), theme.page);
+            // Pre-paint row 1 as a "zebra" stripe, distinct from `on`.
+            paint::fill(f.buffer_mut(), Rect::new(0, 1, 4, 1), stripe);
+            // Top edge at y0=1.97: coverage = 0.03 → round(0.24) = 0, the
+            // empty glyph. y1=3.0 keeps the bottom edge integral (no
+            // second edge write to confuse the assertion).
+            frac_vspan(f.buffer_mut(), 0, 4, 1.97, 3.0, theme.accent, theme.page);
+        })
+        .unwrap();
+        let c = |x, y| term.backend().buffer().cell((x, y)).unwrap().clone();
+        assert_eq!(c(1, 1).symbol(), " ");
+        assert_eq!(
+            c(1, 1).bg,
+            stripe,
+            "negligible top-edge coverage must not flatten the row's own background"
+        );
     }
 }
