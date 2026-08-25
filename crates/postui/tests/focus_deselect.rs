@@ -287,7 +287,7 @@ fn selected_request_marker_sits_beside_the_sidebar_focus_bar() {
     let mut markers = 0;
     for y in r.y..r.y + r.height {
         let cell = &buf[(r.x + 1, y)];
-        if cell.symbol() == "█" && cell.fg == app.theme.accent {
+        if cell.symbol() == "▌" && cell.fg == app.theme.accent {
             markers += 1;
         }
     }

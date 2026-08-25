@@ -1045,9 +1045,11 @@ impl App {
                         // diverge from the open request. Queue ancestor
                         // folders open, rebuild so the row exists, then
                         // select it now that it's visible.
+                        let prev = self.sidebar.selected;
                         self.sidebar.select_slug(&slug);
                         self.refresh_sidebar();
                         self.sidebar.select_slug(&slug);
+                        self.retarget_sidebar_travel(prev);
                         self.apply(Action::PersistLocalState);
                     }
                     Err(e) => {
@@ -4112,9 +4114,11 @@ impl App {
                 // Queue the slug's ancestor folders open, rebuild the tree
                 // with them expanded (so the new row exists at all), then
                 // select it now that it's actually visible.
+                let prev = self.sidebar.selected;
                 self.sidebar.select_slug(&slug);
                 self.refresh_sidebar();
                 self.sidebar.select_slug(&slug);
+                self.retarget_sidebar_travel(prev);
                 self.apply(Action::PersistLocalState);
                 true
             }
@@ -4735,10 +4739,46 @@ impl App {
 
     fn focused_component_key(&mut self, ev: KeyEvent) -> Option<Action> {
         match self.focus {
-            PaneId::Sidebar => self.sidebar.handle_key(ev),
+            PaneId::Sidebar => {
+                let prev = self.sidebar.selected;
+                let action = self.sidebar.handle_key(ev);
+                self.retarget_sidebar_travel(prev);
+                action
+            }
             PaneId::Editor => self.editor.handle_key(ev),
             PaneId::Response => self.session.response.handle_key(ev),
         }
+    }
+
+    /// Retargets `AnimKey::ListTravel(Sidebar)` from `prev`'s row toward
+    /// the sidebar's current selection, over the config-tunable
+    /// `ui_settings.anim_ms.list_travel` (100ms by default), whenever the
+    /// selection actually moved. Called after every sidebar mutation that
+    /// can change `selected`: keyboard navigation (`focused_component_key`)
+    /// and the `select_slug` calls that follow opening/creating a request.
+    /// A no-op when the selection didn't move, or when nothing ended up
+    /// selected (`draw`'s own fallback already snaps to the current
+    /// selection whenever the anim has no tracked value).
+    fn retarget_sidebar_travel(&mut self, prev: Option<usize>) {
+        let Some(cur) = self.sidebar.selected else {
+            return;
+        };
+        if prev == Some(cur) {
+            return;
+        }
+        let now = Instant::now();
+        let key = AnimKey::ListTravel(ListId::Sidebar);
+        // An untracked anim has no "current position" to chain from, so
+        // the very first move of the session seeds one at `prev`'s row (or
+        // `cur`'s, absent a prior selection) before retargeting — a move
+        // already in flight instead continues smoothly from wherever it
+        // actually is, even if that's not exactly `prev` (e.g. rapid
+        // repeats mid-animation).
+        if self.anims.value(key, now).is_none() {
+            self.anims.snap(key, prev.unwrap_or(cur) as f32);
+        }
+        self.anims
+            .retarget(key, cur as f32, self.ui_settings.anim_ms.list_travel, now);
     }
 
     /// Pops the top modal on `close` and dispatches each of `res`'s

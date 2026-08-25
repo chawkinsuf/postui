@@ -1,9 +1,10 @@
 use super::{Component, DrawCtx};
 use crate::action::Action;
+use crate::anim::{AnimKey, ListId};
 use crate::hit::{self, Hit, HitMap, ScrollbarSpec};
 use crate::layout::PaneId;
 use crate::paint::{
-    BUTTON_HEIGHT, Button, ButtonKind, Chip, ControlState, PillRow, RowHighlight, fill, text,
+    BUTTON_HEIGHT, Button, ButtonKind, ControlState, ListRow, RowHighlight, fill, frac_vspan, text,
 };
 use crate::theme::Theme;
 use postui_core::model::Method;
@@ -441,7 +442,65 @@ impl Component for Sidebar {
             );
         }
 
+        let zebra = self.zebra_parities();
+        let hover_t = ctx.hover_t();
+
+        // The keyboard cursor's travel band: `Some((y0, y1))` in *screen*
+        // row-space, only while it's actually mid-flight (still easing
+        // toward `self.selected`'s row). Once it arrives — or the anim was
+        // never wired up at all, e.g. every sidebar-only unit test — this
+        // is `None` and the loop below degenerates to painting the
+        // selected row exactly like any other `ListRow::Selected`, with no
+        // `frac_vspan` call at all.
+        let travel_key = AnimKey::ListTravel(ListId::Sidebar);
+        let cursor_settled_at = self.selected.filter(|_| ctx.focused);
+        let anim_val = cursor_settled_at.map(|c| ctx.anims.value_or(travel_key, ctx.now, c as f32));
+        let settled = match (cursor_settled_at, anim_val) {
+            (Some(c), Some(v)) => (v - c as f32).abs() < 0.01,
+            _ => true,
+        };
+        let band_range = if !settled {
+            anim_val.map(|v| {
+                let y0 = list_area.y as f32 + (v - self.scroll as f32);
+                (y0, y0 + 1.0)
+            })
+        } else {
+            None
+        };
+
         let buf = frame.buffer_mut();
+
+        if let Some((y0, y1)) = band_range {
+            let clip_top = list_area.y as f32;
+            let clip_bottom = (list_area.y + list_area.height) as f32;
+            let cy0 = y0.max(clip_top);
+            let cy1 = y1.min(clip_bottom);
+            if cy1 > cy0 {
+                // Accent bar column, then the rest of the row's width —
+                // two spans so the bar keeps its own color through the
+                // fractional edge frames instead of blending into the
+                // fill's tint.
+                frac_vspan(
+                    buf,
+                    list_area.x,
+                    list_area.x + 1,
+                    cy0,
+                    cy1,
+                    theme.accent,
+                    theme.panel,
+                );
+                frac_vspan(
+                    buf,
+                    list_area.x + 1,
+                    list_area.x + list_area.width,
+                    cy0,
+                    cy1,
+                    theme.selection,
+                    theme.panel,
+                );
+            }
+        }
+
         for (display_pos, (i, row)) in self
             .rows
             .iter()
@@ -450,60 +509,73 @@ impl Component for Sidebar {
             .take(visible_height.max(1))
             .enumerate()
         {
-            let text_row = list_area.y + (display_pos as u16) * 2;
+            let text_row = list_area.y + display_pos as u16;
             if text_row >= area.y + area.height {
                 break;
             }
             // Two separate things can mark a row: the accent pill sits on
             // the OPEN request (the one loaded in the editor) and stays put
-            // while the user browses; the arrow-key cursor is a keyboard
-            // hover — same fill as mouse hover, painted only while the pane
-            // actually has the keyboard.
+            // while the user browses, painted immediately with no travel of
+            // its own; the arrow-key cursor is the animated selection band
+            // above, painted only while the pane actually has the keyboard.
             let is_open = matches!(
                 row,
                 Row::Request { slug, .. } if self.open_slug.as_deref() == Some(slug.as_str())
             );
-            let is_cursor = ctx.focused && Some(i) == self.selected;
+            let is_cursor_row = cursor_settled_at == Some(i);
             let is_hovered = ctx.hovered == Some(&Hit::SidebarRow(i));
-            let highlight = if is_open {
+            let text_row_f = text_row as f32;
+            let intersects_band =
+                band_range.is_some_and(|(y0, y1)| y0 < text_row_f + 1.0 && y1 > text_row_f);
+
+            let highlight = if intersects_band {
+                RowHighlight::None
+            } else if is_open || (is_cursor_row && settled) {
                 RowHighlight::Selected
-            } else if is_cursor || is_hovered {
+            } else if is_hovered {
                 RowHighlight::Hover
             } else {
                 RowHighlight::None
             };
-            let row_fill = match highlight {
-                RowHighlight::None => theme.panel,
-                RowHighlight::Hover => theme.control,
-                RowHighlight::Selected => theme.control_hover,
-            };
 
             // The list's own inset keeps column `area.x` free for the pane
-            // focus bar, so every pill — selected or hover — spans the full
-            // list width and the selected pill's accent marker never needs
-            // to dodge it.
-            PillRow { highlight }.paint(
-                buf,
-                text_row,
-                list_area.x,
-                list_area.width,
-                area,
-                theme.panel,
-                theme,
-            );
+            // focus bar, so every row — selected or hover — spans the full
+            // list width and the selected row's accent marker never needs
+            // to dodge it. Rows the travel band is currently sitting on
+            // skip their own fill entirely: the band already painted their
+            // background (and, mid-flight, its fractional-edge glyphs
+            // would only get stomped by a flat `ListRow` fill underneath).
+            if !intersects_band {
+                ListRow {
+                    highlight,
+                    zebra: zebra[i],
+                }
+                .paint(
+                    buf,
+                    text_row,
+                    list_area.x,
+                    list_area.width,
+                    theme.panel,
+                    hover_t,
+                    theme,
+                );
+            }
+
+            let row_fill = if intersects_band {
+                theme.selection
+            } else {
+                Self::resolve_fill(theme, highlight, zebra[i], theme.panel, hover_t)
+            };
 
             self.paint_row(buf, row, text_row, list_area, row_fill, is_open, theme);
 
-            // The hit rect covers the text row and its two half-pad rows
-            // (clipped to the pane), so a click anywhere in the padding
-            // between rows still selects this one.
-            let hit_top = text_row.saturating_sub(1).max(area.y);
-            let hit_bottom = (text_row + 2).min(area.y + area.height);
+            // Hit math is a direct `y - list_top` on the 1-line pitch now —
+            // no half-pad rows to fold in.
             let row_rect = Rect {
                 x: list_area.x,
-                y: hit_top,
+                y: text_row,
                 width: list_area.width,
-                height: hit_bottom.saturating_sub(hit_top),
+                height: 1,
             };
             hits.register(row_rect, Hit::SidebarRow(i));
 
@@ -523,21 +595,87 @@ impl Component for Sidebar {
     }
 }
 
+/// Column width of the request row's method tag field (text right-padded
+/// to this many columns before the display name starts).
+const TAG_WIDTH: u16 = 5;
+
 impl Sidebar {
-    /// Number of full 2-line rows that fit in a list area `list_height`
-    /// lines tall: a trailing odd line still fits one more row's text line
-    /// (its bottom pad just gets clipped), so this rounds up.
+    /// Number of rows that fit in a list area `list_height` lines tall, on
+    /// the dense 1-line pitch: every line is a row, so this is just the
+    /// height itself.
     fn visible_rows(list_height: u16) -> usize {
-        (list_height as usize).div_ceil(2)
+        list_height as usize
+    }
+
+    /// The request row's method tag text: a short (3–5 char) label that
+    /// always fits inside [`TAG_WIDTH`] columns, unlike [`Method::as_str`]
+    /// (`DELETE`, `OPTIONS` overflow it).
+    fn method_tag(m: Method) -> &'static str {
+        match m {
+            Method::Get => "GET",
+            Method::Post => "POST",
+            Method::Put => "PUT",
+            Method::Patch => "PATCH",
+            Method::Delete => "DEL",
+            Method::Head => "HEAD",
+            Method::Options => "OPT",
+        }
+    }
+
+    /// One zebra-parity slot per row in `self.rows`: `Some(bool)` for a
+    /// request row (alternating within its group), `None` for a folder row
+    /// (folder rows keep no zebra fill of their own — they're the block
+    /// separators). The parity counter restarts at 0 every time a
+    /// top-level (depth 0) folder row is crossed, so each top-level
+    /// folder's expanded subtree reads as its own zebra-striped group;
+    /// nested folder rows don't reset it, since they're inside the same
+    /// group as their siblings.
+    fn zebra_parities(&self) -> Vec<Option<bool>> {
+        let mut out = Vec::with_capacity(self.rows.len());
+        let mut counter = 0usize;
+        for row in &self.rows {
+            match row {
+                Row::Folder { depth: 0, .. } => {
+                    counter = 0;
+                    out.push(None);
+                }
+                Row::Folder { .. } => out.push(None),
+                Row::Request { .. } => {
+                    out.push(Some(counter % 2 == 1));
+                    counter += 1;
+                }
+            }
+        }
+        out
+    }
+
+    /// Replicates [`ListRow::paint`]'s own fill computation, so a row
+    /// painted through it can be asked separately what color its content
+    /// (text) should sit on — needed because `paint_row` sits *outside*
+    /// `ListRow`, painted as a second pass on top of it.
+    fn resolve_fill(
+        theme: &Theme,
+        highlight: RowHighlight,
+        zebra: Option<bool>,
+        base: Color,
+        hover_t: f32,
+    ) -> Color {
+        let zebra_fill = match zebra {
+            Some(true) => theme.zebra_alt,
+            Some(false) | None => base,
+        };
+        match highlight {
+            RowHighlight::None => zebra_fill,
+            RowHighlight::Hover => crate::theme::mix(zebra_fill, theme.control, hover_t),
+            RowHighlight::Selected => theme.selection,
+        }
     }
 
     /// The row list's scroll state, as of the last draw. `None` before the
     /// first frame (the viewport height is a render-time fact). Content and
-    /// viewport are both counted in logical rows (not lines): the 2-line
-    /// pitch scales every row's footprint by the same factor, so the
-    /// thumb's proportions come out identical whether measured in rows or
-    /// lines — counting rows keeps `offset` in the same unit as `scroll`,
-    /// which callers (e.g. thumb-drag handling) assign directly.
+    /// viewport are both counted in rows, which on the 1-line pitch are
+    /// also lines — `offset` stays in the same unit as `scroll`, which
+    /// callers (e.g. thumb-drag handling) assign directly.
     pub fn scrollbar_spec(&self) -> Option<ScrollbarSpec> {
         if self.last_list_height == 0 {
             return None;
@@ -562,9 +700,10 @@ impl Sidebar {
         }
     }
 
-    /// Paints one row's text-row content (chip/disclosure + name) at
-    /// `text_row`, on top of the fill `PillRow` already painted there.
-    /// `row_fill` is that fill (the surface the chip/text sit on).
+    /// Paints one row's text-row content (method tag/disclosure + name) at
+    /// `text_row`, on top of the fill already painted there (by `ListRow`
+    /// or the travel band). `row_fill` is that fill — the surface the tag
+    /// text and name sit on.
     #[allow(clippy::too_many_arguments)]
     fn paint_row(
         &self,
@@ -578,8 +717,8 @@ impl Sidebar {
     ) {
         let right = list_area.x + list_area.width;
         // Column 0 is reserved for the selection's accent bar (painted by
-        // PillRow), whether or not this row is selected, so content never
-        // shifts when selection changes.
+        // `ListRow` or the travel band), whether or not this row is
+        // selected, so content never shifts when selection changes.
         let text_x = list_area.x + 1;
 
         match row {
@@ -624,12 +763,21 @@ impl Sidebar {
 
                 let content_x = match (method, broken) {
                     (Some(m), None) => {
-                        let width = Chip {
-                            label: m.as_str(),
-                            color: theme.method_color(*m),
-                        }
-                        .paint(buf, x, text_row, row_fill, theme);
-                        x + width + 1
+                        let label = format!(
+                            "{:<width$}",
+                            Self::method_tag(*m),
+                            width = TAG_WIDTH as usize
+                        );
+                        text(
+                            buf,
+                            x,
+                            text_row,
+                            Self::clip(&label, right.saturating_sub(x)),
+                            theme.method_color(*m),
+                            row_fill,
+                            true,
+                        );
+                        x + TAG_WIDTH + 1
                     }
                     // Broken (unparseable) files have no method to chip: an
                     // error glyph stands in its place instead.
@@ -904,11 +1052,12 @@ mod tests {
         let track = hits.track_of(PaneId::Sidebar).expect("track rect");
         assert_eq!(track.x, thumb.x);
         // 12-row pane: label(1) + button(3) + spacer(1) = 5 rows overhead,
-        // leaving 7 lines for the list -> 4 full 2-line rows fit.
-        let viewport = 4i16;
+        // leaving 7 lines for the list -> 7 rows fit on the dense 1-line
+        // pitch.
+        let viewport = 7i16;
         assert!(
             thumb.height < track.height,
-            "30 rows in an 8-row viewport is a short thumb"
+            "30 rows in a 7-row viewport is a short thumb"
         );
         assert!(
             hits.rect_of(&Hit::ScrollbarTrack(PaneId::Sidebar, viewport))
@@ -999,11 +1148,11 @@ mod tests {
         // rows[0] = "top", rows[1] = folder "api" (expanded), rows[2] = "api/ping"
         // list starts at y = label(1) + button(3) + spacer(1) = 5.
         let row0 = hits.rect_of(&Hit::SidebarRow(0)).expect("row 0 hit");
-        assert_eq!(row0.y, 4, "row 0's hit rect includes its top half-pad");
+        assert_eq!(row0.y, 5, "row 0 sits right at the list top, 1-line pitch");
         let row1 = hits.rect_of(&Hit::SidebarRow(1)).expect("row 1 hit");
         let row2 = hits.rect_of(&Hit::SidebarRow(2)).expect("row 2 hit");
-        assert_eq!(row1.y - row0.y, 2, "rows sit on a 2-line pitch");
-        assert_eq!(row2.y - row1.y, 2);
+        assert_eq!(row1.y - row0.y, 1, "rows sit on a 1-line pitch");
+        assert_eq!(row2.y - row1.y, 1);
 
         // Folder row 1 also registers its arrow glyph cell, which must win
         // over the row hit at that exact point (registered after it).
@@ -1033,12 +1182,11 @@ mod tests {
             .draw(|f| s.draw(f, f.area(), &ctx, &mut hits))
             .unwrap();
         let row1 = hits.rect_of(&Hit::SidebarRow(1)).unwrap();
-        // The hit rect's top row is the row's upper half-pad; the text row
-        // (where the fill's own bg lives, not composed with a neighbor) is
-        // one line below it. Sampled at the pill's right end: column 0 is
-        // the selection/focus lane hover pills leave untouched, and the
-        // columns after it hold the method chip's own fill.
-        let text_row = row1.y + 1;
+        // The hit rect *is* the text row on the 1-line pitch. Sampled at
+        // the row's right end: column 0 is the selection/focus lane hover
+        // rows leave untouched, and the columns after it hold the row's
+        // own fill.
+        let text_row = row1.y;
         let cell = terminal.backend().buffer()[(row1.x + row1.width - 1, text_row)].clone();
         assert_eq!(
             cell.bg, theme.control,
@@ -1050,11 +1198,15 @@ mod tests {
         );
     }
 
-    /// The accent pill marks the OPEN request and stays put while the
-    /// arrow-key cursor browses; the cursor row shows as a keyboard hover
-    /// (control fill, no bar) until Enter opens it.
+    /// The accent bar marks BOTH the OPEN request (stays put while the
+    /// user browses) and the keyboard cursor row (`self.selected`, once
+    /// its travel animation has settled — which it has here: the test's
+    /// `Anims` is disabled, so `draw` degenerates straight to the static
+    /// selected row with no `frac_vspan` band in play). They share the
+    /// same `ListRow::Selected` treatment; on two different rows, both get
+    /// it independently.
     #[test]
-    fn open_row_keeps_the_accent_pill_while_the_cursor_browses() {
+    fn open_row_and_settled_cursor_row_both_get_the_selection_highlight() {
         let mut s = Sidebar::default();
         // Rows sort by slug: row 0 is "next", row 1 is "top".
         s.refresh(listing(&["top", "next"]), &expanded(&[]));
@@ -1070,38 +1222,39 @@ mod tests {
             .unwrap();
         let buf = terminal.backend().buffer();
 
-        // Row 0 ("top", open): accent bar + control_hover fill.
+        // Row 0 ("next", open): accent bar + selection fill.
         let row0 = hits.rect_of(&Hit::SidebarRow(0)).unwrap();
-        let text_row = row0.y + 1;
-        let bar_cell = buf[(row0.x, text_row)].clone();
-        // Far right of the row, past the chip/name text, where only the
-        // pill's plain fill (not glyph content) is painted.
-        let fill_cell = buf[(row0.x + row0.width - 2, text_row)].clone();
-        assert_eq!(bar_cell.symbol(), "\u{2588}", "accent bar on the open row");
+        let bar_cell = buf[(row0.x, row0.y)].clone();
+        // Far right of the row, past the tag/name text, where only the
+        // row's plain fill (not glyph content) is painted.
+        let fill_cell = buf[(row0.x + row0.width - 2, row0.y)].clone();
+        assert_eq!(bar_cell.symbol(), "\u{258c}", "accent bar on the open row");
         assert_eq!(bar_cell.fg, theme.accent);
         assert_eq!(
-            fill_cell.bg, theme.control_hover,
-            "open row fills with control_hover"
+            fill_cell.bg, theme.selection,
+            "open row fills with the selection color"
         );
 
-        // Row 1 ("next", cursor): keyboard hover — control fill, no bar.
+        // Row 1 ("top", settled cursor): the same accent bar + fill.
         let row1 = hits.rect_of(&Hit::SidebarRow(1)).unwrap();
-        let text_row = row1.y + 1;
-        let bar_cell = buf[(row1.x, text_row)].clone();
-        let fill_cell = buf[(row1.x + row1.width - 2, text_row)].clone();
-        assert_ne!(bar_cell.fg, theme.accent, "no accent bar on the cursor row");
+        let bar_cell = buf[(row1.x, row1.y)].clone();
+        let fill_cell = buf[(row1.x + row1.width - 2, row1.y)].clone();
         assert_eq!(
-            fill_cell.bg, theme.control,
-            "cursor row shows the hover fill until Enter opens it"
+            bar_cell.symbol(),
+            "\u{258c}",
+            "accent bar on the settled cursor row too"
         );
+        assert_eq!(bar_cell.fg, theme.accent);
+        assert_eq!(fill_cell.bg, theme.selection);
     }
 
     #[test]
-    fn request_row_paints_a_tinted_method_chip() {
+    fn request_row_paints_a_method_tag() {
         let mut s = Sidebar::default();
-        // Two rows: row 0 stays default-selected (control_hover fill), row
-        // 1 is plain (theme.panel fill) — check the chip's tint there so it
-        // reflects the surface it actually sits on.
+        // Two rows, neither selected/hovered/open: row 0 sits on the base
+        // fill (zebra parity false), row 1 on the zebra stripe (parity
+        // true) — check the tag's colors against the surface it actually
+        // sits on.
         s.refresh(
             vec![
                 RequestListing {
@@ -1121,22 +1274,25 @@ mod tests {
         );
         let (_, hits) = render_hits(&mut s);
         let row1 = hits.rect_of(&Hit::SidebarRow(1)).unwrap();
-        let text_row = row1.y + 1;
         let theme = Theme::dark();
-        let ctx = draw_ctx(&theme, None);
+        // Tag starts one column after the reserved accent-bar column.
         let backend = ratatui::backend::TestBackend::new(30, 12);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let ctx = draw_ctx(&theme, None);
         let mut hits2 = HitMap::default();
         terminal
             .draw(|f| s.draw(f, f.area(), &ctx, &mut hits2))
             .unwrap();
-        // Chip starts one column after the reserved accent-bar column.
-        let chip_cell = terminal.backend().buffer()[(row1.x + 2, text_row)].clone();
-        assert_eq!(chip_cell.symbol(), "G", "GET chip label");
+        let tag_cell = terminal.backend().buffer()[(row1.x + 1, row1.y)].clone();
+        assert_eq!(tag_cell.symbol(), "G", "GET tag's first letter");
         assert_eq!(
-            chip_cell.bg,
-            theme.tint(theme.method_color(Method::Get), theme.panel),
-            "chip bg is tinted toward the method color"
+            tag_cell.fg,
+            theme.method_color(Method::Get),
+            "tag text is colored by method, not filled"
+        );
+        assert_eq!(
+            tag_cell.bg, theme.zebra_alt,
+            "tag sits directly on the row's own (zebra) fill"
         );
     }
 
@@ -1156,6 +1312,111 @@ mod tests {
         assert!(
             content.contains('\u{2717}'),
             "broken rows keep the error glyph in place of a chip"
+        );
+    }
+
+    #[test]
+    fn visible_rows_is_the_full_list_height_on_the_1_line_pitch() {
+        assert_eq!(Sidebar::visible_rows(7), 7);
+        assert_eq!(Sidebar::visible_rows(0), 0);
+        assert_eq!(Sidebar::visible_rows(1), 1);
+    }
+
+    #[test]
+    fn zebra_parity_restarts_at_each_top_level_folder_and_skips_folder_rows() {
+        let mut s = Sidebar::default();
+        // top-level requests "a","b","c" (parity false,true,false), then a
+        // top-level folder "grp" (no zebra of its own) whose two expanded
+        // children restart the parity at false.
+        s.refresh(
+            listing(&["a", "b", "c", "grp/x", "grp/y"]),
+            &expanded(&["grp"]),
+        );
+        let zebra = s.zebra_parities();
+        // rows: [a, b, c, grp(folder), grp/x, grp/y]
+        assert_eq!(
+            zebra,
+            vec![
+                Some(false), // a
+                Some(true),  // b
+                Some(false), // c
+                None,        // grp (folder, no zebra of its own)
+                Some(false), // grp/x — restarted, not continuing c's parity
+                Some(true),  // grp/y
+            ]
+        );
+    }
+
+    #[test]
+    fn consecutive_rows_get_adjacent_1_line_hit_rects() {
+        let mut s = Sidebar::default();
+        s.refresh(listing(&["a", "b", "c"]), &expanded(&[]));
+        let (_, hits) = render_hits(&mut s);
+        let r0 = hits.rect_of(&Hit::SidebarRow(0)).unwrap();
+        let r1 = hits.rect_of(&Hit::SidebarRow(1)).unwrap();
+        let r2 = hits.rect_of(&Hit::SidebarRow(2)).unwrap();
+        assert_eq!(r0.height, 1);
+        assert_eq!(r1.y, r0.y + 1, "rows are exactly adjacent, no gap");
+        assert_eq!(r2.y, r1.y + 1);
+    }
+
+    /// Mid-flight, the traveling band shows the accent-colored fractional
+    /// glyphs `frac_vspan` paints for a partially-covered row, rather than
+    /// the flat `▌` + `theme.selection` fill a settled row gets.
+    #[test]
+    fn mid_flight_selection_travel_paints_a_fractional_band() {
+        let mut s = Sidebar::default();
+        s.refresh(listing(&["a", "b", "c"]), &expanded(&[]));
+        s.selected = Some(1);
+
+        let theme = Theme::dark();
+        let now = std::time::Instant::now();
+        // Retarget the travel key straight through `Anims` (bypassing
+        // `App`, which isn't in scope for a sidebar-only unit test): a
+        // 50ms-old start against a 100ms move, so `now` samples mid-flight
+        // rather than at t=0 or t=1.
+        let mut anims = crate::anim::Anims::new(true);
+        anims.snap(
+            crate::anim::AnimKey::ListTravel(crate::anim::ListId::Sidebar),
+            0.0,
+        );
+        let started = now - std::time::Duration::from_millis(50);
+        anims.retarget(
+            crate::anim::AnimKey::ListTravel(crate::anim::ListId::Sidebar),
+            1.0,
+            std::time::Duration::from_millis(100),
+            started,
+        );
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: None,
+            dragging: false,
+            anims: &anims,
+            now,
+        };
+
+        let backend = ratatui::backend::TestBackend::new(30, 12);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut hits = HitMap::default();
+        terminal
+            .draw(|f| s.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+
+        let row0 = hits.rect_of(&Hit::SidebarRow(0)).unwrap();
+        let row1 = hits.rect_of(&Hit::SidebarRow(1)).unwrap();
+        // Somewhere between row 0 and row 1's text lines, the band's
+        // fractional edge glyph shows an accent-tinted lower-block
+        // character rather than a plain space — proof the band is
+        // actually mid-transit rather than degenerated to a static row.
+        let has_fractional_glyph = (row0.y..=row1.y).any(|y| {
+            let sym = buf[(row0.x, y)].symbol();
+            sym != " " && sym != "\u{258c}"
+        });
+        assert!(
+            has_fractional_glyph,
+            "expected a lower-block fractional glyph somewhere in the travel band"
         );
     }
 }
