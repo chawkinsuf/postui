@@ -1153,9 +1153,17 @@ impl App {
                 true
             }
             Action::FocusUrl => {
+                // Only a focus that actually MOVES here restarts the fade:
+                // re-focusing the already-focused URL bar (clicking the
+                // well the caret is in) would snap the fill to its
+                // unfocused color for a frame — a visible blink.
+                let already =
+                    self.focus == PaneId::Editor && self.editor.sub_focus == SubFocus::Url;
                 self.focus = PaneId::Editor;
                 self.editor.sub_focus = SubFocus::Url;
-                self.begin_focus_fade();
+                if !already {
+                    self.begin_focus_fade();
+                }
                 true
             }
             Action::ToggleTableCollapse => {

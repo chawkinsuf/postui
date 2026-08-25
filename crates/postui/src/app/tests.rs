@@ -2485,6 +2485,27 @@ fn folder_arrow_click_moves_only_the_cursor_not_the_travel_band() {
     );
 }
 
+/// Re-focusing the URL bar while it is already the focused input (e.g.
+/// clicking the well the caret is already in) must not restart the focus
+/// fade — restarting snaps `FocusFade` to 0, dropping the well's lifted
+/// fill to the unfocused color for a frame before easing back: a visible
+/// blink.
+#[test]
+fn refocusing_the_already_focused_url_bar_does_not_restart_the_fade() {
+    let mut app = App::new_for_test();
+    app.update(Action::FocusUrl);
+    // Let the first fade finish.
+    let key = crate::anim::AnimKey::FocusFade;
+    app.anims.snap(key, 1.0);
+
+    app.update(Action::FocusUrl);
+    assert_eq!(
+        app.anims.value(key, std::time::Instant::now()),
+        Some(1.0),
+        "an already-focused URL bar must keep its settled fade"
+    );
+}
+
 /// Right-clicking a different request moves the cursor onto it only while
 /// its context menu is open: dismissing the menu without choosing anything
 /// restores the previous selection (both the click-off `Action::Close`
