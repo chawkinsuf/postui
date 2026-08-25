@@ -120,8 +120,8 @@ scripting trap — not an app bug, see the Finding below):
 tmux send-keys -t s8:0 'M-M'
 ```
 — **sweep-06-method-dropdown-ring.png** — **done**. The popup's ring
-corners (`\u{1FB7F}` etc.) and the accent border are both clearly visible
-around the GET/POST/…/OPTIONS list.
+corners (square box-drawing `┌ ┐ └ ┘`) and the accent border are both
+clearly visible around the GET/POST/…/OPTIONS list.
 
 **Finding (scripting trap, not an app bug):** `tmux send-keys -t s8:0
 Escape` followed by a *separate* `tmux send-keys -t s8:0 -l 'M'` call does
@@ -227,8 +227,8 @@ the target field; blind chained `send-keys` calls without an
 intermediate check are the recurring failure mode across this whole
 sweep, not any single app defect.
 
-— **sweep-09-body-ring.png** — **done**: `▕`/`▏` edges and floating-panel
-corner glyphs frame the Body editor's content once it holds `{"a":1}`.
+— **sweep-09-body-ring.png** — **done**: `│` edges and square box-drawing
+corners frame the Body editor's content once it holds `{"a":1}`.
 
 ## 7. Send-cap breathe
 
@@ -353,10 +353,9 @@ caveat in §1.
 
 ## 13. Ring corners — no longer applicable
 
-- The ring's corners are now edge-owned (the top/bottom `▁`/`▔` edges run
-  the full width and paint the corner cells themselves; the left/right
-  `▕`/`▏` edges stop one cell short at each end), not a separate glyph —
-  so there's no Legacy Computing corner glyph left to font-check.
+- The ring now uses standard box-drawing: square `┌ ┐ └ ┘` corners, `─`
+  horizontals, `│` verticals. These are universally supported by every
+  terminal font, so there's nothing left to font-check.
 
 ## Summary
 

@@ -3144,9 +3144,8 @@ x-a = "1"
     /// pane itself unfocused), and once `focus_t` has settled (`test_anims`
     /// is a disabled/instant `Anims`), a full-strength `theme.focus_ring`
     /// ring stroke. Checks the exact gutter cell just left of the recorded
-    /// `last_body_area` (its left edge stroke, `▕`) rather than scanning
-    /// the whole buffer for a ring glyph — the address bar's own bevel caps
-    /// reuse the same eighth-block glyphs elsewhere on screen.
+    /// `last_body_area` (its left edge stroke, `│`) rather than scanning
+    /// the whole buffer for a ring glyph.
     #[test]
     fn body_ring_shows_exactly_when_content_focused() {
         let theme = Theme::dark();
@@ -3185,27 +3184,27 @@ x-a = "1"
 
         let (terminal, body_area) = render(SubFocus::Content, true);
         let cell = left_edge_cell(&terminal, body_area);
-        assert_eq!(cell.symbol(), "▕", "content focused: ring shows");
+        assert_eq!(cell.symbol(), "│", "content focused: ring shows");
         assert_eq!(cell.fg, theme.focus_ring);
 
         let (terminal, body_area) = render(SubFocus::Content, false);
         assert_ne!(
             left_edge_cell(&terminal, body_area).symbol(),
-            "▕",
+            "│",
             "pane not focused: no ring even on Content sub-focus"
         );
 
         let (terminal, body_area) = render(SubFocus::Url, true);
         assert_ne!(
             left_edge_cell(&terminal, body_area).symbol(),
-            "▕",
+            "│",
             "url sub-focus: no ring"
         );
 
         let (terminal, body_area) = render(SubFocus::None, true);
         assert_ne!(
             left_edge_cell(&terminal, body_area).symbol(),
-            "▕",
+            "│",
             "no sub-focus: no ring"
         );
     }

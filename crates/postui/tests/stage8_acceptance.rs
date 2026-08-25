@@ -146,10 +146,9 @@ fn stage8_landmarks_render_walk() {
     }
 
     // --- dropdown ring: opening the method selector paints the accent
-    // ring. The top edge owns the corner cell outright (runs the full
-    // width, including x = popup.x), and the left edge is shortened by
-    // one row so it starts only on the row below the corner — no glyph
-    // overlaps the corner cell. ----------------------------------------
+    // ring with square box-drawing corners — a `┌` corner glyph at the
+    // popup's top-left cell, and a `│` vertical stroke down the row below
+    // it. ------------------------------------------------------------
     click(&mut app, Hit::MethodSelector);
     assert!(
         matches!(app.modals.top(), Some(Modal::Dropdown(_))),
@@ -160,15 +159,15 @@ fn stage8_landmarks_render_walk() {
     let corner = buf.cell((popup.x, popup.y)).unwrap();
     assert_eq!(
         corner.symbol(),
-        "▁",
-        "the popup's top-left cell is the top edge's own glyph, not a corner glyph: {corner:?}"
+        "┌",
+        "the popup's top-left cell is a square box-drawing corner: {corner:?}"
     );
     assert_eq!(corner.fg, t_accent);
     let left_edge_start = buf.cell((popup.x, popup.y + 1)).unwrap();
     assert_eq!(
         left_edge_start.symbol(),
-        "▕",
-        "the left edge starts one row below the corner: {left_edge_start:?}"
+        "│",
+        "the left edge is a vertical stroke on the row below the corner: {left_edge_start:?}"
     );
 }
 

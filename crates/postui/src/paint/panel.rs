@@ -191,12 +191,12 @@ mod tests {
         .unwrap();
         // Top edge (non-corner column), inside the panel's own border row.
         let top = buf_cell(&term, 5, 2);
-        assert_eq!(top.symbol(), "▁");
+        assert_eq!(top.symbol(), "─");
         assert_eq!(top.fg, theme.hairline);
         assert_eq!(top.bg, theme.panel);
         // Left edge (non-corner row).
         let left = buf_cell(&term, 2, 4);
-        assert_eq!(left.symbol(), "▕");
+        assert_eq!(left.symbol(), "│");
         assert_eq!(left.fg, theme.hairline);
         assert_eq!(left.bg, theme.panel);
     }

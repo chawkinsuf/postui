@@ -1,25 +1,18 @@
-//! Cell-tight accent ring: a 1-cell-thick border stroked with one-eighth
-//! block glyphs, hugging the *inside* of `area`'s own border cells so the
-//! accent reads as a hairline hugging the content rather than a full-block
-//! frame. Used for focus/open affordances (dropdown popups, the
+//! Cell-tight accent ring: a 1-cell-thick border stroked with standard
+//! box-drawing glyphs, hugging the *inside* of `area`'s own border cells so
+//! the accent reads as a hairline framing the content rather than a full
+//! double frame. Used for focus/open affordances (dropdown popups, the
 //! body-editor's focus outline) where a heavier border would be too loud.
 
 use ratatui::{buffer::Buffer, layout::Rect, style::Color};
 
-/// Strokes a 1-cell accent ring inside `area`'s own border cells: the top
-/// row gets `▁` (lower one-eighth block — hangs down toward the content
-/// just below it), the bottom row gets `▔` (upper one-eighth — hangs up
-/// toward the content just above it), the left column gets `▕` (right
-/// one-eighth — hugs the content just to its right), the right column gets
-/// `▏` (left one-eighth — hugs the content just to its left).
-///
-/// The top and bottom edges own the corner cells outright, running the
-/// full width of `area`. The left and right edges span only the rows
-/// strictly between the top and bottom edges (one cell shorter at each
-/// end), so the vertical strokes stop short of the corner rather than
-/// overlapping a corner glyph there. This keeps each corner cell a single
-/// clean horizontal stroke instead of a glyph that reads as a cross where
-/// horizontal and vertical strokes visually overshoot into it.
+/// Strokes a 1-cell accent ring inside `area`'s own border cells with
+/// standard box-drawing glyphs: `┌`/`┐`/`└`/`┘` at the four corners, `─`
+/// across the top and bottom edges, and `│` down the left and right edges
+/// on the rows strictly between the corners. Corners join seamlessly with
+/// the horizontals and verticals since box-drawing strokes are centered in
+/// the cell (unlike eighth-block glyphs, which hug an edge and can't form
+/// a joined corner) — every corner reads as clean and square.
 ///
 /// `color` (fg) is the accent color; `on` (bg) is the surface the ring
 /// paints over (so it composes with whatever's already behind `area`).
@@ -42,16 +35,21 @@ pub fn ring(buf: &mut Buffer, area: Rect, color: Color, on: Color) {
         }
     };
 
-    // Top/bottom edges, full width — these own the corner cells.
-    for x in left..=right {
-        put(buf, x, top, "▁");
-        put(buf, x, bottom, "▔");
+    // Corners.
+    put(buf, left, top, "┌");
+    put(buf, right, top, "┐");
+    put(buf, left, bottom, "└");
+    put(buf, right, bottom, "┘");
+
+    // Top/bottom edges, excluding the corner columns.
+    for x in (left + 1)..right {
+        put(buf, x, top, "─");
+        put(buf, x, bottom, "─");
     }
-    // Left/right edges, excluding the corner rows so nothing overlaps the
-    // corner cells the horizontal edges already own.
+    // Left/right edges, excluding the corner rows.
     for y in (top + 1)..bottom {
-        put(buf, left, y, "▕");
-        put(buf, right, y, "▏");
+        put(buf, left, y, "│");
+        put(buf, right, y, "│");
     }
 }
 
@@ -81,33 +79,40 @@ mod tests {
         })
         .unwrap();
 
-        // Top edge, full width including corner columns, row 0.
-        for x in 0..6 {
+        // Corners.
+        let tl = buf_cell(&term, 0, 0);
+        assert_eq!(tl.symbol(), "┌", "top-left corner");
+        assert_eq!(tl.fg, theme.accent);
+        assert_eq!(tl.bg, theme.panel);
+        let tr = buf_cell(&term, 5, 0);
+        assert_eq!(tr.symbol(), "┐", "top-right corner");
+        let bl = buf_cell(&term, 0, 3);
+        assert_eq!(bl.symbol(), "└", "bottom-left corner");
+        let br = buf_cell(&term, 5, 3);
+        assert_eq!(br.symbol(), "┘", "bottom-right corner");
+
+        // Top edge, excluding corner columns, row 0.
+        for x in 1..5 {
             let c = buf_cell(&term, x, 0);
-            assert_eq!(c.symbol(), "▁", "top edge at x={x}");
+            assert_eq!(c.symbol(), "─", "top edge at x={x}");
             assert_eq!(c.fg, theme.accent);
             assert_eq!(c.bg, theme.panel);
         }
-        // Bottom edge, full width including corner columns, row 3.
-        for x in 0..6 {
+        // Bottom edge, excluding corner columns, row 3.
+        for x in 1..5 {
             let c = buf_cell(&term, x, 3);
-            assert_eq!(c.symbol(), "▔", "bottom edge at x={x}");
+            assert_eq!(c.symbol(), "─", "bottom edge at x={x}");
         }
-        // Left edge, shortened by one row at each end (rows 1..3), col 0 —
-        // does not reach into the corner rows the top/bottom edges own.
+        // Left edge, excluding corner rows (rows 1..3), col 0.
         for y in 1..3 {
             let c = buf_cell(&term, 0, y);
-            assert_eq!(c.symbol(), "▕", "left edge at y={y}");
+            assert_eq!(c.symbol(), "│", "left edge at y={y}");
         }
-        // Right edge, shortened by one row at each end (rows 1..3), col 5.
+        // Right edge, excluding corner rows (rows 1..3), col 5.
         for y in 1..3 {
             let c = buf_cell(&term, 5, y);
-            assert_eq!(c.symbol(), "▏", "right edge at y={y}");
+            assert_eq!(c.symbol(), "│", "right edge at y={y}");
         }
-
-        // No Legacy Computing corner glyphs anywhere — the top/bottom
-        // edges own the corner cells outright (asserted above as part of
-        // the full-width top/bottom rows).
 
         // Interior stays untouched.
         assert_eq!(buf_cell(&term, 2, 1).bg, theme.panel);
