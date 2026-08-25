@@ -8,9 +8,9 @@
 //! `App::handle_key`'s `Screen::Testbed` branch) — every specimen is
 //! painted once, in a fixed state, with no hit registration.
 
-use ratatui::{Frame, buffer::Buffer, layout::Rect, style::Color, text::Line};
+use ratatui::{Frame, buffer::Buffer, layout::Rect, text::Line};
 
-use crate::anim::{AnimKey, ListId, StripId};
+use crate::anim::{AnimKey, ListId};
 use crate::components::DrawCtx;
 use crate::paint::{
     self, BUTTON_HEIGHT, Button, ButtonKind, Chip, ControlState, FIELD_HEIGHT, ListRow,
@@ -52,6 +52,22 @@ pub fn draw_testbed(frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
 
     let x0 = area.x + MARGIN;
     let mut y = area.y + MARGIN;
+
+    // --- MOTION: looping demos (Task 8b) ---------------------------------
+    // Drawn first, ahead of every static specimen grid below: this is a
+    // fixed, non-scrolling screen (see the module doc), and the static
+    // sections below already run to ~46 rows on their own — on anything
+    // short of a very tall terminal, content placed after them would never
+    // be reachable at all. The MOTION section is what a checkpoint review
+    // is actually here to judge, so it gets the top of the screen.
+    //
+    // Everything below is live, not a frozen freeze-frame: `draw_testbed`
+    // is called every frame while `Screen::Testbed` is up, and
+    // `App::tick_testbed_demos` keeps retargeting each demo's `AnimKey`(s)
+    // to their opposite pole once it arrives, so they loop for as long as
+    // the screen is showing.
+    draw_motion_section(buf, area, x0, &mut y, ctx);
+    y += 1;
 
     // --- Buttons: 5 states × 2 kinds -----------------------------------
     if !section_label(buf, area, x0, &mut y, "BUTTONS", theme) {
@@ -304,15 +320,6 @@ pub fn draw_testbed(frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
         theme.panel,
         false,
     );
-    y += 5 + 1;
-
-    // --- MOTION: looping demos (Task 8b) ---------------------------------
-    // Everything below is live, not a frozen freeze-frame: `draw_testbed`
-    // is called every frame while `Screen::Testbed` is up, and
-    // `App::tick_testbed_demos` keeps retargeting each demo's `AnimKey`(s)
-    // to their opposite pole once it arrives, so they loop for as long as
-    // the screen is showing.
-    draw_motion_section(buf, area, x0, &mut y, ctx);
 }
 
 /// The "MOTION" section: looping animated demos judged live, not as a
@@ -326,8 +333,15 @@ fn draw_motion_section(buf: &mut Buffer, area: Rect, x0: u16, y: &mut u16, ctx: 
     if !section_label(buf, area, x0, y, "MOTION", theme) {
         return;
     }
+    // Wider than the file's shared `LABEL_COL` (12): this section's inline
+    // duration labels (e.g. `"500ms (current demo)"`, 21 columns) are
+    // longer than any specimen label elsewhere in the grid, and sit on the
+    // very same line as the row they label (see the compactness note
+    // below), so they need more room before the row starts or they'd run
+    // straight into it.
+    const MOTION_LABEL_COL: u16 = 22;
 
-    // Shared two-tab geometry both underline variants slide across.
+    // Shared two-tab geometry every underline duration copy slides across.
     let motion_tabs = vec![
         ("Params".to_string(), None),
         ("Headers".to_string(), None),
@@ -337,83 +351,112 @@ fn draw_motion_section(buf: &mut Buffer, area: Rect, x0: u16, y: &mut u16, ctx: 
     let strip_w = 40;
     let lerp = |a: u16, b: u16, t: f32| a as f32 + (b as f32 - a as f32) * t;
 
-    // Variant A: shipping candidate — whole-cell rounding, thin `▂` bar,
-    // driven straight through the existing `TabStrip::underline` field.
-    if !fits(area, *y, 1) {
+    // Underline slide: a duration COMPARISON — the plan (140ms) alongside
+    // three longer alternatives, so the actual question ("is 140ms too
+    // fast against a reference app with longer transitions?") can be
+    // judged directly rather than guessed at from a single sample. Every
+    // row shares one cycle clock (`App::drive_testbed_group`): all four
+    // start moving at the same instant, each easing over its own labeled
+    // duration, so nothing but the duration itself differs between them.
+    // Each row is the real, shipping `TabStrip::paint`/`underline` field —
+    // just fed a different-duration animated value. The duration label
+    // sits at `x0` on the strip's own top row (not a separate line above
+    // it, the way the earlier TAB STRIP section's "static"/"mid-slide"
+    // labels do) — this section is meant to fit near the top of a normal
+    // terminal without scrolling, and a checkpoint review needs to see
+    // every comparison row at once, so every line saved here matters more
+    // than it would in the static reference grid below.
+    if !section_label(buf, area, x0, y, "underline slide (duration)", theme) {
         return;
     }
-    safe_text(
-        buf,
-        area,
-        x0,
-        *y,
-        "A: thin, cell-step (shipping)",
-        theme.text_muted,
-        theme.page,
-        false,
-    );
-    *y += 1;
-    if !fits(area, *y, 2) {
-        return;
+    let underline_specs: [(&str, AnimKey); 4] = [
+        ("140ms (plan)", AnimKey::ToastFade(140)),
+        ("250ms", AnimKey::ToastFade(250)),
+        ("400ms", AnimKey::ToastFade(400)),
+        ("500ms (current demo)", AnimKey::ToastFade(500)),
+    ];
+    for (label, key) in underline_specs {
+        if !fits(area, *y, 2) {
+            return;
+        }
+        safe_text(
+            buf,
+            area,
+            x0,
+            *y,
+            label,
+            theme.text_muted,
+            theme.page,
+            false,
+        );
+        let t = ctx.anims.value_or(key, ctx.now, 0.0);
+        TabStrip {
+            tabs: &motion_tabs,
+            active: 0,
+            hovered: None,
+            focused: false,
+            underline: (
+                lerp(spans[0].0, spans[1].0, t),
+                lerp(spans[0].1, spans[1].1, t),
+            ),
+        }
+        .paint(
+            buf,
+            Rect::new(x0 + MOTION_LABEL_COL, *y, strip_w, 2),
+            theme.page,
+            theme,
+        );
+        *y += 2;
     }
-    let t_a = ctx
-        .anims
-        .value_or(AnimKey::TabUnderline(StripId::EditorTabs), ctx.now, 0.0);
-    TabStrip {
-        tabs: &motion_tabs,
-        active: 0,
-        hovered: None,
-        focused: false,
-        underline: (
-            lerp(spans[0].0, spans[1].0, t_a),
-            lerp(spans[0].1, spans[1].1, t_a),
-        ),
-    }
-    .paint(buf, Rect::new(x0, *y, strip_w, 2), theme.page, theme);
-    *y += 2 + 1;
 
-    // Variant B: alternative — half-height `▄` bar with sub-cell (half-
-    // column) horizontal edges via quadrant glyphs `▖`/`▗`. Painted
-    // locally (not a `paint/chip.rs` primitive yet): the labels + hairline
-    // rule come from the same `TabStrip::paint` (with a zero-width
-    // underline, so it paints no `▂` of its own), then
-    // `paint_subcell_underline` overlays the accent bar on the rule row.
-    if !fits(area, *y, 1) {
+    // Hover fade: the same duration-comparison treatment — the plan
+    // (70ms) alongside two longer alternatives, each a dense `ListRow`
+    // ping-ponging Normal↔Hover through `theme::mix` (via `ListRow`'s own
+    // `hover_t` blend), label and row sharing one line for the same
+    // compactness reason as above.
+    if !section_label(buf, area, x0, y, "hover fade (duration)", theme) {
         return;
     }
-    safe_text(
-        buf,
-        area,
-        x0,
-        *y,
-        "B: half-height, sub-cell (alternative)",
-        theme.text_muted,
-        theme.page,
-        false,
-    );
-    *y += 1;
-    if !fits(area, *y, 2) {
-        return;
+    let hover_specs: [(&str, AnimKey); 3] = [
+        ("70ms (plan)", AnimKey::ToastFade(70)),
+        ("150ms", AnimKey::ToastFade(150)),
+        ("300ms", AnimKey::ToastFade(300)),
+    ];
+    for (label, key) in hover_specs {
+        if !fits(area, *y, 1) {
+            return;
+        }
+        safe_text(
+            buf,
+            area,
+            x0,
+            *y,
+            label,
+            theme.text_muted,
+            theme.page,
+            false,
+        );
+        let hover_t = ctx.anims.value_or(key, ctx.now, 0.0);
+        ListRow {
+            highlight: RowHighlight::Hover,
+            zebra: None,
+        }
+        .paint(
+            buf,
+            *y,
+            x0 + MOTION_LABEL_COL,
+            24,
+            theme.page,
+            hover_t,
+            theme,
+        );
+        *y += 1;
     }
-    let t_b = ctx
-        .anims
-        .value_or(AnimKey::TabUnderline(StripId::ResponseTabs), ctx.now, 0.0);
-    TabStrip {
-        tabs: &motion_tabs,
-        active: 0,
-        hovered: None,
-        focused: false,
-        underline: (0.0, 0.0),
-    }
-    .paint(buf, Rect::new(x0, *y, strip_w, 2), theme.page, theme);
-    let rule_y = *y + 1;
-    let left_b = lerp(spans[0].0, spans[1].0, t_b);
-    let width_b = lerp(spans[0].1, spans[1].1, t_b);
-    paint_subcell_underline(buf, x0, rule_y, left_b, width_b, theme.accent, theme.page);
-    *y += 2 + 1;
 
-    // Hover fade: a dense ListRow ping-ponging Normal↔Hover through
-    // `theme::mix` (via `ListRow`'s own `hover_t` blend).
+    // Send breathe: the in-flight catalog motion at its plan duration —
+    // fill ping-pongs `mix(accent, accent_edge_dark, t)` at 700ms per pole.
+    // A single copy: unlike the two demos above, this duration isn't in
+    // question, so there's nothing to compare it against.
     if !fits(area, *y, 1) {
         return;
     }
@@ -422,30 +465,7 @@ fn draw_motion_section(buf: &mut Buffer, area: Rect, x0: u16, y: &mut u16, ctx: 
         area,
         x0,
         *y,
-        "hover fade",
-        theme.text_muted,
-        theme.page,
-        false,
-    );
-    let hover_t = ctx.anims.value_or(AnimKey::Hover, ctx.now, 0.0);
-    ListRow {
-        highlight: RowHighlight::Hover,
-        zebra: None,
-    }
-    .paint(buf, *y, x0 + LABEL_COL, 24, theme.page, hover_t, theme);
-    *y += 1 + 1;
-
-    // Send breathe: the in-flight catalog motion — fill ping-pongs
-    // `mix(accent, accent_edge_dark, t)` at 700ms per pole.
-    if !fits(area, *y, 1) {
-        return;
-    }
-    safe_text(
-        buf,
-        area,
-        x0,
-        *y,
-        "send breathe",
+        "send breathe — 700ms/pole (plan)",
         theme.text_muted,
         theme.page,
         false,
@@ -453,7 +473,7 @@ fn draw_motion_section(buf: &mut Buffer, area: Rect, x0: u16, y: &mut u16, ctx: 
     if fits(area, *y + 1, BUTTON_HEIGHT) {
         let breathe_t = ctx.anims.value_or(AnimKey::SendBreathe, ctx.now, 0.0);
         let fill = crate::theme::mix(theme.accent, theme.accent_edge_dark, breathe_t);
-        let rect = Rect::new(x0 + LABEL_COL, *y + 1, 16, BUTTON_HEIGHT);
+        let rect = Rect::new(x0 + MOTION_LABEL_COL, *y + 1, 16, BUTTON_HEIGHT);
         paint::fill(buf, rect, fill);
         let (light, dark) = paint::face_edges(fill, theme);
         paint::bevel_top(buf, Rect::new(rect.x, rect.y, rect.width, 1), light, fill);
@@ -468,111 +488,65 @@ fn draw_motion_section(buf: &mut Buffer, area: Rect, x0: u16, y: &mut u16, ctx: 
         let sx = rect.x + rect.width.saturating_sub(lw) / 2;
         paint::text(buf, sx, rect.y + 1, label, theme.on_accent, fill, true);
     }
-    *y += 1 + BUTTON_HEIGHT + 1;
+    *y += 1 + BUTTON_HEIGHT;
 
-    // List travel: a 5-row dense list whose selection band slides
-    // row-to-row via `frac_vspan` at the animated fractional y.
-    if !fits(area, *y, 1) {
+    // List travel: the plan (100ms/row) alongside one longer alternative
+    // (250ms/row) — two independent 5-row dense lists, each with its own
+    // `frac_vspan`-painted selection band sliding row-to-row. Not synced
+    // to a shared clock (unlike the two ease comparisons above): each is
+    // a discrete dwell-then-step cadence, not a continuous ease, so lining
+    // up their start instants doesn't carry the same comparison value.
+    // Label shares the first row's line, same compactness reason as above.
+    if !section_label(buf, area, x0, y, "list travel (duration)", theme) {
         return;
     }
-    safe_text(
-        buf,
-        area,
-        x0,
-        *y,
-        "list travel",
-        theme.text_muted,
-        theme.page,
-        false,
-    );
-    *y += 1;
+    let list_specs: [(&str, AnimKey); 2] = [
+        ("100ms/row (plan)", AnimKey::ListTravel(ListId::Sidebar)),
+        ("250ms/row", AnimKey::ListTravel(ListId::Palette)),
+    ];
     const ROWS: usize = 5;
-    if !fits(area, *y, ROWS as u16) {
-        return;
-    }
     let row_w = 24;
-    for i in 0..ROWS {
-        ListRow {
-            highlight: RowHighlight::None,
-            zebra: Some(i % 2 == 1),
+    for (label, key) in list_specs {
+        if !fits(area, *y, ROWS as u16) {
+            return;
         }
-        .paint(
+        safe_text(
             buf,
-            *y + i as u16,
-            x0 + LABEL_COL,
-            row_w,
+            area,
+            x0,
+            *y,
+            label,
+            theme.text_muted,
             theme.page,
-            1.0,
-            theme,
+            false,
         );
-    }
-    let travel_t = ctx
-        .anims
-        .value_or(AnimKey::ListTravel(ListId::Sidebar), ctx.now, 0.0);
-    let band_y0 = *y as f32 + travel_t;
-    frac_vspan(
-        buf,
-        x0 + LABEL_COL,
-        x0 + LABEL_COL + row_w,
-        band_y0,
-        band_y0 + 1.0,
-        theme.selection,
-        theme.page,
-    );
-    *y += ROWS as u16;
-}
-
-/// Paints a half-height accent bar (`▄`, fg on the lower half of the cell)
-/// across the fractional column span `[left, left + width)` on `rule_y`,
-/// relative to `x0` — the alternative tab-underline treatment (variant B):
-/// unlike [`TabStrip`]'s own whole-cell-rounded `▂` segment, edges land on
-/// the nearest *half* column, using the quadrant glyphs `▖` (only the left
-/// half of the cell filled) / `▗` (only the right half filled) so the
-/// slide reads as continuous rather than snapping a full cell at a time.
-/// A demo-only painter — not a `paint/chip.rs` primitive.
-fn paint_subcell_underline(
-    buf: &mut Buffer,
-    x0: u16,
-    rule_y: u16,
-    left: f32,
-    width: f32,
-    fg: Color,
-    bg: Color,
-) {
-    if width <= 0.0 {
-        return;
-    }
-    // Work in half-column units so each cell's left/right half can be
-    // tested for coverage independently.
-    let lh = (left * 2.0).round() as i32;
-    let rh = ((left + width) * 2.0).round() as i32;
-    if rh <= lh {
-        return;
-    }
-    let c_min = lh.div_euclid(2);
-    let c_max = (rh - 1).div_euclid(2);
-    for c in c_min..=c_max {
-        let left_half = 2 * c;
-        let right_half = 2 * c + 1;
-        let left_on = left_half >= lh && left_half < rh;
-        let right_on = right_half >= lh && right_half < rh;
-        let glyph = match (left_on, right_on) {
-            (true, true) => "▄",
-            (true, false) => "▖",
-            (false, true) => "▗",
-            (false, false) => continue,
-        };
-        let Some(x) = x0.checked_add_signed(c as i16) else {
-            continue;
-        };
-        if x >= buf.area().right() {
-            continue;
+        for i in 0..ROWS {
+            ListRow {
+                highlight: RowHighlight::None,
+                zebra: Some(i % 2 == 1),
+            }
+            .paint(
+                buf,
+                *y + i as u16,
+                x0 + MOTION_LABEL_COL,
+                row_w,
+                theme.page,
+                1.0,
+                theme,
+            );
         }
-        if let Some(cell) = buf.cell_mut((x, rule_y)) {
-            cell.set_symbol(glyph);
-            cell.set_fg(fg);
-            cell.set_bg(bg);
-        }
+        let travel_t = ctx.anims.value_or(key, ctx.now, 0.0);
+        let band_y0 = *y as f32 + travel_t;
+        frac_vspan(
+            buf,
+            x0 + MOTION_LABEL_COL,
+            x0 + MOTION_LABEL_COL + row_w,
+            band_y0,
+            band_y0 + 1.0,
+            theme.selection,
+            theme.page,
+        );
+        *y += ROWS as u16;
     }
 }
 
@@ -637,12 +611,15 @@ mod tests {
     /// once, at the app level, in `app::tests::testbed_renders_a_bevel_and_an_underline`
     /// (rendered through `ui::draw`, the real entry point) — this test
     /// covers what that one doesn't: every section is present and labeled
-    /// when `draw_testbed` is called directly.
+    /// when `draw_testbed` is called directly. Backend height is 90, not
+    /// 60: since Task 8b, MOTION is drawn *first* (see `draw_testbed`'s own
+    /// doc comment on why) and needs real room of its own before any of
+    /// the static sections below it get a chance to render at all.
     #[test]
     fn every_section_is_labeled() {
         let theme = Theme::dark();
         let anims = Anims::new(false);
-        let mut term = Terminal::new(TestBackend::new(160, 60)).unwrap();
+        let mut term = Terminal::new(TestBackend::new(160, 90)).unwrap();
         term.draw(|f| {
             let area = f.area();
             let ctx = DrawCtx {
@@ -666,15 +643,16 @@ mod tests {
         assert!(content.contains("FLOATING PANEL"), "section label missing");
     }
 
-    /// The MOTION section (Task 8b) needs a taller backend than
+    /// The MOTION section (Task 8b) needs a much taller backend than
     /// `every_section_is_labeled`'s 160×60 to avoid being clipped by
     /// `fits` — it's the last section, appended after everything that test
-    /// already covers.
+    /// already covers, and its duration-comparison rows (4 underline + 3
+    /// hover + 2 list-travel copies) run well past 60 rows on their own.
     #[test]
-    fn motion_section_is_labeled_and_shows_both_underline_variants() {
+    fn motion_section_is_labeled_and_shows_every_duration_row() {
         let theme = Theme::dark();
         let anims = Anims::new(false);
-        let mut term = Terminal::new(TestBackend::new(160, 90)).unwrap();
+        let mut term = Terminal::new(TestBackend::new(160, 140)).unwrap();
         term.draw(|f| {
             let area = f.area();
             let ctx = DrawCtx {
@@ -691,37 +669,54 @@ mod tests {
         let content = format!("{:?}", term.backend().buffer());
         assert!(content.contains("MOTION"), "MOTION section label missing");
         assert!(
-            content.contains("A: thin, cell-step (shipping)"),
-            "variant A label missing"
+            content.contains("underline slide (duration)"),
+            "underline comparison header missing"
         );
+        for label in ["140ms (plan)", "250ms", "400ms", "500ms (current demo)"] {
+            assert!(
+                content.contains(label),
+                "underline duration label {label:?} missing"
+            );
+        }
         assert!(
-            content.contains("B: half-height, sub-cell (alternative)"),
-            "variant B label missing"
+            content.contains("hover fade (duration)"),
+            "hover comparison header missing"
         );
-        assert!(content.contains("hover fade"), "hover fade label missing");
+        for label in ["70ms (plan)", "150ms", "300ms"] {
+            assert!(
+                content.contains(label),
+                "hover duration label {label:?} missing"
+            );
+        }
         assert!(
-            content.contains("send breathe"),
+            content.contains("send breathe — 700ms/pole (plan)"),
             "send breathe label missing"
         );
-        assert!(content.contains("list travel"), "list travel label missing");
+        assert!(
+            content.contains("list travel (duration)"),
+            "list travel comparison header missing"
+        );
+        for label in ["100ms/row (plan)", "250ms/row"] {
+            assert!(
+                content.contains(label),
+                "list travel duration label {label:?} missing"
+            );
+        }
     }
 
-    /// At `t = 0` both underline variants must actually be painting: variant
-    /// A shows its whole-cell `▂` bar, variant B shows its half-height `▄`
-    /// bar (plus, generally, its sub-cell `▖`/`▗` edge glyphs) — confirming
-    /// both read the same `AnimKey`-driven `t` and paint something, not
-    /// just the shared strip geometry underneath.
+    /// At `t = 0` every underline duration row must actually be painting
+    /// its thin `▂` bar — confirming each row's own `AnimKey` (borrowed
+    /// `ToastFade` ids) is read and painted, not just the shared strip
+    /// geometry underneath.
     #[test]
-    fn underline_variant_a_and_b_both_paint_at_rest() {
+    fn every_underline_duration_row_paints_at_rest() {
         let theme = Theme::dark();
         let mut anims = Anims::new(false);
         let now = std::time::Instant::now();
-        anims.snap(crate::anim::AnimKey::TabUnderline(StripId::EditorTabs), 0.0);
-        anims.snap(
-            crate::anim::AnimKey::TabUnderline(StripId::ResponseTabs),
-            0.0,
-        );
-        let mut term = Terminal::new(TestBackend::new(160, 90)).unwrap();
+        for ms in [140, 250, 400, 500] {
+            anims.snap(crate::anim::AnimKey::ToastFade(ms), 0.0);
+        }
+        let mut term = Terminal::new(TestBackend::new(160, 140)).unwrap();
         term.draw(|f| {
             let area = f.area();
             let ctx = DrawCtx {
@@ -736,29 +731,22 @@ mod tests {
         })
         .unwrap();
         let content = format!("{:?}", term.backend().buffer());
-        assert!(content.contains('▂'), "variant A: thin bar missing");
-        assert!(content.contains('▄'), "variant B: half-height bar missing");
-    }
-
-    #[test]
-    fn subcell_underline_paints_quadrant_edges_for_a_half_cell_offset() {
-        let theme = Theme::dark();
-        let mut term = Terminal::new(TestBackend::new(20, 1)).unwrap();
-        term.draw(|f| {
-            paint::fill(f.buffer_mut(), Rect::new(0, 0, 20, 1), theme.page);
-            // left edge at column 2.5, spanning 3.0 columns wide: half-cell
-            // start (▗, right half only) at col 2, full ▄ at cols 3-4, half-
-            // cell end (▖, left half only) at col 5.
-            paint_subcell_underline(f.buffer_mut(), 0, 0, 2.5, 3.0, theme.accent, theme.page);
-        })
-        .unwrap();
-        let buf = term.backend().buffer();
-        let sym = |x: u16| buf.cell((x, 0)).unwrap().symbol();
-        assert_eq!(sym(2), "▗", "half-cell left edge: right-half glyph");
-        assert_eq!(sym(3), "▄", "fully covered cell");
-        assert_eq!(sym(4), "▄", "fully covered cell");
-        assert_eq!(sym(5), "▖", "half-cell right edge: left-half glyph");
-        assert_eq!(sym(1), " ", "untouched left of the span");
-        assert_eq!(sym(6), " ", "untouched right of the span");
+        // Each buffer row is its own quoted line in the Debug output (see
+        // `ratatui_core::buffer::Buffer`'s `Debug` impl), so counting
+        // *lines* containing the glyph — not raw character occurrences,
+        // which would overcount a single row's multi-column bar — gives
+        // the number of distinct rows painting one. Restricted to the
+        // MOTION section itself: the earlier TAB STRIP section also
+        // paints `▂` bars of its own (on 2 rows), and this assertion is
+        // specifically about the 4 duration-comparison rows.
+        let motion_start = content
+            .find("MOTION")
+            .expect("MOTION section label missing");
+        let motion_content = &content[motion_start..];
+        let rows_with_bar = motion_content.lines().filter(|l| l.contains('▂')).count();
+        assert!(
+            rows_with_bar >= 4,
+            "expected a `▂` bar on each of the 4 underline duration rows, found {rows_with_bar}: {motion_content}"
+        );
     }
 }

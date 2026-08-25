@@ -1,5 +1,5 @@
 use crate::action::{Action, CopyTarget};
-use crate::anim::{AnimKey, Anims, ListId, StripId};
+use crate::anim::{AnimKey, Anims, ListId};
 use crate::components::editor::{Editor, EditorTab, SubFocus};
 use crate::components::line_input::LineInput;
 use crate::components::modal::{Modal, ModalResult, ModalStack, PromptKind};
@@ -202,10 +202,13 @@ pub struct App {
     /// `capture_undo` on every call.
     no_coalesce: bool,
     /// Step direction (`1` = downward, `-1` = upward) the testbed screen's
-    /// looping list-travel motion demo is currently stepping in. Only ever
-    /// read/written from `Screen::Testbed`'s tick path
-    /// (`tick_testbed_demos`); meaningless (and untouched) everywhere else.
-    testbed_list_dir: i32,
+    /// two looping list-travel duration-comparison demos are each
+    /// currently stepping in (`_plan` for the 100ms/plan copy, `_alt` for
+    /// the 250ms alternative). Only ever read/written from
+    /// `Screen::Testbed`'s tick path (`tick_testbed_demos`); meaningless
+    /// (and untouched) everywhere else.
+    testbed_list_dir_plan: i32,
+    testbed_list_dir_alt: i32,
 }
 
 /// What to do with the chosen startup root once its source is known.
@@ -532,7 +535,8 @@ impl App {
             shadow: None,
             shadow_cursor: crate::undo::CursorPos::None,
             no_coalesce: false,
-            testbed_list_dir: 1,
+            testbed_list_dir_plan: 1,
+            testbed_list_dir_alt: 1,
         };
         app.prompt_migration_if_pending();
         app
@@ -4289,16 +4293,31 @@ impl App {
     }
 
     /// Drives every looping motion demo on the hidden testbed screen
-    /// (Task 8b): each self-retargets to its opposite pole once it
-    /// finishes, so the demos animate continuously for as long as the
-    /// screen is showing, with no interaction required. Called once per
-    /// `Action::Tick` while `self.screen == Screen::Testbed`; every other
-    /// screen's tick path never reaches this. None of the `AnimKey`s used
-    /// here (`TabUnderline`/`TabUnderlineWidth` on `EditorTabs`/
-    /// `ResponseTabs`, `Hover`, `SendBreathe`, `ListTravel(Sidebar)`) are
-    /// wired to anything else yet, so reusing them for the testbed's own
-    /// demos can't collide with real usage — and the testbed is a dead end
-    /// no other surface is ever drawn alongside.
+    /// (Task 8b): each self-retargets once it finishes, so the demos
+    /// animate continuously for as long as the screen is showing, with no
+    /// interaction required. Called once per `Action::Tick` while
+    /// `self.screen == Screen::Testbed`; every other screen's tick path
+    /// never reaches this.
+    ///
+    /// The underline and hover demos are duration COMPARISON rows: the
+    /// user wasn't sure whether the plan's 140ms/70ms felt right against a
+    /// reference app with longer transitions, so several candidate
+    /// durations are shown side by side, each labeled with its own actual
+    /// duration (`components::testbed::draw_motion_section` renders the
+    /// labels), so whichever one the user picks maps 1:1 to a config
+    /// value. [`Self::drive_testbed_group`] is what keeps every row in a
+    /// comparison starting its move at the exact same instant despite
+    /// easing over different durations — the only way to compare durations
+    /// fairly is to hold every other variable (including "when did it
+    /// start moving") fixed.
+    ///
+    /// The reused `AnimKey`s here (`TabUnderline`/`TabUnderlineWidth` on
+    /// `EditorTabs`/`ResponseTabs`, `Hover`, `SendBreathe`,
+    /// `ListTravel(Sidebar|Palette)`, and `ToastFade` borrowed with demo-
+    /// only integer ids for the duration-comparison rows — real toasts
+    /// never reach ids in the 70-500 range, and none of these keys are
+    /// wired to anything else yet) can't collide with real usage, since
+    /// the testbed is a dead end no other surface is ever drawn alongside.
     ///
     /// `animations = false` (the config kill-switch) still freezes these:
     /// `Anims::retarget` collapses every duration to zero when disabled, so
@@ -4306,56 +4325,67 @@ impl App {
     /// nothing left in flight — `Anims::active` goes false and the main
     /// loop simply stops ticking, exactly like every other animation in
     /// the app.
-    ///
-    /// Every move duration below is deliberately slower than the real
-    /// production value it demonstrates (e.g. the hover fade actually
-    /// plays at 70ms — see `begin_hover_fade` — not the 300ms used here):
-    /// this screen is watched, not clicked through, so the demos are
-    /// stretched out for legibility. None of these `AnimKey`s are wired to
-    /// any real surface yet (see the note above), so slowing them down
-    /// here changes nothing about what ships.
     fn tick_testbed_demos(&mut self, now: Instant) {
-        // Tab-strip underline, variant A ("thin, cell-step") and variant B
-        // ("half-height, sub-cell") share the same slide phase `t` (0..1)
-        // driven independently per strip, drawn very differently by
-        // `components::testbed::draw_testbed`.
-        self.drive_testbed_pingpong(
-            AnimKey::TabUnderline(StripId::EditorTabs),
-            0.0,
-            1.0,
-            Duration::from_millis(500),
+        // Underline slide: four durations compared side by side, all
+        // sharing one cycle clock. 500ms was this task's own (unauthorized,
+        // now-corrected) demo-slowdown value; kept as the fourth candidate
+        // since the reference app the user is comparing against runs
+        // noticeably longer than the 140ms plan.
+        self.drive_testbed_group(
+            &[
+                (AnimKey::ToastFade(140), Duration::from_millis(140)),
+                (AnimKey::ToastFade(250), Duration::from_millis(250)),
+                (AnimKey::ToastFade(400), Duration::from_millis(400)),
+                (AnimKey::ToastFade(500), Duration::from_millis(500)),
+            ],
             Duration::from_millis(1800),
             now,
         );
-        self.drive_testbed_pingpong(
-            AnimKey::TabUnderline(StripId::ResponseTabs),
-            0.0,
-            1.0,
-            Duration::from_millis(500),
+        // Hover fade: three durations compared side by side, same
+        // synced-cycle treatment.
+        self.drive_testbed_group(
+            &[
+                (AnimKey::ToastFade(70), Duration::from_millis(70)),
+                (AnimKey::ToastFade(150), Duration::from_millis(150)),
+                (AnimKey::ToastFade(300), Duration::from_millis(300)),
+            ],
             Duration::from_millis(1800),
             now,
         );
-        // Hover fade: a slow dwell between cycles so the fade itself is
-        // visible rather than a constant flicker.
-        self.drive_testbed_pingpong(
-            AnimKey::Hover,
-            0.0,
-            1.0,
-            Duration::from_millis(300),
-            Duration::from_millis(1800),
-            now,
-        );
-        // Send breathe: the in-flight breathe from the motion catalog —
-        // continuous, no dwell between poles.
+        // Send breathe: the in-flight breathe from the motion catalog, at
+        // its plan duration (700ms per pole) — continuous, no dwell
+        // between poles.
         self.drive_testbed_pingpong(
             AnimKey::SendBreathe,
             0.0,
             1.0,
-            Duration::from_millis(1200),
+            Duration::from_millis(700),
             Duration::ZERO,
             now,
         );
-        self.tick_testbed_list_travel(now);
+        // List travel: the plan duration (100ms/row) alongside one
+        // alternative (250ms/row) — not synced to each other (each has
+        // its own dwell-then-step cadence; a shared clock isn't needed to
+        // compare a *stepped* motion the way it is for a continuous ease).
+        let mut plan_dir = self.testbed_list_dir_plan;
+        self.tick_testbed_list_travel(
+            AnimKey::ListTravel(ListId::Sidebar),
+            &mut plan_dir,
+            Duration::from_millis(100),
+            Duration::from_millis(900),
+            now,
+        );
+        self.testbed_list_dir_plan = plan_dir;
+
+        let mut alt_dir = self.testbed_list_dir_alt;
+        self.tick_testbed_list_travel(
+            AnimKey::ListTravel(ListId::Palette),
+            &mut alt_dir,
+            Duration::from_millis(250),
+            Duration::from_millis(900),
+            now,
+        );
+        self.testbed_list_dir_alt = alt_dir;
     }
 
     /// One looping demo's drive step: if `key` isn't tracked yet, starts it
@@ -4397,23 +4427,71 @@ impl App {
         }
     }
 
-    /// The list-travel demo's own drive step: unlike the two-pole demos
-    /// above, this steps one row at a time across a 5-row list (indices
-    /// `0.0..=4.0`), reversing direction at either end, with a dwell at
-    /// each row so the step reads as a step rather than a blur. The real
-    /// production value for a row-to-row slide is 100ms; `move_dur` below
-    /// is slower for the same on-screen-legibility reason every other demo
-    /// in `tick_testbed_demos` is. `self.testbed_list_dir` (`1` down / `-1`
-    /// up) is the only testbed-demo state that can't be recovered from
-    /// `Anims` alone, since both ends of the range are otherwise
-    /// indistinguishable "arrived and dwelling" moments.
-    fn tick_testbed_list_travel(&mut self, now: Instant) {
+    /// A duration-comparison group's drive step: every `(key, move_dur)`
+    /// member retargets at the exact same instant, each easing over its
+    /// own `move_dur` — so what's compared is purely "does this duration
+    /// feel right", with every other variable (start time, target,
+    /// underlying geometry) held fixed. Phase changes (move → dwell →
+    /// move …) are decided off a single "clock" member — the one with the
+    /// longest `move_dur` in the group — rather than each member's own
+    /// timer: by the time the clock's own move finishes, every faster
+    /// member has already arrived and been idling at its target, so
+    /// forcing the whole group into a dwell at that instant doesn't cut
+    /// any of them off mid-motion. `dwell_dur` is shared by every member.
+    fn drive_testbed_group(
+        &mut self,
+        members: &[(AnimKey, Duration)],
+        dwell_dur: Duration,
+        now: Instant,
+    ) {
+        let &(clock_key, _) = members
+            .iter()
+            .max_by_key(|(_, dur)| *dur)
+            .expect("a duration-comparison group always has at least one member");
+
+        if self.anims.value(clock_key, now).is_none() {
+            for &(key, dur) in members {
+                self.anims.snap(key, 0.0);
+                self.anims.retarget(key, 1.0, dur, now);
+            }
+            return;
+        }
+        if !self.anims.is_done(clock_key, now) {
+            return;
+        }
+        let cur = self.anims.value_or(clock_key, now, 0.0);
+        if self.anims.is_static(clock_key) {
+            let target = if cur <= 0.5 { 1.0 } else { 0.0 };
+            for &(key, dur) in members {
+                self.anims.retarget(key, target, dur, now);
+            }
+        } else {
+            for &(key, _) in members {
+                let v = self.anims.value_or(key, now, 0.0);
+                self.anims.retarget(key, v, dwell_dur, now);
+            }
+        }
+    }
+
+    /// One list-travel demo's drive step: steps one row at a time across a
+    /// 5-row list (indices `0.0..=4.0`), reversing direction at either
+    /// end, with a `dwell_dur` pause at each row so the step reads as a
+    /// step rather than a blur. `dir` is the caller's own per-demo
+    /// direction state (`1` down / `-1` up) — the one bit `Anims` alone
+    /// can't recover, since both ends of the range otherwise look like the
+    /// same "arrived and dwelling" moment.
+    fn tick_testbed_list_travel(
+        &mut self,
+        key: AnimKey,
+        dir: &mut i32,
+        move_dur: Duration,
+        dwell_dur: Duration,
+        now: Instant,
+    ) {
         const LAST_ROW: f32 = 4.0;
-        let key = AnimKey::ListTravel(ListId::Sidebar);
-        let move_dur = Duration::from_millis(300);
         if self.anims.value(key, now).is_none() {
             self.anims.snap(key, 0.0);
-            self.testbed_list_dir = 1;
+            *dir = 1;
             self.anims.retarget(key, 1.0, move_dur, now);
             return;
         }
@@ -4423,15 +4501,14 @@ impl App {
         let cur = self.anims.value_or(key, now, 0.0);
         if self.anims.is_static(key) {
             if cur <= 0.0 {
-                self.testbed_list_dir = 1;
+                *dir = 1;
             } else if cur >= LAST_ROW {
-                self.testbed_list_dir = -1;
+                *dir = -1;
             }
-            let next = (cur + self.testbed_list_dir as f32).clamp(0.0, LAST_ROW);
+            let next = (cur + *dir as f32).clamp(0.0, LAST_ROW);
             self.anims.retarget(key, next, move_dur, now);
         } else {
-            self.anims
-                .retarget(key, cur, Duration::from_millis(900), now);
+            self.anims.retarget(key, cur, dwell_dur, now);
         }
     }
 
