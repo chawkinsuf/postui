@@ -1604,8 +1604,7 @@ impl App {
                     detail: None,
                     actions: vec![Action::PromptOpenProjectPath],
                 });
-                self.modals
-                    .push(Modal::Chooser(ChooserState::new("Projects", items)));
+                self.push_modal(Modal::Chooser(ChooserState::new("Projects", items)));
                 true
             }
             Action::CycleProject => {
@@ -1776,8 +1775,7 @@ impl App {
                     detail: None,
                     actions: vec![Action::OpenNewEnvPrompt],
                 });
-                self.modals
-                    .push(Modal::Chooser(ChooserState::new("Environments", items)));
+                self.push_modal(Modal::Chooser(ChooserState::new("Environments", items)));
                 true
             }
             Action::OpenNewEnvPrompt => {
@@ -2835,10 +2833,9 @@ impl App {
                 .push(format!("{group} has no entries here"), ToastKind::Warning);
             return true;
         }
-        self.modals
-            .push(Modal::VarPicker(VarPickerState::new_select(
-                entries, name, group, env_key,
-            )));
+        self.push_modal(Modal::VarPicker(VarPickerState::new_select(
+            entries, name, group, env_key,
+        )));
         true
     }
 

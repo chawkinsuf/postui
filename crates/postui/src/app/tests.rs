@@ -2521,6 +2521,7 @@ fn clicking_a_prompts_own_body_does_not_close_it_or_touch_the_input() {
     // the border) resolved to `ModalOutside` and closed the modal,
     // discarding typed input.
     let (mut app, _dir) = sidebar_test_app();
+    app.anims.enabled = false;
     render_once(&mut app);
     let r = app
         .hits
@@ -4531,6 +4532,30 @@ fn dropdown_push_never_touches_modal_open() {
     );
 }
 
+/// Regression for a review finding: `Action::OpenEnvChooser` originally
+/// pushed straight onto `self.modals` (a two-line `self.modals\n.push(...)`
+/// form a single-line grep for `self.modals.push(` missed) instead of going
+/// through `push_modal`, so the Environments chooser never retargeted
+/// `AnimKey::ModalOpen` on open. Mirrors
+/// `modal_open_retargets_only_on_empty_to_non_empty_push`, but for this
+/// specific push site, so a future modal-opening action that bypasses
+/// `push_modal` fails a test rather than only a grep sweep.
+#[test]
+fn env_chooser_open_retargets_modal_open_on_empty_to_non_empty_push() {
+    let (mut app, _dir) = app_with_envs();
+    let now = std::time::Instant::now();
+
+    app.update(Action::OpenEnvChooser);
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Chooser(_))),
+        "sanity: the chooser actually opened"
+    );
+    assert!(
+        app.anims.value(AnimKey::ModalOpen, now).unwrap() < 1.0,
+        "opening the env chooser on an empty stack must start the settle animation short of 1"
+    );
+}
+
 #[test]
 fn click_palette_row_runs_immediately() {
     let mut app = App::new_for_test();
@@ -4550,6 +4575,7 @@ fn click_palette_row_runs_immediately() {
 #[test]
 fn click_chooser_row_selects_then_click_again_confirms() {
     let (mut app, _a, b) = two_projects();
+    app.anims.enabled = false;
     app.update(Action::OpenProjectChooser);
     render_once(&mut app);
     // Row 0 is alpha (the currently open project); row 1 is beta.
@@ -6534,6 +6560,7 @@ fn ctrl_v_on_a_one_field_groups_token_opens_select_option_with_checkmark() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.anims.enabled = false;
     app.project.set_selection_for("qa", "user", "alice");
 
     focus_url_with_cursor_on(&mut app, "https://x/{{user}}", "{{user}}");
@@ -6566,6 +6593,7 @@ fn ctrl_v_on_group_member_token_shows_the_group_s_options_with_full_preview() {
     group_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.anims.enabled = false;
 
     focus_url_with_cursor_on(&mut app, "https://x/{{user_id}}", "{{user_id}}");
     app.update(Action::OpenVarPicker { completing: false });
