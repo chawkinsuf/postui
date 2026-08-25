@@ -11,6 +11,10 @@ use crate::theme::Theme;
 pub enum RowHighlight {
     None,
     Hover,
+    /// A keyboard-cursor / menu-target marker: a steady `control_hover`
+    /// fill, one step brighter than a plain hover so it reads against the
+    /// zebra stripes, but still clearly weaker than `Selected`'s band.
+    Cursor,
     Selected,
 }
 
@@ -40,6 +44,7 @@ impl ListRow {
         match highlight {
             RowHighlight::None => base,
             RowHighlight::Hover => crate::theme::mix(base, theme.control, hover_t),
+            RowHighlight::Cursor => theme.control_hover,
             RowHighlight::Selected => theme.selection,
         }
     }

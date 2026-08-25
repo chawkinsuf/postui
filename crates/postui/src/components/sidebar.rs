@@ -534,7 +534,7 @@ impl Component for Sidebar {
             // focused — while the keyboard cursor (`self.selected`), when
             // it rests on a *different* row (arrow-key browsing, or a
             // right-click arming a context menu), gets a steady
-            // `control`-fill marker: visibly targeted, clearly not the
+            // `control_hover`-fill marker: visibly targeted, clearly not the
             // band. When the two coincide (the common case right after an
             // open) the band simply wins.
             let is_open = matches!(
@@ -555,14 +555,13 @@ impl Component for Sidebar {
                 RowHighlight::None
             } else if is_band_row {
                 RowHighlight::Selected
-            } else if is_cursor || is_hovered {
+            } else if is_cursor {
+                RowHighlight::Cursor
+            } else if is_hovered {
                 RowHighlight::Hover
             } else {
                 RowHighlight::None
             };
-            // The cursor marker holds at full strength; a plain hover keeps
-            // the shared fade-in.
-            let row_hover_t = if is_cursor { 1.0 } else { hover_t };
 
             // The list's own inset keeps column `area.x` free for the pane
             // focus bar, so every row — selected or hover — spans the full
@@ -582,7 +581,7 @@ impl Component for Sidebar {
                     list_area.x,
                     list_area.width,
                     theme.panel,
-                    row_hover_t,
+                    hover_t,
                     theme,
                 );
             }
@@ -590,7 +589,7 @@ impl Component for Sidebar {
             let row_fill = if intersects_band {
                 theme.selection
             } else {
-                Self::resolve_fill(theme, highlight, zebra[i], theme.panel, row_hover_t)
+                Self::resolve_fill(theme, highlight, zebra[i], theme.panel, hover_t)
             };
 
             self.paint_row(buf, row, text_row, list_area, row_fill, is_open, theme);
@@ -693,6 +692,7 @@ impl Sidebar {
         match highlight {
             RowHighlight::None => zebra_fill,
             RowHighlight::Hover => crate::theme::mix(zebra_fill, theme.control, hover_t),
+            RowHighlight::Cursor => theme.control_hover,
             RowHighlight::Selected => theme.selection,
         }
     }
@@ -1229,7 +1229,7 @@ mod tests {
     /// The OPEN request's row keeps the full `▌` bar + `theme.selection`
     /// fill — the band always means "this is what the right panes show".
     /// The keyboard cursor, resting on a *different* row, gets only a
-    /// steady `theme.control` fill (a settled hover): visibly targeted,
+    /// steady `theme.control_hover` fill: visibly targeted,
     /// clearly not the band.
     #[test]
     fn open_row_and_cursor_row_stay_visually_distinct() {
@@ -1279,8 +1279,8 @@ mod tests {
             "no accent bar on the cursor row"
         );
         assert_eq!(
-            fill_cell.bg, theme.control,
-            "cursor row carries the steady control fill"
+            fill_cell.bg, theme.control_hover,
+            "cursor row carries the steady control_hover fill"
         );
         assert_eq!(
             name_cell.symbol(),
@@ -1323,7 +1323,7 @@ mod tests {
 
         // The unfocused cursor row shows no marker of its own.
         let row1 = hits.rect_of(&Hit::SidebarRow(1)).unwrap();
-        assert_ne!(buf[(row1.x + row1.width - 2, row1.y)].bg, theme.control);
+        assert_ne!(buf[(row1.x + row1.width - 2, row1.y)].bg, theme.control_hover);
         assert_ne!(buf[(row1.x + row1.width - 2, row1.y)].bg, theme.selection);
     }
 

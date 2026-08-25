@@ -1350,6 +1350,7 @@ fn draw_dropdown(
         let row_fill = match highlight {
             paint::RowHighlight::None => theme.panel,
             paint::RowHighlight::Hover => theme.control,
+            paint::RowHighlight::Cursor => theme.control_hover,
             paint::RowHighlight::Selected => theme.selection,
         };
 
