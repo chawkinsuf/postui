@@ -27,7 +27,18 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 | crate::components::editor::EditorTab::Headers
                 | crate::components::editor::EditorTab::Vars
         );
-    let layout = compute_layout(frame.area(), editor_collapsed_to_chrome);
+    // `App::sync_pane_collapse_anim` (run on every `update`) keeps
+    // `AnimKey::PaneCollapse` chasing this same condition, so its eased
+    // value at `now` is what actually drives the row split — falling back
+    // to the settled bool (as a plain 0.0/1.0) only for the very first
+    // frame, before `update` has ever run and started the anim.
+    let now = std::time::Instant::now();
+    let collapse_t = app.anims.value_or(
+        crate::anim::AnimKey::PaneCollapse,
+        now,
+        if editor_collapsed_to_chrome { 1.0 } else { 0.0 },
+    );
+    let layout = compute_layout(frame.area(), collapse_t);
     let focus = app.focus;
     let screen = app.screen;
     let mut hits = std::mem::take(&mut app.hits);
@@ -134,7 +145,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         &mut hits,
         app.hovered.as_ref(),
     );
-    app.toasts.draw(frame, frame.area(), &app.theme);
+    app.toasts.draw(
+        frame,
+        frame.area(),
+        &app.theme,
+        &app.anims,
+        std::time::Instant::now(),
+    );
     app.modals.draw(
         frame,
         frame.area(),
@@ -293,8 +310,7 @@ mod tests {
         let mut app = App::new_for_test();
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).unwrap();
-        let layout =
-            crate::layout::compute_layout(ratatui::layout::Rect::new(0, 0, 120, 40), false);
+        let layout = crate::layout::compute_layout(ratatui::layout::Rect::new(0, 0, 120, 40), 0.0);
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let buf = terminal.backend().buffer();
 

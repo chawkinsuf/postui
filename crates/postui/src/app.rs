@@ -178,6 +178,13 @@ pub struct App {
     /// (tab strip + its count chip stay visible; only the table itself is
     /// hidden). Session-only — never persisted.
     pub table_collapsed: bool,
+    /// The last `editor_collapsed_to_chrome` value (`table_collapsed` AND
+    /// the active tab is one the table applies to) `AnimKey::PaneCollapse`
+    /// was driven toward, tracked so `update` can tell when that derived
+    /// condition flips — from `Action::ToggleTableCollapse` or from an
+    /// active-tab switch while collapsed — and start easing the layout
+    /// split rather than snapping it every frame it's still settled.
+    pane_collapsed_target: bool,
     /// The most recent left-click's hit and when it landed, used to detect
     /// a double-click (same hit, within 400ms).
     last_click: Option<(Hit, std::time::Instant)>,
@@ -542,6 +549,7 @@ impl App {
             drag: None,
             text_drag: None,
             table_collapsed: false,
+            pane_collapsed_target: false,
             last_click: None,
             last_action_failed: false,
             _test_rx: None,
@@ -638,7 +646,49 @@ impl App {
             .as_ref()
             .is_some_and(|f| f.slug == self.editor.slug);
         self.editor.table_collapsed = self.table_collapsed;
+        self.sync_pane_collapse_anim();
+        // Any toast pushed by `apply(action)` above gets its slide-in
+        // started here rather than inside `Toasts::push` itself — `push`
+        // is called from ~100 sites across this file, none of which
+        // otherwise need `&mut self.anims`/`ui_settings` in scope.
+        self.toasts.start_pending_anims(
+            &mut self.anims,
+            Instant::now(),
+            self.ui_settings.anim_ms.toast,
+        );
         changed || swapped
+    }
+
+    /// Keeps `AnimKey::PaneCollapse` chasing `editor_collapsed_to_chrome`
+    /// (`table_collapsed` AND the active tab is Params/Headers/Vars — the
+    /// same condition `layout::compute_layout`'s caller uses): whenever it
+    /// flips (`Action::ToggleTableCollapse`, or an active-tab switch while
+    /// collapsed), retargets the anim from wherever it currently sits to
+    /// the new pole over `ui_settings.anim_ms.pane_collapse` (120ms by
+    /// default). Called on every `update`, not just the toggle action, so
+    /// a tab switch that changes the derived condition eases too rather
+    /// than only reacting to the chip/alt+p.
+    fn sync_pane_collapse_anim(&mut self) {
+        let target = self.table_collapsed
+            && matches!(
+                self.editor.active_tab,
+                EditorTab::Params | EditorTab::Headers | EditorTab::Vars
+            );
+        if target == self.pane_collapsed_target {
+            return;
+        }
+        self.pane_collapsed_target = target;
+        let now = Instant::now();
+        let target_v = if target { 1.0 } else { 0.0 };
+        if self.anims.value(AnimKey::PaneCollapse, now).is_none() {
+            self.anims.snap(AnimKey::PaneCollapse, 1.0 - target_v);
+        }
+        self.anims.retarget(
+            AnimKey::PaneCollapse,
+            target_v,
+            self.ui_settings.anim_ms.pane_collapse,
+            now,
+        );
     }
 
     /// Builds the Vars tab's shadow hint map: `name → "overrides <env>:
@@ -830,13 +880,23 @@ impl App {
             Action::Tick => {
                 self.editor.on_tick();
                 let tip_changed = self.track_caret_token();
+                let now = Instant::now();
                 // The testbed's looping motion demos self-drive from here,
                 // never from any other screen's tick path — see
                 // `tick_testbed_demos`.
                 if self.screen == Screen::Testbed {
-                    self.tick_testbed_demos(Instant::now());
+                    self.tick_testbed_demos(now);
+                } else {
+                    // The production Send-cap breathe: a separate pingpong
+                    // from the testbed's own (they never run on the same
+                    // screen at once, so sharing `AnimKey::SendBreathe`
+                    // between them is safe — see the testbed's own doc).
+                    self.tick_send_breathe(now);
                 }
-                self.toasts.on_tick() || self.in_flight_ticking() || tip_changed || self.animating()
+                self.toasts.on_tick(&mut self.anims, now)
+                    || self.in_flight_ticking()
+                    || tip_changed
+                    || self.animating()
             }
             // No state change; forces a redraw. Background tasks use this
             // to wake the main loop when they've mutated state directly
@@ -4310,6 +4370,34 @@ impl App {
     /// `Anims` stays deterministic and this stays cheap to call every frame.
     pub fn animating(&self) -> bool {
         self.anims.active(Instant::now())
+    }
+
+    /// Drives the production Send-cap breathe while a request is in
+    /// flight: if `AnimKey::SendBreathe` has never been set, or a real
+    /// send just started after it was last cleared, snaps it to 0 and
+    /// starts easing to 1 over `ui_settings.anim_ms.send_breathe` (700ms
+    /// by default); each tick after it finishes, retargets to the
+    /// opposite pole over the same duration, so it ping-pongs for as long
+    /// as `in_flight` stays set. Clears the key once nothing is in flight,
+    /// so the next send starts a fresh breathe rather than resuming
+    /// mid-pulse. Never called on `Screen::Testbed` — that screen drives
+    /// the same `AnimKey` itself via `drive_testbed_pingpong`.
+    fn tick_send_breathe(&mut self, now: Instant) {
+        if self.session.in_flight.is_none() {
+            self.anims.clear(AnimKey::SendBreathe);
+            return;
+        }
+        let dur = self.ui_settings.anim_ms.send_breathe;
+        if self.anims.value(AnimKey::SendBreathe, now).is_none() {
+            self.anims.snap(AnimKey::SendBreathe, 0.0);
+            self.anims.retarget(AnimKey::SendBreathe, 1.0, dur, now);
+            return;
+        }
+        if self.anims.is_done(AnimKey::SendBreathe, now) {
+            let cur = self.anims.value_or(AnimKey::SendBreathe, now, 0.0);
+            let target = if cur >= 0.5 { 0.0 } else { 1.0 };
+            self.anims.retarget(AnimKey::SendBreathe, target, dur, now);
+        }
     }
 
     /// Starts the hover fade over from 0: snaps `AnimKey::Hover` to 0 and

@@ -26,6 +26,7 @@ use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn render(app: &mut App) -> String {
+    app.anims.finish_all();
     let mut terminal = Terminal::new(TestBackend::new(140, 44)).unwrap();
     terminal.draw(|f| postui::ui::draw(f, app)).unwrap();
     format!("{:?}", terminal.backend().buffer())

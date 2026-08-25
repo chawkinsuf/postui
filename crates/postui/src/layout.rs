@@ -40,13 +40,22 @@ pub struct AppLayout {
     pub footer: Rect,
 }
 
-/// `editor_collapsed_to_chrome` is `true` exactly when the Editor pane has
-/// nothing but chrome to show — its params/headers table is collapsed and
-/// one of those two tabs is active (the Body tab always keeps the normal
-/// split, table or no table). In that case the Editor pane shrinks to
-/// [`editor::CHROME_HEIGHT`] and the Response pane takes every row that
-/// frees up; otherwise the two keep today's fixed 50/50 split.
-pub fn compute_layout(area: Rect, editor_collapsed_to_chrome: bool) -> AppLayout {
+/// `collapse_t` is the eased `AnimKey::PaneCollapse` value (Task 14):
+/// `0.0` is the Editor pane's normal 50/50 split with the Response pane;
+/// `1.0` is the Editor pane collapsed to nothing but chrome — shrunk to
+/// exactly [`editor::CHROME_HEIGHT`], with the Response pane taking every
+/// row that frees up. Values strictly between the two interpolate the
+/// Editor pane's height (rounded to whole rows — a `Rect` can't hold a
+/// fractional one) between the two endpoints' actual split heights, so the
+/// row boundary itself eases smoothly rather than snapping.
+///
+/// The two endpoints are each computed with `Layout::split` exactly as
+/// before (once for the 50/50 split, once for the chrome/`Min(0)` split),
+/// so `collapse_t <= 0.0` and `collapse_t >= 1.0` are byte-identical to the
+/// old `editor_collapsed_to_chrome: bool` behavior — callers that only
+/// ever need the settled state (every existing test) can keep passing
+/// `0.0`/`1.0` unchanged.
+pub fn compute_layout(area: Rect, collapse_t: f32) -> AppLayout {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -64,25 +73,45 @@ pub fn compute_layout(area: Rect, editor_collapsed_to_chrome: bool) -> AppLayout
             Constraint::Percentage(72),
         ])
         .split(body);
-    let right_constraints = if editor_collapsed_to_chrome {
-        [
-            Constraint::Length(editor::CHROME_HEIGHT),
-            Constraint::Min(0),
-        ]
-    } else {
-        [Constraint::Percentage(50), Constraint::Percentage(50)]
-    };
-    let right = Layout::default()
+    let t = collapse_t.clamp(0.0, 1.0);
+    let expanded = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(right_constraints)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(cols[2]);
+    let (editor, response) = if t <= 0.0 {
+        (expanded[0], expanded[1])
+    } else {
+        let collapsed = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(editor::CHROME_HEIGHT),
+                Constraint::Min(0),
+            ])
+            .split(cols[2]);
+        if t >= 1.0 {
+            (collapsed[0], collapsed[1])
+        } else {
+            let editor_h = (expanded[0].height as f32
+                + (collapsed[0].height as f32 - expanded[0].height as f32) * t)
+                .round() as u16;
+            let response_h = cols[2].height.saturating_sub(editor_h);
+            let editor_rect = Rect::new(cols[2].x, cols[2].y, cols[2].width, editor_h);
+            let response_rect = Rect::new(
+                cols[2].x,
+                cols[2].y.saturating_add(editor_h),
+                cols[2].width,
+                response_h,
+            );
+            (editor_rect, response_rect)
+        }
+    };
     AppLayout {
         header: rows[0],
         body,
         sidebar: cols[0],
         gutter: cols[1],
-        editor: right[0],
-        response: right[1],
+        editor,
+        response,
         footer: rows[2],
     }
 }
@@ -111,7 +140,7 @@ mod tests {
     #[test]
     fn layout_partitions_area() {
         let area = Rect::new(0, 0, 120, 40);
-        let l = compute_layout(area, false);
+        let l = compute_layout(area, 0.0);
         assert_eq!(l.header.height, 3);
         assert_eq!(l.footer.height, 3);
         assert_eq!(l.header.y, 0);
@@ -132,8 +161,8 @@ mod tests {
     #[test]
     fn collapsed_editor_shrinks_to_chrome_and_response_takes_the_rest() {
         let area = Rect::new(0, 0, 120, 40);
-        let expanded = compute_layout(area, false);
-        let collapsed = compute_layout(area, true);
+        let expanded = compute_layout(area, 0.0);
+        let collapsed = compute_layout(area, 1.0);
         assert_eq!(
             collapsed.editor.height,
             editor::CHROME_HEIGHT,
@@ -148,5 +177,35 @@ mod tests {
             collapsed.response.height > expanded.response.height,
             "response pane reclaims every row the table gave up"
         );
+    }
+
+    #[test]
+    fn mid_collapse_height_sits_strictly_between_both_endpoints() {
+        let area = Rect::new(0, 0, 120, 40);
+        let expanded = compute_layout(area, 0.0);
+        let collapsed = compute_layout(area, 1.0);
+        let mid = compute_layout(area, 0.5);
+        assert!(
+            mid.editor.height < expanded.editor.height,
+            "mid-collapse editor is shorter than fully expanded"
+        );
+        assert!(
+            mid.editor.height > collapsed.editor.height,
+            "mid-collapse editor is taller than fully collapsed"
+        );
+        assert_eq!(
+            mid.editor.height + mid.response.height,
+            expanded.editor.height + expanded.response.height,
+            "still exactly fills the same vertical span mid-anim"
+        );
+    }
+
+    #[test]
+    fn collapse_t_clamps_outside_zero_one() {
+        let area = Rect::new(0, 0, 120, 40);
+        let below = compute_layout(area, -0.5);
+        let above = compute_layout(area, 1.5);
+        assert_eq!(below.editor, compute_layout(area, 0.0).editor);
+        assert_eq!(above.editor, compute_layout(area, 1.0).editor);
     }
 }

@@ -19,6 +19,7 @@ use ratatui::crossterm::event::{
 use tokio::sync::mpsc::UnboundedReceiver;
 
 fn render(app: &mut App) -> String {
+    app.anims.finish_all();
     let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
     terminal.draw(|f| postui::ui::draw(f, app)).unwrap();
     format!("{:?}", terminal.backend().buffer())

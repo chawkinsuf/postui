@@ -165,9 +165,11 @@ pub struct Editor {
     /// line and places the caret at the clicked column.
     pub last_url_text_area: Option<Rect>,
     /// Bumped on every `Action::Tick`, regardless of `sending`; drives the
-    /// Send cap's spinner glyph and accent/accent_edge_dark pulse while a
-    /// request is in flight. Wrapping is harmless -- only taken mod the
-    /// spinner's frame count / a small pulse period.
+    /// Send cap's spinner glyph while a request is in flight. Wrapping is
+    /// harmless -- only taken mod the spinner's frame count. The
+    /// accent/accent_edge_dark breathe is a separate, eased effect (Task
+    /// 14) driven by `AnimKey::SendBreathe` via `App::tick_send_breathe`,
+    /// not this counter.
     pub spinner_frame: u32,
     /// Mirrors `App::table_collapsed`, synced by `App::update` on every
     /// action alongside `sending`. Draw-only: when set, the active tab's
@@ -1536,12 +1538,17 @@ impl Editor {
         let send_hovered = ctx.hovered == Some(&crate::hit::Hit::SendButton);
         let (label, send_fill, label_fg, bold) = if self.sending {
             let glyph = SPINNER_GLYPHS[(self.spinner_frame as usize) % SPINNER_GLYPHS.len()];
-            let pulse_dark = (self.spinner_frame / 3) % 2 == 1;
-            let face = if pulse_dark {
-                theme.accent_edge_dark
-            } else {
-                theme.accent
-            };
+            // The breathe pulse: `AnimKey::SendBreathe` ping-pongs 0<->1 over
+            // `ui_settings.anim_ms.send_breathe` (700ms by default) for as
+            // long as `App::tick_send_breathe` sees a real send in flight
+            // (a separate driver from the testbed's own pingpong of the
+            // same key -- they never run on the same screen). Defaults to
+            // 0.0 (pure `accent`) the one frame a send starts before its
+            // first `Action::Tick` has run.
+            let breathe_t = ctx
+                .anims
+                .value_or(crate::anim::AnimKey::SendBreathe, ctx.now, 0.0);
+            let face = mix(theme.accent, theme.accent_edge_dark, breathe_t);
             // Hovering a send in flight swaps the label to "Cancel" so the
             // click-to-cancel affordance is discoverable, without touching
             // the pulse/spinner face logic.
@@ -2768,14 +2775,20 @@ mod tests {
 
     #[test]
     fn format_body_on_invalid_json_toasts_position_and_empty_body_is_a_noop() {
-        let mut app = App::new_for_test();
+        // Animations off: the toast's slide-in would otherwise still be
+        // mid-flight (offset off-screen) at the instant this test draws it,
+        // one line after the push that starts it.
+        let mut app = App::new_for_test_with_anims(false);
         app.editor.set_body_text("{\n  \"a\": oops\n}");
         assert!(app.update(Action::FormatBody));
         let theme = Theme::dark();
         let backend = TestBackend::new(80, 10);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|f| app.toasts.draw(f, f.area(), &theme))
+            .draw(|f| {
+                app.toasts
+                    .draw(f, f.area(), &theme, &app.anims, std::time::Instant::now())
+            })
             .unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(
@@ -3759,8 +3772,7 @@ url = "https://api.example.com/users""#,
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
 
-        let layout =
-            crate::layout::compute_layout(ratatui::layout::Rect::new(0, 0, 120, 40), false);
+        let layout = crate::layout::compute_layout(ratatui::layout::Rect::new(0, 0, 120, 40), 0.0);
         let buf = terminal.backend().buffer();
         // Deep into the pane's lower region, well past the address bar, tab
         // bar, and the empty table's few header/ghost/edge rows.

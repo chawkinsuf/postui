@@ -3149,10 +3149,15 @@ fn two_projects() -> (App, tempfile::TempDir, tempfile::TempDir) {
 
 /// Renders the app and returns the terminal buffer's debug text, so
 /// tests can assert on toast wording (`Toasts` exposes no message
-/// accessor beyond `is_empty`).
+/// accessor beyond `is_empty`). Settles every in-flight animation first
+/// (`Anims::finish_all`) — this helper's whole purpose is asserting
+/// static content, which would otherwise land mid-flight of whatever
+/// animation the action under test happened to also start (e.g. a
+/// freshly pushed toast's own slide-in, off in its first frame).
 fn rendered_text(app: &mut App) -> String {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    app.anims.finish_all();
     let backend = TestBackend::new(80, 24);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
@@ -7863,6 +7868,7 @@ use crate::components::varmanager::VmField;
 fn rendered_text_tall(app: &mut App) -> String {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    app.anims.finish_all();
     let backend = TestBackend::new(100, 46);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
@@ -9080,6 +9086,134 @@ fn testbed_demo_drive_does_not_run_on_the_main_screen() {
             )
             .is_none(),
         "the testbed's list-travel demo must not start ticking on Screen::Main"
+    );
+}
+
+// --- Task 14 (stage 8): toast motion, Send breathe, pane collapse --------
+
+/// Pushing a toast (any `App::update` that ends up calling `Toasts::push`)
+/// must start its slide-in ease immediately -- `App::update`'s trailing
+/// `Toasts::start_pending_anims` call, not something a later `Action::Tick`
+/// is needed for.
+#[test]
+fn pushing_a_toast_starts_an_active_toast_fade_anim() {
+    let mut app = App::new_for_test();
+    // No response yet: `CopyToClipboard(ResponseBody)` toasts "nothing to
+    // copy" unconditionally, with no fixture setup needed.
+    app.update(Action::CopyToClipboard(CopyTarget::ResponseBody));
+    assert!(!app.toasts.is_empty(), "the copy must have toasted");
+    assert!(
+        app.animating(),
+        "the freshly pushed toast's own slide-in must already be in flight"
+    );
+}
+
+/// While a send is in flight, `App::animating()` must stay true across
+/// ticks: the Send-cap breathe (`AnimKey::SendBreathe`) keeps retargeting
+/// to the opposite pole every time it finishes, for as long as
+/// `session.in_flight` is set -- see `App::tick_send_breathe`.
+#[tokio::test]
+async fn in_flight_send_keeps_animating_true_across_ticks() {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
+    app.editor.url = crate::components::line_input::LineInput::new("http://127.0.0.1:9");
+    app.update(Action::ForceSend);
+    assert!(app.session.in_flight.is_some());
+    for _ in 0..5 {
+        app.update(Action::Tick);
+        assert!(
+            app.animating(),
+            "the Send-cap breathe must still be easing or dwelling"
+        );
+    }
+    // Cleanup: cancel so the spawned task doesn't outlive the test.
+    app.update(Action::CancelSend);
+}
+
+/// Once nothing is in flight any more, the breathe's `AnimKey::SendBreathe`
+/// entry is dropped -- so the *next* send starts a fresh breathe from 0
+/// rather than resuming wherever the last one left off.
+#[tokio::test]
+async fn send_breathe_anim_is_cleared_once_nothing_is_in_flight() {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
+    app.editor.url = crate::components::line_input::LineInput::new("http://127.0.0.1:9");
+    app.update(Action::ForceSend);
+    app.update(Action::Tick);
+    assert!(
+        app.anims
+            .value(crate::anim::AnimKey::SendBreathe, std::time::Instant::now())
+            .is_some(),
+        "the breathe must have started while sending"
+    );
+    app.update(Action::CancelSend);
+    app.update(Action::Tick);
+    assert!(
+        app.anims
+            .value(crate::anim::AnimKey::SendBreathe, std::time::Instant::now())
+            .is_none(),
+        "the breathe must be cleared once nothing is in flight"
+    );
+}
+
+/// `Action::ToggleTableCollapse` (the `⌄ hide`/`⌄ show` chip and alt+p)
+/// must retarget `AnimKey::PaneCollapse` rather than snap it -- right after
+/// the toggle, the anim is still in flight (not yet `is_done`), so the very
+/// next `ui::draw` reads an eased value, not the settled endpoint.
+#[test]
+fn toggle_table_collapse_retargets_pane_collapse_instead_of_snapping() {
+    let mut app = App::new_for_test_with_anims(true);
+    app.editor.active_tab = EditorTab::Params;
+    assert!(!app.table_collapsed);
+    let now = std::time::Instant::now();
+    assert!(
+        app.anims
+            .value(crate::anim::AnimKey::PaneCollapse, now)
+            .is_none(),
+        "untouched before the first toggle"
+    );
+
+    app.update(Action::ToggleTableCollapse);
+    assert!(app.table_collapsed);
+    let now = std::time::Instant::now();
+    assert!(
+        !app.anims.is_done(crate::anim::AnimKey::PaneCollapse, now),
+        "collapsing must ease over ui_settings.anim_ms.pane_collapse, not snap"
+    );
+
+    // `layout::compute_layout` interpolates the row split from this same
+    // eased value -- see the dedicated mid-anim coverage in
+    // `layout::tests::mid_collapse_height_sits_strictly_between_both_endpoints`,
+    // which drives `now` manually rather than depending on real elapsed
+    // time between two `Instant::now()` calls here.
+}
+
+/// A tab switch that changes whether the table is actually showing (while
+/// `table_collapsed` itself stays put) must also ease `PaneCollapse` --
+/// switching onto the Body tab always keeps the normal 50/50 split
+/// (`layout::compute_layout`'s own doc), so leaving a collapsed Params tab
+/// for Body must animate the pane back open exactly like an explicit
+/// toggle would.
+#[test]
+fn switching_off_a_collapsed_table_tab_also_eases_pane_collapse() {
+    let mut app = App::new_for_test_with_anims(true);
+    app.editor.active_tab = EditorTab::Params;
+    app.update(Action::ToggleTableCollapse);
+    assert!(app.table_collapsed);
+    // Let it settle (real time is fine here -- pane_collapse defaults to
+    // 120ms, and `is_done`/`value` both tolerate an already-finished anim).
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    assert!(app.anims.is_done(
+        crate::anim::AnimKey::PaneCollapse,
+        std::time::Instant::now()
+    ));
+
+    app.update(Action::EditorTabSelect(EditorTab::Body.index()));
+    assert_eq!(app.editor.active_tab, EditorTab::Body);
+    let now = std::time::Instant::now();
+    assert!(
+        !app.anims.is_done(crate::anim::AnimKey::PaneCollapse, now),
+        "switching off the collapsed table tab must re-open the pane with an ease, not a snap"
     );
 }
 

@@ -212,6 +212,19 @@ impl Anims {
     pub fn clear(&mut self, key: AnimKey) {
         self.entries.remove(&key);
     }
+
+    /// Force-settles every tracked animation to its own target, as if it
+    /// had already finished. For tests whose whole purpose is asserting on
+    /// otherwise-static content (e.g. `app::tests::rendered_text`'s toast
+    /// wording checks) that would otherwise land mid-flight of some
+    /// unrelated animation the same action happens to have started (e.g. a
+    /// toast's own slide-in) — production code never calls this.
+    pub fn finish_all(&mut self) {
+        for a in self.entries.values_mut() {
+            a.start = a.target;
+            a.dur = Duration::ZERO;
+        }
+    }
 }
 
 #[cfg(test)]
