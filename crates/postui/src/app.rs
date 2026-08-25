@@ -640,11 +640,13 @@ impl App {
         let swapped = self.session.sync_open(&self.editor.slug);
         // The send button shows "sending" only when the in-flight send
         // belongs to the request being looked at.
-        self.editor.sending = self
+        let editor_in_flight = self
             .session
             .in_flight
             .as_ref()
-            .is_some_and(|f| f.slug == self.editor.slug);
+            .filter(|f| f.slug == self.editor.slug);
+        self.editor.sending = editor_in_flight.is_some();
+        self.editor.send_started = editor_in_flight.map(|f| f.started);
         self.editor.table_collapsed = self.table_collapsed;
         self.sync_pane_collapse_anim();
         // Any toast pushed by `apply(action)` above gets its slide-in
@@ -878,7 +880,6 @@ impl App {
                 true
             }
             Action::Tick => {
-                self.editor.on_tick();
                 let tip_changed = self.track_caret_token();
                 let now = Instant::now();
                 // The testbed's looping motion demos self-drive from here,

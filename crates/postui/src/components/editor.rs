@@ -18,6 +18,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use std::time::Instant;
 
 /// Which editor tab is active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,13 +165,17 @@ pub struct Editor {
     /// left padding); consumed by the click handler that focuses the URL
     /// line and places the caret at the clicked column.
     pub last_url_text_area: Option<Rect>,
-    /// Bumped on every `Action::Tick`, regardless of `sending`; drives the
-    /// Send cap's spinner glyph while a request is in flight. Wrapping is
-    /// harmless -- only taken mod the spinner's frame count. The
+    /// When the in-flight send belonging to this editor started, mirrored
+    /// from `Session::InFlight::started` by `App::update` alongside
+    /// `sending`. Draw-only: `elapsed()` off this wall-clock instant drives
+    /// the Send cap's spinner glyph while a request is in flight, the same
+    /// way `ResponseState::InFlight`'s own spinner derives its frame from
+    /// elapsed time (see `components::response`) rather than a tick
+    /// counter. `None` whenever `sending` is false. The
     /// accent/accent_edge_dark breathe is a separate, eased effect (Task
     /// 14) driven by `AnimKey::SendBreathe` via `App::tick_send_breathe`,
-    /// not this counter.
-    pub spinner_frame: u32,
+    /// not this.
+    pub send_started: Option<Instant>,
     /// Mirrors `App::table_collapsed`, synced by `App::update` on every
     /// action alongside `sending`. Draw-only: when set, the active tab's
     /// params/headers table body (header/rows/ghost/edge) is skipped and the
@@ -234,7 +239,7 @@ impl Default for Editor {
             sending: false,
             last_method_area: None,
             last_url_text_area: None,
-            spinner_frame: 0,
+            send_started: None,
             table_collapsed: false,
             computed: ComputedHeadersView::default(),
         }
@@ -535,14 +540,6 @@ impl Editor {
             content: self.body.lines.len(),
             viewport: area.height as usize,
         })
-    }
-
-    /// Advances the Send cap's spinner/pulse frame counter. Called on every
-    /// `Action::Tick` unconditionally (cheap wrapping add) so the counter is
-    /// already warm the instant a send starts, rather than waiting for the
-    /// first tick after `sending` flips.
-    pub fn on_tick(&mut self) {
-        self.spinner_frame = self.spinner_frame.wrapping_add(1);
     }
 
     /// Cursor-movement niceties edtui 0.11 doesn't provide, applied before
@@ -1537,7 +1534,13 @@ impl Editor {
         let disabled = !self.sending && url_empty;
         let send_hovered = ctx.hovered == Some(&crate::hit::Hit::SendButton);
         let (label, send_fill, label_fg, bold) = if self.sending {
-            let glyph = SPINNER_GLYPHS[(self.spinner_frame as usize) % SPINNER_GLYPHS.len()];
+            // Wall-clock frame index, matching `ResponseState::InFlight`'s
+            // own spinner (`components::response`) rather than counting
+            // ticks -- the tick period is adaptive (see `main.rs`), so a
+            // tick-counted frame would race ahead while anything animates.
+            let elapsed = self.send_started.map(|s| s.elapsed()).unwrap_or_default();
+            let glyph =
+                SPINNER_GLYPHS[(elapsed.subsec_millis() / 100) as usize % SPINNER_GLYPHS.len()];
             // The breathe pulse: `AnimKey::SendBreathe` ping-pongs 0<->1 over
             // `ui_settings.anim_ms.send_breathe` (700ms by default) for as
             // long as `App::tick_send_breathe` sees a real send in flight
