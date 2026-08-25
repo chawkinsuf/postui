@@ -19,7 +19,7 @@ pub use chip::{Chip, TabStrip};
 pub use field::{FIELD_HEIGHT, TextField};
 pub use frac::frac_vspan;
 pub use panel::{dim_backdrop, floating_panel};
-pub use rows::{PillRow, RowHighlight};
+pub use rows::{ListRow, PillRow, RowHighlight};
 
 /// The interaction state of a painted control. Determines which face/edge
 /// colors a control paints with.

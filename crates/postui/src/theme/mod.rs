@@ -83,6 +83,11 @@ pub struct Theme {
     // bevel pair (relative to `control`; paint layer derives per-surface variants)
     pub edge_light: Color,
     pub edge_dark: Color,
+    /// Alternate zebra-stripe fill for dense list rows: the ground surface
+    /// lifted a small step, distinct from `panel`/`control`.
+    pub zebra_alt: Color,
+    /// A subtle divider line color, darker than `panel` (edge_dark family).
+    pub hairline: Color,
     // accent family
     pub accent: Color,
     pub accent_edge_light: Color,
@@ -119,6 +124,13 @@ impl Theme {
         let control_pressed = lift(bg, step * -0.02);
         let edge_light = lift(control, 0.08);
         let edge_dark = lift(control, -0.08);
+        // Zebra stripe: one small ladder step past `panel`, continuing the
+        // same direction the page->panel->control ladder already moves in.
+        let zebra_alt = lift(panel, step * 0.02);
+        // Hairline divider: same unconditional-offset family as `edge_dark`
+        // (an absolute darkening relative to its base, regardless of theme
+        // polarity), just a subtler step than a full bevel edge.
+        let hairline = lift(panel, -0.05);
 
         let accent = seeds.accent;
         let accent_edge_light = lift(accent, 0.12);
@@ -156,6 +168,8 @@ impl Theme {
             control_pressed: to_color(control_pressed),
             edge_light: to_color(edge_light),
             edge_dark: to_color(edge_dark),
+            zebra_alt: to_color(zebra_alt),
+            hairline: to_color(hairline),
             accent: to_color(accent),
             accent_edge_light: to_color(accent_edge_light),
             accent_edge_dark: to_color(accent_edge_dark),
@@ -265,6 +279,8 @@ impl Theme {
             control_pressed: f(self.control_pressed),
             edge_light: f(self.edge_light),
             edge_dark: f(self.edge_dark),
+            zebra_alt: f(self.zebra_alt),
+            hairline: f(self.hairline),
             accent: f(self.accent),
             accent_edge_light: f(self.accent_edge_light),
             accent_edge_dark: f(self.accent_edge_dark),
@@ -626,6 +642,23 @@ mod tests {
     }
 
     #[test]
+    fn zebra_alt_is_lighter_than_page_and_panel() {
+        let t = Theme::dark();
+        let l = |c: Color| oklab_l(rgb_of(c));
+        assert!(l(t.zebra_alt) > l(t.panel));
+        assert!(l(t.zebra_alt) > l(t.page));
+    }
+
+    #[test]
+    fn hairline_is_darker_than_panel() {
+        let t = Theme::dark();
+        let l = |c: Color| oklab_l(rgb_of(c));
+        assert!(l(t.hairline) < l(t.panel));
+        let t = Theme::light();
+        assert!(l(t.hairline) < l(t.panel));
+    }
+
+    #[test]
     fn generator_ladder_inverts_for_light_seeds() {
         let t = Theme::light();
         let l = |c: Color| oklab_l(rgb_of(c));
@@ -801,6 +834,8 @@ mod tests {
             t.control_pressed,
             t.edge_light,
             t.edge_dark,
+            t.zebra_alt,
+            t.hairline,
             t.accent_edge_light,
             t.accent_edge_dark,
             t.on_accent,
