@@ -170,7 +170,7 @@ impl App {
                     Hit::SidebarRow(i) | Hit::SidebarFolderArrow(i) => {
                         changed |= self.update(Action::FocusPane(PaneId::Sidebar));
                         changed |= self.sidebar.selected != Some(*i);
-                        self.sidebar.selected = Some(*i);
+                        self.set_sidebar_selected(*i);
                     }
                     Hit::VmLeftRow(i) => {
                         changed |= self.varmanager.left_cursor != *i;
@@ -593,12 +593,12 @@ impl App {
             Hit::SidebarNewRequest => self.update(Action::PromptNewRequest),
             Hit::SidebarFolderArrow(i) => {
                 self.update(Action::FocusPane(PaneId::Sidebar));
-                self.sidebar.selected = Some(i);
+                self.set_sidebar_selected(i);
                 self.update(Action::ToggleSelectedFolder)
             }
             Hit::SidebarRow(i) => {
                 self.update(Action::FocusPane(PaneId::Sidebar));
-                self.sidebar.selected = Some(i);
+                self.set_sidebar_selected(i);
                 match self.sidebar.rows.get(i).cloned() {
                     Some(Row::Request {
                         slug, broken: None, ..

@@ -2250,6 +2250,118 @@ fn click_folder_arrow_expands_the_folder() {
     );
 }
 
+/// A project with three flat top-level requests, sorted (by name, all
+/// nameless so it falls back to slug) into rows `alpha`(0), `beta`(1),
+/// `gamma`(2) — no folders, so row indices are unambiguous.
+fn sidebar_test_app_three_flat_rows() -> (App, tempfile::TempDir) {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::storage::ensure_project(dir.path()).unwrap();
+    for slug in ["alpha", "beta", "gamma"] {
+        postui_core::storage::save_request(dir.path(), slug, &req("https://x/1")).unwrap();
+    }
+    let app = App::with_root(tx, dir.path().to_path_buf());
+    (app, dir)
+}
+
+/// Regression test for the mouse-click travel-desync bug: keyboard-nav to
+/// one row, then click a *different* row, must SNAP the travel band to the
+/// clicked row instantly rather than leaving it animating (or frozen) on
+/// wherever the keyboard cursor last settled. Also exercises the
+/// coincide-wins ruling: the clicked request becomes both the cursor row
+/// and the open row, so it must show the plain `▌`/`theme.selection`
+/// treatment with a normal-colored (not `theme.accent`) name.
+#[test]
+fn click_after_keyboard_nav_snaps_the_travel_band_to_the_clicked_row() {
+    let (mut app, _dir) = sidebar_test_app_three_flat_rows();
+    render_once(&mut app);
+
+    // Keyboard-select row 0 ("alpha"): lands the cursor and its travel anim
+    // there.
+    app.handle_key(
+        &Keymap::default_bindings(),
+        KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+    );
+    assert_eq!(app.sidebar.selected, Some(0));
+
+    // Click row 2 ("gamma") — a different row from the keyboard cursor.
+    render_once(&mut app);
+    let r = app.hits.rect_of(&crate::hit::Hit::SidebarRow(2)).unwrap();
+    app.handle_mouse(left_down(r.x, r.y));
+
+    assert_eq!(
+        app.sidebar.selected,
+        Some(2),
+        "the click moves the selection"
+    );
+    let now = std::time::Instant::now();
+    let key = crate::anim::AnimKey::ListTravel(crate::anim::ListId::Sidebar);
+    assert_eq!(
+        app.anims.value(key, now),
+        Some(2.0),
+        "the travel anim snapped straight to the clicked row, not left \
+         animating (or frozen) on the keyboard cursor's old row"
+    );
+
+    // Drawn: row 2 carries the plain selection fill/bar (cursor ==
+    // clicked == now-open row, so open's accent-name styling doesn't
+    // layer on top — the fill simply wins); row 0 (the stale keyboard
+    // position) carries neither.
+    render_once(&mut app);
+    let backend = ratatui::backend::TestBackend::new(120, 40);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let buf = terminal.backend().buffer();
+    let row0 = app.hits.rect_of(&crate::hit::Hit::SidebarRow(0)).unwrap();
+    let row2 = app.hits.rect_of(&crate::hit::Hit::SidebarRow(2)).unwrap();
+    assert_eq!(
+        buf[(row2.x, row2.y)].symbol(),
+        "\u{258c}",
+        "accent bar on the clicked row"
+    );
+    assert_eq!(
+        buf[(row2.x + row2.width - 2, row2.y)].bg,
+        app.theme.selection
+    );
+    assert_ne!(
+        buf[(row0.x, row0.y)].symbol(),
+        "\u{258c}",
+        "no bar left behind on the stale keyboard-cursor row"
+    );
+}
+
+/// Same regression, for the folder-arrow click path (which sets
+/// `sidebar.selected` on its own line, separate from `Hit::SidebarRow`).
+#[test]
+fn folder_arrow_click_after_keyboard_nav_snaps_the_travel_band() {
+    let (mut app, _dir) = sidebar_test_app();
+    render_once(&mut app);
+
+    // Keyboard-select row 0 ("top").
+    app.handle_key(
+        &Keymap::default_bindings(),
+        KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+    );
+    assert_eq!(app.sidebar.selected, Some(0));
+
+    // Click the folder arrow on row 1 ("api").
+    render_once(&mut app);
+    let r = app
+        .hits
+        .rect_of(&crate::hit::Hit::SidebarFolderArrow(1))
+        .unwrap();
+    app.handle_mouse(left_down(r.x, r.y));
+
+    assert_eq!(app.sidebar.selected, Some(1));
+    let now = std::time::Instant::now();
+    let key = crate::anim::AnimKey::ListTravel(crate::anim::ListId::Sidebar);
+    assert_eq!(
+        app.anims.value(key, now),
+        Some(1.0),
+        "folder-arrow click also snaps the travel anim, not just row clicks"
+    );
+}
+
 #[test]
 fn single_click_folder_name_selects_only_double_click_expands() {
     let (mut app, _dir) = sidebar_test_app();

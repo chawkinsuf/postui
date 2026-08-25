@@ -4781,6 +4781,22 @@ impl App {
             .retarget(key, cur as f32, self.ui_settings.anim_ms.list_travel, now);
     }
 
+    /// Sets `sidebar.selected` to row `i` and snaps
+    /// `AnimKey::ListTravel(Sidebar)` straight there, with no easing. Every
+    /// mouse path that sets `sidebar.selected` directly (a row/folder-arrow
+    /// click, the right-click menu's pre-selection) must go through this
+    /// rather than assigning the field itself: a click is a hard jump, not
+    /// a keyboard-driven glide, so the travel band must never animate in
+    /// from wherever it last settled — without the snap, `draw`'s band
+    /// would keep painting the *previous* selected row (wherever the anim
+    /// last came to rest) while the just-clicked row got no fill/bar at
+    /// all, silently desyncing the two.
+    fn set_sidebar_selected(&mut self, i: usize) {
+        self.sidebar.selected = Some(i);
+        self.anims
+            .snap(AnimKey::ListTravel(ListId::Sidebar), i as f32);
+    }
+
     /// Pops the top modal on `close` and dispatches each of `res`'s
     /// actions, exactly like the key path used to inline — shared by
     /// `handle_key`'s modal branch and `on_hit`'s modal click arms so a
