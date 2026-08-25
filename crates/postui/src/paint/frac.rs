@@ -1,7 +1,7 @@
 //! Fractional vertical span helper: paints a horizontal band across fractional row boundaries
 //! using lower-block glyphs (▁▂▃▄▅▆▇█) for precise vertical positioning.
 
-use ratatui::{buffer::Buffer, style::Color};
+use ratatui::{buffer::Buffer, layout::Rect, style::Color};
 
 /// Paints a full-width horizontal band covering rows `y0..y1` (fractional row
 /// coordinates, `y1 > y0`) across columns `x0..x1`. Whole-covered rows are
@@ -39,13 +39,14 @@ pub fn frac_vspan(buf: &mut Buffer, x0: u16, x1: u16, y0: f32, y1: f32, fill: Co
     // Full rows between the fractional edges
     // If y0_frac == 0.0, row y0_int is fully covered; otherwise start from y0_int + 1
     let start_full = if y0_frac > 0.0 { y0_int + 1 } else { y0_int };
-    for y in start_full..y1_int {
-        for x in x0..x1.min(buf.area().right()) {
-            if let Some(cell) = buf.cell_mut((x, y)) {
-                cell.set_symbol("█");
-                cell.set_bg(fill);
-            }
-        }
+    if start_full < y1_int {
+        let full_rect = Rect::new(
+            x0,
+            start_full,
+            x1.saturating_sub(x0),
+            y1_int.saturating_sub(start_full),
+        );
+        super::fill(buf, full_rect, fill);
     }
 
     // Bottom fractional row: shows the upper portion as fill
@@ -61,12 +62,11 @@ pub fn frac_vspan(buf: &mut Buffer, x0: u16, x1: u16, y0: f32, y1: f32, fill: Co
             }
         }
     } else if y1_frac > 0.0 && y1_int == y0_int {
-        // Top and bottom fractions land in the same row: pick the closest glyph
-        // Top fraction wins the priority
+        // Top and bottom fractions land in the same row: pick the glyph based
+        // on top-fraction coverage (top-fraction wins)
         let top_coverage = 1.0 - y0_frac;
-        let top_index = (top_coverage * 8.0).round() as usize;
-        let bottom_index = (y1_frac * 8.0).round() as usize;
-        let glyph_index = top_index.min(8).max(bottom_index.min(8));
+        let glyph_index = (top_coverage * 8.0).round() as usize;
+        let glyph_index = glyph_index.min(8);
         for x in x0..x1.min(buf.area().right()) {
             if let Some(cell) = buf.cell_mut((x, y0_int)) {
                 cell.set_symbol(GLYPHS[glyph_index]);
@@ -97,7 +97,9 @@ mod tests {
         assert_eq!(c(3, 1).symbol(), "▄"); // half coverage from below
         assert_eq!(c(3, 1).fg, theme.accent);
         assert_eq!(c(3, 1).bg, theme.panel);
-        assert_eq!(c(3, 2).bg, theme.accent); // fully covered row
+        assert_eq!(c(3, 2).symbol(), " "); // fully covered row uses space
+        assert_eq!(c(3, 2).bg, theme.accent);
+        assert_eq!(c(3, 3).symbol(), " "); // fully covered row uses space
         assert_eq!(c(3, 3).bg, theme.accent);
         assert_eq!(c(3, 4).bg, theme.panel); // untouched below y1
     }
@@ -117,19 +119,38 @@ mod tests {
                 frac_vspan(f.buffer_mut(), 0, 4, y0, 3.0, theme.accent, theme.panel);
             })
             .unwrap();
-            let sym = term
-                .backend()
-                .buffer()
-                .cell((0, 1))
-                .unwrap()
-                .symbol()
-                .to_string();
-            let order = ORDER.iter().position(|g| **g == *sym).unwrap_or(8);
+            let cell = term.backend().buffer().cell((0, 1)).unwrap();
+            let sym = cell.symbol().to_string();
+            // Full rows use " " + bg=fill; check background to recognize full coverage
+            let order = if sym == " " && cell.bg == theme.accent {
+                8 // Full row with filled background represents 100% coverage
+            } else {
+                ORDER.iter().position(|g| **g == *sym).unwrap_or(8)
+            };
             assert!(
                 order >= prev_glyph_order,
                 "coverage never shrinks: {sym} at step {step}"
             );
             prev_glyph_order = order;
         }
+    }
+
+    #[test]
+    fn single_row_case_uses_top_fraction_when_top_and_bottom_land_in_same_row() {
+        let theme = Theme::dark();
+        let mut term = Terminal::new(TestBackend::new(4, 4)).unwrap();
+        term.draw(|f| {
+            paint::fill(f.buffer_mut(), Rect::new(0, 0, 4, 4), theme.panel);
+            // Band from y=1.7 to y=1.9: both edges in row 1
+            // top_coverage = 1.0 - 0.7 = 0.3 → index 2 (▂)
+            // bottom_coverage = 0.9 → index 7 (▇)
+            // top-fraction wins, so we should see index 2
+            frac_vspan(f.buffer_mut(), 0, 4, 1.7, 1.9, theme.accent, theme.panel);
+        })
+        .unwrap();
+        let c = |x, y| term.backend().buffer().cell((x, y)).unwrap().clone();
+        assert_eq!(c(1, 1).symbol(), "▂"); // top-fraction wins: 30% coverage
+        assert_eq!(c(1, 1).fg, theme.accent);
+        assert_eq!(c(1, 1).bg, theme.panel);
     }
 }
