@@ -3176,6 +3176,45 @@ async fn force_send_with_empty_url_toasts_and_does_not_spawn() {
     );
 }
 
+#[test]
+fn modal_prompt_field_supports_click_to_place_drag_select_and_double_click() {
+    // Modal text boxes share `LineInput` with the URL bar — the mouse
+    // affordances (click places the caret, drag sweeps a selection,
+    // double click selects all) must work there too.
+    let mut app = App::new_for_test();
+    // Animations off so the modal's settle-in doesn't hide its fields on
+    // the single test frame.
+    app.anims.enabled = false;
+    let keymap = Keymap::default_bindings();
+    app.update(Action::PromptNewRequest);
+    for c in "hello".chars() {
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    render_once(&mut app);
+    let r = app
+        .hits
+        .rect_of(&crate::hit::Hit::ModalInput(0))
+        .expect("prompt input hit");
+
+    // Click lands the caret on the clicked char (inner text starts two
+    // cells into the box, on its middle row).
+    app.handle_mouse(left_down(r.x + 2 + 2, r.y + 1));
+    let input = app.modals.focused_input().expect("prompt input");
+    assert_eq!(input.cursor(), 2, "caret placed at the clicked column");
+
+    // Dragging right extends a selection from the click's anchor.
+    app.handle_mouse(dragged(r.x + 2 + 4, r.y + 1));
+    let input = app.modals.focused_input().expect("prompt input");
+    assert_eq!(input.selection(), Some((2, 4)), "drag swept a selection");
+
+    // A second click within the double-click window selects the whole
+    // text (the sweep's own press was click #1).
+    app.handle_mouse(left_up(r.x + 2 + 2, r.y + 1));
+    app.handle_mouse(left_down(r.x + 2 + 2, r.y + 1));
+    let input = app.modals.focused_input().expect("prompt input");
+    assert_eq!(input.selection(), Some((0, 5)), "double click selects all");
+}
+
 #[tokio::test]
 async fn shift_enter_sends_even_while_the_body_editor_has_focus() {
     // Shift+Enter is a global Send shortcut that must win over the focused

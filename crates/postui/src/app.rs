@@ -60,6 +60,8 @@ pub enum TextDrag {
     Body,
     Url,
     Response,
+    /// A sweep inside the top modal's text box `i` (see `Hit::ModalInput`).
+    ModalInput(usize),
 }
 
 /// Which full-frame screen is showing. `ui::draw` and `App::handle_key`

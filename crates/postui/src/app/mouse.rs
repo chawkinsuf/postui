@@ -52,6 +52,7 @@ impl App {
                             self.session.response.drag_selection_to(m.column, m.row)
                         }
                         Some(TextDrag::Url) => self.url_drag_to(m.column),
+                        Some(TextDrag::ModalInput(i)) => self.modal_input_drag_to(i, m.column),
                         None => false,
                     };
                 }
@@ -429,6 +430,27 @@ impl App {
         true
     }
 
+    /// Like [`Self::url_drag_to`], for the top modal's text box `i`: maps
+    /// the pointer's column back through the same window math the click
+    /// used (the input draws focused mid-sweep) and extends the selection.
+    fn modal_input_drag_to(&mut self, i: usize, column: u16) -> bool {
+        let Some(area) = self.hits.rect_of(&Hit::ModalInput(i)) else {
+            return false;
+        };
+        let inner_w = area.width.saturating_sub(2);
+        if inner_w == 0 {
+            return false;
+        }
+        let Some(input) = self.modals.focus_input(i) else {
+            return false;
+        };
+        let start = input.window_start(true, inner_w);
+        let text_x = area.x + 2;
+        let col = usize::from(column.clamp(text_x, text_x + inner_w - 1) - text_x);
+        input.set_cursor_extending(start + col);
+        true
+    }
+
     /// Commits any in-progress table cell edit, surfacing its warning as a
     /// toast. The one place typing is turned into map data outside the
     /// table's own key handling — click-away, focus loss, tab switch, save
@@ -797,6 +819,32 @@ impl App {
                     return self.update(Action::Render);
                 }
                 false
+            }
+            Hit::ModalInput(i) => {
+                let Some(area) = self.hits.rect_of(&Hit::ModalInput(i)) else {
+                    return false;
+                };
+                let inner_w = area.width.saturating_sub(2);
+                let was_focused = self.modals.focused_input_index() == Some(i);
+                let Some(input) = self.modals.focus_input(i) else {
+                    return false;
+                };
+                if clicks == 2 {
+                    // Same convention as the URL bar: double click selects
+                    // the whole text.
+                    input.select_all();
+                } else {
+                    // Map the clicked column back to a char index through
+                    // the same window math the field drew with at click
+                    // time (unfocused fields draw from 0), then anchor a
+                    // possible drag sweep.
+                    let start = input.window_start(was_focused, inner_w.max(1));
+                    let col = usize::from(m.column.saturating_sub(area.x + 2));
+                    input.set_cursor(start + col);
+                    input.begin_mouse_selection();
+                    self.text_drag = Some(TextDrag::ModalInput(i));
+                }
+                self.update(Action::Render)
             }
             // The painted Cancel/Confirm buttons deliver exactly what
             // Esc/Enter already dispatch for whichever modal is on top: a

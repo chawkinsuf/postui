@@ -353,6 +353,48 @@ impl ModalStack {
         }
     }
 
+    /// The `Hit::ModalInput` index of the text box that currently holds
+    /// the top modal's field focus, if any — what a click-time window
+    /// mapping needs to know *before* `focus_input` moves the focus.
+    pub fn focused_input_index(&self) -> Option<usize> {
+        match self.stack.last()? {
+            Modal::Prompt { .. } => Some(0),
+            Modal::NewProject { on_path, .. } => Some(usize::from(*on_path)),
+            Modal::MultiPrompt { fields, focus, .. } => fields
+                .get(*focus)
+                .filter(|f| f.choices.is_empty())
+                .map(|_| *focus),
+            _ => None,
+        }
+    }
+
+    /// Moves the top modal's field focus to text box `i` (a
+    /// `Hit::ModalInput` index) and returns that box's `LineInput` — the
+    /// mouse path's counterpart to Tab/Down field switching. `None` when
+    /// the top modal has no text box `i`.
+    pub fn focus_input(&mut self, i: usize) -> Option<&mut LineInput> {
+        match self.stack.last_mut()? {
+            Modal::Prompt { input, .. } if i == 0 => Some(input),
+            Modal::NewProject { name, on_path, .. } if i == 0 => {
+                *on_path = false;
+                Some(name)
+            }
+            Modal::NewProject { path, on_path, .. } if i == 1 => {
+                *on_path = true;
+                Some(path)
+            }
+            Modal::MultiPrompt { fields, focus, .. } => {
+                let field = fields.get_mut(i)?;
+                if !field.choices.is_empty() {
+                    return None;
+                }
+                *focus = i;
+                Some(&mut field.input)
+            }
+            _ => None,
+        }
+    }
+
     pub fn top(&self) -> Option<&Modal> {
         self.stack.last()
     }
@@ -956,6 +998,7 @@ impl ModalStack {
                     state: ControlState::Focused,
                 }
                 .paint(frame.buffer_mut(), field_area, theme);
+                hits.register(field_area, crate::hit::Hit::ModalInput(0));
 
                 if kind.is_secret() {
                     let hint_y = field_area.y + FIELD_HEIGHT + 1;
@@ -1033,6 +1076,7 @@ impl ModalStack {
                     },
                 }
                 .paint(frame.buffer_mut(), name_area, theme);
+                hits.register(name_area, crate::hit::Hit::ModalInput(0));
 
                 let path_label_y = name_area.y + FIELD_HEIGHT + 1;
                 paint::text(
@@ -1059,6 +1103,7 @@ impl ModalStack {
                     },
                 }
                 .paint(frame.buffer_mut(), path_area, theme);
+                hits.register(path_area, crate::hit::Hit::ModalInput(1));
 
                 let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
                 draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered);
@@ -1145,6 +1190,10 @@ impl ModalStack {
                             },
                         }
                         .paint(frame.buffer_mut(), field_area, theme);
+                        // On top of `ModalField`, so the box itself gets
+                        // the full text-input mouse treatment while the
+                        // label row keeps the plain focus-click.
+                        hits.register(field_area, crate::hit::Hit::ModalInput(i));
                     } else {
                         let content =
                             Line::from(format!("\u{2039} {} \u{203a}", field.input.text()));

@@ -162,6 +162,13 @@ pub enum Hit {
     /// Field `i` of a `Modal::MultiPrompt` (label row + input box): click
     /// moves the prompt's focus there.
     ModalField(usize),
+    /// The 3-row text box of field `i` in the top modal's field order
+    /// (`Prompt` = 0; `NewProject` name/path = 0/1; `MultiPrompt` = its
+    /// free-text fields' indices). Registered over `ModalField`, so the
+    /// box itself gets the full text-input mouse treatment — click places
+    /// the caret, drag sweeps a selection, double click selects all —
+    /// while the label row keeps `ModalField`'s plain focus-click.
+    ModalInput(usize),
 }
 
 /// A terminal pointer-shape hint (Kitty's OSC 22 protocol, `\x1b]22;{shape}\x07`),
@@ -208,7 +215,9 @@ impl PointerShape {
     pub fn for_hit(hit: Option<&Hit>) -> Self {
         match hit {
             None => PointerShape::Default,
-            Some(Hit::UrlBar | Hit::BodyEditor | Hit::JsonRow(_)) => PointerShape::Text,
+            Some(Hit::UrlBar | Hit::BodyEditor | Hit::JsonRow(_) | Hit::ModalInput(_)) => {
+                PointerShape::Text
+            }
             // The response pane's bare content is selectable text (a click
             // anchors a selection sweep), so it I-beams like the editors.
             Some(Hit::Pane(PaneId::Response)) => PointerShape::Text,
