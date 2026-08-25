@@ -9,6 +9,7 @@ pub mod palette;
 pub mod response;
 pub mod sidebar;
 pub mod table_editor;
+pub mod testbed;
 pub mod toast;
 pub mod var_picker;
 pub mod var_tokens;

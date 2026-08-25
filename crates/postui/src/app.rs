@@ -67,6 +67,12 @@ pub enum Screen {
     #[default]
     Main,
     VarManager,
+    /// The hidden primitive showcase, entered at startup when the
+    /// `POSTUI_TESTBED` env var is set (see [`App::new`]). A static grid of
+    /// every painted primitive in every state, for judging the visual
+    /// language against — never entered any other way, and Esc/`q` quit the
+    /// app outright rather than returning to `Main`.
+    Testbed,
 }
 
 pub struct App {
@@ -297,6 +303,8 @@ impl App {
             .map(crate::usage::UsageStore::load_from)
             .unwrap_or_default();
 
+        let testbed = std::env::var_os("POSTUI_TESTBED").is_some();
+
         let Some((root, disposition, stale_last)) = resolve_startup(
             &registry,
             cli_root,
@@ -315,6 +323,9 @@ impl App {
                 "could not determine a project directory for this platform",
                 ToastKind::Error,
             );
+            if testbed {
+                app.screen = Screen::Testbed;
+            }
             return app;
         };
 
@@ -377,6 +388,10 @@ impl App {
                     }
                 }
             }
+        }
+
+        if testbed {
+            app.screen = Screen::Testbed;
         }
 
         app
@@ -528,6 +543,19 @@ impl App {
         let mut app = Self::with_root(tx, dir.path().to_path_buf());
         app._test_rx = Some(rx);
         app._test_dir = Some(dir);
+        app
+    }
+
+    /// Like [`Self::new_for_test`], but takes an explicit `testbed` flag
+    /// instead of reading `POSTUI_TESTBED` — tests must never depend on
+    /// process-global env state. `true` opens straight onto
+    /// [`Screen::Testbed`], exactly like a real startup with the env var
+    /// set.
+    pub fn new_for_test_with_testbed(testbed: bool) -> Self {
+        let mut app = Self::new_for_test();
+        if testbed {
+            app.screen = Screen::Testbed;
+        }
         app
     }
 
@@ -1086,7 +1114,8 @@ impl App {
                 };
                 match postui_core::storage::duplicate_request(&self.project.root, &slug) {
                     Ok(new_slug) => {
-                        let new_path = postui_core::storage::request_path(&self.project.root, &new_slug);
+                        let new_path =
+                            postui_core::storage::request_path(&self.project.root, &new_slug);
                         self.record_file_step(vec![(new_path.clone(), None)], &[new_path], None);
                         self.refresh_sidebar();
                         let display = self.request_display(&new_slug);
@@ -4312,6 +4341,17 @@ impl App {
             {
                 return self.update(a);
             }
+            // The testbed is a dead end, not a screen with content of its
+            // own to navigate: `q`/`Esc` quit the app outright rather than
+            // returning to `Main` (there's no "prior" state to restore —
+            // it's only ever entered at startup), and every other key is
+            // swallowed like any other non-`Main` screen.
+            if self.screen == Screen::Testbed {
+                return match ev.code {
+                    KeyCode::Esc | KeyCode::Char('q') => self.update(Action::Quit),
+                    _ => true,
+                };
+            }
             // A variable-form field under edit owns the keyboard: `Esc`
             // reverts, `Enter` commits (through `commit_var_form`, which
             // needs the mutable project access `VarManager::handle_key`'s
@@ -4523,7 +4563,10 @@ impl App {
         self.capture_undo(); // re-seed the shadow for the newly opened request
         let display = self.request_display(target_slug);
         self.toasts.push(
-            format!("{} {noun} in {display}", if redo { "Redid" } else { "Undid" }),
+            format!(
+                "{} {noun} in {display}",
+                if redo { "Redid" } else { "Undid" }
+            ),
             ToastKind::Info,
         );
         true
@@ -4535,7 +4578,11 @@ impl App {
     fn apply_undo_step(&mut self, step: crate::undo::Step, redo: bool) -> bool {
         use crate::undo::StepKind;
         match &step.kind {
-            StepKind::EditorDelta { slug, before, after } => {
+            StepKind::EditorDelta {
+                slug,
+                before,
+                after,
+            } => {
                 if *slug != self.editor.slug {
                     let Some(target_slug) = slug.clone() else {
                         // A scratch request has no slug to reopen; once it's
@@ -4695,10 +4742,8 @@ impl App {
                             self.refresh_sidebar();
                         }
                         Err(e) => {
-                            self.toasts.push(
-                                format!("redo failed to save {slug}: {e}"),
-                                ToastKind::Error,
-                            );
+                            self.toasts
+                                .push(format!("redo failed to save {slug}: {e}"), ToastKind::Error);
                             return false;
                         }
                     }

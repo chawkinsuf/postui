@@ -113,6 +113,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 app.hovered.as_ref(),
             );
         }
+        Screen::Testbed => {
+            let ctx = DrawCtx {
+                theme: &app.theme,
+                focused: false,
+                hovered: app.hovered.as_ref(),
+                dragging: false,
+                anims: &app.anims,
+                now: std::time::Instant::now(),
+            };
+            crate::components::testbed::draw_testbed(frame, layout.body, &ctx);
+        }
     }
 
     crate::components::footer::draw_footer(

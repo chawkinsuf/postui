@@ -246,7 +246,10 @@ fn ctrl_c_copies_the_url_selection_instead_of_quitting() {
     app.handle_key(&Keymap::default_bindings(), ctrl('c'));
 
     assert!(!app.should_quit, "copy pre-empts quit");
-    assert_eq!(std::fs::read_to_string(&out).unwrap(), "https://example.com");
+    assert_eq!(
+        std::fs::read_to_string(&out).unwrap(),
+        "https://example.com"
+    );
     assert!(
         app.editor.url.selection().is_some(),
         "copy keeps the selection"
@@ -2490,12 +2493,16 @@ fn new_request_same_display_name_toasts_and_creates_nothing() {
     let mut app = App::new_for_test();
     app.update(Action::CreateRequest("My Request!".into()));
     assert_eq!(
-        postui_core::storage::list_requests(&app.project.root).0.len(),
+        postui_core::storage::list_requests(&app.project.root)
+            .0
+            .len(),
         1
     );
     app.update(Action::CreateRequest("my request!".into()));
     assert_eq!(
-        postui_core::storage::list_requests(&app.project.root).0.len(),
+        postui_core::storage::list_requests(&app.project.root)
+            .0
+            .len(),
         1,
         "case-insensitive duplicate display name is rejected"
     );
@@ -2530,8 +2537,7 @@ fn rename_flow_speaks_display_names_and_regenerates_the_slug() {
     assert_eq!(app.editor.slug.as_deref(), Some("get-user-v2"));
     assert_eq!(app.editor.name.as_deref(), Some("Get User v2"));
     assert_eq!(app.sidebar.open_slug.as_deref(), Some("get-user-v2"));
-    let loaded =
-        postui_core::storage::load_request(&app.project.root, "get-user-v2").unwrap();
+    let loaded = postui_core::storage::load_request(&app.project.root, "get-user-v2").unwrap();
     assert_eq!(loaded.name.as_deref(), Some("Get User v2"));
 }
 
@@ -2547,7 +2553,10 @@ fn delete_confirm_and_duplicate_toast_show_display_names() {
     let Some(Modal::Confirm { body, .. }) = app.modals.top() else {
         panic!("expected the delete confirm");
     };
-    assert!(body.contains("Fancy Name!"), "display name in confirm: {body}");
+    assert!(
+        body.contains("Fancy Name!"),
+        "display name in confirm: {body}"
+    );
     app.modals.pop();
 
     app.update(Action::DuplicateRequest);
@@ -8533,6 +8542,47 @@ fn every_named_action_is_mouse_reachable() {
     }
 }
 
+// --- Task 8 (stage 8): Testbed screen (POSTUI_TESTBED=1) -------------------
+
+#[test]
+fn explicit_testbed_flag_enters_the_testbed_screen() {
+    let app = App::new_for_test_with_testbed(true);
+    assert_eq!(app.screen, crate::app::Screen::Testbed);
+}
+
+#[test]
+fn testbed_renders_a_bevel_and_an_underline() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let mut app = App::new_for_test_with_testbed(true);
+    let backend = TestBackend::new(160, 60);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let content = format!("{:?}", terminal.backend().buffer());
+    assert!(content.contains('▔'), "no bevel glyph found: {content}");
+    assert!(
+        content.contains('▂'),
+        "no tab-strip underline glyph found: {content}"
+    );
+}
+
+#[test]
+fn q_quits_the_app_from_the_testbed_screen() {
+    let mut app = App::new_for_test_with_testbed(true);
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, plain('q'));
+    assert!(app.should_quit, "q must quit from the testbed screen");
+}
+
+#[test]
+fn esc_quits_the_app_from_the_testbed_screen() {
+    let mut app = App::new_for_test_with_testbed(true);
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.should_quit, "Esc must quit from the testbed screen");
+}
+
 mod undo_tests {
     use super::*;
     use crate::undo::CursorPos;
@@ -9002,9 +9052,15 @@ mod undo_tests {
 
         let step = crate::undo::Step {
             kind: crate::undo::StepKind::FileStates {
-                before: vec![(new_path.clone(), None), (blocked_path.clone(), Some("x".into()))],
+                before: vec![
+                    (new_path.clone(), None),
+                    (blocked_path.clone(), Some("x".into())),
+                ],
                 after: vec![
-                    (new_path.clone(), Some(req("https://brand-new").to_toml_string())),
+                    (
+                        new_path.clone(),
+                        Some(req("https://brand-new").to_toml_string()),
+                    ),
                     (blocked_path.clone(), Some("y".into())),
                 ],
                 active_env: None,
@@ -9050,16 +9106,12 @@ mod undo_tests {
             value: "v2".into(),
         }));
         app.capture_undo();
-        assert!(std::fs::read_to_string(&vars_path)
-            .unwrap()
-            .contains("v2"));
+        assert!(std::fs::read_to_string(&vars_path).unwrap().contains("v2"));
 
         app.update(Action::Undo);
         assert_eq!(std::fs::read_to_string(&vars_path).unwrap(), with_v1);
         app.update(Action::Redo);
-        assert!(std::fs::read_to_string(&vars_path)
-            .unwrap()
-            .contains("v2"));
+        assert!(std::fs::read_to_string(&vars_path).unwrap().contains("v2"));
     }
 
     /// Final-review finding: `Action::DuplicateVar` wrote variables.toml
@@ -9129,11 +9181,7 @@ mod undo_tests {
             to: "b".into(),
         }));
         assert!(!app.toasts.is_empty(), "rename collision must toast");
-        assert_eq!(
-            app.history.undo_len(),
-            before,
-            "failed op recorded nothing"
-        );
+        assert_eq!(app.history.undo_len(), before, "failed op recorded nothing");
     }
 
     /// Reviewer finding: `commit_var_form` (the Variable Manager detail
