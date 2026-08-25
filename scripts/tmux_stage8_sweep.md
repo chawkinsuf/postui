@@ -351,14 +351,12 @@ No result recorded here — this needs the user's own eyes on a real
 Ghostty window at checkpoint 2, same as the MOTION section's live-motion
 caveat in §1.
 
-## 13. Ring corner-glyph font coverage — manual-check item
+## 13. Ring corners — no longer applicable
 
-- Verify the ring's `U+1FB7C`–`U+1FB7F` corner glyphs (Legacy Computing
-  block-sextant corners, seen framing the method dropdown/modals in §3/§5)
-  render as actual corner shapes — not tofu/a missing-glyph box — in the
-  user's own terminal font; the straight `▁▔▕▏` edges degrade gracefully on
-  a font lacking Legacy Computing coverage, but the corners have no
-  fallback and need that block specifically.
+- The ring's corners are now edge-owned (the top/bottom `▁`/`▔` edges run
+  the full width and paint the corner cells themselves; the left/right
+  `▕`/`▏` edges stop one cell short at each end), not a separate glyph —
+  so there's no Legacy Computing corner glyph left to font-check.
 
 ## Summary
 

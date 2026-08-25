@@ -2066,16 +2066,19 @@ mod tests {
             .unwrap();
         let body = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
         let buffer = terminal.backend().buffer();
-        // Top edge stroke, corner excluded.
+        // Top edge stroke, full width — it owns the corner cell.
         let top_cell = &buffer[(body.x + 1, body.y)];
         assert_eq!(top_cell.symbol(), "▁");
         assert_eq!(top_cell.fg, theme.accent);
-        // Left edge stroke, corner excluded.
+        // Left edge stroke starts one row below the corner (shortened by
+        // one cell at each end so it never overlaps the corner glyph).
         let left_cell = &buffer[(body.x, body.y + 1)];
         assert_eq!(left_cell.symbol(), "▕");
         assert_eq!(left_cell.fg, theme.accent);
-        // Top-left corner.
+        // Top-left corner: the top edge's own glyph, not a distinct
+        // corner glyph — no vertical stroke overlaps it.
         let corner = &buffer[(body.x, body.y)];
+        assert_eq!(corner.symbol(), "▁");
         assert_eq!(corner.fg, theme.accent);
     }
 

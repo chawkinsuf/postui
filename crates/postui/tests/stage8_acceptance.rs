@@ -73,8 +73,9 @@ fn seed(app: &mut App, slugs: &[&str]) {
 /// One full render walk over the stage-8 landmarks: the address bar's
 /// bevel, the tab strip's accent underline (`━` family, distinguished by
 /// fg color from the hairline rest of the rule), the sidebar's zebra
-/// parity, the dropdown's ring corner glyph, and the absence of the
-/// deleted `PillRow`-era pad glyphs (`█`/`▀`) in a dense list.
+/// parity, the dropdown's ring edge geometry (full-width top edge owning
+/// the corner, shortened verticals), and the absence of the deleted
+/// `PillRow`-era pad glyphs (`█`/`▀`) in a dense list.
 #[test]
 fn stage8_landmarks_render_walk() {
     let mut app = App::new_for_test();
@@ -145,8 +146,10 @@ fn stage8_landmarks_render_walk() {
     }
 
     // --- dropdown ring: opening the method selector paints the accent
-    // ring, whose top-left corner is the combined "right and lower"
-    // one-eighth-block glyph -----------------------------------------
+    // ring. The top edge owns the corner cell outright (runs the full
+    // width, including x = popup.x), and the left edge is shortened by
+    // one row so it starts only on the row below the corner — no glyph
+    // overlaps the corner cell. ----------------------------------------
     click(&mut app, Hit::MethodSelector);
     assert!(
         matches!(app.modals.top(), Some(Modal::Dropdown(_))),
@@ -157,10 +160,16 @@ fn stage8_landmarks_render_walk() {
     let corner = buf.cell((popup.x, popup.y)).unwrap();
     assert_eq!(
         corner.symbol(),
-        "\u{1FB7F}",
-        "the popup's top-left ring corner: {corner:?}"
+        "▁",
+        "the popup's top-left cell is the top edge's own glyph, not a corner glyph: {corner:?}"
     );
     assert_eq!(corner.fg, t_accent);
+    let left_edge_start = buf.cell((popup.x, popup.y + 1)).unwrap();
+    assert_eq!(
+        left_edge_start.symbol(),
+        "▕",
+        "the left edge starts one row below the corner: {left_edge_start:?}"
+    );
 }
 
 /// `animations = false` (`Anims::new(false)`) renders identically to the

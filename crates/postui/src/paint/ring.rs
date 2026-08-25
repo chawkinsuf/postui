@@ -11,10 +11,15 @@ use ratatui::{buffer::Buffer, layout::Rect, style::Color};
 /// just below it), the bottom row gets `▔` (upper one-eighth — hangs up
 /// toward the content just above it), the left column gets `▕` (right
 /// one-eighth — hugs the content just to its right), the right column gets
-/// `▏` (left one-eighth — hugs the content just to its left). The four
-/// corner cells combine the two strokes that meet there: e.g. the top-left
-/// corner joins the top edge's *lower* stroke with the left edge's *right*
-/// stroke, so it uses the "right and lower" eighth-block glyph.
+/// `▏` (left one-eighth — hugs the content just to its left).
+///
+/// The top and bottom edges own the corner cells outright, running the
+/// full width of `area`. The left and right edges span only the rows
+/// strictly between the top and bottom edges (one cell shorter at each
+/// end), so the vertical strokes stop short of the corner rather than
+/// overlapping a corner glyph there. This keeps each corner cell a single
+/// clean horizontal stroke instead of a glyph that reads as a cross where
+/// horizontal and vertical strokes visually overshoot into it.
 ///
 /// `color` (fg) is the accent color; `on` (bg) is the surface the ring
 /// paints over (so it composes with whatever's already behind `area`).
@@ -37,23 +42,17 @@ pub fn ring(buf: &mut Buffer, area: Rect, color: Color, on: Color) {
         }
     };
 
-    // Top/bottom edges, excluding the corner columns.
-    for x in (left + 1)..right {
+    // Top/bottom edges, full width — these own the corner cells.
+    for x in left..=right {
         put(buf, x, top, "▁");
         put(buf, x, bottom, "▔");
     }
-    // Left/right edges, excluding the corner rows.
+    // Left/right edges, excluding the corner rows so nothing overlaps the
+    // corner cells the horizontal edges already own.
     for y in (top + 1)..bottom {
         put(buf, left, y, "▕");
         put(buf, right, y, "▏");
     }
-
-    // Corners: each combines the vertical edge's side with the horizontal
-    // edge's side that meet there.
-    put(buf, left, top, "\u{1FB7F}"); // right and lower
-    put(buf, right, top, "\u{1FB7C}"); // left and lower
-    put(buf, left, bottom, "\u{1FB7E}"); // right and upper
-    put(buf, right, bottom, "\u{1FB7D}"); // left and upper
 }
 
 #[cfg(test)]
@@ -82,39 +81,33 @@ mod tests {
         })
         .unwrap();
 
-        // Top edge (non-corner columns 1..5), row 0.
-        for x in 1..5 {
+        // Top edge, full width including corner columns, row 0.
+        for x in 0..6 {
             let c = buf_cell(&term, x, 0);
             assert_eq!(c.symbol(), "▁", "top edge at x={x}");
             assert_eq!(c.fg, theme.accent);
             assert_eq!(c.bg, theme.panel);
         }
-        // Bottom edge (non-corner columns 1..5), row 3.
-        for x in 1..5 {
+        // Bottom edge, full width including corner columns, row 3.
+        for x in 0..6 {
             let c = buf_cell(&term, x, 3);
             assert_eq!(c.symbol(), "▔", "bottom edge at x={x}");
         }
-        // Left edge (non-corner rows 1..3), col 0.
+        // Left edge, shortened by one row at each end (rows 1..3), col 0 —
+        // does not reach into the corner rows the top/bottom edges own.
         for y in 1..3 {
             let c = buf_cell(&term, 0, y);
             assert_eq!(c.symbol(), "▕", "left edge at y={y}");
         }
-        // Right edge (non-corner rows 1..3), col 5.
+        // Right edge, shortened by one row at each end (rows 1..3), col 5.
         for y in 1..3 {
             let c = buf_cell(&term, 5, y);
             assert_eq!(c.symbol(), "▏", "right edge at y={y}");
         }
 
-        // Corners.
-        assert_eq!(buf_cell(&term, 0, 0).symbol(), "\u{1FB7F}"); // top-left
-        assert_eq!(buf_cell(&term, 5, 0).symbol(), "\u{1FB7C}"); // top-right
-        assert_eq!(buf_cell(&term, 0, 3).symbol(), "\u{1FB7E}"); // bottom-left
-        assert_eq!(buf_cell(&term, 5, 3).symbol(), "\u{1FB7D}"); // bottom-right
-        for (x, y) in [(0, 0), (5, 0), (0, 3), (5, 3)] {
-            let c = buf_cell(&term, x, y);
-            assert_eq!(c.fg, theme.accent);
-            assert_eq!(c.bg, theme.panel);
-        }
+        // No Legacy Computing corner glyphs anywhere — the top/bottom
+        // edges own the corner cells outright (asserted above as part of
+        // the full-width top/bottom rows).
 
         // Interior stays untouched.
         assert_eq!(buf_cell(&term, 2, 1).bg, theme.panel);
