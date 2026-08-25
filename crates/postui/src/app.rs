@@ -1,5 +1,5 @@
 use crate::action::{Action, CopyTarget};
-use crate::anim::{AnimKey, Anims};
+use crate::anim::{AnimKey, Anims, ListId, StripId};
 use crate::components::editor::{Editor, EditorTab, SubFocus};
 use crate::components::line_input::LineInput;
 use crate::components::modal::{Modal, ModalResult, ModalStack, PromptKind};
@@ -201,6 +201,11 @@ pub struct App {
     /// clears redo, even mid-typing-burst. Consumed (reset to `false`) by
     /// `capture_undo` on every call.
     no_coalesce: bool,
+    /// Step direction (`1` = downward, `-1` = upward) the testbed screen's
+    /// looping list-travel motion demo is currently stepping in. Only ever
+    /// read/written from `Screen::Testbed`'s tick path
+    /// (`tick_testbed_demos`); meaningless (and untouched) everywhere else.
+    testbed_list_dir: i32,
 }
 
 /// What to do with the chosen startup root once its source is known.
@@ -527,6 +532,7 @@ impl App {
             shadow: None,
             shadow_cursor: crate::undo::CursorPos::None,
             no_coalesce: false,
+            testbed_list_dir: 1,
         };
         app.prompt_migration_if_pending();
         app
@@ -795,6 +801,12 @@ impl App {
             Action::Tick => {
                 self.editor.on_tick();
                 let tip_changed = self.track_caret_token();
+                // The testbed's looping motion demos self-drive from here,
+                // never from any other screen's tick path — see
+                // `tick_testbed_demos`.
+                if self.screen == Screen::Testbed {
+                    self.tick_testbed_demos(Instant::now());
+                }
                 self.toasts.on_tick() || self.in_flight_ticking() || tip_changed || self.animating()
             }
             // No state change; forces a redraw. Background tasks use this
@@ -4274,6 +4286,153 @@ impl App {
         self.anims.snap(AnimKey::FocusFade, 0.0);
         self.anims
             .retarget(AnimKey::FocusFade, 1.0, Duration::from_millis(90), now);
+    }
+
+    /// Drives every looping motion demo on the hidden testbed screen
+    /// (Task 8b): each self-retargets to its opposite pole once it
+    /// finishes, so the demos animate continuously for as long as the
+    /// screen is showing, with no interaction required. Called once per
+    /// `Action::Tick` while `self.screen == Screen::Testbed`; every other
+    /// screen's tick path never reaches this. None of the `AnimKey`s used
+    /// here (`TabUnderline`/`TabUnderlineWidth` on `EditorTabs`/
+    /// `ResponseTabs`, `Hover`, `SendBreathe`, `ListTravel(Sidebar)`) are
+    /// wired to anything else yet, so reusing them for the testbed's own
+    /// demos can't collide with real usage — and the testbed is a dead end
+    /// no other surface is ever drawn alongside.
+    ///
+    /// `animations = false` (the config kill-switch) still freezes these:
+    /// `Anims::retarget` collapses every duration to zero when disabled, so
+    /// each demo's very first retarget already lands on its target with
+    /// nothing left in flight — `Anims::active` goes false and the main
+    /// loop simply stops ticking, exactly like every other animation in
+    /// the app.
+    ///
+    /// Every move duration below is deliberately slower than the real
+    /// production value it demonstrates (e.g. the hover fade actually
+    /// plays at 70ms — see `begin_hover_fade` — not the 300ms used here):
+    /// this screen is watched, not clicked through, so the demos are
+    /// stretched out for legibility. None of these `AnimKey`s are wired to
+    /// any real surface yet (see the note above), so slowing them down
+    /// here changes nothing about what ships.
+    fn tick_testbed_demos(&mut self, now: Instant) {
+        // Tab-strip underline, variant A ("thin, cell-step") and variant B
+        // ("half-height, sub-cell") share the same slide phase `t` (0..1)
+        // driven independently per strip, drawn very differently by
+        // `components::testbed::draw_testbed`.
+        self.drive_testbed_pingpong(
+            AnimKey::TabUnderline(StripId::EditorTabs),
+            0.0,
+            1.0,
+            Duration::from_millis(500),
+            Duration::from_millis(1800),
+            now,
+        );
+        self.drive_testbed_pingpong(
+            AnimKey::TabUnderline(StripId::ResponseTabs),
+            0.0,
+            1.0,
+            Duration::from_millis(500),
+            Duration::from_millis(1800),
+            now,
+        );
+        // Hover fade: a slow dwell between cycles so the fade itself is
+        // visible rather than a constant flicker.
+        self.drive_testbed_pingpong(
+            AnimKey::Hover,
+            0.0,
+            1.0,
+            Duration::from_millis(300),
+            Duration::from_millis(1800),
+            now,
+        );
+        // Send breathe: the in-flight breathe from the motion catalog —
+        // continuous, no dwell between poles.
+        self.drive_testbed_pingpong(
+            AnimKey::SendBreathe,
+            0.0,
+            1.0,
+            Duration::from_millis(1200),
+            Duration::ZERO,
+            now,
+        );
+        self.tick_testbed_list_travel(now);
+    }
+
+    /// One looping demo's drive step: if `key` isn't tracked yet, starts it
+    /// moving from `pole0` toward `pole1`. Once a move finishes, holds at
+    /// the arrived-at value for `dwell_dur` (a `retarget` to the same
+    /// value — see [`crate::anim::Anims::is_static`]); once a dwell
+    /// finishes, starts the next move toward whichever pole isn't the
+    /// current value. A zero `dwell_dur` still takes one extra (near-
+    /// instant) tick to flip, since the dwell retarget's own `done()` isn't
+    /// checked until the tick after it's set — imperceptible against a
+    /// ~33ms tick period.
+    fn drive_testbed_pingpong(
+        &mut self,
+        key: AnimKey,
+        pole0: f32,
+        pole1: f32,
+        move_dur: Duration,
+        dwell_dur: Duration,
+        now: Instant,
+    ) {
+        if self.anims.value(key, now).is_none() {
+            self.anims.snap(key, pole0);
+            self.anims.retarget(key, pole1, move_dur, now);
+            return;
+        }
+        if !self.anims.is_done(key, now) {
+            return;
+        }
+        let cur = self.anims.value_or(key, now, pole0);
+        if self.anims.is_static(key) {
+            let target = if (cur - pole0).abs() <= (cur - pole1).abs() {
+                pole1
+            } else {
+                pole0
+            };
+            self.anims.retarget(key, target, move_dur, now);
+        } else {
+            self.anims.retarget(key, cur, dwell_dur, now);
+        }
+    }
+
+    /// The list-travel demo's own drive step: unlike the two-pole demos
+    /// above, this steps one row at a time across a 5-row list (indices
+    /// `0.0..=4.0`), reversing direction at either end, with a dwell at
+    /// each row so the step reads as a step rather than a blur. The real
+    /// production value for a row-to-row slide is 100ms; `move_dur` below
+    /// is slower for the same on-screen-legibility reason every other demo
+    /// in `tick_testbed_demos` is. `self.testbed_list_dir` (`1` down / `-1`
+    /// up) is the only testbed-demo state that can't be recovered from
+    /// `Anims` alone, since both ends of the range are otherwise
+    /// indistinguishable "arrived and dwelling" moments.
+    fn tick_testbed_list_travel(&mut self, now: Instant) {
+        const LAST_ROW: f32 = 4.0;
+        let key = AnimKey::ListTravel(ListId::Sidebar);
+        let move_dur = Duration::from_millis(300);
+        if self.anims.value(key, now).is_none() {
+            self.anims.snap(key, 0.0);
+            self.testbed_list_dir = 1;
+            self.anims.retarget(key, 1.0, move_dur, now);
+            return;
+        }
+        if !self.anims.is_done(key, now) {
+            return;
+        }
+        let cur = self.anims.value_or(key, now, 0.0);
+        if self.anims.is_static(key) {
+            if cur <= 0.0 {
+                self.testbed_list_dir = 1;
+            } else if cur >= LAST_ROW {
+                self.testbed_list_dir = -1;
+            }
+            let next = (cur + self.testbed_list_dir as f32).clamp(0.0, LAST_ROW);
+            self.anims.retarget(key, next, move_dur, now);
+        } else {
+            self.anims
+                .retarget(key, cur, Duration::from_millis(900), now);
+        }
     }
 
     /// Central key router. Order (each step tested):

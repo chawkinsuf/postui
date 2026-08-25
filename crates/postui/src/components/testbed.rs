@@ -8,8 +8,9 @@
 //! `App::handle_key`'s `Screen::Testbed` branch) — every specimen is
 //! painted once, in a fixed state, with no hit registration.
 
-use ratatui::{Frame, buffer::Buffer, layout::Rect, text::Line};
+use ratatui::{Frame, buffer::Buffer, layout::Rect, style::Color, text::Line};
 
+use crate::anim::{AnimKey, ListId, StripId};
 use crate::components::DrawCtx;
 use crate::paint::{
     self, BUTTON_HEIGHT, Button, ButtonKind, Chip, ControlState, FIELD_HEIGHT, ListRow,
@@ -303,6 +304,276 @@ pub fn draw_testbed(frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
         theme.panel,
         false,
     );
+    y += 5 + 1;
+
+    // --- MOTION: looping demos (Task 8b) ---------------------------------
+    // Everything below is live, not a frozen freeze-frame: `draw_testbed`
+    // is called every frame while `Screen::Testbed` is up, and
+    // `App::tick_testbed_demos` keeps retargeting each demo's `AnimKey`(s)
+    // to their opposite pole once it arrives, so they loop for as long as
+    // the screen is showing.
+    draw_motion_section(buf, area, x0, &mut y, ctx);
+}
+
+/// The "MOTION" section: looping animated demos judged live, not as a
+/// static freeze-frame — the tab-underline slide in both shipping and
+/// alternative form, a hover fade, the in-flight Send breathe, and a
+/// list-selection travel. Every demo reads its value straight from
+/// `ctx.anims`/`ctx.now`; nothing here mutates state — driving the loop is
+/// `App::tick_testbed_demos`'s job (called from `Action::Tick`).
+fn draw_motion_section(buf: &mut Buffer, area: Rect, x0: u16, y: &mut u16, ctx: &DrawCtx) {
+    let theme = ctx.theme;
+    if !section_label(buf, area, x0, y, "MOTION", theme) {
+        return;
+    }
+
+    // Shared two-tab geometry both underline variants slide across.
+    let motion_tabs = vec![
+        ("Params".to_string(), None),
+        ("Headers".to_string(), None),
+        ("Body".to_string(), Some(('✓', theme.success))),
+    ];
+    let spans = TabStrip::spans(&motion_tabs);
+    let strip_w = 40;
+    let lerp = |a: u16, b: u16, t: f32| a as f32 + (b as f32 - a as f32) * t;
+
+    // Variant A: shipping candidate — whole-cell rounding, thin `▂` bar,
+    // driven straight through the existing `TabStrip::underline` field.
+    if !fits(area, *y, 1) {
+        return;
+    }
+    safe_text(
+        buf,
+        area,
+        x0,
+        *y,
+        "A: thin, cell-step (shipping)",
+        theme.text_muted,
+        theme.page,
+        false,
+    );
+    *y += 1;
+    if !fits(area, *y, 2) {
+        return;
+    }
+    let t_a = ctx
+        .anims
+        .value_or(AnimKey::TabUnderline(StripId::EditorTabs), ctx.now, 0.0);
+    TabStrip {
+        tabs: &motion_tabs,
+        active: 0,
+        hovered: None,
+        focused: false,
+        underline: (
+            lerp(spans[0].0, spans[1].0, t_a),
+            lerp(spans[0].1, spans[1].1, t_a),
+        ),
+    }
+    .paint(buf, Rect::new(x0, *y, strip_w, 2), theme.page, theme);
+    *y += 2 + 1;
+
+    // Variant B: alternative — half-height `▄` bar with sub-cell (half-
+    // column) horizontal edges via quadrant glyphs `▖`/`▗`. Painted
+    // locally (not a `paint/chip.rs` primitive yet): the labels + hairline
+    // rule come from the same `TabStrip::paint` (with a zero-width
+    // underline, so it paints no `▂` of its own), then
+    // `paint_subcell_underline` overlays the accent bar on the rule row.
+    if !fits(area, *y, 1) {
+        return;
+    }
+    safe_text(
+        buf,
+        area,
+        x0,
+        *y,
+        "B: half-height, sub-cell (alternative)",
+        theme.text_muted,
+        theme.page,
+        false,
+    );
+    *y += 1;
+    if !fits(area, *y, 2) {
+        return;
+    }
+    let t_b = ctx
+        .anims
+        .value_or(AnimKey::TabUnderline(StripId::ResponseTabs), ctx.now, 0.0);
+    TabStrip {
+        tabs: &motion_tabs,
+        active: 0,
+        hovered: None,
+        focused: false,
+        underline: (0.0, 0.0),
+    }
+    .paint(buf, Rect::new(x0, *y, strip_w, 2), theme.page, theme);
+    let rule_y = *y + 1;
+    let left_b = lerp(spans[0].0, spans[1].0, t_b);
+    let width_b = lerp(spans[0].1, spans[1].1, t_b);
+    paint_subcell_underline(buf, x0, rule_y, left_b, width_b, theme.accent, theme.page);
+    *y += 2 + 1;
+
+    // Hover fade: a dense ListRow ping-ponging Normal↔Hover through
+    // `theme::mix` (via `ListRow`'s own `hover_t` blend).
+    if !fits(area, *y, 1) {
+        return;
+    }
+    safe_text(
+        buf,
+        area,
+        x0,
+        *y,
+        "hover fade",
+        theme.text_muted,
+        theme.page,
+        false,
+    );
+    let hover_t = ctx.anims.value_or(AnimKey::Hover, ctx.now, 0.0);
+    ListRow {
+        highlight: RowHighlight::Hover,
+        zebra: None,
+    }
+    .paint(buf, *y, x0 + LABEL_COL, 24, theme.page, hover_t, theme);
+    *y += 1 + 1;
+
+    // Send breathe: the in-flight catalog motion — fill ping-pongs
+    // `mix(accent, accent_edge_dark, t)` at 700ms per pole.
+    if !fits(area, *y, 1) {
+        return;
+    }
+    safe_text(
+        buf,
+        area,
+        x0,
+        *y,
+        "send breathe",
+        theme.text_muted,
+        theme.page,
+        false,
+    );
+    if fits(area, *y + 1, BUTTON_HEIGHT) {
+        let breathe_t = ctx.anims.value_or(AnimKey::SendBreathe, ctx.now, 0.0);
+        let fill = crate::theme::mix(theme.accent, theme.accent_edge_dark, breathe_t);
+        let rect = Rect::new(x0 + LABEL_COL, *y + 1, 16, BUTTON_HEIGHT);
+        paint::fill(buf, rect, fill);
+        let (light, dark) = paint::face_edges(fill, theme);
+        paint::bevel_top(buf, Rect::new(rect.x, rect.y, rect.width, 1), light, fill);
+        paint::bevel_bottom(
+            buf,
+            Rect::new(rect.x, rect.y + rect.height - 1, rect.width, 1),
+            dark,
+            fill,
+        );
+        let label = "Send";
+        let lw = label.chars().count() as u16;
+        let sx = rect.x + rect.width.saturating_sub(lw) / 2;
+        paint::text(buf, sx, rect.y + 1, label, theme.on_accent, fill, true);
+    }
+    *y += 1 + BUTTON_HEIGHT + 1;
+
+    // List travel: a 5-row dense list whose selection band slides
+    // row-to-row via `frac_vspan` at the animated fractional y.
+    if !fits(area, *y, 1) {
+        return;
+    }
+    safe_text(
+        buf,
+        area,
+        x0,
+        *y,
+        "list travel",
+        theme.text_muted,
+        theme.page,
+        false,
+    );
+    *y += 1;
+    const ROWS: usize = 5;
+    if !fits(area, *y, ROWS as u16) {
+        return;
+    }
+    let row_w = 24;
+    for i in 0..ROWS {
+        ListRow {
+            highlight: RowHighlight::None,
+            zebra: Some(i % 2 == 1),
+        }
+        .paint(
+            buf,
+            *y + i as u16,
+            x0 + LABEL_COL,
+            row_w,
+            theme.page,
+            1.0,
+            theme,
+        );
+    }
+    let travel_t = ctx
+        .anims
+        .value_or(AnimKey::ListTravel(ListId::Sidebar), ctx.now, 0.0);
+    let band_y0 = *y as f32 + travel_t;
+    frac_vspan(
+        buf,
+        x0 + LABEL_COL,
+        x0 + LABEL_COL + row_w,
+        band_y0,
+        band_y0 + 1.0,
+        theme.selection,
+        theme.page,
+    );
+    *y += ROWS as u16;
+}
+
+/// Paints a half-height accent bar (`▄`, fg on the lower half of the cell)
+/// across the fractional column span `[left, left + width)` on `rule_y`,
+/// relative to `x0` — the alternative tab-underline treatment (variant B):
+/// unlike [`TabStrip`]'s own whole-cell-rounded `▂` segment, edges land on
+/// the nearest *half* column, using the quadrant glyphs `▖` (only the left
+/// half of the cell filled) / `▗` (only the right half filled) so the
+/// slide reads as continuous rather than snapping a full cell at a time.
+/// A demo-only painter — not a `paint/chip.rs` primitive.
+fn paint_subcell_underline(
+    buf: &mut Buffer,
+    x0: u16,
+    rule_y: u16,
+    left: f32,
+    width: f32,
+    fg: Color,
+    bg: Color,
+) {
+    if width <= 0.0 {
+        return;
+    }
+    // Work in half-column units so each cell's left/right half can be
+    // tested for coverage independently.
+    let lh = (left * 2.0).round() as i32;
+    let rh = ((left + width) * 2.0).round() as i32;
+    if rh <= lh {
+        return;
+    }
+    let c_min = lh.div_euclid(2);
+    let c_max = (rh - 1).div_euclid(2);
+    for c in c_min..=c_max {
+        let left_half = 2 * c;
+        let right_half = 2 * c + 1;
+        let left_on = left_half >= lh && left_half < rh;
+        let right_on = right_half >= lh && right_half < rh;
+        let glyph = match (left_on, right_on) {
+            (true, true) => "▄",
+            (true, false) => "▖",
+            (false, true) => "▗",
+            (false, false) => continue,
+        };
+        let Some(x) = x0.checked_add_signed(c as i16) else {
+            continue;
+        };
+        if x >= buf.area().right() {
+            continue;
+        }
+        if let Some(cell) = buf.cell_mut((x, rule_y)) {
+            cell.set_symbol(glyph);
+            cell.set_fg(fg);
+            cell.set_bg(bg);
+        }
+    }
 }
 
 /// Whether a block `height` rows tall, starting at row `y`, fits entirely
@@ -393,5 +664,101 @@ mod tests {
         assert!(content.contains("CHIPS"), "section label missing");
         assert!(content.contains("FRAC_VSPAN"), "section label missing");
         assert!(content.contains("FLOATING PANEL"), "section label missing");
+    }
+
+    /// The MOTION section (Task 8b) needs a taller backend than
+    /// `every_section_is_labeled`'s 160×60 to avoid being clipped by
+    /// `fits` — it's the last section, appended after everything that test
+    /// already covers.
+    #[test]
+    fn motion_section_is_labeled_and_shows_both_underline_variants() {
+        let theme = Theme::dark();
+        let anims = Anims::new(false);
+        let mut term = Terminal::new(TestBackend::new(160, 90)).unwrap();
+        term.draw(|f| {
+            let area = f.area();
+            let ctx = DrawCtx {
+                theme: &theme,
+                focused: false,
+                hovered: None,
+                dragging: false,
+                anims: &anims,
+                now: std::time::Instant::now(),
+            };
+            draw_testbed(f, area, &ctx);
+        })
+        .unwrap();
+        let content = format!("{:?}", term.backend().buffer());
+        assert!(content.contains("MOTION"), "MOTION section label missing");
+        assert!(
+            content.contains("A: thin, cell-step (shipping)"),
+            "variant A label missing"
+        );
+        assert!(
+            content.contains("B: half-height, sub-cell (alternative)"),
+            "variant B label missing"
+        );
+        assert!(content.contains("hover fade"), "hover fade label missing");
+        assert!(
+            content.contains("send breathe"),
+            "send breathe label missing"
+        );
+        assert!(content.contains("list travel"), "list travel label missing");
+    }
+
+    /// At `t = 0` both underline variants must actually be painting: variant
+    /// A shows its whole-cell `▂` bar, variant B shows its half-height `▄`
+    /// bar (plus, generally, its sub-cell `▖`/`▗` edge glyphs) — confirming
+    /// both read the same `AnimKey`-driven `t` and paint something, not
+    /// just the shared strip geometry underneath.
+    #[test]
+    fn underline_variant_a_and_b_both_paint_at_rest() {
+        let theme = Theme::dark();
+        let mut anims = Anims::new(false);
+        let now = std::time::Instant::now();
+        anims.snap(crate::anim::AnimKey::TabUnderline(StripId::EditorTabs), 0.0);
+        anims.snap(
+            crate::anim::AnimKey::TabUnderline(StripId::ResponseTabs),
+            0.0,
+        );
+        let mut term = Terminal::new(TestBackend::new(160, 90)).unwrap();
+        term.draw(|f| {
+            let area = f.area();
+            let ctx = DrawCtx {
+                theme: &theme,
+                focused: false,
+                hovered: None,
+                dragging: false,
+                anims: &anims,
+                now,
+            };
+            draw_testbed(f, area, &ctx);
+        })
+        .unwrap();
+        let content = format!("{:?}", term.backend().buffer());
+        assert!(content.contains('▂'), "variant A: thin bar missing");
+        assert!(content.contains('▄'), "variant B: half-height bar missing");
+    }
+
+    #[test]
+    fn subcell_underline_paints_quadrant_edges_for_a_half_cell_offset() {
+        let theme = Theme::dark();
+        let mut term = Terminal::new(TestBackend::new(20, 1)).unwrap();
+        term.draw(|f| {
+            paint::fill(f.buffer_mut(), Rect::new(0, 0, 20, 1), theme.page);
+            // left edge at column 2.5, spanning 3.0 columns wide: half-cell
+            // start (▗, right half only) at col 2, full ▄ at cols 3-4, half-
+            // cell end (▖, left half only) at col 5.
+            paint_subcell_underline(f.buffer_mut(), 0, 0, 2.5, 3.0, theme.accent, theme.page);
+        })
+        .unwrap();
+        let buf = term.backend().buffer();
+        let sym = |x: u16| buf.cell((x, 0)).unwrap().symbol();
+        assert_eq!(sym(2), "▗", "half-cell left edge: right-half glyph");
+        assert_eq!(sym(3), "▄", "fully covered cell");
+        assert_eq!(sym(4), "▄", "fully covered cell");
+        assert_eq!(sym(5), "▖", "half-cell right edge: left-half glyph");
+        assert_eq!(sym(1), " ", "untouched left of the span");
+        assert_eq!(sym(6), " ", "untouched right of the span");
     }
 }

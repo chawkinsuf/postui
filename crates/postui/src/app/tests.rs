@@ -8631,6 +8631,55 @@ fn testbed_screen_quit_chip_still_quits_via_mouse() {
     );
 }
 
+// --- Task 8b (stage 8): looping motion demos on the testbed screen ---------
+
+/// The MOTION section's demos self-retarget to their opposite pole every
+/// time they finish (see `App::tick_testbed_demos`), so — unlike every
+/// other idle screen — a tick on `Screen::Testbed` never goes fully quiet:
+/// `Anims::active` (and so `App::animating`) stays true across many
+/// consecutive ticks, keeping the redraw loop alive with nothing else
+/// (background sends, toasts, ...) driving it.
+#[test]
+fn testbed_tick_keeps_animating_true_across_many_ticks() {
+    let mut app = App::new_for_test_with_testbed(true);
+    for _ in 0..50 {
+        app.update(Action::Tick);
+        assert!(
+            app.animating(),
+            "a looping testbed demo should still be in flight or dwelling"
+        );
+    }
+}
+
+/// `tick_testbed_demos` must only ever run from `Screen::Testbed` — ticking
+/// on `Screen::Main` (the overwhelmingly common case) must not start
+/// tracking any of the reused `AnimKey`s (`SendBreathe`,
+/// `ListTravel(Sidebar)`, ...), since a later real feature wiring one of
+/// them up must not find it already animating from a screen that was never
+/// showing.
+#[test]
+fn testbed_demo_drive_does_not_run_on_the_main_screen() {
+    let mut app = App::new_for_test();
+    assert_eq!(app.screen, crate::app::Screen::Main);
+    let now = std::time::Instant::now();
+    app.update(Action::Tick);
+    assert!(
+        app.anims
+            .value(crate::anim::AnimKey::SendBreathe, now)
+            .is_none(),
+        "the testbed's Send-breathe demo must not start ticking on Screen::Main"
+    );
+    assert!(
+        app.anims
+            .value(
+                crate::anim::AnimKey::ListTravel(crate::anim::ListId::Sidebar),
+                now
+            )
+            .is_none(),
+        "the testbed's list-travel demo must not start ticking on Screen::Main"
+    );
+}
+
 mod undo_tests {
     use super::*;
     use crate::undo::CursorPos;

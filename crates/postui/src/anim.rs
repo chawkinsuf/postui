@@ -124,6 +124,28 @@ impl Anims {
         self.entries.values().any(|a| !a.done(now))
     }
 
+    /// Whether `key`'s own tracked animation (if any) has finished at
+    /// `now`. A key with no tracked value at all counts as done — there's
+    /// nothing in flight to wait on. Unlike [`Anims::active`] (which asks
+    /// about every key at once), this is what a looping demo driver polls
+    /// per key to decide when to retarget it.
+    pub fn is_done(&self, key: AnimKey, now: Instant) -> bool {
+        self.entries.get(&key).is_none_or(|a| a.done(now))
+    }
+
+    /// Whether `key`'s current entry is a "hold" — its `start` and
+    /// `target` are the same value, so [`Anims::value`] doesn't move even
+    /// while the entry counts as active. A looping demo driver uses
+    /// [`Anims::retarget`] with `target` equal to the value it just
+    /// arrived at to implement a dwell pause (still `active` for the
+    /// dwell's duration, so the main loop keeps ticking through it) —
+    /// this is how the driver tells a finished dwell apart from a
+    /// finished move without any extra state of its own. Returns `false`
+    /// for an untracked key.
+    pub fn is_static(&self, key: AnimKey) -> bool {
+        self.entries.get(&key).is_some_and(|a| a.start == a.target)
+    }
+
     /// Drops `key`'s tracked value entirely.
     pub fn clear(&mut self, key: AnimKey) {
         self.entries.remove(&key);
@@ -167,6 +189,42 @@ mod tests {
             a.value(AnimKey::Hover, t_half),
             Some(v_half),
             "no jump on reversal"
+        );
+    }
+
+    #[test]
+    fn is_done_tracks_a_single_key_and_defaults_true_when_untracked() {
+        let t0 = Instant::now();
+        let mut a = Anims::new(true);
+        assert!(
+            a.is_done(AnimKey::Hover, t0),
+            "an untracked key has nothing in flight"
+        );
+        a.snap(AnimKey::Hover, 0.0);
+        a.retarget(AnimKey::Hover, 1.0, Duration::from_millis(100), t0);
+        assert!(!a.is_done(AnimKey::Hover, t0 + Duration::from_millis(50)));
+        assert!(a.is_done(AnimKey::Hover, t0 + Duration::from_millis(100)));
+    }
+
+    #[test]
+    fn is_static_distinguishes_a_hold_from_a_move() {
+        let t0 = Instant::now();
+        let mut a = Anims::new(true);
+        assert!(
+            !a.is_static(AnimKey::Hover),
+            "an untracked key isn't a hold"
+        );
+        a.snap(AnimKey::Hover, 0.0);
+        a.retarget(AnimKey::Hover, 1.0, Duration::from_millis(100), t0);
+        assert!(!a.is_static(AnimKey::Hover), "start != target: a move");
+        let done_at = t0 + Duration::from_millis(100);
+        // Hold at the value it just arrived at, for a dwell duration.
+        let arrived = a.value(AnimKey::Hover, done_at).unwrap();
+        a.retarget(AnimKey::Hover, arrived, Duration::from_millis(50), done_at);
+        assert!(a.is_static(AnimKey::Hover), "start == target: a hold");
+        assert!(
+            !a.is_done(AnimKey::Hover, done_at),
+            "the hold itself is still active until its own duration elapses"
         );
     }
 
