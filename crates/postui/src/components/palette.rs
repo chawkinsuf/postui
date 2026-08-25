@@ -417,9 +417,9 @@ impl PaletteState {
         t: f32,
     ) {
         let width = 50.min(screen.width);
-        const CHROME: u16 = 10;
+        const CHROME: u16 = 8;
         let content_rows = (self.filtered.len() as u16).clamp(1, 10) * 2;
-        let height = (CHROME + content_rows).clamp(13, 26).min(screen.height);
+        let height = (CHROME + content_rows).clamp(11, 24).min(screen.height);
         let area = super::modal::centered_rect(screen, width, height);
         hits.register(area, crate::hit::Hit::ModalBody);
         paint::floating_panel_settling(frame.buffer_mut(), area, screen, theme, t);
@@ -562,16 +562,6 @@ impl PaletteState {
             hits.register(row_rect, crate::hit::Hit::PaletteRow(i));
         }
 
-        let footer_y = area.y + area.height.saturating_sub(2);
-        paint::text(
-            frame.buffer_mut(),
-            area.x + 2,
-            footer_y,
-            "enter run  esc cancel",
-            theme.text_muted,
-            theme.panel,
-            false,
-        );
     }
 }
 
@@ -761,6 +751,25 @@ mod tests {
         p.handle_key(key(KeyCode::Down));
         p.handle_key(key(KeyCode::Char('q')));
         assert_eq!(p.selected(), 0);
+    }
+
+    #[test]
+    fn no_key_hint_footer_row() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut p = PaletteState::new(&crate::usage::UsageStore::default(), 0);
+        let theme = Theme::dark();
+        let keymap = crate::keys::Keymap::default_bindings();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, &keymap, 1.0))
+            .unwrap();
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(!content.contains("enter run"), "{content}");
+        assert!(!content.contains("esc cancel"), "{content}");
     }
 
     #[test]

@@ -450,9 +450,9 @@ impl VarPickerState {
         t: f32,
     ) {
         let width = 60.min(screen.width);
-        const CHROME: u16 = 10;
+        const CHROME: u16 = 8;
         let content_rows = (self.row_count() as u16).clamp(1, 10);
-        let height = (CHROME + content_rows).clamp(13, 26).min(screen.height);
+        let height = (CHROME + content_rows).clamp(11, 24).min(screen.height);
         let area = super::modal::centered_rect(screen, width, height);
         hits.register(area, crate::hit::Hit::ModalBody);
         paint::floating_panel_settling(frame.buffer_mut(), area, screen, theme, t);
@@ -763,20 +763,6 @@ impl VarPickerState {
             hits.register(row_rect, crate::hit::Hit::VarPickerRow(i));
         }
 
-        let footer = match &self.mode {
-            PickerMode::Insert => "enter insert  esc cancel",
-            PickerMode::SelectOption { .. } => "enter select  esc cancel",
-        };
-        let footer_y = area.y + area.height.saturating_sub(2);
-        paint::text(
-            frame.buffer_mut(),
-            area.x + 2,
-            footer_y,
-            footer,
-            theme.text_muted,
-            theme.panel,
-            false,
-        );
     }
 }
 
@@ -878,6 +864,24 @@ mod tests {
         }
         let res = p.handle_key(key(KeyCode::Enter)).unwrap();
         assert_eq!(res.actions, vec![Action::InsertVarText("{{base}}".into())]);
+    }
+
+    #[test]
+    fn no_key_hint_footer_row() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut p = VarPickerState::new(vec![var_entry("a", None, None)], false);
+        let theme = Theme::dark();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0))
+            .unwrap();
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(!content.contains("enter insert"), "{content}");
+        assert!(!content.contains("esc cancel"), "{content}");
     }
 
     #[test]

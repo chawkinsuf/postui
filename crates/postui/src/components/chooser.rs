@@ -160,10 +160,10 @@ impl ChooserState {
     ) {
         let width = 60.min(screen.width);
         // Chrome (everything but the list): 1 pad + 1 title + 1 ring-margin
-        // gap + 3-row field + 1 ring-margin gap + 1 gap + 1 footer + 1 pad.
-        const CHROME: u16 = 10;
+        // gap + 3-row field + 1 ring-margin gap + 1 pad.
+        const CHROME: u16 = 8;
         let content_rows = (self.filtered.len() as u16).clamp(1, 10);
-        let height = (CHROME + content_rows).clamp(13, 26).min(screen.height);
+        let height = (CHROME + content_rows).clamp(11, 24).min(screen.height);
         let area = super::modal::centered_rect(screen, width, height);
         hits.register(area, crate::hit::Hit::ModalBody);
         paint::floating_panel_settling(frame.buffer_mut(), area, screen, theme, t);
@@ -294,16 +294,6 @@ impl ChooserState {
             hits.register(row_rect, crate::hit::Hit::ChooserRow(i));
         }
 
-        let footer_y = area.y + area.height.saturating_sub(2);
-        paint::text(
-            frame.buffer_mut(),
-            area.x + 2,
-            footer_y,
-            "enter select  esc cancel",
-            theme.text_muted,
-            theme.panel,
-            false,
-        );
     }
 }
 
@@ -334,6 +324,24 @@ mod tests {
                 actions: vec![Action::Render],
             })
             .collect()
+    }
+
+    #[test]
+    fn no_key_hint_footer_row() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut c = ChooserState::new("Projects", items(&["a", "b"]));
+        let theme = crate::theme::Theme::dark();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0))
+            .unwrap();
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(!content.contains("enter select"), "{content}");
+        assert!(!content.contains("esc cancel"), "{content}");
     }
 
     #[test]

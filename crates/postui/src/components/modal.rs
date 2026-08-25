@@ -885,8 +885,7 @@ impl ModalStack {
 
                 // Each choice is its own clickable painted button
                 // (`Hit::ConfirmChoice(c)`); `Esc` still closes the modal
-                // (matching whichever choice text says "Cancel", if any) and
-                // is documented in the muted helper line below the buttons.
+                // (matching whichever choice text says "Cancel", if any).
                 let mut x = area.x + area.width.saturating_sub(2 + btn_row_w);
                 for (c, label, _) in choices.iter() {
                     let w = paint::button_min_width(label);
@@ -910,17 +909,6 @@ impl ModalStack {
                     hits.register(btn_area, crate::hit::Hit::ConfirmChoice(*c));
                     x += w + 2;
                 }
-
-                let hint_y = buttons_y.saturating_sub(1);
-                paint::text(
-                    frame.buffer_mut(),
-                    area.x + 2,
-                    hint_y,
-                    "esc cancel",
-                    theme.text_muted,
-                    theme.panel,
-                    false,
-                );
             }
             Modal::Prompt {
                 title,
@@ -929,7 +917,12 @@ impl ModalStack {
                 revealed,
             } => {
                 let masked = kind.is_secret() && !*revealed;
-                let area = centered_rect(screen, 60.min(screen.width), 14.min(screen.height));
+                // The secret prompt keeps a hint row for the reveal toggle
+                // (ctrl+r isn't discoverable); every other prompt's
+                // Enter/Esc behavior is implied, so no hint row and two
+                // rows less chrome.
+                let height = if kind.is_secret() { 14 } else { 12 };
+                let area = centered_rect(screen, 60.min(screen.width), height.min(screen.height));
                 hits.register(area, crate::hit::Hit::ModalBody);
                 paint::floating_panel_settling(frame.buffer_mut(), area, screen, theme, t);
                 if t < 1.0 {
@@ -964,25 +957,23 @@ impl ModalStack {
                 }
                 .paint(frame.buffer_mut(), field_area, theme);
 
-                let hint_y = field_area.y + FIELD_HEIGHT + 1;
-                let hint = if kind.is_secret() {
-                    if *revealed {
-                        "enter confirm  esc cancel  ctrl+r hide"
+                if kind.is_secret() {
+                    let hint_y = field_area.y + FIELD_HEIGHT + 1;
+                    let hint = if *revealed {
+                        "ctrl+r hide"
                     } else {
-                        "enter confirm  esc cancel  ctrl+r reveal"
-                    }
-                } else {
-                    "enter confirm  esc cancel"
-                };
-                paint::text(
-                    frame.buffer_mut(),
-                    area.x + 2,
-                    hint_y,
-                    hint,
-                    theme.text_muted,
-                    theme.panel,
-                    false,
-                );
+                        "ctrl+r reveal"
+                    };
+                    paint::text(
+                        frame.buffer_mut(),
+                        area.x + 2,
+                        hint_y,
+                        hint,
+                        theme.text_muted,
+                        theme.panel,
+                        false,
+                    );
+                }
 
                 let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
                 draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered);
@@ -996,7 +987,7 @@ impl ModalStack {
                 on_path,
                 ..
             } => {
-                let area = centered_rect(screen, 60.min(screen.width), 19.min(screen.height));
+                let area = centered_rect(screen, 60.min(screen.width), 17.min(screen.height));
                 hits.register(area, crate::hit::Hit::ModalBody);
                 paint::floating_panel_settling(frame.buffer_mut(), area, screen, theme, t);
                 if t < 1.0 {
@@ -1069,17 +1060,6 @@ impl ModalStack {
                 }
                 .paint(frame.buffer_mut(), path_area, theme);
 
-                let hint_y = path_area.y + FIELD_HEIGHT + 1;
-                paint::text(
-                    frame.buffer_mut(),
-                    field_x,
-                    hint_y,
-                    "tab switch  enter create  esc cancel",
-                    theme.text_muted,
-                    theme.panel,
-                    false,
-                );
-
                 let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
                 draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered);
             }
@@ -1093,8 +1073,8 @@ impl ModalStack {
                 ..
             } => {
                 // Each field costs a label row plus a `FIELD_HEIGHT` box;
-                // around them sit the top pad, the title, a blank row, the
-                // hint row, the button row and the bottom pad. Counting the
+                // around them sit the top pad, the title, a blank row, a
+                // gap row, the button row and the bottom pad. Counting the
                 // boxes (not just 2 rows per field) is what keeps the
                 // bottom-anchored buttons off the last field — with two
                 // fields the old estimate had them painting straight
@@ -1180,17 +1160,6 @@ impl ModalStack {
                     }
                     y += FIELD_HEIGHT + 1;
                 }
-
-                let hint_y = y;
-                paint::text(
-                    frame.buffer_mut(),
-                    field_x,
-                    hint_y,
-                    "tab switch  enter confirm  esc cancel",
-                    theme.text_muted,
-                    theme.panel,
-                    false,
-                );
 
                 let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
                 draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered);
@@ -1625,6 +1594,85 @@ mod tests {
             body: "b".into(),
         });
         assert!(matches!(m.top(), Some(Modal::Message { .. })));
+    }
+
+    fn draw_modal(m: &mut ModalStack) -> String {
+        let theme = Theme::dark();
+        let keymap = crate::keys::Keymap::default_bindings();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| {
+                m.draw(
+                    f,
+                    f.area(),
+                    &theme,
+                    &mut hits,
+                    None,
+                    &keymap,
+                    test_anims(),
+                    std::time::Instant::now(),
+                )
+            })
+            .unwrap();
+        format!("{:?}", terminal.backend().buffer())
+    }
+
+    #[test]
+    fn prompts_and_confirms_show_no_key_hint_row() {
+        // Enter/Esc/Tab behavior is implied; the hint rows are gone.
+        let mut m = ModalStack::default();
+        m.push(Modal::Prompt {
+            title: "New request".into(),
+            input: LineInput::new(""),
+            kind: PromptKind::NewRequest,
+            revealed: false,
+        });
+        let content = draw_modal(&mut m);
+        assert!(!content.contains("esc cancel"), "{content}");
+        assert!(!content.contains("enter confirm"), "{content}");
+
+        let mut m = ModalStack::default();
+        m.push(Modal::Confirm {
+            title: "Unsaved changes".into(),
+            body: "Save before closing?".into(),
+            choices: vec![('s', "Save".into(), vec![])],
+        });
+        let content = draw_modal(&mut m);
+        assert!(!content.contains("esc cancel"), "{content}");
+
+        let mut m = ModalStack::default();
+        m.push(Modal::MultiPrompt {
+            title: "New option".into(),
+            fields: vec![PromptField::text("key", "Key", "")],
+            focus: 0,
+            kind: PromptKind::NewOptionInline {
+                owner: "host".into(),
+            },
+        });
+        let content = draw_modal(&mut m);
+        assert!(!content.contains("tab switch"), "{content}");
+        assert!(!content.contains("esc cancel"), "{content}");
+    }
+
+    #[test]
+    fn secret_prompt_keeps_the_reveal_hint_only() {
+        // ctrl+r reveal is not discoverable, so that hint alone survives.
+        let mut m = ModalStack::default();
+        m.push(Modal::Prompt {
+            title: "Secret".into(),
+            input: LineInput::new(""),
+            kind: PromptKind::SecretValue {
+                name: "token".into(),
+                env: "dev".into(),
+            },
+            revealed: false,
+        });
+        let content = draw_modal(&mut m);
+        assert!(content.contains("ctrl+r reveal"), "{content}");
+        assert!(!content.contains("esc cancel"), "{content}");
+        assert!(!content.contains("enter confirm"), "{content}");
     }
 
     #[test]
