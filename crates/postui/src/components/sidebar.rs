@@ -4,7 +4,7 @@ use crate::anim::{AnimKey, ListId};
 use crate::hit::{self, Hit, HitMap, ScrollbarSpec};
 use crate::layout::PaneId;
 use crate::paint::{
-    BUTTON_HEIGHT, Button, ButtonKind, ControlState, ListRow, RowHighlight, fill, frac_vspan, text,
+    BUTTON_HEIGHT, Button, ButtonKind, ControlState, ListRow, RowHighlight, fill, text,
 };
 use crate::theme::Theme;
 use postui_core::model::Method;
@@ -81,6 +81,12 @@ pub struct Sidebar {
     /// Whether the open request has unsaved changes, likewise kept in sync
     /// by `App::update`.
     pub open_dirty: bool,
+    /// The row the selection band is crossfading away from: the previously
+    /// open request's row, recorded by `App::retarget_sidebar_travel` when
+    /// the open request changes. Only read while `ListTravel` is still
+    /// easing — once the anim settles the band paints solely on the open
+    /// row and this goes stale harmlessly.
+    pub band_fade_from: Option<usize>,
 }
 
 impl Sidebar {
@@ -457,15 +463,18 @@ impl Component for Sidebar {
         let zebra = self.zebra_parities();
         let hover_t = ctx.hover_t();
 
-        // The open request's travel band: `Some((y0, y1))` in *screen*
-        // row-space, only while it's actually mid-flight (still easing
-        // toward the open request's row). Once it arrives — or the anim was
-        // never wired up at all, e.g. every sidebar-only unit test — this
-        // is `None` and the loop below degenerates to painting the open
-        // row exactly like any other `ListRow::Selected`, with no
-        // `frac_vspan` call at all. The band anchors to `open_row()` (NOT
-        // the keyboard cursor) and ignores pane focus: the fill + bar
-        // always mean "this request is the one in the right panes".
+        // The open request's band crossfade: while `ListTravel` is still
+        // easing between the previously open row (`band_fade_from`) and
+        // the newly open one, BOTH rows paint the band at partial strength
+        // — fading out on the old row, in on the new — rather than sliding
+        // a fractional-height band between them (whose full-cell edge
+        // fills made the half-width `▌` bar read as doubling in width
+        // mid-flight). Once the anim arrives — or was never wired up at
+        // all, e.g. every sidebar-only unit test — the loop below paints
+        // the open row exactly like any other `ListRow::Selected`. The
+        // band anchors to `open_row()` (NOT the keyboard cursor) and
+        // ignores pane focus: the fill + bar always mean "this request is
+        // the one in the right panes".
         let travel_key = AnimKey::ListTravel(ListId::Sidebar);
         let band_settled_at = self.open_row();
         let anim_val = band_settled_at.map(|c| ctx.anims.value_or(travel_key, ctx.now, c as f32));
@@ -473,47 +482,17 @@ impl Component for Sidebar {
             (Some(c), Some(v)) => (v - c as f32).abs() < 0.01,
             _ => true,
         };
-        let band_range = if !settled {
-            anim_val.map(|v| {
-                let y0 = list_area.y as f32 + (v - self.scroll as f32);
-                (y0, y0 + 1.0)
-            })
-        } else {
-            None
+        // Eased 0→1 progress of the crossfade; `None` once settled, or
+        // with no recorded origin row to fade out from (then the band just
+        // paints fully on the open row).
+        let fade_t = match (band_settled_at, anim_val, self.band_fade_from) {
+            (Some(c), Some(v), Some(f)) if !settled && f != c => {
+                Some(((v - f as f32) / (c as f32 - f as f32)).clamp(0.0, 1.0))
+            }
+            _ => None,
         };
 
         let buf = frame.buffer_mut();
-
-        if let Some((y0, y1)) = band_range {
-            let clip_top = list_area.y as f32;
-            let clip_bottom = (list_area.y + list_area.height) as f32;
-            let cy0 = y0.max(clip_top);
-            let cy1 = y1.min(clip_bottom);
-            if cy1 > cy0 {
-                // Accent bar column, then the rest of the row's width —
-                // two spans so the bar keeps its own color through the
-                // fractional edge frames instead of blending into the
-                // fill's tint.
-                frac_vspan(
-                    buf,
-                    list_area.x,
-                    list_area.x + 1,
-                    cy0,
-                    cy1,
-                    theme.accent,
-                    theme.panel,
-                );
-                frac_vspan(
-                    buf,
-                    list_area.x + 1,
-                    list_area.x + list_area.width,
-                    cy0,
-                    cy1,
-                    theme.selection,
-                    theme.panel,
-                );
-            }
-        }
 
         for (display_pos, (i, row)) in self
             .rows
@@ -542,22 +521,28 @@ impl Component for Sidebar {
                 Row::Request { slug, .. } if self.open_slug.as_deref() == Some(slug.as_str())
             );
             let is_hovered = ctx.hovered == Some(&Hit::SidebarRow(i));
-            let text_row_f = text_row as f32;
-            let intersects_band =
-                band_range.is_some_and(|(y0, y1)| y0 < text_row_f + 1.0 && y1 > text_row_f);
-            let is_band_row = band_settled_at == Some(i) && settled;
+            // Full band once the crossfade is done (or was never armed);
+            // partial strength on the two rows a crossfade is between.
+            let is_band_row = band_settled_at == Some(i) && fade_t.is_none();
+            let band_alpha = fade_t.and_then(|t| {
+                if self.band_fade_from == Some(i) {
+                    Some(1.0 - t)
+                } else if band_settled_at == Some(i) {
+                    Some(t)
+                } else {
+                    None
+                }
+            });
             let is_cursor = ctx.focused
                 && self.selected == Some(i)
                 && !is_band_row
-                && !intersects_band;
+                && band_alpha.is_none();
 
-            let highlight = if intersects_band {
-                RowHighlight::None
-            } else if is_band_row {
+            let highlight = if is_band_row {
                 RowHighlight::Selected
             } else if is_cursor {
                 RowHighlight::Cursor
-            } else if is_hovered {
+            } else if is_hovered && band_alpha.is_none() {
                 RowHighlight::Hover
             } else {
                 RowHighlight::None
@@ -566,11 +551,25 @@ impl Component for Sidebar {
             // The list's own inset keeps column `area.x` free for the pane
             // focus bar, so every row — selected or hover — spans the full
             // list width and the selected row's accent marker never needs
-            // to dodge it. Rows the travel band is currently sitting on
-            // skip their own fill entirely: the band already painted their
-            // background (and, mid-flight, its fractional-edge glyphs
-            // would only get stomped by a flat `ListRow` fill underneath).
-            if !intersects_band {
+            // to dodge it. A crossfading row paints its own blend instead:
+            // the base fill mixed toward `theme.selection` at `band_alpha`,
+            // with the `▌` bar's accent likewise faded against that fill —
+            // the bar keeps its half-cell width through the whole fade.
+            let row_fill = if let Some(a) = band_alpha {
+                let base =
+                    Self::resolve_fill(theme, RowHighlight::None, zebra[i], theme.panel, hover_t);
+                let blended = crate::theme::mix(base, theme.selection, a);
+                fill(
+                    buf,
+                    Rect::new(list_area.x, text_row, list_area.width, 1),
+                    blended,
+                );
+                if let Some(cell) = buf.cell_mut((list_area.x, text_row)) {
+                    cell.set_symbol("\u{258c}");
+                    cell.set_fg(crate::theme::mix(blended, theme.accent, a));
+                }
+                blended
+            } else {
                 ListRow {
                     highlight,
                     zebra: zebra[i],
@@ -584,11 +583,6 @@ impl Component for Sidebar {
                     hover_t,
                     theme,
                 );
-            }
-
-            let row_fill = if intersects_band {
-                theme.selection
-            } else {
                 Self::resolve_fill(theme, highlight, zebra[i], theme.panel, hover_t)
             };
 
@@ -1469,16 +1463,19 @@ mod tests {
         assert_eq!(r2.y, r1.y + 1);
     }
 
-    /// Mid-flight, the traveling band shows the accent-colored fractional
-    /// glyphs `frac_vspan` paints for a partially-covered row, rather than
-    /// the flat `▌` + `theme.selection` fill a settled row gets.
+    /// Mid-flight, the band CROSSFADES between the previously open row and
+    /// the newly open one — both rows carry a partial-strength selection
+    /// fill and a half-width `▌` bar at partial accent — rather than a
+    /// sliding fractional-height band (whose full-cell edge fills used to
+    /// make the bar read as doubling in width).
     #[test]
-    fn mid_flight_selection_travel_paints_a_fractional_band() {
+    fn mid_flight_band_crossfades_between_the_old_and_new_open_rows() {
         let mut s = Sidebar::default();
         s.refresh(listing(&["a", "b", "c"]), &expanded(&[]));
-        // The band anchors to the OPEN request's row (row 1, "b"): the
-        // anim below is mid-flight from row 0 toward it.
+        // The band is moving from row 0 ("a", previously open) toward the
+        // newly open row 1 ("b").
         s.open_slug = Some("b".into());
+        s.band_fade_from = Some(0);
         s.selected = Some(1);
 
         let theme = Theme::dark();
@@ -1518,17 +1515,32 @@ mod tests {
 
         let row0 = hits.rect_of(&Hit::SidebarRow(0)).unwrap();
         let row1 = hits.rect_of(&Hit::SidebarRow(1)).unwrap();
-        // Somewhere between row 0 and row 1's text lines, the band's
-        // fractional edge glyph shows an accent-tinted lower-block
-        // character rather than a plain space — proof the band is
-        // actually mid-transit rather than degenerated to a static row.
-        let has_fractional_glyph = (row0.y..=row1.y).any(|y| {
+
+        // Both crossfading rows keep the half-width bar glyph — never a
+        // fractional-height block or a flooded full cell.
+        for r in [&row0, &row1] {
+            assert_eq!(
+                buf[(r.x, r.y)].symbol(),
+                "\u{258c}",
+                "crossfading rows keep the half-width bar"
+            );
+        }
+        // And their fills sit strictly between the resting surface and the
+        // full selection color: partial strength on both ends of the fade.
+        for r in [&row0, &row1] {
+            let bg = buf[(r.x + r.width - 2, r.y)].bg;
+            assert_ne!(bg, theme.selection, "mid-fade fill is not full strength");
+            assert_ne!(bg, theme.panel, "mid-fade fill is not the resting surface");
+            assert_ne!(bg, theme.zebra_alt, "mid-fade fill is not the zebra surface");
+        }
+        // No fractional-height glyphs anywhere in the list's bar column
+        // (three rows: "a", "b", "c").
+        for y in row0.y..row0.y + 3 {
             let sym = buf[(row0.x, y)].symbol();
-            sym != " " && sym != "\u{258c}"
-        });
-        assert!(
-            has_fractional_glyph,
-            "expected a lower-block fractional glyph somewhere in the travel band"
-        );
+            assert!(
+                sym == " " || sym == "\u{258c}",
+                "bar column must hold only spaces or the half-width bar, got {sym:?} at y={y}"
+            );
+        }
     }
 }

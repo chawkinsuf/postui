@@ -5033,6 +5033,9 @@ impl App {
         if self.anims.value(key, now).is_none() {
             self.anims.snap(key, prev.unwrap_or(cur) as f32);
         }
+        // The band crossfades rather than slides: record the row it fades
+        // out from (see `Sidebar::band_fade_from`).
+        self.sidebar.band_fade_from = prev;
         self.anims
             .retarget(key, cur as f32, self.ui_settings.anim_ms.list_travel, now);
     }
