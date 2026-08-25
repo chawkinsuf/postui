@@ -263,11 +263,16 @@ pub fn load_ui_settings(path: &Path) -> (UiSettings, Vec<String>) {
             "toast",
             "send_breathe",
         ];
-        let set_ms = |key: &str, field: &mut std::time::Duration| {
-            if let Some(ms) = table.get(key).and_then(|v| v.as_integer())
-                && let Ok(ms) = u64::try_from(ms)
-            {
-                *field = std::time::Duration::from_millis(ms);
+        let mut set_ms = |key: &str, field: &mut std::time::Duration| {
+            let Some(v) = table.get(key) else {
+                return;
+            };
+            match v.as_integer().and_then(|ms| u64::try_from(ms).ok()) {
+                Some(ms) => *field = std::time::Duration::from_millis(ms),
+                None => warnings.push(format!(
+                    "invalid value for {key:?} in [animation_ms] section of \
+                     config.toml (expected a non-negative integer); using default"
+                )),
             }
         };
         set_ms("tab_slide", &mut settings.anim_ms.tab_slide);
@@ -590,6 +595,33 @@ mod tests {
         assert_eq!(s.anim_ms, AnimDurations::default());
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("bogus"));
+    }
+
+    /// A present-but-unusable value (not an integer, e.g. a string) must
+    /// warn and default, the same as an unknown key -- not silently default
+    /// with no warning.
+    #[test]
+    fn animation_ms_non_integer_value_warns_and_defaults() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        std::fs::write(&p, "[animation_ms]\nhover = \"fast\"\n").unwrap();
+        let (s, warnings) = load_ui_settings(&p);
+        assert_eq!(s.anim_ms, AnimDurations::default());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("hover"));
+    }
+
+    /// A negative value fails the `u64` conversion the same way a
+    /// non-integer does, and must warn rather than silently default.
+    #[test]
+    fn animation_ms_negative_value_warns_and_defaults() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        std::fs::write(&p, "[animation_ms]\nhover = -5\n").unwrap();
+        let (s, warnings) = load_ui_settings(&p);
+        assert_eq!(s.anim_ms, AnimDurations::default());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("hover"));
     }
 
     #[test]
