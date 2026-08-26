@@ -316,7 +316,10 @@ impl App {
             return false;
         };
         let hit = self.hits.hit_at_ignoring_var_tokens(x, y).cloned();
-        let token = self.hits.var_token_at(x, y).map(|(name, _)| name.to_string());
+        let token = self
+            .hits
+            .var_token_at(x, y)
+            .map(|(name, _)| name.to_string());
         let hit_changed = hit != self.hovered;
         let changed = hit_changed || token != self.hovered_token;
         self.hovered = hit;

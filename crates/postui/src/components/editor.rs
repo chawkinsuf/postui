@@ -1237,15 +1237,22 @@ impl Component for Editor {
             EditorTab::Body => Constraint::Min(0),
             EditorTab::Params | EditorTab::Headers | EditorTab::Vars => {
                 let (rows, active, active_hint) = self.table_geometry();
-                let (inherited, computed_extra) = if self.active_tab == EditorTab::Headers {
-                    let auto_rows = self.computed_row_count();
-                    let divider = if auto_rows > 0 { 1 } else { 0 };
-                    (
-                        self.inherited_header_lines(ctx.theme).len() as u16,
-                        auto_rows + divider,
-                    )
-                } else {
-                    (0, 0)
+                let (inherited, computed_extra) = match self.active_tab {
+                    EditorTab::Headers => {
+                        let auto_rows = self.computed_row_count();
+                        let divider = if auto_rows > 0 { 1 } else { 0 };
+                        (
+                            self.inherited_header_lines(ctx.theme).len() as u16,
+                            auto_rows + divider,
+                        )
+                    }
+                    // The referenced-vars section: one row per token the
+                    // request references, plus its divider.
+                    EditorTab::Vars => {
+                        let refs = self.referenced_var_names().len() as u16;
+                        (0, if refs > 0 { refs + 1 } else { 0 })
+                    }
+                    _ => (0, 0),
                 };
                 // Capped to what's left after the fixed address bar and tab
                 // bar rows, never the other way around: those two must never
@@ -1886,6 +1893,42 @@ impl Editor {
             .count() as u16
     }
 
+    /// Every `{{variable}}` the request references, deduped in first-seen
+    /// order, from exactly the fields a send substitutes: the URL, enabled
+    /// param and header keys/values, enabled request-var values, and the
+    /// body only while `substitute_body` is on. Shared by the Vars tab's
+    /// height math and its referenced-section draw so they can never
+    /// disagree.
+    fn referenced_var_names(&self) -> Vec<String> {
+        let mut seen = std::collections::HashSet::new();
+        let mut names = Vec::new();
+        let mut scan = |text: &str| {
+            for t in postui_core::vars::find_tokens(text) {
+                if seen.insert(t.name.clone()) {
+                    names.push(t.name);
+                }
+            }
+        };
+        scan(self.url.text());
+        for map in [&self.params, &self.headers] {
+            for (k, e) in map {
+                if e.enabled {
+                    scan(k);
+                    scan(&e.value);
+                }
+            }
+        }
+        for (_, e) in &self.variables {
+            if e.enabled {
+                scan(&e.value);
+            }
+        }
+        if self.substitute_body {
+            scan(&self.body_text());
+        }
+        names
+    }
+
     /// Builds the muted status lines for enabled inherited (project-default)
     /// headers, shown above the request headers table. Each line notes
     /// whether the name is untouched by the request (`project`), overridden
@@ -2000,6 +2043,27 @@ impl Editor {
                 if self.table_collapsed {
                     return;
                 }
+                // Same split the Headers tab uses for its computed section:
+                // the editable table keeps its full height first, and the
+                // referenced list only gets what's left, clamped to what it
+                // asked for.
+                let refs = self.referenced_var_names();
+                let (rows, active, active_hint) = self.table_geometry();
+                let table_h = table_height(rows, active, active_hint).min(area.height);
+                let refs_h = if refs.is_empty() {
+                    0
+                } else {
+                    (refs.len() as u16 + 1).min(area.height.saturating_sub(table_h))
+                };
+                let refs_area = (refs_h > 0).then(|| Rect {
+                    y: area.y + table_h,
+                    height: refs_h,
+                    ..area
+                });
+                let table_area = Rect {
+                    height: table_h,
+                    ..area
+                };
                 let table_ctx = DrawCtx {
                     theme,
                     focused,
@@ -2010,7 +2074,7 @@ impl Editor {
                 };
                 self.table.draw(
                     frame,
-                    area,
+                    table_area,
                     &self.variables,
                     &table_ctx,
                     "+ Add variable",
@@ -2018,6 +2082,9 @@ impl Editor {
                     Some(&self.shadowed),
                     &self.vars,
                 );
+                if let Some(refs_area) = refs_area {
+                    self.draw_referenced_vars(frame, refs_area, &refs, ctx, hits);
+                }
             }
             EditorTab::Headers => {
                 if self.table_collapsed {
@@ -2183,6 +2250,65 @@ impl Editor {
     /// (`Hit::AutoHeaderCopy`, indexed by its position in this filtered
     /// list); the divider carries a `👁 reveal`/`hide` toggle
     /// (`Hit::AutoHeaderReveal`) whenever `self.computed.has_secret`.
+    /// The Vars tab's read-only "referenced" section: one row per
+    /// `{{variable}}` the request references (see
+    /// [`Self::referenced_var_names`]), each with its resolved value
+    /// (secrets masked) and the source the value comes from. Tokens are
+    /// tinted and hover-tooltipped by `paint_var_tokens`, exactly like
+    /// tokens drawn anywhere else.
+    fn draw_referenced_vars(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        names: &[String],
+        ctx: &DrawCtx,
+        hits: &mut crate::hit::HitMap,
+    ) {
+        if area.height == 0 || area.width == 0 {
+            return;
+        }
+        let theme = ctx.theme;
+        let dim = Style::default().fg(theme.text_muted);
+        let mut y = area.y;
+        let max_y = area.y.saturating_add(area.height);
+
+        let prefix = "\u{2500}\u{2500} referenced ";
+        let dash_w = area.width.saturating_sub(prefix.chars().count() as u16);
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                format!("{prefix}{}", "\u{2500}".repeat(dash_w as usize)),
+                dim,
+            )),
+            Rect::new(area.x, y, area.width, 1),
+        );
+        y += 1;
+
+        for name in names {
+            if y >= max_y {
+                break;
+            }
+            let info = self.vars.describe(name);
+            let token_piece = format!("  {{{{{name}}}}}");
+            let line = Line::from(vec![
+                Span::styled(token_piece.clone(), dim),
+                Span::styled(format!("  {}", info.display_value()), dim),
+                Span::styled(format!("  ({})", info.source.label()), dim),
+            ]);
+            frame.render_widget(Paragraph::new(line), Rect::new(area.x, y, area.width, 1));
+            // Retint the token itself (and register its tooltip hit).
+            crate::components::var_tokens::paint_var_tokens(
+                frame.buffer_mut(),
+                Rect::new(area.x, y, area.width, 1),
+                &token_piece,
+                area.x,
+                &self.vars,
+                theme,
+                hits,
+            );
+            y += 1;
+        }
+    }
+
     fn draw_computed_headers(
         &self,
         frame: &mut Frame,
@@ -4022,6 +4148,106 @@ url = "https://api.example.com/users""#,
             })
             .is_some(),
             "the ghost row's cells must be registered on the Vars tab"
+        );
+    }
+
+    #[test]
+    fn vars_tab_lists_the_variables_the_request_references() {
+        let mut e = Editor {
+            active_tab: EditorTab::Vars,
+            ..Editor::default()
+        };
+        e.url = LineInput::new("https://{{base}}/v1");
+        e.headers.insert(
+            "auth".into(),
+            Entry {
+                value: "Bearer {{token}}".into(),
+                enabled: true,
+            },
+        );
+        e.headers.insert(
+            "x-off".into(),
+            Entry {
+                value: "{{ignored}}".into(),
+                enabled: false,
+            },
+        );
+        e.set_body_text("{\"k\": \"{{body_var}}\"}");
+        // substitute_body stays false: body tokens are sent verbatim, so
+        // the body's token is not "referenced" by the send.
+        let theme = Theme::dark();
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: None,
+            dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
+        };
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(content.contains("referenced"), "section divider: {content}");
+        assert!(content.contains("{{base}}"), "url token listed: {content}");
+        assert!(
+            content.contains("{{token}}"),
+            "header token listed: {content}"
+        );
+        assert!(
+            content.contains("not defined"),
+            "an unresolvable token says so: {content}"
+        );
+        assert!(
+            !content.contains("ignored"),
+            "disabled rows are not scanned: {content}"
+        );
+        assert!(
+            !content.contains("body_var"),
+            "body tokens only count with substitute on: {content}"
+        );
+
+        // Turn substitution on: the body's token joins the list.
+        e.substitute_body = true;
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(content.contains("body_var"), "{content}");
+    }
+
+    #[test]
+    fn vars_tab_shows_no_referenced_section_without_tokens() {
+        let mut e = Editor {
+            active_tab: EditorTab::Vars,
+            ..Editor::default()
+        };
+        e.url = LineInput::new("https://plain.example/v1");
+        let theme = Theme::dark();
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: None,
+            dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
+        };
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            !content.contains("referenced"),
+            "no tokens, no section: {content}"
         );
     }
 
