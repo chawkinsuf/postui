@@ -673,7 +673,7 @@ impl App {
                 ))
             }
             Hit::SendButton => {
-                if self.session.in_flight.is_some() {
+                if self.session.is_in_flight(&self.editor.slug) {
                     self.update(Action::CancelSend)
                 } else {
                     self.update(Action::Send)

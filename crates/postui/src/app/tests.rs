@@ -702,16 +702,32 @@ fn body_tab_is_unreachable_for_get_and_head() {
     let mut app = App::new_for_test();
     assert_eq!(app.editor.method, postui_core::model::Method::Get);
     app.update(Action::EditorTabSelect(2));
-    assert_eq!(app.editor.active_tab, EditorTab::Params, "select is a no-op");
+    assert_eq!(
+        app.editor.active_tab,
+        EditorTab::Params,
+        "select is a no-op"
+    );
     app.update(Action::EditorTabSelect(3)); // Vars, the tab before Body
     app.update(Action::EditorTabCycle(1));
-    assert_eq!(app.editor.active_tab, EditorTab::Params, "forward skips Body");
+    assert_eq!(
+        app.editor.active_tab,
+        EditorTab::Params,
+        "forward skips Body"
+    );
     app.update(Action::EditorTabCycle(-1));
-    assert_eq!(app.editor.active_tab, EditorTab::Vars, "backward skips Body");
+    assert_eq!(
+        app.editor.active_tab,
+        EditorTab::Vars,
+        "backward skips Body"
+    );
 
     app.update(Action::SetMethod(postui_core::model::Method::Head));
     app.update(Action::EditorTabSelect(2));
-    assert_eq!(app.editor.active_tab, EditorTab::Vars, "HEAD: still a no-op");
+    assert_eq!(
+        app.editor.active_tab,
+        EditorTab::Vars,
+        "HEAD: still a no-op"
+    );
 
     app.update(Action::SetMethod(postui_core::model::Method::Post));
     app.update(Action::EditorTabSelect(2));
@@ -3127,7 +3143,7 @@ async fn send_with_invalid_body_prompts_first() {
     app.editor.set_body_text("{oops");
     app.update(Action::Send);
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
-    assert!(app.session.in_flight.is_none());
+    assert!(app.session.in_flight.is_empty());
 }
 
 #[tokio::test]
@@ -3150,7 +3166,7 @@ async fn empty_url_toasts_instead_of_sending() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
     app.update(Action::Send);
-    assert!(app.session.in_flight.is_none());
+    assert!(app.session.in_flight.is_empty());
     assert!(
         !app.toasts.is_empty(),
         "empty URL must toast rather than send"
@@ -3163,7 +3179,7 @@ async fn force_send_with_empty_url_toasts_and_does_not_spawn() {
     let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
     app.update(Action::ForceSend);
     assert!(
-        app.session.in_flight.is_none(),
+        app.session.in_flight.is_empty(),
         "no task should be spawned for an empty URL"
     );
     assert!(
@@ -3231,8 +3247,12 @@ async fn shift_enter_sends_even_while_the_body_editor_has_focus() {
     let keymap = Keymap::default_bindings();
     let ev = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
     app.handle_key(&keymap, ev);
-    assert!(app.session.in_flight.is_some(), "shift+enter sent");
-    assert_eq!(app.editor.body_text(), "{}", "no newline leaked into the body");
+    assert!(!app.session.in_flight.is_empty(), "shift+enter sent");
+    assert_eq!(
+        app.editor.body_text(),
+        "{}",
+        "no newline leaked into the body"
+    );
 }
 
 #[tokio::test]
@@ -3241,7 +3261,7 @@ async fn force_send_spawns_a_task_and_marks_response_in_flight() {
     let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
     app.editor.url = crate::components::line_input::LineInput::new("http://127.0.0.1:9"); // unroutable, never actually hit
     app.update(Action::ForceSend);
-    assert!(app.session.in_flight.is_some());
+    assert!(!app.session.in_flight.is_empty());
     assert!(matches!(
         app.session.response.state(),
         ResponseState::InFlight { .. }
@@ -3250,14 +3270,73 @@ async fn force_send_spawns_a_task_and_marks_response_in_flight() {
 }
 
 #[tokio::test]
+async fn sidebar_mirrors_which_requests_are_in_flight() {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
+    app.session.in_flight.push(crate::session::InFlight {
+        started: std::time::Instant::now(),
+        generation: 1,
+        slug: Some("ping".into()),
+        task: tokio::spawn(async {}),
+    });
+    app.update(Action::Render);
+    assert!(app.sidebar.in_flight.contains("ping"));
+
+    app.session.in_flight.clear();
+    app.update(Action::Render);
+    assert!(app.sidebar.in_flight.is_empty());
+}
+
+#[tokio::test]
+async fn send_is_a_noop_while_the_open_request_is_in_flight() {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
+    app.editor.url = crate::components::line_input::LineInput::new("http://127.0.0.1:9");
+    app.update(Action::ForceSend);
+    let generation = app.session.in_flight[0].generation;
+
+    app.update(Action::Send);
+    app.update(Action::ForceSend);
+    assert_eq!(
+        app.session.in_flight.len(),
+        1,
+        "a request already in flight cannot be sent again"
+    );
+    assert_eq!(
+        app.session.in_flight[0].generation, generation,
+        "the original send is untouched, not superseded"
+    );
+}
+
+#[tokio::test]
+async fn esc_nothing_else_consumed_cancels_the_open_requests_send() {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
+    app.editor.url = crate::components::line_input::LineInput::new("http://127.0.0.1:9");
+    app.update(Action::ForceSend);
+    assert!(!app.session.in_flight.is_empty());
+
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(
+        app.session.in_flight.is_empty(),
+        "a bare esc cancels the open request's send from any pane"
+    );
+    assert!(matches!(
+        app.session.response.state(),
+        ResponseState::Cancelled
+    ));
+}
+
+#[tokio::test]
 async fn cancel_send_aborts_task_and_marks_cancelled() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
     app.editor.url = crate::components::line_input::LineInput::new("http://127.0.0.1:9");
     app.update(Action::ForceSend);
-    assert!(app.session.in_flight.is_some());
+    assert!(!app.session.in_flight.is_empty());
     app.update(Action::CancelSend);
-    assert!(app.session.in_flight.is_none());
+    assert!(app.session.in_flight.is_empty());
     assert!(matches!(
         app.session.response.state(),
         ResponseState::Cancelled
@@ -3304,6 +3383,14 @@ async fn response_arrived_with_current_generation_clears_in_flight() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
     app.session.send_generation = 1;
+    // A delivery only counts while its send is still tracked — fabricate
+    // the tracked entry the real send path would have pushed.
+    app.session.in_flight.push(crate::session::InFlight {
+        started: std::time::Instant::now(),
+        generation: 1,
+        slug: None,
+        task: tokio::spawn(async {}),
+    });
     let data = crate::http::ResponseData {
         status: 200,
         headers: vec![],
@@ -3316,7 +3403,7 @@ async fn response_arrived_with_current_generation_clears_in_flight() {
         generation: 1,
         data: Box::new(data.clone()),
     });
-    assert!(app.session.in_flight.is_none());
+    assert!(app.session.in_flight.is_empty());
     assert!(matches!(app.session.response.state(), ResponseState::Ready(d) if **d == data));
 }
 
@@ -3872,7 +3959,7 @@ async fn unresolved_variable_blocks_send_with_toast() {
     let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
     app.editor.url = crate::components::line_input::LineInput::new("http://x/{{gone}}");
     app.update(Action::ForceSend);
-    assert!(app.session.in_flight.is_none());
+    assert!(app.session.in_flight.is_empty());
     assert!(!app.toasts.is_empty());
 }
 
@@ -5063,7 +5150,7 @@ fn chooser_keys_and_wheel_keep_a_long_list_scrolling_correctly() {
 /// registered while sending -- it shows a spinner + "Sending" (or
 /// "Cancel" on hover) instead of the old `[ Cancel ]` bracket text, but
 /// a second click on the same rect still cancels, routed by `App`'s
-/// `Hit::SendButton` handler checking `in_flight.is_some()`.
+/// `Hit::SendButton` handler checking `is_in_flight(&editor.slug)`.
 #[tokio::test]
 async fn click_send_button_sends_then_click_again_cancels() {
     use ratatui::Terminal;
@@ -5076,7 +5163,7 @@ async fn click_send_button_sends_then_click_again_cancels() {
     let before = app.hits.rect_of(&Hit::SendButton).unwrap();
 
     app.handle_mouse(left_down(before.x, before.y));
-    assert!(app.session.in_flight.is_some(), "click dispatches Send");
+    assert!(!app.session.in_flight.is_empty(), "click dispatches Send");
     assert!(app.editor.sending, "editor.sending mirrors in_flight");
 
     let backend = TestBackend::new(120, 40);
@@ -5375,7 +5462,7 @@ fn ctrl_r_and_ctrl_enter_do_not_send_from_the_manager_screen() {
         app.toasts.is_empty(),
         "ctrl+r must not reach Action::Send (an empty-URL send would toast)"
     );
-    assert!(app.session.in_flight.is_none());
+    assert!(app.session.in_flight.is_empty());
     assert_eq!(app.screen, crate::app::Screen::VarManager);
 
     app.handle_key(
@@ -5386,7 +5473,7 @@ fn ctrl_r_and_ctrl_enter_do_not_send_from_the_manager_screen() {
         app.toasts.is_empty(),
         "ctrl+enter must not reach Action::Send either"
     );
-    assert!(app.session.in_flight.is_none());
+    assert!(app.session.in_flight.is_empty());
     assert_eq!(app.screen, crate::app::Screen::VarManager);
 }
 
@@ -6933,7 +7020,7 @@ fn blocked_send_toast_names_first_needs_selection_var_with_a_ctrl_v_hint() {
 
     app.update(Action::ForceSend);
 
-    assert!(app.session.in_flight.is_none());
+    assert!(app.session.in_flight.is_empty());
     let content = rendered_text(&mut app);
     assert!(content.contains("need a selection"), "{content}");
     assert!(content.contains("press ctrl+v to select user"), "{content}");
@@ -7007,7 +7094,7 @@ async fn missing_secrets_prompt_sequentially_then_the_request_sends() {
     // First send attempt: blocked, prompting for the alphabetically first
     // missing secret — never api_secret first.
     app.update(Action::ForceSend);
-    assert!(app.session.in_flight.is_none());
+    assert!(app.session.in_flight.is_empty());
     let Some(Modal::Prompt { title, kind, .. }) = app.modals.top() else {
         panic!("expected a secret prompt");
     };
@@ -7024,7 +7111,7 @@ async fn missing_secrets_prompt_sequentially_then_the_request_sends() {
     type_and_confirm(&mut app, &keymap, "key-val");
 
     // Still not sent — the second secret is missing too.
-    assert!(app.session.in_flight.is_none());
+    assert!(app.session.in_flight.is_empty());
     let Some(Modal::Prompt { title, kind, .. }) = app.modals.top() else {
         panic!("expected the second secret prompt");
     };
@@ -7035,7 +7122,7 @@ async fn missing_secrets_prompt_sequentially_then_the_request_sends() {
 
     // Both secrets resolved: the send actually goes out this time.
     assert!(app.modals.is_empty());
-    assert!(app.session.in_flight.is_some());
+    assert!(!app.session.in_flight.is_empty());
 
     drain_until_settled(&mut app, &mut rx).await;
     match app.session.response.state() {
@@ -7072,7 +7159,7 @@ async fn esc_mid_chain_cancels_the_send_and_keeps_only_confirmed_secrets() {
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
     assert!(app.modals.is_empty(), "esc closes the prompt");
-    assert!(app.session.in_flight.is_none(), "nothing was sent");
+    assert!(app.session.in_flight.is_empty(), "nothing was sent");
     let content = rendered_text(&mut app);
     assert!(content.contains("send canceled"), "{content}");
 
@@ -9135,7 +9222,7 @@ fn every_named_action_is_mouse_reachable() {
     let mut mouse_reachable: Vec<Action> = vec![Action::Quit, Action::OpenPalette];
     for pane in [PaneId::Sidebar, PaneId::Editor, PaneId::Response] {
         mouse_reachable.extend(
-            crate::components::footer::footer_chips(pane, false)
+            crate::components::footer::footer_chips(pane, false, false)
                 .into_iter()
                 .filter_map(|(_, _, a)| a),
         );
@@ -9376,7 +9463,7 @@ async fn in_flight_send_keeps_animating_true_across_ticks() {
     let mut app = App::with_root(tx, tempfile::tempdir().unwrap().path().into());
     app.editor.url = crate::components::line_input::LineInput::new("http://127.0.0.1:9");
     app.update(Action::ForceSend);
-    assert!(app.session.in_flight.is_some());
+    assert!(!app.session.in_flight.is_empty());
     for _ in 0..5 {
         app.update(Action::Tick);
         assert!(

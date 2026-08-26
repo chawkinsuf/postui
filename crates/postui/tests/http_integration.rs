@@ -290,7 +290,7 @@ async fn send_substitutes_vars_and_applies_default_headers() {
     app.editor.set_body_text(r#"{"id": "{{uid}}"}"#);
     app.editor.substitute_body = true;
     app.update(Action::ForceSend);
-    assert!(app.session.in_flight.is_some());
+    assert!(!app.session.in_flight.is_empty());
 
     drain_until_settled(&mut app, &mut rx).await;
     match app.session.response.state() {
@@ -335,7 +335,7 @@ async fn disabled_request_header_row_suppresses_a_default_header() {
         },
     );
     app.update(Action::ForceSend);
-    assert!(app.session.in_flight.is_some());
+    assert!(!app.session.in_flight.is_empty());
 
     drain_until_settled(&mut app, &mut rx).await;
     match app.session.response.state() {

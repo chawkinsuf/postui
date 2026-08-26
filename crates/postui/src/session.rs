@@ -1,5 +1,6 @@
 //! The request session: which request's response is on screen, the
-//! per-request cache of earlier responses, and the single in-flight send.
+//! per-request cache of earlier responses, and the in-flight sends — at
+//! most one per request, any number across requests.
 //!
 //! A response is not app-global — it is *the response to one request*. This
 //! module owns that binding: the on-screen [`Response`] always belongs to
@@ -15,8 +16,7 @@ use std::time::Instant;
 /// A dispatched request: when it started (for the elapsed display), which
 /// generation it belongs to (so a stale result can be told apart from the
 /// current one), which request issued it (so the result lands with its
-/// owner), and the task itself (so it can be aborted on cancel or on a
-/// newer send superseding it).
+/// owner), and the task itself (so it can be aborted on cancel).
 pub struct InFlight {
     pub started: Instant,
     pub generation: u64,
@@ -35,7 +35,11 @@ pub struct Session {
     /// Latest response of every request navigated away from, keyed like
     /// `open_slug`. Session-lifetime only; never persisted.
     cache: HashMap<Option<String>, Response>,
-    pub in_flight: Option<InFlight>,
+    /// Every send still waiting on its result — at most one entry per
+    /// request (`Action::Send` is disabled while its request is in
+    /// flight, and `begin_send` defensively supersedes a same-request
+    /// entry), any number of entries across requests.
+    pub in_flight: Vec<InFlight>,
     /// Bumped on every `begin_send`; tags each spawned send so a result
     /// that arrives after a newer send has started can be told apart and
     /// dropped. Public so tests can fabricate delivery actions.
@@ -73,47 +77,60 @@ impl Session {
         }
     }
 
-    /// Starts a new send from the open request: aborts (and marks
-    /// cancelled) any previous in-flight send, bumps the generation, and
-    /// puts the on-screen response into `InFlight`. Returns the new
-    /// generation for the caller to tag the spawned task's result with;
-    /// the caller then stores the task via `in_flight`.
-    pub fn begin_send(&mut self) -> u64 {
-        if let Some(prev) = self.in_flight.take() {
-            prev.task.abort();
-            let generation = self.send_generation;
-            self.response_for(&prev.slug)
-                .set_state(ResponseState::Cancelled, generation);
+    /// The in-flight send belonging to `slug`, if any.
+    pub fn in_flight_for(&self, slug: &Option<String>) -> Option<&InFlight> {
+        self.in_flight.iter().find(|f| &f.slug == slug)
+    }
+
+    /// Whether `slug` has a send still waiting — the gate that keeps a
+    /// request from being sent twice at once (other requests may send
+    /// freely alongside it).
+    pub fn is_in_flight(&self, slug: &Option<String>) -> bool {
+        self.in_flight_for(slug).is_some()
+    }
+
+    /// Starts a new send for `slug` (always the open request): aborts and
+    /// drops any previous send *of that request* — other requests' sends
+    /// keep running — bumps the generation, and puts the request's
+    /// response into `InFlight`. Returns the new generation for the
+    /// caller to tag the spawned task's result with; the caller then
+    /// tracks the task by pushing onto `in_flight`.
+    pub fn begin_send(&mut self, slug: &Option<String>) -> u64 {
+        // `Action::Send` is a no-op while `slug` is in flight, so this is
+        // defensive: a superseded same-request send is aborted and its
+        // entry dropped (its slot is overwritten with the fresh InFlight
+        // state below, so there is no Cancelled flash to paint).
+        if let Some(i) = self.in_flight.iter().position(|f| &f.slug == slug) {
+            self.in_flight.remove(i).task.abort();
         }
         self.send_generation += 1;
-        self.response.set_state(
+        let generation = self.send_generation;
+        self.response_for(slug).set_state(
             ResponseState::InFlight {
                 started: Instant::now(),
             },
-            self.send_generation,
+            generation,
         );
-        self.send_generation
+        generation
     }
 
-    /// Cancels the in-flight send, if any, marking its owner's response
-    /// `Cancelled` (on screen or in the cache, wherever it now lives).
+    /// Cancels the *open* request's in-flight send, if any, marking its
+    /// response `Cancelled`. Other requests' sends keep running — cancel
+    /// is per-request, reached from the request it belongs to.
     pub fn cancel(&mut self) -> bool {
-        match self.in_flight.take() {
-            Some(inflight) => {
-                inflight.task.abort();
-                // Bump the generation too, not just abort the task: the
-                // task may have already raced past the abort point and
-                // queued a result for the old generation. Without this,
-                // that stale result would still pass the staleness check
-                // and silently overwrite Cancelled.
-                self.send_generation += 1;
-                let generation = self.send_generation;
-                self.response_for(&inflight.slug)
-                    .set_state(ResponseState::Cancelled, generation);
-                true
-            }
-            None => false,
-        }
+        let Some(i) = self.in_flight.iter().position(|f| f.slug == self.open_slug) else {
+            return false;
+        };
+        let inflight = self.in_flight.remove(i);
+        inflight.task.abort();
+        // Removing the entry is also what drops a raced result: the task
+        // may have already queued its result before the abort landed, and
+        // `deliver` only accepts generations it can still find here.
+        self.send_generation += 1;
+        let generation = self.send_generation;
+        self.response_for(&inflight.slug)
+            .set_state(ResponseState::Cancelled, generation);
+        true
     }
 
     /// Delivers a completed response to its owner — on screen when that
@@ -129,13 +146,17 @@ impl Session {
     }
 
     fn deliver(&mut self, generation: u64, state: ResponseState) -> bool {
-        if generation != self.send_generation {
-            return false; // stale: a newer send has already superseded it
-        }
-        let slug = match self.in_flight.take() {
-            Some(inflight) => inflight.slug,
-            None => self.open_slug.clone(),
+        // A result is current exactly while its send is still tracked:
+        // cancel and same-request supersession both remove the entry, so
+        // a raced or stale result finds nothing and is dropped.
+        let Some(i) = self
+            .in_flight
+            .iter()
+            .position(|f| f.generation == generation)
+        else {
+            return false;
         };
+        let slug = self.in_flight.remove(i).slug;
         self.response_for(&slug).set_state(state, generation);
         true
     }
@@ -164,7 +185,7 @@ impl Session {
     /// switch: slugs are project-relative, so a cached response would
     /// otherwise leak across projects under a colliding slug.
     pub fn reset(&mut self) {
-        if let Some(inflight) = self.in_flight.take() {
+        for inflight in self.in_flight.drain(..) {
             inflight.task.abort();
         }
         self.send_generation += 1;
@@ -242,8 +263,8 @@ mod tests {
     async fn result_arriving_after_navigating_away_lands_in_its_requests_cache() {
         let mut s = Session::default();
         open(&mut s, "a");
-        let generation = s.begin_send();
-        s.in_flight = Some(in_flight(generation, "a").await);
+        let generation = s.begin_send(&Some("a".into()));
+        s.in_flight.push(in_flight(generation, "a").await);
 
         open(&mut s, "b");
         assert!(s.arrived(generation, data("late result")));
@@ -260,10 +281,10 @@ mod tests {
     async fn result_from_a_superseded_generation_is_dropped() {
         let mut s = Session::default();
         open(&mut s, "a");
-        let stale = s.begin_send();
-        s.in_flight = Some(in_flight(stale, "a").await);
-        let current = s.begin_send();
-        s.in_flight = Some(in_flight(current, "a").await);
+        let stale = s.begin_send(&Some("a".into()));
+        s.in_flight.push(in_flight(stale, "a").await);
+        let current = s.begin_send(&Some("a".into()));
+        s.in_flight.push(in_flight(current, "a").await);
 
         assert!(!s.arrived(stale, data("stale")));
         assert!(
@@ -275,55 +296,93 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancel_marks_the_owning_request_cancelled_wherever_it_lives() {
+    async fn sends_from_different_requests_run_concurrently() {
         let mut s = Session::default();
         open(&mut s, "a");
-        let generation = s.begin_send();
-        s.in_flight = Some(in_flight(generation, "a").await);
+        let first = s.begin_send(&Some("a".into()));
+        s.in_flight.push(in_flight(first, "a").await);
 
         open(&mut s, "b");
-        assert!(s.cancel());
-        assert!(matches!(s.response.state(), ResponseState::Empty));
+        let second = s.begin_send(&Some("b".into()));
+        s.in_flight.push(in_flight(second, "b").await);
+        assert!(
+            s.is_in_flight(&Some("a".into())),
+            "b's send leaves a's running"
+        );
+        assert!(s.is_in_flight(&Some("b".into())));
 
+        assert!(s.arrived(first, data("from a")), "a's result still lands");
+        assert!(s.arrived(second, data("from b")));
+        assert_eq!(body_of(&s.response), Some("from b"));
         open(&mut s, "a");
-        assert!(matches!(s.response.state(), ResponseState::Cancelled));
+        assert_eq!(body_of(&s.response), Some("from a"));
     }
 
     #[tokio::test]
-    async fn a_new_send_supersedes_and_cancels_the_previous_requests_send() {
+    async fn cancel_only_cancels_the_open_requests_send() {
         let mut s = Session::default();
         open(&mut s, "a");
-        let first = s.begin_send();
-        s.in_flight = Some(in_flight(first, "a").await);
+        let first = s.begin_send(&Some("a".into()));
+        s.in_flight.push(in_flight(first, "a").await);
 
         open(&mut s, "b");
-        let second = s.begin_send();
-        s.in_flight = Some(in_flight(second, "b").await);
-        assert!(matches!(s.response.state(), ResponseState::InFlight { .. }));
-        assert!(
-            !s.arrived(first, data("from a")),
-            "the aborted send's result is stale"
-        );
+        assert!(!s.cancel(), "b has nothing in flight to cancel");
+        assert!(s.is_in_flight(&Some("a".into())), "a's send keeps running");
 
+        let second = s.begin_send(&Some("b".into()));
+        s.in_flight.push(in_flight(second, "b").await);
+        assert!(s.cancel());
+        assert!(matches!(s.response.state(), ResponseState::Cancelled));
+        assert!(s.is_in_flight(&Some("a".into())), "cancel is per-request");
+
+        assert!(s.arrived(first, data("from a")));
         open(&mut s, "a");
+        assert_eq!(body_of(&s.response), Some("from a"));
+    }
+
+    #[tokio::test]
+    async fn a_result_racing_a_cancel_is_dropped() {
+        let mut s = Session::default();
+        open(&mut s, "a");
+        let generation = s.begin_send(&Some("a".into()));
+        s.in_flight.push(in_flight(generation, "a").await);
+        assert!(s.cancel());
+
         assert!(
-            matches!(s.response.state(), ResponseState::Cancelled),
-            "a's send was superseded, and its slot says so"
+            !s.arrived(generation, data("raced past the abort")),
+            "a cancelled send's late result must not overwrite Cancelled"
         );
+        assert!(matches!(s.response.state(), ResponseState::Cancelled));
     }
 
     #[tokio::test]
     async fn failure_lands_with_its_owner_too() {
         let mut s = Session::default();
         open(&mut s, "a");
-        let generation = s.begin_send();
-        s.in_flight = Some(in_flight(generation, "a").await);
+        let generation = s.begin_send(&Some("a".into()));
+        s.in_flight.push(in_flight(generation, "a").await);
 
         open(&mut s, "b");
         assert!(s.failed(generation, "boom".into()));
         assert!(matches!(s.response.state(), ResponseState::Empty));
         open(&mut s, "a");
         assert!(matches!(s.response.state(), ResponseState::Failed(e) if e == "boom"));
+    }
+
+    #[tokio::test]
+    async fn reset_aborts_every_in_flight_send() {
+        let mut s = Session::default();
+        open(&mut s, "a");
+        let first = s.begin_send(&Some("a".into()));
+        s.in_flight.push(in_flight(first, "a").await);
+        open(&mut s, "b");
+        let second = s.begin_send(&Some("b".into()));
+        s.in_flight.push(in_flight(second, "b").await);
+
+        s.reset();
+        assert!(s.in_flight.is_empty());
+        assert!(!s.arrived(first, data("late")));
+        assert!(!s.arrived(second, data("late")));
     }
 
     #[tokio::test]
@@ -336,8 +395,8 @@ mod tests {
 
         let mut s = Session::default();
         open(&mut s, "a");
-        let generation = s.begin_send();
-        s.in_flight = Some(in_flight(generation, "a").await);
+        let generation = s.begin_send(&Some("a".into()));
+        s.in_flight.push(in_flight(generation, "a").await);
         assert!(s.arrived(generation, data(&big)));
         assert!(s.response.view().unwrap().parsing);
 

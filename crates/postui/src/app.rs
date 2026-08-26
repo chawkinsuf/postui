@@ -662,6 +662,12 @@ impl App {
         // threading that bookkeeping through each arm individually.
         self.sidebar.open_slug = self.editor.slug.clone();
         self.sidebar.open_dirty = self.editor.is_dirty();
+        self.sidebar.in_flight = self
+            .session
+            .in_flight
+            .iter()
+            .filter_map(|f| f.slug.clone())
+            .collect();
         self.editor.inherited_headers = self.project.meta.default_headers.clone();
         self.editor.shadowed = self.compute_shadowed();
         // The token-highlighting/tooltip snapshot, kept in lockstep with the
@@ -678,11 +684,7 @@ impl App {
         let swapped = self.session.sync_open(&self.editor.slug);
         // The send button shows "sending" only when the in-flight send
         // belongs to the request being looked at.
-        let editor_in_flight = self
-            .session
-            .in_flight
-            .as_ref()
-            .filter(|f| f.slug == self.editor.slug);
+        let editor_in_flight = self.session.in_flight_for(&self.editor.slug);
         self.editor.sending = editor_in_flight.is_some();
         self.editor.send_started = editor_in_flight.map(|f| f.started);
         self.editor.table_collapsed = self.table_collapsed;
@@ -1018,6 +1020,13 @@ impl App {
                 // again (see `push_modal`).
                 self.anims.snap(AnimKey::DropdownOpen, 1.0);
                 self.anims.snap(AnimKey::ModalOpen, 1.0);
+                // With nothing to close, esc is the cancel shortcut: an
+                // esc no component consumed falls through to here (the
+                // global keymap binds esc → Close), and cancels the open
+                // request's in-flight send, if any.
+                if !popped && self.session.cancel() {
+                    return true;
+                }
                 popped
             }
             Action::ShowToast(msg, kind) => {
@@ -1535,6 +1544,13 @@ impl App {
                 true
             }
             Action::Send => {
+                // A request already waiting on its result cannot be sent
+                // again — the button is a Cancel while in flight, and the
+                // send shortcuts go dead rather than superseding the send.
+                // (Other requests can still be opened and sent.)
+                if self.session.is_in_flight(&self.editor.slug) {
+                    return false;
+                }
                 // Same for sending: the typed cell is part of the request
                 // that goes out, not something to discard.
                 self.commit_table_edit();
@@ -1558,6 +1574,11 @@ impl App {
                 self.apply(Action::ForceSend)
             }
             Action::ForceSend => {
+                // Same in-flight gate as `Action::Send`: ForceSend is also
+                // reachable directly (invalid-body confirm, SetSecret).
+                if self.session.is_in_flight(&self.editor.slug) {
+                    return false;
+                }
                 self.apply(Action::ReloadProjectFiles);
                 if self.editor.url.text().trim().is_empty() {
                     self.toasts
@@ -1620,7 +1641,7 @@ impl App {
                 for w in &warnings {
                     self.toasts.push(w.to_string(), ToastKind::Warning);
                 }
-                let generation = self.session.begin_send();
+                let generation = self.session.begin_send(&self.editor.slug);
                 let tx = self.tx.clone();
                 let client = self.client.clone();
                 let task = tokio::spawn(async move {
@@ -1636,7 +1657,7 @@ impl App {
                         }
                     }
                 });
-                self.session.in_flight = Some(crate::session::InFlight {
+                self.session.in_flight.push(crate::session::InFlight {
                     started: Instant::now(),
                     generation,
                     slug: self.editor.slug.clone(),
@@ -4457,7 +4478,7 @@ impl App {
     /// Whether any in-flight HTTP request is still ticking (e.g. animating
     /// a spinner) and therefore needs a redraw.
     fn in_flight_ticking(&self) -> bool {
-        self.session.in_flight.is_some()
+        !self.session.in_flight.is_empty()
             // A background pretty-print animates its own spinner, so ticks
             // must keep coming while one is running.
             || self.session.response.view().is_some_and(|v| v.parsing)
@@ -4482,7 +4503,9 @@ impl App {
     /// mid-pulse. Never called on `Screen::Testbed` — that screen drives
     /// the same `AnimKey` itself via `drive_testbed_pingpong`.
     fn tick_send_breathe(&mut self, now: Instant) {
-        if self.session.in_flight.is_none() {
+        // The breathe animates the *open* request's Send cap; another
+        // request's background send must not keep it pulsing.
+        if !self.session.is_in_flight(&self.editor.slug) {
             self.anims.clear(AnimKey::SendBreathe);
             return;
         }

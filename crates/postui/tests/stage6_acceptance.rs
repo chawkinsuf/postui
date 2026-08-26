@@ -316,7 +316,7 @@ async fn stage6_acceptance_flow() {
     );
     assert!(!*revealed, "the secret prompt must render masked");
     assert!(
-        app.session.in_flight.is_none(),
+        app.session.in_flight.is_empty(),
         "nothing sends while a secret is missing"
     );
 
@@ -331,7 +331,7 @@ async fn stage6_acceptance_flow() {
 
     let generation = app.session.send_generation;
     assert!(
-        app.session.in_flight.is_some(),
+        !app.session.in_flight.is_empty(),
         "the secret prompt's confirm re-runs ForceSend, which now resolves"
     );
     drain_until(&mut rx, &mut app, generation).await;

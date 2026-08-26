@@ -161,7 +161,7 @@ async fn stage3_acceptance_flow() {
     // --- send with no environment active: unresolved, nothing sent ---
     app.update(Action::Send);
     assert!(
-        app.session.in_flight.is_none(),
+        app.session.in_flight.is_empty(),
         "unresolved variables must not send anything"
     );
     let frame = render(&mut app);
@@ -181,7 +181,7 @@ async fn stage3_acceptance_flow() {
     app.update(Action::Send);
     let generation = app.session.send_generation;
     assert!(
-        app.session.in_flight.is_some(),
+        !app.session.in_flight.is_empty(),
         "qa resolves: request goes out"
     );
     drain_until(&mut rx, &mut app, generation).await;

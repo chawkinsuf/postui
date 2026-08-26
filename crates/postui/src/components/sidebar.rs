@@ -81,6 +81,10 @@ pub struct Sidebar {
     /// Whether the open request has unsaved changes, likewise kept in sync
     /// by `App::update`.
     pub open_dirty: bool,
+    /// Slugs whose sends are still waiting on a result, likewise kept in
+    /// sync by `App::update` — their rows show a pending glyph so
+    /// background sends stay visible while the user works elsewhere.
+    pub in_flight: BTreeSet<String>,
     /// The row the selection band is crossfading away from: the previously
     /// open request's row, recorded by `App::retarget_sidebar_travel` when
     /// the open request changes. Only read while `ListTravel` is still
@@ -524,10 +528,8 @@ impl Component for Sidebar {
                     None
                 }
             });
-            let is_cursor = ctx.focused
-                && self.selected == Some(i)
-                && !is_band_row
-                && band_alpha.is_none();
+            let is_cursor =
+                ctx.focused && self.selected == Some(i) && !is_band_row && band_alpha.is_none();
 
             let highlight = if is_band_row {
                 RowHighlight::Selected
@@ -547,8 +549,7 @@ impl Component for Sidebar {
             // with the `▌` bar's accent likewise faded against that fill —
             // the bar keeps its half-cell width through the whole fade.
             let row_fill = if let Some(a) = band_alpha {
-                let base =
-                    Self::resolve_fill(theme, RowHighlight::None, theme.panel, hover_t);
+                let base = Self::resolve_fill(theme, RowHighlight::None, theme.panel, hover_t);
                 let blended = crate::theme::mix(base, theme.selection, a);
                 fill(
                     buf,
@@ -761,6 +762,26 @@ impl Sidebar {
                         text(buf, x, text_row, "\u{2717}", theme.error, row_fill, false);
                         x + 2
                     }
+                };
+                if content_x >= right {
+                    return;
+                }
+
+                // A send still waiting on its result marks its row with a
+                // pending glyph, whichever request is open on screen.
+                let content_x = if self.in_flight.contains(slug.as_str()) {
+                    text(
+                        buf,
+                        content_x,
+                        text_row,
+                        "\u{21bb} ",
+                        theme.accent,
+                        row_fill,
+                        false,
+                    );
+                    content_x + 2
+                } else {
+                    content_x
                 };
                 if content_x >= right {
                     return;
@@ -1271,7 +1292,10 @@ mod tests {
 
         // The unfocused cursor row shows no marker of its own.
         let row1 = hits.rect_of(&Hit::SidebarRow(1)).unwrap();
-        assert_ne!(buf[(row1.x + row1.width - 2, row1.y)].bg, theme.control_hover);
+        assert_ne!(
+            buf[(row1.x + row1.width - 2, row1.y)].bg,
+            theme.control_hover
+        );
         assert_ne!(buf[(row1.x + row1.width - 2, row1.y)].bg, theme.selection);
     }
 
@@ -1350,6 +1374,49 @@ mod tests {
             tag_cell.bg, theme.panel,
             "tag sits directly on the row's flat panel fill"
         );
+    }
+
+    /// A request with a send still waiting shows a pending glyph between
+    /// its method tag and name — background sends stay visible while the
+    /// user works elsewhere.
+    #[test]
+    fn in_flight_request_row_paints_a_pending_glyph() {
+        let mut s = Sidebar::default();
+        s.refresh(
+            vec![RequestListing {
+                name: None,
+                slug: "ping".into(),
+                broken: None,
+                method: Some(Method::Get),
+            }],
+            &expanded(&[]),
+        );
+        s.in_flight.insert("ping".into());
+        let (_, hits) = render_hits(&mut s);
+        let row0 = hits.rect_of(&Hit::SidebarRow(0)).unwrap();
+        let theme = Theme::dark();
+        let backend = ratatui::backend::TestBackend::new(30, 12);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let ctx = draw_ctx(&theme, None);
+        let mut hits2 = HitMap::default();
+        terminal
+            .draw(|f| s.draw(f, f.area(), &ctx, &mut hits2))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        // Glyph sits where the name would otherwise start: one past the
+        // accent-bar column plus the padded tag field.
+        let glyph = buf[(row0.x + 1 + TAG_WIDTH + 1, row0.y)].clone();
+        assert_eq!(glyph.symbol(), "\u{21bb}");
+        assert_eq!(glyph.fg, theme.accent);
+        let name = buf[(row0.x + 1 + TAG_WIDTH + 3, row0.y)].clone();
+        assert_eq!(name.symbol(), "p", "name follows the glyph");
+
+        s.in_flight.clear();
+        terminal
+            .draw(|f| s.draw(f, f.area(), &ctx, &mut HitMap::default()))
+            .unwrap();
+        let cleared = terminal.backend().buffer()[(row0.x + 1 + TAG_WIDTH + 1, row0.y)].clone();
+        assert_eq!(cleared.symbol(), "p", "glyph gone once the send settles");
     }
 
     #[test]

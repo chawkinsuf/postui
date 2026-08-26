@@ -198,7 +198,7 @@ async fn stage4_mouse_only_acceptance_flow() {
     // --- step 6: click SendButton; pump until the response arrives ------
     click(&mut app, Hit::SendButton);
     let generation = app.session.send_generation;
-    assert!(app.session.in_flight.is_some(), "click dispatches Send");
+    assert!(!app.session.in_flight.is_empty(), "click dispatches Send");
     drain_until(&mut rx, &mut app, generation).await;
     let frame = render(&mut app);
     assert!(frame.contains("200"), "status 200 rendered: {frame}");

@@ -151,7 +151,7 @@ pub struct Editor {
     /// (including the very first frame before anything has drawn). Mouse
     /// events are hit-tested against this before being forwarded to edtui.
     pub last_body_area: Option<Rect>,
-    /// Mirrors `App::in_flight.is_some()`, synced by `App::update` on every
+    /// Mirrors whether the open request has a send in flight, synced by `App::update` on every
     /// action alongside `open_slug`. Draw-only: swaps the address bar's Send
     /// cap to its spinner + "Sending" face (or "Cancel" on hover); its
     /// `Hit` stays registered while sending -- clicking it still cancels,
@@ -3584,7 +3584,7 @@ url = "https://api.example.com/users""#,
     /// In flight is a distinct state from disabled (mouse-first ruling):
     /// the Send hit must stay registered while sending so a click can still
     /// cancel it (`App`'s `Hit::SendButton` handler routes to
-    /// `Action::CancelSend` when `in_flight.is_some()`).
+    /// `Action::CancelSend` when the open request is in flight).
     #[test]
     fn sending_shows_spinner_glyph_and_keeps_send_hit_registered() {
         let mut e = Editor::default();
