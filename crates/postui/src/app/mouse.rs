@@ -300,6 +300,33 @@ impl App {
         }
     }
 
+    /// Re-resolves `hovered`/`hovered_token` from the last known pointer
+    /// position against the just-rebuilt frame's hit map. The move handler
+    /// only hit-tests on actual motion, so without this a control that
+    /// appears (or vanishes) *under* a stationary pointer — a hover-revealed
+    /// row button, a pane's action pills after a view switch — would keep
+    /// stale hover styling until the mouse next moved. Called after every
+    /// frame draw; returns whether anything changed (the caller schedules a
+    /// repaint). Inert mid-drag, matching the move handler.
+    pub fn resync_hover(&mut self) -> bool {
+        if self.drag.is_some() || self.text_drag.is_some() {
+            return false;
+        }
+        let Some((x, y)) = self.pointer else {
+            return false;
+        };
+        let hit = self.hits.hit_at_ignoring_var_tokens(x, y).cloned();
+        let token = self.hits.var_token_at(x, y).map(|(name, _)| name.to_string());
+        let hit_changed = hit != self.hovered;
+        let changed = hit_changed || token != self.hovered_token;
+        self.hovered = hit;
+        self.hovered_token = token;
+        if hit_changed {
+            self.begin_hover_fade();
+        }
+        changed
+    }
+
     /// Recomputes the pointer shape (task 8d) from `self.hovered` — the same
     /// hover state `ui::draw` already styles from, so this piggybacks on the
     /// existing hover-change path rather than running its own hit test.

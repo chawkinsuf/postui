@@ -154,7 +154,10 @@ async fn run(
                 }
                 Ok(())
             })??;
-            redraw = false;
+            // The frame may have added or removed a control under a resting
+            // pointer (hover-revealed buttons, view switches); re-resolve
+            // hover against the fresh hit map and repaint if it changed.
+            redraw = app.resync_hover();
         }
 
         tokio::select! {

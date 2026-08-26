@@ -858,6 +858,35 @@ fn app_with_one_param() -> App {
     app
 }
 
+/// A control that appears under a stationary pointer (here: the row's
+/// hover-revealed toggle button) must pick up hover styling from the
+/// post-frame resync, without the mouse having to move again.
+#[test]
+fn hover_resyncs_to_controls_revealed_under_a_stationary_pointer() {
+    let mut app = app_with_one_param();
+    render_once(&mut app);
+    let row = app.hits.rect_of(&Hit::TableRow(0)).unwrap();
+    // Land exactly where the toggle button will appear (3 cells starting 8
+    // from the row's right edge — see `draw_row_buttons`).
+    let x = row.right() - 7;
+    app.handle_mouse(moved(x, row.y));
+    assert_ne!(
+        app.hovered,
+        Some(Hit::TableCheckbox(0)),
+        "frame N has no button registered yet"
+    );
+    render_once(&mut app); // frame N+1 draws + registers the buttons
+    assert!(
+        app.resync_hover(),
+        "the resync notices the new control under the pointer"
+    );
+    assert_eq!(app.hovered, Some(Hit::TableCheckbox(0)));
+    assert!(
+        !app.resync_hover(),
+        "a second resync with nothing changed is quiet"
+    );
+}
+
 /// Moves the pointer onto `row_hit`'s rect so hover-revealed affordances
 /// (the row's toggle/trash buttons) get registered, then clicks `hit`.
 fn hover_row_then_click(app: &mut App, row_hit: Hit, hit: Hit) {
