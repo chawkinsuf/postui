@@ -141,6 +141,12 @@ pub struct TableEditorState {
     /// Down/j or a click lands somewhere.
     pub selected: Option<usize>,
     pub editing: Option<CellEdit>,
+    /// Value text typed into the ghost row before it has a key. A ghost
+    /// VALUE commit can't create a row (only a key can), so the text is
+    /// stashed here and attached when the ghost's key commits — instead of
+    /// being silently dropped. Cleared whenever the edit leaves the ghost
+    /// row without creating it.
+    pending_ghost_value: Option<String>,
 }
 
 impl TableEditorState {
@@ -149,6 +155,7 @@ impl TableEditorState {
     pub fn reset(&mut self) {
         self.selected = None;
         self.editing = None;
+        self.pending_ghost_value = None;
     }
 
     /// The text `row`/`col` currently shows. Empty for the ghost row.
@@ -167,7 +174,16 @@ impl TableEditorState {
     /// or reverted.
     fn start_edit(&mut self, row: usize, col: Col, map: &IndexMap<String, Entry>) {
         let row = row.min(map.len());
-        let original = Self::cell_text(map, row, col);
+        let original = if row == map.len() && col == Col::Value {
+            // Re-entering the ghost's value cell resumes the stashed text.
+            self.pending_ghost_value.clone().unwrap_or_default()
+        } else {
+            if row < map.len() {
+                // The edit moved onto a real row: the ghost was abandoned.
+                self.pending_ghost_value = None;
+            }
+            Self::cell_text(map, row, col)
+        };
         self.selected = Some(row);
         self.editing = Some(CellEdit {
             row,
@@ -234,6 +250,10 @@ impl TableEditorState {
         {
             e.value.clone_from(&edit.original);
         }
+        if edit.row >= map.len() {
+            // Reverting a ghost edit: the row never happened, stash and all.
+            self.pending_ghost_value = None;
+        }
         self.selected = Some(edit.row.min(map.len()));
     }
 
@@ -258,9 +278,10 @@ impl TableEditorState {
             };
         }
         // The ghost row: only a non-empty key can make it a real row. A
-        // value typed with no key has nothing to attach to.
+        // value typed with no key is stashed until one arrives.
         match edit.col {
             Col::Key if !typed.trim().is_empty() => {
+                let pending = self.pending_ghost_value.take();
                 if let Some(other) = map.get_index_of(&typed) {
                     return (
                         Some(other),
@@ -270,11 +291,15 @@ impl TableEditorState {
                 map.insert(
                     typed,
                     Entry {
-                        value: String::new(),
+                        value: pending.unwrap_or_default(),
                         enabled: true,
                     },
                 );
                 (Some(map.len() - 1), None)
+            }
+            Col::Value => {
+                self.pending_ghost_value = (!typed.is_empty()).then_some(typed);
+                (None, None)
             }
             _ => (None, None),
         }
@@ -644,7 +669,9 @@ impl TableEditorState {
         if y < bottom {
             if ghost_editing {
                 let entry = Entry {
-                    value: String::new(),
+                    // A value typed before the key shows while the key is
+                    // being typed, not just once the row commits.
+                    value: self.pending_ghost_value.clone().unwrap_or_default(),
                     enabled: true,
                 };
                 y = self.draw_active_row(
@@ -1255,6 +1282,78 @@ mod tests {
         let out = t.commit(&mut map);
         assert_eq!(map.len(), 1);
         assert!(out.warning.is_none());
+    }
+
+    #[test]
+    fn ghost_value_typed_first_survives_the_hop_to_the_key_cell() {
+        // Type into the ghost row's VALUE cell first, then click over to the
+        // NAME cell: the typed value must ride along and land on the row the
+        // key commit creates, not silently vanish.
+        let mut map = IndexMap::new();
+        let mut t = TableEditorState::default();
+        t.click_cell(0, Col::Value, &mut map);
+        type_str(&mut t, &mut map, "42");
+        t.click_cell(0, Col::Key, &mut map);
+        type_str(&mut t, &mut map, "id");
+        t.commit(&mut map);
+        assert_eq!(map["id"].value, "42", "the value typed first is kept");
+    }
+
+    #[test]
+    fn ghost_value_survives_walking_back_to_the_key_cell_by_keyboard() {
+        let mut map = IndexMap::new();
+        let mut t = TableEditorState::default();
+        t.click_cell(0, Col::Value, &mut map);
+        type_str(&mut t, &mut map, "42");
+        t.handle_key(shift_tab(), &mut map); // back to the key cell
+        type_str(&mut t, &mut map, "id");
+        t.handle_key(key(KeyCode::Enter), &mut map);
+        assert_eq!(map["id"].value, "42");
+    }
+
+    #[test]
+    fn reclicking_the_ghost_value_cell_shows_the_stashed_text() {
+        let mut map = IndexMap::new();
+        let mut t = TableEditorState::default();
+        t.click_cell(0, Col::Value, &mut map);
+        type_str(&mut t, &mut map, "42");
+        t.click_cell(0, Col::Key, &mut map);
+        t.click_cell(0, Col::Value, &mut map);
+        assert_eq!(
+            t.editing.as_ref().unwrap().input.text(),
+            "42",
+            "hopping away and back does not lose the typed value"
+        );
+    }
+
+    #[test]
+    fn a_stashed_ghost_value_is_dropped_when_the_edit_leaves_the_ghost_row() {
+        // Typing a value with no key, then wandering off to a real row,
+        // abandons the ghost: a later new row must not inherit stale text.
+        let mut map = map_of(&[("a", "1")]);
+        let mut t = TableEditorState::default();
+        t.click_cell(1, Col::Value, &mut map); // the ghost row
+        type_str(&mut t, &mut map, "stale");
+        t.click_cell(0, Col::Value, &mut map); // a real row
+        t.commit(&mut map);
+        t.click_cell(1, Col::Key, &mut map);
+        type_str(&mut t, &mut map, "fresh");
+        t.commit(&mut map);
+        assert_eq!(map["fresh"].value, "", "no stale value resurfaces");
+    }
+
+    #[test]
+    fn esc_on_the_ghost_key_also_discards_a_stashed_value() {
+        let mut map = IndexMap::new();
+        let mut t = TableEditorState::default();
+        t.click_cell(0, Col::Value, &mut map);
+        type_str(&mut t, &mut map, "42");
+        t.click_cell(0, Col::Key, &mut map);
+        t.revert(&mut map); // Esc: the ghost row never happened
+        t.click_cell(0, Col::Key, &mut map);
+        type_str(&mut t, &mut map, "id");
+        t.commit(&mut map);
+        assert_eq!(map["id"].value, "", "Esc wiped the stash too");
     }
 
     // --- keyboard: navigation --------------------------------------------
