@@ -205,8 +205,8 @@ fn animations_disabled_renders_identically_at_rest() {
     // `AnimKey::TabUnderline`/`TabUnderlineWidth`) on each app, then
     // compare the very next frame WITHOUT settling first.
     use postui::components::editor::EditorTab;
-    animated.update(Action::EditorTabSelect(EditorTab::Headers.index()));
-    still.update(Action::EditorTabSelect(EditorTab::Headers.index()));
+    animated.update(Action::EditorTabSelect(EditorTab::Params.index()));
+    still.update(Action::EditorTabSelect(EditorTab::Params.index()));
     let a_mid = render_no_settle(&mut animated);
     let b_mid = render_no_settle(&mut still);
     assert_ne!(

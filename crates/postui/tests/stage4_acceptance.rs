@@ -155,12 +155,12 @@ async fn stage4_mouse_only_acceptance_flow() {
 
     // --- step 5: tab switches by click; add a param via keys; toggle its
     //     checkbox off then on via click ----------------------------------
-    click(&mut app, Hit::EditorTab(1)); // Headers
+    click(&mut app, Hit::EditorTab(0)); // Headers
     assert_eq!(
         app.editor.active_tab,
         postui::components::editor::EditorTab::Headers
     );
-    click(&mut app, Hit::EditorTab(0)); // Params
+    click(&mut app, Hit::EditorTab(1)); // Params
     assert_eq!(
         app.editor.active_tab,
         postui::components::editor::EditorTab::Params

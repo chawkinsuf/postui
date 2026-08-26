@@ -489,6 +489,7 @@ fn render_once(app: &mut App) {
 #[test]
 fn deleting_a_table_row_by_key_requires_confirmation() {
     let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Params;
     app.editor.params.insert(
         "page".into(),
         postui_core::model::Entry {
@@ -640,6 +641,7 @@ fn table_row_context_menu_duplicate_delete_extract_end_to_end() {
 #[test]
 fn duplicate_table_row_resolves_collisions_like_duplicate_request() {
     let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Params;
     app.editor.params.insert(
         "page".into(),
         postui_core::model::Entry {
@@ -660,13 +662,13 @@ fn duplicate_table_row_resolves_collisions_like_duplicate_request() {
 }
 
 #[test]
-fn editor_tab_cycle_order_is_params_headers_vars_body() {
+fn editor_tab_cycle_order_is_headers_params_vars_body() {
     let mut app = App::new_for_test();
     // Body is only reachable for a method that sends one.
     app.update(Action::SetMethod(postui_core::model::Method::Post));
-    assert_eq!(app.editor.active_tab, EditorTab::Params);
-    app.update(Action::EditorTabCycle(1));
     assert_eq!(app.editor.active_tab, EditorTab::Headers);
+    app.update(Action::EditorTabCycle(1));
+    assert_eq!(app.editor.active_tab, EditorTab::Params);
     app.update(Action::EditorTabCycle(1));
     assert_eq!(app.editor.active_tab, EditorTab::Vars);
     app.update(Action::EditorTabCycle(1));
@@ -674,24 +676,26 @@ fn editor_tab_cycle_order_is_params_headers_vars_body() {
     app.update(Action::EditorTabCycle(1));
     assert_eq!(
         app.editor.active_tab,
-        EditorTab::Params,
-        "cycle wraps back to Params"
+        EditorTab::Headers,
+        "cycle wraps back to Headers"
     );
 }
 
 #[test]
-fn alt_1_2_3_still_select_params_headers_body_with_vars_inserted() {
-    // Task 13: "alt+1/2/3 aliases unaffected" — Vars is reachable by click
-    // or EditorTabCycle only, not by these three shortcuts.
+fn alt_number_shortcuts_follow_the_screen_order() {
+    // alt+1..4 select the tabs in the order they appear on screen:
+    // Headers, Params, Vars, Body.
     let mut app = App::new_for_test();
     app.update(Action::SetMethod(postui_core::model::Method::Post));
     let keymap = Keymap::default_bindings();
     app.editor.active_tab = EditorTab::Body;
     app.handle_key(&keymap, alt('1'));
-    assert_eq!(app.editor.active_tab, EditorTab::Params);
-    app.handle_key(&keymap, alt('2'));
     assert_eq!(app.editor.active_tab, EditorTab::Headers);
+    app.handle_key(&keymap, alt('2'));
+    assert_eq!(app.editor.active_tab, EditorTab::Params);
     app.handle_key(&keymap, alt('3'));
+    assert_eq!(app.editor.active_tab, EditorTab::Vars);
+    app.handle_key(&keymap, alt('4'));
     assert_eq!(app.editor.active_tab, EditorTab::Body);
 }
 
@@ -701,17 +705,17 @@ fn body_tab_is_unreachable_for_get_and_head() {
     // a no-op and cycling skips over it in both directions.
     let mut app = App::new_for_test();
     assert_eq!(app.editor.method, postui_core::model::Method::Get);
-    app.update(Action::EditorTabSelect(2));
+    app.update(Action::EditorTabSelect(3));
     assert_eq!(
         app.editor.active_tab,
-        EditorTab::Params,
+        EditorTab::Headers,
         "select is a no-op"
     );
-    app.update(Action::EditorTabSelect(3)); // Vars, the tab before Body
+    app.update(Action::EditorTabSelect(2)); // Vars, the tab before Body
     app.update(Action::EditorTabCycle(1));
     assert_eq!(
         app.editor.active_tab,
-        EditorTab::Params,
+        EditorTab::Headers,
         "forward skips Body"
     );
     app.update(Action::EditorTabCycle(-1));
@@ -722,7 +726,7 @@ fn body_tab_is_unreachable_for_get_and_head() {
     );
 
     app.update(Action::SetMethod(postui_core::model::Method::Head));
-    app.update(Action::EditorTabSelect(2));
+    app.update(Action::EditorTabSelect(3));
     assert_eq!(
         app.editor.active_tab,
         EditorTab::Vars,
@@ -730,7 +734,7 @@ fn body_tab_is_unreachable_for_get_and_head() {
     );
 
     app.update(Action::SetMethod(postui_core::model::Method::Post));
-    app.update(Action::EditorTabSelect(2));
+    app.update(Action::EditorTabSelect(3));
     assert_eq!(app.editor.active_tab, EditorTab::Body, "POST re-enables it");
 }
 
@@ -738,29 +742,18 @@ fn body_tab_is_unreachable_for_get_and_head() {
 fn switching_to_a_bodyless_method_hops_off_the_body_tab() {
     let mut app = App::new_for_test();
     app.update(Action::SetMethod(postui_core::model::Method::Post));
-    app.update(Action::EditorTabSelect(2));
+    app.update(Action::EditorTabSelect(3));
     assert_eq!(app.editor.active_tab, EditorTab::Body);
     app.update(Action::SetMethod(postui_core::model::Method::Get));
     assert_eq!(
         app.editor.active_tab,
-        EditorTab::Params,
+        EditorTab::Headers,
         "GET can't sit on a disabled tab"
     );
     // The body text itself survives the round trip.
     app.update(Action::SetMethod(postui_core::model::Method::Put));
-    app.update(Action::EditorTabSelect(2));
+    app.update(Action::EditorTabSelect(3));
     assert_eq!(app.editor.active_tab, EditorTab::Body);
-}
-
-/// Task 17: alt+4 fills the one gap the above test called out — Vars gets
-/// its own direct shortcut alongside alt+1/2/3.
-#[test]
-fn alt_4_selects_the_vars_tab() {
-    let mut app = App::new_for_test();
-    let keymap = Keymap::default_bindings();
-    app.editor.active_tab = EditorTab::Body;
-    app.handle_key(&keymap, alt('4'));
-    assert_eq!(app.editor.active_tab, EditorTab::Vars);
 }
 
 #[test]
@@ -828,6 +821,7 @@ fn declining_the_table_row_delete_keeps_the_row() {
 #[test]
 fn clicking_the_row_delete_affordance_opens_the_confirm_modal() {
     let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Params;
     app.editor.params.insert(
         "page".into(),
         postui_core::model::Entry {
@@ -996,6 +990,7 @@ fn esc_mid_edit_puts_the_original_cell_text_back() {
 #[test]
 fn checkbox_and_delete_clicks_during_an_edit_commit_it_first() {
     let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Params;
     for (k, v) in [("a", "1"), ("b", "2")] {
         app.editor.params.insert(
             k.into(),
@@ -1028,6 +1023,7 @@ fn checkbox_and_delete_clicks_during_an_edit_commit_it_first() {
 /// Params `a=1, b=2, c=3`, editor focused.
 fn app_with_three_params() -> App {
     let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Params;
     for (k, v) in [("a", "1"), ("b", "2"), ("c", "3")] {
         app.editor.params.insert(
             k.into(),
@@ -1170,7 +1166,7 @@ fn switching_editor_tabs_commits_the_cell_under_edit() {
     let mut app = app_with_one_param();
     click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
     type_chars(&mut app, "2");
-    app.handle_key(&Keymap::default_bindings(), alt('2'));
+    app.handle_key(&Keymap::default_bindings(), alt('1'));
     assert_eq!(app.editor.active_tab, EditorTab::Headers);
     assert_eq!(
         app.editor.params["page"].value, "12",
@@ -1185,7 +1181,7 @@ fn switching_editor_tabs_commits_the_cell_under_edit() {
 #[test]
 fn switching_editor_tabs_retargets_the_underline_slide() {
     let mut app = App::new_for_test_with_anims(true);
-    assert_eq!(app.editor.active_tab, EditorTab::Params);
+    assert_eq!(app.editor.active_tab, EditorTab::Headers);
     let left_key = AnimKey::TabUnderline(StripId::EditorTabs);
     let right_key = AnimKey::TabUnderlineWidth(StripId::EditorTabs);
     let before = Instant::now();
@@ -1194,8 +1190,8 @@ fn switching_editor_tabs_retargets_the_underline_slide() {
         "untouched before any switch"
     );
 
-    app.update(Action::EditorTabSelect(EditorTab::Headers.index()));
-    assert_eq!(app.editor.active_tab, EditorTab::Headers);
+    app.update(Action::EditorTabSelect(EditorTab::Params.index()));
+    assert_eq!(app.editor.active_tab, EditorTab::Params);
 
     let now = Instant::now();
     assert!(
@@ -1204,17 +1200,17 @@ fn switching_editor_tabs_retargets_the_underline_slide() {
     );
 
     let spans = app.editor.tab_strip_spans();
-    let (x, w) = spans[EditorTab::Headers.draw_position()];
+    let (x, w) = spans[EditorTab::Params.draw_position()];
     let done_at = now + app.ui_settings.anim_ms.tab_slide + Duration::from_millis(5);
     assert_eq!(
         app.anims.value(left_key, done_at),
         Some(x as f32),
-        "left edge settles on the Headers span's left edge"
+        "left edge settles on the Params span's left edge"
     );
     assert_eq!(
         app.anims.value(right_key, done_at),
         Some((x + w) as f32),
-        "right edge settles on the Headers span's right edge"
+        "right edge settles on the Params span's right edge"
     );
 }
 
@@ -1828,6 +1824,7 @@ fn discard_changes_confirms_then_reverts_to_the_saved_request() {
 #[test]
 fn clicking_the_row_toggle_toggles_without_selecting() {
     let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Params;
     app.editor.params.insert(
         "a".into(),
         postui_core::model::Entry {
@@ -4587,6 +4584,7 @@ fn the_search_step_buttons_cycle_the_matches() {
 #[test]
 fn click_table_checkbox_toggles_enabled() {
     let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Params;
     app.editor.params.insert(
         "page".into(),
         postui_core::model::Entry {

@@ -30,37 +30,26 @@ pub enum EditorTab {
 }
 
 /// Left-to-right tab-strip order, and the order `EditorTabCycle` walks:
-/// Params → Headers → Vars → Body. Deliberately *not* the same order as
-/// [`EditorTab::index`] (which stays Params/Headers/Body = 0/1/2 so the
-/// existing alt+1/2/3 keybindings keep landing on the same tabs they always
-/// did, even though Vars now sits between Headers and Body on screen).
+/// Headers → Params → Vars → Body. The `alt+1/2/3/4` shortcuts
+/// ([`EditorTab::index`]) follow this same order, so the number you press
+/// always matches the tab's on-screen position.
 const DRAW_ORDER: [EditorTab; 4] = [
-    EditorTab::Params,
     EditorTab::Headers,
+    EditorTab::Params,
     EditorTab::Vars,
     EditorTab::Body,
 ];
 
 impl EditorTab {
-    /// Stable slot number for the `alt+1/2/3/4` shortcuts
-    /// (`Action::EditorTabSelect`), unaffected by where Vars was inserted on
-    /// screen: Params=0, Headers=1, Body=2, Vars=3.
+    /// Slot number for the `alt+1/2/3/4` shortcuts
+    /// (`Action::EditorTabSelect`) — identical to [`EditorTab::draw_position`]
+    /// so alt-numbers match the tab strip left to right.
     pub fn index(self) -> usize {
-        match self {
-            EditorTab::Params => 0,
-            EditorTab::Headers => 1,
-            EditorTab::Body => 2,
-            EditorTab::Vars => 3,
-        }
+        self.draw_position()
     }
 
     pub fn from_index(i: usize) -> Self {
-        match i % 4 {
-            0 => EditorTab::Params,
-            1 => EditorTab::Headers,
-            2 => EditorTab::Body,
-            _ => EditorTab::Vars,
-        }
+        Self::from_draw_position(i)
     }
 
     /// This tab's position in [`DRAW_ORDER`] — what the tab strip's left-to-
@@ -232,7 +221,7 @@ impl Default for Editor {
             body: new_body_state(""),
             body_handler: EditorEventHandler::emacs_mode(),
             body_sel_anchor: None,
-            active_tab: EditorTab::Params,
+            active_tab: EditorTab::Headers,
             sub_focus: SubFocus::Url,
             table: TableEditorState::default(),
             last_body_area: None,
@@ -2376,17 +2365,17 @@ mod tests {
         let mut app = App::new_for_test();
         app.update(Action::CycleMethod);
         assert_eq!(app.editor.method, Method::Post);
-        app.update(Action::EditorTabSelect(2));
+        app.update(Action::EditorTabSelect(3));
         assert_eq!(app.editor.active_tab, EditorTab::Body);
         app.update(Action::EditorTabCycle(1));
-        assert_eq!(app.editor.active_tab, EditorTab::Params, "cycle wraps");
+        assert_eq!(app.editor.active_tab, EditorTab::Headers, "cycle wraps");
     }
 
     #[test]
     fn tab_cycle_backward_wraps() {
         let mut app = App::new_for_test();
         app.update(Action::SetMethod(postui_core::model::Method::Post));
-        assert_eq!(app.editor.active_tab, EditorTab::Params);
+        assert_eq!(app.editor.active_tab, EditorTab::Headers);
         app.update(Action::EditorTabCycle(-1));
         assert_eq!(
             app.editor.active_tab,
@@ -2670,7 +2659,10 @@ mod tests {
 
     #[test]
     fn duplicate_key_commit_in_params_tab_shows_warning_toast() {
-        let mut e = Editor::default();
+        let mut e = Editor {
+            active_tab: EditorTab::Params,
+            ..Editor::default()
+        };
         for (k, v) in [("a", "1"), ("b", "2")] {
             e.params.insert(
                 k.into(),
@@ -3943,7 +3935,7 @@ url = "https://api.example.com/users""#,
     #[test]
     fn empty_params_table_still_paints_page_below_its_short_content() {
         let mut app = App::new_for_test();
-        assert_eq!(app.editor.active_tab, EditorTab::Params);
+        app.editor.active_tab = EditorTab::Params;
         assert!(
             app.editor.params.is_empty(),
             "fresh scratch editor: no rows"
@@ -4104,7 +4096,10 @@ url = "https://api.example.com/users""#,
     fn params_and_headers_tabs_never_show_a_shadow_hint() {
         // `shadow` is only ever passed for Vars; Params/Headers keep their
         // existing 3-line expansion regardless of `Editor::shadowed`.
-        let mut e = Editor::default();
+        let mut e = Editor {
+            active_tab: EditorTab::Params,
+            ..Editor::default()
+        };
         e.params.insert(
             "page".into(),
             Entry {
@@ -4134,18 +4129,21 @@ url = "https://api.example.com/users""#,
     }
 
     #[test]
-    fn tab_order_and_alt_shortcuts_survive_vars_insertion() {
-        // Draw order / EditorTabCycle: Params -> Headers -> Vars -> Body.
-        assert_eq!(EditorTab::from_draw_position(0), EditorTab::Params);
-        assert_eq!(EditorTab::from_draw_position(1), EditorTab::Headers);
+    fn tab_order_headers_first_and_alt_matches_screen() {
+        // Draw order / EditorTabCycle: Headers -> Params -> Vars -> Body.
+        assert_eq!(EditorTab::from_draw_position(0), EditorTab::Headers);
+        assert_eq!(EditorTab::from_draw_position(1), EditorTab::Params);
         assert_eq!(EditorTab::from_draw_position(2), EditorTab::Vars);
         assert_eq!(EditorTab::from_draw_position(3), EditorTab::Body);
-        // alt+1/2/3 (`EditorTabSelect(0/1/2)`) are unaffected: still
-        // Params/Headers/Body. Vars has no alt shortcut (index 3, unbound).
-        assert_eq!(EditorTab::from_index(0), EditorTab::Params);
-        assert_eq!(EditorTab::from_index(1), EditorTab::Headers);
-        assert_eq!(EditorTab::from_index(2), EditorTab::Body);
-        assert_eq!(EditorTab::from_index(3), EditorTab::Vars);
+        // alt+1/2/3/4 (`EditorTabSelect(0..3)`) follow the screen order:
+        // what you see is what the number selects.
+        for i in 0..4 {
+            assert_eq!(EditorTab::from_index(i), EditorTab::from_draw_position(i));
+            assert_eq!(
+                EditorTab::from_draw_position(i).index(),
+                EditorTab::from_draw_position(i).draw_position()
+            );
+        }
     }
 
     // --- computed request-headers section (Task 10, spec §6) ---------

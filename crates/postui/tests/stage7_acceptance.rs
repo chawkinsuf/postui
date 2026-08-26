@@ -490,7 +490,7 @@ fn the_headers_tab_shows_defaults_auto_content_type_and_host_resolved() {
     app.editor.url = postui::components::line_input::LineInput::new("https://api.example.test/v1");
     app.update(Action::SetMethod(postui_core::model::Method::Post));
     app.editor.set_body_text("{\"a\": 1}");
-    click(&mut app, Hit::EditorTab(1));
+    click(&mut app, Hit::EditorTab(0)); // Headers, first in the strip
 
     let frame = render(&mut app);
     for want in ["x-team", "payments", "Content-Type", "application/json"] {
@@ -549,6 +549,7 @@ fn a_param_cell_commits_on_click_away_reverts_on_esc_and_the_ghost_row_creates()
     open_request(&mut app, "ping");
     let keymap = Keymap::default_bindings();
     assert!(app.editor.params.is_empty());
+    click(&mut app, Hit::EditorTab(1)); // Params
 
     // The ghost row is row 0 of an empty table: click into its key cell and
     // type — no select-then-edit dance.

@@ -5152,15 +5152,15 @@ impl App {
     }
 
     /// If the active editor tab just became disabled (the method changed
-    /// to GET/HEAD while Body was showing), hops to Params through the
-    /// same commit-and-retarget path a normal tab switch takes. Called
+    /// to GET/HEAD while Body was showing), hops to the first tab through
+    /// the same commit-and-retarget path a normal tab switch takes. Called
     /// after every path that can change the method (cycle, dropdown
     /// select, request load, undo snapshot).
     fn leave_disabled_body_tab(&mut self) {
         if self.editor.active_tab == EditorTab::Body && self.editor.body_tab_disabled() {
             self.commit_table_edit();
             let prev = self.editor.active_tab;
-            self.editor.active_tab = EditorTab::Params;
+            self.editor.active_tab = EditorTab::from_draw_position(0);
             self.editor.table.reset();
             self.retarget_editor_tab_underline(prev);
         }
