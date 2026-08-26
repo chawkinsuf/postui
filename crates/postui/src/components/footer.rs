@@ -25,6 +25,7 @@ pub(crate) fn footer_chips(
     focus: PaneId,
     shift_enter_send: bool,
     sending: bool,
+    add_row_label: Option<&'static str>,
 ) -> Vec<(&'static str, &'static str, Option<Action>)> {
     let chips: Vec<(&'static str, &'static str, Option<Action>)> = match focus {
         PaneId::Sidebar => vec![
@@ -33,31 +34,39 @@ pub(crate) fn footer_chips(
             ("r", "rename", Some(Action::PromptRenameRequest)),
             ("d", "delete", Some(Action::ConfirmDeleteRequest)),
         ],
-        PaneId::Editor => vec![
-            // Shift+Enter is only reportable under the kitty keyboard
-            // protocol; where the terminal can't deliver it, ^R is the
-            // advertised send key (both bindings stay active regardless).
-            // While the open request is in flight the send shortcuts go
-            // dead, and esc — the cancel shortcut — is advertised instead.
-            if sending {
-                ("esc", "cancel", Some(Action::CancelSend))
-            } else {
+        PaneId::Editor => {
+            let mut chips = vec![
+                // Shift+Enter is only reportable under the kitty keyboard
+                // protocol; where the terminal can't deliver it, ^R is the
+                // advertised send key (both bindings stay active regardless).
+                // While the open request is in flight the send shortcuts go
+                // dead, and esc — the cancel shortcut — is advertised instead.
+                if sending {
+                    ("esc", "cancel", Some(Action::CancelSend))
+                } else {
+                    (
+                        if shift_enter_send { "⇧enter" } else { "^R" },
+                        "send",
+                        Some(Action::Send),
+                    )
+                },
                 (
-                    if shift_enter_send { "⇧enter" } else { "^R" },
-                    "send",
-                    Some(Action::Send),
-                )
-            },
-            ("alt+a", "add row", Some(Action::TableAddRow)),
-            (
-                "^V",
-                "vars",
-                Some(Action::OpenVarPicker { completing: false }),
-            ),
-            // Arrows are the primary route (method ← URL ↓ tabs ↓ content);
-            // alt+1/2/3 still work where the terminal passes them through.
-            ("↑↓←→", "navigate", None),
-        ],
+                    "^V",
+                    "vars",
+                    Some(Action::OpenVarPicker { completing: false }),
+                ),
+                // Arrows are the primary route (method ← URL ↓ tabs ↓ content);
+                // alt+1/2/3 still work where the terminal passes them through.
+                ("↑↓←→", "navigate", None),
+            ];
+            // Named for what it adds on the active tab ("add header" on
+            // Headers, …); hidden on the Body tab, where the action is
+            // inert.
+            if let Some(label) = add_row_label {
+                chips.insert(1, ("alt+a", label, Some(Action::TableAddRow)));
+            }
+            chips
+        }
         PaneId::Response => vec![
             (
                 "r",
@@ -104,6 +113,7 @@ pub fn draw_footer(
     shift_enter_send: bool,
     sending: bool,
     dirty: bool,
+    add_row_label: Option<&'static str>,
     hits: &mut HitMap,
     hovered: Option<&Hit>,
 ) {
@@ -169,7 +179,7 @@ pub fn draw_footer(
     // Per-pane chips stop one column shy of the save group so the two
     // never collide.
     let right_limit = group_x.saturating_sub(1);
-    let chips = footer_chips(focus, shift_enter_send, sending);
+    let chips = footer_chips(focus, shift_enter_send, sending, add_row_label);
     paint_chip_row(
         buf,
         mid_y,
@@ -293,6 +303,7 @@ mod tests {
                     false,
                     false,
                     dirty,
+                    Some("add header"),
                     &mut hits,
                     None,
                 )
@@ -303,9 +314,9 @@ mod tests {
 
     #[test]
     fn send_chip_advertises_shift_enter_only_when_the_terminal_reports_it() {
-        let with = footer_chips(PaneId::Editor, true, false);
+        let with = footer_chips(PaneId::Editor, true, false, Some("add header"));
         assert!(with.iter().any(|(k, l, _)| *k == "⇧enter" && *l == "send"));
-        let without = footer_chips(PaneId::Editor, false, false);
+        let without = footer_chips(PaneId::Editor, false, false, Some("add header"));
         assert!(without.iter().any(|(k, l, _)| *k == "^R" && *l == "send"));
     }
 
@@ -314,7 +325,7 @@ mod tests {
     /// of a send key that would do nothing.
     #[test]
     fn send_chip_becomes_esc_cancel_while_the_open_request_is_in_flight() {
-        let sending = footer_chips(PaneId::Editor, false, true);
+        let sending = footer_chips(PaneId::Editor, false, true, Some("add header"));
         assert!(
             sending
                 .iter()
@@ -370,7 +381,7 @@ mod tests {
     /// to the global right-side group — and no longer a second ^S.
     #[test]
     fn editor_context_chips_offer_vars_and_no_duplicate_save() {
-        let chips = footer_chips(PaneId::Editor, false, false);
+        let chips = footer_chips(PaneId::Editor, false, false, Some("add header"));
         assert!(chips.iter().any(|(k, l, a)| *k == "^V"
             && *l == "vars"
             && *a == Some(Action::OpenVarPicker { completing: false })));
@@ -422,6 +433,7 @@ mod tests {
                     false,
                     false,
                     false,
+                    Some("add header"),
                     &mut hits,
                     None,
                 )
@@ -460,6 +472,7 @@ mod tests {
                     false,
                     false,
                     false,
+                    Some("add header"),
                     &mut hits,
                     None,
                 )
@@ -501,6 +514,7 @@ mod tests {
                     false,
                     false,
                     false,
+                    Some("add header"),
                     &mut hits,
                     None,
                 )
@@ -531,6 +545,7 @@ mod tests {
                     false,
                     false,
                     false,
+                    Some("add header"),
                     &mut hits,
                     None,
                 )
@@ -589,6 +604,7 @@ mod tests {
                     false,
                     false,
                     false,
+                    Some("add header"),
                     &mut hits,
                     None,
                 )
@@ -639,6 +655,7 @@ mod tests {
                     false,
                     false,
                     false,
+                    Some("add header"),
                     &mut hits,
                     None,
                 )
@@ -682,6 +699,7 @@ mod tests {
                     false,
                     false,
                     false,
+                    Some("add header"),
                     &mut hits,
                     None,
                 )

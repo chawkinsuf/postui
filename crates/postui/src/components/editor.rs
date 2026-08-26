@@ -73,6 +73,17 @@ impl EditorTab {
             EditorTab::Vars => "Vars",
         }
     }
+
+    /// What the alt+a footer chip says it will add on this tab — `None` on
+    /// Body, where `Action::TableAddRow` is inert and the chip is hidden.
+    pub fn add_row_label(self) -> Option<&'static str> {
+        match self {
+            EditorTab::Params => Some("add param"),
+            EditorTab::Headers => Some("add header"),
+            EditorTab::Vars => Some("add variable"),
+            EditorTab::Body => None,
+        }
+    }
 }
 
 /// Which sub-region of the editor pane has keyboard focus: the method
@@ -2252,10 +2263,12 @@ impl Editor {
     /// (`Hit::AutoHeaderReveal`) whenever `self.computed.has_secret`.
     /// The Vars tab's read-only "referenced" section: one row per
     /// `{{variable}}` the request references (see
-    /// [`Self::referenced_var_names`]), each with its resolved value
-    /// (secrets masked) and the source the value comes from. Tokens are
-    /// tinted and hover-tooltipped by `paint_var_tokens`, exactly like
-    /// tokens drawn anywhere else.
+    /// [`Self::referenced_var_names`]), laid out on the editable table's
+    /// own name/value columns so the two read as one table — the token in
+    /// the name column, its resolved value (secrets masked) in the value
+    /// column, and the value's source right-aligned. Tokens are tinted
+    /// and hover-tooltipped by `paint_var_tokens`, exactly like tokens
+    /// drawn anywhere else.
     fn draw_referenced_vars(
         &self,
         frame: &mut Frame,
@@ -2283,27 +2296,58 @@ impl Editor {
         );
         y += 1;
 
+        let cols = super::table_editor::columns(area.x, area.width);
+        let clip = |s: &str, avail: u16| -> String { s.chars().take(avail as usize).collect() };
+        let buf = frame.buffer_mut();
         for name in names {
             if y >= max_y {
                 break;
             }
             let info = self.vars.describe(name);
-            let token_piece = format!("  {{{{{name}}}}}");
-            let line = Line::from(vec![
-                Span::styled(token_piece.clone(), dim),
-                Span::styled(format!("  {}", info.display_value()), dim),
-                Span::styled(format!("  ({})", info.source.label()), dim),
-            ]);
-            frame.render_widget(Paragraph::new(line), Rect::new(area.x, y, area.width, 1));
+            let token_piece = format!("{{{{{name}}}}}");
+            let name_w = cols.divider_x.saturating_sub(cols.name_x);
+            crate::paint::text(
+                buf,
+                cols.name_x,
+                y,
+                &clip(&token_piece, name_w),
+                theme.text_muted,
+                theme.page,
+                false,
+            );
             // Retint the token itself (and register its tooltip hit).
             crate::components::var_tokens::paint_var_tokens(
-                frame.buffer_mut(),
-                Rect::new(area.x, y, area.width, 1),
+                buf,
+                Rect::new(cols.name_x, y, name_w, 1),
                 &token_piece,
-                area.x,
+                cols.name_x,
                 &self.vars,
                 theme,
                 hits,
+            );
+            // Source label right-aligned; the value gets what's between
+            // the value column and the source, with a 2-cell gap.
+            let source = format!("({})", info.source.label());
+            let source_w = (source.chars().count() as u16).min(area.width);
+            let source_x = area.right().saturating_sub(source_w + 1);
+            crate::paint::text(
+                buf,
+                source_x,
+                y,
+                &source,
+                theme.text_muted,
+                theme.page,
+                false,
+            );
+            let value_avail = source_x.saturating_sub(2).saturating_sub(cols.value_x);
+            crate::paint::text(
+                buf,
+                cols.value_x,
+                y,
+                &clip(&info.display_value(), value_avail),
+                theme.text_muted,
+                theme.page,
+                false,
             );
             y += 1;
         }
@@ -4220,6 +4264,69 @@ url = "https://api.example.com/users""#,
             .unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("body_var"), "{content}");
+    }
+
+    #[test]
+    fn referenced_vars_render_as_aligned_table_columns() {
+        // Tokens of different lengths land in the table's own name column,
+        // and their values all start at the table's value column.
+        let mut e = Editor {
+            active_tab: EditorTab::Vars,
+            ..Editor::default()
+        };
+        e.url = LineInput::new("https://{{b}}/{{longer_name}}");
+        let theme = Theme::dark();
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: None,
+            dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
+        };
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let row_text = |y: u16| -> String {
+            (0..buf.area.width)
+                .map(|x| buf.cell((x, y)).unwrap().symbol().to_string())
+                .collect()
+        };
+        // `str::find` returns a byte offset; rows can hold multi-byte
+        // glyphs (the header's `│` divider), so convert to a column.
+        let col_of = |line: &str, needle: &str| -> Option<usize> {
+            line.find(needle).map(|b| line[..b].chars().count())
+        };
+        let divider_y = (0..buf.area.height)
+            .find(|y| row_text(*y).contains("referenced"))
+            .expect("section divider");
+        let mut token_cols = Vec::new();
+        let mut value_cols = Vec::new();
+        for y in divider_y + 1..buf.area.height {
+            let line = row_text(y);
+            if line.contains("{{b}}") || line.contains("{{longer_name}}") {
+                token_cols.push(col_of(&line, "{{").unwrap());
+                value_cols.push(col_of(&line, "\u{2014}").expect("undefined value dash"));
+            }
+        }
+        assert_eq!(token_cols.len(), 2, "both referenced rows drawn");
+        assert_eq!(token_cols[0], token_cols[1], "names share a column");
+        assert_eq!(value_cols[0], value_cols[1], "values share a column");
+        // And the value column is the table's own: the header row's VALUE
+        // label sits at the same x.
+        let header = (0..buf.area.height)
+            .map(row_text)
+            .find(|l| l.contains("VALUE"))
+            .expect("table header row");
+        assert_eq!(
+            col_of(&header, "VALUE").unwrap(),
+            value_cols[0],
+            "referenced values align with the table's VALUE column"
+        );
     }
 
     #[test]

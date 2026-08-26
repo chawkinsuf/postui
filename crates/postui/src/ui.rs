@@ -153,6 +153,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         app.shift_enter_send,
         app.editor.sending,
         app.editor.is_dirty(),
+        app.editor.active_tab.add_row_label(),
         &mut hits,
         app.hovered.as_ref(),
     );

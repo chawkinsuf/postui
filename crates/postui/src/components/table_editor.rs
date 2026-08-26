@@ -88,13 +88,13 @@ impl TableOutcome {
 /// There is no checkbox column any more: enabled/disabled reads from the
 /// row's own styling (dim + struck name), and toggling happens through the
 /// hover-revealed buttons at the row's right edge.
-struct Columns {
-    name_x: u16,
-    divider_x: u16,
-    value_x: u16,
+pub(crate) struct Columns {
+    pub(crate) name_x: u16,
+    pub(crate) divider_x: u16,
+    pub(crate) value_x: u16,
 }
 
-fn columns(x0: u16, width: u16) -> Columns {
+pub(crate) fn columns(x0: u16, width: u16) -> Columns {
     let pad = 2u16.min(width);
     let remaining = width.saturating_sub(pad);
     let name_w = (remaining / 3)

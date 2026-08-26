@@ -858,6 +858,36 @@ fn app_with_one_param() -> App {
     app
 }
 
+/// The alt+a footer chip names what it will actually add on the active
+/// tab — "add header" on Headers, "add param" on Params, "add variable"
+/// on Vars — and disappears on the Body tab, where alt+a is inert.
+#[test]
+fn add_row_chip_label_follows_the_active_tab() {
+    let mut app = App::new_for_test();
+    app.focus = PaneId::Editor;
+    let frame = |app: &mut App| {
+        render_once(app);
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+        format!("{:?}", terminal.backend().buffer())
+    };
+    assert!(frame(&mut app).contains("add header"), "Headers tab");
+    app.update(Action::EditorTabSelect(1));
+    assert!(frame(&mut app).contains("add param"), "Params tab");
+    app.update(Action::EditorTabSelect(2));
+    assert!(frame(&mut app).contains("add variable"), "Vars tab");
+    app.update(Action::SetMethod(postui_core::model::Method::Post));
+    app.update(Action::EditorTabSelect(3));
+    let body = frame(&mut app);
+    assert!(
+        !body.contains("add header") && !body.contains("add param"),
+        "no add chip on the Body tab"
+    );
+}
+
 /// alt+a starts a new row on whichever table tab is active — from any
 /// focus, so adding a header never needs a mouse trip to the ghost row.
 #[test]
@@ -9384,7 +9414,7 @@ fn every_named_action_is_mouse_reachable() {
     let mut mouse_reachable: Vec<Action> = vec![Action::Quit, Action::OpenPalette];
     for pane in [PaneId::Sidebar, PaneId::Editor, PaneId::Response] {
         mouse_reachable.extend(
-            crate::components::footer::footer_chips(pane, false, false)
+            crate::components::footer::footer_chips(pane, false, false, Some("add header"))
                 .into_iter()
                 .filter_map(|(_, _, a)| a),
         );
