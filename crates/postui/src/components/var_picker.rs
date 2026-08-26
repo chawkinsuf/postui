@@ -762,7 +762,6 @@ impl VarPickerState {
             };
             hits.register(row_rect, crate::hit::Hit::VarPickerRow(i));
         }
-
     }
 }
 

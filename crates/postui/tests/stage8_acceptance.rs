@@ -80,8 +80,7 @@ fn seed(app: &mut App, slugs: &[&str]) {
 fn stage8_landmarks_render_walk() {
     let mut app = App::new_for_test();
     seed(&mut app, &["a", "b", "c"]);
-    let (t_panel, t_accent, t_hairline) =
-        (app.theme.panel, app.theme.accent, app.theme.hairline);
+    let (t_panel, t_accent, t_hairline) = (app.theme.panel, app.theme.accent, app.theme.hairline);
 
     // --- address bar: a "▔" bevel cap on the method/URL row -------------
     let buf = render(&mut app);

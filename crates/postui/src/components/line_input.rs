@@ -589,10 +589,7 @@ mod tests {
     fn ctrl_a_selects_all() {
         let mut input = LineInput::new("hello");
         input.set_cursor(2);
-        assert!(input.handle_key(KeyEvent::new(
-            KeyCode::Char('a'),
-            KeyModifiers::CONTROL
-        )));
+        assert!(input.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)));
         assert_eq!(input.selection(), Some((0, 5)));
         assert_eq!(input.selected_text().as_deref(), Some("hello"));
     }

@@ -561,7 +561,6 @@ impl PaletteState {
             };
             hits.register(row_rect, crate::hit::Hit::PaletteRow(i));
         }
-
     }
 }
 

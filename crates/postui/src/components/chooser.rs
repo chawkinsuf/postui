@@ -294,7 +294,6 @@ impl ChooserState {
             };
             hits.register(row_rect, crate::hit::Hit::ChooserRow(i));
         }
-
     }
 }
 

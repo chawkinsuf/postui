@@ -468,13 +468,9 @@ impl ReadyView {
         self.sel_anchor = Some((anchor_line, 0));
         self.move_cursor(delta);
         let cl = self.cursor;
-        let len =
-            |v: &Self, l: usize| v.display_line_text(l).map_or(0, |t| t.chars().count());
+        let len = |v: &Self, l: usize| v.display_line_text(l).map_or(0, |t| t.chars().count());
         self.sel = Some(if cl >= anchor_line {
-            (
-                (anchor_line, 0),
-                (cl, len(self, cl).saturating_sub(1)),
-            )
+            ((anchor_line, 0), (cl, len(self, cl).saturating_sub(1)))
         } else {
             (
                 (anchor_line, len(self, anchor_line).saturating_sub(1)),
@@ -2717,7 +2713,10 @@ mod tests {
             0,
         );
         let out = render(&mut r);
-        assert!(!out.contains("taking a while"), "no warning early on: {out}");
+        assert!(
+            !out.contains("taking a while"),
+            "no warning early on: {out}"
+        );
     }
 
     #[test]

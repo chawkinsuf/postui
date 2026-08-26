@@ -91,7 +91,10 @@ impl KeyCombo {
             }
             _ => (ev.code, ev.modifiers),
         };
-        Self { code, modifiers: mods }
+        Self {
+            code,
+            modifiers: mods,
+        }
     }
 }
 
@@ -533,7 +536,10 @@ mod tests {
     fn from_event_uppercases_before_stripping_shift_for_kitty_protocol() {
         // Under DISAMBIGUATE_ESCAPE_CODES, crossterm can report the base
         // char with SHIFT|CONTROL rather than the pre-shifted char.
-        let ev = KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        let ev = KeyEvent::new(
+            KeyCode::Char('z'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
         assert_eq!(
             KeyCombo::from_event(&ev),
             KeyCombo::parse("ctrl+shift+z").unwrap()

@@ -232,12 +232,7 @@ pub fn rename_request_named(
 /// `folder/slugify(leaf)`, with `-2`, `-3`, … appended while the file
 /// already exists. `exclude` is the renaming request's own slug — its
 /// file doesn't count as a collision.
-pub fn unique_slug(
-    root: &Path,
-    folder: &str,
-    leaf_display: &str,
-    exclude: Option<&str>,
-) -> String {
+pub fn unique_slug(root: &Path, folder: &str, leaf_display: &str, exclude: Option<&str>) -> String {
     let base = if folder.is_empty() {
         slugify(leaf_display)
     } else {
@@ -479,7 +474,10 @@ mod tests {
             split_display_path("API Auth/Get User"),
             Some(("api-auth".into(), "Get User".into()))
         );
-        assert_eq!(split_display_path("Get User"), Some(("".into(), "Get User".into())));
+        assert_eq!(
+            split_display_path("Get User"),
+            Some(("".into(), "Get User".into()))
+        );
         assert_eq!(
             split_display_path("a/b/  Leaf Name  "),
             Some(("a/b".into(), "Leaf Name".into()))
@@ -493,7 +491,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         ensure_project(dir.path()).unwrap();
         let (slug, leaf) = create_request_named(dir.path(), "My Request!", req()).unwrap();
-        assert_eq!((slug.as_str(), leaf.as_str()), ("my-request", "My Request!"));
+        assert_eq!(
+            (slug.as_str(), leaf.as_str()),
+            ("my-request", "My Request!")
+        );
         let loaded = load_request(dir.path(), "my-request").unwrap();
         assert_eq!(loaded.name.as_deref(), Some("My Request!"));
 
@@ -544,28 +545,31 @@ mod tests {
         ensure_project(dir.path()).unwrap();
         create_request_named(dir.path(), "Get User", req()).unwrap();
 
-        let (slug, leaf) =
-            rename_request_named(dir.path(), "get-user", "Get User v2").unwrap();
-        assert_eq!((slug.as_str(), leaf.as_str()), ("get-user-v2", "Get User v2"));
+        let (slug, leaf) = rename_request_named(dir.path(), "get-user", "Get User v2").unwrap();
+        assert_eq!(
+            (slug.as_str(), leaf.as_str()),
+            ("get-user-v2", "Get User v2")
+        );
         assert!(!request_exists(dir.path(), "get-user"));
         let loaded = load_request(dir.path(), "get-user-v2").unwrap();
         assert_eq!(loaded.name.as_deref(), Some("Get User v2"));
 
         // Renaming onto its own current name is a no-op Ok.
-        let (slug, _) =
-            rename_request_named(dir.path(), "get-user-v2", "Get User v2").unwrap();
+        let (slug, _) = rename_request_named(dir.path(), "get-user-v2", "Get User v2").unwrap();
         assert_eq!(slug, "get-user-v2");
 
         // A slug collision with a *different* request dedupes.
         create_request_named(dir.path(), "Other", req()).unwrap();
-        let (slug, _) =
-            rename_request_named(dir.path(), "other", "Get User v2!").unwrap();
+        let (slug, _) = rename_request_named(dir.path(), "other", "Get User v2!").unwrap();
         assert_eq!(slug, "get-user-v2-2");
 
         // But the same display name as a sibling errors... note the names
         // above differ ("Get User v2" vs "Get User v2!").
         let err = rename_request_named(dir.path(), "get-user-v2-2", "get user V2");
-        assert!(matches!(err, Err(StorageError::AlreadyExists(_))), "{err:?}");
+        assert!(
+            matches!(err, Err(StorageError::AlreadyExists(_))),
+            "{err:?}"
+        );
     }
 
     #[test]
@@ -599,7 +603,10 @@ mod tests {
     fn unique_slug_dedupes_against_existing_files() {
         let dir = tempfile::tempdir().unwrap();
         ensure_project(dir.path()).unwrap();
-        assert_eq!(unique_slug(dir.path(), "", "My Request", None), "my-request");
+        assert_eq!(
+            unique_slug(dir.path(), "", "My Request", None),
+            "my-request"
+        );
         save_request(dir.path(), "my-request", &req()).unwrap();
         assert_eq!(
             unique_slug(dir.path(), "", "My Request", None),
@@ -802,7 +809,10 @@ mod tests {
         let second_copy = duplicate_request(dir.path(), "users/list").unwrap();
         assert_eq!(second_copy, "users/list-copy-2");
         assert_eq!(
-            load_request(dir.path(), &second_copy).unwrap().name.as_deref(),
+            load_request(dir.path(), &second_copy)
+                .unwrap()
+                .name
+                .as_deref(),
             Some("list copy 2")
         );
     }

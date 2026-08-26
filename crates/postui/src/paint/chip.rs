@@ -109,7 +109,11 @@ impl TabStrip<'_> {
 
             text(buf, x + 1, labels_y, label, fg, on, active);
             if let Some((glyph, color)) = badge {
-                let color = if disabled { theme.text_disabled } else { *color };
+                let color = if disabled {
+                    theme.text_disabled
+                } else {
+                    *color
+                };
                 text(
                     buf,
                     x + 1 + label_w,
