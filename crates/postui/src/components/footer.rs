@@ -48,7 +48,11 @@ pub(crate) fn footer_chips(
                     Some(Action::Send),
                 )
             },
-            ("^S", "save", Some(Action::SaveRequest)),
+            (
+                "^V",
+                "vars",
+                Some(Action::OpenVarPicker { completing: false }),
+            ),
             // Arrows are the primary route (method ← URL ↓ tabs ↓ content);
             // alt+1/2/3 still work where the terminal passes them through.
             ("↑↓←→", "navigate", None),
@@ -79,10 +83,16 @@ pub(crate) fn footer_chips(
 /// per-pane chips.
 const PALETTE_CHIP: (&str, &str, Option<Action>) = ("^P", "commands", Some(Action::OpenPalette));
 
-/// `" q "` + `"quit "` — the always-present, right-aligned quit hint. Kept
-/// separate from `footer_chips` since it never varies with focus and paints
-/// plain muted text directly on the panel (not a `control`-filled chip).
-const QUIT_LABEL: &str = " q quit ";
+/// The always-present, right-aligned quit chip. Kept separate from
+/// `footer_chips` since it never varies with focus; painted through
+/// `paint_chip_row` so it reads exactly like its neighbours.
+const QUIT_CHIP: (&str, &str, Option<Action>) = ("q", "quit", Some(Action::Quit));
+
+/// A `paint_chip_row` entry's total footprint: ` key ` pill + ` label `
+/// (see its own layout comment — 4 columns beyond key+label either way).
+fn chip_width((key, label, _): &(&str, &str, Option<Action>)) -> u16 {
+    (key.chars().count() + label.chars().count() + 4) as u16
+}
 
 #[allow(clippy::too_many_arguments)]
 pub fn draw_footer(
@@ -92,6 +102,7 @@ pub fn draw_footer(
     focus: PaneId,
     shift_enter_send: bool,
     sending: bool,
+    dirty: bool,
     hits: &mut HitMap,
     hovered: Option<&Hit>,
 ) {
@@ -103,30 +114,21 @@ pub fn draw_footer(
     }
     let mid_y = area.y + area.height / 2;
 
-    let quit_w = QUIT_LABEL.chars().count() as u16;
-    let quit_x = (area.x + area.width).saturating_sub(quit_w);
-    text(
+    let quit_w = chip_width(&QUIT_CHIP);
+    let quit_x = (area.x + area.width).saturating_sub(quit_w + 1);
+    paint_chip_row(
         buf,
-        quit_x,
         mid_y,
-        QUIT_LABEL,
-        theme.text_muted,
-        theme.panel,
-        false,
-    );
-    hits.register(
-        Rect {
-            x: quit_x,
-            y: mid_y,
-            width: quit_w,
-            height: 1,
-        },
-        Hit::FooterChip(Action::Quit),
+        quit_x,
+        quit_x + quit_w,
+        &[QUIT_CHIP],
+        theme,
+        hits,
+        hovered,
     );
 
     // The palette chip sits right-aligned, one gap column left of quit.
-    let (pk, pl, _) = PALETTE_CHIP;
-    let palette_w = (pk.chars().count() + pl.chars().count() + 4) as u16;
+    let palette_w = chip_width(&PALETTE_CHIP);
     let palette_x = quit_x.saturating_sub(palette_w + 1);
     paint_chip_row(
         buf,
@@ -139,9 +141,33 @@ pub fn draw_footer(
         hovered,
     );
 
-    // Per-pane chips stop one column shy of the palette chip so the two
+    // The global save/discard group: request-level actions available from
+    // every pane (ctrl+s is a global binding), right-aligned left of the
+    // palette/quit pair with a wider gap so it reads as its own group.
+    // Discard only exists while there are unsaved edits to walk back.
+    const GROUP_GAP: u16 = 8;
+    let save_label = if dirty { "save •" } else { "save" };
+    let mut group: Vec<(&'static str, &'static str, Option<Action>)> =
+        vec![("^S", save_label, Some(Action::SaveRequest))];
+    if dirty {
+        group.push(("↩", "discard", Some(Action::ConfirmDiscardChanges)));
+    }
+    let group_w: u16 = group.iter().map(chip_width).sum::<u16>() + 2 * (group.len() as u16 - 1);
+    let group_x = palette_x.saturating_sub(GROUP_GAP + group_w);
+    paint_chip_row(
+        buf,
+        mid_y,
+        group_x,
+        group_x + group_w,
+        &group,
+        theme,
+        hits,
+        hovered,
+    );
+
+    // Per-pane chips stop one column shy of the save group so the two
     // never collide.
-    let right_limit = palette_x.saturating_sub(1);
+    let right_limit = group_x.saturating_sub(1);
     let chips = footer_chips(focus, shift_enter_send, sending);
     paint_chip_row(
         buf,
@@ -247,14 +273,31 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     fn render(focus: PaneId) -> String {
+        let (content, _) = render_dirty(focus, false);
+        content
+    }
+
+    fn render_dirty(focus: PaneId, dirty: bool) -> (String, crate::hit::HitMap) {
         let theme = Theme::for_terminal();
         let backend = TestBackend::new(120, FOOTER_HEIGHT);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut hits = crate::hit::HitMap::default();
         terminal
-            .draw(|f| draw_footer(f, f.area(), &theme, focus, false, false, &mut hits, None))
+            .draw(|f| {
+                draw_footer(
+                    f,
+                    f.area(),
+                    &theme,
+                    focus,
+                    false,
+                    false,
+                    dirty,
+                    &mut hits,
+                    None,
+                )
+            })
             .unwrap();
-        format!("{:?}", terminal.backend().buffer())
+        (format!("{:?}", terminal.backend().buffer()), hits)
     }
 
     #[test]
@@ -279,6 +322,62 @@ mod tests {
         assert!(
             !sending.iter().any(|(_, l, _)| *l == "send"),
             "a dead send key must not be advertised"
+        );
+    }
+
+    /// Save (and, while dirty, discard) are global actions now: they sit
+    /// right-aligned on the footer regardless of pane focus, in their own
+    /// group left of the palette/quit pair with a wider gap separating the
+    /// two groups.
+    #[test]
+    fn save_group_is_right_aligned_on_every_pane_with_a_gap_before_palette() {
+        for focus in [PaneId::Sidebar, PaneId::Editor, PaneId::Response] {
+            let (content, hits) = render_dirty(focus, false);
+            assert!(content.contains("save"), "{focus:?}: {content}");
+            let save = hits
+                .rect_of(&Hit::FooterChip(Action::SaveRequest))
+                .unwrap_or_else(|| panic!("{focus:?}: save chip registered"));
+            let palette = hits.rect_of(&Hit::FooterChip(Action::OpenPalette)).unwrap();
+            assert!(
+                save.x + save.width + 8 <= palette.x,
+                "{focus:?}: save group clearly separated from palette/quit: save {save:?} palette {palette:?}"
+            );
+            assert!(save.x > 60, "{focus:?}: right-aligned in a 120-wide footer");
+            assert!(
+                hits.rect_of(&Hit::FooterChip(Action::ConfirmDiscardChanges))
+                    .is_none(),
+                "{focus:?}: a clean editor has nothing to discard"
+            );
+        }
+    }
+
+    #[test]
+    fn dirty_editor_shows_the_save_dot_and_a_discard_chip() {
+        let (content, hits) = render_dirty(PaneId::Sidebar, true);
+        assert!(content.contains("save •"), "{content}");
+        assert!(content.contains("discard"), "{content}");
+        let save = hits.rect_of(&Hit::FooterChip(Action::SaveRequest)).unwrap();
+        let discard = hits
+            .rect_of(&Hit::FooterChip(Action::ConfirmDiscardChanges))
+            .expect("dirty editor offers discard");
+        assert!(discard.x > save.x, "discard sits right of save");
+        let palette = hits.rect_of(&Hit::FooterChip(Action::OpenPalette)).unwrap();
+        assert!(discard.x + discard.width < palette.x, "left of palette");
+    }
+
+    /// The editor's context chips advertise vars (^V) now that save moved
+    /// to the global right-side group — and no longer a second ^S.
+    #[test]
+    fn editor_context_chips_offer_vars_and_no_duplicate_save() {
+        let chips = footer_chips(PaneId::Editor, false, false);
+        assert!(chips.iter().any(|(k, l, a)| *k == "^V"
+            && *l == "vars"
+            && *a == Some(Action::OpenVarPicker { completing: false })));
+        assert!(
+            !chips
+                .iter()
+                .any(|(_, _, a)| *a == Some(Action::SaveRequest)),
+            "save lives in the global right-side group, not the context chips"
         );
     }
 
@@ -321,6 +420,7 @@ mod tests {
                     PaneId::Response,
                     false,
                     false,
+                    false,
                     &mut hits,
                     None,
                 )
@@ -356,6 +456,7 @@ mod tests {
                     f.area(),
                     &theme,
                     PaneId::Sidebar,
+                    false,
                     false,
                     false,
                     &mut hits,
@@ -398,6 +499,7 @@ mod tests {
                     PaneId::Sidebar,
                     false,
                     false,
+                    false,
                     &mut hits,
                     None,
                 )
@@ -425,6 +527,7 @@ mod tests {
                     f.area(),
                     &theme,
                     PaneId::Sidebar,
+                    false,
                     false,
                     false,
                     &mut hits,
@@ -484,6 +587,7 @@ mod tests {
                     PaneId::Sidebar,
                     false,
                     false,
+                    false,
                     &mut hits,
                     None,
                 )
@@ -515,8 +619,11 @@ mod tests {
         );
     }
 
+    /// Quit paints exactly like its neighbours — a tinted `q` key pill with
+    /// a muted label — rather than the plain muted text it used to be, so
+    /// the right-side chips read as one consistent family.
     #[test]
-    fn quit_hint_is_right_aligned_muted_text_on_panel() {
+    fn quit_is_a_chip_like_its_neighbours() {
         let theme = Theme::for_terminal();
         let backend = TestBackend::new(120, FOOTER_HEIGHT);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -530,6 +637,7 @@ mod tests {
                     PaneId::Sidebar,
                     false,
                     false,
+                    false,
                     &mut hits,
                     None,
                 )
@@ -538,16 +646,18 @@ mod tests {
         let rect = hits
             .rect_of(&Hit::FooterChip(Action::Quit))
             .expect("quit hit registered");
-        assert_eq!(
-            rect.x + rect.width,
-            120,
-            "quit hint sits flush against the footer's right edge"
+        assert!(
+            rect.x + rect.width >= 119,
+            "quit chip is right-aligned: {rect:?}"
         );
         let buf = terminal.backend().buffer();
         let cell = buf.cell((rect.x + 1, rect.y)).unwrap();
         assert_eq!(cell.symbol(), "q");
-        assert_eq!(cell.fg, theme.text_muted);
-        assert_eq!(cell.bg, theme.panel);
+        assert_eq!(
+            cell.bg,
+            theme.tint(theme.accent, theme.control),
+            "quit's key sits in the same tinted pill as every other chip"
+        );
     }
 
     /// Regression test for the controller sweep's Paint Gap C report: a
@@ -568,6 +678,7 @@ mod tests {
                     f.area(),
                     &theme,
                     PaneId::Sidebar,
+                    false,
                     false,
                     false,
                     &mut hits,

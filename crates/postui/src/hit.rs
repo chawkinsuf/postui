@@ -51,6 +51,9 @@ pub enum Hit {
     },
     /// The `⌄ hide` / `› show` toggle at the tab strip's right edge.
     TableCollapse,
+    /// The Response pane's hide/show toggle at the right edge of its
+    /// header strip: click dispatches `Action::ToggleResponseCollapse`.
+    ResponseCollapse,
     /// Raw mouse event forwarded to edtui (click-to-place, wheel).
     BodyEditor,
     ResponseTab(crate::components::response::ViewMode),

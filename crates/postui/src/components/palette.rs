@@ -120,6 +120,12 @@ pub fn all_commands() -> Vec<Command> {
             action: Action::ToggleBodyVars,
         },
         Command {
+            id: "response-toggle",
+            name: "Response: hide/show panel",
+            description: "Collapse the response pane to its header, or bring it back",
+            action: Action::ToggleResponseCollapse,
+        },
+        Command {
             id: "project-choose",
             name: "Project: choose…",
             description: "Switch to another registered project",

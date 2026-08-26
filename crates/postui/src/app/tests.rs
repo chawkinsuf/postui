@@ -9533,6 +9533,25 @@ fn toggle_table_collapse_retargets_pane_collapse_instead_of_snapping() {
     // time between two `Instant::now()` calls here.
 }
 
+/// `Action::ToggleResponseCollapse` (the response header's `⌄ hide`/`› show`
+/// toggle and the palette entry) flips the pane's collapsed flag and eases
+/// `AnimKey::ResponseCollapse` toward the new pole rather than snapping.
+#[test]
+fn toggle_response_collapse_flips_the_flag_and_eases_the_anim() {
+    let mut app = App::new_for_test_with_anims(true);
+    assert!(!app.session.response.collapsed);
+    app.update(Action::ToggleResponseCollapse);
+    assert!(app.session.response.collapsed);
+    let now = std::time::Instant::now();
+    assert!(
+        !app.anims
+            .is_done(crate::anim::AnimKey::ResponseCollapse, now),
+        "collapsing must ease, not snap"
+    );
+    app.update(Action::ToggleResponseCollapse);
+    assert!(!app.session.response.collapsed, "toggles back open");
+}
+
 /// A tab switch that changes whether the table is actually showing (while
 /// `table_collapsed` itself stays put) must also ease `PaneCollapse` --
 /// switching onto the Body tab always keeps the normal 50/50 split

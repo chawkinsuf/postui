@@ -148,7 +148,10 @@ impl Theme {
 
         let mut text = fg;
         let text_muted = blend(fg, bg, 0.55);
-        let text_disabled = blend(fg, bg, 0.35);
+        // `blend`'s `t` is the *bg* weight, so disabled must sit closer to
+        // 1.0 than muted to actually read dimmer — 0.35 had it the wrong
+        // way around, leaving disabled text brighter than muted.
+        let text_disabled = blend(fg, bg, 0.82);
 
         // Contrast clamp: push text away from bg until |ΔL| >= 0.4.
         let page_l = oklab_l(page);
@@ -567,6 +570,27 @@ mod tests {
         let m = crate::theme::mix(a, b, 0.5);
         let Color::Rgb(r, ..) = m else { panic!() };
         assert!(r > 0 && r < 200);
+    }
+
+    /// Disabled text must read clearly dimmer than muted text — at most
+    /// half of muted's lightness distance from the page surface. At the
+    /// old `blend(fg, bg, 0.35)` a disabled tab label was barely
+    /// distinguishable from its enabled neighbours.
+    #[test]
+    fn disabled_text_is_at_most_half_of_muted_s_contrast() {
+        for t in [Theme::dark(), Theme::light()] {
+            let l = |c: Color| {
+                let Color::Rgb(r, g, b) = c else { panic!() };
+                oklab_l((r, g, b))
+            };
+            let page = l(t.page);
+            let muted = (l(t.text_muted) - page).abs();
+            let disabled = (l(t.text_disabled) - page).abs();
+            assert!(
+                disabled <= muted * 0.5,
+                "disabled {disabled} vs muted {muted}"
+            );
+        }
     }
 
     #[test]

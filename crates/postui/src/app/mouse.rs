@@ -513,17 +513,18 @@ impl App {
     #[cfg(test)]
     pub(crate) fn mouse_dispatch_mirror() -> Vec<Action> {
         vec![
-            Action::Close,               // Hit::ModalOutside
-            Action::OpenProjectChooser,  // Hit::HeaderProject
-            Action::OpenEnvChooser,      // Hit::HeaderEnv
-            Action::OpenVarManager,      // Hit::HeaderVars
-            Action::OpenMethodDropdown,  // Hit::MethodSelector
-            Action::ToggleTableCollapse, // Hit::TableCollapse
-            Action::FocusUrl,            // Hit::UrlBar
-            Action::Send,                // Hit::SendButton (not in flight)
-            Action::EditorTabSelect(0),  // Hit::EditorTab, any draw position
-            Action::EditorTabSelect(1),  // (converted through
-            Action::EditorTabSelect(2),  //  EditorTab::from_draw_position(..).index())
+            Action::Close,                  // Hit::ModalOutside
+            Action::OpenProjectChooser,     // Hit::HeaderProject
+            Action::OpenEnvChooser,         // Hit::HeaderEnv
+            Action::OpenVarManager,         // Hit::HeaderVars
+            Action::OpenMethodDropdown,     // Hit::MethodSelector
+            Action::ToggleTableCollapse,    // Hit::TableCollapse
+            Action::ToggleResponseCollapse, // Hit::ResponseCollapse
+            Action::FocusUrl,               // Hit::UrlBar
+            Action::Send,                   // Hit::SendButton (not in flight)
+            Action::EditorTabSelect(0),     // Hit::EditorTab, any draw position
+            Action::EditorTabSelect(1),     // (converted through
+            Action::EditorTabSelect(2),     //  EditorTab::from_draw_position(..).index())
             Action::EditorTabSelect(3),
         ]
     }
@@ -753,6 +754,7 @@ impl App {
                 self.update(Action::ConfirmDeleteTableRow(i))
             }
             Hit::TableCollapse => self.update(Action::ToggleTableCollapse),
+            Hit::ResponseCollapse => self.update(Action::ToggleResponseCollapse),
             Hit::UrlBar => {
                 let was_focused = self.editor.sub_focus == SubFocus::Url;
                 // `Action::FocusUrl` is exactly "focus Editor, sub-focus

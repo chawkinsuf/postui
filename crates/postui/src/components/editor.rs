@@ -489,6 +489,15 @@ impl Editor {
         !self.method.sends_body()
     }
 
+    /// Whether the Body tab carries its validity badge: only once there's
+    /// body text to validate, and never while the tab is disabled — a
+    /// bright ✓ on a disabled tab made it read as lit as its neighbours.
+    /// Shared by [`Self::draw_tab_bar`] and [`Self::tab_strip_spans`] since
+    /// badge presence affects the tab's on-screen width.
+    fn body_badge_present(&self) -> bool {
+        !self.body_tab_disabled() && !self.body_text().is_empty()
+    }
+
     /// Shared by [`Self::draw_tab_bar`] and [`Self::tab_strip_spans`] so
     /// the two can never drift apart on the counts that drive each tab's
     /// on-screen width.
@@ -517,8 +526,8 @@ impl Editor {
             .iter()
             .map(|t| {
                 let label = self.tab_label_text(*t);
-                let badge =
-                    matches!(t, EditorTab::Body).then_some(('_', ratatui::style::Color::Reset));
+                let badge = (matches!(t, EditorTab::Body) && self.body_badge_present())
+                    .then_some(('_', ratatui::style::Color::Reset));
                 (label, badge)
             })
             .collect();
@@ -1719,7 +1728,7 @@ impl Editor {
             .map(|t| {
                 let label = self.tab_label_text(*t);
                 let badge = match t {
-                    EditorTab::Body => Some(if self.body_is_valid() {
+                    EditorTab::Body if self.body_badge_present() => Some(if self.body_is_valid() {
                         ('✓', theme.success)
                     } else {
                         ('✗', theme.error)
@@ -1817,51 +1826,6 @@ impl Editor {
         hits.register(
             Rect::new(toggle_x, area.y, toggle_w, 1),
             crate::hit::Hit::TableCollapse,
-        );
-
-        // --- save / vars chips (right-aligned, left of the toggle) ---
-        // Request-level actions: they save/parameterize the whole request,
-        // not the active tab, so they sit apart from the tabs on the same
-        // row — right-aligned, the same "about the whole pane" position the
-        // Response pane's Copy/Save buttons use.
-        let save_label = if self.is_dirty() { "save •" } else { "save" };
-        let mut chips: Vec<(&str, &str, Option<Action>)> =
-            vec![("^S", save_label, Some(Action::SaveRequest))];
-        // Unsaved edits can be walked back, not just saved: the chip only
-        // exists while there is something to discard.
-        if self.is_dirty() {
-            chips.push(("↩", "discard", Some(Action::ConfirmDiscardChanges)));
-        }
-        chips.push((
-            "^V",
-            "vars",
-            Some(Action::OpenVarPicker { completing: false }),
-        ));
-        // Each chip is ` {key} ` + ` {label} ` wide, with `paint_chip_row`'s
-        // 2-col gap between consecutive chips.
-        let chips_w: u16 = chips
-            .iter()
-            .map(|(key, label, _)| (key.chars().count() + label.chars().count() + 4) as u16)
-            .sum::<u16>()
-            + 2 * (chips.len().saturating_sub(1)) as u16;
-        // Right-aligned against the toggle, but never over the tab labels
-        // (or the substitute indicator after them): in a pane too narrow for
-        // everything, the chips start after the tabs instead and
-        // `paint_chip_row` drops whatever runs past the limit.
-        let tabs_end = rects
-            .last()
-            .map(|r| r.x + r.width + if self.substitute_body { 7 } else { 0 })
-            .unwrap_or(area.x);
-        let right_limit = toggle_x.saturating_sub(2);
-        crate::components::footer::paint_chip_row(
-            buf,
-            area.y,
-            right_limit.saturating_sub(chips_w).max(tabs_end + 2),
-            right_limit,
-            &chips,
-            theme,
-            hits,
-            ctx.hovered,
         );
     }
 
@@ -2893,40 +2857,35 @@ mod tests {
     }
 
     #[test]
-    fn save_and_vars_sit_right_aligned_on_the_tab_label_row() {
+    fn save_vars_and_discard_no_longer_sit_on_the_tab_label_row() {
+        // They moved to the footer: save/discard to its global right-side
+        // group, vars to the editor's context chips. Only the collapse
+        // toggle keeps the tab-label row's right edge.
         let mut e = Editor::default();
-        let (content, hits) = draw_editor(&mut e);
-        assert!(content.contains("save"), "save chip label: {content}");
-        assert!(content.contains("vars"), "vars chip label: {content}");
-
-        let save_rect = hits
-            .rect_of(&Hit::FooterChip(Action::SaveRequest))
-            .expect("save chip must be a registered hit");
-        let vars_rect = hits
-            .rect_of(&Hit::FooterChip(Action::OpenVarPicker {
+        e.load(
+            Some("a".into()),
+            HttpRequest::from_toml_str("url = \"https://x\"\n").unwrap(),
+        );
+        e.url = LineInput::new("https://x/changed");
+        assert!(e.is_dirty());
+        let (_, hits) = draw_editor(&mut e);
+        assert!(
+            hits.rect_of(&Hit::FooterChip(Action::SaveRequest))
+                .is_none()
+        );
+        assert!(
+            hits.rect_of(&Hit::FooterChip(Action::ConfirmDiscardChanges))
+                .is_none()
+        );
+        assert!(
+            hits.rect_of(&Hit::FooterChip(Action::OpenVarPicker {
                 completing: false,
             }))
-            .expect("vars chip must be a registered hit");
-        // Request-level actions live on the tab-label row (the first row of
-        // the tab bar), not on a row of their own below the tabs.
-        assert_eq!(save_rect.y, ADDRESS_BAR_HEIGHT);
-        assert_eq!(vars_rect.y, ADDRESS_BAR_HEIGHT);
-        assert!(
-            vars_rect.x > save_rect.x,
-            "vars chip sits right of save, left to right"
-        );
-        // Right-aligned, but left of the collapse toggle that keeps the far
-        // right edge of the same row.
-        let toggle = hits
-            .rect_of(&Hit::TableCollapse)
-            .expect("collapse toggle hit");
-        assert!(
-            vars_rect.x + vars_rect.width <= toggle.x,
-            "chips must not overlap the collapse toggle: vars {vars_rect:?} toggle {toggle:?}"
+            .is_none()
         );
         assert!(
-            save_rect.x > 60,
-            "chips are right-aligned in a 120-wide pane: {save_rect:?}"
+            hits.rect_of(&Hit::TableCollapse).is_some(),
+            "the collapse toggle stays"
         );
     }
 
@@ -2946,26 +2905,6 @@ mod tests {
     }
 
     #[test]
-    fn save_chip_label_gains_a_dirty_dot_only_while_the_editor_is_dirty() {
-        let mut e = Editor::default();
-        e.load(
-            Some("a".into()),
-            HttpRequest::from_toml_str("url = \"https://x\"\n").unwrap(),
-        );
-        let (clean, _) = draw_editor(&mut e);
-        assert!(clean.contains("save "), "clean editor: {clean}");
-        assert!(!clean.contains("save •"), "clean editor: {clean}");
-
-        e.url = LineInput::new("https://x/changed");
-        assert!(e.is_dirty());
-        let (dirty, _) = draw_editor(&mut e);
-        assert!(
-            dirty.contains("save •"),
-            "dirty editor shows the dot: {dirty}"
-        );
-    }
-
-    #[test]
     fn scratch_dirty_is_typed_content_with_no_saved_snapshot() {
         let mut e = Editor::default();
         assert!(
@@ -2981,30 +2920,6 @@ mod tests {
         assert!(
             !e.is_scratch_dirty(),
             "a loaded request is `is_dirty`'s territory, never this"
-        );
-    }
-
-    #[test]
-    fn discard_chip_appears_only_while_dirty() {
-        let mut e = Editor::default();
-        e.load(
-            Some("a".into()),
-            HttpRequest::from_toml_str("url = \"https://x\"\n").unwrap(),
-        );
-        let (_, hits) = draw_editor(&mut e);
-        assert!(
-            hits.rect_of(&Hit::FooterChip(Action::ConfirmDiscardChanges))
-                .is_none(),
-            "a clean editor has nothing to discard"
-        );
-
-        e.url = LineInput::new("https://x/changed");
-        let (content, hits) = draw_editor(&mut e);
-        assert!(content.contains("discard"), "{content}");
-        assert!(
-            hits.rect_of(&Hit::FooterChip(Action::ConfirmDiscardChanges))
-                .is_some(),
-            "a dirty editor offers discard next to save"
         );
     }
 
@@ -3074,9 +2989,10 @@ mod tests {
 
     #[test]
     fn body_tab_label_shows_json_validity() {
-        let render = |text: &str| {
+        let render = |method: postui_core::model::Method, text: &str| {
             let mut e = Editor {
                 active_tab: EditorTab::Body,
+                method,
                 ..Editor::default()
             };
             e.set_body_text(text);
@@ -3097,9 +3013,40 @@ mod tests {
                 .unwrap();
             format!("{:?}", terminal.backend().buffer())
         };
-        assert!(render("").contains("Body ✓"), "empty body counts as valid");
-        assert!(render("{\"a\": 1}").contains("Body ✓"));
-        assert!(render("{oops").contains("Body ✗"));
+        use postui_core::model::Method;
+        assert!(render(Method::Post, "{\"a\": 1}").contains("Body ✓"));
+        assert!(render(Method::Post, "{oops").contains("Body ✗"));
+        // No badge at all on an empty body — there's nothing to validate.
+        let empty = render(Method::Post, "");
+        assert!(
+            !empty.contains('✓') && !empty.contains('✗'),
+            "empty body shows no validity badge: {empty}"
+        );
+        // No badge while the tab is disabled (GET/HEAD send no body): the
+        // bright validity glyph is what made a disabled tab read as lit.
+        let disabled = render(Method::Get, "{\"a\": 1}");
+        assert!(
+            !disabled.contains('✓') && !disabled.contains('✗'),
+            "disabled Body tab shows no validity badge: {disabled}"
+        );
+    }
+
+    /// `tab_strip_spans` must agree with `draw_tab_bar` on badge presence
+    /// (it affects the Body tab's width): no badge on an empty body, one
+    /// once the body has text and the method sends it.
+    #[test]
+    fn tab_strip_spans_track_badge_presence() {
+        let mut e = Editor {
+            method: postui_core::model::Method::Post,
+            ..Editor::default()
+        };
+        let without = e.tab_strip_spans()[EditorTab::Body.draw_position()].1;
+        e.set_body_text("{}");
+        let with = e.tab_strip_spans()[EditorTab::Body.draw_position()].1;
+        assert_eq!(with, without + 2, "badge adds its 2-cell span");
+        e.method = postui_core::model::Method::Get;
+        let disabled = e.tab_strip_spans()[EditorTab::Body.draw_position()].1;
+        assert_eq!(disabled, without, "disabled tab drops the badge");
     }
 
     #[test]
@@ -3825,7 +3772,8 @@ url = "https://api.example.com/users""#,
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
 
-        let layout = crate::layout::compute_layout(ratatui::layout::Rect::new(0, 0, 120, 40), 0.0);
+        let layout =
+            crate::layout::compute_layout(ratatui::layout::Rect::new(0, 0, 120, 40), 0.0, 0.0);
         let buf = terminal.backend().buffer();
         // Deep into the pane's lower region, well past the address bar, tab
         // bar, and the empty table's few header/ghost/edge rows.

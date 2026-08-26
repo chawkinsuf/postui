@@ -55,7 +55,14 @@ pub struct AppLayout {
 /// old `editor_collapsed_to_chrome: bool` behavior — callers that only
 /// ever need the settled state (every existing test) can keep passing
 /// `0.0`/`1.0` unchanged.
-pub fn compute_layout(area: Rect, collapse_t: f32) -> AppLayout {
+///
+/// `response_t` is the eased `AnimKey::ResponseCollapse` value: `1.0` is
+/// the Response pane hidden — shrunk to exactly its
+/// [`crate::components::response::HEADER_STRIP_HEIGHT`]-row header strip,
+/// with the Editor pane taking every freed row. Applied after (and
+/// overriding) `collapse_t`'s split: with both at `1.0` the editor keeps
+/// the leftover rows as empty page below its chrome.
+pub fn compute_layout(area: Rect, collapse_t: f32, response_t: f32) -> AppLayout {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -105,6 +112,27 @@ pub fn compute_layout(area: Rect, collapse_t: f32) -> AppLayout {
             (editor_rect, response_rect)
         }
     };
+    let rt = response_t.clamp(0.0, 1.0);
+    let (editor, response) = if rt <= 0.0 {
+        (editor, response)
+    } else {
+        let chrome = crate::components::response::HEADER_STRIP_HEIGHT.min(cols[2].height);
+        let response_h = if rt >= 1.0 {
+            chrome
+        } else {
+            (response.height as f32 + (chrome as f32 - response.height as f32) * rt).round() as u16
+        };
+        let editor_h = cols[2].height.saturating_sub(response_h);
+        (
+            Rect::new(cols[2].x, cols[2].y, cols[2].width, editor_h),
+            Rect::new(
+                cols[2].x,
+                cols[2].y.saturating_add(editor_h),
+                cols[2].width,
+                response_h,
+            ),
+        )
+    };
     AppLayout {
         header: rows[0],
         body,
@@ -140,7 +168,7 @@ mod tests {
     #[test]
     fn layout_partitions_area() {
         let area = Rect::new(0, 0, 120, 40);
-        let l = compute_layout(area, 0.0);
+        let l = compute_layout(area, 0.0, 0.0);
         assert_eq!(l.header.height, 3);
         assert_eq!(l.footer.height, 3);
         assert_eq!(l.header.y, 0);
@@ -161,8 +189,8 @@ mod tests {
     #[test]
     fn collapsed_editor_shrinks_to_chrome_and_response_takes_the_rest() {
         let area = Rect::new(0, 0, 120, 40);
-        let expanded = compute_layout(area, 0.0);
-        let collapsed = compute_layout(area, 1.0);
+        let expanded = compute_layout(area, 0.0, 0.0);
+        let collapsed = compute_layout(area, 1.0, 0.0);
         assert_eq!(
             collapsed.editor.height,
             editor::CHROME_HEIGHT,
@@ -182,9 +210,9 @@ mod tests {
     #[test]
     fn mid_collapse_height_sits_strictly_between_both_endpoints() {
         let area = Rect::new(0, 0, 120, 40);
-        let expanded = compute_layout(area, 0.0);
-        let collapsed = compute_layout(area, 1.0);
-        let mid = compute_layout(area, 0.5);
+        let expanded = compute_layout(area, 0.0, 0.0);
+        let collapsed = compute_layout(area, 1.0, 0.0);
+        let mid = compute_layout(area, 0.5, 0.0);
         assert!(
             mid.editor.height < expanded.editor.height,
             "mid-collapse editor is shorter than fully expanded"
@@ -203,9 +231,63 @@ mod tests {
     #[test]
     fn collapse_t_clamps_outside_zero_one() {
         let area = Rect::new(0, 0, 120, 40);
-        let below = compute_layout(area, -0.5);
-        let above = compute_layout(area, 1.5);
-        assert_eq!(below.editor, compute_layout(area, 0.0).editor);
-        assert_eq!(above.editor, compute_layout(area, 1.0).editor);
+        let below = compute_layout(area, -0.5, 0.0);
+        let above = compute_layout(area, 1.5, 0.0);
+        assert_eq!(below.editor, compute_layout(area, 0.0, 0.0).editor);
+        assert_eq!(above.editor, compute_layout(area, 1.0, 0.0).editor);
+    }
+
+    #[test]
+    fn collapsed_response_shrinks_to_its_header_and_editor_takes_the_rest() {
+        let area = Rect::new(0, 0, 120, 40);
+        let expanded = compute_layout(area, 0.0, 0.0);
+        let collapsed = compute_layout(area, 0.0, 1.0);
+        assert_eq!(
+            collapsed.response.height,
+            crate::components::response::HEADER_STRIP_HEIGHT,
+            "response pane shrinks to exactly its header strip"
+        );
+        assert_eq!(
+            collapsed.editor.height + collapsed.response.height,
+            expanded.editor.height + expanded.response.height,
+            "the two panes still exactly fill the same vertical span"
+        );
+        assert!(
+            collapsed.editor.height > expanded.editor.height,
+            "editor pane reclaims every row the response gave up"
+        );
+    }
+
+    #[test]
+    fn mid_response_collapse_sits_strictly_between_both_endpoints() {
+        let area = Rect::new(0, 0, 120, 40);
+        let expanded = compute_layout(area, 0.0, 0.0);
+        let collapsed = compute_layout(area, 0.0, 1.0);
+        let mid = compute_layout(area, 0.0, 0.5);
+        assert!(mid.response.height < expanded.response.height);
+        assert!(mid.response.height > collapsed.response.height);
+        assert_eq!(
+            mid.editor.height + mid.response.height,
+            expanded.editor.height + expanded.response.height,
+            "still exactly fills the same vertical span mid-anim"
+        );
+    }
+
+    /// A collapsed response wins the freed rows even while the editor is
+    /// itself collapsed to chrome — the editor pane simply shows its chrome
+    /// atop empty page.
+    #[test]
+    fn response_collapse_takes_precedence_over_editor_collapse() {
+        let area = Rect::new(0, 0, 120, 40);
+        let both = compute_layout(area, 1.0, 1.0);
+        assert_eq!(
+            both.response.height,
+            crate::components::response::HEADER_STRIP_HEIGHT
+        );
+        assert_eq!(
+            both.editor.height + both.response.height,
+            compute_layout(area, 0.0, 0.0).editor.height
+                + compute_layout(area, 0.0, 0.0).response.height
+        );
     }
 }

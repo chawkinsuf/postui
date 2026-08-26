@@ -1198,6 +1198,25 @@ impl App {
                 self.table_collapsed = !self.table_collapsed;
                 true
             }
+            Action::ToggleResponseCollapse => {
+                // Unlike `PaneCollapse` (whose target is a derived condition
+                // resynced on every update), only this action moves the
+                // response collapse, so the anim retargets right here.
+                let collapsed = !self.session.response.collapsed;
+                self.session.response.collapsed = collapsed;
+                let now = Instant::now();
+                let target = if collapsed { 1.0 } else { 0.0 };
+                if self.anims.value(AnimKey::ResponseCollapse, now).is_none() {
+                    self.anims.snap(AnimKey::ResponseCollapse, 1.0 - target);
+                }
+                self.anims.retarget(
+                    AnimKey::ResponseCollapse,
+                    target,
+                    self.ui_settings.anim_ms.pane_collapse,
+                    now,
+                );
+                true
+            }
             Action::FormatBody => {
                 self.no_coalesce = true;
                 self.transform_body(postui_core::json::format)

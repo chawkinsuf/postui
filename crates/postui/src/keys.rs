@@ -136,6 +136,7 @@ pub(crate) fn named_actions() -> Vec<(&'static str, Action)> {
         ("env_cycle", Action::CycleEnv),
         ("pick_variable", Action::OpenVarPicker { completing: false }),
         ("toggle_table_collapse", Action::ToggleTableCollapse),
+        ("toggle_response_collapse", Action::ToggleResponseCollapse),
         ("var_manager_open", Action::OpenVarManager),
         ("extract_to_variable", Action::ExtractToVariable),
         ("request_duplicate", Action::DuplicateRequest),

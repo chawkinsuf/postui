@@ -80,6 +80,10 @@ pub enum AnimKey {
     ModalOpen,
     DropdownOpen,
     PaneCollapse,
+    /// The Response pane's hide/show collapse (0.0 shown → 1.0 hidden),
+    /// driven by `Action::ToggleResponseCollapse` with the same easing and
+    /// duration as [`AnimKey::PaneCollapse`].
+    ResponseCollapse,
     SendBreathe,
     ToastFade(u64),
 }

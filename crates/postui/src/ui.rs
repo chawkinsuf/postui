@@ -43,7 +43,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         now,
         if editor_collapsed_to_chrome { 1.0 } else { 0.0 },
     );
-    let layout = compute_layout(frame.area(), collapse_t);
+    let response_t = app.anims.value_or(
+        crate::anim::AnimKey::ResponseCollapse,
+        now,
+        if app.session.response.collapsed {
+            1.0
+        } else {
+            0.0
+        },
+    );
+    let layout = compute_layout(frame.area(), collapse_t, response_t);
     let focus = app.focus;
     let screen = app.screen;
     let mut hits = std::mem::take(&mut app.hits);
@@ -148,6 +157,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         focus,
         app.shift_enter_send,
         app.editor.sending,
+        app.editor.is_dirty(),
         &mut hits,
         app.hovered.as_ref(),
     );
@@ -310,7 +320,8 @@ mod tests {
         let mut app = App::new_for_test();
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).unwrap();
-        let layout = crate::layout::compute_layout(ratatui::layout::Rect::new(0, 0, 120, 40), 0.0);
+        let layout =
+            crate::layout::compute_layout(ratatui::layout::Rect::new(0, 0, 120, 40), 0.0, 0.0);
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let buf = terminal.backend().buffer();
 

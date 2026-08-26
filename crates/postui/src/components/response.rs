@@ -507,6 +507,10 @@ struct LineMatches {
 pub struct Response {
     state: ResponseState,
     view: Option<ReadyView>,
+    /// Whether the pane is hidden — collapsed to just its header strip,
+    /// with the editor taking the freed rows (`Action::ToggleResponseCollapse`).
+    /// Session-only — never persisted.
+    pub collapsed: bool,
 }
 
 impl Response {
@@ -1006,7 +1010,7 @@ impl Component for Response {
             ])
             .split(inner);
 
-        draw_header_strip(frame, hits, rows[0], data, view, ctx);
+        draw_header_strip(frame, hits, rows[0], data, view, self.collapsed, ctx);
 
         let mut body_area = rows[1];
         crate::paint::fill(frame.buffer_mut(), body_area, t.page);
@@ -1069,53 +1073,83 @@ impl Component for Response {
 
 /// Total on-screen height (in rows) of [`draw_header_strip`]'s painted
 /// surface: status chip / chips + right-aligned tabs / tabs underline.
-const HEADER_STRIP_HEIGHT: u16 = 3;
+/// `pub` because it is also the collapsed Response pane's height — what
+/// `layout::compute_layout` shrinks the pane to while it's hidden.
+pub const HEADER_STRIP_HEIGHT: u16 = 3;
 
-/// Paints the 3-row header strip on `theme.panel`: the status chip and,
-/// right-aligned on the same row, the Copy body / Save to file buttons, on
-/// row 0; the timing + size chips (plain muted text — they are not
-/// clickable) plus content type on the left and the response tabs
-/// right-aligned on row 1; the tabs' accent underline on row 2.
+/// Paints the 3-row header strip on `theme.panel`: the status chip plus
+/// the timing + size chips (plain muted text — they are not clickable) and
+/// content type, all on row 0; the response tabs right-aligned on row 1;
+/// row 2 holds the tabs' accent underline on the right and the icon
+/// actions (🔍 / ⧉ / 💾) on the left, directly above the body they act on.
 fn draw_header_strip(
     frame: &mut Frame,
     hits: &mut crate::hit::HitMap,
     area: Rect,
     data: &crate::http::ResponseData,
     view: &ReadyView,
+    collapsed: bool,
     ctx: &DrawCtx,
 ) {
     let t = ctx.theme;
     let buf = frame.buffer_mut();
     crate::paint::fill(buf, area, t.panel);
 
-    // Row 0 (left): the status chip, e.g. " 200 ".
-    crate::paint::Chip {
+    // Row 0 (left): the status chip, e.g. " 200 ", then timing + size,
+    // plain muted text (not clickable, so no control fill — chip fill
+    // means clickability), then content type.
+    let chip_w = crate::paint::Chip {
         label: &data.status.to_string(),
         color: t.status_color(data.status),
     }
     .paint(buf, area.x, area.y, t.panel, t);
 
-    // Row 0 (right): 🔍 / Copy body / Save to file, right-aligned — the
-    // row's only other content is the short status chip, so there's no risk
-    // of the buttons colliding with it at any pane width worth supporting.
-    draw_header_actions(frame, hits, area, ctx);
-
-    let buf = frame.buffer_mut();
-
-    // Row 1 (left): timing + size, plain muted text (not clickable, so no
-    // control fill — chip fill means clickability), then content type.
-    let row1_y = area.y + 1;
-    let mut x = area.x;
+    let mut x = area.x + chip_w + 1;
     for label in [human_elapsed(data.elapsed), human_size(data.size)] {
         let s = format!(" {label} ");
         let w = s.chars().count() as u16;
-        crate::paint::text(buf, x, row1_y, &s, t.text_muted, t.panel, false);
+        crate::paint::text(buf, x, area.y, &s, t.text_muted, t.panel, false);
         x += w + 1;
     }
     if let Some(ct) = &data.content_type {
         let s = format!(" {ct}");
-        crate::paint::text(buf, x, row1_y, &s, t.text_muted, t.panel, false);
+        crate::paint::text(buf, x, area.y, &s, t.text_muted, t.panel, false);
     }
+
+    // Row 0 (right): the pane's hide/show toggle, mirroring the editor
+    // table's own collapse affordance.
+    let toggle_label = if collapsed {
+        "\u{203a} show"
+    } else {
+        "\u{2304} hide"
+    };
+    let toggle_w = toggle_label.chars().count() as u16;
+    let toggle_x = area.right().saturating_sub(toggle_w + 1);
+    let toggle_fg = if ctx.hovered == Some(&crate::hit::Hit::ResponseCollapse) {
+        t.text
+    } else {
+        t.text_muted
+    };
+    crate::paint::text(
+        buf,
+        toggle_x,
+        area.y,
+        toggle_label,
+        toggle_fg,
+        t.panel,
+        false,
+    );
+    hits.register(
+        Rect::new(toggle_x, area.y, toggle_w, 1),
+        crate::hit::Hit::ResponseCollapse,
+    );
+
+    // Row 2 (left): the icon actions, on the stretch of the underline row
+    // the tabs' rule doesn't reach.
+    draw_header_actions(frame, hits, area, ctx);
+
+    let buf = frame.buffer_mut();
+    let row1_y = area.y + 1;
 
     // Row 1 (right) + row 2 (its underline): the response tabs,
     // right-aligned.
@@ -1199,10 +1233,18 @@ fn tabstrip_width(tabs: &[(String, Option<(char, ratatui::style::Color)>)]) -> u
         .unwrap_or(0)
 }
 
-/// The header strip's plain painted actions — `🔍` (open search), `Copy
-/// body`, `Save to file` — right-aligned in `area` on its `theme.panel`
-/// fill. Overflows leftward when `area` is too narrow rather than off its
-/// right edge.
+/// The icon actions in the header strip — `🔍` (search), `💾` (save to
+/// file), `⧉` (copy body, the same glyph every other copy affordance
+/// uses, keeping the group's right edge).
+const HEADER_ACTIONS: [(&str, crate::hit::Hit); 3] = [
+    (" 🔍 ", crate::hit::Hit::ResponseSearchButton),
+    (" 💾 ", crate::hit::Hit::SaveBodyButton),
+    (" ⧉ ", crate::hit::Hit::CopyBodyButton),
+];
+
+/// The header strip's icon actions, left-aligned on the underline row
+/// (`area`'s third row) — the stretch the tabs' rule doesn't reach — so
+/// they sit directly above the response body they act on.
 fn draw_header_actions(
     frame: &mut Frame,
     hits: &mut crate::hit::HitMap,
@@ -1210,27 +1252,14 @@ fn draw_header_actions(
     ctx: &DrawCtx,
 ) {
     use unicode_width::UnicodeWidthStr;
-    let actions = [
-        (" 🔍 ".to_string(), crate::hit::Hit::ResponseSearchButton),
-        (" Copy body ".to_string(), crate::hit::Hit::CopyBodyButton),
-        (
-            " Save to file ".to_string(),
-            crate::hit::Hit::SaveBodyButton,
-        ),
-    ];
-    // Display width, not char count — the magnifier is a 2-column glyph.
-    let widths: Vec<u16> = actions
-        .iter()
-        .map(|(label, _)| label.width() as u16)
-        .collect();
-    // One blank column between neighbours, the group flush to the right.
-    let total: u16 = widths.iter().sum::<u16>() + widths.len().saturating_sub(1) as u16;
-    let mut x = area.right().saturating_sub(total).max(area.x);
-
-    let mut rects = Vec::new();
+    let y = area.y + 2;
+    let mut x = area.x + 1;
     let buf = frame.buffer_mut();
-    for ((label, hit), w) in actions.iter().zip(widths) {
-        let rect = Rect::new(x, area.y, w, 1);
+    let mut rects = Vec::new();
+    for (label, hit) in HEADER_ACTIONS {
+        // Display width, not char count — the emoji are 2-column glyphs.
+        let w = label.width() as u16;
+        let rect = Rect::new(x, y, w, 1);
         draw_pane_action(
             buf,
             rect,
@@ -1240,7 +1269,7 @@ fn draw_header_actions(
             ctx.theme.panel,
             ctx.theme,
         );
-        rects.push((rect, hit.clone()));
+        rects.push((rect, hit));
         x += w + 1;
     }
     for (rect, hit) in rects {
@@ -1991,9 +2020,9 @@ mod tests {
             .draw(|f| r.draw(f, f.area(), &ctx, &mut hits))
             .unwrap();
         let buf = terminal.backend().buffer();
-        // Row 1, just past the pane's 1-col left padding, lands inside the
-        // elapsed chip's leading space.
-        let cell = buf.cell((1, 1)).expect("elapsed chip cell");
+        // Row 0, just past the status chip (` 200 ` from x=1), lands in the
+        // gap before the elapsed figure.
+        let cell = buf.cell((6, 0)).expect("elapsed chip cell");
         assert_eq!(
             cell.bg, theme.panel,
             "timing chip must not be control-filled: {cell:?}"
@@ -2001,7 +2030,7 @@ mod tests {
         // Find the "ms" text and confirm it's muted, not on control fill.
         let mut found = false;
         for x in 0..60u16 {
-            let cell = buf.cell((x, 1)).unwrap();
+            let cell = buf.cell((x, 0)).unwrap();
             if cell.symbol() == "m" {
                 assert_eq!(cell.fg, theme.text_muted, "elapsed text should be muted");
                 assert_eq!(
@@ -2034,11 +2063,12 @@ mod tests {
             .unwrap();
         let buf = terminal.backend().buffer();
         // Rows 0..3 (panes carry no border of their own) are the strip.
-        // Column 15 is blank on row 0 (past the status chip, short of the
-        // right-aligned Copy/Save buttons); column 36 is blank on rows 1-2
-        // (past the chips and content type, short of the right-aligned
-        // block tabs starting at 37). Both should still read as panel fill.
-        for (y, x) in [(0u16, 15u16), (1, 36), (2, 36)] {
+        // Column 45 is blank on row 0 (past the status/timing/size/content
+        // figures); column 10 is blank on row 1 (left of the right-aligned
+        // tabs); column 20 is blank on row 2 (past the left-aligned icon
+        // actions, short of the tabs' underline rule). All should still
+        // read as panel fill.
+        for (y, x) in [(0u16, 45u16), (1, 10), (2, 20)] {
             let cell = buf.cell((x, y)).unwrap();
             assert_eq!(
                 cell.bg, theme.panel,
@@ -2774,6 +2804,134 @@ mod tests {
         let out = render(&mut r);
         assert!(out.contains("🔍"), "{out}");
         assert!(!out.contains("⌕"), "{out}");
+    }
+
+    /// Renders with a hovered hit, returning (buffer content, hits).
+    fn render_hovered(
+        resp: &mut Response,
+        hovered: Option<&crate::hit::Hit>,
+    ) -> (String, crate::hit::HitMap) {
+        let theme = Theme::dark();
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered,
+            dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
+        };
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| resp.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+        (format!("{:?}", terminal.backend().buffer()), hits)
+    }
+
+    /// The status figures share the top row with the status chip: `200
+    /// 342 ms  18 B  application/json` all on one line.
+    #[test]
+    fn status_timing_size_and_content_type_share_the_top_row() {
+        let theme = Theme::dark();
+        let mut r = ready(r#"{"a": 1}"#);
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: None,
+            dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
+        };
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| r.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let row0: String = (0..60u16)
+            .map(|x| buf.cell((x, 0)).unwrap().symbol())
+            .collect();
+        assert!(row0.contains("200"), "status chip on row 0: {row0}");
+        assert!(row0.contains("342 ms"), "elapsed on row 0: {row0}");
+        assert!(row0.contains("8 B"), "size on row 0: {row0}");
+        assert!(
+            row0.contains("application/json"),
+            "content type on row 0: {row0}"
+        );
+    }
+
+    /// The header actions are icons — 🔍 (search), ⧉ (copy body, the same
+    /// glyph every other copy affordance uses), 💾 (save to file) — sitting
+    /// left-aligned on the underline row, directly above the body they act
+    /// on. The old text labels are gone.
+    #[test]
+    fn header_actions_are_icons_on_the_underline_row() {
+        let mut r = ready(r#"{"a": 1}"#);
+        let (out, hits) = render_hovered(&mut r, None);
+        assert!(out.contains("⧉"), "copy icon: {out}");
+        assert!(out.contains("💾"), "save icon: {out}");
+        assert!(!out.contains("Copy body"), "no text label at rest: {out}");
+        assert!(
+            !out.contains("Save to file"),
+            "no text label at rest: {out}"
+        );
+        let search = hits
+            .rect_of(&crate::hit::Hit::ResponseSearchButton)
+            .expect("search hit");
+        let copy = hits
+            .rect_of(&crate::hit::Hit::CopyBodyButton)
+            .expect("copy hit");
+        let save = hits
+            .rect_of(&crate::hit::Hit::SaveBodyButton)
+            .expect("save hit");
+        for (name, rect) in [("search", search), ("copy", copy), ("save", save)] {
+            assert_eq!(rect.y, 2, "{name} sits on the underline row: {rect:?}");
+        }
+        assert!(
+            search.x < save.x && save.x < copy.x,
+            "search / save / copy, left to right — copy keeps the right edge"
+        );
+        assert!(
+            copy.x + copy.width < 20,
+            "icons are left-aligned, not flushed right: {copy:?}"
+        );
+    }
+
+    /// The header's right edge offers the pane's hide/show toggle,
+    /// mirroring the editor table's collapse affordance.
+    #[test]
+    fn header_offers_a_hide_toggle_that_reads_show_while_collapsed() {
+        let mut r = ready(r#"{"a": 1}"#);
+        let (out, hits) = render_hovered(&mut r, None);
+        assert!(out.contains("hide"), "{out}");
+        let toggle = hits
+            .rect_of(&crate::hit::Hit::ResponseCollapse)
+            .expect("toggle registered");
+        assert_eq!(toggle.y, 0, "toggle sits on the header's top row");
+        assert!(toggle.x > 40, "right-aligned in a 60-wide pane: {toggle:?}");
+
+        r.collapsed = true;
+        let (out, hits) = render_hovered(&mut r, None);
+        assert!(out.contains("show"), "{out}");
+        assert!(
+            hits.rect_of(&crate::hit::Hit::ResponseCollapse).is_some(),
+            "toggle stays clickable while collapsed"
+        );
+    }
+
+    /// The icon buttons carry no hover tooltip (a one-line floating label
+    /// read as noise) — hovering one changes only the button's own styling.
+    #[test]
+    fn hovered_header_action_raises_no_tooltip() {
+        for (hit, name) in [
+            (crate::hit::Hit::ResponseSearchButton, "Search"),
+            (crate::hit::Hit::CopyBodyButton, "Copy body"),
+            (crate::hit::Hit::SaveBodyButton, "Save to file"),
+        ] {
+            let mut r = ready(r#"{"a": 1}"#);
+            let (out, _) = render_hovered(&mut r, Some(&hit));
+            assert!(!out.contains(name), "no tooltip for {hit:?}: {out}");
+        }
     }
 
     #[test]

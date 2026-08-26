@@ -49,6 +49,10 @@ pub enum Action {
     /// Toggles `App::table_collapsed` (params/headers table body vs. tab
     /// strip only). Session-only — never persisted.
     ToggleTableCollapse,
+    /// Toggles the Response pane between hidden (collapsed to its header
+    /// strip, editor taking the freed rows) and shown. Session-only —
+    /// never persisted.
+    ToggleResponseCollapse,
     /// Open the delete confirmation for row `i` of the active params/headers
     /// table (from the `d`/`Delete` key or the row's `✕` affordance).
     ConfirmDeleteTableRow(usize),
