@@ -212,13 +212,14 @@ pub struct App {
     /// (tab strip + its count chip stay visible; only the table itself is
     /// hidden). Session-only — never persisted.
     pub table_collapsed: bool,
-    /// The last `editor_collapsed_to_chrome` value (`table_collapsed` AND
-    /// the active tab is one the table applies to) `AnimKey::PaneCollapse`
-    /// was driven toward, tracked so `update` can tell when that derived
-    /// condition flips — from `Action::ToggleTableCollapse` or from an
-    /// active-tab switch while collapsed — and start easing the layout
-    /// split rather than snapping it every frame it's still settled.
+    /// The last `table_collapsed` value `AnimKey::PaneCollapse` was driven
+    /// toward, tracked so `update` can tell when it flips
+    /// (`Action::ToggleTableCollapse`) and start easing the layout split
+    /// rather than snapping it every frame it's still settled.
     pane_collapsed_target: bool,
+    /// Mirror of [`Self::pane_collapsed_target`] for the Response pane's
+    /// collapse anim — see [`Self::sync_response_collapse_anim`].
+    response_collapsed_target: bool,
     /// The most recent left-click's hit and when it landed, used to detect
     /// a double-click (same hit, within 400ms).
     last_click: Option<(Hit, std::time::Instant)>,
@@ -588,6 +589,7 @@ impl App {
             text_drag: None,
             table_collapsed: false,
             pane_collapsed_target: false,
+            response_collapsed_target: false,
             last_click: None,
             last_action_failed: false,
             _test_rx: None,
@@ -682,6 +684,12 @@ impl App {
         // whenever an action changed which request is open (any route),
         // swap in that request's cached response — or an empty one.
         let swapped = self.session.sync_open(&self.editor.slug);
+        // The no-blank-screen rule (see `Action::ToggleTableCollapse`)
+        // also holds when a hidden response arrives by request switch: the
+        // swapped-in response keeps its state, so the editor expands.
+        if swapped && self.session.response.collapsed && self.table_collapsed {
+            self.table_collapsed = false;
+        }
         // The send button shows "sending" only when the in-flight send
         // belongs to the request being looked at.
         let editor_in_flight = self.session.in_flight_for(&self.editor.slug);
@@ -689,6 +697,7 @@ impl App {
         self.editor.send_started = editor_in_flight.map(|f| f.started);
         self.editor.table_collapsed = self.table_collapsed;
         self.sync_pane_collapse_anim();
+        self.sync_response_collapse_anim();
         // Any toast pushed by `apply(action)` above gets its slide-in
         // started here rather than inside `Toasts::push` itself — `push`
         // is called from ~100 sites across this file, none of which
@@ -701,21 +710,15 @@ impl App {
         changed || swapped
     }
 
-    /// Keeps `AnimKey::PaneCollapse` chasing `editor_collapsed_to_chrome`
-    /// (`table_collapsed` AND the active tab is Params/Headers/Vars — the
-    /// same condition `layout::compute_layout`'s caller uses): whenever it
-    /// flips (`Action::ToggleTableCollapse`, or an active-tab switch while
-    /// collapsed), retargets the anim from wherever it currently sits to
-    /// the new pole over `ui_settings.anim_ms.pane_collapse` (120ms by
-    /// default). Called on every `update`, not just the toggle action, so
-    /// a tab switch that changes the derived condition eases too rather
-    /// than only reacting to the chip/alt+p.
+    /// Keeps `AnimKey::PaneCollapse` chasing `table_collapsed` (the same
+    /// condition `ui::draw` uses — hide applies on every tab, the Body
+    /// buffer included): whenever it flips
+    /// (`Action::ToggleTableCollapse`/the `⌄ hide` chip), retargets the
+    /// anim from wherever it currently sits to the new pole over
+    /// `ui_settings.anim_ms.pane_collapse` (120ms by default). Called on
+    /// every `update`, not just the toggle action.
     fn sync_pane_collapse_anim(&mut self) {
-        let target = self.table_collapsed
-            && matches!(
-                self.editor.active_tab,
-                EditorTab::Params | EditorTab::Headers | EditorTab::Vars
-            );
+        let target = self.table_collapsed;
         if target == self.pane_collapsed_target {
             return;
         }
@@ -727,6 +730,31 @@ impl App {
         }
         self.anims.retarget(
             AnimKey::PaneCollapse,
+            target_v,
+            self.ui_settings.anim_ms.pane_collapse,
+            now,
+        );
+    }
+
+    /// Keeps `AnimKey::ResponseCollapse` chasing the *open* response's
+    /// `collapsed` flag the same way [`Self::sync_pane_collapse_anim`]
+    /// chases `table_collapsed`. The flag is per-request state
+    /// (`session.sync_open` swaps it with the response), so the toggle
+    /// action alone can't own the anim: switching to a request whose
+    /// response isn't collapsed must re-open the pane too.
+    fn sync_response_collapse_anim(&mut self) {
+        let target = self.session.response.collapsed;
+        if target == self.response_collapsed_target {
+            return;
+        }
+        self.response_collapsed_target = target;
+        let now = Instant::now();
+        let target_v = if target { 1.0 } else { 0.0 };
+        if self.anims.value(AnimKey::ResponseCollapse, now).is_none() {
+            self.anims.snap(AnimKey::ResponseCollapse, 1.0 - target_v);
+        }
+        self.anims.retarget(
+            AnimKey::ResponseCollapse,
             target_v,
             self.ui_settings.anim_ms.pane_collapse,
             now,
@@ -1196,25 +1224,26 @@ impl App {
             }
             Action::ToggleTableCollapse => {
                 self.table_collapsed = !self.table_collapsed;
+                // Hiding the only expanded panel would leave the screen
+                // blank: swap instead — the response expands as the editor
+                // hides. (`sync_*_collapse_anim` ease both moves.)
+                if self.table_collapsed && self.session.response.collapsed {
+                    self.session.response.collapsed = false;
+                }
                 true
             }
             Action::ToggleResponseCollapse => {
-                // Unlike `PaneCollapse` (whose target is a derived condition
-                // resynced on every update), only this action moves the
-                // response collapse, so the anim retargets right here.
-                let collapsed = !self.session.response.collapsed;
-                self.session.response.collapsed = collapsed;
-                let now = Instant::now();
-                let target = if collapsed { 1.0 } else { 0.0 };
-                if self.anims.value(AnimKey::ResponseCollapse, now).is_none() {
-                    self.anims.snap(AnimKey::ResponseCollapse, 1.0 - target);
+                // `sync_response_collapse_anim` (run on every `update`)
+                // retargets the anim — here as well as when `sync_open`
+                // swaps in another request's response with a different
+                // collapsed state.
+                self.session.response.collapsed = !self.session.response.collapsed;
+                // Hiding the only expanded panel would leave the screen
+                // blank: swap instead — the editor expands as the response
+                // hides.
+                if self.session.response.collapsed && self.table_collapsed {
+                    self.table_collapsed = false;
                 }
-                self.anims.retarget(
-                    AnimKey::ResponseCollapse,
-                    target,
-                    self.ui_settings.anim_ms.pane_collapse,
-                    now,
-                );
                 true
             }
             Action::FormatBody => {

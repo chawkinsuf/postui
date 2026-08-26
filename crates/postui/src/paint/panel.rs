@@ -27,6 +27,24 @@ pub fn dim_backdrop(buf: &mut Buffer, area: Rect, t: f32) {
     }
 }
 
+/// Blends every cell in `area` — fg and bg alike — toward the single color
+/// `to` by `t`, so a stretch of chrome can fade out against its background
+/// rather than snapping. `t >= 1.0` lands every cell exactly on `to`
+/// (`theme::mix`'s endpoint short-circuit), erasing the content; `t <= 0.0`
+/// leaves the cells untouched.
+pub fn fade_to(buf: &mut Buffer, area: Rect, to: ratatui::style::Color, t: f32) {
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                let fg = cell.fg;
+                let bg = cell.bg;
+                cell.set_fg(mix(fg, to, t));
+                cell.set_bg(mix(bg, to, t));
+            }
+        }
+    }
+}
+
 /// Fills `area` with `theme.panel`, darkens a 1-cell drop-shadow band along
 /// its right edge (offset 1 down) and bottom edge (offset 2 right), clipped
 /// to `screen` so the shadow never paints outside the terminal, then strokes
@@ -115,6 +133,22 @@ mod tests {
         let shadow = buf_cell(&term, 12, 3).bg; // band right of panel
         let page = theme.page;
         assert_ne!(shadow, page); // darkened
+    }
+
+    #[test]
+    fn fade_to_blends_cells_toward_the_target_and_flattens_at_full_strength() {
+        let theme = Theme::dark();
+        let mut term = Terminal::new(TestBackend::new(10, 5)).unwrap();
+        term.draw(|f| {
+            fill(f.buffer_mut(), Rect::new(0, 0, 10, 5), theme.panel);
+            fade_to(f.buffer_mut(), Rect::new(0, 0, 5, 5), theme.page, 1.0);
+            fade_to(f.buffer_mut(), Rect::new(5, 0, 5, 5), theme.page, 0.5);
+        })
+        .unwrap();
+        assert_eq!(buf_cell(&term, 2, 2).bg, theme.page, "t=1 lands exactly");
+        let half = buf_cell(&term, 7, 2).bg;
+        assert_ne!(half, theme.panel, "t=0.5 moved off the original");
+        assert_ne!(half, theme.page, "t=0.5 not yet fully faded");
     }
 
     #[test]

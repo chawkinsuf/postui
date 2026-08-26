@@ -26,13 +26,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // which could otherwise see an animation at very slightly different
     // points within the same frame.
     let now = std::time::Instant::now();
-    let editor_collapsed_to_chrome = app.table_collapsed
-        && matches!(
-            app.editor.active_tab,
-            crate::components::editor::EditorTab::Params
-                | crate::components::editor::EditorTab::Headers
-                | crate::components::editor::EditorTab::Vars
-        );
+    // Hide collapses the editor to its strip on every tab — the Body tab's
+    // buffer hides just like the Params/Headers/Vars table does.
     // `App::sync_pane_collapse_anim` (run on every `update`) keeps
     // `AnimKey::PaneCollapse` chasing this same condition, so its eased
     // value at `now` is what actually drives the row split — falling back
@@ -41,7 +36,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let collapse_t = app.anims.value_or(
         crate::anim::AnimKey::PaneCollapse,
         now,
-        if editor_collapsed_to_chrome { 1.0 } else { 0.0 },
+        if app.table_collapsed { 1.0 } else { 0.0 },
     );
     let response_t = app.anims.value_or(
         crate::anim::AnimKey::ResponseCollapse,

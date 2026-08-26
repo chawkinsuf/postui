@@ -1244,10 +1244,8 @@ impl Component for Editor {
         // give it" rather than leaving dead space; the rows it would have
         // used are already the Response pane's.
         let content_constraint = match self.active_tab {
+            _ if self.table_collapsed => Constraint::Length(0),
             EditorTab::Body => Constraint::Min(0),
-            EditorTab::Params | EditorTab::Headers | EditorTab::Vars if self.table_collapsed => {
-                Constraint::Length(0)
-            }
             EditorTab::Params | EditorTab::Headers | EditorTab::Vars => {
                 let (rows, active, active_hint) = self.table_geometry();
                 let (inherited, computed_extra) = if self.active_tab == EditorTab::Headers {
@@ -1272,10 +1270,24 @@ impl Component for Editor {
             }
         };
 
+        // Hidden, the tab bar is a single row (the labels' underline row
+        // went with the labels). In every state the row heights are
+        // clamped to what's actually left below the address bar:
+        // over-constrained, ratatui shortchanges the *first* `Length`,
+        // shearing the address bar's caps into its text row — both at the
+        // settled collapsed height and at every mid-animation height while
+        // the pane eases between the two.
+        let below_bar = inner.height.saturating_sub(ADDRESS_BAR_HEIGHT);
+        let tab_bar_height = if self.table_collapsed {
+            1.min(below_bar)
+        } else {
+            TAB_BAR_HEIGHT.min(below_bar)
+        };
         // The toolbar row holds the Body tab's body-only tools; every other
-        // tab starts its content directly under the tab bar.
-        let toolbar_height = if self.active_tab == EditorTab::Body {
-            TOOLBAR_HEIGHT
+        // tab starts its content directly under the tab bar — and a hidden
+        // editor drops the row along with the content it acts on.
+        let toolbar_height = if self.active_tab == EditorTab::Body && !self.table_collapsed {
+            TOOLBAR_HEIGHT.min(below_bar.saturating_sub(tab_bar_height))
         } else {
             0
         };
@@ -1283,7 +1295,7 @@ impl Component for Editor {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(ADDRESS_BAR_HEIGHT), // fused address bar + its ring margins
-                Constraint::Length(TAB_BAR_HEIGHT),     // tab bar (+ right-aligned save/vars)
+                Constraint::Length(tab_bar_height),     // tab bar (+ right-aligned save/vars)
                 Constraint::Length(toolbar_height),     // Body-only tools chip row
                 content_constraint,                     // active tab content
             ])
@@ -1319,15 +1331,19 @@ pub const TAB_BAR_HEIGHT: u16 = 2;
 /// request-level save/vars chips live on the tab-label row, so they skip
 /// the row entirely.
 pub const TOOLBAR_HEIGHT: u16 = 1;
-/// The Editor pane's total on-screen height when its params/headers table is
-/// collapsed: just the two fixed content rows above (address bar, tab bar),
-/// with nothing left for a table — the toolbar row is Body-only and a
-/// Body-tab editor never collapses to chrome. Panes no longer draw a
-/// border, so this is exactly their combined height — no border-row inset
-/// to add. `layout::compute_layout` sizes the Editor pane down to exactly
-/// this so the Response pane can reclaim every row the table would
-/// otherwise have used.
+/// The fixed chrome above the tab content: address bar + full tab bar.
+/// What the expanded pane's content height is measured against. Panes no
+/// longer draw a border, so this is exactly the two rows' combined height
+/// — no border-row inset to add. The *hidden* pane is smaller still — see
+/// [`COLLAPSED_HEIGHT`].
 pub const CHROME_HEIGHT: u16 = ADDRESS_BAR_HEIGHT + TAB_BAR_HEIGHT;
+
+/// The hidden Editor pane's total height — what `layout::compute_layout`
+/// shrinks the pane to while it's collapsed: the full address bar (the
+/// request's controls stay usable while its tab content is put away) plus
+/// a single tab-strip row holding only the `› show` toggle, the labels'
+/// underline row having gone with the labels.
+pub const COLLAPSED_HEIGHT: u16 = ADDRESS_BAR_HEIGHT + 1;
 
 /// Cycled through (one glyph per `Action::Tick`) at the start of the Send
 /// cap's label while a request is in flight.
@@ -1767,33 +1783,56 @@ impl Editor {
             static_left + static_width,
         );
         let underline = (left, right - left);
-        let rects = {
-            let buf = frame.buffer_mut();
-            crate::paint::TabStrip {
-                tabs: &tab_strip,
-                active,
-                hovered,
-                focused: ctx.focused && self.sub_focus == SubFocus::Tabs,
-                underline,
-                disabled: self
-                    .body_tab_disabled()
-                    .then(|| EditorTab::Body.draw_position()),
+        // The pane-collapse progress doubles as the tabs' fade: hiding the
+        // editor fades the tab labels (underline, badge, and vars indicator
+        // with them) out entirely — settled hidden, the strip isn't painted
+        // at all, and the `› show` toggle is the row's only surviving
+        // control. Hidden tabs also take no clicks, so registration is
+        // gated on the settled flag, not the fade.
+        let fade_t = ctx
+            .anims
+            .value_or(
+                crate::anim::AnimKey::PaneCollapse,
+                ctx.now,
+                if self.table_collapsed { 1.0 } else { 0.0 },
+            )
+            .clamp(0.0, 1.0);
+        if fade_t < 1.0 {
+            let rects = {
+                let buf = frame.buffer_mut();
+                crate::paint::TabStrip {
+                    tabs: &tab_strip,
+                    active,
+                    hovered,
+                    focused: ctx.focused && self.sub_focus == SubFocus::Tabs,
+                    underline,
+                    disabled: self
+                        .body_tab_disabled()
+                        .then(|| EditorTab::Body.draw_position()),
+                }
+                .paint(buf, strip_area, theme.page, theme)
+            };
+            if !self.table_collapsed {
+                for (i, rect) in rects.iter().enumerate() {
+                    hits.register(*rect, crate::hit::Hit::EditorTab(i));
+                }
             }
-            .paint(buf, strip_area, theme.page, theme)
-        };
-        for (i, rect) in rects.iter().enumerate() {
-            hits.register(*rect, crate::hit::Hit::EditorTab(i));
-        }
 
-        // The "vars" indicator sits right after the tab blocks, on the
-        // labels row.
-        if self.substitute_body {
-            let last_rect = rects[tabs.len() - 1];
-            let x = last_rect.x + last_rect.width + 2;
-            frame.render_widget(
-                Paragraph::new(Line::styled("vars ", Style::default().fg(theme.accent))),
-                Rect::new(x, area.y, 5, 1),
-            );
+            // The "vars" indicator sits right after the tab blocks, on the
+            // labels row.
+            if self.substitute_body {
+                let last_rect = rects[tabs.len() - 1];
+                let x = last_rect.x + last_rect.width + 2;
+                frame.render_widget(
+                    Paragraph::new(Line::styled("vars ", Style::default().fg(theme.accent))),
+                    Rect::new(x, area.y, 5, 1),
+                );
+            }
+            if fade_t > 0.0 {
+                // Mid-slide: blend the whole strip toward the page it sits
+                // on. The toggle is painted after this, so it never fades.
+                crate::paint::fade_to(frame.buffer_mut(), strip_area, theme.page, fade_t);
+            }
         }
 
         // --- collapse toggle (right-aligned) ---
@@ -1808,7 +1847,9 @@ impl Editor {
         };
         let toggle_hovered = ctx.hovered == Some(&crate::hit::Hit::TableCollapse);
         let toggle_w = toggle_label.chars().count() as u16;
-        let toggle_x = area.x + area.width.saturating_sub(toggle_w);
+        // One-column right inset, matching the Response pane's toggle so
+        // the two line up on screen.
+        let toggle_x = area.right().saturating_sub(toggle_w + 1);
         let toggle_fg = if toggle_hovered {
             theme.text
         } else {
@@ -2887,6 +2928,146 @@ mod tests {
             hits.rect_of(&Hit::TableCollapse).is_some(),
             "the collapse toggle stays"
         );
+    }
+
+    /// Hiding hides the controls too: with the table collapsed the tab
+    /// labels fade out entirely (settled: not painted at all) and take no
+    /// clicks — only the `› show` toggle keeps the row.
+    #[test]
+    fn hidden_tab_labels_fade_out_and_take_no_clicks() {
+        let mut e = Editor {
+            table_collapsed: true,
+            ..Editor::default()
+        };
+        let (out, hits) = draw_editor(&mut e);
+        assert!(!out.contains("Params"), "tab labels are invisible: {out}");
+        assert!(
+            hits.rect_of(&Hit::EditorTab(0)).is_none(),
+            "hidden tabs take no clicks"
+        );
+        assert!(
+            hits.rect_of(&Hit::TableCollapse).is_some(),
+            "the show toggle stays"
+        );
+        assert!(out.contains("show"), "{out}");
+    }
+
+    /// Hiding puts away the tab content, not the request's controls: the
+    /// address bar (method / URL / Send) stays fully usable while hidden.
+    #[test]
+    fn hidden_editor_keeps_its_address_bar() {
+        let mut e = Editor {
+            table_collapsed: true,
+            ..Editor::default()
+        };
+        e.load(
+            Some("a".into()),
+            HttpRequest::from_toml_str("url = \"https://x/path\"\n").unwrap(),
+        );
+        e.table_collapsed = true;
+        let (out, hits) = draw_editor(&mut e);
+        assert!(out.contains("https://x/path"), "{out}");
+        assert!(hits.rect_of(&Hit::UrlBar).is_some(), "URL stays editable");
+        assert!(hits.rect_of(&Hit::SendButton).is_some());
+        assert!(hits.rect_of(&Hit::MethodSelector).is_some());
+        assert!(hits.rect_of(&Hit::TableCollapse).is_some());
+    }
+
+    fn draw_editor_sized(e: &mut Editor, w: u16, h: u16) -> crate::hit::HitMap {
+        let theme = Theme::dark();
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: None,
+            dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
+        };
+        let backend = TestBackend::new(w, h);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+        hits
+    }
+
+    /// At exactly its collapsed height the address bar still gets its full
+    /// rows — an over-constrained split shortchanges the *first*
+    /// constraint, shearing the bar's caps into its text row. The `› show`
+    /// row sits directly below the bar (its bottom breathing margin
+    /// included — kept by user choice).
+    #[test]
+    fn hidden_editor_at_collapsed_height_keeps_the_address_bar_intact() {
+        let expanded_url = {
+            let mut e = Editor::default();
+            let (_, hits) = draw_editor(&mut e);
+            hits.rect_of(&Hit::UrlBar).unwrap()
+        };
+
+        let mut e = Editor {
+            table_collapsed: true,
+            ..Editor::default()
+        };
+        let hits = draw_editor_sized(&mut e, 120, COLLAPSED_HEIGHT);
+        let url = hits.rect_of(&Hit::UrlBar).expect("URL well drawn");
+        assert_eq!(
+            (url.y, url.height),
+            (expanded_url.y, expanded_url.height),
+            "address bar keeps its exact expanded geometry while hidden"
+        );
+        let toggle = hits
+            .rect_of(&Hit::TableCollapse)
+            .expect("the show toggle fits");
+        assert_eq!(toggle.y, ADDRESS_BAR_HEIGHT, "toggle on the strip row");
+    }
+
+    /// The editor's hide/show toggle right-aligns with the same inset the
+    /// Response pane's toggle uses (2 cols in from the pane edge: 1 for
+    /// `pane_surface`, 1 for the toggle's own margin) — expanded and
+    /// hidden alike, so the two panes' toggles line up on screen.
+    #[test]
+    fn collapse_toggle_aligns_with_the_response_panes_inset() {
+        let mut e = Editor::default();
+        let (_, hits) = draw_editor(&mut e);
+        let expanded = hits.rect_of(&Hit::TableCollapse).unwrap();
+        assert_eq!(expanded.x + expanded.width, 120 - 2, "{expanded:?}");
+
+        let mut e = Editor {
+            table_collapsed: true,
+            ..Editor::default()
+        };
+        let hits = draw_editor_sized(&mut e, 120, COLLAPSED_HEIGHT);
+        let hidden = hits.rect_of(&Hit::TableCollapse).unwrap();
+        assert_eq!(hidden.x + hidden.width, 120 - 2, "{hidden:?}");
+    }
+
+    /// Un-hiding eases the pane taller while the expanded constraints are
+    /// already in force: at every intermediate height the address bar must
+    /// keep its exact geometry — the tab bar and toolbar give way instead
+    /// (otherwise the whole bar shears up for the animation, then jumps
+    /// back).
+    #[test]
+    fn address_bar_geometry_is_stable_at_every_mid_animation_height() {
+        let expanded_url = {
+            let mut e = Editor::default();
+            let (_, hits) = draw_editor(&mut e);
+            hits.rect_of(&Hit::UrlBar).unwrap()
+        };
+        for h in COLLAPSED_HEIGHT..=CHROME_HEIGHT + 2 {
+            let mut e = Editor {
+                active_tab: EditorTab::Body,
+                ..Editor::default()
+            };
+            e.method = postui_core::model::Method::Post;
+            let hits = draw_editor_sized(&mut e, 120, h);
+            let url = hits.rect_of(&Hit::UrlBar).expect("URL well drawn");
+            assert_eq!(
+                (url.y, url.height),
+                (expanded_url.y, expanded_url.height),
+                "address bar sheared at height {h}"
+            );
+        }
     }
 
     #[test]

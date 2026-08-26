@@ -4616,7 +4616,7 @@ fn three_params(app: &mut App) {
 }
 
 #[test]
-fn collapse_hides_body_and_keeps_tab_count_visible() {
+fn collapse_hides_body_and_fades_the_tab_labels_out() {
     let mut app = App::new_for_test();
     three_params(&mut app);
     app.table_collapsed = true;
@@ -4635,12 +4635,13 @@ fn collapse_hides_body_and_keeps_tab_count_visible() {
         "table header must not be drawn while collapsed: {content}"
     );
 
-    // The param count still shows while collapsed — inside the Params
-    // tab's own label.
+    // Hiding hides the controls too: the tab labels (count included) fade
+    // out entirely, leaving only the `› show` toggle on the row.
     assert!(
-        content.contains("Params · 3"),
-        "param count must stay visible in the tab label: {content}"
+        !content.contains("Params · 3"),
+        "tab labels are invisible while hidden: {content}"
     );
+    assert!(content.contains("show"), "{content}");
 }
 
 #[test]
@@ -4659,7 +4660,7 @@ fn collapse_toggle_click_and_key() {
 }
 
 #[test]
-fn collapse_on_a_table_tab_shrinks_editor_to_chrome_and_grows_response() {
+fn collapse_on_a_table_tab_shrinks_editor_to_a_row_and_grows_response() {
     let mut app = App::new_for_test();
     three_params(&mut app);
     render_once(&mut app);
@@ -4671,8 +4672,8 @@ fn collapse_on_a_table_tab_shrinks_editor_to_chrome_and_grows_response() {
     let response = app.hits.rect_of(&Hit::Pane(PaneId::Response)).unwrap();
     assert_eq!(
         editor.height,
-        crate::components::editor::CHROME_HEIGHT,
-        "editor pane shrinks to exactly its chrome"
+        crate::components::editor::COLLAPSED_HEIGHT,
+        "editor pane shrinks to exactly its one-row strip"
     );
     assert!(
         response.height > expanded_response.height,
@@ -4681,23 +4682,127 @@ fn collapse_on_a_table_tab_shrinks_editor_to_chrome_and_grows_response() {
 }
 
 #[test]
-fn collapse_on_the_body_tab_leaves_the_split_unchanged() {
+fn collapse_on_the_body_tab_shrinks_editor_to_chrome_too() {
     let mut app = App::new_for_test();
     three_params(&mut app);
     app.editor.active_tab = EditorTab::Body;
     render_once(&mut app);
-    let expanded_editor = app.hits.rect_of(&Hit::Pane(PaneId::Editor)).unwrap();
     let expanded_response = app.hits.rect_of(&Hit::Pane(PaneId::Response)).unwrap();
 
     app.table_collapsed = true;
+    app.editor.table_collapsed = true;
     render_once(&mut app);
     let editor = app.hits.rect_of(&Hit::Pane(PaneId::Editor)).unwrap();
     let response = app.hits.rect_of(&Hit::Pane(PaneId::Response)).unwrap();
     assert_eq!(
-        editor, expanded_editor,
-        "Body tab active: split unchanged by collapse"
+        editor.height,
+        crate::components::editor::COLLAPSED_HEIGHT,
+        "Body tab active: hide collapses the editor all the same"
     );
-    assert_eq!(response, expanded_response);
+    assert!(
+        response.height > expanded_response.height,
+        "response pane reclaims the freed rows"
+    );
+}
+
+/// The `AnimKey::ResponseCollapse` target is per-request state
+/// (`session.response.collapsed`), but the anim is global: switching to a
+/// request whose response isn't collapsed must re-open the pane rather
+/// than leave the layout squashed under a stale 1.0.
+#[test]
+fn response_collapse_reopens_when_switching_to_an_expanded_request() {
+    // Disabled anims: each retarget lands instantly, so the layout can be
+    // asserted right after the update that moves it.
+    let mut app = App::new_for_test_with_anims(false);
+    app.update(Action::ToggleResponseCollapse);
+    render_once(&mut app);
+    let hidden = app.hits.rect_of(&Hit::Pane(PaneId::Response)).unwrap();
+    assert_eq!(
+        hidden.height,
+        crate::components::response::COLLAPSED_HEIGHT,
+        "toggle collapses the pane"
+    );
+
+    // Opening a different request swaps in that request's own response,
+    // which is not collapsed.
+    app.editor.slug = Some("other".into());
+    app.update(Action::Render);
+    assert!(!app.session.response.collapsed);
+    render_once(&mut app);
+    let reopened = app.hits.rect_of(&Hit::Pane(PaneId::Response)).unwrap();
+    assert!(
+        reopened.height > hidden.height,
+        "the pane re-opens with the swapped-in response: {reopened:?}"
+    );
+}
+
+/// Hiding the only expanded panel would leave the screen blank: the
+/// panels swap instead — the clicked one hides and the other expands.
+#[test]
+fn hiding_the_expanded_editor_swaps_the_panels() {
+    let mut app = App::new_for_test_with_anims(false);
+    app.update(Action::ToggleResponseCollapse);
+    assert!(app.session.response.collapsed);
+
+    app.update(Action::ToggleTableCollapse);
+    assert!(app.table_collapsed, "the editor hides");
+    assert!(
+        !app.session.response.collapsed,
+        "the response expands instead of leaving the screen blank"
+    );
+    render_once(&mut app);
+    let response = app.hits.rect_of(&Hit::Pane(PaneId::Response)).unwrap();
+    assert!(
+        response.height > crate::components::response::COLLAPSED_HEIGHT,
+        "response pane takes the freed space: {response:?}"
+    );
+}
+
+/// The same no-blank-screen rule holds when a hidden response arrives by
+/// request switch rather than by toggle: the swapped-in response keeps its
+/// hidden state, so the editor expands.
+#[test]
+fn switching_to_a_hidden_response_while_the_editor_is_hidden_expands_the_editor() {
+    let mut app = App::new_for_test_with_anims(false);
+    // Hide request A's response, then switch away — A caches as hidden
+    // (a non-Empty state, so `sync_open` keeps its cache slot).
+    app.editor.slug = Some("a".into());
+    app.update(Action::Render);
+    app.session
+        .response
+        .set_state(crate::components::response::ResponseState::Cancelled, 0);
+    app.update(Action::ToggleResponseCollapse);
+    app.editor.slug = Some("b".into());
+    app.update(Action::Render);
+    assert!(!app.session.response.collapsed);
+
+    // Hide the editor on B, then switch back to A: both flags would be
+    // set — the editor must re-open.
+    app.update(Action::ToggleTableCollapse);
+    app.editor.slug = Some("a".into());
+    app.update(Action::Render);
+    assert!(
+        app.session.response.collapsed,
+        "A's response is still hidden"
+    );
+    assert!(
+        !app.table_collapsed,
+        "the editor expands instead of leaving the screen blank"
+    );
+}
+
+#[test]
+fn hiding_the_expanded_response_swaps_the_panels() {
+    let mut app = App::new_for_test_with_anims(false);
+    app.update(Action::ToggleTableCollapse);
+    assert!(app.table_collapsed);
+
+    app.update(Action::ToggleResponseCollapse);
+    assert!(app.session.response.collapsed, "the response hides");
+    assert!(
+        !app.table_collapsed,
+        "the editor expands instead of leaving the screen blank"
+    );
 }
 
 #[test]
@@ -9559,7 +9664,7 @@ fn toggle_response_collapse_flips_the_flag_and_eases_the_anim() {
 /// for Body must animate the pane back open exactly like an explicit
 /// toggle would.
 #[test]
-fn switching_off_a_collapsed_table_tab_also_eases_pane_collapse() {
+fn switching_to_the_body_tab_keeps_a_hidden_editor_hidden() {
     let mut app = App::new_for_test_with_anims(true);
     app.update(Action::SetMethod(postui_core::model::Method::Post));
     app.editor.active_tab = EditorTab::Params;
@@ -9573,13 +9678,16 @@ fn switching_off_a_collapsed_table_tab_also_eases_pane_collapse() {
         std::time::Instant::now()
     ));
 
+    // Hide applies on every tab now, the Body buffer included: a tab
+    // switch no longer re-opens the pane.
     app.update(Action::EditorTabSelect(EditorTab::Body.index()));
     assert_eq!(app.editor.active_tab, EditorTab::Body);
     let now = std::time::Instant::now();
     assert!(
-        !app.anims.is_done(crate::anim::AnimKey::PaneCollapse, now),
-        "switching off the collapsed table tab must re-open the pane with an ease, not a snap"
+        app.anims.is_done(crate::anim::AnimKey::PaneCollapse, now),
+        "switching tabs while hidden must not disturb the collapse"
     );
+    assert!(app.table_collapsed, "still hidden on the Body tab");
 }
 
 /// The caret-resting variable tooltip must dwell for `CARET_TIP_DWELL`
