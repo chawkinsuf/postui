@@ -858,6 +858,36 @@ fn app_with_one_param() -> App {
     app
 }
 
+/// alt+a starts a new row on whichever table tab is active — from any
+/// focus, so adding a header never needs a mouse trip to the ghost row.
+#[test]
+fn alt_a_starts_a_new_row_on_the_active_table_tab() {
+    use crate::components::table_editor::Col;
+    let mut app = App::new_for_test();
+    let keymap = Keymap::default_bindings();
+    app.focus = PaneId::Sidebar; // works from anywhere
+    app.handle_key(&keymap, alt('a'));
+    assert_eq!(app.focus, PaneId::Editor);
+    assert_eq!(app.editor.sub_focus, SubFocus::Content);
+    let edit = app
+        .editor
+        .table
+        .editing
+        .as_ref()
+        .expect("a new-row edit began on the Headers tab");
+    assert_eq!((edit.row, edit.col), (0, Col::Key));
+    type_chars(&mut app, "X-Trace");
+    app.handle_key(&keymap, enter_key());
+    assert!(app.editor.headers.contains_key("X-Trace"));
+
+    // On the Body tab there is no table to add to: inert.
+    app.update(Action::SetMethod(postui_core::model::Method::Post));
+    app.update(Action::EditorTabSelect(3));
+    app.handle_key(&keymap, alt('a'));
+    assert!(app.editor.table.editing.is_none());
+    assert_eq!(app.editor.active_tab, EditorTab::Body);
+}
+
 /// A control that appears under a stationary pointer (here: the row's
 /// hover-revealed toggle button) must pick up hover styling from the
 /// post-frame resync, without the mouse having to move again.

@@ -48,6 +48,7 @@ pub(crate) fn footer_chips(
                     Some(Action::Send),
                 )
             },
+            ("alt+a", "add row", Some(Action::TableAddRow)),
             (
                 "^V",
                 "vars",

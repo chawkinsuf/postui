@@ -54,6 +54,12 @@ pub fn all_commands() -> Vec<Command> {
             action: Action::Send,
         },
         Command {
+            id: "table-add-row",
+            name: "Table: add row",
+            description: "Add a row to the active Params/Headers/Vars table",
+            action: Action::TableAddRow,
+        },
+        Command {
             id: "request-new",
             name: "Request: new",
             description: "Create a new request in the current folder",
@@ -269,6 +275,7 @@ fn keymap_action_name(command_id: &str) -> Option<&'static str> {
         "project-new" => Some("project_new"),
         "env-choose" => Some("env_choose"),
         "env-next" => Some("env_cycle"),
+        "table-add-row" => Some("table_add_row"),
         "vars-insert" => Some("pick_variable"),
         "var-manager" => Some("var_manager_open"),
         "vars-extract" => Some("extract_to_variable"),

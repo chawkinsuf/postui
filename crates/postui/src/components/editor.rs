@@ -1662,6 +1662,21 @@ impl Editor {
         map.get_index_of(key)
     }
 
+    /// Starts a new row on the active tab's table: focuses the table and
+    /// begins editing the ghost row's key cell, exactly like clicking
+    /// "+ Add …". A no-op on the Body tab. Any prior edit must already be
+    /// committed (see `App`'s `Action::TableAddRow` arm).
+    pub fn begin_add_row(&mut self) {
+        let map = match self.active_tab {
+            EditorTab::Params => &self.params,
+            EditorTab::Headers => &self.headers,
+            EditorTab::Vars => &self.variables,
+            EditorTab::Body => return,
+        };
+        self.sub_focus = SubFocus::Content;
+        self.table.begin_add(map);
+    }
+
     /// Commits any in-progress table cell edit into the active tab's map —
     /// the click-away / focus-loss path. Its warning is the caller's to
     /// surface.

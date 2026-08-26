@@ -53,6 +53,10 @@ pub enum Action {
     /// strip, editor taking the freed rows) and shown. Session-only —
     /// never persisted.
     ToggleResponseCollapse,
+    /// Start a new row on the active table tab (Params/Headers/Vars):
+    /// focuses the editor's table and begins editing the ghost row's key
+    /// cell, exactly like clicking "+ Add …". Inert on the Body tab.
+    TableAddRow,
     /// Open the delete confirmation for row `i` of the active params/headers
     /// table (from the `d`/`Delete` key or the row's `✕` affordance).
     ConfirmDeleteTableRow(usize),

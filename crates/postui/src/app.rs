@@ -1418,6 +1418,15 @@ impl App {
                 }
                 true
             }
+            Action::TableAddRow => {
+                if self.editor.active_tab == EditorTab::Body {
+                    return false;
+                }
+                self.commit_table_edit();
+                self.focus = PaneId::Editor;
+                self.editor.begin_add_row();
+                true
+            }
             Action::ConfirmDeleteTableRow(i) => {
                 let (map, noun) = match self.editor.active_tab {
                     EditorTab::Params => (&self.editor.params, "param"),
