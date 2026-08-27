@@ -1,6 +1,7 @@
 use ratatui::style::Color;
 
 pub mod osc;
+pub mod builtin;
 
 pub use osc::{OscQuery, QueriedColors, TerminalPalette};
 
@@ -33,6 +34,7 @@ impl ThemeChoice {
 
 /// The small set of hand-picked colors a palette is generated from. Everything
 /// else in [`Theme`] is derived from these six seeds by [`Theme::generate`].
+#[derive(Debug, Clone, Copy)]
 pub struct Seeds {
     pub bg: (u8, u8, u8),
     pub fg: (u8, u8, u8),
