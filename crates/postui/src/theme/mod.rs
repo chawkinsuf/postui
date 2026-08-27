@@ -213,24 +213,7 @@ impl Theme {
         match choice {
             ThemeChoice::Dark => Self::dark(),
             ThemeChoice::Light => Self::light(),
-            ThemeChoice::Terminal => {
-                let answer = term.query();
-                let seeds = match answer.bg {
-                    Some(bg) => {
-                        let builtin = Seeds::dark();
-                        Seeds {
-                            bg,
-                            fg: answer.fg.unwrap_or_else(|| derive_fg_from_bg(bg)),
-                            accent: answer.ansi[4].or(answer.ansi[12]).unwrap_or(builtin.accent),
-                            success: answer.ansi[2].unwrap_or(builtin.success),
-                            warning: answer.ansi[3].unwrap_or(builtin.warning),
-                            error: answer.ansi[1].unwrap_or(builtin.error),
-                        }
-                    }
-                    None => Seeds::dark(),
-                };
-                Self::generate(&seeds)
-            }
+            ThemeChoice::Terminal => Self::generate(&seeds_from_queried(&term.query())),
         }
     }
 
@@ -300,6 +283,27 @@ impl Theme {
             warning: f(self.warning),
             error: f(self.error),
         }
+    }
+}
+
+/// Builds a seed palette from a terminal's OSC query answer: the queried
+/// bg/fg with ANSI slots for the semantic colors, falling back per-slot to
+/// the built-in dark seeds, and to `Seeds::dark()` wholesale when the
+/// terminal reported no background at all.
+pub fn seeds_from_queried(q: &QueriedColors) -> Seeds {
+    match q.bg {
+        Some(bg) => {
+            let builtin = Seeds::dark();
+            Seeds {
+                bg,
+                fg: q.fg.unwrap_or_else(|| derive_fg_from_bg(bg)),
+                accent: q.ansi[4].or(q.ansi[12]).unwrap_or(builtin.accent),
+                success: q.ansi[2].unwrap_or(builtin.success),
+                warning: q.ansi[3].unwrap_or(builtin.warning),
+                error: q.ansi[1].unwrap_or(builtin.error),
+            }
+        }
+        None => Seeds::dark(),
     }
 }
 
@@ -897,5 +901,27 @@ mod tests {
         ] {
             assert!(matches!(c, Color::Indexed(_)));
         }
+    }
+
+    #[test]
+    fn seeds_from_queried_uses_answer_and_falls_back_per_slot() {
+        let mut ansi = [None; 16];
+        ansi[4] = Some((1, 120, 212));
+        let s = seeds_from_queried(&QueriedColors {
+            bg: Some((16, 16, 20)),
+            fg: None,
+            ansi,
+        });
+        assert_eq!(s.bg, (16, 16, 20));
+        assert_eq!(s.accent, (1, 120, 212));
+        assert_eq!(s.fg, Seeds::dark().fg, "fg derived from the dark bg");
+        assert_eq!(s.success, Seeds::dark().success, "missing slot: builtin seed");
+    }
+
+    #[test]
+    fn seeds_from_queried_silent_terminal_is_dark_seeds() {
+        let s = seeds_from_queried(&QueriedColors::default());
+        assert_eq!(s.bg, Seeds::dark().bg);
+        assert_eq!(s.accent, Seeds::dark().accent);
     }
 }
