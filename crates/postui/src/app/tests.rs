@@ -10689,6 +10689,29 @@ mod undo_tests {
     }
 
     #[test]
+    fn theme_picker_click_away_reverts_the_live_preview() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::new_for_test();
+        let keymap = crate::keys::Keymap::default_bindings();
+        let original = app.theme.page;
+        let original_name = app.theme_name.clone();
+        app.update(Action::OpenThemeChooser);
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // "dark"
+        assert_eq!(app.theme_name, "dark", "highlight applies live");
+        // Hit::ModalOutside routes here, not through apply_modal_result.
+        app.update(Action::Close);
+        assert_eq!(
+            app.theme_name, original_name,
+            "click-away reverts the prior theme"
+        );
+        assert_eq!(app.theme.page, original);
+        assert!(
+            app.theme_preview.is_none(),
+            "preview state disarmed so a later project/env chooser is unaffected"
+        );
+    }
+
+    #[test]
     fn theme_picker_enter_keeps_the_previewed_theme() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = App::new_for_test();

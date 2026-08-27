@@ -1132,6 +1132,16 @@ impl App {
                 {
                     self.sidebar.selected = prev;
                 }
+                // Closing the theme picker restores the pre-preview theme —
+                // same rule as `apply_modal_result`'s Chooser-revert branch,
+                // needed here too since a click outside the modal (Hit::
+                // ModalOutside) routes through `Action::Close`, not
+                // `apply_modal_result`.
+                if matches!(popped_modal, Some(Modal::Chooser(_)))
+                    && let Some(prior) = self.theme_preview.take()
+                {
+                    self.set_theme_by_name(&prior);
+                }
                 // Overlay close is always instant — no motion rule
                 // exception for either open-settle key. Snapping
                 // `ModalOpen` here also sets the next panel modal's open
