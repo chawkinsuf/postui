@@ -127,6 +127,37 @@ pub fn draw_header(
         false,
     );
     hits.register(vars_rect, Hit::HeaderVars);
+
+    // The theme-picker chip sits alone at the bar's right edge, mirroring
+    // the wordmark's 3-column margin.
+    let theme_label = " theme ";
+    let theme_w = theme_label.chars().count() as u16;
+    let theme_x = (area.x + area.width).saturating_sub(theme_w + 3);
+    // Never collide with the left-side chips on a very narrow bar.
+    if theme_x > x {
+        let theme_rect = Rect {
+            x: theme_x,
+            y: mid_y,
+            width: theme_w,
+            height: 1,
+        };
+        let theme_bg = if hovered == Some(&Hit::HeaderTheme) {
+            theme.control_hover
+        } else {
+            theme.control
+        };
+        fill(buf, theme_rect, theme_bg);
+        text(
+            buf,
+            theme_rect.x,
+            mid_y,
+            theme_label,
+            theme.text_muted,
+            theme_bg,
+            false,
+        );
+        hits.register(theme_rect, Hit::HeaderTheme);
+    }
 }
 
 #[cfg(test)]
@@ -156,6 +187,55 @@ mod tests {
 
     fn cell(term: &Terminal<TestBackend>, x: u16, y: u16) -> ratatui::buffer::Cell {
         term.backend().buffer().cell((x, y)).unwrap().clone()
+    }
+
+    #[test]
+    fn theme_chip_sits_right_aligned_and_lifts_on_hover() {
+        let theme = Theme::dark();
+        let (term, hits) = render(&theme, "alpha", "qa", None);
+        let rect = hits
+            .rect_of(&Hit::HeaderTheme)
+            .expect("theme chip registered");
+        assert_eq!(
+            rect.x + rect.width,
+            60 - 3,
+            "right-aligned with the wordmark's 3-column margin"
+        );
+        let c = cell(&term, rect.x + 1, rect.y);
+        assert_eq!(c.symbol(), "t");
+        assert_eq!(c.bg, theme.control);
+        let (term, hits) = render(&theme, "alpha", "qa", Some(&Hit::HeaderTheme));
+        let rect = hits.rect_of(&Hit::HeaderTheme).unwrap();
+        assert_eq!(
+            cell(&term, rect.x + 1, rect.y).bg,
+            theme.control_hover,
+            "hover lifts the chip fill"
+        );
+    }
+
+    /// A bar too narrow for the right-aligned chip drops it rather than
+    /// painting over the left-side chips.
+    #[test]
+    fn theme_chip_disappears_on_a_too_narrow_bar() {
+        let theme = Theme::dark();
+        let backend = TestBackend::new(38, HEADER_HEIGHT);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = HitMap::default();
+        terminal
+            .draw(|f: &mut Frame| {
+                draw_header(
+                    f,
+                    f.area(),
+                    &theme,
+                    "a-rather-long-project",
+                    "qa",
+                    false,
+                    &mut hits,
+                    None,
+                )
+            })
+            .unwrap();
+        assert!(hits.rect_of(&Hit::HeaderTheme).is_none());
     }
 
     #[test]

@@ -15,6 +15,9 @@ pub enum Hit {
     HeaderEnv,
     /// The header's "vars" chip: toggles the Variable Manager screen.
     HeaderVars,
+    /// The right-aligned "theme" chip on the app bar: opens the theme
+    /// picker.
+    HeaderTheme,
     /// A footer hint chip that dispatches its action on click.
     FooterChip(crate::action::Action),
     SidebarNewRequest,

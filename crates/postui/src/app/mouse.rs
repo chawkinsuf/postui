@@ -547,6 +547,7 @@ impl App {
             Action::OpenProjectChooser,     // Hit::HeaderProject
             Action::OpenEnvChooser,         // Hit::HeaderEnv
             Action::OpenVarManager,         // Hit::HeaderVars
+            Action::OpenThemeChooser,       // Hit::HeaderTheme
             Action::OpenMethodDropdown,     // Hit::MethodSelector
             Action::ToggleTableCollapse,    // Hit::TableCollapse
             Action::ToggleResponseCollapse, // Hit::ResponseCollapse
@@ -658,6 +659,7 @@ impl App {
             }
             Hit::HeaderProject => self.update(Action::OpenProjectChooser),
             Hit::HeaderEnv => self.update(Action::OpenEnvChooser),
+            Hit::HeaderTheme => self.update(Action::OpenThemeChooser),
             Hit::HeaderVars => {
                 if self.screen == crate::app::Screen::VarManager {
                     self.update(Action::CloseScreen)
