@@ -21,24 +21,28 @@ pub struct Seeds {
 }
 
 impl Seeds {
-    /// Starting palette (Tokyo-Night-adjacent); visual direction iterates on
-    /// these values during stage-1 polish with the frontend-design skill.
+    /// The default dark palette: neutral graphite surfaces with a teal
+    /// accent — deliberately outside the blue-lavender genre so it reads
+    /// distinct from the Catppuccin built-ins (the original
+    /// Tokyo-Night-adjacent seeds were near-twins of Mocha).
     pub fn dark() -> Self {
         Self {
-            bg: (0x13, 0x17, 0x20),
-            fg: (0xd8, 0xde, 0xe9),
-            accent: (0x7a, 0xa2, 0xf7),
+            bg: (0x17, 0x18, 0x1b),
+            fg: (0xe0, 0xe1, 0xe4),
+            accent: (0x2d, 0xd4, 0xbf),
             success: (0x9e, 0xce, 0x6a),
             warning: (0xe0, 0xaf, 0x68),
             error: (0xf7, 0x76, 0x8e),
         }
     }
 
+    /// The default light palette: warm-neutral paper with the dark
+    /// variant's teal accent stepped down for a light surface.
     pub fn light() -> Self {
         Self {
-            bg: (0xf7, 0xf8, 0xfa),
-            fg: (0x24, 0x29, 0x2f),
-            accent: (0x1d, 0x63, 0xed),
+            bg: (0xfa, 0xfa, 0xf8),
+            fg: (0x25, 0x26, 0x2a),
+            accent: (0x0d, 0x94, 0x88),
             success: (0x16, 0xa3, 0x4a),
             warning: (0xd9, 0x77, 0x06),
             error: (0xdc, 0x26, 0x26),
@@ -693,7 +697,10 @@ mod tests {
             ..Seeds::dark()
         };
         let t = Theme::generate(&s);
-        assert!((oklab_l(rgb_of(t.text)) - oklab_l(rgb_of(t.page))).abs() >= 0.4);
+        // The clamp targets ΔL = 0.4; the Oklab→sRGB→u8 round-trip can
+        // quantize a boundary color ~0.0005 short (same slack as the
+        // builtin catalog's contrast test).
+        assert!((oklab_l(rgb_of(t.text)) - oklab_l(rgb_of(t.page))).abs() >= 0.399);
     }
 
     #[test]
