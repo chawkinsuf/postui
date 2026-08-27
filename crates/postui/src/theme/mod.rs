@@ -306,6 +306,31 @@ fn derive_fg_from_bg(bg: (u8, u8, u8)) -> (u8, u8, u8) {
 /// pick a legible text color for content painted directly on `c` (e.g. a
 /// key-pill's fill), rather than assuming the fill is always dark the way
 /// most of this dark-first theme's surfaces are.
+/// Returns `fg` with its Oklab lightness pushed away from `bg` until
+/// |ΔL| >= `min_delta`, keeping hue/chroma. The push continues in `fg`'s
+/// natural direction (lighter stays lighter) unless that side lacks the
+/// room, in which case it flips — mirroring `Theme::generate`'s text
+/// clamp. Non-RGB colors pass through unchanged. Used by chip painting,
+/// where a dim pill color (`text_muted` on a soft palette) can land
+/// within a whisper of its own tinted fill.
+pub(crate) fn ensure_min_contrast(fg: Color, bg: Color, min_delta: f32) -> Color {
+    let (Color::Rgb(fr, fgc, fb), Color::Rgb(br, bgc, bb)) = (fg, bg) else {
+        return fg;
+    };
+    let fg_l = oklab_l((fr, fgc, fb));
+    let bg_l = oklab_l((br, bgc, bb));
+    if (fg_l - bg_l).abs() >= min_delta {
+        return fg;
+    }
+    let direction = if fg_l >= bg_l { 1.0 } else { -1.0 };
+    let mut target = bg_l + direction * min_delta;
+    if !(0.0..=1.0).contains(&target) {
+        target = bg_l - direction * min_delta;
+    }
+    let (r, g, b) = lift((fr, fgc, fb), target.clamp(0.0, 1.0) - fg_l);
+    Color::Rgb(r, g, b)
+}
+
 pub(crate) fn is_light(c: Color) -> bool {
     oklab_l(rgb_of(c)) >= 0.5
 }

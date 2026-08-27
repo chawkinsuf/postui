@@ -571,7 +571,13 @@ mod tests {
                 "light fill needs dark key text: {key_cell:?}"
             );
         } else {
-            assert_eq!(key_cell.fg, theme.text_muted);
+            // The key keeps text_muted's hue but contrast-guarded against
+            // its own tinted fill (soft palettes land the two within a
+            // whisper of each other otherwise).
+            assert_eq!(
+                key_cell.fg,
+                crate::theme::ensure_min_contrast(theme.text_muted, fill, 0.35)
+            );
         }
         assert!(key_cell.modifier.contains(ratatui::style::Modifier::BOLD));
         // The label follows one gap column after the pill (" n " is 3

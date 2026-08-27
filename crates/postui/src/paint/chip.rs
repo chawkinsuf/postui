@@ -37,6 +37,11 @@ impl Chip<'_> {
         } else {
             self.color
         };
+        // A dim pill color (e.g. `text_muted` on a soft, low-contrast
+        // palette) tints a fill that lands within a whisper of the label
+        // itself — push the label's lightness away from the fill, hue
+        // intact, until it reads.
+        let fg = crate::theme::ensure_min_contrast(fg, bg, 0.35);
         text(buf, x, y, &s, fg, bg, true);
         width
     }
@@ -262,10 +267,46 @@ mod tests {
         })
         .unwrap();
         let c = buf_cell(&term, 1, 0);
+        // A dark pill color on a dark fill keeps its hue but gets pushed
+        // apart in lightness by the contrast guard — it must not flip to
+        // the light-fill dark-text branch.
         assert_eq!(
-            c.fg, dark_accent,
-            "unchanged: dark fill keeps the pill's own color"
+            c.fg,
+            crate::theme::ensure_min_contrast(dark_accent, fill, 0.35),
+            "dark fill keeps the pill's own (contrast-guarded) color"
         );
+        assert!(
+            crate::theme::is_light(c.fg),
+            "the guard lifts a too-dark label up, not down: {c:?}"
+        );
+    }
+
+    /// Regression for the soft-solarized footer keycaps: a `text_muted`
+    /// pill tints a fill so close to the label's own lightness that the
+    /// key was nearly invisible. The painted label must clear the fill by
+    /// the guard's margin on every built-in theme.
+    #[test]
+    fn muted_key_pill_stays_legible_on_every_builtin_theme() {
+        for b in crate::theme::builtin::builtin_themes() {
+            let theme = Theme::generate(&b.seeds);
+            let mut term = Terminal::new(TestBackend::new(12, 1)).unwrap();
+            term.draw(|f| {
+                Chip {
+                    label: "^V",
+                    color: theme.text_muted,
+                }
+                .paint(f.buffer_mut(), 0, 0, theme.control, &theme);
+            })
+            .unwrap();
+            let c = buf_cell(&term, 1, 0);
+            let l = |color: Color| crate::theme::oklab_l(crate::theme::rgb_of(color));
+            let delta = (l(c.fg) - l(c.bg)).abs();
+            assert!(
+                delta >= 0.34,
+                "{}: keycap contrast {delta:.3} too low ({c:?})",
+                b.name
+            );
+        }
     }
 
     #[test]
