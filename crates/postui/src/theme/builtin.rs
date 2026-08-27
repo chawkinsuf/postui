@@ -117,6 +117,23 @@ pub fn builtin_themes() -> Vec<BuiltinTheme> {
             ]),
             counterpart: Some("solarized-dark"),
         },
+        // The exact ghostty terminal palette the default Dark seeds were
+        // adapted from (Dark stands in palette slots 0/7 where this uses
+        // the real background/foreground keys) — kept verbatim for
+        // side-by-side comparison. Unpaired: no light sibling exists.
+        BuiltinTheme {
+            name: "ghostty",
+            label: "Ghostty",
+            seeds: s([
+                (0x0a, 0x20, 0x28),
+                (0xcc, 0xd8, 0xe0),
+                (0x78, 0xa8, 0xc8),
+                (0x90, 0xac, 0x60),
+                (0xc8, 0xa8, 0x68),
+                (0xcc, 0x7e, 0x78),
+            ]),
+            counterpart: None,
+        },
     ]
 }
 
@@ -140,18 +157,25 @@ mod tests {
                 "catppuccin-latte",
                 "solarized-dark",
                 "solarized-light",
+                "ghostty",
             ]
         );
     }
 
-    /// Every built-in belongs to a light/dark pair: its counterpart names
-    /// a real catalog entry of the opposite polarity, and the link is
-    /// mutual.
+    /// A declared counterpart names a real catalog entry of the opposite
+    /// polarity, and the link is mutual. Unpaired built-ins (ghostty) are
+    /// allowed — the picker's light/dark switch hides for them.
     #[test]
-    fn every_builtin_pairs_with_an_opposite_polarity_counterpart() {
+    fn declared_counterparts_are_mutual_and_opposite_polarity() {
         let all = builtin_themes();
+        assert!(
+            all.iter().filter(|b| b.counterpart.is_some()).count() >= 8,
+            "the paired families stay paired"
+        );
         for b in &all {
-            let cp_name = b.counterpart.expect(b.name);
+            let Some(cp_name) = b.counterpart else {
+                continue;
+            };
             let cp = all
                 .iter()
                 .find(|o| o.name == cp_name)
