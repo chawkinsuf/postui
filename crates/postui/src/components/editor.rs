@@ -2630,7 +2630,7 @@ impl Editor {
             let line = Line::from(vec![
                 Span::styled(name_piece, name_style),
                 Span::styled(value_piece, value_style),
-                Span::styled(" \u{29c9} ", glyph_style),
+                Span::styled(" ❐ ", glyph_style),
             ]);
             frame.render_widget(Paragraph::new(line), Rect::new(area.x, y, area.width, 1));
             crate::components::var_tokens::paint_var_tokens(

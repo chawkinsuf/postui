@@ -8286,6 +8286,32 @@ fn declining_the_migration_leaves_saved_selections_on_disk() {
 
 // --- computed request-headers section: copy/reveal/env-switch (Task 10) ---
 
+/// Every copy affordance uses the same `❐` glyph — the computed-header
+/// rows once carried `⧉`, which renders wrong in some terminals.
+#[test]
+fn auto_header_copy_icon_is_the_shared_copy_glyph() {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor.url = LineInput::new("https://example.com/foo");
+    app.update(Action::Render);
+
+    let text = rendered_text(&mut app);
+    assert!(!text.contains('\u{29c9}'), "no ⧉ anywhere: {text}");
+    let backend = ratatui::backend::TestBackend::new(100, 70);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let rect = app
+        .hits
+        .rect_of(&Hit::AutoHeaderCopy(0))
+        .expect("the Host row's copy icon is registered");
+    let row = terminal.backend().buffer().content[rect.y as usize * 100..]
+        .iter()
+        .take(100)
+        .map(|c| c.symbol())
+        .collect::<String>();
+    assert!(row.contains('❐'), "the Host row's copy icon is ❐: {row}");
+}
+
 #[test]
 fn auto_header_copy_icon_puts_the_resolved_value_on_the_clipboard() {
     let mut app = App::new_for_test();
