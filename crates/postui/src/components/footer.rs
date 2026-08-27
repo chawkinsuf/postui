@@ -194,17 +194,17 @@ pub fn draw_footer(
 
 /// Paints a left-to-right row of `(key, label, action)` chips starting at
 /// `start_x` on row `y`, stopping before drawing one that would cross
-/// `right_limit`. Each chip with `Some(action)` is a quiet chip: the key
-/// combo sits in a small `Chip`-style pill tinted `theme.accent` on
-/// `theme.control` (lifting to `theme.control_hover` under the mouse per
-/// `hovered`), with the label following in plain `theme.text_muted` text
-/// beside it — registering `Hit::FooterChip(action)` over the combined
-/// span. A `None` action renders as fully plain (unregistered, muted) text
-/// directly on the caller's background instead — the pill IS the
-/// clickability signal, so a hint with no single dispatchable action never
-/// visually promises a click it can't honor. Shared by the footer's own
-/// hint row and the editor toolbar. Returns the x position just past the
-/// last chip painted.
+/// `right_limit`. Each chip with `Some(action)` emphasizes its label: the
+/// key combo sits in a small `Chip`-style pill tinted `theme.text_muted`
+/// on `theme.control` (lifting to `theme.control_hover` under the mouse per
+/// `hovered`), with the label following in prominent `theme.text` text
+/// beside it — the action is the content, the shortcut the affordance.
+/// Registers `Hit::FooterChip(action)` over the combined span. A `None`
+/// action renders as fully plain (unregistered) text: key muted, label
+/// prominent — the pill IS the clickability signal, so a hint with no
+/// single dispatchable action never visually promises a click it can't honor.
+/// Shared by the footer's own hint row and the editor toolbar. Returns the x
+/// position just past the last chip painted.
 #[allow(clippy::too_many_arguments)]
 pub fn paint_chip_row(
     buf: &mut Buffer,
@@ -242,7 +242,7 @@ pub fn paint_chip_row(
                 };
                 let pill_w = Chip {
                     label: key,
-                    color: theme.accent,
+                    color: theme.text_muted,
                 }
                 .paint(buf, x, y, on, theme);
                 let label_text = format!(" {label} ");
@@ -251,7 +251,7 @@ pub fn paint_chip_row(
                     x + pill_w,
                     y,
                     &label_text,
-                    theme.text_muted,
+                    theme.text,
                     theme.panel,
                     false,
                 );
@@ -260,13 +260,13 @@ pub fn paint_chip_row(
             None => {
                 let key_text = format!(" {key}");
                 let label_text = format!(" {label}  ");
-                text(buf, x, y, &key_text, theme.accent, theme.panel, true);
+                text(buf, x, y, &key_text, theme.text_muted, theme.panel, true);
                 text(
                     buf,
                     x + key_text.chars().count() as u16,
                     y,
                     &label_text,
-                    theme.text_muted,
+                    theme.text,
                     theme.panel,
                     false,
                 );
@@ -556,14 +556,14 @@ mod tests {
             .expect("new-request chip hit registered");
         let buf = terminal.backend().buffer();
         // First cell of the chip is the pill's leading space, then the key
-        // glyph, bold, on the accent-tinted pill fill — not a flat
+        // glyph, bold, on the text_muted-tinted pill fill — not a flat
         // `theme.control` fill. The glyph's own color is a contrast pick
-        // against that fill (checkpoint-2: `theme.accent` is itself light
+        // against that fill (checkpoint-2: `theme.text_muted` is itself light
         // enough that the tinted fill reads light too, so painting the
-        // key in `theme.accent` unconditionally would be light-on-light).
+        // key in `theme.text_muted` unconditionally would be light-on-light).
         let key_cell = buf.cell((rect.x + 1, rect.y)).unwrap();
         assert_eq!(key_cell.symbol(), "n");
-        let fill = theme.tint(theme.accent, theme.control);
+        let fill = theme.tint(theme.text_muted, theme.control);
         assert_eq!(key_cell.bg, fill);
         if crate::theme::is_light(fill) {
             assert!(
@@ -571,15 +571,15 @@ mod tests {
                 "light fill needs dark key text: {key_cell:?}"
             );
         } else {
-            assert_eq!(key_cell.fg, theme.accent);
+            assert_eq!(key_cell.fg, theme.text_muted);
         }
         assert!(key_cell.modifier.contains(ratatui::style::Modifier::BOLD));
         // The label follows one gap column after the pill (" n " is 3
-        // cells, then the label's own leading space), muted, not bold, and
-        // sitting on the plain panel — no chip fill of its own.
+        // cells, then the label's own leading space), prominent (text, not muted),
+        // not bold, and sitting on the plain panel — no chip fill of its own.
         let label_cell = buf.cell((rect.x + 4, rect.y)).unwrap();
         assert_eq!(label_cell.symbol(), "n"); // first letter of "new"
-        assert_eq!(label_cell.fg, theme.text_muted);
+        assert_eq!(label_cell.fg, theme.text);
         assert_eq!(label_cell.bg, theme.panel);
         assert!(!label_cell.modifier.contains(ratatui::style::Modifier::BOLD));
     }
@@ -622,7 +622,7 @@ mod tests {
             plain_cell.bg, theme.panel,
             "non-clickable entry is unfilled"
         );
-        assert_eq!(plain_cell.fg, theme.accent);
+        assert_eq!(plain_cell.fg, theme.text_muted);
 
         // "n new" (PromptNewRequest) IS clickable: tinted key pill.
         let rect = hits
@@ -631,7 +631,7 @@ mod tests {
         let chip_cell = buf.cell((rect.x + 1, rect.y)).unwrap();
         assert_eq!(
             chip_cell.bg,
-            theme.tint(theme.accent, theme.control),
+            theme.tint(theme.text_muted, theme.control),
             "clickable entry keeps its tinted key pill"
         );
     }
@@ -673,9 +673,55 @@ mod tests {
         assert_eq!(cell.symbol(), "q");
         assert_eq!(
             cell.bg,
-            theme.tint(theme.accent, theme.control),
+            theme.tint(theme.text_muted, theme.control),
             "quit's key sits in the same tinted pill as every other chip"
         );
+    }
+
+    /// The action label is the content and the shortcut is the affordance —
+    /// emphasis was inverted before (accent keycap, muted label). The label
+    /// must paint in `theme.text` and the keycap pill's tint must derive from
+    /// `theme.text_muted`, not `theme.accent`.
+    #[test]
+    fn chip_emphasis_action_label_is_prominent_and_keycap_is_quiet() {
+        let theme = Theme::for_terminal();
+        let backend = TestBackend::new(60, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| {
+                paint_chip_row(
+                    f.buffer_mut(),
+                    0,
+                    0,
+                    60,
+                    &[("^R", "send", Some(Action::Send)), ("g", "top", None)],
+                    &theme,
+                    &mut hits,
+                    None,
+                );
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        // Clickable chip: pill " ^R " occupies columns 0..4; label " send "
+        // follows. The pill fill tints from text_muted, not accent.
+        assert_eq!(
+            buffer[(1, 0)].bg,
+            theme.tint(theme.text_muted, theme.control),
+            "keycap pill tint derives from text_muted"
+        );
+        let label_cell = buffer[(5, 0)].clone(); // 's' of " send "
+        assert_eq!(label_cell.symbol(), "s");
+        assert_eq!(label_cell.fg, theme.text, "action label is prominent");
+        // Plain (None-action) entry: key muted, label prominent. The plain
+        // entry starts at x = 4 (pill) + 6 (" send ") + 2 (gap) = 12; its key
+        // text " g" puts 'g' at column 13 and the label 't' at column 15.
+        let key_cell = buffer[(13, 0)].clone();
+        assert_eq!(key_cell.symbol(), "g");
+        assert_eq!(key_cell.fg, theme.text_muted, "plain key is quiet");
+        let plain_label = buffer[(15, 0)].clone();
+        assert_eq!(plain_label.symbol(), "t");
+        assert_eq!(plain_label.fg, theme.text, "plain label is prominent");
     }
 
     /// Regression test for the controller sweep's Paint Gap C report: a
