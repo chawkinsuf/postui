@@ -387,7 +387,7 @@ fn apply_ui_settings_wires_animations_into_anims() {
         animations: false,
         ..crate::config::UiSettings::default()
     };
-    app.apply_ui_settings(settings, crate::theme::Theme::dark());
+    app.apply_ui_settings(settings, "dark".into(), crate::theme::Theme::dark());
     assert!(
         !app.anims.enabled,
         "animations = false in UiSettings must disable App.anims"
@@ -397,7 +397,7 @@ fn apply_ui_settings_wires_animations_into_anims() {
         animations: true,
         ..crate::config::UiSettings::default()
     };
-    app.apply_ui_settings(settings, crate::theme::Theme::dark());
+    app.apply_ui_settings(settings, "dark".into(), crate::theme::Theme::dark());
     assert!(app.anims.enabled, "animations = true re-enables App.anims");
 }
 

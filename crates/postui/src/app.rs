@@ -116,6 +116,18 @@ pub struct App {
     /// Mouse-first-GUI UI settings (clipboard command, OSC 52 threshold),
     /// loaded from the same `config.toml` the registry uses.
     pub ui_settings: crate::config::UiSettings,
+    /// The loaded theme registry (built-ins + custom `themes/*.toml`
+    /// files) — rescanned when the picker opens, so a file dropped in
+    /// mid-session shows up without a restart.
+    pub themes: crate::theme::ThemeRegistry,
+    /// The startup OSC answer, cached because the query can only run once,
+    /// before crossterm's event reader exists.
+    pub terminal_colors: crate::theme::QueriedColors,
+    /// The currently-applied theme's registry name.
+    pub theme_name: String,
+    /// The custom-themes directory, `None` when no config dir resolved for
+    /// this platform.
+    pub themes_dir: Option<PathBuf>,
     /// Eased animated values (tab underline, hover fade, ...), constructed
     /// from `ui_settings.animations`. Time is always passed in by the
     /// caller — `Action::Tick`'s handler and `DrawCtx::now` both sample
@@ -357,7 +369,29 @@ impl App {
             .as_deref()
             .map(crate::config::load_ui_settings)
             .unwrap_or_default();
-        let theme = Theme::from_environment(ui_settings.theme, &mut crate::theme::OscQuery);
+        let themes_dir = crate::config::themes_dir_path();
+        let (themes, theme_warnings) = crate::theme::ThemeRegistry::load(themes_dir.as_deref());
+        let terminal_colors = {
+            use crate::theme::TerminalPalette;
+            crate::theme::OscQuery.query()
+        };
+        let (theme_name, theme) = match themes.resolve(&ui_settings.theme, &terminal_colors) {
+            Some(t) => (ui_settings.theme.clone(), t),
+            None => (
+                "terminal".to_string(),
+                themes
+                    .resolve("terminal", &terminal_colors)
+                    .expect("terminal is always registered"),
+            ),
+        };
+        let mut ui_warnings = ui_warnings;
+        ui_warnings.extend(theme_warnings); // malformed custom theme files surface as startup toasts
+        if theme_name != ui_settings.theme {
+            ui_warnings.push(format!(
+                "unknown theme {:?} in config.toml; using terminal",
+                ui_settings.theme
+            ));
+        }
         let usage_path = crate::config::ui_file_path();
         let usage = usage_path
             .as_deref()
@@ -374,7 +408,10 @@ impl App {
             let mut app = Self::bare(tx, PathBuf::new());
             app.registry = registry;
             app.registry_path = registry_path;
-            app.apply_ui_settings(ui_settings, theme);
+            app.themes = themes;
+            app.terminal_colors = terminal_colors;
+            app.themes_dir = themes_dir;
+            app.apply_ui_settings(ui_settings, theme_name, theme);
             app.usage = usage;
             app.usage_path = usage_path;
             app.keymap = crate::keys::Keymap::load();
@@ -394,7 +431,10 @@ impl App {
         let mut app = Self::with_root(tx, root);
         app.registry = registry;
         app.registry_path = registry_path;
-        app.apply_ui_settings(ui_settings, theme);
+        app.themes = themes;
+        app.terminal_colors = terminal_colors;
+        app.themes_dir = themes_dir;
+        app.apply_ui_settings(ui_settings, theme_name, theme);
         app.usage = usage;
         app.usage_path = usage_path;
         app.keymap = crate::keys::Keymap::load();
@@ -537,11 +577,34 @@ impl App {
     /// fallback) call this instead of assigning each dependent field
     /// separately, so a new `UiSettings`-derived field can't be wired into
     /// one branch and silently forgotten in the other.
-    fn apply_ui_settings(&mut self, ui_settings: crate::config::UiSettings, theme: Theme) {
+    fn apply_ui_settings(
+        &mut self,
+        ui_settings: crate::config::UiSettings,
+        theme_name: String,
+        theme: Theme,
+    ) {
         self.clipboard = crate::clipboard::Clipboard::new(&ui_settings);
         self.anims = Anims::new(ui_settings.animations);
         self.theme = theme;
+        self.theme_name = theme_name;
         self.ui_settings = ui_settings;
+    }
+
+    /// Applies the named theme from the registry (the Terminal entry seeds
+    /// from the startup query). An unknown name — a custom file deleted since
+    /// the registry was built — degrades to the terminal theme.
+    fn set_theme_by_name(&mut self, name: &str) {
+        let (resolved, theme) = match self.themes.resolve(name, &self.terminal_colors) {
+            Some(t) => (name.to_string(), t),
+            None => (
+                "terminal".to_string(),
+                self.themes
+                    .resolve("terminal", &self.terminal_colors)
+                    .expect("terminal is always registered"),
+            ),
+        };
+        self.theme = theme;
+        self.theme_name = resolved;
     }
 
     fn bare(tx: UnboundedSender<Action>, root: PathBuf) -> Self {
@@ -567,6 +630,10 @@ impl App {
             registry_path: None,
             clipboard: crate::clipboard::Clipboard::new(&crate::config::UiSettings::default()),
             ui_settings: crate::config::UiSettings::default(),
+            themes: crate::theme::ThemeRegistry::builtin(),
+            terminal_colors: crate::theme::QueriedColors::default(),
+            theme_name: "terminal".into(),
+            themes_dir: None,
             anims: Anims::new(crate::config::UiSettings::default().animations),
             animating_last_tick: false,
             keymap: crate::keys::Keymap::default_bindings(),

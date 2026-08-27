@@ -2,7 +2,6 @@
 //! `[projects]` table: known project paths (cycle order), an optional
 //! configured root directory, and the last-used project.
 
-use crate::theme::ThemeChoice;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -192,8 +191,11 @@ impl Default for AnimDurations {
 pub struct UiSettings {
     pub clipboard_cmd: Option<String>,
     pub osc52_limit: usize,
-    /// Which palette source to seed the theme from; see [`ThemeChoice`].
-    pub theme: ThemeChoice,
+    /// The configured theme's registry name (e.g. `"terminal"`,
+    /// `"gruvbox-dark"`, or a custom theme file's stem). Free-form: name
+    /// validity is the registry's business at resolve time, not this
+    /// loader's.
+    pub theme: String,
     /// Whether eased transitions (tab underline, hover, modal open, ...)
     /// play, or every animated value jumps straight to its target.
     pub animations: bool,
@@ -207,7 +209,7 @@ impl Default for UiSettings {
         Self {
             clipboard_cmd: None,
             osc52_limit: 65536,
-            theme: ThemeChoice::default(),
+            theme: "terminal".into(),
             animations: true,
             anim_ms: AnimDurations::default(),
         }
@@ -217,10 +219,10 @@ impl Default for UiSettings {
 /// Reads the top-level `clipboard_cmd` (string), `osc52_limit` (integer),
 /// `theme` (string), and `animations` (bool) keys from `config.toml`. Never
 /// errors: a missing file, corrupt TOML, or a mistyped key degrades that
-/// piece to its default. An unrecognized `theme` value degrades to
-/// [`ThemeChoice::Terminal`] and is reported in the returned warnings, for
-/// the caller to surface as a startup toast (the same pattern
-/// `ProjectContext::open` uses).
+/// piece to its default. `theme` is taken verbatim as a raw name string —
+/// whether it names a real registry entry is the registry's business at
+/// resolve time, not this loader's, so no warning is produced here for an
+/// unrecognized value.
 pub fn load_ui_settings(path: &Path) -> (UiSettings, Vec<String>) {
     let mut settings = UiSettings::default();
     let mut warnings = Vec::new();
@@ -240,12 +242,7 @@ pub fn load_ui_settings(path: &Path) -> (UiSettings, Vec<String>) {
         settings.osc52_limit = limit;
     }
     if let Some(raw) = value.get("theme").and_then(|v| v.as_str()) {
-        settings.theme = ThemeChoice::parse(raw);
-        if !matches!(raw, "terminal" | "dark" | "light") {
-            warnings.push(format!(
-                "unknown theme {raw:?} in config.toml; using terminal"
-            ));
-        }
+        settings.theme = raw.to_string();
     }
     if let Some(b) = value.get("animations").and_then(|v| v.as_bool()) {
         settings.animations = b;
@@ -301,6 +298,27 @@ pub fn load_ui_settings(path: &Path) -> (UiSettings, Vec<String>) {
 pub fn config_file_path() -> Option<PathBuf> {
     directories::ProjectDirs::from("", "", postui_core::APP_NAME)
         .map(|d| d.config_dir().join("config.toml"))
+}
+
+/// Writes `name` as the top-level `theme` key in the config file at
+/// `path`, round-tripping through `toml_edit::DocumentMut` so every other
+/// key is preserved byte-for-byte (same posture as
+/// `ProjectsRegistry::save_to`). Creates the parent directory if needed.
+pub fn save_ui_theme(path: &Path, name: &str) -> anyhow::Result<()> {
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let mut doc: toml_edit::DocumentMut = existing.parse().unwrap_or_default();
+    doc["theme"] = toml_edit::value(name);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, doc.to_string())?;
+    Ok(())
+}
+
+/// The directory custom theme files live in: `<config dir>/themes`.
+pub fn themes_dir_path() -> Option<PathBuf> {
+    directories::ProjectDirs::from("", "", postui_core::APP_NAME)
+        .map(|d| d.config_dir().join("themes"))
 }
 
 /// The path to the mouse-first-GUI UI-state file (currently just palette
@@ -439,7 +457,7 @@ mod tests {
         assert_eq!(s, UiSettings::default());
         assert_eq!(s.clipboard_cmd, None);
         assert_eq!(s.osc52_limit, 65536);
-        assert_eq!(s.theme, ThemeChoice::Terminal);
+        assert_eq!(s.theme, "terminal");
         assert!(warnings.is_empty());
     }
 
@@ -473,13 +491,42 @@ mod tests {
     }
 
     #[test]
-    fn load_ui_settings_theme_round_trips() {
+    fn load_ui_settings_theme_is_a_raw_name_string() {
         let dir = tempdir().unwrap();
         let p = dir.path().join("config.toml");
-        std::fs::write(&p, "theme = \"light\"\n").unwrap();
+        std::fs::write(&p, "theme = \"gruvbox-dark\"\n").unwrap();
         let (s, warnings) = load_ui_settings(&p);
-        assert_eq!(s.theme, ThemeChoice::Light);
-        assert!(warnings.is_empty());
+        assert_eq!(s.theme, "gruvbox-dark");
+        assert!(
+            warnings.is_empty(),
+            "name validity is the registry's business at resolve time, not load's: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn save_ui_theme_sets_the_key_and_preserves_unrelated_content() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        std::fs::write(&p, "clipboard_cmd = \"xclip\"\n\n[projects]\nknown = []\n").unwrap();
+        save_ui_theme(&p, "catppuccin-mocha").unwrap();
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(text.contains("theme = \"catppuccin-mocha\""), "{text}");
+        assert!(text.contains("clipboard_cmd = \"xclip\""), "{text}");
+        assert!(text.contains("[projects]"), "{text}");
+        let (s, _) = load_ui_settings(&p);
+        assert_eq!(s.theme, "catppuccin-mocha");
+        save_ui_theme(&p, "dark").unwrap();
+        let (s, _) = load_ui_settings(&p);
+        assert_eq!(s.theme, "dark", "overwrites an existing key");
+    }
+
+    #[test]
+    fn save_ui_theme_creates_a_missing_file() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("sub").join("config.toml");
+        save_ui_theme(&p, "light").unwrap();
+        let (s, _) = load_ui_settings(&p);
+        assert_eq!(s.theme, "light");
     }
 
     #[test]
@@ -488,19 +535,8 @@ mod tests {
         let p = dir.path().join("config.toml");
         std::fs::write(&p, "clipboard_cmd = \"xclip\"\n").unwrap();
         let (s, warnings) = load_ui_settings(&p);
-        assert_eq!(s.theme, ThemeChoice::Terminal);
+        assert_eq!(s.theme, "terminal");
         assert!(warnings.is_empty());
-    }
-
-    #[test]
-    fn load_ui_settings_unknown_theme_value_falls_back_to_terminal_with_warning() {
-        let dir = tempdir().unwrap();
-        let p = dir.path().join("config.toml");
-        std::fs::write(&p, "theme = \"sepia\"\n").unwrap();
-        let (s, warnings) = load_ui_settings(&p);
-        assert_eq!(s.theme, ThemeChoice::Terminal);
-        assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].contains("sepia"));
     }
 
     #[test]
