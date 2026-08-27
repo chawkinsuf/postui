@@ -135,11 +135,14 @@ impl Theme {
         // way around, leaving disabled text brighter than muted.
         let text_disabled = blend(fg, bg, 0.82);
 
-        // Contrast clamp: push text away from bg until |ΔL| >= 0.4.
+        // Contrast clamp: push text away from bg until |ΔL| >= 0.4. The
+        // target overshoots to 0.405 because the Oklab→sRGB→u8 round-trip
+        // can quantize the result ~0.001 short — aiming at exactly 0.4
+        // would leave clamped text just under the guarantee.
         let page_l = oklab_l(page);
         if (oklab_l(text) - page_l).abs() < 0.4 {
             let direction = if oklab_l(text) >= page_l { 1.0 } else { -1.0 };
-            let target_l = (page_l + direction * 0.4).clamp(0.0, 1.0);
+            let target_l = (page_l + direction * 0.405).clamp(0.0, 1.0);
             text = lift(text, target_l - oklab_l(text));
         }
 
@@ -697,10 +700,9 @@ mod tests {
             ..Seeds::dark()
         };
         let t = Theme::generate(&s);
-        // The clamp targets ΔL = 0.4; the Oklab→sRGB→u8 round-trip can
-        // quantize a boundary color ~0.0005 short (same slack as the
-        // builtin catalog's contrast test).
-        assert!((oklab_l(rgb_of(t.text)) - oklab_l(rgb_of(t.page))).abs() >= 0.399);
+        // Strict: the clamp's target overshoots quantization, so the
+        // guarantee holds exactly.
+        assert!((oklab_l(rgb_of(t.text)) - oklab_l(rgb_of(t.page))).abs() >= 0.4);
     }
 
     #[test]

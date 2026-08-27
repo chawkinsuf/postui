@@ -189,9 +189,9 @@ mod tests {
         for b in builtin_themes() {
             let t = Theme::generate(&b.seeds);
             let d = (oklab_l(rgb_of(t.text)) - oklab_l(rgb_of(t.page))).abs();
-            // The clamp targets ΔL = 0.4, but the Oklab→sRGB→u8 round-trip can
-            // quantize a boundary color slightly (~0.0005) short of the 0.4 target.
-            assert!(d >= 0.399, "{}: contrast {d}", b.name);
+            // Strict: the clamp's target overshoots u8 quantization, so
+            // the 0.4 guarantee holds exactly for every catalog entry.
+            assert!(d >= 0.4, "{}: contrast {d}", b.name);
         }
     }
 }
