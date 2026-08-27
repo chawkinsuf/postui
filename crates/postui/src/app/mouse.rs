@@ -583,6 +583,7 @@ impl App {
                 | Hit::ModalOutside
                 | Hit::DropdownRow(_)
                 | Hit::ChooserRow(_)
+                | Hit::ChooserToggle
                 | Hit::PaletteRow(_)
                 | Hit::VarPickerRow(_)
                 | Hit::ScrollbarThumb(_)
@@ -910,6 +911,15 @@ impl App {
                     return false;
                 };
                 self.apply_modal_result(res)
+            }
+            Hit::ChooserToggle => {
+                let Some(Modal::Chooser(state)) = self.modals.top_mut() else {
+                    return false;
+                };
+                let Some(action) = state.toggle_action().cloned() else {
+                    return false;
+                };
+                self.update(action)
             }
             Hit::ChooserRow(i) => {
                 let Some(Modal::Chooser(state)) = self.modals.top_mut() else {

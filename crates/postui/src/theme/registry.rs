@@ -109,6 +109,14 @@ impl ThemeRegistry {
         }
     }
 
+    /// Whether an entry is a dark-background theme, judged the same way
+    /// `Theme::generate` picks its ladder polarity (Oklab lightness of the
+    /// seed background < 0.5). The Terminal entry is judged from the
+    /// queried (or cached) colors. Drives the picker's dark/light filter.
+    pub fn entry_is_dark(&self, entry: &ThemeEntry, queried: &QueriedColors) -> bool {
+        crate::theme::oklab_l(self.seeds_of(entry, queried).bg) < 0.5
+    }
+
     /// Generates the full theme for `name`, or `None` for an unknown name
     /// (the caller warns and falls back).
     pub fn resolve(&self, name: &str, queried: &QueriedColors) -> Option<Theme> {
@@ -294,6 +302,23 @@ mod tests {
         assert_eq!(r.entries()[1].name, "dark", "position preserved");
         let t = r.resolve("dark", &QueriedColors::default()).unwrap();
         assert_eq!(t.page, Color::Rgb(0, 0, 0));
+    }
+
+    #[test]
+    fn entry_polarity_follows_the_seed_background() {
+        let r = ThemeRegistry::builtin();
+        let q = QueriedColors::default();
+        assert!(r.entry_is_dark(r.get("gruvbox-dark").unwrap(), &q));
+        assert!(!r.entry_is_dark(r.get("gruvbox-light").unwrap(), &q));
+        // Terminal entry: silent query falls back to the dark seeds...
+        assert!(r.entry_is_dark(r.get("terminal").unwrap(), &q));
+        // ...but a light queried background flips it.
+        let light = QueriedColors {
+            bg: Some((0xfa, 0xfa, 0xfa)),
+            fg: None,
+            ansi: [None; 16],
+        };
+        assert!(!r.entry_is_dark(r.get("terminal").unwrap(), &light));
     }
 
     #[test]

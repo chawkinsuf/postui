@@ -190,6 +190,9 @@ pub enum Action {
     OpenProjectChooser,
     /// Open the theme picker (chooser modal listing the theme registry).
     OpenThemeChooser,
+    /// Flip the open theme picker between its dark and light theme sets
+    /// (the chooser toggle's action; Left/Right or a click on the label).
+    ToggleThemePickerPolarity,
     /// Apply the named theme, persist it as the config `theme` key, and
     /// record it as the session's theme. Dispatched by the picker's Enter.
     ApplyTheme(String),

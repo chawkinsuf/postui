@@ -22,6 +22,16 @@ pub struct ChooserItem {
     pub id: Option<String>,
 }
 
+/// An optional two-state switch on a chooser (the theme picker's
+/// dark/light filter): `label` renders right-aligned on the title row,
+/// and Left/Right (or a click on the label) dispatch `action` without
+/// closing the modal — the action's handler is expected to swap the
+/// chooser's items via [`ChooserState::set_items`].
+pub struct ChooserToggle {
+    pub label: String,
+    pub action: Action,
+}
+
 /// A generic fuzzy-filterable chooser modal. Structure mirrors
 /// `PaletteState`: typed input filters `items` by fuzzy-matching against
 /// `label + " " + detail`; arrows move the selection; `Enter` dispatches the
@@ -32,6 +42,7 @@ pub struct ChooserState {
     selected: usize,
     items: Vec<ChooserItem>,
     filtered: Vec<usize>,
+    toggle: Option<ChooserToggle>,
     /// First visible row's index into `filtered`. Kept in view of `selected`
     /// on the next `draw` whenever `ensure_visible` is set; free to roam
     /// otherwise (wheel scrolling).
@@ -53,6 +64,52 @@ impl ChooserState {
             filtered,
             scroll: 0,
             ensure_visible: true,
+            toggle: None,
+        }
+    }
+
+    /// Attaches a [`ChooserToggle`] (builder-style, for construction).
+    pub fn with_toggle(mut self, label: impl Into<String>, action: Action) -> Self {
+        self.toggle = Some(ChooserToggle {
+            label: label.into(),
+            action,
+        });
+        self
+    }
+
+    /// Updates the toggle's displayed label (e.g. after its action flipped
+    /// the state it names). A no-op when no toggle is attached.
+    pub fn set_toggle_label(&mut self, label: impl Into<String>) {
+        if let Some(t) = &mut self.toggle {
+            t.label = label.into();
+        }
+    }
+
+    /// The toggle's action, if a toggle is attached — what a click on the
+    /// toggle label dispatches.
+    pub fn toggle_action(&self) -> Option<&Action> {
+        self.toggle.as_ref().map(|t| &t.action)
+    }
+
+    /// Replaces the item list wholesale (the toggle's handler swapping in
+    /// the other set), keeping the typed filter and re-running it. The
+    /// selection resets to the first match; callers that want a specific
+    /// row follow up with [`Self::select_id`].
+    pub fn set_items(&mut self, items: Vec<ChooserItem>) {
+        self.items = items;
+        self.refilter();
+    }
+
+    /// Moves the selection to the filtered row whose item id is `id`, if
+    /// one is visible under the current filter; otherwise leaves the
+    /// selection where it is.
+    pub fn select_id(&mut self, id: &str) {
+        if let Some(pos) = self
+            .filtered
+            .iter()
+            .position(|&i| self.items[i].id.as_deref() == Some(id))
+        {
+            self.select(pos);
         }
     }
 
@@ -138,6 +195,18 @@ impl ChooserState {
                 });
             }
             KeyCode::Enter => return self.confirm(),
+            // Left/Right fire the toggle (when one is attached) without
+            // closing — the filter input has no caret to move, so these
+            // keys are otherwise unused here.
+            KeyCode::Left | KeyCode::Right => {
+                if let Some(t) = &self.toggle {
+                    return Some(super::modal::ModalResult {
+                        actions: vec![t.action.clone()],
+                        close: false,
+                        ..Default::default()
+                    });
+                }
+            }
             KeyCode::Up => {
                 self.selected = self.selected.saturating_sub(1);
                 self.ensure_visible = true;
@@ -194,6 +263,30 @@ impl ChooserState {
             theme.panel,
             true,
         );
+        if let Some(t) = &self.toggle {
+            // Right-aligned on the title row, clickable and flippable with
+            // Left/Right — mirrored by `handle_key`.
+            let w = t.label.chars().count() as u16;
+            let x = (area.x + area.width).saturating_sub(w + 2);
+            paint::text(
+                frame.buffer_mut(),
+                x,
+                title_y,
+                &t.label,
+                theme.accent,
+                theme.panel,
+                false,
+            );
+            hits.register(
+                Rect {
+                    x,
+                    y: title_y,
+                    width: w,
+                    height: 1,
+                },
+                crate::hit::Hit::ChooserToggle,
+            );
+        }
 
         let field_area = Rect {
             x: area.x + 1,
@@ -491,6 +584,61 @@ mod tests {
         assert_eq!(
             right_edge.bg, theme.control,
             "the hovered (non-selected) row's pill fill must span the full row width"
+        );
+    }
+
+    #[test]
+    fn left_right_fire_the_toggle_without_closing_and_are_inert_without_one() {
+        let mut plain = ChooserState::new("t", items(&["a", "b"]));
+        assert!(
+            plain.handle_key(key(KeyCode::Left)).is_none(),
+            "no toggle: Left is ignored"
+        );
+        let mut c =
+            ChooserState::new("t", items(&["a", "b"])).with_toggle("◂ dark ▸", Action::Quit);
+        for code in [KeyCode::Left, KeyCode::Right] {
+            let res = c.handle_key(key(code)).unwrap();
+            assert!(!res.close, "toggle must not close the modal");
+            assert_eq!(res.actions, vec![Action::Quit]);
+        }
+    }
+
+    #[test]
+    fn set_items_keeps_the_typed_filter_and_select_id_finds_a_visible_row() {
+        let mut c = ChooserState::new("t", items(&["alpha", "beta"]));
+        for ch in "bet".chars() {
+            c.handle_key(key(KeyCode::Char(ch)));
+        }
+        assert_eq!(c.selected_label(), Some("beta"));
+        // Swapping in a new set re-runs the same typed filter over it.
+        c.set_items(items(&["betamax", "gamma"]));
+        assert_eq!(c.input(), "bet", "filter text survives the swap");
+        assert_eq!(c.selected_label(), Some("betamax"));
+        // select_id moves to a visible row; an id filtered out is a no-op.
+        let mut c = ChooserState::new(
+            "t",
+            vec![
+                ChooserItem {
+                    label: "alpha".into(),
+                    detail: None,
+                    actions: vec![Action::Render],
+                    id: Some("alpha-id".into()),
+                },
+                ChooserItem {
+                    label: "beta".into(),
+                    detail: None,
+                    actions: vec![Action::Render],
+                    id: Some("beta-id".into()),
+                },
+            ],
+        );
+        c.select_id("beta-id");
+        assert_eq!(c.selected_id(), Some("beta-id"));
+        c.select_id("no-such-id");
+        assert_eq!(
+            c.selected_id(),
+            Some("beta-id"),
+            "unknown id leaves selection"
         );
     }
 

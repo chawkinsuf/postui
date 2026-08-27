@@ -321,6 +321,13 @@ pub fn themes_dir_path() -> Option<PathBuf> {
         .map(|d| d.config_dir().join("themes"))
 }
 
+/// The path to the terminal-color cache written after a successful OSC
+/// query: `<config dir>/terminal-colors.toml`. See `theme::cache`.
+pub fn terminal_colors_path() -> Option<PathBuf> {
+    directories::ProjectDirs::from("", "", postui_core::APP_NAME)
+        .map(|d| d.config_dir().join("terminal-colors.toml"))
+}
+
 /// The path to the mouse-first-GUI UI-state file (currently just palette
 /// usage stats): `<config dir>/ui.toml`.
 pub fn ui_file_path() -> Option<PathBuf> {

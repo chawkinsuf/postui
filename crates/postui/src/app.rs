@@ -128,6 +128,11 @@ pub struct App {
     /// While the theme picker is open: the theme name to restore if the
     /// picker closes without a commit. `None` whenever the picker isn't up.
     theme_preview: Option<String>,
+    /// The theme picker's polarity filter: `true` shows dark themes,
+    /// `false` light ones. Set from the applied theme when the picker
+    /// opens; flipped by `Action::ToggleThemePickerPolarity`. Meaningless
+    /// while the picker is closed.
+    theme_picker_dark: bool,
     /// The custom-themes directory, `None` when no config dir resolved for
     /// this platform.
     pub themes_dir: Option<PathBuf>,
@@ -359,6 +364,16 @@ fn resolve_startup(
     None
 }
 
+/// The theme picker's title-row toggle label for the given polarity —
+/// names the set currently shown, with arrows advertising Left/Right.
+fn theme_picker_toggle_label(dark: bool) -> String {
+    if dark {
+        "◂ dark ▸".into()
+    } else {
+        "◂ light ▸".into()
+    }
+}
+
 impl App {
     /// Resolves the project to open (see [`resolve_startup`]) and opens it,
     /// self-initializing or prompting to create as its disposition says.
@@ -377,6 +392,24 @@ impl App {
         let terminal_colors = {
             use crate::theme::TerminalPalette;
             crate::theme::OscQuery.query()
+        };
+        // A successful query refreshes the per-terminal color cache; a
+        // lost race (no bg answered in time) replays the cache instead of
+        // degrading to the built-in dark seeds, so the same terminal
+        // renders the same palette on every launch. The cache is keyed by
+        // terminal identity — another terminal's colors never leak in.
+        let cache_path = crate::config::terminal_colors_path();
+        let term_id = crate::theme::cache::term_identity();
+        let terminal_colors = if terminal_colors.bg.is_some() {
+            if let Some(p) = &cache_path {
+                let _ = crate::theme::cache::save(p, &term_id, &terminal_colors);
+            }
+            terminal_colors
+        } else {
+            cache_path
+                .as_deref()
+                .and_then(|p| crate::theme::cache::load(p, &term_id))
+                .unwrap_or(terminal_colors)
         };
         let (theme_name, theme) = match themes.resolve(&ui_settings.theme, &terminal_colors) {
             Some(t) => (ui_settings.theme.clone(), t),
@@ -613,6 +646,32 @@ impl App {
     /// Live preview: while the theme picker is open, keep the applied theme
     /// in lockstep with the picker's highlighted row. Called after any key
     /// or click that may have moved the chooser's selection.
+    /// Builds the theme picker's rows for the current polarity filter
+    /// (`theme_picker_dark`): one row per registry entry whose seed
+    /// background matches, in registry order.
+    fn theme_picker_items(&self) -> Vec<crate::components::chooser::ChooserItem> {
+        self.themes
+            .entries()
+            .iter()
+            .filter(|e| {
+                self.themes.entry_is_dark(e, &self.terminal_colors) == self.theme_picker_dark
+            })
+            .map(|e| {
+                let detail = match &e.source {
+                    crate::theme::ThemeSource::Terminal => "terminal colors",
+                    crate::theme::ThemeSource::Builtin(_) => "built-in",
+                    crate::theme::ThemeSource::Custom(_) => "custom",
+                };
+                crate::components::chooser::ChooserItem {
+                    label: e.label.clone(),
+                    detail: Some(detail.into()),
+                    actions: vec![Action::ApplyTheme(e.name.clone())],
+                    id: Some(e.name.clone()),
+                }
+            })
+            .collect()
+    }
+
     fn sync_theme_preview(&mut self) {
         if self.theme_preview.is_none() {
             return;
@@ -656,6 +715,7 @@ impl App {
             terminal_colors: crate::theme::QueriedColors::default(),
             theme_name: "terminal".into(),
             theme_preview: None,
+            theme_picker_dark: true,
             themes_dir: None,
             anims: Anims::new(crate::config::UiSettings::default().animations),
             animating_last_tick: false,
@@ -1948,7 +2008,7 @@ impl App {
                 true
             }
             Action::OpenThemeChooser => {
-                use crate::components::chooser::{ChooserItem, ChooserState};
+                use crate::components::chooser::ChooserState;
                 // Rescan the themes dir so a custom file edited or added since
                 // startup shows up without a restart (spec: rescan on picker open).
                 let (themes, warnings) =
@@ -1957,38 +2017,37 @@ impl App {
                     self.toasts.push(w, ToastKind::Warning);
                 }
                 self.themes = themes;
-                let items: Vec<ChooserItem> = self
-                    .themes
-                    .entries()
-                    .iter()
-                    .map(|e| {
-                        let detail = match &e.source {
-                            crate::theme::ThemeSource::Terminal => "terminal colors",
-                            crate::theme::ThemeSource::Builtin(_) => "built-in",
-                            crate::theme::ThemeSource::Custom(_) => "custom",
-                        };
-                        ChooserItem {
-                            label: e.label.clone(),
-                            detail: Some(detail.into()),
-                            actions: vec![Action::ApplyTheme(e.name.clone())],
-                            id: Some(e.name.clone()),
-                        }
-                    })
-                    .collect();
-                let mut state = ChooserState::new("Theme", items);
+                // The picker opens filtered to the current theme's
+                // polarity: browsing themes must not flash the opposite
+                // polarity's (much brighter/darker) palettes. Left/Right
+                // or the title-row toggle flips to the other set.
+                self.theme_picker_dark = self.theme.is_dark();
+                let mut state = ChooserState::new("Theme", self.theme_picker_items()).with_toggle(
+                    theme_picker_toggle_label(self.theme_picker_dark),
+                    Action::ToggleThemePickerPolarity,
+                );
                 // Open on the currently-applied theme, not row 0 — the
                 // highlight drives the live preview, so starting anywhere
                 // else would instantly re-theme the app on open.
-                if let Some(idx) = self
-                    .themes
-                    .entries()
-                    .iter()
-                    .position(|e| e.name == self.theme_name)
-                {
-                    state.select(idx);
-                }
+                state.select_id(&self.theme_name.clone());
                 self.theme_preview = Some(self.theme_name.clone());
                 self.push_modal(Modal::Chooser(state));
+                true
+            }
+            Action::ToggleThemePickerPolarity => {
+                self.theme_picker_dark = !self.theme_picker_dark;
+                let items = self.theme_picker_items();
+                let label = theme_picker_toggle_label(self.theme_picker_dark);
+                let name = self.theme_name.clone();
+                if let Some(Modal::Chooser(state)) = self.modals.top_mut() {
+                    state.set_items(items);
+                    state.set_toggle_label(label);
+                    // If the applied theme is in the newly shown set, keep
+                    // the highlight on it; otherwise row 0 stands and the
+                    // preview sync below applies it.
+                    state.select_id(&name);
+                }
+                self.sync_theme_preview();
                 true
             }
             Action::ApplyTheme(name) => {

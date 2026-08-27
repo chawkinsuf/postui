@@ -10649,6 +10649,61 @@ mod undo_tests {
         assert_eq!(c.selected_id(), Some("terminal"), "terminal entry first");
     }
 
+    /// The picker opens filtered to the applied theme's polarity: on the
+    /// (dark) default, light themes are not reachable by browsing, so no
+    /// bright flashes. Left/Right flips to the light set, the preview
+    /// follows, and Esc still restores the original theme.
+    #[test]
+    fn theme_picker_polarity_toggle_flips_sets_and_esc_still_reverts() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::new_for_test();
+        let keymap = crate::keys::Keymap::load();
+        let original = app.theme.page;
+        let original_name = app.theme_name.clone();
+        app.update(Action::OpenThemeChooser);
+        {
+            // Dark set only: fuzzy-typing a light theme's name matches
+            // nothing.
+            let Some(crate::components::modal::Modal::Chooser(c)) = app.modals.top() else {
+                panic!("theme chooser modal expected");
+            };
+            assert_eq!(c.selected_id(), Some("terminal"));
+        }
+        for ch in "light".chars() {
+            app.handle_key(
+                &keymap,
+                KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+            );
+        }
+        {
+            let Some(crate::components::modal::Modal::Chooser(c)) = app.modals.top() else {
+                panic!("theme chooser modal expected");
+            };
+            assert_eq!(c.selected_id(), None, "no light themes in the dark set");
+        }
+        for _ in 0..5 {
+            app.handle_key(
+                &keymap,
+                KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+            );
+        }
+        // Right flips to the light set; the applied (dark) theme is not in
+        // it, so row 0 (the "light" builtin) previews immediately.
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(
+            app.theme_name, "light",
+            "flip previews the light set's row 0"
+        );
+        assert_ne!(app.theme.page, original);
+        // Flip back: the original theme is in the dark set again, so the
+        // highlight (and preview) return to it.
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(app.theme_name, original_name);
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.theme_name, original_name, "esc restores after toggling");
+        assert_eq!(app.theme.page, original);
+    }
+
     /// The picker must open with the highlight on the currently-applied
     /// theme — the highlight drives the live preview, so opening on row 0
     /// would instantly re-theme the app before the user touches a key.
@@ -10696,10 +10751,11 @@ mod undo_tests {
         let original = app.theme.page;
         let original_name = app.theme_name.clone();
         app.update(Action::OpenThemeChooser);
-        // Row 0 is "terminal"; Down moves to "dark", Down again to "light".
+        // The picker opens filtered to the current (dark) polarity: row 0
+        // is "terminal"; Down moves to "dark", Down again to "gruvbox-dark".
         app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.theme_name, "light", "highlight applies live");
+        assert_eq!(app.theme_name, "gruvbox-dark", "highlight applies live");
         assert_ne!(app.theme.page, original);
         app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(

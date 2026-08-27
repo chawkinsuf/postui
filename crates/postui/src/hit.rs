@@ -90,6 +90,10 @@ pub enum Hit {
     HScrollTrack(PaneId, i16),
     DropdownRow(usize),
     ChooserRow(usize),
+    /// The chooser's optional title-row toggle label (the theme picker's
+    /// dark/light filter): click dispatches the toggle's action without
+    /// closing the modal.
+    ChooserToggle,
     PaletteRow(usize),
     VarPickerRow(usize),
     /// A visible row of the Variable Manager's left list (spec §3.4).

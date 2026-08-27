@@ -1,6 +1,7 @@
 use ratatui::style::Color;
 
 pub mod builtin;
+pub mod cache;
 pub mod osc;
 pub mod registry;
 
