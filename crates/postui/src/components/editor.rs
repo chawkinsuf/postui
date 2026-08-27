@@ -336,6 +336,19 @@ impl Editor {
                 let row = (*row).min(rows.saturating_sub(1));
                 let col = (*col).min(self.body.lines.len_col(row).unwrap_or(0));
                 self.body.cursor = edtui::Index2::new(row, col);
+                // An undo/redo snapshot swap rebuilt the edtui state, whose
+                // fresh view (num_rows = 0) makes edtui's own
+                // scroll-to-cursor a no-op on the very next render — the
+                // view would show the buffer top instead of the edit. Seed
+                // the viewport here: the restored row roughly centered in
+                // the last-drawn body height (top-aligned when no draw has
+                // recorded one yet). Wrapped lines make this approximate;
+                // edtui trues it up as soon as the cursor moves.
+                let half = self
+                    .last_body_area
+                    .map(|a| usize::from(a.height) / 2)
+                    .unwrap_or(0);
+                self.body.set_viewport_offset(0, row.saturating_sub(half));
             }
             CursorPos::Cell { tab, key } => {
                 self.active_tab = *tab;
@@ -561,17 +574,78 @@ impl Editor {
 
     /// Cursor-movement niceties edtui 0.11 doesn't provide, applied before
     /// its event handler sees the key: ←/→ wrapping across line boundaries,
-    /// ctrl+Home/ctrl+End buffer jumps, and smart Home (first non-whitespace
-    /// first, column 0 on the next press). Only unmodified (or exactly-ctrl)
+    /// ctrl/alt+←/→ word hops (alt is the spelling macOS terminals deliver
+    /// for option+arrow), ctrl/alt+Backspace word deletion, ctrl+Home/
+    /// ctrl+End buffer jumps, and smart Home (first non-whitespace first,
+    /// column 0 on the next press). Only unmodified (or exactly-ctrl/alt)
     /// combos are touched, so shifted selection keys and edtui's own emacs
     /// bindings pass through untouched. Returns true when handled here.
     fn body_nav_key(&mut self, ev: &KeyEvent) -> bool {
         let ctrl = ev.modifiers == KeyModifiers::CONTROL;
+        let word = ctrl || ev.modifiers == KeyModifiers::ALT;
         let plain = ev.modifiers.is_empty();
         let cursor = self.body.cursor;
         let rows = self.body.lines.len();
         let len_of = |row: usize| self.body.lines.len_col(row).unwrap_or(0);
+        let row_chars = |body: &EditorState, row: usize| -> Vec<char> {
+            body.lines
+                .iter_row()
+                .nth(row)
+                .map(|l| l.to_vec())
+                .unwrap_or_default()
+        };
         match ev.code {
+            KeyCode::Left if word => {
+                if cursor.col == 0 && cursor.row > 0 {
+                    // At a line's start the hop wraps like plain Left.
+                    self.body.cursor = edtui::Index2::new(cursor.row - 1, len_of(cursor.row - 1));
+                } else {
+                    let line = row_chars(&self.body, cursor.row);
+                    self.body.cursor.col =
+                        super::word_nav::prev_word_boundary(&line, cursor.col);
+                }
+                true
+            }
+            KeyCode::Right if word => {
+                if cursor.col >= len_of(cursor.row) && cursor.row + 1 < rows {
+                    // At a line's end the hop wraps like plain Right.
+                    self.body.cursor = edtui::Index2::new(cursor.row + 1, 0);
+                } else {
+                    let line = row_chars(&self.body, cursor.row);
+                    self.body.cursor.col =
+                        super::word_nav::next_word_boundary(&line, cursor.col);
+                }
+                true
+            }
+            // Word deletion: select the hop word-left would make, then
+            // reuse the selection-delete path. At a line's start there is
+            // no same-line word behind; a plain Backspace (the line join)
+            // is forwarded instead.
+            // The ctrl+h spelling is how a physical ctrl+backspace reaches
+            // a legacy terminal (crossterm parses the 0x08 byte as ctrl+h);
+            // alt+h stays untouched — only alt+Backspace is a word delete.
+            KeyCode::Backspace | KeyCode::Char('h')
+                if (ev.code == KeyCode::Backspace && word)
+                    || (ev.code == KeyCode::Char('h') && ctrl) =>
+            {
+                if cursor.col == 0 {
+                    self.body_handler.on_key_event(
+                        KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+                        &mut self.body,
+                    );
+                    return true;
+                }
+                let line = row_chars(&self.body, cursor.row);
+                let target = super::word_nav::prev_word_boundary(&line, cursor.col);
+                if target < cursor.col {
+                    self.set_body_selection_cells(
+                        edtui::Index2::new(cursor.row, target),
+                        edtui::Index2::new(cursor.row, cursor.col - 1),
+                    );
+                    self.delete_body_selection();
+                }
+                true
+            }
             KeyCode::Home if ctrl => {
                 self.body.cursor = edtui::Index2::new(0, 0);
                 true
@@ -799,6 +873,18 @@ impl Editor {
             out.extend(line.iter().skip(from).take(to.saturating_sub(from)));
         }
         Some(out)
+    }
+
+    /// Selects the entire body buffer (ctrl+a, the toolbar chip, and the
+    /// palette command all land here).
+    pub fn body_select_all(&mut self) {
+        let last = self.body.lines.len().saturating_sub(1);
+        let last_col = self.body.lines.len_col(last).unwrap_or(0);
+        self.body_sel_anchor = Some(edtui::Index2::new(0, 0));
+        self.set_body_selection_cells(
+            edtui::Index2::new(0, 0),
+            edtui::Index2::new(last, last_col),
+        );
     }
 
     /// Drops any body selection and its anchor.
@@ -1096,13 +1182,7 @@ impl Component for Editor {
                 // meanings (type to replace, Backspace/Delete to remove,
                 // Esc to deselect).
                 if ev.code == KeyCode::Char('a') && ev.modifiers == KeyModifiers::CONTROL {
-                    let last = self.body.lines.len().saturating_sub(1);
-                    let last_col = self.body.lines.len_col(last).unwrap_or(0);
-                    self.body_sel_anchor = Some(edtui::Index2::new(0, 0));
-                    self.set_body_selection_cells(
-                        edtui::Index2::new(0, 0),
-                        edtui::Index2::new(last, last_col),
-                    );
+                    self.body_select_all();
                     return Some(Action::Render);
                 }
                 let is_motion = matches!(
@@ -1132,6 +1212,13 @@ impl Component for Editor {
                             return Some(Action::Render);
                         }
                         KeyCode::Backspace | KeyCode::Delete => {
+                            self.delete_body_selection();
+                            return Some(Action::Render);
+                        }
+                        // ctrl+h: a legacy terminal's ctrl+backspace.
+                        KeyCode::Char('h')
+                            if ev.modifiers == KeyModifiers::CONTROL =>
+                        {
                             self.delete_body_selection();
                             return Some(Action::Render);
                         }
@@ -2001,6 +2088,8 @@ impl Editor {
             ("alt+g", "minify", Some(Action::MinifyBody)),
             ("alt+b", sub_label, Some(Action::ToggleBodyVars)),
             ("^E", "$EDITOR", Some(Action::OpenBodyInEditor)),
+            ("^A", "select all", Some(Action::BodySelectAll)),
+            ("✕", "clear", Some(Action::BodyClear)),
         ];
 
         let right_limit = area.x + area.width;
@@ -2220,8 +2309,11 @@ impl Editor {
                     .selection_style(Style::default().bg(theme.selection).fg(theme.text))
                     .hide_status_line();
                 // A cursor block on an unfocused pane reads as "you are typing
-                // here", so only the focused editor shows one.
-                if !focused {
+                // here", so only the focused editor shows one — and while a
+                // selection is live the highlighted range is the visual
+                // focus, so the block caret hides rather than dangling at
+                // the selection's edge.
+                if !focused || self.body.selection.is_some() {
                     edtui_theme = edtui_theme.hide_cursor();
                 }
                 let view = EditorView::new(&mut self.body)
@@ -2482,12 +2574,66 @@ impl Editor {
 /// `Arc`-shared process-wide statics, so only one theme and one syntax
 /// reference are cloned, and draws are event-driven rather than continuous.
 fn json_highlighter(theme: &Theme) -> Option<SyntaxHighlighter> {
-    let name = if theme.is_dark() {
-        "base16-ocean-dark"
-    } else {
-        "base16-ocean-light"
+    // The named theme only seeds the highlighter (its constructor requires
+    // one); the palette actually used is the app-matched custom theme.
+    SyntaxHighlighter::new("base16-ocean-dark", "json")
+        .ok()
+        .map(|h| h.custom_theme(json_editor_syntect_theme(theme)))
+}
+
+/// The syntect theme the body editor highlights JSON with: the response
+/// pane's exact palette (see `token_color` in `components::response` —
+/// keys `accent`, strings `success`, numbers `warning`, `true`/`false`/
+/// `null` `text_muted`, everything else `text`), so the request body and
+/// the response viewer read as one surface.
+fn json_editor_syntect_theme(theme: &Theme) -> edtui::syntect::highlighting::Theme {
+    use edtui::syntect::highlighting::{
+        Color as SynColor, ScopeSelectors, StyleModifier, Theme as SynTheme, ThemeItem,
+        ThemeSettings,
     };
-    SyntaxHighlighter::new(name, "json").ok()
+    use std::str::FromStr;
+
+    let syn = |c: ratatui::style::Color| {
+        // Theme colors are always Color::Rgb (built from rgb tuples); any
+        // other variant would mean the palette changed shape, and falling
+        // back to the base text style keeps the draw alive.
+        match c {
+            ratatui::style::Color::Rgb(r, g, b) => SynColor { r, g, b, a: 0xFF },
+            _ => SynColor::WHITE,
+        }
+    };
+    // Order matters only for readability: syntect scores every selector
+    // and the most specific match wins, which is what lets the key rule
+    // (a `string` inside `meta.mapping.key`) beat the plain string rule.
+    let scopes = [
+        // syntect's bundled JSON grammar scopes keys as
+        // `meta.structure.dictionary.key`; `meta.mapping.key` is the same
+        // rule in Sublime's newer grammar, kept in case the bundle moves.
+        ("meta.structure.dictionary.key string", theme.accent),
+        ("meta.mapping.key string", theme.accent),
+        ("string", theme.success),
+        ("constant.numeric", theme.warning),
+        ("constant.language", theme.text_muted),
+    ];
+    SynTheme {
+        settings: ThemeSettings {
+            foreground: Some(syn(theme.text)),
+            ..ThemeSettings::default()
+        },
+        scopes: scopes
+            .into_iter()
+            .map(|(sel, color)| ThemeItem {
+                scope: ScopeSelectors::from_str(sel)
+                    .expect("static scope selectors parse"),
+                style: StyleModifier {
+                    foreground: Some(syn(color)),
+                    background: None,
+                    font_style: None,
+                },
+            })
+            .collect(),
+        ..SynTheme::default()
+    }
 }
 
 #[cfg(test)]
@@ -2658,6 +2804,188 @@ mod tests {
             edtui::Index2::new(0, 0),
             "ctrl+Home lands at the buffer's start"
         );
+    }
+
+    #[test]
+    fn body_ctrl_arrows_jump_by_word() {
+        let mut e = body_editor("foo bar\nbaz");
+        e.body.cursor = edtui::Index2::new(0, 0);
+        e.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
+        assert_eq!(e.body.cursor, edtui::Index2::new(0, 3), "end of foo");
+        e.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
+        assert_eq!(e.body.cursor, edtui::Index2::new(0, 7), "end of bar");
+        e.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
+        assert_eq!(
+            e.body.cursor,
+            edtui::Index2::new(1, 0),
+            "word-right at a line's end wraps like plain Right"
+        );
+        e.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
+        assert_eq!(
+            e.body.cursor,
+            edtui::Index2::new(0, 7),
+            "word-left at a line's start wraps to the previous line's end"
+        );
+        e.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
+        assert_eq!(e.body.cursor, edtui::Index2::new(0, 4), "start of bar");
+    }
+
+    #[test]
+    fn body_alt_arrows_jump_by_word_for_macos() {
+        let mut e = body_editor("foo bar");
+        e.body.cursor = edtui::Index2::new(0, 0);
+        e.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+        assert_eq!(e.body.cursor, edtui::Index2::new(0, 3));
+        e.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
+        assert_eq!(e.body.cursor, edtui::Index2::new(0, 0));
+    }
+
+    #[test]
+    fn body_ctrl_shift_right_selects_the_next_word() {
+        let mut e = body_editor("foo bar");
+        e.body.cursor = edtui::Index2::new(0, 0);
+        e.handle_key(KeyEvent::new(
+            KeyCode::Right,
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ));
+        assert_eq!(e.body.cursor, edtui::Index2::new(0, 3));
+        assert_eq!(e.body_selected_text().as_deref(), Some("foo"));
+    }
+
+    #[test]
+    fn body_ctrl_backspace_deletes_the_previous_word() {
+        let mut e = body_editor("foo bar");
+        e.body.cursor = edtui::Index2::new(0, 7);
+        e.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::CONTROL));
+        assert_eq!(e.body_text(), "foo ");
+        assert_eq!(e.body.cursor, edtui::Index2::new(0, 4));
+        // The macOS spelling of the same gesture: skips the whitespace and
+        // takes the word behind it too.
+        e.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT));
+        assert_eq!(e.body_text(), "");
+        assert_eq!(e.body.cursor, edtui::Index2::new(0, 0));
+    }
+
+    #[test]
+    fn restoring_a_body_cursor_seeds_the_viewport_near_the_edit() {
+        let text: String = (0..100).map(|i| format!("\"l{i}\": {i},\n")).collect();
+        let mut e = body_editor(&text);
+        e.last_body_area = Some(Rect::new(0, 0, 60, 10));
+        e.restore_cursor(&crate::undo::CursorPos::Body { row: 50, col: 0 });
+        let offset = e.body.viewport_offset().1;
+        assert!(
+            (41..=50).contains(&offset),
+            "the restored row (50) sits inside a 10-row viewport at offset {offset}"
+        );
+    }
+
+    #[test]
+    fn restoring_a_body_cursor_with_no_known_area_still_scrolls_to_the_row() {
+        let text: String = (0..100).map(|i| format!("\"l{i}\": {i},\n")).collect();
+        let mut e = body_editor(&text);
+        e.last_body_area = None;
+        e.restore_cursor(&crate::undo::CursorPos::Body { row: 50, col: 0 });
+        assert_eq!(
+            e.body.viewport_offset().1,
+            50,
+            "unknown height: top-align the restored row"
+        );
+    }
+
+    #[test]
+    fn body_highlighting_matches_the_response_panes_palette() {
+        use edtui::syntect::easy::HighlightLines;
+        use ratatui::style::Color;
+        let theme = Theme::dark();
+        let st = json_editor_syntect_theme(&theme);
+        let ss = &*edtui::SYNTAX_SET;
+        let syntax = ss.find_syntax_by_extension("json").unwrap();
+        let mut hl = HighlightLines::new(syntax, &st);
+        let regions = hl
+            .highlight_line("{\"akey\": [17, \"astr\", true]}", ss)
+            .unwrap();
+        let color_of = |needle: &str| {
+            regions
+                .iter()
+                .find(|(_, t)| t.contains(needle))
+                .unwrap_or_else(|| panic!("no region containing {needle:?}: {regions:?}"))
+                .0
+                .foreground
+        };
+        let rgb = |c: Color| match c {
+            Color::Rgb(r, g, b) => (r, g, b),
+            other => panic!("expected an Rgb theme color, got {other:?}"),
+        };
+        let fg = |c| {
+            let (r, g, b) = rgb(c);
+            edtui::syntect::highlighting::Color { r, g, b, a: 0xFF }
+        };
+        assert_eq!(color_of("akey"), fg(theme.accent), "keys use accent");
+        assert_eq!(color_of("astr"), fg(theme.success), "strings use success");
+        assert_eq!(color_of("17"), fg(theme.warning), "numbers use warning");
+        assert_eq!(
+            color_of("true"),
+            fg(theme.text_muted),
+            "literals use text_muted"
+        );
+        assert_eq!(color_of("{"), fg(theme.text), "punctuation uses text");
+    }
+
+    #[test]
+    fn body_caret_hides_while_a_selection_is_live() {
+        let reversed_cells = |e: &mut Editor| {
+            let theme = Theme::dark();
+            let ctx = DrawCtx {
+                theme: &theme,
+                focused: true,
+                hovered: None,
+                dragging: false,
+                anims: test_anims(),
+                now: std::time::Instant::now(),
+            };
+            let backend = TestBackend::new(120, 20);
+            let mut terminal = Terminal::new(backend).unwrap();
+            let mut hits = crate::hit::HitMap::default();
+            terminal
+                .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
+                .unwrap();
+            let buf = terminal.backend().buffer().clone();
+            let area = e.last_body_area.unwrap();
+            let mut n = 0;
+            for y in area.y..area.bottom() {
+                for x in area.x..area.right() {
+                    if buf[(x, y)].modifier.contains(Modifier::REVERSED) {
+                        n += 1;
+                    }
+                }
+            }
+            n
+        };
+        let mut e = body_editor("foo bar");
+        e.method = Method::Post;
+        assert!(
+            reversed_cells(&mut e) > 0,
+            "no selection: the caret cell renders reversed"
+        );
+        e.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+        // The selection itself renders via the theme's selection *color*,
+        // not REVERSED — so with the caret hidden no reversed cell remains.
+        assert_eq!(
+            reversed_cells(&mut e),
+            0,
+            "selection live: the block caret hides"
+        );
+    }
+
+    #[test]
+    fn body_ctrl_h_is_word_backspace_for_legacy_terminals() {
+        // Terminals without the enhanced-keys protocol deliver a physical
+        // ctrl+backspace as the 0x08 byte, which crossterm parses as
+        // ctrl+h — so ctrl+h must mean the same word deletion.
+        let mut e = body_editor("foo bar");
+        e.body.cursor = edtui::Index2::new(0, 7);
+        e.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL));
+        assert_eq!(e.body_text(), "foo ");
     }
 
     #[test]
@@ -3320,6 +3648,13 @@ mod tests {
             hits.rect_of(&Hit::FooterChip(Action::OpenBodyInEditor))
                 .is_some()
         );
+        assert!(content.contains("select all"), "{content}");
+        assert!(content.contains("clear"), "{content}");
+        assert!(
+            hits.rect_of(&Hit::FooterChip(Action::BodySelectAll))
+                .is_some()
+        );
+        assert!(hits.rect_of(&Hit::FooterChip(Action::BodyClear)).is_some());
     }
 
     #[test]

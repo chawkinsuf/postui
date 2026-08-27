@@ -131,14 +131,46 @@ impl LineInput {
 
     /// Handles a key event, returning `true` if it was consumed (state may
     /// have changed) or `false` if the caller should treat it as unhandled.
+    /// The char index a word-left/word-right motion from the cursor lands
+    /// on (ctrl+arrow, or alt+arrow for macOS muscle memory).
+    fn word_target(&self, forward: bool) -> usize {
+        let chars: Vec<char> = self.text.chars().collect();
+        if forward {
+            super::word_nav::next_word_boundary(&chars, self.cursor)
+        } else {
+            super::word_nav::prev_word_boundary(&chars, self.cursor)
+        }
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        // ctrl+arrow skips words; alt+arrow is the same gesture as macOS
+        // terminals deliver it (option+arrow), so both spellings work on
+        // every platform.
+        let word = key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
         // Shifted motion extends a selection from an anchor planted at the
         // pre-move cursor; unshifted motion collapses any selection first
         // (Left/Right land on the selection's own edge, GUI-style).
         match key.code {
             KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.select_all();
+                true
+            }
+            // A physical ctrl+backspace reaches a legacy terminal as the
+            // 0x08 byte, which crossterm parses as ctrl+h — same word
+            // deletion as the enhanced-keys `Backspace + CONTROL` below.
+            KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if !self.delete_selection() {
+                    let target = self.word_target(false);
+                    if self.cursor > target {
+                        let start = self.byte_offset(target);
+                        let end = self.byte_offset(self.cursor);
+                        self.text.replace_range(start..end, "");
+                        self.cursor = target;
+                    }
+                }
                 true
             }
             KeyCode::Char(c) if key.modifiers.difference(KeyModifiers::SHIFT).is_empty() => {
@@ -152,11 +184,18 @@ impl LineInput {
                 if self.delete_selection() {
                     return true;
                 }
-                if self.cursor > 0 {
-                    let start = self.byte_offset(self.cursor - 1);
+                // ctrl/alt+backspace removes the whole word behind the
+                // caret, the same hop word-left would make.
+                let target = if word {
+                    self.word_target(false)
+                } else {
+                    self.cursor.saturating_sub(1)
+                };
+                if self.cursor > target {
+                    let start = self.byte_offset(target);
                     let end = self.byte_offset(self.cursor);
                     self.text.replace_range(start..end, "");
-                    self.cursor -= 1;
+                    self.cursor = target;
                 }
                 true
             }
@@ -174,30 +213,42 @@ impl LineInput {
             KeyCode::Left => {
                 if shift {
                     self.anchor.get_or_insert(self.cursor);
-                    self.cursor = self.cursor.saturating_sub(1);
-                } else if let Some((start, _)) = self.selection() {
+                    self.cursor = if word {
+                        self.word_target(false)
+                    } else {
+                        self.cursor.saturating_sub(1)
+                    };
+                } else if !word && let Some((start, _)) = self.selection() {
                     self.cursor = start;
                     self.anchor = None;
                 } else {
                     self.anchor = None;
-                    self.cursor = self.cursor.saturating_sub(1);
+                    self.cursor = if word {
+                        self.word_target(false)
+                    } else {
+                        self.cursor.saturating_sub(1)
+                    };
                 }
                 true
             }
             KeyCode::Right => {
                 if shift {
                     self.anchor.get_or_insert(self.cursor);
-                    if self.cursor < self.len_chars() {
-                        self.cursor += 1;
-                    }
-                } else if let Some((_, end)) = self.selection() {
+                    self.cursor = if word {
+                        self.word_target(true)
+                    } else {
+                        (self.cursor + 1).min(self.len_chars())
+                    };
+                } else if !word && let Some((_, end)) = self.selection() {
                     self.cursor = end;
                     self.anchor = None;
                 } else {
                     self.anchor = None;
-                    if self.cursor < self.len_chars() {
-                        self.cursor += 1;
-                    }
+                    self.cursor = if word {
+                        self.word_target(true)
+                    } else {
+                        (self.cursor + 1).min(self.len_chars())
+                    };
                 }
                 true
             }
@@ -331,8 +382,11 @@ impl LineInput {
         };
         let reversed = base.add_modifier(Modifier::REVERSED);
         let selection = self.selection();
+        // While a selection is live the reversed range *is* the visual
+        // focus; the caret cell hides so it can't dangle outside the
+        // selection's edge as a stray reversed cell.
         let style_at = |i: usize| {
-            if i == self.cursor {
+            if selection.is_none() && i == self.cursor {
                 return reversed;
             }
             match selection {
@@ -355,8 +409,9 @@ impl LineInput {
         if !run.is_empty() {
             spans.push(Span::styled(run, run_style));
         }
-        // The trailing caret cell when the cursor sits past the drawn text.
-        if self.cursor >= end {
+        // The trailing caret cell when the cursor sits past the drawn text
+        // — suppressed like the in-text caret while a selection is live.
+        if selection.is_none() && self.cursor >= end {
             spans.push(Span::styled(" ", reversed));
         }
         Line::from(spans)
@@ -637,8 +692,93 @@ mod tests {
         }
         assert_eq!(reversed[0], ('a', true), "selected");
         assert_eq!(reversed[1], ('b', true), "selected");
-        assert_eq!(reversed[2], ('c', true), "caret cell at the selection end");
+        assert_eq!(
+            reversed[2],
+            ('c', false),
+            "the caret hides while a selection is live"
+        );
         assert_eq!(reversed[3], ('d', false), "outside the selection");
+    }
+
+    #[test]
+    fn select_all_renders_no_trailing_caret_cell() {
+        let mut input = LineInput::new("ab");
+        input.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+        let theme = Theme::dark();
+        let line = input.draw_line(true, &theme);
+        let rendered = line_text(&line);
+        assert_eq!(
+            rendered, "ab",
+            "no reversed blank caret cell after the selection"
+        );
+    }
+
+    fn word_key(c: KeyCode, extra: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(c, extra)
+    }
+
+    #[test]
+    fn ctrl_arrows_jump_by_word() {
+        let mut input = LineInput::new("foo bar");
+        input.handle_key(code(KeyCode::Home));
+        assert!(input.handle_key(word_key(KeyCode::Right, KeyModifiers::CONTROL)));
+        assert_eq!(input.cursor(), 3);
+        assert!(input.handle_key(word_key(KeyCode::Right, KeyModifiers::CONTROL)));
+        assert_eq!(input.cursor(), 7);
+        assert!(input.handle_key(word_key(KeyCode::Left, KeyModifiers::CONTROL)));
+        assert_eq!(input.cursor(), 4);
+    }
+
+    #[test]
+    fn alt_arrows_jump_by_word_for_macos() {
+        let mut input = LineInput::new("foo bar");
+        input.handle_key(code(KeyCode::Home));
+        assert!(input.handle_key(word_key(KeyCode::Right, KeyModifiers::ALT)));
+        assert_eq!(input.cursor(), 3);
+        assert!(input.handle_key(word_key(KeyCode::Left, KeyModifiers::ALT)));
+        assert_eq!(input.cursor(), 0);
+    }
+
+    #[test]
+    fn ctrl_shift_arrows_extend_the_selection_by_word() {
+        let mut input = LineInput::new("foo bar");
+        input.handle_key(code(KeyCode::Home));
+        assert!(input.handle_key(word_key(
+            KeyCode::Right,
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT
+        )));
+        assert_eq!(input.selection(), Some((0, 3)));
+        assert_eq!(input.selected_text().as_deref(), Some("foo"));
+    }
+
+    #[test]
+    fn ctrl_backspace_deletes_the_previous_word() {
+        let mut input = LineInput::new("foo bar"); // cursor at end
+        assert!(input.handle_key(word_key(KeyCode::Backspace, KeyModifiers::CONTROL)));
+        assert_eq!(input.text(), "foo ");
+        assert_eq!(input.cursor(), 4);
+        // The macOS spelling of the same gesture.
+        assert!(input.handle_key(word_key(KeyCode::Backspace, KeyModifiers::ALT)));
+        assert_eq!(input.text(), "");
+    }
+
+    #[test]
+    fn ctrl_h_is_word_backspace_for_legacy_terminals() {
+        // Terminals without the enhanced-keys protocol deliver a physical
+        // ctrl+backspace as the 0x08 byte, which crossterm parses as
+        // ctrl+h — so ctrl+h must mean the same word deletion.
+        let mut input = LineInput::new("foo bar");
+        assert!(input.handle_key(word_key(KeyCode::Char('h'), KeyModifiers::CONTROL)));
+        assert_eq!(input.text(), "foo ");
+    }
+
+    #[test]
+    fn word_backspace_with_a_selection_removes_only_the_selection() {
+        let mut input = LineInput::new("foo bar");
+        input.handle_key(code(KeyCode::Home));
+        input.handle_key(shifted(KeyCode::Right));
+        assert!(input.handle_key(word_key(KeyCode::Backspace, KeyModifiers::CONTROL)));
+        assert_eq!(input.text(), "oo bar");
     }
 
     #[test]

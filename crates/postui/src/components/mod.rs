@@ -14,6 +14,7 @@ pub mod toast;
 pub mod var_picker;
 pub mod var_tokens;
 pub mod varmanager;
+pub mod word_nav;
 
 use crate::action::Action;
 use crate::anim::{AnimKey, Anims};

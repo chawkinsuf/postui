@@ -114,6 +114,18 @@ pub fn all_commands() -> Vec<Command> {
             action: Action::MinifyBody,
         },
         Command {
+            id: "body-select-all",
+            name: "Body: select all",
+            description: "Select the whole request body",
+            action: Action::BodySelectAll,
+        },
+        Command {
+            id: "body-clear",
+            name: "Body: clear",
+            description: "Empty the request body (undoable)",
+            action: Action::BodyClear,
+        },
+        Command {
             id: "body-external-editor",
             name: "Body: open in $EDITOR",
             description: "Edit the body in your external editor",
