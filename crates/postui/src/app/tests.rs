@@ -10668,4 +10668,52 @@ mod undo_tests {
         app.update(Action::ApplyTheme("no-such-theme".into()));
         assert_eq!(app.theme_name, "terminal");
     }
+
+    #[test]
+    fn theme_picker_previews_on_highlight_and_esc_reverts() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::new_for_test();
+        let keymap = crate::keys::Keymap::default_bindings();
+        let original = app.theme.page;
+        let original_name = app.theme_name.clone();
+        app.update(Action::OpenThemeChooser);
+        // Row 0 is "terminal"; Down moves to "dark", Down again to "light".
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.theme_name, "light", "highlight applies live");
+        assert_ne!(app.theme.page, original);
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.theme_name, original_name, "esc restores the prior theme");
+        assert_eq!(app.theme.page, original);
+        assert!(app.modals.top().is_none());
+    }
+
+    #[test]
+    fn theme_picker_enter_keeps_the_previewed_theme() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::new_for_test();
+        let keymap = crate::keys::Keymap::default_bindings();
+        app.update(Action::OpenThemeChooser);
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // "dark"
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.theme_name, "dark");
+        assert_eq!(app.ui_settings.theme, "dark");
+        assert!(app.modals.top().is_none());
+        assert!(app.theme_preview.is_none(), "preview state cleared on close");
+    }
+
+    #[test]
+    fn filter_typing_moves_the_live_preview_with_the_highlight() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::new_for_test();
+        let keymap = crate::keys::Keymap::default_bindings();
+        app.update(Action::OpenThemeChooser);
+        for ch in "mocha".chars() {
+            app.handle_key(&keymap, KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        }
+        assert_eq!(
+            app.theme_name, "catppuccin-mocha",
+            "refilter re-selects row 0 and previews it"
+        );
+    }
 }

@@ -922,6 +922,7 @@ impl App {
                     self.apply_modal_result(res)
                 } else {
                     state.select(i);
+                    self.sync_theme_preview();
                     self.update(Action::Render)
                 }
             }

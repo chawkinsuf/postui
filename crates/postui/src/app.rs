@@ -125,6 +125,9 @@ pub struct App {
     pub terminal_colors: crate::theme::QueriedColors,
     /// The currently-applied theme's registry name.
     pub theme_name: String,
+    /// While the theme picker is open: the theme name to restore if the
+    /// picker closes without a commit. `None` whenever the picker isn't up.
+    theme_preview: Option<String>,
     /// The custom-themes directory, `None` when no config dir resolved for
     /// this platform.
     pub themes_dir: Option<PathBuf>,
@@ -607,6 +610,25 @@ impl App {
         self.theme_name = resolved;
     }
 
+    /// Live preview: while the theme picker is open, keep the applied theme
+    /// in lockstep with the picker's highlighted row. Called after any key
+    /// or click that may have moved the chooser's selection.
+    fn sync_theme_preview(&mut self) {
+        if self.theme_preview.is_none() {
+            return;
+        }
+        let Some(Modal::Chooser(c)) = self.modals.top() else {
+            return;
+        };
+        let Some(id) = c.selected_id() else {
+            return; // filter matched nothing; keep the last previewed theme
+        };
+        if id != self.theme_name {
+            let id = id.to_string();
+            self.set_theme_by_name(&id);
+        }
+    }
+
     fn bare(tx: UnboundedSender<Action>, root: PathBuf) -> Self {
         let (project, warnings) = ProjectContext::open(root);
         let mut toasts = Toasts::default();
@@ -633,6 +655,7 @@ impl App {
             themes: crate::theme::ThemeRegistry::builtin(),
             terminal_colors: crate::theme::QueriedColors::default(),
             theme_name: "terminal".into(),
+            theme_preview: None,
             themes_dir: None,
             anims: Anims::new(crate::config::UiSettings::default().animations),
             animating_last_tick: false,
@@ -1955,6 +1978,7 @@ impl App {
                         }
                     })
                     .collect();
+                self.theme_preview = Some(self.theme_name.clone());
                 self.push_modal(Modal::Chooser(ChooserState::new("Theme", items)));
                 true
             }
@@ -5067,9 +5091,12 @@ impl App {
         // 2. Modals capture all remaining input.
         if !self.modals.is_empty() {
             let Some(res) = self.modals.handle_key(ev) else {
+                self.sync_theme_preview();
                 return true; // typed into modal
             };
-            return self.apply_modal_result(res);
+            let changed = self.apply_modal_result(res);
+            self.sync_theme_preview();
+            return changed;
         }
 
         // 3. A non-Main screen captures all remaining input, like a modal —
@@ -5490,6 +5517,14 @@ impl App {
                 {
                     self.sidebar.selected = prev;
                 }
+            }
+            // Closing the theme picker restores the pre-preview theme; a
+            // committed choice (Enter → ApplyTheme in `res.actions`)
+            // re-applies over this.
+            if matches!(popped, Some(Modal::Chooser(_)))
+                && let Some(prior) = self.theme_preview.take()
+            {
+                self.set_theme_by_name(&prior);
             }
         }
         if let Some(id) = &res.usage {
