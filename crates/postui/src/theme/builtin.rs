@@ -9,6 +9,9 @@ pub struct BuiltinTheme {
     pub name: &'static str,
     pub label: &'static str,
     pub seeds: Seeds,
+    /// The name of this theme's opposite-polarity sibling, when the
+    /// catalog ships one — the picker's light/dark switch follows it.
+    pub counterpart: Option<&'static str>,
 }
 
 /// Every built-in, in picker order. `dark`/`light` reuse the existing
@@ -28,11 +31,13 @@ pub fn builtin_themes() -> Vec<BuiltinTheme> {
             name: "dark",
             label: "Dark",
             seeds: Seeds::dark(),
+            counterpart: Some("light"),
         },
         BuiltinTheme {
             name: "light",
             label: "Light",
             seeds: Seeds::light(),
+            counterpart: Some("dark"),
         },
         BuiltinTheme {
             name: "gruvbox-dark",
@@ -45,6 +50,7 @@ pub fn builtin_themes() -> Vec<BuiltinTheme> {
                 (0xfa, 0xbd, 0x2f),
                 (0xfb, 0x49, 0x34),
             ]),
+            counterpart: Some("gruvbox-light"),
         },
         BuiltinTheme {
             name: "gruvbox-light",
@@ -57,6 +63,7 @@ pub fn builtin_themes() -> Vec<BuiltinTheme> {
                 (0xb5, 0x76, 0x14),
                 (0x9d, 0x00, 0x06),
             ]),
+            counterpart: Some("gruvbox-dark"),
         },
         BuiltinTheme {
             name: "catppuccin-mocha",
@@ -69,6 +76,20 @@ pub fn builtin_themes() -> Vec<BuiltinTheme> {
                 (0xf9, 0xe2, 0xaf),
                 (0xf3, 0x8b, 0xa8),
             ]),
+            counterpart: Some("catppuccin-latte"),
+        },
+        BuiltinTheme {
+            name: "catppuccin-latte",
+            label: "Catppuccin Latte",
+            seeds: s([
+                (0xef, 0xf1, 0xf5),
+                (0x4c, 0x4f, 0x69),
+                (0x1e, 0x66, 0xf5),
+                (0x40, 0xa0, 0x2b),
+                (0xdf, 0x8e, 0x1d),
+                (0xd2, 0x0f, 0x39),
+            ]),
+            counterpart: Some("catppuccin-mocha"),
         },
         BuiltinTheme {
             name: "solarized-dark",
@@ -81,6 +102,7 @@ pub fn builtin_themes() -> Vec<BuiltinTheme> {
                 (0xb5, 0x89, 0x00),
                 (0xdc, 0x32, 0x2f),
             ]),
+            counterpart: Some("solarized-light"),
         },
         BuiltinTheme {
             name: "solarized-light",
@@ -93,6 +115,7 @@ pub fn builtin_themes() -> Vec<BuiltinTheme> {
                 (0xb5, 0x89, 0x00),
                 (0xdc, 0x32, 0x2f),
             ]),
+            counterpart: Some("solarized-dark"),
         },
     ]
 }
@@ -103,7 +126,7 @@ mod tests {
     use crate::theme::{Theme, oklab_l, rgb_of};
 
     #[test]
-    fn seven_builtins_in_stable_order_with_unique_names() {
+    fn builtins_in_stable_order_with_unique_names() {
         let all = builtin_themes();
         let names: Vec<&str> = all.iter().map(|b| b.name).collect();
         assert_eq!(
@@ -114,10 +137,38 @@ mod tests {
                 "gruvbox-dark",
                 "gruvbox-light",
                 "catppuccin-mocha",
+                "catppuccin-latte",
                 "solarized-dark",
                 "solarized-light",
             ]
         );
+    }
+
+    /// Every built-in belongs to a light/dark pair: its counterpart names
+    /// a real catalog entry of the opposite polarity, and the link is
+    /// mutual.
+    #[test]
+    fn every_builtin_pairs_with_an_opposite_polarity_counterpart() {
+        let all = builtin_themes();
+        for b in &all {
+            let cp_name = b.counterpart.expect(b.name);
+            let cp = all
+                .iter()
+                .find(|o| o.name == cp_name)
+                .unwrap_or_else(|| panic!("{}: counterpart {cp_name} missing", b.name));
+            assert_ne!(
+                oklab_l(b.seeds.bg) < 0.5,
+                oklab_l(cp.seeds.bg) < 0.5,
+                "{}: counterpart must have the opposite polarity",
+                b.name
+            );
+            assert_eq!(
+                cp.counterpart,
+                Some(b.name),
+                "{}: link must be mutual",
+                b.name
+            );
+        }
     }
 
     /// Every built-in must generate a full theme without panicking, with

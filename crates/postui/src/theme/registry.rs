@@ -20,6 +20,13 @@ pub struct ThemeEntry {
     pub name: String,
     pub label: String,
     pub source: ThemeSource,
+    /// The name of this theme's opposite-polarity sibling, when it has
+    /// one — built-ins ship theirs, customs pair by the `-dark`/`-light`
+    /// stem convention or an explicit `counterpart` key. Validated at
+    /// load: always names an existing entry, and the link is mutual.
+    /// `None` for unpaired themes (Terminal, lone customs) — the picker's
+    /// light/dark switch is disabled while one is highlighted.
+    pub counterpart: Option<String>,
 }
 
 /// Every theme the picker offers, in display order: terminal first, then
@@ -37,11 +44,13 @@ impl ThemeRegistry {
             name: "terminal".into(),
             label: "Terminal colors".into(),
             source: ThemeSource::Terminal,
+            counterpart: None,
         }];
         entries.extend(builtin_themes().into_iter().map(|b| ThemeEntry {
             name: b.name.into(),
             label: b.label.into(),
             source: ThemeSource::Builtin(b.seeds),
+            counterpart: b.counterpart.map(Into::into),
         }));
         Self { entries }
     }
@@ -65,13 +74,14 @@ impl ThemeRegistry {
                 continue;
             }
             match parse_theme_file(&path) {
-                Ok((label, seeds)) => {
+                Ok((label, counterpart, seeds)) => {
                     let name = path
                         .file_stem()
                         .map(|s| s.to_string_lossy().into_owned())
                         .unwrap_or_default();
                     customs.push(ThemeEntry {
                         label: label.unwrap_or_else(|| name.clone()),
+                        counterpart: counterpart.or_else(|| conventional_counterpart(&name)),
                         name,
                         source: ThemeSource::Custom(seeds),
                     });
@@ -87,6 +97,30 @@ impl ThemeRegistry {
             match registry.entries.iter_mut().find(|e| e.name == custom.name) {
                 Some(slot) => *slot = custom, // shadow a builtin in place
                 None => registry.entries.push(custom),
+            }
+        }
+        // Counterpart links must name a real entry other than themselves;
+        // a dangling (or self-pointing) declaration drops to unpaired. A
+        // valid one-way link is then made mutual when the named side
+        // declares no counterpart of its own.
+        let names: Vec<String> = registry.entries.iter().map(|e| e.name.clone()).collect();
+        for e in &mut registry.entries {
+            if let Some(cp) = &e.counterpart
+                && (cp == &e.name || !names.contains(cp))
+            {
+                e.counterpart = None;
+            }
+        }
+        let links: Vec<(String, String)> = registry
+            .entries
+            .iter()
+            .filter_map(|e| e.counterpart.clone().map(|c| (e.name.clone(), c)))
+            .collect();
+        for (from, to) in links {
+            if let Some(other) = registry.entries.iter_mut().find(|e| e.name == to)
+                && other.counterpart.is_none()
+            {
+                other.counterpart = Some(from);
             }
         }
         (registry, warnings)
@@ -125,10 +159,30 @@ impl ThemeRegistry {
     }
 }
 
+/// The `-dark`/`-light` stem convention (plus the bare `dark`/`light`
+/// pair): the counterpart name a custom theme is assumed to pair with
+/// when its file declares no explicit `counterpart` key. Whether that
+/// name actually exists is the load-time validation's business.
+fn conventional_counterpart(name: &str) -> Option<String> {
+    match name {
+        "dark" => Some("light".into()),
+        "light" => Some("dark".into()),
+        _ => name
+            .strip_suffix("-dark")
+            .map(|base| format!("{base}-light"))
+            .or_else(|| {
+                name.strip_suffix("-light")
+                    .map(|base| format!("{base}-dark"))
+            }),
+    }
+}
+
 /// Parses one custom theme file: six required `#rrggbb` color keys plus an
-/// optional `name` display label. Any missing or malformed piece fails the
-/// whole file — no partial themes.
-fn parse_theme_file(path: &Path) -> Result<(Option<String>, Seeds), String> {
+/// optional `name` display label and an optional `counterpart` (the name
+/// of the theme its light/dark switch should land on, overriding the stem
+/// convention). Any missing or malformed required piece fails the whole
+/// file — no partial themes.
+fn parse_theme_file(path: &Path) -> Result<(Option<String>, Option<String>, Seeds), String> {
     let contents = std::fs::read_to_string(path).map_err(|e| format!("unreadable: {e}"))?;
     let value: toml::Value = toml::from_str(&contents).map_err(|_| "invalid TOML".to_string())?;
     let color = |key: &str| -> Result<(u8, u8, u8), String> {
@@ -151,7 +205,11 @@ fn parse_theme_file(path: &Path) -> Result<(Option<String>, Seeds), String> {
         .get("name")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    Ok((label, seeds))
+    let counterpart = value
+        .get("counterpart")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    Ok((label, counterpart, seeds))
 }
 
 /// Parses `"#rrggbb"` (case-insensitive hex) into components.
@@ -184,6 +242,7 @@ mod tests {
                 "gruvbox-dark",
                 "gruvbox-light",
                 "catppuccin-mocha",
+                "catppuccin-latte",
                 "solarized-dark",
                 "solarized-light",
             ]
@@ -192,6 +251,74 @@ mod tests {
             r.get("terminal").unwrap().source,
             ThemeSource::Terminal
         ));
+        assert_eq!(
+            r.get("gruvbox-dark").unwrap().counterpart.as_deref(),
+            Some("gruvbox-light")
+        );
+        assert_eq!(r.get("terminal").unwrap().counterpart, None);
+    }
+
+    /// Customs pair by the `-dark`/`-light` stem convention (mutualized at
+    /// load), an explicit `counterpart` key overrides the convention, a
+    /// dangling declaration drops to unpaired, and a lone custom is
+    /// unpaired.
+    #[test]
+    fn custom_counterparts_by_convention_key_and_validation() {
+        let dir = tempdir().unwrap();
+        let seeds_body = "fg = \"#e2e2e6\"\naccent = \"#0178d4\"\n\
+             success = \"#9ece6a\"\nwarning = \"#e0af68\"\nerror = \"#f7768e\"\n";
+        std::fs::write(
+            dir.path().join("zebra-dark.toml"),
+            format!("bg = \"#101418\"\n{seeds_body}"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("zebra-light.toml"),
+            format!("bg = \"#fafafa\"\n{seeds_body}"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("noir.toml"),
+            format!("counterpart = \"gruvbox-light\"\nbg = \"#000000\"\n{seeds_body}"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("dangling-dark.toml"),
+            format!("bg = \"#000005\"\n{seeds_body}"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("lone.toml"),
+            format!("bg = \"#000009\"\n{seeds_body}"),
+        )
+        .unwrap();
+        let (r, warnings) = ThemeRegistry::load(Some(dir.path()));
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(
+            r.get("zebra-dark").unwrap().counterpart.as_deref(),
+            Some("zebra-light"),
+            "stem convention pairs the two zebras"
+        );
+        assert_eq!(
+            r.get("zebra-light").unwrap().counterpart.as_deref(),
+            Some("zebra-dark")
+        );
+        assert_eq!(
+            r.get("noir").unwrap().counterpart.as_deref(),
+            Some("gruvbox-light"),
+            "explicit key overrides the (absent) convention"
+        );
+        assert_eq!(
+            r.get("gruvbox-light").unwrap().counterpart.as_deref(),
+            Some("gruvbox-dark"),
+            "an already-paired target keeps its own link"
+        );
+        assert_eq!(
+            r.get("dangling-dark").unwrap().counterpart,
+            None,
+            "conventional name that doesn't exist drops to unpaired"
+        );
+        assert_eq!(r.get("lone").unwrap().counterpart, None);
     }
 
     #[test]
@@ -281,7 +408,7 @@ mod tests {
         );
         assert!(warnings.iter().any(|w| w.contains("nokey")));
         assert!(warnings.iter().any(|w| w.contains("badhex")));
-        assert_eq!(r.entries().len(), 8, "builtins only");
+        assert_eq!(r.entries().len(), 9, "builtins only");
     }
 
     #[test]
@@ -298,7 +425,7 @@ mod tests {
             warnings.is_empty(),
             "shadowing is deliberate, no warning: {warnings:?}"
         );
-        assert_eq!(r.entries().len(), 8, "shadow replaces, not appends");
+        assert_eq!(r.entries().len(), 9, "shadow replaces, not appends");
         assert_eq!(r.entries()[1].name, "dark", "position preserved");
         let t = r.resolve("dark", &QueriedColors::default()).unwrap();
         assert_eq!(t.page, Color::Rgb(0, 0, 0));
@@ -325,9 +452,9 @@ mod tests {
     fn load_missing_dir_is_builtins_with_no_warnings() {
         let (r, warnings) = ThemeRegistry::load(Some(std::path::Path::new("/nonexistent/themes")));
         assert!(warnings.is_empty());
-        assert_eq!(r.entries().len(), 8);
+        assert_eq!(r.entries().len(), 9);
         let (r2, w2) = ThemeRegistry::load(None);
         assert!(w2.is_empty());
-        assert_eq!(r2.entries().len(), 8);
+        assert_eq!(r2.entries().len(), 9);
     }
 }

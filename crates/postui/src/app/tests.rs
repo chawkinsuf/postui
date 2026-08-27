@@ -10687,21 +10687,45 @@ mod undo_tests {
                 KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
             );
         }
-        // Right flips to the light set; the applied (dark) theme is not in
-        // it, so row 0 (the "light" builtin) previews immediately.
+        // Terminal has no light/dark counterpart: the switch is inert
+        // while it's highlighted.
         app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-        assert_eq!(
-            app.theme_name, "light",
-            "flip previews the light set's row 0"
-        );
+        assert_eq!(app.theme_name, "terminal", "unpaired: flip does nothing");
+        // Move to the paired "dark" builtin; Right now lands on its
+        // counterpart in the light set, and the preview follows.
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.theme_name, "dark");
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.theme_name, "light", "flip follows the counterpart");
         assert_ne!(app.theme.page, original);
-        // Flip back: the original theme is in the dark set again, so the
-        // highlight (and preview) return to it.
+        // Flip back: counterpart again — the same family, dark side.
         app.handle_key(&keymap, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
-        assert_eq!(app.theme_name, original_name);
+        assert_eq!(app.theme_name, "dark");
         app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(app.theme_name, original_name, "esc restores after toggling");
         assert_eq!(app.theme.page, original);
+    }
+
+    /// The switch keeps the selected family across polarity flips for
+    /// non-adjacent rows too — gruvbox-dark lands on gruvbox-light, not
+    /// on the light set's first row.
+    #[test]
+    fn theme_picker_flip_stays_on_the_selected_family() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::new_for_test();
+        let keymap = crate::keys::Keymap::load();
+        app.update(Action::ApplyTheme("gruvbox-dark".into()));
+        app.update(Action::OpenThemeChooser);
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.theme_name, "gruvbox-light");
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(app.theme_name, "gruvbox-dark");
+        // Catppuccin pairs across its own names, not the stem convention.
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.update(Action::ApplyTheme("catppuccin-mocha".into()));
+        app.update(Action::OpenThemeChooser);
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.theme_name, "catppuccin-latte");
     }
 
     /// The picker must open with the highlight on the currently-applied

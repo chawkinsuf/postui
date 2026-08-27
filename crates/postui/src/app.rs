@@ -679,12 +679,28 @@ impl App {
         let Some(Modal::Chooser(c)) = self.modals.top() else {
             return;
         };
-        let Some(id) = c.selected_id() else {
-            return; // filter matched nothing; keep the last previewed theme
+        // Filter matched nothing: keep the last previewed theme (and the
+        // toggle label — the highlight hasn't actually moved anywhere).
+        let Some(id) = c.selected_id().map(str::to_string) else {
+            return;
         };
         if id != self.theme_name {
-            let id = id.to_string();
             self.set_theme_by_name(&id);
+        }
+        // The light/dark switch only exists for the highlighted theme when
+        // it has a counterpart: hide its label otherwise (Terminal, lone
+        // customs), so the picker never advertises a dead control.
+        let label = if self
+            .themes
+            .get(&id)
+            .is_some_and(|e| e.counterpart.is_some())
+        {
+            theme_picker_toggle_label(self.theme_picker_dark)
+        } else {
+            String::new()
+        };
+        if let Some(Modal::Chooser(state)) = self.modals.top_mut() {
+            state.set_toggle_label(label);
         }
     }
 
@@ -2032,20 +2048,34 @@ impl App {
                 state.select_id(&self.theme_name.clone());
                 self.theme_preview = Some(self.theme_name.clone());
                 self.push_modal(Modal::Chooser(state));
+                // Settle the toggle label for the opening highlight (hidden
+                // when the current theme is unpaired, e.g. Terminal).
+                self.sync_theme_preview();
                 true
             }
             Action::ToggleThemePickerPolarity => {
+                // The switch means "this theme, other polarity": it only
+                // acts when the highlighted theme has a counterpart, and
+                // the highlight lands on that counterpart in the flipped
+                // set. Unpaired themes (Terminal, lone customs) leave the
+                // switch inert — the label is hidden for them too, via
+                // `sync_theme_preview`.
+                let highlighted = match self.modals.top() {
+                    Some(Modal::Chooser(c)) => c.selected_id().map(str::to_string),
+                    _ => None,
+                };
+                let Some(counterpart) = highlighted
+                    .as_deref()
+                    .and_then(|id| self.themes.get(id))
+                    .and_then(|e| e.counterpart.clone())
+                else {
+                    return false;
+                };
                 self.theme_picker_dark = !self.theme_picker_dark;
                 let items = self.theme_picker_items();
-                let label = theme_picker_toggle_label(self.theme_picker_dark);
-                let name = self.theme_name.clone();
                 if let Some(Modal::Chooser(state)) = self.modals.top_mut() {
                     state.set_items(items);
-                    state.set_toggle_label(label);
-                    // If the applied theme is in the newly shown set, keep
-                    // the highlight on it; otherwise row 0 stands and the
-                    // preview sync below applies it.
-                    state.select_id(&name);
+                    state.select_id(&counterpart);
                 }
                 self.sync_theme_preview();
                 true

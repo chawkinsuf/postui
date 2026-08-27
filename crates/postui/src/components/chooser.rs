@@ -263,7 +263,10 @@ impl ChooserState {
             theme.panel,
             true,
         );
-        if let Some(t) = &self.toggle {
+        // An empty toggle label means the control is currently inert (the
+        // theme picker hides it while an unpaired theme is highlighted):
+        // paint nothing and register no hit.
+        if let Some(t) = self.toggle.as_ref().filter(|t| !t.label.is_empty()) {
             // Right-aligned on the title row, clickable and flippable with
             // Left/Right — mirrored by `handle_key`.
             let w = t.label.chars().count() as u16;
@@ -666,6 +669,21 @@ mod tests {
         let first = buffer[(toggle.x, toggle.y)].clone();
         assert_eq!(first.symbol(), "◂");
         assert_eq!(first.fg, theme.accent);
+    }
+
+    #[test]
+    fn empty_toggle_label_paints_nothing_and_registers_no_hit() {
+        let mut c = ChooserState::new("Theme", items(&["a"])).with_toggle("", Action::Quit);
+        let theme = Theme::dark();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0))
+            .unwrap();
+        assert!(
+            hits.rect_of(&crate::hit::Hit::ChooserToggle).is_none(),
+            "hidden toggle must not be clickable"
+        );
     }
 
     #[test]
