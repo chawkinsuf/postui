@@ -10524,4 +10524,62 @@ mod undo_tests {
         app.update(Action::Redo);
         assert_eq!(std::fs::read_to_string(&env_path).unwrap(), with_9);
     }
+
+    #[test]
+    fn switching_requests_keeps_the_active_tab() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("a".into()));
+        app.update(Action::CreateRequest("b".into()));
+        app.update(Action::EditorTabSelect(EditorTab::Params.index()));
+        app.update(Action::OpenRequest("a".into()));
+        assert_eq!(app.editor.slug.as_deref(), Some("a"));
+        assert_eq!(app.editor.active_tab, EditorTab::Params);
+    }
+
+    #[test]
+    fn body_tab_survives_a_detour_through_a_bodyless_request() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("get-req".into()));
+        app.update(Action::CreateRequest("post-req".into()));
+        app.update(Action::CycleMethod); // post-req: GET -> POST
+        app.update(Action::SaveRequest);
+        app.update(Action::EditorTabSelect(EditorTab::Body.index()));
+        assert_eq!(app.editor.active_tab, EditorTab::Body);
+        // Opening the GET request hops off the disabled Body tab...
+        app.update(Action::OpenRequest("get-req".into()));
+        assert_ne!(app.editor.active_tab, EditorTab::Body);
+        // ...but coming back to the POST restores the chosen tab.
+        app.update(Action::OpenRequest("post-req".into()));
+        assert_eq!(app.editor.active_tab, EditorTab::Body);
+    }
+
+    #[test]
+    fn method_change_restores_the_body_tab_when_it_reenables() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("m".into()));
+        app.update(Action::CycleMethod); // POST
+        app.update(Action::EditorTabSelect(EditorTab::Body.index()));
+        app.update(Action::SetMethod(postui_core::model::Method::Get));
+        assert_ne!(app.editor.active_tab, EditorTab::Body, "hops off disabled Body");
+        app.update(Action::SetMethod(postui_core::model::Method::Post));
+        assert_eq!(app.editor.active_tab, EditorTab::Body, "returns when re-enabled");
+    }
+
+    #[test]
+    fn choosing_a_tab_after_the_hop_replaces_the_body_preference() {
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("g".into()));
+        app.update(Action::CreateRequest("p".into()));
+        app.update(Action::CycleMethod); // p: POST
+        app.update(Action::SaveRequest);
+        app.update(Action::EditorTabSelect(EditorTab::Body.index()));
+        app.update(Action::OpenRequest("g".into())); // hop off Body
+        app.update(Action::EditorTabSelect(EditorTab::Vars.index()));
+        app.update(Action::OpenRequest("p".into()));
+        assert_eq!(
+            app.editor.active_tab,
+            EditorTab::Vars,
+            "the explicit Vars choice replaced the old Body preference"
+        );
+    }
 }

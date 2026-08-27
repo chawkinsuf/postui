@@ -142,6 +142,13 @@ pub struct Editor {
     /// moving end travels. `None` when no selection gesture is live.
     body_sel_anchor: Option<edtui::Index2>,
     pub active_tab: EditorTab,
+    /// The last tab the user explicitly chose (click, alt+number, or
+    /// arrow-cycling) — where `active_tab` returns whenever it can.
+    /// `active_tab` only ever diverges from this through the forced hop
+    /// off a disabled Body tab (GET/HEAD); `App::sync_active_tab` restores
+    /// the preference as soon as the open request enables it again, so
+    /// switching requests never loses the user's place.
+    pub preferred_tab: EditorTab,
     pub sub_focus: SubFocus,
     /// Shared cursor/edit state for the key/value table, reused by both the
     /// Params and Headers tabs (never holds the entry data itself).
@@ -233,6 +240,7 @@ impl Default for Editor {
             body_handler: EditorEventHandler::emacs_mode(),
             body_sel_anchor: None,
             active_tab: EditorTab::Headers,
+            preferred_tab: EditorTab::Headers,
             sub_focus: SubFocus::Url,
             table: TableEditorState::default(),
             last_body_area: None,

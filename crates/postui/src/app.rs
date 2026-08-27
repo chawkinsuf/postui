@@ -940,7 +940,7 @@ impl App {
                     self.editor.table.editing = None;
                     self.editor.table.selected = None;
                     self.editor.load(slug, saved);
-                    self.leave_disabled_body_tab();
+                    self.sync_active_tab();
                     self.toasts.push("Changes discarded", ToastKind::Info);
                 }
                 true
@@ -1155,6 +1155,7 @@ impl App {
                 self.commit_table_edit();
                 let prev = self.editor.active_tab;
                 self.editor.active_tab = target;
+                self.editor.preferred_tab = target;
                 self.editor.table.reset();
                 self.retarget_editor_tab_underline(prev);
                 true
@@ -1171,6 +1172,7 @@ impl App {
                     next = (next + delta.signum()).rem_euclid(4);
                 }
                 self.editor.active_tab = EditorTab::from_draw_position(next as usize);
+                self.editor.preferred_tab = self.editor.active_tab;
                 self.editor.table.reset();
                 self.retarget_editor_tab_underline(prev);
                 true
@@ -1178,7 +1180,7 @@ impl App {
             Action::CycleMethod => {
                 self.no_coalesce = true;
                 self.editor.method = self.editor.method.cycle();
-                self.leave_disabled_body_tab();
+                self.sync_active_tab();
                 true
             }
             Action::OpenMethodDropdown => {
@@ -1205,7 +1207,7 @@ impl App {
             Action::SetMethod(m) => {
                 self.no_coalesce = true;
                 self.editor.method = m;
-                self.leave_disabled_body_tab();
+                self.sync_active_tab();
                 true
             }
             Action::FocusUrl => {
@@ -1301,7 +1303,7 @@ impl App {
                 match postui_core::storage::load_request(&self.project.root, &slug) {
                     Ok(req) => {
                         self.editor.load(Some(slug.clone()), req);
-                        self.leave_disabled_body_tab();
+                        self.sync_active_tab();
                         // Every open route (click, Enter, palette, restore)
                         // drags the sidebar selection along so it can't
                         // diverge from the open request. Queue ancestor
@@ -5179,16 +5181,25 @@ impl App {
             .retarget(key, cur as f32, self.ui_settings.anim_ms.list_travel, now);
     }
 
-    /// If the active editor tab just became disabled (the method changed
-    /// to GET/HEAD while Body was showing), hops to the first tab through
-    /// the same commit-and-retarget path a normal tab switch takes. Called
-    /// after every path that can change the method (cycle, dropdown
-    /// select, request load, undo snapshot).
-    fn leave_disabled_body_tab(&mut self) {
-        if self.editor.active_tab == EditorTab::Body && self.editor.body_tab_disabled() {
+    /// Re-derives the active editor tab from the user's preferred tab and
+    /// the current method, through the same commit-and-retarget path a
+    /// normal tab switch takes. Called after every path that can change
+    /// the method (cycle, dropdown select, request load, undo snapshot):
+    /// a preferred Body tab hops to the first tab while the method sends
+    /// no body, and comes back the moment it's enabled again — so
+    /// switching through a GET request never permanently loses the user's
+    /// place (`Editor::preferred_tab`).
+    fn sync_active_tab(&mut self) {
+        let preferred = self.editor.preferred_tab;
+        let target = if preferred == EditorTab::Body && self.editor.body_tab_disabled() {
+            EditorTab::from_draw_position(0)
+        } else {
+            preferred
+        };
+        if target != self.editor.active_tab {
             self.commit_table_edit();
             let prev = self.editor.active_tab;
-            self.editor.active_tab = EditorTab::from_draw_position(0);
+            self.editor.active_tab = target;
             self.editor.table.reset();
             self.retarget_editor_tab_underline(prev);
         }
@@ -5408,7 +5419,7 @@ impl App {
                 };
                 self.editor.apply_snapshot(&target);
                 self.editor.restore_cursor(&cursor);
-                self.leave_disabled_body_tab();
+                self.sync_active_tab();
                 self.focus = PaneId::Editor;
                 // The applied state IS the new shadow; without this the
                 // capture hook would record the undo as a fresh edit.
