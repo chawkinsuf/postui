@@ -907,6 +907,61 @@ impl Editor {
         self.body_sel_anchor = None;
     }
 
+    /// Shifts the body lines the selection spans (the caret's line when
+    /// nothing is selected) one tab stop right (`indent`) or left: Tab /
+    /// shift+Tab on selected JSON. Indent prepends [`BODY_TAB_WIDTH`]
+    /// spaces (empty lines are skipped — indenting them would only plant
+    /// trailing whitespace); dedent strips up to one tab stop of leading
+    /// whitespace, where a single `\t` counts as a full stop. The
+    /// selection, its anchor, and the caret ride along with their lines'
+    /// shifts, so repeated presses keep working on the same text.
+    fn indent_body_lines(&mut self, indent: bool) {
+        let (first, last) = match self.body.selection.as_ref() {
+            Some(sel) => (sel.start().row, sel.end().row),
+            None => (self.body.cursor.row, self.body.cursor.row),
+        };
+        let mut shifts = vec![0isize; last - first + 1];
+        for row in first..=last {
+            let Some(line) = self.body.lines.get_mut(edtui::RowIndex::new(row)) else {
+                continue;
+            };
+            shifts[row - first] = if indent {
+                if line.is_empty() {
+                    continue;
+                }
+                line.splice(0..0, [' '; BODY_TAB_WIDTH]);
+                BODY_TAB_WIDTH as isize
+            } else {
+                let n = if line.first() == Some(&'\t') {
+                    1
+                } else {
+                    line.iter()
+                        .take(BODY_TAB_WIDTH)
+                        .take_while(|c| **c == ' ')
+                        .count()
+                };
+                line.drain(0..n);
+                -(n as isize)
+            };
+        }
+        let shift_of = |i: edtui::Index2| -> edtui::Index2 {
+            let s = *shifts.get(i.row.wrapping_sub(first)).unwrap_or(&0);
+            edtui::Index2::new(i.row, i.col.saturating_add_signed(s))
+        };
+        self.body.cursor = shift_of(self.body.cursor);
+        self.body_sel_anchor = self.body_sel_anchor.map(shift_of);
+        if let Some(sel) = self.body.selection.as_mut() {
+            // Shift raw endpoints in place (they may sit in either order),
+            // then re-clamp onto character cells: a dedent that emptied an
+            // endpoint's line can leave its col past the line's last char.
+            sel.start = shift_of(sel.start);
+            sel.end = shift_of(sel.end);
+        }
+        if let Some(sel) = self.body.selection.take() {
+            self.set_body_selection_cells(sel.start, sel.end);
+        }
+    }
+
     /// Maps a screen click inside `last_body_area` to a body-buffer cursor,
     /// honouring `wrap(true)`, the line-number gutter and the vertical
     /// viewport offset — a port of edtui 0.11.6's
@@ -1219,6 +1274,23 @@ impl Component for Editor {
                     self.body.mode = EditorMode::Insert;
                     return Some(Action::Render);
                 }
+                // Tab / shift+tab adjust indentation: with a selection Tab
+                // shifts the selected lines a tab stop right instead of
+                // replacing them, and shift+tab always shifts left.
+                // shift+tab is consumed unconditionally — crossterm's
+                // BackTab has no edtui KeyCode conversion (it panics
+                // `unimplemented!()`), so it must never reach the handler.
+                if ev.code == KeyCode::BackTab {
+                    self.indent_body_lines(false);
+                    return Some(Action::Render);
+                }
+                if ev.code == KeyCode::Tab
+                    && ev.modifiers.is_empty()
+                    && self.body.selection.is_some()
+                {
+                    self.indent_body_lines(true);
+                    return Some(Action::Render);
+                }
                 if self.body.selection.is_some() {
                     match ev.code {
                         KeyCode::Esc => {
@@ -1242,7 +1314,7 @@ impl Component for Editor {
                         {
                             self.delete_body_selection();
                         }
-                        KeyCode::Enter | KeyCode::Tab if ev.modifiers.is_empty() => {
+                        KeyCode::Enter if ev.modifiers.is_empty() => {
                             self.delete_body_selection();
                         }
                         // Any other key drops the selection and acts
@@ -5323,5 +5395,73 @@ mod body_click_tests {
         let mut e = editor_with_body("");
         e.handle_mouse(left_down(20, 5));
         assert_eq!(e.body.cursor, Index2::new(0, 0));
+    }
+
+    /// shift+tab arrives from the terminal as `BackTab` with SHIFT set — a
+    /// code edtui's crossterm conversion panics on (`unimplemented!()`), so
+    /// it must be consumed here whether or not a selection is live.
+    fn backtab() -> ratatui::crossterm::event::KeyEvent {
+        ratatui::crossterm::event::KeyEvent::new(
+            ratatui::crossterm::event::KeyCode::BackTab,
+            KeyModifiers::SHIFT,
+        )
+    }
+
+    #[test]
+    fn tab_indents_the_selected_lines_and_keeps_the_selection() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut e = editor_with_body("{\n\"a\": 1\n}");
+        e.set_body_selection_cells(Index2::new(0, 0), Index2::new(2, 0));
+        e.handle_key(pkey(KeyCode::Tab));
+        assert_eq!(e.body_text(), "  {\n  \"a\": 1\n  }");
+        assert!(e.body.selection.is_some(), "selection survives an indent");
+        // A second press keeps working on the same (shifted) selection.
+        e.handle_key(pkey(KeyCode::Tab));
+        assert_eq!(e.body_text(), "    {\n    \"a\": 1\n    }");
+        assert_eq!(e.body.mode, EditorMode::Insert);
+    }
+
+    #[test]
+    fn tab_skips_empty_lines_when_indenting() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut e = editor_with_body("a\n\nb");
+        e.set_body_selection_cells(Index2::new(0, 0), Index2::new(2, 0));
+        e.handle_key(pkey(KeyCode::Tab));
+        assert_eq!(e.body_text(), "  a\n\n  b");
+    }
+
+    #[test]
+    fn shift_tab_dedents_the_selected_lines_without_panicking() {
+        let mut e = editor_with_body("  a\n\tb\n    c\nd");
+        e.set_body_selection_cells(Index2::new(0, 2), Index2::new(3, 0));
+        e.handle_key(backtab());
+        assert_eq!(
+            e.body_text(),
+            "a\nb\n  c\nd",
+            "one tab stop stripped per line: two spaces, one tab, \
+             already-flush lines untouched"
+        );
+        assert!(e.body.selection.is_some(), "selection survives a dedent");
+    }
+
+    #[test]
+    fn shift_tab_without_a_selection_dedents_the_cursor_line() {
+        let mut e = editor_with_body("  a\n  b");
+        e.body.cursor = Index2::new(1, 2);
+        e.handle_key(backtab());
+        assert_eq!(e.body_text(), "  a\nb");
+        assert_eq!(e.body.cursor, Index2::new(1, 0), "caret rides the shift");
+        // On an already-flush line it's a no-op, not a panic.
+        e.handle_key(backtab());
+        assert_eq!(e.body_text(), "  a\nb");
+    }
+
+    #[test]
+    fn tab_without_a_selection_still_inserts() {
+        use ratatui::crossterm::event::KeyCode;
+        let mut e = editor_with_body("ab");
+        e.body.cursor = Index2::new(0, 1);
+        e.handle_key(pkey(KeyCode::Tab));
+        assert_eq!(e.body_text(), "a\tb", "plain Tab keeps edtui's insert");
     }
 }
