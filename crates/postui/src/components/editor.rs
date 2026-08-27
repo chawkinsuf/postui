@@ -1498,8 +1498,8 @@ pub const ADDRESS_BAR_HEIGHT: u16 = 5;
 /// Columns of padding between the method segment and the URL text, so the
 /// text isn't flush against the method button.
 const URL_PAD: u16 = 2;
-/// Fixed width, in cells, of the `⧉` copy-URL chip at the URL well's right
-/// edge (`" ⧉ "` — one glyph column, one padding column each side).
+/// Fixed width, in cells, of the `❐` copy-URL chip at the URL well's right
+/// edge (`" ❐ "` — one glyph column, one padding column each side).
 const COPY_CHIP_WIDTH: u16 = 3;
 /// Height of the tab bar row — the second row of that split.
 pub const TAB_BAR_HEIGHT: u16 = 2;
@@ -1726,7 +1726,7 @@ impl Editor {
                 buf,
                 chip_area.x + chip_area.width / 2,
                 chip_area.y,
-                "⧉",
+                "❐",
                 chip_fg,
                 chip_bg,
                 false,
@@ -2441,7 +2441,7 @@ impl Editor {
     /// above. A `DefaultHeader { suppressed: true }` row (overridden, or a
     /// duplicate default) renders struck through; a row with unresolved
     /// `{{tokens}}` tints its whole value `theme.error` (span-level tinting
-    /// is Task 12). Each row gets a trailing `⧉` copy icon
+    /// is Task 12). Each row gets a trailing `❐` copy icon
     /// (`Hit::AutoHeaderCopy`, indexed by its position in this filtered
     /// list); the divider carries a `👁 reveal`/`hide` toggle
     /// (`Hit::AutoHeaderReveal`) whenever `self.computed.has_secret`.

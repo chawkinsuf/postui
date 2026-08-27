@@ -216,7 +216,7 @@ impl ReadyView {
                     .unwrap_or(0)
             }),
             ViewMode::Raw => self.raw_lines.iter().map(|l| l.width()).max().unwrap_or(0),
-            // + 3 for the ` ⧉ ` copy pill appended to each rendered row.
+            // + 3 for the ` ❐ ` copy pill appended to each rendered row.
             ViewMode::Headers => self
                 .header_lines
                 .iter()
@@ -1127,7 +1127,7 @@ pub const COLLAPSED_HEIGHT: u16 = 1;
 /// the timing + size chips (plain muted text — they are not clickable) and
 /// content type, all on row 0; the response tabs right-aligned on row 1;
 /// row 2 holds the tabs' accent underline on the right and the icon
-/// actions (🔍 / ⧉ / 💾) on the left, directly above the body they act on.
+/// actions (🔍 / ❐ / 💾) on the left, directly above the body they act on.
 fn draw_header_strip(
     frame: &mut Frame,
     hits: &mut crate::hit::HitMap,
@@ -1295,12 +1295,12 @@ fn tabstrip_width(tabs: &[(String, Option<(char, ratatui::style::Color)>)]) -> u
 }
 
 /// The icon actions in the header strip — `🔍` (search), `💾` (save to
-/// file), `⧉` (copy body, the same glyph every other copy affordance
+/// file), `❐` (copy body, the same glyph every other copy affordance
 /// uses, keeping the group's right edge).
 const HEADER_ACTIONS: [(&str, crate::hit::Hit); 3] = [
     (" 🔍 ", crate::hit::Hit::ResponseSearchButton),
     (" 💾 ", crate::hit::Hit::SaveBodyButton),
-    (" ⧉ ", crate::hit::Hit::CopyBodyButton),
+    (" ❐ ", crate::hit::Hit::CopyBodyButton),
 ];
 
 /// The header strip's icon actions, left-aligned on the underline row
@@ -1399,7 +1399,7 @@ fn human_size(bytes: usize) -> String {
 /// In `Pretty` mode, also registers a `JsonRow` hit over each rendered row
 /// (click selects) and a `JsonArrow` hit over its first two columns when the
 /// row opens a container (click toggles). In `Headers` mode, registers a
-/// `HeaderCopy` hit over the trailing ` ⧉ ` pill appended to each row.
+/// `HeaderCopy` hit over the trailing ` ❐ ` pill appended to each row.
 /// `Raw` registers nothing per-row.
 fn body_lines(
     view: &ReadyView,
@@ -1515,7 +1515,7 @@ fn body_lines(
                 let pieces = vec![
                     (name_piece, Style::default().fg(t.accent)),
                     (value_piece, text),
-                    (" ⧉ ".to_string(), glyph_style),
+                    (" ❐ ".to_string(), glyph_style),
                 ];
                 push(i, i, pieces, true);
 
@@ -2184,7 +2184,7 @@ mod tests {
             .collect();
         assert_eq!(
             pill,
-            vec![" ", "⧉", " "],
+            vec![" ", "❐", " "],
             "the hovered pill is odd-width with the glyph in its center"
         );
     }
@@ -2921,7 +2921,7 @@ mod tests {
         );
     }
 
-    /// The header actions are icons — 🔍 (search), ⧉ (copy body, the same
+    /// The header actions are icons — 🔍 (search), ❐ (copy body, the same
     /// glyph every other copy affordance uses), 💾 (save to file) — sitting
     /// left-aligned on the underline row, directly above the body they act
     /// on. The old text labels are gone.
@@ -2929,7 +2929,7 @@ mod tests {
     fn header_actions_are_icons_on_the_underline_row() {
         let mut r = ready(r#"{"a": 1}"#);
         let (out, hits) = render_hovered(&mut r, None);
-        assert!(out.contains("⧉"), "copy icon: {out}");
+        assert!(out.contains("❐"), "copy icon: {out}");
         assert!(out.contains("💾"), "save icon: {out}");
         assert!(!out.contains("Copy body"), "no text label at rest: {out}");
         assert!(

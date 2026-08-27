@@ -155,14 +155,16 @@ pub fn draw_footer(
     // The global save/discard group: request-level actions available from
     // every pane (ctrl+s is a global binding), right-aligned left of the
     // palette/quit pair with a wider gap so it reads as its own group.
-    // Discard only exists while there are unsaved edits to walk back.
+    // Discard only exists while there are unsaved edits to walk back; it
+    // slots in left of save so save keeps its right-anchored spot and
+    // doesn't jump when discard comes and goes.
     const GROUP_GAP: u16 = 8;
     let save_label = if dirty { "save •" } else { "save" };
-    let mut group: Vec<(&'static str, &'static str, Option<Action>)> =
-        vec![("^S", save_label, Some(Action::SaveRequest))];
+    let mut group: Vec<(&'static str, &'static str, Option<Action>)> = Vec::new();
     if dirty {
         group.push(("↩", "discard", Some(Action::ConfirmDiscardChanges)));
     }
+    group.push(("^S", save_label, Some(Action::SaveRequest)));
     let group_w: u16 = group.iter().map(chip_width).sum::<u16>() + 2 * (group.len() as u16 - 1);
     let group_x = palette_x.saturating_sub(GROUP_GAP + group_w);
     paint_chip_row(
@@ -372,9 +374,12 @@ mod tests {
         let discard = hits
             .rect_of(&Hit::FooterChip(Action::ConfirmDiscardChanges))
             .expect("dirty editor offers discard");
-        assert!(discard.x > save.x, "discard sits right of save");
+        assert!(
+            discard.x + discard.width < save.x,
+            "discard sits left of save so save stays put when discard appears"
+        );
         let palette = hits.rect_of(&Hit::FooterChip(Action::OpenPalette)).unwrap();
-        assert!(discard.x + discard.width < palette.x, "left of palette");
+        assert!(save.x + save.width < palette.x, "left of palette");
     }
 
     /// The editor's context chips advertise vars (^V) now that save moved
