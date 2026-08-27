@@ -10640,13 +10640,32 @@ mod undo_tests {
     }
 
     #[test]
-    fn open_theme_chooser_lists_registry_entries_with_ids_and_swatches() {
+    fn open_theme_chooser_lists_registry_entries_with_ids() {
         let mut app = App::new_for_test();
         app.update(Action::OpenThemeChooser);
         let Some(crate::components::modal::Modal::Chooser(c)) = app.modals.top() else {
             panic!("theme chooser modal expected");
         };
         assert_eq!(c.selected_id(), Some("terminal"), "terminal entry first");
+    }
+
+    /// The picker must open with the highlight on the currently-applied
+    /// theme — the highlight drives the live preview, so opening on row 0
+    /// would instantly re-theme the app before the user touches a key.
+    #[test]
+    fn open_theme_chooser_defaults_to_the_current_theme() {
+        let mut app = App::new_for_test();
+        app.update(Action::ApplyTheme("gruvbox-dark".into()));
+        let gruvbox_page = app.theme.page;
+        app.update(Action::OpenThemeChooser);
+        let Some(crate::components::modal::Modal::Chooser(c)) = app.modals.top() else {
+            panic!("theme chooser modal expected");
+        };
+        assert_eq!(c.selected_id(), Some("gruvbox-dark"));
+        assert_eq!(
+            app.theme.page, gruvbox_page,
+            "opening the picker must not change the applied theme"
+        );
     }
 
     #[test]

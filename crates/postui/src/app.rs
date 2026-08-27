@@ -1962,18 +1962,6 @@ impl App {
                     .entries()
                     .iter()
                     .map(|e| {
-                        let seeds = self.themes.seeds_of(e, &self.terminal_colors);
-                        let sw = [
-                            seeds.bg,
-                            seeds.fg,
-                            seeds.accent,
-                            seeds.success,
-                            seeds.warning,
-                            seeds.error,
-                        ]
-                        .iter()
-                        .map(|&(r, g, b)| ratatui::style::Color::Rgb(r, g, b))
-                        .collect();
                         let detail = match &e.source {
                             crate::theme::ThemeSource::Terminal => "terminal colors",
                             crate::theme::ThemeSource::Builtin(_) => "built-in",
@@ -1983,13 +1971,24 @@ impl App {
                             label: e.label.clone(),
                             detail: Some(detail.into()),
                             actions: vec![Action::ApplyTheme(e.name.clone())],
-                            swatches: Some(sw),
                             id: Some(e.name.clone()),
                         }
                     })
                     .collect();
+                let mut state = ChooserState::new("Theme", items);
+                // Open on the currently-applied theme, not row 0 — the
+                // highlight drives the live preview, so starting anywhere
+                // else would instantly re-theme the app on open.
+                if let Some(idx) = self
+                    .themes
+                    .entries()
+                    .iter()
+                    .position(|e| e.name == self.theme_name)
+                {
+                    state.select(idx);
+                }
                 self.theme_preview = Some(self.theme_name.clone());
-                self.push_modal(Modal::Chooser(ChooserState::new("Theme", items)));
+                self.push_modal(Modal::Chooser(state));
                 true
             }
             Action::ApplyTheme(name) => {
