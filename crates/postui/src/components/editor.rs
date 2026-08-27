@@ -2090,7 +2090,7 @@ impl Editor {
             ("alt+b", sub_label, Some(Action::ToggleBodyVars)),
             ("^E", "$EDITOR", Some(Action::OpenBodyInEditor)),
             ("^A", "select all", Some(Action::BodySelectAll)),
-            ("✕", "clear", Some(Action::BodyClear)),
+            ("alt+x", "clear", Some(Action::BodyClear)),
         ];
 
         let right_limit = area.x + area.width;
