@@ -214,6 +214,7 @@ async fn run(
         if let Some(pending) = app.pending_terminal_action.take() {
             match pending {
                 Action::OpenBodyInEditor => edit_body_externally(terminal, &mut app)?,
+                Action::OpenResponseInEditor => view_response_externally(terminal, &mut app)?,
                 other => debug_assert!(false, "not a terminal action: {other:?}"),
             }
             redraw = true;
@@ -237,19 +238,61 @@ fn edit_body_externally(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
 ) -> anyhow::Result<()> {
+    let path = write_editor_tempfile("postui-body-", ".json", &app.editor.body_text())?;
+    run_editor_and_restore(terminal, app, &path, true)
+}
+
+/// Hands the response pane's active tab's text to `$EDITOR`, view-only:
+/// the temp file is discarded on exit, nothing is read back. The tab's
+/// text (pretty / raw / headers) and the file extension both follow the
+/// active view, exactly like the toolbar's copy and save.
+fn view_response_externally(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &mut App,
+) -> anyhow::Result<()> {
+    let Some(view) = app.session.response.view() else {
+        return Ok(()); // gated in App::update; races to nothing here
+    };
+    let is_json_body = view.mode != postui::components::response::ViewMode::Headers
+        && matches!(
+            app.session.response.state(),
+            postui::components::response::ResponseState::Ready(d)
+                if d.content_type.as_deref().is_some_and(|c| c.contains("json"))
+        );
+    let suffix = if is_json_body { ".json" } else { ".txt" };
+    let path = write_editor_tempfile("postui-response-", suffix, &view.view_text())?;
+    run_editor_and_restore(terminal, app, &path, false)
+}
+
+/// Writes `text` to a fresh temp file for an external-editor round-trip and
+/// keeps the file alive (into_temp_path is dropped by the caller when the
+/// editor exits — `run_editor_and_restore` removes it explicitly instead so
+/// the path stays valid for the child's whole lifetime).
+fn write_editor_tempfile(
+    prefix: &str,
+    suffix: &str,
+    text: &str,
+) -> anyhow::Result<std::path::PathBuf> {
     use std::io::Write;
-
     let file = tempfile::Builder::new()
-        .prefix("postui-body-")
-        .suffix(".json")
+        .prefix(prefix)
+        .suffix(suffix)
         .tempfile()?;
-    let path = file.path().to_path_buf();
-    {
-        let mut handle = file.as_file();
-        handle.write_all(app.editor.body_text().as_bytes())?;
-        handle.flush()?;
-    }
+    let (mut handle, path) = file.keep()?;
+    handle.write_all(text.as_bytes())?;
+    handle.flush()?;
+    Ok(path)
+}
 
+/// Tears the TUI down, runs `$EDITOR` (falling back to `vi`) on `path`,
+/// rebuilds the TUI, then — only when `read_back` — feeds the edited text
+/// back into the request body. The temp file is removed either way.
+fn run_editor_and_restore(
+    terminal: &mut ratatui::DefaultTerminal,
+    app: &mut App,
+    path: &std::path::Path,
+    read_back: bool,
+) -> anyhow::Result<()> {
     let command = std::env::var("EDITOR").unwrap_or_default();
     let command = if command.trim().is_empty() {
         "vi".to_string()
@@ -271,7 +314,7 @@ fn edit_body_externally(
 
     let status = std::process::Command::new(&program)
         .args(&args)
-        .arg(&path)
+        .arg(path)
         .status();
 
     *terminal = ratatui::init();
@@ -279,25 +322,32 @@ fn edit_body_externally(
     terminal.clear()?;
 
     match status {
-        Ok(s) if s.success() => match std::fs::read_to_string(&path) {
-            // Editors conventionally leave a trailing newline; keeping it
-            // would add a phantom blank line and a spurious dirty flag on
-            // every round-trip.
-            Ok(text) => {
-                let text = text.strip_suffix('\n').unwrap_or(&text);
-                let text = text.strip_suffix('\r').unwrap_or(text);
-                app.editor.set_body_text(text);
+        Ok(s) if s.success() => {
+            if read_back {
+                match std::fs::read_to_string(path) {
+                    // Editors conventionally leave a trailing newline;
+                    // keeping it would add a phantom blank line and a
+                    // spurious dirty flag on every round-trip.
+                    Ok(text) => {
+                        let text = text.strip_suffix('\n').unwrap_or(&text);
+                        let text = text.strip_suffix('\r').unwrap_or(text);
+                        app.editor.set_body_text(text);
+                    }
+                    Err(e) => {
+                        app.update(Action::ShowToast(
+                            format!("could not read back the edited body: {e}"),
+                            ToastKind::Error,
+                        ));
+                    }
+                }
             }
-            Err(e) => {
-                app.update(Action::ShowToast(
-                    format!("could not read back the edited body: {e}"),
-                    ToastKind::Error,
-                ));
-            }
-        },
+        }
         Ok(s) => {
             app.update(Action::ShowToast(
-                format!("{program} exited with {s}; body unchanged"),
+                format!(
+                    "{program} exited with {s}{}",
+                    if read_back { "; body unchanged" } else { "" }
+                ),
                 ToastKind::Error,
             ));
         }
@@ -308,5 +358,6 @@ fn edit_body_externally(
             ));
         }
     }
+    let _ = std::fs::remove_file(path);
     Ok(())
 }

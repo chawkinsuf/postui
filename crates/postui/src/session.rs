@@ -205,6 +205,7 @@ mod tests {
             status: 200,
             headers: vec![],
             body: body.to_string(),
+            ttfb: Duration::from_millis(1),
             elapsed: Duration::from_millis(1),
             size: body.len(),
             content_type: None,

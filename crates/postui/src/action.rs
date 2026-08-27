@@ -19,6 +19,10 @@ pub enum ExtractDestination {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CopyTarget {
     ResponseBody,
+    /// The response pane's active tab, as rendered: the pretty text on
+    /// Pretty, the verbatim body on Raw, the header list on Headers — the
+    /// toolbar ❐ button's target, following the tab like search does.
+    ResponseView,
     ResponseHeader(usize),
     Url,
     /// One row of the request Headers tab's computed-headers section, by
@@ -309,6 +313,17 @@ pub enum Action {
     /// Write the ready response body to `path` (from the save-body prompt),
     /// expanding `~` and creating parent directories as needed.
     SaveBodyToFile(String),
+    /// Open the response pane's active tab's text in `$EDITOR`, view-only
+    /// (the temp file is discarded on exit). Parked in
+    /// `App::pending_terminal_action` like `OpenBodyInEditor`, because
+    /// applying it means suspending the terminal.
+    OpenResponseInEditor,
+    /// Like `PromptSaveBody` but for the response pane's active tab (the
+    /// toolbar 💾 button): the prefilled extension follows the tab too
+    /// (`.txt` on Headers).
+    PromptSaveView,
+    /// Write the active tab's text (`ReadyView::view_text`) to `path`.
+    SaveViewToFile(String),
     /// Open the Variable Manager screen (spec §5): stores the current
     /// focus so `Action::CloseScreen` can restore it, then switches
     /// `App::screen` to `Screen::VarManager`. A no-op when the Manager is

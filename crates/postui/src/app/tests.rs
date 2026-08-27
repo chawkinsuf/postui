@@ -1528,6 +1528,7 @@ fn scrollbar_track_click_below_the_thumb_pages_the_response() {
             headers: vec![],
             size: body.len(),
             body,
+            ttfb: std::time::Duration::from_millis(1),
             elapsed: std::time::Duration::from_millis(1),
             content_type: Some("text/plain".into()),
         })),
@@ -1845,6 +1846,7 @@ fn horizontal_wheel_over_the_response_pane_scrolls_it_sideways() {
             status: 200,
             headers: vec![],
             body: body.clone(),
+            ttfb: std::time::Duration::from_millis(1),
             elapsed: std::time::Duration::from_millis(1),
             size: body.len(),
             content_type: None,
@@ -2075,6 +2077,7 @@ fn app_with_wide_response() -> App {
             status: 200,
             headers: vec![],
             body: body.clone(),
+            ttfb: std::time::Duration::from_millis(1),
             elapsed: std::time::Duration::from_millis(1),
             size: body.len(),
             content_type: None,
@@ -3450,6 +3453,7 @@ async fn cancelled_send_ignores_a_result_that_was_already_queued() {
         status: 200,
         headers: vec![],
         body: "late".into(),
+        ttfb: std::time::Duration::from_millis(1),
         elapsed: std::time::Duration::from_millis(1),
         size: 4,
         content_type: None,
@@ -3481,6 +3485,7 @@ async fn response_arrived_with_current_generation_clears_in_flight() {
         status: 200,
         headers: vec![],
         body: "ok".into(),
+        ttfb: std::time::Duration::from_millis(1),
         elapsed: std::time::Duration::from_millis(1),
         size: 2,
         content_type: None,
@@ -3517,6 +3522,7 @@ fn plain_keys_reach_the_focused_response_pane() {
             status: 200,
             headers: vec![],
             body: r#"{"a": 1}"#.into(),
+            ttfb: std::time::Duration::from_millis(5),
             elapsed: std::time::Duration::from_millis(5),
             size: 8,
             content_type: None,
@@ -4376,6 +4382,7 @@ fn ready_response(app: &mut App, body: &str) {
             status: 200,
             headers: vec![("content-type".into(), "application/json".into())],
             body: body.to_string(),
+            ttfb: std::time::Duration::from_millis(1),
             elapsed: std::time::Duration::from_millis(1),
             size: body.len(),
             content_type: Some("application/json".into()),
@@ -5402,6 +5409,38 @@ fn copy_body_writes_via_clipboard_cmd_and_toasts_copied() {
     );
 }
 
+/// The ❐ toolbar button follows the active tab like search does: on the
+/// Headers tab it copies the header list, not the body.
+#[test]
+fn toolbar_copy_follows_the_headers_tab() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.txt");
+    let cmd = format!("cat > {}", out.to_string_lossy());
+    let mut app = App::new_for_test();
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
+        Some(cmd),
+        65536,
+        false,
+    ));
+    ready_response(&mut app, r#"{"a": 1}"#);
+    app.update(Action::ResponseViewMode(
+        crate::components::response::ViewMode::Headers,
+    ));
+
+    click_hit(&mut app, Hit::CopyBodyButton);
+
+    let copied = std::fs::read_to_string(&out).unwrap();
+    assert!(
+        copied.contains("content-type:") && copied.contains("application/json"),
+        "the Headers tab copies the header list: {copied:?}"
+    );
+    assert!(!copied.contains("\"a\""), "not the body: {copied:?}");
+    assert!(
+        rendered_text(&mut app).contains("Copied response headers"),
+        "toast names what was copied"
+    );
+}
+
 #[test]
 fn copy_body_over_osc52_threshold_toasts_too_large() {
     let mut app = App::new_for_test();
@@ -5447,6 +5486,62 @@ fn prompt_save_body_prefills_json_extension_and_enter_writes_the_file() {
 
     assert_eq!(std::fs::read_to_string(&out).unwrap(), r#"{"a": 1}"#);
     assert!(rendered_text(&mut app).contains("Saved body to"));
+}
+
+/// The ✎ toolbar button parks `OpenResponseInEditor` for the main loop
+/// (which must suspend the terminal), exactly as the request body's
+/// `$EDITOR` action does.
+#[test]
+fn toolbar_editor_button_parks_the_terminal_action() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, r#"{"a": 1}"#);
+
+    click_hit(&mut app, Hit::ResponseEditorButton);
+
+    assert_eq!(
+        app.pending_terminal_action,
+        Some(Action::OpenResponseInEditor),
+        "the click parks the terminal action for the main loop"
+    );
+}
+
+/// The 💾 toolbar button follows the active tab like search does: on the
+/// Headers tab it prompts with a `.txt` prefill and writes the header
+/// list, not the body.
+#[test]
+fn toolbar_save_follows_the_headers_tab() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, r#"{"a": 1}"#);
+    app.update(Action::ResponseViewMode(
+        crate::components::response::ViewMode::Headers,
+    ));
+
+    click_hit(&mut app, Hit::SaveBodyButton);
+
+    let Some(Modal::Prompt {
+        kind: PromptKind::SaveViewAs,
+        input,
+        ..
+    }) = app.modals.top()
+    else {
+        panic!("expected a SaveViewAs prompt");
+    };
+    assert!(
+        input.text().ends_with("-response.txt"),
+        "headers prefill is .txt: {}",
+        input.text()
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("view.txt");
+    app.update(Action::SaveViewToFile(out.to_string_lossy().to_string()));
+
+    let saved = std::fs::read_to_string(&out).unwrap();
+    assert!(
+        saved.contains("content-type:") && !saved.contains("\"a\""),
+        "the Headers tab saves the header list: {saved:?}"
+    );
+    assert!(rendered_text(&mut app).contains("Saved"));
 }
 
 #[test]

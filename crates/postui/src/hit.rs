@@ -62,6 +62,9 @@ pub enum Hit {
     ResponseTab(crate::components::response::ViewMode),
     CopyBodyButton,
     SaveBodyButton,
+    /// The `✎` button on the response header strip: opens the active
+    /// tab's text in `$EDITOR` (view-only — nothing is read back).
+    ResponseEditorButton,
     /// The `Find` button on the response header strip: opens the in-pane
     /// search, exactly as `/` does.
     ResponseSearchButton,

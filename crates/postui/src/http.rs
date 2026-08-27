@@ -13,6 +13,9 @@ pub struct ResponseData {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub body: String,
+    /// Time to first byte: send → response headers received.
+    pub ttfb: Duration,
+    /// Total: send → body fully downloaded.
     pub elapsed: Duration,
     pub size: usize,
     pub content_type: Option<String>,
@@ -65,6 +68,9 @@ pub async fn send(client: &reqwest::Client, req: &PreparedRequest) -> Result<Res
 
     let started = Instant::now();
     let result = builder.send().await;
+    // `send` resolves once the response headers are in — the closest thing
+    // reqwest exposes to "first byte".
+    let ttfb = started.elapsed();
     let response = result.map_err(|e| error_chain(&e))?;
 
     let status = response.status().as_u16();
@@ -87,6 +93,7 @@ pub async fn send(client: &reqwest::Client, req: &PreparedRequest) -> Result<Res
         status,
         headers,
         body,
+        ttfb,
         elapsed,
         size,
         content_type,
@@ -115,5 +122,45 @@ mod tests {
         // No #[tokio::test] here on purpose: this is the load-bearing check
         // for App staying constructible in plain sync tests.
         let _c = client();
+    }
+
+    /// A server that sends its headers immediately but stalls before the
+    /// body separates the two measures: `ttfb` stops at the headers,
+    /// `elapsed` keeps counting until the body completes.
+    #[tokio::test]
+    async fn ttfb_stops_at_headers_while_elapsed_covers_the_body() {
+        use std::io::{Read as _, Write as _};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n")
+                .unwrap();
+            stream.flush().unwrap();
+            std::thread::sleep(Duration::from_millis(150));
+            stream.write_all(b"ok").unwrap();
+        });
+
+        let client = client();
+        let req = PreparedRequest {
+            method: postui_core::model::Method::Get,
+            url: format!("http://{addr}/"),
+            headers: vec![],
+            body: None,
+        };
+        let resp = send(&client, &req).await.unwrap();
+        server.join().unwrap();
+
+        assert!(
+            resp.elapsed >= resp.ttfb + Duration::from_millis(100),
+            "the stalled body must land in elapsed but not ttfb: \
+             ttfb={:?} elapsed={:?}",
+            resp.ttfb,
+            resp.elapsed
+        );
     }
 }

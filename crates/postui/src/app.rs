@@ -1322,6 +1322,65 @@ impl App {
                 }
                 true
             }
+            Action::PromptSaveView => {
+                let ResponseState::Ready(data) = self.session.response.state() else {
+                    self.toasts
+                        .push("nothing to copy — send a request first", ToastKind::Warning);
+                    return true;
+                };
+                let slug = self
+                    .editor
+                    .slug
+                    .clone()
+                    .unwrap_or_else(|| "response".to_string())
+                    .replace('/', "-");
+                // The extension follows the tab like the content does: the
+                // header list is plain text whatever the body was.
+                let on_headers = self.session.response.view().is_some_and(|v| {
+                    v.mode == crate::components::response::ViewMode::Headers
+                });
+                let ext = if !on_headers
+                    && data
+                        .content_type
+                        .as_deref()
+                        .is_some_and(|c| c.contains("json"))
+                {
+                    "json"
+                } else {
+                    "txt"
+                };
+                let prefill = format!("~/Downloads/{slug}-response.{ext}");
+                self.push_modal(Modal::Prompt {
+                    title: "Save response view".into(),
+                    input: crate::components::line_input::LineInput::new(&prefill),
+                    kind: PromptKind::SaveViewAs,
+                    revealed: false,
+                });
+                true
+            }
+            Action::SaveViewToFile(path) => {
+                let Some(view) = self.session.response.view() else {
+                    return true;
+                };
+                let text = view.view_text();
+                let expanded = crate::config::expand_tilde(&path);
+                let result = (|| -> std::io::Result<()> {
+                    if let Some(parent) = expanded.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&expanded, &text)
+                })();
+                match result {
+                    Ok(()) => self.toasts.push(
+                        format!("Saved to {}", expanded.display()),
+                        ToastKind::Success,
+                    ),
+                    Err(e) => self
+                        .toasts
+                        .push(format!("could not save: {e}"), ToastKind::Error),
+                }
+                true
+            }
             Action::EditorTabSelect(i) => {
                 let target = EditorTab::from_index(i);
                 if target == EditorTab::Body && self.editor.body_tab_disabled() {
@@ -1454,6 +1513,18 @@ impl App {
             Action::OpenBodyInEditor => {
                 self.no_coalesce = true;
                 self.pending_terminal_action = Some(Action::OpenBodyInEditor);
+                true
+            }
+            Action::OpenResponseInEditor => {
+                // Unlike the body editor there may be nothing to show yet
+                // (the palette can fire this any time), so gate here.
+                if self.session.response.view().is_none() {
+                    self.toasts
+                        .push("nothing to open — send a request first", ToastKind::Warning);
+                    return true;
+                }
+                self.no_coalesce = true;
+                self.pending_terminal_action = Some(Action::OpenResponseInEditor);
                 true
             }
             Action::OpenRequest(slug) => {
@@ -4772,6 +4843,17 @@ impl App {
                 }
                 _ => None,
             },
+            CopyTarget::ResponseView => {
+                let ResponseState::Ready(_) = self.session.response.state() else {
+                    return None;
+                };
+                let view = self.session.response.view()?;
+                let what = match view.mode {
+                    crate::components::response::ViewMode::Headers => "response headers",
+                    _ => "response body",
+                };
+                Some((view.view_text(), format!("Copied {what}")))
+            }
             CopyTarget::ResponseHeader(i) => match self.session.response.state() {
                 ResponseState::Ready(d) => d
                     .headers

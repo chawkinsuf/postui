@@ -263,6 +263,13 @@ impl ReadyView {
         }
     }
 
+    /// The active tab's full text — what the toolbar's copy/save/editor
+    /// actions operate on, so they follow the tab exactly as search does
+    /// (same corpus, joined into one string).
+    pub fn view_text(&self) -> String {
+        self.search_corpus().join("\n")
+    }
+
     fn clamp_cursor(&mut self) {
         self.cursor = self.cursor.min(self.visible_len().saturating_sub(1));
     }
@@ -1151,7 +1158,13 @@ fn draw_header_strip(
     .paint(buf, area.x, area.y, t.panel, t);
 
     let mut x = area.x + chip_w + 1;
-    for label in [human_elapsed(data.elapsed), human_size(data.size)] {
+    // One combined timing figure — ttfb → total — rather than two chips.
+    let timing = format!(
+        "{} → {}",
+        human_elapsed(data.ttfb),
+        human_elapsed(data.elapsed)
+    );
+    for label in [timing, human_size(data.size)] {
         let s = format!(" {label} ");
         let w = s.chars().count() as u16;
         crate::paint::text(buf, x, area.y, &s, t.text_muted, t.panel, false);
@@ -1294,11 +1307,13 @@ fn tabstrip_width(tabs: &[(String, Option<(char, ratatui::style::Color)>)]) -> u
         .unwrap_or(0)
 }
 
-/// The icon actions in the header strip — `🔍` (search), `💾` (save to
-/// file), `❐` (copy body, the same glyph every other copy affordance
-/// uses, keeping the group's right edge).
-const HEADER_ACTIONS: [(&str, crate::hit::Hit); 3] = [
+/// The icon actions in the header strip — `🔍` (search), `✎` (open the
+/// view in `$EDITOR`), `💾` (save to file), `❐` (copy, the same glyph
+/// every other copy affordance uses, keeping the group's right edge).
+/// All of them act on the *active tab's* text, following it like search.
+const HEADER_ACTIONS: [(&str, crate::hit::Hit); 4] = [
     (" 🔍 ", crate::hit::Hit::ResponseSearchButton),
+    (" ✎ ", crate::hit::Hit::ResponseEditorButton),
     (" 💾 ", crate::hit::Hit::SaveBodyButton),
     (" ❐ ", crate::hit::Hit::CopyBodyButton),
 ];
@@ -1851,6 +1866,7 @@ mod tests {
             status: 200,
             headers: vec![("content-type".into(), "application/json".into())],
             body: body.to_string(),
+            ttfb: Duration::from_millis(38),
             elapsed: Duration::from_millis(342),
             size: body.len(),
             content_type: Some("application/json".into()),
@@ -2012,6 +2028,71 @@ mod tests {
         assert!(out.contains(" B"), "human size: {out}");
         assert!(out.contains("application/json"), "content type: {out}");
         assert!(out.contains("\"hello\""), "pretty body key: {out}");
+    }
+
+    /// The header strip carries a ✎ icon that opens the active tab's text
+    /// in `$EDITOR`, registered like the other icon actions.
+    #[test]
+    fn header_actions_include_an_open_in_editor_icon() {
+        let mut r = ready(r#"{"a": 1}"#);
+        let theme = Theme::dark();
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: None,
+            dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
+        };
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| r.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+        let out = format!("{:?}", terminal.backend().buffer());
+        assert!(out.contains("✎"), "editor icon: {out}");
+        assert!(
+            hits.rect_of(&crate::hit::Hit::ResponseEditorButton).is_some(),
+            "the ✎ icon registers its hit"
+        );
+    }
+
+    /// `view_text` follows the active tab exactly as search does: the
+    /// pretty rendering on Pretty, the verbatim body on Raw, the header
+    /// list on Headers.
+    #[test]
+    fn view_text_follows_the_active_tab() {
+        let mut r = ready(r#"{"a":1}"#);
+
+        let pretty = r.view().unwrap().view_text();
+        assert!(
+            pretty.contains('\n') && pretty.contains("\"a\""),
+            "Pretty tab yields the formatted rendering: {pretty:?}"
+        );
+
+        r.set_view_mode(ViewMode::Raw);
+        assert_eq!(
+            r.view().unwrap().view_text(),
+            r#"{"a":1}"#,
+            "Raw tab yields the verbatim body"
+        );
+
+        r.set_view_mode(ViewMode::Headers);
+        let headers = r.view().unwrap().view_text();
+        assert!(
+            headers.contains("content-type:") && headers.contains("application/json"),
+            "Headers tab yields the header list: {headers:?}"
+        );
+        assert!(!headers.contains("\"a\""), "no body on the Headers tab");
+    }
+
+    /// The timing chip pairs time-to-first-byte with the total as one
+    /// `ttfb → total` figure rather than two separate chips.
+    #[test]
+    fn timing_chip_combines_ttfb_and_total() {
+        let mut r = ready(r#"{"a": 1}"#);
+        let out = render(&mut r);
+        assert!(out.contains("38 ms → 342 ms"), "combined timing: {out}");
     }
 
     #[test]

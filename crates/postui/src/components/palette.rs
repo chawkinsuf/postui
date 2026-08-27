@@ -210,6 +210,12 @@ pub fn all_commands() -> Vec<Command> {
             action: Action::PromptSaveBody,
         },
         Command {
+            id: "response-open-editor",
+            name: "Response: open in $EDITOR",
+            description: "View the response's active tab in your external editor",
+            action: Action::OpenResponseInEditor,
+        },
+        Command {
             id: "response-search",
             name: "Response: search",
             description: "Search within the response body",
@@ -607,6 +613,17 @@ mod tests {
             .position(|c| c.id == id)
             .unwrap_or_else(|| panic!("{id} was filtered out"));
         p.select(i);
+    }
+
+    /// The response's open-in-$EDITOR action is reachable from the palette,
+    /// like the request body's is.
+    #[test]
+    fn palette_carries_response_open_in_editor() {
+        let cmd = all_commands()
+            .into_iter()
+            .find(|c| c.id == "response-open-editor")
+            .expect("response-open-editor command");
+        assert_eq!(cmd.action, Action::OpenResponseInEditor);
     }
 
     #[test]

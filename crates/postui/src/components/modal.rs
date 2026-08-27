@@ -27,6 +27,9 @@ pub enum PromptKind {
     SaveAsThen(Box<Action>),
     OpenProjectPath,
     SaveBodyAs,
+    /// The toolbar 💾 button's save: writes the active tab's text rather
+    /// than always the raw body.
+    SaveViewAs,
     /// The env chooser's "new environment…" row: the text is the new
     /// environment's name (slug rules).
     NewEnvironment,
@@ -485,6 +488,9 @@ impl ModalStack {
                         }
                         PromptKind::SaveBodyAs => {
                             Some(vec![Action::SaveBodyToFile(text.to_string())])
+                        }
+                        PromptKind::SaveViewAs => {
+                            Some(vec![Action::SaveViewToFile(text.to_string())])
                         }
                         PromptKind::NewEnvironment => {
                             Some(vec![Action::CreateEnv(text.to_string())])

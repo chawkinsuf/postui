@@ -998,8 +998,9 @@ impl App {
             Hit::ResponseSearchNext => self.step_response_search(1),
             Hit::ResponseSearchPrev => self.step_response_search(-1),
             Hit::CopyUrl => self.update(Action::CopyToClipboard(CopyTarget::Url)),
-            Hit::CopyBodyButton => self.update(Action::CopyToClipboard(CopyTarget::ResponseBody)),
-            Hit::SaveBodyButton => self.update(Action::PromptSaveBody),
+            Hit::CopyBodyButton => self.update(Action::CopyToClipboard(CopyTarget::ResponseView)),
+            Hit::SaveBodyButton => self.update(Action::PromptSaveView),
+            Hit::ResponseEditorButton => self.update(Action::OpenResponseInEditor),
             Hit::HeaderCopy(i) => {
                 self.update(Action::CopyToClipboard(CopyTarget::ResponseHeader(i)))
             }
