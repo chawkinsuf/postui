@@ -21,31 +21,33 @@ pub struct Seeds {
 }
 
 impl Seeds {
-    /// The default dark palette: neutral graphite surfaces with a teal
-    /// accent — deliberately outside the blue-lavender genre so it reads
-    /// distinct from the Catppuccin built-ins (the original
-    /// Tokyo-Night-adjacent seeds were near-twins of Mocha).
+    /// The default dark palette: a soft, brightened, blue-shifted
+    /// Solarized — deep blue-teal ground, warm bright foreground, and
+    /// desaturated pastel accents (much gentler than canonical Solarized's
+    /// saturated ones).
     pub fn dark() -> Self {
         Self {
-            bg: (0x17, 0x18, 0x1b),
-            fg: (0xe0, 0xe1, 0xe4),
-            accent: (0x2d, 0xd4, 0xbf),
-            success: (0x9e, 0xce, 0x6a),
-            warning: (0xe0, 0xaf, 0x68),
-            error: (0xf7, 0x76, 0x8e),
+            bg: (0x0c, 0x22, 0x30),
+            fg: (0xdc, 0xd8, 0xd0),
+            accent: (0x78, 0xa8, 0xc8),
+            success: (0x90, 0xac, 0x60),
+            warning: (0xc8, 0xa8, 0x68),
+            error: (0xcc, 0x7e, 0x78),
         }
     }
 
-    /// The default light palette: warm-neutral paper with the dark
-    /// variant's teal accent stepped down for a light surface.
+    /// The default light palette, derived from [`Seeds::dark`] in Oklab:
+    /// the dark variant's warm paper white as ground, its ground as (a
+    /// slightly lifted) foreground, and the same accent hues darkened to
+    /// read on a light surface.
     pub fn light() -> Self {
         Self {
-            bg: (0xfa, 0xfa, 0xf8),
-            fg: (0x25, 0x26, 0x2a),
-            accent: (0x0d, 0x94, 0x88),
-            success: (0x16, 0xa3, 0x4a),
-            warning: (0xd9, 0x77, 0x06),
-            error: (0xdc, 0x26, 0x26),
+            bg: (0xee, 0xe8, 0xe4),
+            fg: (0x1a, 0x31, 0x3f),
+            accent: (0x40, 0x6f, 0x8c),
+            success: (0x63, 0x7c, 0x31),
+            warning: (0x94, 0x75, 0x35),
+            error: (0xa3, 0x59, 0x54),
         }
     }
 }
@@ -142,8 +144,15 @@ impl Theme {
         let page_l = oklab_l(page);
         if (oklab_l(text) - page_l).abs() < 0.4 {
             let direction = if oklab_l(text) >= page_l { 1.0 } else { -1.0 };
-            let target_l = (page_l + direction * 0.405).clamp(0.0, 1.0);
-            text = lift(text, target_l - oklab_l(text));
+            let mut target_l = page_l + direction * 0.405;
+            // A very dark (or very light) page leaves no room on the
+            // text's natural side — a darker-than-bg text on a near-black
+            // page would clamp at black and never reach the floor. Flip to
+            // the side that has the room (0.405 < 0.5, so one always does).
+            if !(0.0..=1.0).contains(&target_l) {
+                target_l = page_l - direction * 0.405;
+            }
+            text = lift(text, target_l.clamp(0.0, 1.0) - oklab_l(text));
         }
 
         let to_color = |c: (u8, u8, u8)| Color::Rgb(c.0, c.1, c.2);
