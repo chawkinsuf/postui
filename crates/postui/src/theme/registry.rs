@@ -239,13 +239,13 @@ mod tests {
                 "terminal",
                 "dark",
                 "light",
+                "ghostty",
                 "gruvbox-dark",
                 "gruvbox-light",
                 "catppuccin-mocha",
                 "catppuccin-latte",
                 "solarized-dark",
                 "solarized-light",
-                "ghostty",
             ]
         );
         assert!(matches!(

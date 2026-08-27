@@ -10772,21 +10772,23 @@ mod undo_tests {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = App::new_for_test();
         let keymap = crate::keys::Keymap::default_bindings();
-        let original = app.theme.page;
+        let original = app.theme.text;
         let original_name = app.theme_name.clone();
         app.update(Action::OpenThemeChooser);
         // The picker opens filtered to the current (dark) polarity: row 0
-        // is "terminal"; Down moves to "dark", Down again to "gruvbox-dark".
+        // is "terminal"; Down moves to "dark", Down again to "ghostty".
+        // Ghostty shares Dark's background by design, so the live-apply
+        // proof compares the text token, which differs.
         app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.theme_name, "gruvbox-dark", "highlight applies live");
-        assert_ne!(app.theme.page, original);
+        assert_eq!(app.theme_name, "ghostty", "highlight applies live");
+        assert_ne!(app.theme.text, original);
         app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(
             app.theme_name, original_name,
             "esc restores the prior theme"
         );
-        assert_eq!(app.theme.page, original);
+        assert_eq!(app.theme.text, original);
         assert!(app.modals.top().is_none());
     }
 
