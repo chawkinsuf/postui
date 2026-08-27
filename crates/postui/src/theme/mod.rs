@@ -2,8 +2,10 @@ use ratatui::style::Color;
 
 pub mod osc;
 pub mod builtin;
+pub mod registry;
 
 pub use osc::{OscQuery, QueriedColors, TerminalPalette};
+pub use registry::{ThemeEntry, ThemeRegistry, ThemeSource};
 
 /// Which palette source to use, parsed from the `theme` config key.
 /// `Terminal` (the default) queries the real terminal's colors via OSC and
