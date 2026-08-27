@@ -111,8 +111,8 @@ mod tests {
             let t = Theme::generate(&b.seeds);
             let d = (oklab_l(rgb_of(t.text)) - oklab_l(rgb_of(t.page))).abs();
             // The clamp targets ΔL = 0.4, but the Oklab→sRGB→u8 round-trip can
-            // quantize a boundary color ~0.005 short, so we allow that slack.
-            assert!(d >= 0.39, "{}: contrast {d}", b.name);
+            // quantize a boundary color slightly (~0.0005) short of the 0.4 target.
+            assert!(d >= 0.399, "{}: contrast {d}", b.name);
         }
     }
 }
