@@ -1307,13 +1307,14 @@ fn tabstrip_width(tabs: &[(String, Option<(char, ratatui::style::Color)>)]) -> u
         .unwrap_or(0)
 }
 
-/// The icon actions in the header strip — `🔍` (search), `✎` (open the
-/// view in `$EDITOR`), `💾` (save to file), `❐` (copy, the same glyph
-/// every other copy affordance uses, keeping the group's right edge).
+/// The icon actions in the header strip — `🔍` (search), `📝` (open the
+/// view in `$EDITOR`; emoji presentation to sit level with its 2-column
+/// neighbors), `💾` (save to file), `❐` (copy, the same glyph every other
+/// copy affordance uses, keeping the group's right edge).
 /// All of them act on the *active tab's* text, following it like search.
 const HEADER_ACTIONS: [(&str, crate::hit::Hit); 4] = [
     (" 🔍 ", crate::hit::Hit::ResponseSearchButton),
-    (" ✎ ", crate::hit::Hit::ResponseEditorButton),
+    (" 📝 ", crate::hit::Hit::ResponseEditorButton),
     (" 💾 ", crate::hit::Hit::SaveBodyButton),
     (" ❐ ", crate::hit::Hit::CopyBodyButton),
 ];
@@ -2050,7 +2051,7 @@ mod tests {
             .draw(|f| r.draw(f, f.area(), &ctx, &mut hits))
             .unwrap();
         let out = format!("{:?}", terminal.backend().buffer());
-        assert!(out.contains("✎"), "editor icon: {out}");
+        assert!(out.contains("📝"), "editor icon: {out}");
         assert!(
             hits.rect_of(&crate::hit::Hit::ResponseEditorButton).is_some(),
             "the ✎ icon registers its hit"
@@ -3034,7 +3035,7 @@ mod tests {
             "search / save / copy, left to right — copy keeps the right edge"
         );
         assert!(
-            copy.x + copy.width < 20,
+            copy.x + copy.width < 22,
             "icons are left-aligned, not flushed right: {copy:?}"
         );
     }
