@@ -530,7 +530,7 @@ mod tests {
     }
 
     #[test]
-    fn chip_paints_accent_bold_key_in_a_tinted_pill_and_muted_label_beside_it() {
+    fn chip_paints_muted_bold_key_in_a_tinted_pill_and_prominent_label_beside_it() {
         let theme = Theme::for_terminal();
         let backend = TestBackend::new(120, FOOTER_HEIGHT);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -636,8 +636,8 @@ mod tests {
         );
     }
 
-    /// Quit paints exactly like its neighbours — a tinted `q` key pill with
-    /// a muted label — rather than the plain muted text it used to be, so
+    /// Quit paints exactly like its neighbours — a quiet keycap pill with
+    /// a prominent label — rather than the plain muted text it used to be, so
     /// the right-side chips read as one consistent family.
     #[test]
     fn quit_is_a_chip_like_its_neighbours() {
