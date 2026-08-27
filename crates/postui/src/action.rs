@@ -188,6 +188,11 @@ pub enum Action {
     /// Open the project chooser: every registered project plus a final
     /// "open by path…" entry.
     OpenProjectChooser,
+    /// Open the theme picker (chooser modal listing the theme registry).
+    OpenThemeChooser,
+    /// Apply the named theme, persist it as the config `theme` key, and
+    /// record it as the session's theme. Dispatched by the picker's Enter.
+    ApplyTheme(String),
     /// Switch to the next registered project after the current one,
     /// wrapping; toasts "only one project registered" when there isn't one.
     CycleProject,

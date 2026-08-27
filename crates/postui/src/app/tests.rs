@@ -10638,4 +10638,34 @@ mod undo_tests {
             "the explicit Vars choice replaced the old Body preference"
         );
     }
+
+    #[test]
+    fn open_theme_chooser_lists_registry_entries_with_ids_and_swatches() {
+        let mut app = App::new_for_test();
+        app.update(Action::OpenThemeChooser);
+        let Some(crate::components::modal::Modal::Chooser(c)) = app.modals.top() else {
+            panic!("theme chooser modal expected");
+        };
+        assert_eq!(c.selected_id(), Some("terminal"), "terminal entry first");
+    }
+
+    #[test]
+    fn apply_theme_switches_the_live_theme_and_records_the_name() {
+        let mut app = App::new_for_test();
+        let before = app.theme.page;
+        app.update(Action::ApplyTheme("gruvbox-dark".into()));
+        assert_eq!(app.theme_name, "gruvbox-dark");
+        assert_eq!(app.ui_settings.theme, "gruvbox-dark");
+        assert_ne!(
+            app.theme.page, before,
+            "gruvbox page differs from the default dark page"
+        );
+    }
+
+    #[test]
+    fn apply_theme_with_an_unknown_name_degrades_to_terminal() {
+        let mut app = App::new_for_test();
+        app.update(Action::ApplyTheme("no-such-theme".into()));
+        assert_eq!(app.theme_name, "terminal");
+    }
 }

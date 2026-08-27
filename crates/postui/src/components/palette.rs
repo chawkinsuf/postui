@@ -48,6 +48,12 @@ pub fn all_commands() -> Vec<Command> {
             action: Action::ShowAbout,
         },
         Command {
+            id: "theme-choose",
+            name: "Change theme…",
+            description: "Pick a color theme (live preview; Esc reverts)",
+            action: Action::OpenThemeChooser,
+        },
+        Command {
             id: "send",
             name: "Send request",
             description: "Send the open request",

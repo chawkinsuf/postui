@@ -1914,6 +1914,61 @@ impl App {
                 self.push_modal(Modal::Chooser(ChooserState::new("Projects", items)));
                 true
             }
+            Action::OpenThemeChooser => {
+                use crate::components::chooser::{ChooserItem, ChooserState};
+                // Rescan the themes dir so a custom file edited or added since
+                // startup shows up without a restart (spec: rescan on picker open).
+                let (themes, warnings) =
+                    crate::theme::ThemeRegistry::load(self.themes_dir.as_deref());
+                for w in warnings {
+                    self.toasts.push(w, ToastKind::Warning);
+                }
+                self.themes = themes;
+                let items: Vec<ChooserItem> = self
+                    .themes
+                    .entries()
+                    .iter()
+                    .map(|e| {
+                        let seeds = self.themes.seeds_of(e, &self.terminal_colors);
+                        let sw = [
+                            seeds.bg,
+                            seeds.fg,
+                            seeds.accent,
+                            seeds.success,
+                            seeds.warning,
+                            seeds.error,
+                        ]
+                        .iter()
+                        .map(|&(r, g, b)| ratatui::style::Color::Rgb(r, g, b))
+                        .collect();
+                        let detail = match &e.source {
+                            crate::theme::ThemeSource::Terminal => "terminal colors",
+                            crate::theme::ThemeSource::Builtin(_) => "built-in",
+                            crate::theme::ThemeSource::Custom(_) => "custom",
+                        };
+                        ChooserItem {
+                            label: e.label.clone(),
+                            detail: Some(detail.into()),
+                            actions: vec![Action::ApplyTheme(e.name.clone())],
+                            swatches: Some(sw),
+                            id: Some(e.name.clone()),
+                        }
+                    })
+                    .collect();
+                self.push_modal(Modal::Chooser(ChooserState::new("Theme", items)));
+                true
+            }
+            Action::ApplyTheme(name) => {
+                self.set_theme_by_name(&name);
+                self.ui_settings.theme = self.theme_name.clone();
+                if let Some(path) = self.registry_path.clone()
+                    && let Err(e) = crate::config::save_ui_theme(&path, &self.theme_name)
+                {
+                    self.toasts
+                        .push(format!("could not save theme: {e}"), ToastKind::Error);
+                }
+                true
+            }
             Action::CycleProject => {
                 match self.registry.next_after(&self.project.root) {
                     None => {
