@@ -698,6 +698,7 @@ impl App {
         self.editor.table_collapsed = self.table_collapsed;
         self.sync_pane_collapse_anim();
         self.sync_response_collapse_anim();
+        self.sync_editor_tab_underline();
         // Any toast pushed by `apply(action)` above gets its slide-in
         // started here rather than inside `Toasts::push` itself — `push`
         // is called from ~100 sites across this file, none of which
@@ -5239,6 +5240,45 @@ impl App {
             .retarget_with(left_key, *x as f32, dur, now, Easing::InOutCubic);
         self.anims
             .retarget_with(right_key, (*x + *w) as f32, dur, now, Easing::InOutCubic);
+    }
+
+    /// Keeps the editor tab underline pinned to the ACTIVE tab's current
+    /// span. A tab switch retargets it explicitly
+    /// ([`Self::retarget_editor_tab_underline`]), but the spans also shift
+    /// with no switch at all — the Headers/Params/Vars counts differ per
+    /// request and change as rows are added, and the Body badge comes and
+    /// goes — which used to leave the underline parked at the previous
+    /// request's geometry after a request switch. Runs on every `update`
+    /// alongside the other sync_* passes; a glide already headed to the
+    /// right place is left alone, and an untracked pair simply snaps
+    /// (`retarget_with` starts at the target when there's no current
+    /// value).
+    fn sync_editor_tab_underline(&mut self) {
+        let spans = self.editor.tab_strip_spans();
+        let Some(&(x, w)) = spans.get(self.editor.active_tab.draw_position()) else {
+            return;
+        };
+        let left_key = AnimKey::TabUnderline(StripId::EditorTabs);
+        let right_key = AnimKey::TabUnderlineWidth(StripId::EditorTabs);
+        let (left, right) = (x as f32, (x + w) as f32);
+        if self.anims.target(left_key) == Some(left) && self.anims.target(right_key) == Some(right)
+        {
+            return;
+        }
+        // An untracked pair (nothing has moved the underline yet this
+        // session) just snaps into place — a target→target "glide" would
+        // read as active for its whole duration and keep forcing redraws.
+        if self.anims.target(left_key).is_none() {
+            self.anims.snap(left_key, left);
+            self.anims.snap(right_key, right);
+            return;
+        }
+        let now = Instant::now();
+        let dur = self.ui_settings.anim_ms.tab_slide;
+        self.anims
+            .retarget_with(left_key, left, dur, now, Easing::InOutCubic);
+        self.anims
+            .retarget_with(right_key, right, dur, now, Easing::InOutCubic);
     }
 
     /// Like [`Self::retarget_editor_tab_underline`], but for

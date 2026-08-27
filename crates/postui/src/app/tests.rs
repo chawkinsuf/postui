@@ -10526,6 +10526,48 @@ mod undo_tests {
     }
 
     #[test]
+    fn tab_underline_follows_span_shifts_on_request_switch() {
+        use crate::anim::{AnimKey, StripId};
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("with-header".into()));
+        app.editor.headers.insert(
+            "X-One".into(),
+            postui_core::model::Entry {
+                value: "1".into(),
+                enabled: true,
+            },
+        );
+        app.update(Action::SaveRequest);
+        app.update(Action::CreateRequest("plain".into()));
+        // Choose Params on the plain request (its Headers label has no
+        // count, so every span sits further left than with-header's).
+        app.update(Action::EditorTabSelect(EditorTab::Params.index()));
+        let plain_x = app.editor.tab_strip_spans()[EditorTab::Params.draw_position()].0;
+        assert_eq!(
+            app.anims.target(AnimKey::TabUnderline(StripId::EditorTabs)),
+            Some(plain_x as f32)
+        );
+        // Opening the request whose Headers label carries a count shifts
+        // every later span right; the underline must follow without a tab
+        // switch.
+        app.update(Action::OpenRequest("with-header".into()));
+        let spans = app.editor.tab_strip_spans();
+        let (x, w) = spans[EditorTab::Params.draw_position()];
+        assert_ne!(x, plain_x, "the span must actually have moved");
+        assert_eq!(
+            app.anims.target(AnimKey::TabUnderline(StripId::EditorTabs)),
+            Some(x as f32),
+            "underline left edge follows the shifted span"
+        );
+        assert_eq!(
+            app.anims
+                .target(AnimKey::TabUnderlineWidth(StripId::EditorTabs)),
+            Some((x + w) as f32),
+            "underline right edge follows the shifted span"
+        );
+    }
+
+    #[test]
     fn switching_requests_keeps_the_active_tab() {
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("a".into()));
@@ -10560,9 +10602,17 @@ mod undo_tests {
         app.update(Action::CycleMethod); // POST
         app.update(Action::EditorTabSelect(EditorTab::Body.index()));
         app.update(Action::SetMethod(postui_core::model::Method::Get));
-        assert_ne!(app.editor.active_tab, EditorTab::Body, "hops off disabled Body");
+        assert_ne!(
+            app.editor.active_tab,
+            EditorTab::Body,
+            "hops off disabled Body"
+        );
         app.update(Action::SetMethod(postui_core::model::Method::Post));
-        assert_eq!(app.editor.active_tab, EditorTab::Body, "returns when re-enabled");
+        assert_eq!(
+            app.editor.active_tab,
+            EditorTab::Body,
+            "returns when re-enabled"
+        );
     }
 
     #[test]

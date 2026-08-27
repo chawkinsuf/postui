@@ -609,8 +609,7 @@ impl Editor {
                     self.body.cursor = edtui::Index2::new(cursor.row - 1, len_of(cursor.row - 1));
                 } else {
                     let line = row_chars(&self.body, cursor.row);
-                    self.body.cursor.col =
-                        super::word_nav::prev_word_boundary(&line, cursor.col);
+                    self.body.cursor.col = super::word_nav::prev_word_boundary(&line, cursor.col);
                 }
                 true
             }
@@ -620,8 +619,7 @@ impl Editor {
                     self.body.cursor = edtui::Index2::new(cursor.row + 1, 0);
                 } else {
                     let line = row_chars(&self.body, cursor.row);
-                    self.body.cursor.col =
-                        super::word_nav::next_word_boundary(&line, cursor.col);
+                    self.body.cursor.col = super::word_nav::next_word_boundary(&line, cursor.col);
                 }
                 true
             }
@@ -889,10 +887,7 @@ impl Editor {
         let last = self.body.lines.len().saturating_sub(1);
         let last_col = self.body.lines.len_col(last).unwrap_or(0);
         self.body_sel_anchor = Some(edtui::Index2::new(0, 0));
-        self.set_body_selection_cells(
-            edtui::Index2::new(0, 0),
-            edtui::Index2::new(last, last_col),
-        );
+        self.set_body_selection_cells(edtui::Index2::new(0, 0), edtui::Index2::new(last, last_col));
     }
 
     /// Drops any body selection and its anchor.
@@ -1224,9 +1219,7 @@ impl Component for Editor {
                             return Some(Action::Render);
                         }
                         // ctrl+h: a legacy terminal's ctrl+backspace.
-                        KeyCode::Char('h')
-                            if ev.modifiers == KeyModifiers::CONTROL =>
-                        {
+                        KeyCode::Char('h') if ev.modifiers == KeyModifiers::CONTROL => {
                             self.delete_body_selection();
                             return Some(Action::Render);
                         }
@@ -2631,8 +2624,7 @@ fn json_editor_syntect_theme(theme: &Theme) -> edtui::syntect::highlighting::The
         scopes: scopes
             .into_iter()
             .map(|(sel, color)| ThemeItem {
-                scope: ScopeSelectors::from_str(sel)
-                    .expect("static scope selectors parse"),
+                scope: ScopeSelectors::from_str(sel).expect("static scope selectors parse"),
                 style: StyleModifier {
                     foreground: Some(syn(color)),
                     background: None,

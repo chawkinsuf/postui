@@ -174,6 +174,13 @@ impl Anims {
         );
     }
 
+    /// The value `key` is easing toward (its resting value once done), or
+    /// `None` if it was never set. Lets a sync pass ask "is this already
+    /// headed where I want?" without cutting a glide short.
+    pub fn target(&self, key: AnimKey) -> Option<f32> {
+        self.entries.get(&key).map(|a| a.target)
+    }
+
     /// The current eased value of `key` at `now`, or `None` if it was never
     /// set.
     pub fn value(&self, key: AnimKey, now: Instant) -> Option<f32> {
