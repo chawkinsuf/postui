@@ -10776,12 +10776,13 @@ mod undo_tests {
         let original_name = app.theme_name.clone();
         app.update(Action::OpenThemeChooser);
         // The picker opens filtered to the current (dark) polarity: row 0
-        // is "terminal"; Down moves to "dark", Down again to "ghostty".
-        // Ghostty shares Dark's background by design, so the live-apply
-        // proof compares the text token, which differs.
+        // is "terminal"; Down moves to "dark", Down again to
+        // "gruvbox-dark". The live-apply proof compares the text token
+        // (the terminal fallback shares Dark's seeds, so page alone
+        // wouldn't necessarily distinguish neighbors).
         app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.theme_name, "ghostty", "highlight applies live");
+        assert_eq!(app.theme_name, "gruvbox-dark", "highlight applies live");
         assert_ne!(app.theme.text, original);
         app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(

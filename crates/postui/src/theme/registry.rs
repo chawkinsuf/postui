@@ -239,7 +239,6 @@ mod tests {
                 "terminal",
                 "dark",
                 "light",
-                "ghostty",
                 "gruvbox-dark",
                 "gruvbox-light",
                 "catppuccin-mocha",
@@ -409,7 +408,7 @@ mod tests {
         );
         assert!(warnings.iter().any(|w| w.contains("nokey")));
         assert!(warnings.iter().any(|w| w.contains("badhex")));
-        assert_eq!(r.entries().len(), 10, "builtins only");
+        assert_eq!(r.entries().len(), 9, "builtins only");
     }
 
     #[test]
@@ -426,7 +425,7 @@ mod tests {
             warnings.is_empty(),
             "shadowing is deliberate, no warning: {warnings:?}"
         );
-        assert_eq!(r.entries().len(), 10, "shadow replaces, not appends");
+        assert_eq!(r.entries().len(), 9, "shadow replaces, not appends");
         assert_eq!(r.entries()[1].name, "dark", "position preserved");
         let t = r.resolve("dark", &QueriedColors::default()).unwrap();
         assert_eq!(t.page, Color::Rgb(0, 0, 0));
@@ -453,9 +452,9 @@ mod tests {
     fn load_missing_dir_is_builtins_with_no_warnings() {
         let (r, warnings) = ThemeRegistry::load(Some(std::path::Path::new("/nonexistent/themes")));
         assert!(warnings.is_empty());
-        assert_eq!(r.entries().len(), 10);
+        assert_eq!(r.entries().len(), 9);
         let (r2, w2) = ThemeRegistry::load(None);
         assert!(w2.is_empty());
-        assert_eq!(r2.entries().len(), 10);
+        assert_eq!(r2.entries().len(), 9);
     }
 }
