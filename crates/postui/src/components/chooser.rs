@@ -643,6 +643,32 @@ mod tests {
     }
 
     #[test]
+    fn toggle_label_paints_right_aligned_on_the_title_row_and_registers_a_hit() {
+        let mut c =
+            ChooserState::new("Theme", items(&["a", "b"])).with_toggle("◂ dark ▸", Action::Quit);
+        let theme = Theme::dark();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0))
+            .unwrap();
+        let toggle = hits
+            .rect_of(&crate::hit::Hit::ChooserToggle)
+            .expect("toggle label registers a clickable hit");
+        let modal = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
+        assert_eq!(toggle.y, modal.y + 1, "sits on the title row");
+        assert_eq!(
+            toggle.x + toggle.width,
+            modal.x + modal.width - 2,
+            "right-aligned with the title row's margin"
+        );
+        let buffer = terminal.backend().buffer();
+        let first = buffer[(toggle.x, toggle.y)].clone();
+        assert_eq!(first.symbol(), "◂");
+        assert_eq!(first.fg, theme.accent);
+    }
+
+    #[test]
     fn selected_id_maps_through_the_filter() {
         let mut c = ChooserState::new(
             "Theme",
