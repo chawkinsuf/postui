@@ -1257,18 +1257,6 @@ impl App {
                 self.no_coalesce = true;
                 self.transform_body(postui_core::json::minify)
             }
-            Action::BodySelectAll => {
-                // Inert while the method sends no body — the same guard the
-                // Body tab itself is behind.
-                if self.editor.body_tab_disabled() {
-                    return true;
-                }
-                self.focus = PaneId::Editor;
-                self.editor.active_tab = EditorTab::Body;
-                self.editor.sub_focus = SubFocus::Content;
-                self.editor.body_select_all();
-                true
-            }
             Action::BodyClear => {
                 self.no_coalesce = true;
                 if !self.editor.body_text().is_empty() {

@@ -2088,8 +2088,7 @@ impl Editor {
             ("alt+f", "format", Some(Action::FormatBody)),
             ("alt+g", "minify", Some(Action::MinifyBody)),
             ("alt+b", sub_label, Some(Action::ToggleBodyVars)),
-            ("^E", "$EDITOR", Some(Action::OpenBodyInEditor)),
-            ("^A", "select all", Some(Action::BodySelectAll)),
+            ("alt+e", "$EDITOR", Some(Action::OpenBodyInEditor)),
             ("alt+x", "clear", Some(Action::BodyClear)),
         ];
 
@@ -3648,12 +3647,12 @@ mod tests {
             hits.rect_of(&Hit::FooterChip(Action::OpenBodyInEditor))
                 .is_some()
         );
-        assert!(content.contains("select all"), "{content}");
-        assert!(content.contains("clear"), "{content}");
         assert!(
-            hits.rect_of(&Hit::FooterChip(Action::BodySelectAll))
-                .is_some()
+            !content.contains("select all"),
+            "the select-all chip is gone (ctrl+a covers it): {content}"
         );
+        assert!(content.contains("alt+e"), "{content}");
+        assert!(content.contains("clear"), "{content}");
         assert!(hits.rect_of(&Hit::FooterChip(Action::BodyClear)).is_some());
     }
 

@@ -9932,33 +9932,6 @@ mod undo_tests {
     }
 
     #[test]
-    fn body_select_all_switches_to_the_body_tab_and_selects_everything() {
-        let mut app = App::new_for_test();
-        app.update(Action::CreateRequest("sel".into()));
-        app.update(Action::CycleMethod); // GET -> POST, so Body is enabled
-        app.editor.set_body_text("{\"a\": 1}");
-        app.editor.active_tab = EditorTab::Headers;
-        app.update(Action::BodySelectAll);
-        assert_eq!(app.editor.active_tab, EditorTab::Body);
-        assert_eq!(app.editor.sub_focus, SubFocus::Content);
-        assert_eq!(app.focus, PaneId::Editor);
-        assert_eq!(
-            app.editor.body_selected_text().as_deref(),
-            Some("{\"a\": 1}")
-        );
-    }
-
-    #[test]
-    fn body_select_all_is_inert_while_the_method_sends_no_body() {
-        let mut app = App::new_for_test();
-        app.update(Action::CreateRequest("sel-get".into()));
-        app.editor.set_body_text("held");
-        app.update(Action::BodySelectAll);
-        assert_ne!(app.editor.active_tab, EditorTab::Body);
-        assert_eq!(app.editor.body_selected_text(), None);
-    }
-
-    #[test]
     fn body_clear_empties_the_body_and_undo_brings_it_back() {
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("clr".into()));

@@ -78,10 +78,6 @@ pub enum Action {
     /// Compact the JSON body in place, with the same error handling as
     /// [`Action::FormatBody`].
     MinifyBody,
-    /// Select the whole request body: switches to the Body tab, focuses the
-    /// buffer, and selects everything (the toolbar chip / palette spelling
-    /// of ctrl+a). Inert while the method sends no body.
-    BodySelectAll,
     /// Empty the request body (undoable like any other edit). A no-op on an
     /// already-empty body.
     BodyClear,

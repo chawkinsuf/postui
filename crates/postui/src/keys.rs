@@ -192,7 +192,6 @@ impl Keymap {
             ("alt+g", Action::MinifyBody),
             ("alt+x", Action::BodyClear),
             ("alt+b", Action::ToggleBodyVars),
-            ("ctrl+e", Action::OpenBodyInEditor),
             ("ctrl+s", Action::SaveRequest),
             ("ctrl+r", Action::Send),
             ("ctrl+enter", Action::Send),
@@ -200,7 +199,8 @@ impl Keymap {
             ("ctrl+o", Action::OpenProjectChooser),
             ("alt+o", Action::CycleProject),
             ("alt+n", Action::PromptNewProject),
-            ("alt+e", Action::OpenEnvChooser),
+            ("alt+e", Action::OpenBodyInEditor),
+            ("alt+shift+e", Action::OpenEnvChooser),
             ("alt+c", Action::CycleEnv),
             ("ctrl+v", Action::OpenVarPicker { completing: false }),
             ("alt+a", Action::TableAddRow),
@@ -401,14 +401,19 @@ mod tests {
         assert_eq!(get("alt+g"), Some(Action::MinifyBody));
         assert_eq!(get("alt+x"), Some(Action::BodyClear));
         assert_eq!(get("alt+b"), Some(Action::ToggleBodyVars));
-        assert_eq!(get("ctrl+e"), Some(Action::OpenBodyInEditor));
+        assert_eq!(get("alt+e"), Some(Action::OpenBodyInEditor));
+        assert_eq!(
+            get("ctrl+e"),
+            None,
+            "ctrl+e is free again (edtui's emacs end-of-line gets it in the body)"
+        );
         assert_eq!(get("ctrl+r"), Some(Action::Send));
         assert_eq!(get("ctrl+enter"), Some(Action::Send));
         assert_eq!(get("shift+enter"), Some(Action::Send));
         assert_eq!(get("ctrl+o"), Some(Action::OpenProjectChooser));
         assert_eq!(get("alt+o"), Some(Action::CycleProject));
         assert_eq!(get("alt+n"), Some(Action::PromptNewProject));
-        assert_eq!(get("alt+e"), Some(Action::OpenEnvChooser));
+        assert_eq!(get("alt+shift+e"), Some(Action::OpenEnvChooser));
         assert_eq!(get("alt+c"), Some(Action::CycleEnv));
         assert_eq!(
             get("ctrl+v"),
