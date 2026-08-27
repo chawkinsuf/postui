@@ -8,7 +8,6 @@ use crate::layout::PaneId;
 use crate::theme::Theme;
 use edtui::{
     EditorEventHandler, EditorMode, EditorState, EditorTheme, EditorView, LineNumbers, Lines,
-    SyntaxHighlighter,
 };
 use indexmap::IndexMap;
 use postui_core::model::{Body, Entry, HttpRequest, Method};
@@ -136,6 +135,13 @@ pub struct Editor {
     pub body: EditorState,
     /// Emacs-mode (modeless) key handling for `body`.
     body_handler: EditorEventHandler,
+    /// The body text `body.highlights` was last computed from, plus the
+    /// palette it was tinted with (`None` = never computed) — the cheap
+    /// change check that keeps the whole-buffer JSON re-lex off draws
+    /// where nothing changed. Reset by [`Self::set_body_text`], which
+    /// rebuilds the edtui state (and with it the highlight list).
+    body_hl_text: String,
+    body_hl_marker: Option<ratatui::style::Color>,
     /// The fixed end of an in-progress body selection: planted by a left
     /// click (mouse) or the first shifted motion (keyboard), consumed by
     /// `body_drag_to`/shifted motions to rebuild `body.selection` as the
@@ -237,6 +243,8 @@ impl Default for Editor {
             vars: Default::default(),
             inherited_headers: IndexMap::new(),
             body: new_body_state(""),
+            body_hl_text: String::new(),
+            body_hl_marker: None,
             body_handler: EditorEventHandler::emacs_mode(),
             body_sel_anchor: None,
             active_tab: EditorTab::Headers,
@@ -491,6 +499,9 @@ impl Editor {
     /// behind the user's back.
     pub fn set_body_text(&mut self, s: &str) {
         self.body = new_body_state(s);
+        // The fresh state has no highlights; force the next draw to relex.
+        self.body_hl_text.clear();
+        self.body_hl_marker = None;
     }
 
     /// Whether the body parses as JSON. An empty body is vacuously valid:
@@ -2301,7 +2312,17 @@ impl Editor {
                     let ring_color = crate::theme::mix(theme.page, theme.focus_ring, ctx.focus_t());
                     crate::paint::ring(frame.buffer_mut(), ring_area, ring_color, theme.page);
                 }
-                let highlighter = json_highlighter(theme);
+                // Refresh the syntax highlights only when the text (or the
+                // palette) actually changed — they're whole-buffer ranges
+                // fed through edtui's Highlight mechanism, not a per-line
+                // parse (see `json_body_highlights`).
+                let text_now = self.body_text();
+                if self.body_hl_text != text_now || self.body_hl_marker != Some(theme.accent) {
+                    self.body
+                        .set_highlights(json_body_highlights(&self.body.lines, theme));
+                    self.body_hl_text = text_now;
+                    self.body_hl_marker = Some(theme.accent);
+                }
                 let mut edtui_theme = EditorTheme::default()
                     .base(Style::default().bg(theme.page).fg(theme.text))
                     .cursor_style(Style::default().add_modifier(Modifier::REVERSED))
@@ -2319,8 +2340,7 @@ impl Editor {
                 let view = EditorView::new(&mut self.body)
                     .theme(edtui_theme)
                     .wrap(true)
-                    .line_numbers(LineNumbers::Absolute)
-                    .syntax_highlighter(highlighter);
+                    .line_numbers(LineNumbers::Absolute);
                 frame.render_widget(view, area);
                 // Body coverage (spec §7): edtui paints the text itself, so
                 // its tokens are found by reading the rendered rows back out
@@ -2563,76 +2583,103 @@ impl Editor {
     }
 }
 
-/// The bundled syntect theme closest to the app palette. edtui's theme names
-/// use dashes rather than syntect's dotted defaults. Matching the app's own
-/// colors exactly is stage-6 polish; until then a missing theme or JSON
-/// syntax definition degrades to unhighlighted text rather than failing the
-/// draw.
-///
-/// Rebuilt per draw because `SyntaxHighlighter` is not `Clone` and the view
-/// takes it by value. That is cheap: the theme and syntax *sets* behind it are
-/// `Arc`-shared process-wide statics, so only one theme and one syntax
-/// reference are cloned, and draws are event-driven rather than continuous.
-fn json_highlighter(theme: &Theme) -> Option<SyntaxHighlighter> {
-    // The named theme only seeds the highlighter (its constructor requires
-    // one); the palette actually used is the app-matched custom theme.
-    SyntaxHighlighter::new("base16-ocean-dark", "json")
-        .ok()
-        .map(|h| h.custom_theme(json_editor_syntect_theme(theme)))
-}
-
-/// The syntect theme the body editor highlights JSON with: the response
-/// pane's exact palette (see `token_color` in `components::response` —
-/// keys `accent`, strings `success`, numbers `warning`, `true`/`false`/
-/// `null` `text_muted`, everything else `text`), so the request body and
-/// the response viewer read as one surface.
-fn json_editor_syntect_theme(theme: &Theme) -> edtui::syntect::highlighting::Theme {
-    use edtui::syntect::highlighting::{
-        Color as SynColor, ScopeSelectors, StyleModifier, Theme as SynTheme, ThemeItem,
-        ThemeSettings,
+/// Context-aware JSON token highlights for the body buffer, matching the
+/// response pane's palette exactly (see `token_color` in
+/// `components::response`): keys `accent`, value strings `success`,
+/// numbers `warning`, `true`/`false`/`null` `text_muted`; punctuation
+/// keeps the base text color, so it needs no highlight. A string is a key
+/// iff the next non-whitespace character after its closing quote is `:` —
+/// the same classification the response tree gets from parsed JSON, but
+/// derived lexically so it works on half-typed bodies too (an
+/// unterminated string colors to its line's end). This replaces edtui's
+/// syntect path, whose per-line parses forgot the enclosing `{` and
+/// colored every key on a later line as a plain string.
+fn json_body_highlights(lines: &Lines, theme: &Theme) -> Vec<edtui::Highlight> {
+    use edtui::{Highlight, Index2};
+    let rows: Vec<Vec<char>> = lines.iter_row().map(|l| l.to_vec()).collect();
+    let mut out = Vec::new();
+    let hl = |r: usize, a: usize, b: usize, color| {
+        Highlight::new(
+            Index2::new(r, a),
+            Index2::new(r, b),
+            Style::default().fg(color),
+        )
     };
-    use std::str::FromStr;
-
-    let syn = |c: ratatui::style::Color| {
-        // Theme colors are always Color::Rgb (built from rgb tuples); any
-        // other variant would mean the palette changed shape, and falling
-        // back to the base text style keeps the draw alive.
-        match c {
-            ratatui::style::Color::Rgb(r, g, b) => SynColor { r, g, b, a: 0xFF },
-            _ => SynColor::WHITE,
+    let (mut r, mut c) = (0usize, 0usize);
+    while r < rows.len() {
+        let row = &rows[r];
+        if c >= row.len() {
+            r += 1;
+            c = 0;
+            continue;
         }
-    };
-    // Order matters only for readability: syntect scores every selector
-    // and the most specific match wins, which is what lets the key rule
-    // (a `string` inside `meta.mapping.key`) beat the plain string rule.
-    let scopes = [
-        // syntect's bundled JSON grammar scopes keys as
-        // `meta.structure.dictionary.key`; `meta.mapping.key` is the same
-        // rule in Sublime's newer grammar, kept in case the bundle moves.
-        ("meta.structure.dictionary.key string", theme.accent),
-        ("meta.mapping.key string", theme.accent),
-        ("string", theme.success),
-        ("constant.numeric", theme.warning),
-        ("constant.language", theme.text_muted),
-    ];
-    SynTheme {
-        settings: ThemeSettings {
-            foreground: Some(syn(theme.text)),
-            ..ThemeSettings::default()
-        },
-        scopes: scopes
-            .into_iter()
-            .map(|(sel, color)| ThemeItem {
-                scope: ScopeSelectors::from_str(sel).expect("static scope selectors parse"),
-                style: StyleModifier {
-                    foreground: Some(syn(color)),
-                    background: None,
-                    font_style: None,
-                },
-            })
-            .collect(),
-        ..SynTheme::default()
+        let ch = row[c];
+        if ch == '"' {
+            // The whole string token, quotes included (the response pane's
+            // Key/Str tokens carry their quotes too). JSON strings never
+            // hold a raw newline, so an unterminated one stops at the line.
+            let start = c;
+            let mut j = c + 1;
+            let mut closed = false;
+            while j < row.len() {
+                match row[j] {
+                    '\\' => j += 2,
+                    '"' => {
+                        closed = true;
+                        break;
+                    }
+                    _ => j += 1,
+                }
+            }
+            let is_key = closed && {
+                let (mut rr, mut cc) = (r, j + 1);
+                loop {
+                    match rows.get(rr).and_then(|rw| rw.get(cc)) {
+                        Some(c2) if c2.is_whitespace() => cc += 1,
+                        Some(c2) => break *c2 == ':',
+                        None => {
+                            if rr + 1 >= rows.len() {
+                                break false;
+                            }
+                            rr += 1;
+                            cc = 0;
+                        }
+                    }
+                }
+            };
+            let color = if is_key { theme.accent } else { theme.success };
+            let end = if closed { j } else { row.len() - 1 };
+            out.push(hl(r, start, end, color));
+            c = end + 1;
+            continue;
+        }
+        if ch.is_ascii_digit() || (ch == '-' && row.get(c + 1).is_some_and(|d| d.is_ascii_digit()))
+        {
+            let start = c;
+            let mut j = c + 1;
+            while j < row.len() && matches!(row[j], '0'..='9' | '.' | 'e' | 'E' | '+' | '-') {
+                j += 1;
+            }
+            out.push(hl(r, start, j - 1, theme.warning));
+            c = j;
+            continue;
+        }
+        if ch.is_ascii_alphabetic() {
+            let start = c;
+            let mut j = c;
+            while j < row.len() && row[j].is_ascii_alphabetic() {
+                j += 1;
+            }
+            let word: String = row[start..j].iter().collect();
+            if matches!(word.as_str(), "true" | "false" | "null") {
+                out.push(hl(r, start, j - 1, theme.text_muted));
+            }
+            c = j;
+            continue;
+        }
+        c += 1;
     }
+    out
 }
 
 #[cfg(test)]
@@ -2891,43 +2938,97 @@ mod tests {
         );
     }
 
-    #[test]
-    fn body_highlighting_matches_the_response_panes_palette() {
-        use edtui::syntect::easy::HighlightLines;
-        use ratatui::style::Color;
+    /// Draws `e` and returns the fg color of the buffer cell holding the
+    /// first occurrence of `needle` inside the body area.
+    fn body_cell_fg(e: &mut Editor, needle: char) -> ratatui::style::Color {
         let theme = Theme::dark();
-        let st = json_editor_syntect_theme(&theme);
-        let ss = &*edtui::SYNTAX_SET;
-        let syntax = ss.find_syntax_by_extension("json").unwrap();
-        let mut hl = HighlightLines::new(syntax, &st);
-        let regions = hl
-            .highlight_line("{\"akey\": [17, \"astr\", true]}", ss)
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: None,
+            dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
+        };
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
             .unwrap();
-        let color_of = |needle: &str| {
-            regions
-                .iter()
-                .find(|(_, t)| t.contains(needle))
-                .unwrap_or_else(|| panic!("no region containing {needle:?}: {regions:?}"))
-                .0
-                .foreground
+        let buf = terminal.backend().buffer().clone();
+        let area = e.last_body_area.unwrap();
+        for y in area.y..area.bottom() {
+            for x in area.x..area.right() {
+                if buf[(x, y)].symbol() == needle.to_string() {
+                    return buf[(x, y)].fg;
+                }
+            }
+        }
+        panic!("{needle:?} not found in the body area");
+    }
+
+    #[test]
+    fn multiline_body_keys_highlight_like_the_response_pane() {
+        // A formatted body: the keys sit on lines BELOW their `{`. A
+        // per-line parse loses that context and colors them as plain
+        // strings; the response-matched highlighter must not.
+        let theme = Theme::dark();
+        let mut e = body_editor("{\n  \"kzz\": [17, \"vzz\", true],\n  \"qzz\": null\n}");
+        e.method = Method::Post;
+        assert_eq!(body_cell_fg(&mut e, 'k'), theme.accent, "key on line 2");
+        assert_eq!(body_cell_fg(&mut e, 'q'), theme.accent, "key on line 3");
+        assert_eq!(body_cell_fg(&mut e, 'v'), theme.success, "value string");
+        assert_eq!(body_cell_fg(&mut e, '7'), theme.warning, "number");
+        assert_eq!(body_cell_fg(&mut e, 't'), theme.text_muted, "literal");
+        assert_eq!(body_cell_fg(&mut e, '['), theme.text, "punctuation");
+    }
+
+    #[test]
+    fn json_body_highlights_classifies_tokens_with_full_context() {
+        let theme = Theme::dark();
+        let lines = Lines::from("{\n  \"key\": \"a:b\",\n  \"n\":\n    12.5e3\n}");
+        let hls = json_body_highlights(&lines, &theme);
+        let find = |row: usize, col: usize| {
+            hls.iter()
+                .find(|h| h.start.row == row && h.start.col == col)
+                .unwrap_or_else(|| panic!("no highlight starting at ({row},{col}): {hls:?}"))
         };
-        let rgb = |c: Color| match c {
-            Color::Rgb(r, g, b) => (r, g, b),
-            other => panic!("expected an Rgb theme color, got {other:?}"),
-        };
-        let fg = |c| {
-            let (r, g, b) = rgb(c);
-            edtui::syntect::highlighting::Color { r, g, b, a: 0xFF }
-        };
-        assert_eq!(color_of("akey"), fg(theme.accent), "keys use accent");
-        assert_eq!(color_of("astr"), fg(theme.success), "strings use success");
-        assert_eq!(color_of("17"), fg(theme.warning), "numbers use warning");
-        assert_eq!(
-            color_of("true"),
-            fg(theme.text_muted),
-            "literals use text_muted"
-        );
-        assert_eq!(color_of("{"), fg(theme.text), "punctuation uses text");
+        // `"key"` on row 1 (cols 2..=6, quotes included) is a key.
+        let key = find(1, 2);
+        assert_eq!(key.end, edtui::Index2::new(1, 6));
+        assert_eq!(key.style.fg, Some(theme.accent));
+        // `"a:b"` is a value string — the colon INSIDE the quotes must not
+        // make it a key.
+        assert_eq!(find(1, 9).style.fg, Some(theme.success));
+        // `"n"` is a key even with its colon... on the same row here, but
+        // the number VALUE sits on the next row.
+        assert_eq!(find(2, 2).style.fg, Some(theme.accent));
+        // `12.5e3` on row 3 is one number token.
+        let num = find(3, 4);
+        assert_eq!(num.end, edtui::Index2::new(3, 9));
+        assert_eq!(num.style.fg, Some(theme.warning));
+    }
+
+    #[test]
+    fn json_body_highlights_survives_half_typed_json() {
+        let theme = Theme::dark();
+        // An unterminated string colors to its line's end and no further.
+        let lines = Lines::from("{\n  \"unfinished: 1\n}");
+        let hls = json_body_highlights(&lines, &theme);
+        let h = hls
+            .iter()
+            .find(|h| h.start == edtui::Index2::new(1, 2))
+            .expect("unterminated string still highlights");
+        assert_eq!(h.end.row, 1, "never crosses the line break");
+        // A key whose colon sits on the NEXT line still reads as a key.
+        let lines = Lines::from("{\n  \"k\"\n  : 1\n}");
+        let hls = json_body_highlights(&lines, &theme);
+        let h = hls
+            .iter()
+            .find(|h| h.start == edtui::Index2::new(1, 2))
+            .expect("key highlight");
+        assert_eq!(h.style.fg, Some(theme.accent));
     }
 
     #[test]
