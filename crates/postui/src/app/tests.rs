@@ -10683,7 +10683,10 @@ mod undo_tests {
         assert_eq!(app.theme_name, "light", "highlight applies live");
         assert_ne!(app.theme.page, original);
         app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert_eq!(app.theme_name, original_name, "esc restores the prior theme");
+        assert_eq!(
+            app.theme_name, original_name,
+            "esc restores the prior theme"
+        );
         assert_eq!(app.theme.page, original);
         assert!(app.modals.top().is_none());
     }
@@ -10722,7 +10725,10 @@ mod undo_tests {
         assert_eq!(app.theme_name, "dark");
         assert_eq!(app.ui_settings.theme, "dark");
         assert!(app.modals.top().is_none());
-        assert!(app.theme_preview.is_none(), "preview state cleared on close");
+        assert!(
+            app.theme_preview.is_none(),
+            "preview state cleared on close"
+        );
     }
 
     #[test]
@@ -10732,7 +10738,10 @@ mod undo_tests {
         let keymap = crate::keys::Keymap::default_bindings();
         app.update(Action::OpenThemeChooser);
         for ch in "mocha".chars() {
-            app.handle_key(&keymap, KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+            app.handle_key(
+                &keymap,
+                KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+            );
         }
         assert_eq!(
             app.theme_name, "catppuccin-mocha",

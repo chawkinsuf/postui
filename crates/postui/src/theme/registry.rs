@@ -128,7 +128,8 @@ fn parse_theme_file(path: &Path) -> Result<(Option<String>, Seeds), String> {
             .get(key)
             .and_then(|v| v.as_str())
             .ok_or_else(|| format!("missing key {key:?}"))?;
-        parse_hex(raw).ok_or_else(|| format!("invalid color {raw:?} for {key:?} (expected \"#rrggbb\")"))
+        parse_hex(raw)
+            .ok_or_else(|| format!("invalid color {raw:?} for {key:?} (expected \"#rrggbb\")"))
     };
     let seeds = Seeds {
         bg: color("bg")?,
@@ -169,11 +170,20 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "terminal", "dark", "light", "gruvbox-dark", "gruvbox-light",
-                "catppuccin-mocha", "solarized-dark", "solarized-light",
+                "terminal",
+                "dark",
+                "light",
+                "gruvbox-dark",
+                "gruvbox-light",
+                "catppuccin-mocha",
+                "solarized-dark",
+                "solarized-light",
             ]
         );
-        assert!(matches!(r.get("terminal").unwrap().source, ThemeSource::Terminal));
+        assert!(matches!(
+            r.get("terminal").unwrap().source,
+            ThemeSource::Terminal
+        ));
     }
 
     #[test]
@@ -190,7 +200,11 @@ mod tests {
         let r = ThemeRegistry::builtin();
         let mut ansi = [None; 16];
         ansi[4] = Some((1, 120, 212));
-        let q = QueriedColors { bg: Some((16, 16, 20)), fg: None, ansi };
+        let q = QueriedColors {
+            bg: Some((16, 16, 20)),
+            fg: None,
+            ansi,
+        };
         let t = r.resolve("terminal", &q).unwrap();
         assert_eq!(t.page, Color::Rgb(16, 16, 20));
         assert_eq!(t.accent, Color::Rgb(1, 120, 212));
@@ -221,9 +235,21 @@ mod tests {
             .filter(|e| matches!(e.source, ThemeSource::Custom(_)))
             .map(|e| e.name.as_str())
             .collect();
-        assert_eq!(customs, vec!["aardvark", "zebra"], "customs after builtins, sorted");
-        assert_eq!(r.get("aardvark").unwrap().label, "Aard Vark", "name key overrides the stem");
-        assert_eq!(r.get("zebra").unwrap().label, "zebra", "label defaults to the stem");
+        assert_eq!(
+            customs,
+            vec!["aardvark", "zebra"],
+            "customs after builtins, sorted"
+        );
+        assert_eq!(
+            r.get("aardvark").unwrap().label,
+            "Aard Vark",
+            "name key overrides the stem"
+        );
+        assert_eq!(
+            r.get("zebra").unwrap().label,
+            "zebra",
+            "label defaults to the stem"
+        );
         let t = r.resolve("zebra", &QueriedColors::default()).unwrap();
         assert_eq!(t.page, Color::Rgb(0x10, 0x14, 0x18));
     }
@@ -240,7 +266,11 @@ mod tests {
         .unwrap();
         std::fs::write(dir.path().join("notes.txt"), "not a theme").unwrap();
         let (r, warnings) = ThemeRegistry::load(Some(dir.path()));
-        assert_eq!(warnings.len(), 2, "one warning per bad .toml; non-toml ignored: {warnings:?}");
+        assert_eq!(
+            warnings.len(),
+            2,
+            "one warning per bad .toml; non-toml ignored: {warnings:?}"
+        );
         assert!(warnings.iter().any(|w| w.contains("nokey")));
         assert!(warnings.iter().any(|w| w.contains("badhex")));
         assert_eq!(r.entries().len(), 8, "builtins only");
@@ -256,7 +286,10 @@ mod tests {
         )
         .unwrap();
         let (r, warnings) = ThemeRegistry::load(Some(dir.path()));
-        assert!(warnings.is_empty(), "shadowing is deliberate, no warning: {warnings:?}");
+        assert!(
+            warnings.is_empty(),
+            "shadowing is deliberate, no warning: {warnings:?}"
+        );
         assert_eq!(r.entries().len(), 8, "shadow replaces, not appends");
         assert_eq!(r.entries()[1].name, "dark", "position preserved");
         let t = r.resolve("dark", &QueriedColors::default()).unwrap();

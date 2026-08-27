@@ -1,7 +1,7 @@
 use ratatui::style::Color;
 
-pub mod osc;
 pub mod builtin;
+pub mod osc;
 pub mod registry;
 
 pub use osc::{OscQuery, QueriedColors, TerminalPalette};
@@ -789,7 +789,11 @@ mod tests {
         assert_eq!(s.bg, (16, 16, 20));
         assert_eq!(s.accent, (1, 120, 212));
         assert_eq!(s.fg, Seeds::dark().fg, "fg derived from the dark bg");
-        assert_eq!(s.success, Seeds::dark().success, "missing slot: builtin seed");
+        assert_eq!(
+            s.success,
+            Seeds::dark().success,
+            "missing slot: builtin seed"
+        );
     }
 
     #[test]
