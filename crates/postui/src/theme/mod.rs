@@ -27,8 +27,12 @@ impl Seeds {
     /// saturated ones).
     pub fn dark() -> Self {
         Self {
-            bg: (0x0c, 0x22, 0x30),
-            fg: (0xdc, 0xd8, 0xd0),
+            // The ghostty theme's exact background; the foreground is the
+            // Oklab midpoint between its cool #ccd8e0 and the warmer
+            // #dcd8d0 the first adaptation used — full brightness, neutral
+            // temperature, so it keeps the clarity without the warm cast.
+            bg: (0x0a, 0x20, 0x28),
+            fg: (0xd4, 0xd8, 0xd8),
             accent: (0x78, 0xa8, 0xc8),
             success: (0x90, 0xac, 0x60),
             warning: (0xc8, 0xa8, 0x68),
@@ -43,7 +47,7 @@ impl Seeds {
     pub fn light() -> Self {
         Self {
             bg: (0xee, 0xe8, 0xe4),
-            fg: (0x1a, 0x31, 0x3f),
+            fg: (0x1b, 0x31, 0x3a),
             accent: (0x40, 0x6f, 0x8c),
             success: (0x63, 0x7c, 0x31),
             warning: (0x94, 0x75, 0x35),
