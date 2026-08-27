@@ -1,7 +1,7 @@
 //! Terminal color introspection via OSC escape sequences (OSC 10/11/4), so
-//! `ThemeChoice::Terminal` can seed a generated palette from whatever colors
-//! the user's real terminal is already configured with, instead of forcing
-//! a hand-picked default on top of it.
+//! the theme registry's Terminal entry can seed a generated palette from
+//! whatever colors the user's real terminal is already configured with,
+//! instead of forcing a hand-picked default on top of it.
 //!
 //! The wire protocol (writing queries, reading a raced reply with a
 //! deadline) lives in [`OscQuery`]; the pure, TTY-free byte parsing lives in
@@ -23,13 +23,13 @@ pub struct QueriedColors {
 }
 
 /// Abstraction over "ask the terminal what colors it's using", so
-/// `Theme::from_environment` can be tested with a fake instead of a real
+/// `seeds_from_queried` can be tested with a fake instead of a real
 /// TTY.
 pub trait TerminalPalette {
     fn query(&mut self) -> QueriedColors;
 }
 
-/// The real implementation: writes OSC queries to stdout and races a 150ms
+/// The real implementation: writes OSC queries to stdout and races a 600ms
 /// deadline reading stdin for replies. Requires raw mode already be active
 /// at the call site (see `main.rs`) — this type never touches raw mode
 /// itself, since toggling it here would race whatever else the caller is
@@ -37,10 +37,12 @@ pub trait TerminalPalette {
 pub struct OscQuery;
 
 /// How long we wait for the terminal to answer before giving up and
-/// treating it as silent. Chosen to be well under one frame's worth of
-/// perceptible startup delay while still giving a real terminal (or tmux
-/// passthrough) time to round-trip.
-const QUERY_DEADLINE: Duration = Duration::from_millis(150);
+/// treating it as silent. The read loop exits early on the DA1 fence, so a
+/// responsive terminal never waits this long — the deadline only bites for
+/// terminals that stay silent. 150ms proved too tight in practice: a
+/// terminal answering late (observed on macOS under load) caused a
+/// nondeterministic fallback to the built-in dark seeds between launches.
+const QUERY_DEADLINE: Duration = Duration::from_millis(600);
 
 impl TerminalPalette for OscQuery {
     fn query(&mut self) -> QueriedColors {
