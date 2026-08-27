@@ -1902,12 +1902,14 @@ impl App {
                         label,
                         detail: Some(path.display().to_string()),
                         actions: vec![Action::SwitchProject(path.clone())],
+                        ..Default::default()
                     });
                 }
                 items.push(ChooserItem {
                     label: "open by path…".into(),
                     detail: None,
                     actions: vec![Action::PromptOpenProjectPath],
+                    ..Default::default()
                 });
                 self.push_modal(Modal::Chooser(ChooserState::new("Projects", items)));
                 true
@@ -2068,17 +2070,20 @@ impl App {
                         label: name.clone(),
                         detail: None,
                         actions: vec![Action::SwitchEnv(Some(name.clone()))],
+                        ..Default::default()
                     })
                     .collect();
                 items.push(ChooserItem {
                     label: "no environment".into(),
                     detail: None,
                     actions: vec![Action::SwitchEnv(None)],
+                    ..Default::default()
                 });
                 items.push(ChooserItem {
                     label: "new environment…".into(),
                     detail: None,
                     actions: vec![Action::OpenNewEnvPrompt],
+                    ..Default::default()
                 });
                 self.push_modal(Modal::Chooser(ChooserState::new("Environments", items)));
                 true

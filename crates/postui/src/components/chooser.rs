@@ -5,17 +5,25 @@ use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
 /// One selectable entry in a `ChooserState`: a label, an optional detail
 /// string shown dimmed after the label, and the actions dispatched on
 /// selection.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct ChooserItem {
     pub label: String,
     pub detail: Option<String>,
     pub actions: Vec<Action>,
+    /// Colors painted as a right-aligned strip of 2-cell blocks (1 blank
+    /// column between blocks) — the theme picker's six-seed preview. Rows
+    /// with `None` render exactly as before.
+    pub swatches: Option<Vec<Color>>,
+    /// A stable identifier the app can read back from the selection
+    /// (`ChooserState::selected_id`) without parsing the display label —
+    /// the theme picker's live-preview hook.
+    pub id: Option<String>,
 }
 
 /// A generic fuzzy-filterable chooser modal. Structure mirrors
@@ -64,6 +72,14 @@ impl ChooserState {
         self.filtered
             .get(self.selected)
             .map(|&i| self.items[i].label.as_str())
+    }
+
+    /// The `id` of the highlighted item, mapped through the filter — `None`
+    /// when nothing is selected or the item carries no id.
+    pub fn selected_id(&self) -> Option<&str> {
+        self.filtered
+            .get(self.selected)
+            .and_then(|&i| self.items[i].id.as_deref())
     }
 
     /// Moves the keyboard/mouse cursor to filtered row `i` (clamped in
@@ -260,8 +276,28 @@ impl ChooserState {
             let text_x = list_area.x + 1;
             let mut x = text_x;
             let right = list_area.x + list_area.width;
-            let label = item.label.as_str();
-            let label_w = (label.chars().count() as u16).min(right.saturating_sub(x));
+            let text_right = match &item.swatches {
+                Some(sw) if !sw.is_empty() => {
+                    let strip_w = sw.len() as u16 * 3 - 1; // 2 cells each + 1-col gaps
+                    let strip_x = right.saturating_sub(strip_w + 1);
+                    for (k, color) in sw.iter().enumerate() {
+                        let sx = strip_x + k as u16 * 3;
+                        paint::text(
+                            frame.buffer_mut(),
+                            sx,
+                            text_row,
+                            "  ",
+                            *color,
+                            *color,
+                            false,
+                        );
+                    }
+                    strip_x.saturating_sub(1)
+                }
+                _ => right,
+            };
+            let label = clip(item.label.as_str(), text_right.saturating_sub(x));
+            let label_w = (label.chars().count() as u16).min(text_right.saturating_sub(x));
             paint::text(
                 frame.buffer_mut(),
                 x,
@@ -274,7 +310,7 @@ impl ChooserState {
             x += label_w;
             if let Some(detail) = &item.detail {
                 let detail = format!(" {detail}");
-                let w = right.saturating_sub(x);
+                let w = text_right.saturating_sub(x);
                 paint::text(
                     frame.buffer_mut(),
                     x,
@@ -322,6 +358,7 @@ mod tests {
                 label: l.to_string(),
                 detail: None,
                 actions: vec![Action::Render],
+                ..Default::default()
             })
             .collect()
     }
@@ -353,11 +390,13 @@ mod tests {
                     label: "svc".into(),
                     detail: Some("/tmp/svc".into()),
                     actions: vec![Action::Quit],
+                    ..Default::default()
                 },
                 ChooserItem {
                     label: "web".into(),
                     detail: Some("/tmp/web".into()),
                     actions: vec![Action::Render],
+                    ..Default::default()
                 },
             ],
         );
@@ -401,11 +440,13 @@ mod tests {
                     label: "svc".into(),
                     detail: Some("/tmp/svc".into()),
                     actions: vec![Action::Quit],
+                    ..Default::default()
                 },
                 ChooserItem {
                     label: "web".into(),
                     detail: Some("/tmp/web".into()),
                     actions: vec![Action::Render],
+                    ..Default::default()
                 },
             ],
         );
@@ -474,6 +515,85 @@ mod tests {
         assert_eq!(
             right_edge.bg, theme.control,
             "the hovered (non-selected) row's pill fill must span the full row width"
+        );
+    }
+
+    #[test]
+    fn swatch_strip_paints_right_aligned_blocks_and_clips_text_before_it() {
+        let swatches = vec![
+            Color::Rgb(1, 1, 1),
+            Color::Rgb(2, 2, 2),
+            Color::Rgb(3, 3, 3),
+            Color::Rgb(4, 4, 4),
+            Color::Rgb(5, 5, 5),
+            Color::Rgb(6, 6, 6),
+        ];
+        let mut c = ChooserState::new(
+            "Theme",
+            vec![ChooserItem {
+                label: "a-very-long-label-that-would-otherwise-run-into-the-swatch-strip".into(),
+                detail: Some("built-in".into()),
+                actions: vec![Action::Render],
+                swatches: Some(swatches.clone()),
+                id: Some("x".into()),
+            }],
+        );
+        let theme = Theme::dark();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| c.draw(f, f.area(), &theme, &mut hits, None, 1.0))
+            .unwrap();
+        let row = hits.rect_of(&crate::hit::Hit::ChooserRow(0)).unwrap();
+        let buffer = terminal.backend().buffer();
+        // Strip: 6 swatches * 2 cells + 5 gaps = 17, right-aligned with 1
+        // margin cell before the row's right edge.
+        let right = row.x + row.width;
+        let strip_x = right - 1 - 17;
+        for (k, color) in swatches.iter().enumerate() {
+            let sx = strip_x + (k as u16) * 3;
+            assert_eq!(buffer[(sx, row.y)].bg, *color, "swatch {k} left cell");
+            assert_eq!(buffer[(sx + 1, row.y)].bg, *color, "swatch {k} right cell");
+            assert_eq!(buffer[(sx, row.y)].symbol(), " ");
+        }
+        // The cell just left of the strip is not label text bleeding into it:
+        // the label must have been clipped at least one column before strip_x.
+        assert_eq!(
+            buffer[(strip_x - 1, row.y)].symbol(),
+            " ",
+            "margin before the strip"
+        );
+    }
+
+    #[test]
+    fn rows_without_swatches_render_unchanged_and_selected_id_maps_through_the_filter() {
+        let mut c = ChooserState::new(
+            "Theme",
+            vec![
+                ChooserItem {
+                    label: "alpha".into(),
+                    detail: None,
+                    actions: vec![Action::Render],
+                    id: Some("alpha-id".into()),
+                    ..Default::default()
+                },
+                ChooserItem {
+                    label: "beta".into(),
+                    detail: None,
+                    actions: vec![Action::Render],
+                    id: Some("beta-id".into()),
+                    ..Default::default()
+                },
+            ],
+        );
+        assert_eq!(c.selected_id(), Some("alpha-id"));
+        for ch in "bet".chars() {
+            c.handle_key(key(KeyCode::Char(ch)));
+        }
+        assert_eq!(
+            c.selected_id(),
+            Some("beta-id"),
+            "id follows the filtered selection"
         );
     }
 

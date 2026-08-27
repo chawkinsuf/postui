@@ -5299,6 +5299,7 @@ fn chooser_keys_and_wheel_keep_a_long_list_scrolling_correctly() {
             label: format!("item{i:02}"),
             detail: None,
             actions: vec![Action::Render],
+            ..Default::default()
         })
         .collect();
     app.modals
