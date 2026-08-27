@@ -4995,6 +4995,23 @@ impl App {
             return true; // swallowed: no fallback to the global keymap
         }
 
+        // 4-exception: with the caret live in the body editor, alt+←/→
+        // are the macOS word-jump spelling (option+arrow) and go to the
+        // editor instead of the global tab-cycle binding — alt+1..4 still
+        // switch tabs from the body, and everywhere else alt+arrows cycle
+        // as before. The shifted variants and alt+backspace need no
+        // carve-out: those combos are unbound, so step 4 already falls
+        // through to the component.
+        if ev.modifiers.contains(KeyModifiers::ALT)
+            && matches!(ev.code, KeyCode::Left | KeyCode::Right)
+            && self.focus == PaneId::Editor
+            && self.editor.sub_focus == SubFocus::Content
+            && self.editor.active_tab == EditorTab::Body
+            && let Some(a) = self.focused_component_key(ev)
+        {
+            return self.update(a);
+        }
+
         // 4. Modified combos prefer the global keymap (app shortcuts beat editors).
         if modified && let Some(a) = global {
             return self.update(a);

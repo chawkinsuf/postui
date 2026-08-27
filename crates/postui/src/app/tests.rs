@@ -10526,6 +10526,38 @@ mod undo_tests {
     }
 
     #[test]
+    fn alt_arrows_word_jump_in_the_body_instead_of_cycling_tabs() {
+        let keymap = Keymap::default_bindings();
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("w".into()));
+        app.update(Action::CycleMethod); // POST, so Body is enabled
+        app.update(Action::EditorTabSelect(EditorTab::Body.index()));
+        app.editor.set_body_text("foo bar");
+        app.editor.sub_focus = SubFocus::Content;
+        app.focus = PaneId::Editor;
+        app.editor.body.cursor = edtui::Index2::new(0, 0);
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+        assert_eq!(
+            app.editor.active_tab,
+            EditorTab::Body,
+            "alt+Right must not cycle tabs while the body caret is live"
+        );
+        assert_eq!(
+            app.editor.body.cursor,
+            edtui::Index2::new(0, 3),
+            "alt+Right word-jumps instead"
+        );
+        // Anywhere else, alt+Right still cycles tabs.
+        app.editor.sub_focus = SubFocus::Url;
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+        assert_ne!(
+            app.editor.active_tab,
+            EditorTab::Body,
+            "outside the body caret, alt+Right cycles tabs as before"
+        );
+    }
+
+    #[test]
     fn tab_underline_follows_span_shifts_on_request_switch() {
         use crate::anim::{AnimKey, StripId};
         let mut app = App::new_for_test();
