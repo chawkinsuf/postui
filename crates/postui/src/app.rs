@@ -2926,8 +2926,7 @@ impl App {
                 // rejected the resulting `variables.toml` on re-parse
                 // (`ModelError::SecretWithDefault`), surfacing as an
                 // incidental parse-error toast instead of an intentional
-                // refusal. Refuse up front instead, mirroring
-                // `open_demote_confirm`'s refusal modals.
+                // refusal. Refuse up front instead with a message modal.
                 if self.project.model.vars.get(&name).is_some_and(|d| d.secret) {
                     self.push_modal(Modal::Message {
                         title: "Can't promote".into(),
@@ -2961,10 +2960,6 @@ impl App {
                     body: "Where should the value land?".into(),
                     choices,
                 });
-                true
-            }
-            Action::ConfirmDemoteVar { name } => {
-                self.open_demote_confirm(name);
                 true
             }
             Action::VarStruct(op) => {
@@ -3401,7 +3396,7 @@ impl App {
                         // token-replacement, then the declaration.
                         self.record_var_file_step(before);
                         self.replace_focused_field_with_token(&name);
-                        // Finding 2, same ruling as demote/promote: the
+                        // Finding 2, same ruling as promote: the
                         // `Request` destination's write only exists so far
                         // in the dirty editor buffer (both the new
                         // `[variables]` option above and the field text
@@ -3839,64 +3834,8 @@ impl App {
         }
     }
 
-    /// `P` on a `Var` row (spec §4): refuses (with a message modal, no
-    /// mutation) a secret name — its resolved value would otherwise land in
-    /// a git-tracked request file — or a selector (request scope is
-    /// simple-only per spec); otherwise opens the demote confirm,
-    /// its body naming any *other* requests already referencing it.
-    fn open_demote_confirm(&mut self, name: String) {
-        if self.editor.slug.is_none() {
-            self.toasts
-                .push("open a request to demote into", ToastKind::Warning);
-            return;
-        }
-        let is_secret = self.project.model.vars.get(&name).is_some_and(|d| d.secret);
-        if is_secret {
-            self.push_modal(Modal::Message {
-                title: "Can't demote".into(),
-                body: format!(
-                    "\"{name}\" is secret; its value can't be written into a request file."
-                ),
-            });
-            return;
-        }
-        if self.project.model.selectors.contains_key(&name) {
-            self.push_modal(Modal::Message {
-                title: "Can't demote".into(),
-                body: format!("\"{name}\" is a selector; request scope is simple values only."),
-            });
-            return;
-        }
-        let this_slug = self.editor.slug.clone();
-        let others: Vec<String> = postui_core::varedit::scan_usage(&self.project.root, &name)
-            .into_iter()
-            .filter(|s| this_slug.as_deref() != Some(s.as_str()))
-            .collect();
-        let body = if others.is_empty() {
-            format!("Demote \"{name}\" into this request?")
-        } else {
-            format!(
-                "Demote \"{name}\" into this request? Referenced by {} other request(s): {}.",
-                others.len(),
-                others.join(", ")
-            )
-        };
-        self.push_modal(Modal::Confirm {
-            title: format!("Demote {name}"),
-            body,
-            choices: vec![
-                ('n', "Cancel".into(), vec![]),
-                (
-                    'y',
-                    "Demote".into(),
-                    vec![Action::VarStruct(VarStructOp::Demote { name })],
-                ),
-            ],
-        });
-    }
-
     /// Applies one confirmed Variable Manager structural mutation (spec
-    /// §5's action list; §4's promote/demote; §3's secret-flag
+    /// §5's action list; §4's promote; §3's secret-flag
     /// transitions). `Err(msg)` — safe to toast, never a secret value —
     /// leaves everything unchanged; the caller (`Action::VarStruct`) never
     /// clears any modal/editing state on failure of its own accord, and
@@ -4037,7 +3976,6 @@ impl App {
                     .edit_variables(|doc| varedit::upsert_selector(doc, selector, None, fields))
             }
             VarStructOp::Promote { name, target } => self.apply_promote(name, *target),
-            VarStructOp::Demote { name } => self.apply_demote(name),
             VarStructOp::NewOption {
                 env,
                 selector,
@@ -4604,65 +4542,10 @@ impl App {
         Ok(())
     }
 
-    /// [`VarStructOp::Demote`] (spec §4): writes the currently resolved
-    /// value into the open request's `[variables]`, deletes the project
-    /// declaration, and strips any flat value left behind in every
-    /// environment (best-effort — an environment with nothing to strip is
-    /// not an error). The caller (`open_demote_confirm`) has already
-    /// refused a secret name or a selector before this ever runs.
-    fn apply_demote(&mut self, name: &str) -> Result<(), String> {
-        let value = self
-            .project
-            .resolved
-            .values
-            .get(name)
-            .cloned()
-            .ok_or_else(|| format!("\"{name}\" has no resolved value to demote"))?;
-        if self.editor.slug.is_none() {
-            return Err("open a request to demote into".to_string());
-        }
-        // The fallible write goes first: `apply_var_struct`'s documented
-        // "Err leaves everything unchanged" contract means the editor must
-        // not gain a demoted option unless the project actually lost the
-        // declaration.
-        self.project
-            .edit_variables(|doc| postui_core::varedit::delete_var(doc, name))?;
-        self.editor.variables.insert(
-            name.to_string(),
-            postui_core::model::Entry {
-                value,
-                enabled: true,
-            },
-        );
-        // Finding 2: the destructive half (the declaration is gone) is
-        // already durable via `edit_variables` above. The compensating
-        // half — the request now carrying the value — only exists in the
-        // dirty editor buffer so far; save it synchronously right after the
-        // buffer mutation, and before the (best-effort, already-`let _ =`)
-        // env strip below, so "demote, then quit" can't lose the value
-        // everywhere. A save failure here is reported as a toast, not an
-        // `Err` — the declaration is genuinely gone either way, and rolling
-        // that back would be a second, separate write this function isn't
-        // set up to attempt; the value is still safe in the dirty editor
-        // buffer for a manual save.
-        if let Err(e) = self.save_open_request() {
-            self.toasts.push(
-                format!("demoted \"{name}\" but {e} \u{2014} save the request manually"),
-                ToastKind::Error,
-            );
-        }
-        for env in self.project.environments.clone() {
-            let _ = self.project.edit_env(&env, |doc| {
-                postui_core::varedit::set_env_value(doc, name, None)
-            });
-        }
-        Ok(())
-    }
-
     /// Synchronously persists the currently open request to disk, mirroring
     /// `Action::SaveRequest`'s slugged branch (no SaveAs prompt — every
-    /// caller here already knows a slug is open). Used by ops (demote,
-    /// promote, extract-to-request) whose spec-mandated "writes
+    /// caller here already knows a slug is open). Used by ops (promote,
+    /// extract-to-request) whose spec-mandated "writes
     /// immediately" (spec §5) binds the request-file half of a
     /// MANAGER-driven mutation — unlike ordinary Vars-tab typing, which
     /// stays save-on-demand (plan-mandated) and never calls this.

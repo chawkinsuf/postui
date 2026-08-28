@@ -1300,7 +1300,7 @@ impl App {
                     .slug
                     .is_some()
                     .then(|| self.editor.current_request());
-                let Some((_, action)) = crate::components::varmanager::promote_demote_action(
+                let Some((_, action)) = crate::components::varmanager::promote_action(
                     &self.project,
                     open_request.as_ref(),
                     &name,

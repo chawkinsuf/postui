@@ -148,9 +148,9 @@ pub enum Hit {
     /// The selector pane's `[Edit fields]` button: opens the field-list
     /// editor (one text slot per current field plus an empty one).
     VmEditFields,
-    /// The variable form's promote/demote button — whichever of the two
-    /// applies right now (`VarManager`'s own precondition check decides
-    /// which, and which `Action` a click fires).
+    /// The variable form's Promote button, shown only while
+    /// [`crate::components::varmanager::promote_action`]'s precondition
+    /// holds (the open request overrides the selected variable).
     VmPromoteBtn,
     /// One drawn `{{name}}` token, carrying the variable's name (spec §7).
     /// Registered *over* whatever control the token sits on (URL bar, table

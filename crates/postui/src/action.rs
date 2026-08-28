@@ -422,11 +422,6 @@ pub enum Action {
     PromptPromoteVar {
         name: String,
     },
-    /// Open the demote confirm (spec §4), or a
-    /// message modal refusing it (a secret or a selector).
-    ConfirmDemoteVar {
-        name: String,
-    },
     /// A confirmed structural mutation; `App::apply_var_struct` applies it.
     VarStruct(VarStructOp),
 

@@ -8,7 +8,7 @@
 //! dispatch. Task 15 fills the right pane's variable face — [`VarFormState`]
 //! and [`draw_var_form`] — description/default/env-value fields edited in
 //! place exactly like Task 8's tables, plus the secret toggle, rename/delete
-//! buttons and the promote/demote button where the legacy `p`/`P`
+//! buttons and the Promote button where the legacy `p`
 //! preconditions hold. The selector face ([`OptionGridState`]) is still a
 //! placeholder for Task 16.
 
@@ -87,7 +87,7 @@ pub enum VarEditOp {
 /// and options. Each applies through `ctx.edit_variables`/`edit_env` in
 /// `App::apply_var_struct`.
 ///
-/// The declaration ops (`NewVar`..`Demote`) write `variables.toml`; the
+/// The declaration ops (`NewVar`..`Promote`) write `variables.toml`; the
 /// option ops (`NewOption`..`DuplicateOption`) write one environment file
 /// each — options belong to exactly one environment (spec §3.1), so every
 /// one of them names the `env` it targets.
@@ -123,8 +123,6 @@ pub enum VarStructOp {
         name: String,
         target: postui_core::varedit::PromoteTarget,
     },
-    /// Demote a project variable into the open request (spec §4).
-    Demote { name: String },
     /// A new option of `selector` in `env` (`varedit::upsert_option`).
     NewOption {
         env: String,
@@ -307,20 +305,16 @@ pub fn var_edit_op_for(
     }
 }
 
-/// The promote/demote button's label and click action for `name` right now
-/// — `None` when neither applies, which is what hides the button entirely.
-/// Mirrors the legacy `p`/`P` preconditions exactly: a secret's value can
-/// never move through either (its plaintext would otherwise land in a
-/// git-tracked request file, or promoting a plain value onto it would make
-/// the declaration invalid — `promote_var`'s own conflict cases, moot here
-/// since a name reachable as `VmDetail::Var` is already a simple
-/// declaration, never a selector name or field). Which direction applies
-/// depends on whether the open request already overrides `name` in its own
-/// `[variables]` — if so, "Promote" offers to move that override up into
-/// the project (`apply_promote` requires exactly this); otherwise, with a
-/// request open, "Demote" offers to copy the resolved project value down
-/// into it.
-pub fn promote_demote_action(
+/// The Promote button's label and click action for `name` right now —
+/// `None` when it doesn't apply, which is what hides the button entirely.
+/// It applies only when the open request overrides `name` in its own
+/// `[variables]` (`apply_promote` requires exactly this), and never for a
+/// secret (its plaintext would otherwise land in a git-tracked request
+/// file — `promote_var`'s own conflict case). The old Demote direction is
+/// gone: deleting the declaration and pasting the value into the one
+/// request that needs it covers that rare case without tying a global
+/// screen to whichever request happens to be open.
+pub fn promote_action(
     ctx: &ProjectContext,
     open_request: Option<&HttpRequest>,
     name: &str,
@@ -337,12 +331,7 @@ pub fn promote_demote_action(
             },
         ))
     } else {
-        Some((
-            "Demote",
-            Action::ConfirmDemoteVar {
-                name: name.to_string(),
-            },
-        ))
+        None
     }
 }
 
@@ -1053,7 +1042,7 @@ impl VarManager {
     /// (a selected selector is Task 16's job).
     ///
     /// `open_request` is the request-scope half of the variable form: the
-    /// promote/demote button's precondition (whether the open request
+    /// Promote button's precondition (whether the open request
     /// already overrides the selected name in its own `[variables]`).
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
@@ -1355,8 +1344,8 @@ impl VarManager {
     /// The right pane for `VmDetail::Var(name)` (spec §3.4): a title row
     /// (`name  🔒?  [Rename] [Delete]`), then description/default/env-value
     /// fields as label + `TextField` rows (`Default` omitted for a secret —
-    /// it can never hold one), the secret on/off toggle, the promote/demote
-    /// button where [`promote_demote_action`] applies, and a dim `used by:`
+    /// it can never hold one), the secret on/off toggle, the Promote
+    /// button where [`promote_action`] applies, and a dim `used by:`
     /// line. `name` is guaranteed declared by the caller.
     #[allow(clippy::too_many_arguments)]
     fn draw_var_form(
@@ -1549,8 +1538,8 @@ impl VarManager {
             y += FIELD_HEIGHT + 1;
         }
 
-        // --- promote/demote --------------------------------------------
-        if let Some((label, _)) = promote_demote_action(ctx, open_request, name)
+        // --- promote ---------------------------------------------------
+        if let Some((label, _)) = promote_action(ctx, open_request, name)
             && y + BUTTON_HEIGHT <= bottom
         {
             let w = button_min_width(label).min(field_w);
@@ -2337,7 +2326,7 @@ fields = ["user_id", "customer_id"]
     // --- Task 15: variable detail form -----------------------------------
 
     /// The form's full column of rows (title, three fields, the promote/
-    /// demote button and the usage line) doesn't fit `render`'s 24-row
+    /// Promote button and the usage line) doesn't fit `render`'s 24-row
     /// screen all at once — plenty tall for a real terminal, but tests that
     /// need to see the whole column use this taller one instead.
     fn render_with_request(
@@ -2545,32 +2534,32 @@ fields = ["user_id", "customer_id"]
     }
 
     #[test]
-    fn promote_demote_action_follows_whether_the_open_request_overrides_the_name() {
+    fn promote_action_applies_only_when_the_open_request_overrides_the_name() {
         let (_dir, ctx) = fixture();
         assert_eq!(
-            promote_demote_action(&ctx, None, "base_url"),
+            promote_action(&ctx, None, "base_url"),
             None,
-            "no open request: neither applies"
+            "no open request: nothing to promote"
         );
 
         let overriding = req_with_var("base_url", "http://elsewhere");
         assert_eq!(
-            promote_demote_action(&ctx, Some(&overriding), "base_url").map(|(l, _)| l),
+            promote_action(&ctx, Some(&overriding), "base_url").map(|(l, _)| l),
             Some("Promote"),
             "the open request already overrides it: offer to promote that override up"
         );
 
         let plain_req = HttpRequest::from_toml_str("url = \"https://x\"\n").unwrap();
         assert_eq!(
-            promote_demote_action(&ctx, Some(&plain_req), "base_url").map(|(l, _)| l),
-            Some("Demote"),
-            "no override: offer to push the project value down"
+            promote_action(&ctx, Some(&plain_req), "base_url"),
+            None,
+            "no override: nothing to promote (demote no longer exists)"
         );
 
         assert_eq!(
-            promote_demote_action(&ctx, Some(&plain_req), "api_key"),
+            promote_action(&ctx, Some(&overriding), "api_key"),
             None,
-            "a secret can never move through either direction"
+            "a secret can never be promoted"
         );
     }
 
@@ -2591,8 +2580,11 @@ fields = ["user_id", "customer_id"]
 
         let plain_req = HttpRequest::from_toml_str("url = \"https://x\"\n").unwrap();
         let (content, hits) = render_with_request(&mut vm, &ctx, Some(&plain_req));
-        assert!(content.contains("Demote"), "{content}");
-        assert!(hits.rect_of(&Hit::VmPromoteBtn).is_some());
+        assert!(!content.contains("Demote"), "{content}");
+        assert!(
+            hits.rect_of(&Hit::VmPromoteBtn).is_none(),
+            "no override, no button — demote no longer exists"
+        );
     }
 
     // --- Task 16: the selector options grid ---------------------------------

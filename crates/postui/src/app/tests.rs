@@ -6279,7 +6279,7 @@ fn var_edit_a_failed_write_toasts_and_writes_nothing() {
 }
 
 // --- Task 12: Manager structural actions (spec §5 action list; §4
-// promote/demote; §3 secret-flag transitions) --------------------------
+// promote; §3 secret-flag transitions) ---------------------------------
 
 /// Opens the Manager and selects whichever left-list row matches `pred`,
 /// panicking if none does — `rendered_text` first so `left_rows` is
@@ -6666,62 +6666,6 @@ fn var_struct_promote_to_env_writes_the_env_value_and_a_bare_declaration() {
     assert!(!app.editor.variables.contains_key("trace_id"));
 }
 
-#[test]
-fn var_struct_demote_writes_the_resolved_value_into_the_request_and_strips_the_project() {
-    let dir = tempfile::tempdir().unwrap();
-    var_project(dir.path());
-    postui_core::storage::save_request(dir.path(), "ping", &req("https://x/ping")).unwrap();
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.update(Action::ForceOpenRequest("ping".into()));
-    assert_eq!(
-        app.project.resolved.values["base_url"],
-        "https://qa.example.com"
-    );
-
-    app.update(Action::VarStruct(VarStructOp::Demote {
-        name: "base_url".into(),
-    }));
-
-    assert!(app.toasts.is_empty());
-    assert_eq!(
-        app.editor.variables["base_url"].value,
-        "https://qa.example.com"
-    );
-    assert!(!app.project.model.vars.contains_key("base_url"));
-    let env_on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
-    assert!(!env_on_disk.contains("qa.example.com"), "{env_on_disk}");
-}
-
-/// Finding 2: `apply_demote` used to leave the compensating request entry
-/// only in the dirty editor buffer — demote, then quit without a manual
-/// save, lost the value everywhere. The request file on disk must carry
-/// it immediately, as part of the op itself.
-#[test]
-fn var_struct_demote_writes_the_request_file_to_disk_immediately() {
-    let dir = tempfile::tempdir().unwrap();
-    var_project(dir.path());
-    postui_core::storage::save_request(dir.path(), "ping", &req("https://x/ping")).unwrap();
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.update(Action::ForceOpenRequest("ping".into()));
-
-    app.update(Action::VarStruct(VarStructOp::Demote {
-        name: "base_url".into(),
-    }));
-
-    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert!(
-        !app.editor.is_dirty(),
-        "the demote op must save, not just dirty, the editor"
-    );
-    let on_disk = postui_core::storage::load_request(dir.path(), "ping").unwrap();
-    assert_eq!(
-        on_disk.variables["base_url"].value, "https://qa.example.com",
-        "the request file on disk must already carry the demoted value"
-    );
-}
-
 /// Finding 2: `apply_promote`'s request-entry removal used to only exist
 /// in the dirty editor buffer. The request file on disk must lose the
 /// promoted entry immediately.
@@ -6783,59 +6727,6 @@ fn extract_to_request_saves_the_request_file_to_disk() {
         "https://x/ping/abc-123"
     );
     assert_eq!(on_disk.url, "{{trace_id}}");
-}
-
-/// Review finding: `apply_demote` used to insert the demoted entry into
-/// `editor.variables` BEFORE the fallible `delete_var` write, so a
-/// `delete_var` failure left a demoted entry live in the editor while the
-/// project still held the declaration, violating `apply_var_struct`'s
-/// documented "Err leaves everything unchanged" contract. This drives
-/// exactly that failure path, with a name that resolves (an undeclared
-/// environment value passes through — spec §3.2's leniency) but has no
-/// declaration for `delete_var` to remove.
-#[test]
-fn demote_leaves_the_editor_untouched_when_the_project_write_fails() {
-    let dir = tempfile::tempdir().unwrap();
-    postui_core::project::init_project(dir.path(), Some("demo")).unwrap();
-    std::fs::write(dir.path().join("variables.toml"), "").unwrap();
-    std::fs::write(
-        dir.path().join("environments/dev.toml"),
-        "shard = \"picked-value\"\n",
-    )
-    .unwrap();
-    postui_core::project::save_local_state(
-        dir.path(),
-        &postui_core::project::LocalState {
-            environment: Some("dev".into()),
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    postui_core::storage::save_request(dir.path(), "r", &req("https://x/r")).unwrap();
-
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.update(Action::ForceOpenRequest("r".into()));
-    assert_eq!(
-        app.project.resolved.values.get("shard"),
-        Some(&"picked-value".to_string()),
-        "shard must resolve so apply_demote reaches delete_var"
-    );
-
-    app.update(Action::VarStruct(VarStructOp::Demote {
-        name: "shard".into(),
-    }));
-
-    assert!(!app.toasts.is_empty(), "delete_var's failure must toast");
-    assert!(
-        !app.editor.variables.contains_key("shard"),
-        "the editor must NOT gain a demoted entry when the project write failed"
-    );
-    let dev_on_disk = std::fs::read_to_string(dir.path().join("environments/dev.toml")).unwrap();
-    assert!(
-        dev_on_disk.contains("picked-value"),
-        "the env value must be untouched: {dev_on_disk}"
-    );
 }
 
 // -------------------------------------------------------------
@@ -6995,50 +6886,6 @@ fn confirm_delete_var_lists_referencing_requests_from_scan_usage() {
         body.contains("uses-it") && body.contains('1'),
         "body must name the referencing request: {body}"
     );
-}
-
-#[test]
-fn confirm_demote_var_on_a_group_refuses_and_changes_nothing() {
-    let dir = tempfile::tempdir().unwrap();
-    var_project(dir.path());
-    postui_core::storage::save_request(dir.path(), "ping", &req("https://x/ping")).unwrap();
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.update(Action::ForceOpenRequest("ping".into()));
-
-    app.update(Action::ConfirmDemoteVar {
-        name: "user".into(),
-    });
-
-    assert!(
-        matches!(app.modals.top(), Some(Modal::Message { .. })),
-        "a group must be refused with a message modal"
-    );
-    assert!(
-        app.project.model.selectors.contains_key("user"),
-        "the declaration must be untouched"
-    );
-    assert!(!app.editor.variables.contains_key("user"));
-}
-
-#[test]
-fn confirm_demote_var_on_a_secret_variable_refuses() {
-    let dir = tempfile::tempdir().unwrap();
-    var_project(dir.path());
-    postui_core::storage::save_request(dir.path(), "ping", &req("https://x/ping")).unwrap();
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.update(Action::ForceOpenRequest("ping".into()));
-
-    app.update(Action::ConfirmDemoteVar {
-        name: "api_key".into(),
-    });
-
-    assert!(
-        matches!(app.modals.top(), Some(Modal::Message { .. })),
-        "a secret variable must be refused, never written into a request file"
-    );
-    assert!(app.project.model.vars.contains_key("api_key"));
 }
 
 #[test]
@@ -7782,11 +7629,16 @@ fn toasts_paint_undimmed_above_an_open_modal() {
 fn the_value_popup_offers_remove_only_where_a_value_is_stored() {
     let (mut app, _dir) = token_popup_app();
     app.update(Action::OpenVarTokenPopup("base_url".into()));
-    rendered_text(&mut app);
-    assert!(
-        app.hits.rect_of(&crate::hit::Hit::ModalRemove).is_some(),
-        "the env stores a value, so it can be removed"
-    );
+    let content = rendered_text(&mut app);
+    let r = app
+        .hits
+        .rect_of(&crate::hit::Hit::ModalRemove)
+        .expect("the env stores a value, so it can be removed");
+    // Same affordance as the variable form's inline control: the
+    // one-row "✕ remove" beside the value field's label, not a boxed
+    // button in the confirm row.
+    assert!(content.contains("\u{2715} remove"), "{content}");
+    assert_eq!(r.height, 1, "inline control, not a boxed button");
 
     // Cycle to "This request", which stores nothing — nothing to remove.
     let keymap = Keymap::default_bindings();
@@ -7805,7 +7657,7 @@ fn remove_deletes_the_env_value_and_falls_back_to_the_default() {
     app.update(Action::OpenVarTokenPopup("base_url".into()));
     rendered_text(&mut app);
     let r = app.hits.rect_of(&crate::hit::Hit::ModalRemove).unwrap();
-    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    app.handle_mouse(left_down(r.x, r.y));
 
     assert!(app.modals.is_empty(), "removal closes the popup");
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
@@ -7829,7 +7681,7 @@ fn remove_deletes_a_request_override() {
     app.update(Action::OpenVarTokenPopup("base_url".into()));
     rendered_text(&mut app);
     let r = app.hits.rect_of(&crate::hit::Hit::ModalRemove).unwrap();
-    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    app.handle_mouse(left_down(r.x, r.y));
 
     assert!(app.modals.is_empty());
     assert!(
@@ -7846,7 +7698,7 @@ fn remove_deletes_the_default_when_it_is_the_supplier() {
     app.update(Action::OpenVarTokenPopup("base_url".into()));
     rendered_text(&mut app);
     let r = app.hits.rect_of(&crate::hit::Hit::ModalRemove).unwrap();
-    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    app.handle_mouse(left_down(r.x, r.y));
 
     assert!(app.modals.is_empty());
     let on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
@@ -9671,25 +9523,6 @@ fn the_promote_button_promotes_the_requests_override_up_into_the_project() {
         Some("http://from-request")
     );
     assert!(!app.editor.variables.contains_key("base_url"));
-}
-
-#[test]
-fn the_demote_button_opens_the_demote_confirm_when_no_override_exists() {
-    let dir = tempfile::tempdir().unwrap();
-    var_project(dir.path());
-    postui_core::storage::save_request(dir.path(), "ping", &req("https://x/ping")).unwrap();
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.update(Action::ForceOpenRequest("ping".into()));
-    goto_row(&mut app, |r| {
-        r == &crate::components::varmanager::VmRow::Var("base_url".into())
-    });
-    let content = rendered_text_tall(&mut app);
-    assert!(content.contains("Demote"), "{content}");
-
-    let r = app.hits.rect_of(&crate::hit::Hit::VmPromoteBtn).unwrap();
-    app.handle_mouse(left_down(r.x + 1, r.y + 1));
-    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
 }
 
 /// Keyboard parity: `e`/`F2` rename and `s` secret-toggle still work while

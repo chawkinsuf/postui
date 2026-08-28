@@ -1405,8 +1405,11 @@ impl ModalStack {
 
                 let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
                 draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered);
-                // The value popup's Remove: only when the chosen Write-to
-                // scope actually stores a value to delete.
+                // The value popup's remove: only when the chosen Write-to
+                // scope actually stores a value to delete. Painted as the
+                // same one-row "✕ remove" accent control the variable
+                // form uses, right-aligned on the value field's label row
+                // (registered after `ModalField(0)`, so it wins the hit).
                 if let PromptKind::EditVarValue { scope_values, .. } = kind {
                     let chosen = fields
                         .iter()
@@ -1419,25 +1422,22 @@ impl ModalStack {
                         .and_then(|(_, v)| v.as_ref())
                         .is_some();
                     if stored {
-                        let label = "Remove";
+                        let label = "\u{2715} remove";
                         let remove_hit = crate::hit::Hit::ModalRemove;
-                        let btn = Rect {
-                            x: area.x + 2,
-                            y: buttons_y,
-                            width: paint::button_min_width(label),
-                            height: BUTTON_HEIGHT,
+                        let style = if hovered == Some(&remove_hit) {
+                            Style::default().bg(theme.accent).fg(theme.on_accent)
+                        } else {
+                            Style::default().bg(theme.panel).fg(theme.accent)
                         };
-                        Button {
-                            label,
-                            kind: ButtonKind::Secondary,
-                            state: if hovered == Some(&remove_hit) {
-                                ControlState::Hover
-                            } else {
-                                ControlState::Normal
-                            },
-                        }
-                        .paint(frame.buffer_mut(), btn, theme);
-                        hits.register(btn, remove_hit);
+                        let w = label.chars().count() as u16;
+                        let rect = Rect {
+                            x: (field_x + field_w).saturating_sub(w),
+                            y: title_y + 2,
+                            width: w,
+                            height: 1,
+                        };
+                        frame.buffer_mut().set_string(rect.x, rect.y, label, style);
+                        hits.register(rect, remove_hit);
                     }
                 }
             }
