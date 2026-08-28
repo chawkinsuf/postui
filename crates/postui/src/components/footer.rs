@@ -51,7 +51,7 @@ pub(crate) fn footer_chips(
                     )
                 },
                 (
-                    "^V",
+                    "alt+shift+v",
                     "vars",
                     Some(Action::OpenVarPicker { completing: false }),
                 ),
@@ -382,12 +382,13 @@ mod tests {
         assert!(save.x + save.width < palette.x, "left of palette");
     }
 
-    /// The editor's context chips advertise vars (^V) now that save moved
-    /// to the global right-side group — and no longer a second ^S.
+    /// The editor's context chips advertise vars (alt+shift+v — ctrl+v is
+    /// paste now) since save moved to the global right-side group — and no
+    /// longer a second ^S.
     #[test]
     fn editor_context_chips_offer_vars_and_no_duplicate_save() {
         let chips = footer_chips(PaneId::Editor, false, false, Some("add header"));
-        assert!(chips.iter().any(|(k, l, a)| *k == "^V"
+        assert!(chips.iter().any(|(k, l, a)| *k == "alt+shift+v"
             && *l == "vars"
             && *a == Some(Action::OpenVarPicker { completing: false })));
         assert!(

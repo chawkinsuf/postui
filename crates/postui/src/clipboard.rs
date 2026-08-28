@@ -33,6 +33,10 @@ pub struct Clipboard {
     osc52_limit: usize,
     allow_arboard: bool,
     arboard: Option<Result<arboard::Clipboard, String>>,
+    /// Test-injected `read()` result, so paste flows are testable without
+    /// a real OS clipboard. See [`Clipboard::set_read_for_test`].
+    #[cfg(any(test, feature = "test-util"))]
+    test_read: Option<String>,
 }
 
 impl Clipboard {
@@ -42,6 +46,8 @@ impl Clipboard {
             osc52_limit: settings.osc52_limit,
             allow_arboard: true,
             arboard: None,
+            #[cfg(any(test, feature = "test-util"))]
+            test_read: None,
         }
     }
 
@@ -61,6 +67,34 @@ impl Clipboard {
             osc52_limit: limit,
             allow_arboard,
             arboard: None,
+            test_read: None,
+        }
+    }
+
+    /// Makes the next `read()` calls return `text` (tests only).
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn set_read_for_test(&mut self, text: &str) {
+        self.test_read = Some(text.to_string());
+    }
+
+    /// Reads text from the OS clipboard — the arboard tier only. There is
+    /// no external-command read (no `paste_cmd` config exists) and no
+    /// OSC 52 read (terminals block clipboard reads almost universally).
+    /// `Err` carries the cause for a toast.
+    pub fn read(&mut self) -> Result<String, String> {
+        #[cfg(any(test, feature = "test-util"))]
+        if let Some(text) = self.test_read.clone() {
+            return Ok(text);
+        }
+        if !self.allow_arboard {
+            return Err("no OS clipboard available".to_string());
+        }
+        let handle = self
+            .arboard
+            .get_or_insert_with(|| arboard::Clipboard::new().map_err(|e| e.to_string()));
+        match handle {
+            Ok(clipboard) => clipboard.get_text().map_err(|e| e.to_string()),
+            Err(e) => Err(e.clone()),
         }
     }
 

@@ -1336,9 +1336,11 @@ impl App {
                     .replace('/', "-");
                 // The extension follows the tab like the content does: the
                 // header list is plain text whatever the body was.
-                let on_headers = self.session.response.view().is_some_and(|v| {
-                    v.mode == crate::components::response::ViewMode::Headers
-                });
+                let on_headers = self
+                    .session
+                    .response
+                    .view()
+                    .is_some_and(|v| v.mode == crate::components::response::ViewMode::Headers);
                 let ext = if !on_headers
                     && data
                         .content_type
@@ -1940,13 +1942,13 @@ impl App {
                         );
                         // Name the first (alphabetically — `causes` is a
                         // `BTreeMap`) variable that just needs a pick, not
-                        // a fix, so `ctrl+v` is a visible next step rather
-                        // than a dead end.
+                        // a fix, so `alt+shift+v` is a visible next step
+                        // rather than a dead end.
                         if let Some(name) = causes.iter().find_map(|(name, cause)| {
                             (*cause == postui_core::prepare::UnresolvedCause::NeedsSelection)
                                 .then(|| name.clone())
                         }) {
-                            msg.push_str(&format!(" \u{2014} press ctrl+v to select {name}"));
+                            msg.push_str(&format!(" \u{2014} press alt+shift+v to select {name}"));
                         }
                         self.toasts.push(msg, ToastKind::Error);
                         return true;
@@ -2559,6 +2561,18 @@ impl App {
                         "nowhere to insert — focus a text field first",
                         ToastKind::Warning,
                     );
+                }
+                true
+            }
+            Action::Paste => {
+                match self.clipboard.read() {
+                    Ok(text) => {
+                        self.paste_text(&text);
+                    }
+                    Err(e) => {
+                        self.toasts
+                            .push(format!("clipboard read failed: {e}"), ToastKind::Warning);
+                    }
                 }
                 true
             }
@@ -4767,6 +4781,59 @@ impl App {
         }
     }
 
+    /// Routes pasted text — read from the OS clipboard by `Action::Paste`
+    /// (ctrl+v), or delivered whole by a terminal bracketed paste
+    /// (`Event::Paste`: cmd+V on macOS, ctrl+shift+V on Linux) — to
+    /// whatever text surface owns the caret, mirroring `handle_key`'s
+    /// capture order: the top modal's focused input first, then a live
+    /// Variable-Manager field or grid edit, then the editor's cell edit /
+    /// URL bar / body. A live selection is replaced (GUI semantics);
+    /// single-line surfaces flatten line breaks (`LineInput::paste`),
+    /// the body takes them verbatim. Returns `false` when nothing
+    /// focused accepts text.
+    pub fn paste_text(&mut self, text: &str) -> bool {
+        if text.is_empty() {
+            return false;
+        }
+        if !self.modals.is_empty() {
+            if let Some(i) = self.modals.focused_input_index()
+                && let Some(input) = self.modals.focus_input(i)
+            {
+                input.paste(text);
+                return self.update(Action::Render);
+            }
+            return false;
+        }
+        if self.screen == Screen::VarManager {
+            if let Some((_, input)) = self.varmanager.form.editing.as_mut() {
+                input.paste(text);
+                return self.update(Action::Render);
+            }
+            if let Some(edit) = self.varmanager.grid.editing.as_mut() {
+                edit.input.paste(text);
+                return self.update(Action::Render);
+            }
+            return false;
+        }
+        if self.screen != Screen::Main || self.focus != PaneId::Editor {
+            return false;
+        }
+        if let Some(edit) = self.editor.table.editing.as_mut() {
+            edit.input.paste(text);
+            return self.update(Action::Render);
+        }
+        match self.editor.sub_focus {
+            SubFocus::Url => {
+                self.editor.url.paste(text);
+                self.update(Action::Render)
+            }
+            SubFocus::Content if self.editor.active_tab == EditorTab::Body => {
+                self.editor.paste_body(text) && self.update(Action::Render)
+            }
+            _ => false,
+        }
+    }
+
     /// Copies `text` to the clipboard and toasts the outcome:
     /// `success_msg` on success, the shared size/availability warnings
     /// otherwise. The one clipboard-write path for both explicit copy
@@ -5266,6 +5333,14 @@ impl App {
                 return true;
             }
             return self.update(Action::Quit);
+        }
+
+        // 1b. A bound paste combo digs past the layers below: modals and
+        // non-Main screens capture all remaining input, but ctrl+v means
+        // "insert at the live caret" wherever that caret is —
+        // `paste_text` (via `Action::Paste`) does the routing.
+        if modified && global == Some(Action::Paste) {
+            return self.update(Action::Paste);
         }
 
         // 2. Modals capture all remaining input.

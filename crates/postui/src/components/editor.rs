@@ -865,6 +865,34 @@ impl Editor {
         self.body.mode = EditorMode::Insert;
     }
 
+    /// Pastes `text` into the body at the caret (GUI semantics: a live
+    /// selection is replaced first), staying in Insert mode. Line endings
+    /// are normalized — `\r\n`/`\r` become `\n` — and inserted as real
+    /// line breaks; everything else lands verbatim. Returns `false` when
+    /// the Body tab isn't active (nothing to paste into).
+    pub fn paste_body(&mut self, text: &str) -> bool {
+        use edtui::actions::{Execute, InsertChar, LineBreak};
+        if self.active_tab != EditorTab::Body {
+            return false;
+        }
+        self.delete_body_selection();
+        let mut chars = text.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '\r' => {
+                    if chars.peek() == Some(&'\n') {
+                        chars.next();
+                    }
+                    LineBreak(1).execute(&mut self.body);
+                }
+                '\n' => LineBreak(1).execute(&mut self.body),
+                _ => InsertChar(c).execute(&mut self.body),
+            }
+        }
+        self.body.mode = EditorMode::Insert;
+        true
+    }
+
     /// The selected body text, rows joined with `\n` (the head cell
     /// included). `None` when nothing is selected.
     pub fn body_selected_text(&self) -> Option<String> {
@@ -5335,10 +5363,7 @@ mod body_click_tests {
         let text: String = (0..30).map(|i| format!("line{i}\n")).collect();
         let mut e = editor_with_body(&text);
         // Park the box lower on the screen and scroll it mid-buffer.
-        let area = Rect {
-            y: 5,
-            ..AREA
-        };
+        let area = Rect { y: 5, ..AREA };
         e.last_body_area = Some(area);
         e.body.set_viewport_offset(0, 15);
 
@@ -5375,6 +5400,27 @@ mod body_click_tests {
         assert!(e.body_drag_to(4, 12));
         assert_eq!(e.body.cursor.row, 12);
         assert!(e.body.selection.is_some());
+    }
+
+    #[test]
+    fn paste_body_inserts_multiline_text_at_the_caret() {
+        let mut e = editor_with_body("ab\ncd\n");
+        e.body.cursor = Index2::new(0, 1);
+        assert!(e.paste_body("X\nY"));
+        assert_eq!(e.body_text(), "aX\nYb\ncd\n");
+        assert_eq!(e.body.cursor, Index2::new(1, 1), "caret after the paste");
+        assert_eq!(e.body.mode, EditorMode::Insert);
+    }
+
+    #[test]
+    fn paste_body_replaces_a_live_selection_and_normalizes_crlf() {
+        let mut e = editor_with_body("hello\nworld\n");
+        e.handle_mouse(left_down(2, 0)); // anchor at (0,0)
+        e.body_drag_to(4, 0); // select "hel"
+        assert!(e.body.selection.is_some());
+        assert!(e.paste_body("a\r\nb"));
+        assert_eq!(e.body_text(), "a\nblo\nworld\n");
+        assert!(e.body.selection.is_none());
     }
 
     fn skey(code: ratatui::crossterm::event::KeyCode) -> ratatui::crossterm::event::KeyEvent {

@@ -121,6 +121,28 @@ impl LineInput {
         self.anchor = None;
     }
 
+    /// Pastes `text` at the caret: a live selection is replaced (GUI
+    /// paste semantics), and the text is flattened to a single line —
+    /// runs of line breaks and tabs collapse to one space, so a
+    /// multi-line paste can't smuggle an Enter into a one-line field.
+    pub fn paste(&mut self, text: &str) {
+        self.delete_selection();
+        let mut flat = String::with_capacity(text.len());
+        let mut pending_gap = false;
+        for c in text.chars() {
+            if matches!(c, '\n' | '\r' | '\t') {
+                pending_gap = !flat.is_empty();
+            } else {
+                if pending_gap {
+                    flat.push(' ');
+                    pending_gap = false;
+                }
+                flat.push(c);
+            }
+        }
+        self.insert_str(&flat);
+    }
+
     /// Whether the text *before* the cursor ends with `suffix`. Used to spot
     /// a just-typed `{{` trigger without caring what (if anything) follows
     /// the cursor.
@@ -489,6 +511,26 @@ mod tests {
         assert!(j.ends_with_at_cursor("{{"));
         j.handle_key(code(KeyCode::Left));
         assert!(!j.ends_with_at_cursor("{{"), "cursor moved off the braces");
+    }
+
+    #[test]
+    fn paste_replaces_the_selection_and_flattens_line_breaks() {
+        // Pasting over a selection replaces it, GUI-style.
+        let mut i = LineInput::new("hello world");
+        i.set_cursor(0);
+        for _ in 0..5 {
+            i.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT));
+        }
+        i.paste("goodbye");
+        assert_eq!(i.text(), "goodbye world");
+        assert_eq!(i.cursor(), 7);
+        assert_eq!(i.selection(), None);
+
+        // A single-line input flattens pasted line breaks (and tabs) to
+        // single spaces — a multi-line paste must not smuggle an Enter.
+        let mut j = LineInput::new("");
+        j.paste("a\r\nb\n\nc\td");
+        assert_eq!(j.text(), "a b c d");
     }
 
     #[test]

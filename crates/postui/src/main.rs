@@ -6,9 +6,9 @@ use postui::keys::Keymap;
 use postui::ui;
 use ratatui::crossterm::SynchronizedUpdate;
 use ratatui::crossterm::event::{
-    DisableFocusChange, DisableMouseCapture, EnableFocusChange, EnableMouseCapture, Event,
-    EventStream, KeyEventKind, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+    EnableFocusChange, EnableMouseCapture, Event, EventStream, KeyEventKind,
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::EndSynchronizedUpdate;
@@ -34,7 +34,8 @@ async fn main() -> anyhow::Result<()> {
         std::io::stdout(),
         PopKeyboardEnhancementFlags,
         DisableMouseCapture,
-        DisableFocusChange
+        DisableFocusChange,
+        DisableBracketedPaste
     );
     ratatui::restore();
     result
@@ -65,7 +66,16 @@ fn reset_pointer_shape() {
 /// which replaces the hook. Also enables focus-change reporting, which
 /// drives `Action::ReloadProjectFiles` on `Event::FocusGained`.
 fn enable_mouse_and_wrap_panic_hook() {
-    let _ = execute!(std::io::stdout(), EnableMouseCapture, EnableFocusChange);
+    // Bracketed paste makes a terminal-level paste (cmd+V on macOS,
+    // ctrl+shift+V on Linux) arrive as one `Event::Paste` instead of a
+    // flood of synthetic keypresses — without it, any newline in the
+    // pasted text acts as a real Enter (committing cells, firing modals).
+    let _ = execute!(
+        std::io::stdout(),
+        EnableMouseCapture,
+        EnableFocusChange,
+        EnableBracketedPaste
+    );
     // Ctrl+Shift+Z is only distinguishable from Ctrl+Z with the kitty
     // keyboard protocol; without it Ctrl+Y is the redo binding that works.
     if matches!(
@@ -97,7 +107,8 @@ fn enable_mouse_and_wrap_panic_hook() {
             std::io::stdout(),
             PopKeyboardEnhancementFlags,
             DisableMouseCapture,
-            DisableFocusChange
+            DisableFocusChange,
+            DisableBracketedPaste
         );
         prev_hook(info);
     }));
@@ -184,6 +195,11 @@ async fn run(
                             }
                             Event::FocusGained => {
                                 redraw |= app.update(Action::ReloadProjectFiles);
+                            }
+                            // A terminal-level paste (bracketed): the whole
+                            // text in one event, routed to the live caret.
+                            Event::Paste(text) => {
+                                redraw |= app.paste_text(&text);
                             }
                             _ => {}
                         }
@@ -308,7 +324,8 @@ fn run_editor_and_restore(
         std::io::stdout(),
         PopKeyboardEnhancementFlags,
         DisableMouseCapture,
-        DisableFocusChange
+        DisableFocusChange,
+        DisableBracketedPaste
     );
     ratatui::restore();
 

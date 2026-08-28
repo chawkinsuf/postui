@@ -137,6 +137,7 @@ pub(crate) fn named_actions() -> Vec<(&'static str, Action)> {
         ("env_choose", Action::OpenEnvChooser),
         ("env_cycle", Action::CycleEnv),
         ("pick_variable", Action::OpenVarPicker { completing: false }),
+        ("paste", Action::Paste),
         ("table_add_row", Action::TableAddRow),
         ("toggle_table_collapse", Action::ToggleTableCollapse),
         ("toggle_response_collapse", Action::ToggleResponseCollapse),
@@ -202,7 +203,8 @@ impl Keymap {
             ("alt+e", Action::OpenBodyInEditor),
             ("alt+shift+e", Action::OpenEnvChooser),
             ("alt+c", Action::CycleEnv),
-            ("ctrl+v", Action::OpenVarPicker { completing: false }),
+            ("ctrl+v", Action::Paste),
+            ("alt+shift+v", Action::OpenVarPicker { completing: false }),
             ("alt+a", Action::TableAddRow),
             ("alt+p", Action::ToggleTableCollapse),
             ("alt+v", Action::OpenVarManager),
@@ -415,9 +417,11 @@ mod tests {
         assert_eq!(get("alt+n"), Some(Action::PromptNewProject));
         assert_eq!(get("alt+shift+e"), Some(Action::OpenEnvChooser));
         assert_eq!(get("alt+c"), Some(Action::CycleEnv));
+        assert_eq!(get("ctrl+v"), Some(Action::Paste), "ctrl+v pastes now");
         assert_eq!(
-            get("ctrl+v"),
-            Some(Action::OpenVarPicker { completing: false })
+            get("alt+shift+v"),
+            Some(Action::OpenVarPicker { completing: false }),
+            "the variable picker moved off the OS paste chord"
         );
         assert_eq!(get("alt+v"), Some(Action::OpenVarManager));
         assert_eq!(get("ctrl+z"), Some(Action::Undo));

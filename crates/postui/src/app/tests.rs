@@ -843,6 +843,92 @@ fn clicking_the_row_delete_affordance_opens_the_confirm_modal() {
     assert_eq!(app.editor.params.len(), 1);
 }
 
+/// A test app whose clipboard read returns `text` (no OS clipboard).
+fn app_with_clipboard_text(text: &str) -> App {
+    let mut app = App::new_for_test();
+    let mut clip = crate::clipboard::Clipboard::new_for_test(None, 65536, false);
+    clip.set_read_for_test(text);
+    app.set_clipboard_for_test(clip);
+    app
+}
+
+/// ctrl+v is paste now (GUI muscle memory — the variable picker moved to
+/// alt+shift+v): with the URL bar focused it reads the clipboard and
+/// inserts at the caret, flattening any line break.
+#[test]
+fn ctrl_v_pastes_clipboard_text_into_the_url_bar() {
+    let mut app = app_with_clipboard_text("https://example.com\n/x");
+    app.update(Action::FocusUrl);
+    app.handle_key(&Keymap::default_bindings(), ctrl('v'));
+    assert_eq!(app.editor.url.text(), "https://example.com /x");
+    assert!(
+        app.modals.is_empty(),
+        "ctrl+v must not open the variable picker any more"
+    );
+}
+
+/// Modals capture all input, but paste digs through: ctrl+v while a
+/// Prompt is open inserts into its focused text box instead of typing a
+/// literal nothing.
+#[test]
+fn ctrl_v_pastes_into_an_open_modal_prompt_input() {
+    let mut app = app_with_clipboard_text("pasted-name");
+    app.modals.push(Modal::Prompt {
+        title: "Name".into(),
+        input: crate::components::line_input::LineInput::new(""),
+        kind: PromptKind::NewRequest,
+        revealed: false,
+    });
+    app.handle_key(&Keymap::default_bindings(), ctrl('v'));
+    let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
+        panic!("the prompt stays open");
+    };
+    assert_eq!(input.text(), "pasted-name");
+}
+
+/// With the body caret live, ctrl+v pastes multi-line text verbatim.
+#[test]
+fn ctrl_v_pastes_multiline_text_into_the_body_editor() {
+    let mut app = app_with_clipboard_text("{\n  \"a\": 1\n}");
+    app.update(Action::SetMethod(postui_core::model::Method::Post));
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = crate::components::editor::SubFocus::Content;
+    app.editor.active_tab = EditorTab::Body;
+    app.handle_key(&Keymap::default_bindings(), ctrl('v'));
+    assert_eq!(app.editor.body_text(), "{\n  \"a\": 1\n}");
+}
+
+/// The variable picker's new home: alt+shift+v (ctrl+v now pastes).
+#[test]
+fn alt_shift_v_opens_the_variable_picker() {
+    let mut app = App::new_for_test();
+    app.update(Action::FocusUrl);
+    app.handle_key(
+        &Keymap::default_bindings(),
+        KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT | KeyModifiers::SHIFT),
+    );
+    assert!(
+        matches!(app.modals.top(), Some(Modal::VarPicker(_))),
+        "alt+shift+v opens the picker"
+    );
+}
+
+/// A terminal bracketed paste (cmd+V on macOS, ctrl+shift+V on Linux)
+/// arrives as one `Event::Paste` and routes through the same insert
+/// path — no clipboard read involved.
+#[test]
+fn bracketed_paste_routes_to_the_focused_input() {
+    let mut app = App::new_for_test();
+    app.update(Action::FocusUrl);
+    assert!(app.paste_text("http://host/a b"));
+    assert_eq!(app.editor.url.text(), "http://host/a b");
+
+    // Nothing focused that takes text: the paste reports unhandled.
+    app.focus = PaneId::Sidebar;
+    app.editor.sub_focus = crate::components::editor::SubFocus::Method;
+    assert!(!app.paste_text("ignored"));
+}
+
 /// Seeds the Params tab with `page = 1` and puts the editor in front.
 fn app_with_one_param() -> App {
     let mut app = App::new_for_test();
@@ -7362,7 +7448,7 @@ fn select_option_typing_filters_rows() {
 }
 
 #[test]
-fn blocked_send_toast_names_first_needs_selection_var_with_a_ctrl_v_hint() {
+fn blocked_send_toast_names_first_needs_selection_var_with_a_picker_hint() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     postui_core::storage::save_request(dir.path(), "r", &req("https://x/{{user}}")).unwrap();
@@ -7375,7 +7461,10 @@ fn blocked_send_toast_names_first_needs_selection_var_with_a_ctrl_v_hint() {
     assert!(app.session.in_flight.is_empty());
     let content = rendered_text(&mut app);
     assert!(content.contains("need a selection"), "{content}");
-    assert!(content.contains("press ctrl+v to select user"), "{content}");
+    assert!(
+        content.contains("press alt+shift+v to select user"),
+        "{content}"
+    );
 }
 
 // -- Task 16: send-time secret prompt chain (spec §3) --

@@ -192,6 +192,12 @@ pub fn all_commands() -> Vec<Command> {
             action: Action::OpenVarPicker { completing: false },
         },
         Command {
+            id: "edit-paste",
+            name: "Edit: paste",
+            description: "Paste clipboard text at the cursor",
+            action: Action::Paste,
+        },
+        Command {
             id: "response-copy-body",
             name: "Response: copy body",
             description: "Copy the response body to the clipboard",

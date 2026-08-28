@@ -280,6 +280,12 @@ pub enum Action {
     /// content focus). Toasts "nowhere to insert" when focus isn't on a
     /// text field.
     InsertVarText(String),
+    /// Paste the OS clipboard's text at the live caret (ctrl+v — GUI
+    /// muscle memory; terminal-level pastes arrive as bracketed-paste
+    /// events and skip the clipboard read). Routed by `App::paste_text`:
+    /// the top modal's focused input, a Variable-Manager field, or the
+    /// editor's cell edit / URL bar / body, replacing any live selection.
+    Paste,
     /// The Insert-mode picker's "new variable…" row (Task 15): opens the
     /// new-variable prompt pre-filled with the typed filter text.
     /// `completing` carries the picker's own flag through, so confirming
