@@ -135,13 +135,31 @@ impl App {
             MouseEventKind::Down(MouseButton::Right) => {
                 // Tokens are a left-click affordance only: a right click
                 // belongs to the row/cell under them and its context menu.
-                let Some(hit) = self
+                let Some(mut hit) = self
                     .hits
                     .hit_at_ignoring_var_tokens(m.column, m.row)
                     .cloned()
                 else {
                     return false;
                 };
+                let mut changed = false;
+                // An open context menu doesn't own the right button the way
+                // it owns the left: a second right click re-targets. It
+                // dismisses the menu through `Action::Close` (running the
+                // same sidebar-selection revert any click-away does), then
+                // acts on whatever sits under the pointer beneath the
+                // overlay — opening that row's menu, or nothing if there's
+                // nothing to menu. Only the dropdown gets this treatment;
+                // dialog modals keep the right button inert.
+                if hit == Hit::ModalOutside
+                    && matches!(self.modals.top(), Some(Modal::Dropdown(_)))
+                {
+                    changed |= self.update(Action::Close);
+                    match self.hits.hit_at_under_modal(m.column, m.row).cloned() {
+                        Some(under) => hit = under,
+                        None => return changed,
+                    }
+                }
                 // A right click is a click away from whatever detail-pane
                 // cell was being typed into, exactly like a left click
                 // (see `on_hit`'s blanket rule): commit it *before*
@@ -151,7 +169,6 @@ impl App {
                 // whose row index would then address a different record —
                 // and the next click-away would write the typed text into
                 // that wrong entry.
-                let mut changed = false;
                 self.commit_var_form();
                 self.commit_grid_edit();
                 // A commit that *failed* keeps its edit (spec §5: the typed

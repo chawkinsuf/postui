@@ -321,6 +321,26 @@ impl HitMap {
             .map(|(_, hit)| hit)
     }
 
+    /// Topmost hit containing the point, skipping the modal layer
+    /// (`ModalOutside`/`ModalBody`/`DropdownRow`) as well as `VarToken`
+    /// overlays: what a click would land on if the open modal weren't
+    /// there. Used by right-click re-targeting — a right click while a
+    /// context menu is open dismisses it and acts on the control
+    /// underneath, whose hits are still registered below the overlay.
+    pub fn hit_at_under_modal(&self, x: u16, y: u16) -> Option<&Hit> {
+        self.regions
+            .iter()
+            .rev()
+            .filter(|(_, hit)| {
+                !matches!(
+                    hit,
+                    Hit::VarToken(_) | Hit::ModalOutside | Hit::ModalBody | Hit::DropdownRow(_)
+                )
+            })
+            .find(|(rect, _)| rect.contains(ratatui::layout::Position { x, y }))
+            .map(|(_, hit)| hit)
+    }
+
     /// The topmost drawn `{{token}}` under the point: its name and the rect
     /// it was drawn into (the tooltip's anchor).
     pub fn var_token_at(&self, x: u16, y: u16) -> Option<(&str, Rect)> {

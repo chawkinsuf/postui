@@ -2693,6 +2693,70 @@ fn dismissed_sidebar_context_menu_restores_the_previous_selection() {
     assert_eq!(app.sidebar.selected, Some(0), "Esc dismissal restores too");
 }
 
+/// A right click while a context menu is already open re-targets in one
+/// click: the open menu is dismissed (with the same selection revert any
+/// click-away does) and the row now under the pointer gets its own menu,
+/// instead of the click dying against the menu's full-screen
+/// `ModalOutside` overlay.
+#[test]
+fn right_click_while_context_menu_open_retargets_to_the_new_row() {
+    let (mut app, _dir) = sidebar_test_app_three_flat_rows();
+    render_once(&mut app);
+    app.update(Action::ForceOpenRequest("alpha".into()));
+    assert_eq!(app.sidebar.selected, Some(0));
+    render_once(&mut app);
+
+    // Open row 2's menu, then render so the hitmap carries the overlay.
+    let r2 = app.hits.rect_of(&crate::hit::Hit::SidebarRow(2)).unwrap();
+    app.handle_mouse(right_down(r2.x, r2.y));
+    assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))));
+    render_once(&mut app);
+
+    // Right-click row 1 while row 2's menu is open: the selection moves
+    // to row 1 and ITS menu is now the open one.
+    let r1 = app.hits.rect_of(&crate::hit::Hit::SidebarRow(1)).unwrap();
+    assert!(app.handle_mouse(right_down(r1.x, r1.y)));
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Dropdown(_))),
+        "the re-targeted row's menu must be open"
+    );
+    assert_eq!(app.sidebar.selected, Some(1));
+
+    // Dismissing the re-targeted menu still restores the pre-menu
+    // selection (row 0), not the intermediate right-clicked row.
+    app.update(Action::Close);
+    assert!(app.modals.is_empty(), "one Close empties the stack");
+    assert_eq!(app.sidebar.selected, Some(0));
+}
+
+/// A right click over dead space while a context menu is open just closes
+/// the menu (and reverts the pre-selection), exactly like a left click
+/// away.
+#[test]
+fn right_click_on_dead_space_while_context_menu_open_closes_it() {
+    let (mut app, _dir) = sidebar_test_app_three_flat_rows();
+    render_once(&mut app);
+    app.update(Action::ForceOpenRequest("alpha".into()));
+    render_once(&mut app);
+
+    let r2 = app.hits.rect_of(&crate::hit::Hit::SidebarRow(2)).unwrap();
+    app.handle_mouse(right_down(r2.x, r2.y));
+    assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))));
+    render_once(&mut app);
+
+    // The response pane's background offers no context menu.
+    let dead = app
+        .hits
+        .rect_of(&crate::hit::Hit::Pane(crate::layout::PaneId::Response))
+        .unwrap();
+    assert!(app.handle_mouse(right_down(
+        dead.x + dead.width / 2,
+        dead.y + dead.height / 2
+    )));
+    assert!(app.modals.is_empty(), "the menu closes, nothing reopens");
+    assert_eq!(app.sidebar.selected, Some(0), "pre-selection restored");
+}
+
 /// Regression test for the ghost-travel-band bug: `refresh_sidebar` can
 /// re-map the OPEN request's row to a different index (a row above it
 /// disappearing) without the open request itself changing. If the
