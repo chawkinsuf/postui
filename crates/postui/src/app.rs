@@ -1041,7 +1041,7 @@ impl App {
                     let step = crate::undo::Step {
                         kind: crate::undo::StepKind::EditorDelta {
                             slug: current_slug.clone(),
-                            before: prev.clone(),
+                            before: Box::new(prev.clone()),
                             after: Box::new(current.clone()),
                         },
                         context: crate::undo::Context {
@@ -1570,7 +1570,7 @@ impl App {
                         let req = self.editor.current_request();
                         match postui_core::storage::save_request(&self.project.root, &slug, &req) {
                             Ok(()) => {
-                                self.record_save_step(slug.clone());
+                                self.mark_saved_after_write();
                                 self.toasts
                                     .push(format!("Saved {slug}"), ToastKind::Success);
                                 self.refresh_sidebar();
@@ -3237,10 +3237,11 @@ impl App {
                         // The var-file half of the gesture (ProjectDefault/
                         // ActiveEnv write variables.toml/an env file; a
                         // Request destination touches neither, so this is a
-                        // no-op there). `save_open_request` below records
-                        // its own SaveRequest step — two steps for one
-                        // gesture is correct here (spec: undo peels the
-                        // token-replacement/save, then the declaration).
+                        // no-op there). The editor-side half (the token
+                        // replacement, and a Request destination's
+                        // `[variables]` insert) is captured by the next
+                        // `capture_undo` as an EditorDelta — undo peels the
+                        // token-replacement, then the declaration.
                         self.record_var_file_step(before);
                         self.replace_focused_field_with_token(&name);
                         // Finding 2, same ruling as demote/promote: the
@@ -4408,32 +4409,22 @@ impl App {
         let req = self.editor.current_request();
         postui_core::storage::save_request(&self.project.root, &slug, &req)
             .map_err(|e| format!("could not save {slug}: {e}"))?;
-        self.record_save_step(slug);
+        self.mark_saved_after_write();
         self.refresh_sidebar();
         Ok(())
     }
 
-    /// Records a `SaveRequest` undo step for `slug` and marks the editor
-    /// saved. `prev_saved` is read *before* `mark_saved` overwrites it, so
-    /// undoing the step can restore exactly what "saved" meant a moment
-    /// ago (spec: uniform before/after disk steps — this one memory-only).
-    /// Shared by `Action::SaveRequest`'s slugged branch and
-    /// `save_open_request` (the latter's callers —
-    /// demote/promote/extract-to-request — gain undo history for free).
-    fn record_save_step(&mut self, slug: String) {
-        let prev_saved = self.editor.saved.clone();
+    /// Marks the editor saved (resetting the baseline `is_dirty` compares
+    /// against) and splits any in-flight typing burst so one undo lands
+    /// exactly on the just-saved snapshot. Saving records no undo step:
+    /// the baseline then always matches disk, keeping the dirty flag an
+    /// honest "buffer differs from disk", and the redo stack survives (an
+    /// undone edit stays redoable across a save) — matching how desktop
+    /// editors treat save. Shared by `Action::SaveRequest`'s slugged
+    /// branch and `save_open_request`.
+    fn mark_saved_after_write(&mut self) {
         self.editor.mark_saved();
-        self.history.record_no_coalesce(crate::undo::Step {
-            kind: crate::undo::StepKind::SaveRequest {
-                slug: slug.clone(),
-                prev_saved,
-            },
-            context: crate::undo::Context {
-                slug: Some(slug),
-                cursor_before: crate::undo::CursorPos::None,
-                cursor_after: crate::undo::CursorPos::None,
-            },
-        });
+        self.history.break_coalescing();
     }
 
     /// Reads each path's current contents; an unreadable path (gone, or a
@@ -5796,8 +5787,8 @@ impl App {
     }
 
     /// Switches the open editor to `target_slug` so an undo/redo step for a
-    /// request that isn't the one currently open can proceed — shared by
-    /// `EditorDelta`'s and `SaveRequest`'s jump-back handling. On failure
+    /// request that isn't the one currently open can proceed — the
+    /// `EditorDelta` arm's jump-back handling. On failure
     /// (dirty gate opened, or the open itself failed) it puts `step` back
     /// where its caller popped it from and returns `false`; the caller
     /// must then return `false` without applying anything else.
@@ -5877,7 +5868,7 @@ impl App {
                 let (target, cursor) = if redo {
                     ((**after).clone(), step.context.cursor_after.clone())
                 } else {
-                    (before.clone(), step.context.cursor_before.clone())
+                    ((**before).clone(), step.context.cursor_before.clone())
                 };
                 self.editor.apply_snapshot(&target);
                 self.editor.restore_cursor(&cursor);
@@ -5988,48 +5979,6 @@ impl App {
                     None => format!("{verb} file change"),
                 };
                 self.toasts.push(msg, ToastKind::Info);
-                if redo {
-                    self.history.push_undo_no_coalesce(step.clone());
-                } else {
-                    self.history.push_redo(step.clone());
-                }
-                true
-            }
-            StepKind::SaveRequest { slug, prev_saved } => {
-                if self.editor.slug.as_deref() != Some(slug.as_str())
-                    && !self.jump_to_request_for_undo(slug, redo, &step, "save")
-                {
-                    return false;
-                }
-                if redo {
-                    // Redoing a save re-runs it: the file gets the editor's
-                    // state written again and `saved` re-syncs. Written
-                    // directly (not via `save_open_request`, which would
-                    // record a *new* SaveRequest step here and — via
-                    // `record_no_coalesce` — wipe the rest of the redo
-                    // stack mid-replay); failures follow the same
-                    // toast-and-drop contract as the FileStates arm above.
-                    match postui_core::storage::save_request(
-                        &self.project.root,
-                        slug,
-                        &self.editor.current_request(),
-                    ) {
-                        Ok(()) => {
-                            self.editor.mark_saved();
-                            self.refresh_sidebar();
-                        }
-                        Err(e) => {
-                            self.toasts
-                                .push(format!("redo failed to save {slug}: {e}"), ToastKind::Error);
-                            return false;
-                        }
-                    }
-                } else {
-                    self.editor.saved = prev_saved.clone();
-                }
-                let verb = if redo { "Redid" } else { "Undid" };
-                self.toasts
-                    .push(format!("{verb} save of {slug}"), ToastKind::Info);
                 if redo {
                     self.history.push_undo_no_coalesce(step.clone());
                 } else {

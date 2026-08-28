@@ -10461,15 +10461,10 @@ mod undo_tests {
     }
 
     #[test]
-    fn undo_past_a_save_marks_dirty_but_keeps_the_file() {
-        // A single pre-save edit would make `prev_saved` (captured before
-        // that edit's own `mark_saved`) structurally identical to the
-        // EditorDelta's `before` — undoing both would coincidentally land
-        // `current == saved` and read as clean, which isn't what "undo
-        // reverted a save" should mean. A second, post-save edit (kept
-        // un-merged because SaveRequest breaks coalescing) avoids that:
-        // undoing back to it still leaves a real edit ("ab") standing
-        // against the reverted, pre-edit `saved` marker.
+    fn save_is_not_an_undo_step_and_dirty_tracks_disk() {
+        // Save updates the `saved` baseline but records nothing: the first
+        // undo after a save reverts the last *edit*, never the save, and
+        // the dirty flag stays an honest "buffer differs from disk".
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("sv".into()));
         app.capture_undo();
@@ -10479,25 +10474,82 @@ mod undo_tests {
         app.editor
             .handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
         app.capture_undo(); // one coalesced EditorDelta: "" -> "ab"
-        app.update(Action::SaveRequest); // breaks coalescing; disk now holds "ab"
+        app.update(Action::SaveRequest); // disk now holds "ab"
         app.capture_undo();
         let path = postui_core::storage::request_path(&app.project.root, "sv");
         let saved_file = std::fs::read_to_string(&path).unwrap();
-        app.editor
-            .handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
-        app.capture_undo(); // a second, unmerged EditorDelta: "ab" -> "abc"
-        app.update(Action::Undo); // undoes the "abc" edit
-        assert_eq!(app.editor.url.text(), "ab");
-        app.update(Action::Undo); // undoes the save (memory only)
+        assert!(!app.editor.is_dirty());
+        app.update(Action::Undo); // reverts the "ab" edit, not the save
+        assert_eq!(
+            app.editor.url.text(),
+            "",
+            "the first undo after a save reverts the last edit"
+        );
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             saved_file,
-            "undoing a save never touches disk"
+            "undo never touches disk"
         );
         assert!(
             app.editor.is_dirty(),
-            "save's undo reverted editor.saved past the still-present 'ab' edit"
+            "buffer ('') genuinely differs from disk ('ab')"
         );
+        app.update(Action::Redo); // back to the saved content
+        assert_eq!(app.editor.url.text(), "ab");
+        assert!(
+            !app.editor.is_dirty(),
+            "buffer matches the saved baseline again"
+        );
+    }
+
+    #[test]
+    fn save_still_splits_a_typing_burst() {
+        // Two keystrokes inside the coalesce window with a save between
+        // them must stay two undo steps, so one undo lands exactly on the
+        // saved snapshot.
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("sv2".into()));
+        app.capture_undo();
+        app.editor.sub_focus = SubFocus::Url;
+        app.editor
+            .handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        app.capture_undo();
+        app.update(Action::SaveRequest); // disk holds "a"
+        app.capture_undo();
+        app.editor
+            .handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
+        app.capture_undo();
+        app.update(Action::Undo);
+        assert_eq!(
+            app.editor.url.text(),
+            "a",
+            "one undo lands on the saved snapshot, not past it"
+        );
+        assert!(!app.editor.is_dirty(), "buffer matches disk ('a')");
+    }
+
+    #[test]
+    fn save_does_not_clear_redo() {
+        // Saving is not an edit: an undone edit must stay redoable across
+        // a save.
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("sv3".into()));
+        app.capture_undo();
+        app.editor.sub_focus = SubFocus::Url;
+        app.editor
+            .handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        app.capture_undo();
+        app.update(Action::Undo); // url back to ""
+        assert_eq!(app.editor.url.text(), "");
+        app.update(Action::SaveRequest); // disk holds ""
+        app.capture_undo();
+        app.update(Action::Redo);
+        assert_eq!(
+            app.editor.url.text(),
+            "a",
+            "the undone edit survives a save as a redo"
+        );
+        assert!(app.editor.is_dirty(), "buffer ('a') differs from disk ('')");
     }
 
     #[test]
@@ -10546,7 +10598,7 @@ mod undo_tests {
             let step = crate::undo::Step {
                 kind: crate::undo::StepKind::EditorDelta {
                     slug: Some("one".into()),
-                    before: req("https://before"),
+                    before: Box::new(req("https://before")),
                     after: Box::new(req("https://after")),
                 },
                 context: crate::undo::Context {

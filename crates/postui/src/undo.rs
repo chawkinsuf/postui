@@ -25,17 +25,13 @@ pub struct Step {
 pub enum StepKind {
     EditorDelta {
         slug: Option<String>,
-        before: HttpRequest,
+        before: Box<HttpRequest>,
         after: Box<HttpRequest>,
     },
     FileStates {
         before: Vec<(PathBuf, Option<String>)>,
         after: Vec<(PathBuf, Option<String>)>,
         active_env: Option<(Option<String>, Option<String>)>,
-    },
-    SaveRequest {
-        slug: String,
-        prev_saved: Option<HttpRequest>,
     },
 }
 
@@ -188,8 +184,8 @@ impl History {
     /// Records `step` on the undo stack without merging, and leaves
     /// coalescing off so nothing merges into it later. Used for wholesale
     /// changes (format/minify, discard, method change, insert-var, `$EDITOR`
-    /// round-trip) and every `FileStates`/`SaveRequest` step — also the
-    /// Redo arm's way of pushing a step back onto undo.
+    /// round-trip) and every `FileStates` step — also the Redo arm's way
+    /// of pushing a step back onto undo.
     pub fn push_undo_no_coalesce(&mut self, step: Step) {
         self.undo.push(step);
         if self.undo.len() > MAX_STEPS {
@@ -270,7 +266,7 @@ mod tests {
         Step {
             kind: StepKind::EditorDelta {
                 slug: Some("a".into()),
-                before: req(before),
+                before: Box::new(req(before)),
                 after: Box::new(req(after)),
             },
             context: Context {
@@ -319,7 +315,7 @@ mod tests {
             Step {
                 kind: StepKind::EditorDelta {
                     slug: Some("a".into()),
-                    before: req("h"),
+                    before: Box::new(req("h")),
                     after: Box::new(named),
                 },
                 context: Context {
