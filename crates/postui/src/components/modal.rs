@@ -312,22 +312,17 @@ pub(crate) fn resync_after_choice_cycle(kind: &PromptKind, fields: &mut [PromptF
 }
 
 /// The value popup's empty value box: a muted "(not set)" (the variable
-/// form's own wording), led by the same reversed-cell caret an empty
-/// `LineInput` draws when the field is focused — without it, a focused
-/// empty box gave no hint the input was selected.
+/// form's own wording). Focused, the caret is the placeholder's own
+/// first char drawn REVERSED — over the `(`, where typing would land —
+/// rather than a prepended cell that would shift the text sideways.
 fn value_placeholder_line(focused: bool, theme: &Theme) -> Line<'static> {
     use ratatui::style::Modifier;
     use ratatui::text::Span;
     let muted = Style::default().fg(theme.text_muted);
     if focused {
         Line::from(vec![
-            Span::styled(
-                " ",
-                Style::default()
-                    .fg(theme.text)
-                    .add_modifier(Modifier::REVERSED),
-            ),
-            Span::styled("(not set)", muted),
+            Span::styled("(", muted.add_modifier(Modifier::REVERSED)),
+            Span::styled("not set)", muted),
         ])
     } else {
         Line::styled("(not set)", muted)
@@ -1943,15 +1938,21 @@ mod tests {
         use ratatui::style::Modifier;
 
         let focused = value_placeholder_line(true, &theme);
-        assert_eq!(focused.spans.len(), 2, "caret cell + placeholder text");
+        assert_eq!(focused.spans.len(), 2, "caret char + the rest");
+        assert_eq!(
+            focused.spans[0].content.as_ref(),
+            "(",
+            "the caret sits on the placeholder's own first char, not a \
+             prepended cell that shifts the text"
+        );
         assert!(
             focused.spans[0]
                 .style
                 .add_modifier
                 .contains(Modifier::REVERSED),
-            "the leading cell is the caret"
+            "that char is drawn as the caret"
         );
-        assert_eq!(focused.spans[1].content.as_ref(), "(not set)");
+        assert_eq!(focused.spans[1].content.as_ref(), "not set)");
 
         let resting = value_placeholder_line(false, &theme);
         assert_eq!(resting.spans.len(), 1);
