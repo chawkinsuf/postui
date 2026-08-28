@@ -127,6 +127,14 @@ pub enum Hit {
     /// (or a secret) for the selected variable, and the explicit way to
     /// un-set it (the value popup's Remove button's twin).
     VmRemoveEnvValue,
+    /// One of the two arrows around a fixed-choice modal field's label
+    /// (the value popup's Write-to control): a click cycles that field's
+    /// choice by `dir` — `-1` for the left `‹`, `+1` for the right `›` —
+    /// running the same kind-specific follow-up as the keyboard cycle.
+    ModalChoiceArrow {
+        field: usize,
+        dir: i8,
+    },
     /// The variable form's title-row `[Rename]` button.
     VmRename,
     /// The variable form's title-row `[Delete]` button.

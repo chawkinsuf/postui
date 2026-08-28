@@ -1423,8 +1423,13 @@ impl ModalStack {
                         // label row keeps the plain focus-click.
                         hits.register(field_area, crate::hit::Hit::ModalInput(i));
                     } else {
-                        let content =
-                            Line::from(format!("\u{2039} {} \u{203a}", field.input.text()));
+                        // The label leaves room for the `‹`/`›` arrows,
+                        // overlaid after the field paints: each is its own
+                        // clickable control cycling one step in that
+                        // direction (the box's own click still steps
+                        // forward). No painted bg of their own — they sit
+                        // on the field's fill, whatever the focus state.
+                        let content = Line::from(format!("  {}", field.input.text()));
                         TextField {
                             content,
                             state: if focused {
@@ -1434,6 +1439,21 @@ impl ModalStack {
                             },
                         }
                         .paint(frame.buffer_mut(), field_area, theme);
+                        let arrow_y = field_area.y + 1;
+                        for (glyph, x, dir) in [
+                            ("\u{2039}", field_x + 2, -1i8),
+                            ("\u{203a}", field_x + field_w.saturating_sub(3), 1),
+                        ] {
+                            let hit = crate::hit::Hit::ModalChoiceArrow { field: i, dir };
+                            let style = if hovered == Some(&hit) {
+                                Style::default().bg(theme.accent).fg(theme.on_accent)
+                            } else {
+                                Style::default().fg(theme.accent)
+                            };
+                            frame.buffer_mut().set_string(x, arrow_y, glyph, style);
+                            // A cell either side pads the click target.
+                            hits.register(Rect::new(x.saturating_sub(1), arrow_y, 3, 1), hit);
+                        }
                     }
                     y += FIELD_HEIGHT + 1;
                 }

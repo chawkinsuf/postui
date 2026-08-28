@@ -7676,6 +7676,40 @@ fn clicking_the_write_to_field_cycles_the_scope_and_reseeds_the_value_box() {
     );
 }
 
+/// The Write-to control's two arrows: `‹` cycles backward, `›` forward —
+/// a click-cycle in either direction runs the same reseed follow-up.
+#[test]
+fn the_write_to_arrows_cycle_in_both_directions() {
+    let (mut app, _dir) = token_popup_app();
+    // dev stores nothing, so all three scopes are on offer, preselected
+    // to "Project default" (the supplier).
+    app.update(Action::SwitchEnv(Some("dev".into())));
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    rendered_text(&mut app);
+
+    let l = app
+        .hits
+        .rect_of(&crate::hit::Hit::ModalChoiceArrow { field: 1, dir: -1 })
+        .expect("left arrow registered");
+    app.handle_mouse(left_down(l.x, l.y));
+    let content = rendered_text(&mut app);
+    assert!(
+        content.contains("This request"),
+        "backward from the first choice wraps to the last: {content}"
+    );
+
+    let r = app
+        .hits
+        .rect_of(&crate::hit::Hit::ModalChoiceArrow { field: 1, dir: 1 })
+        .expect("right arrow registered");
+    app.handle_mouse(left_down(r.x, r.y));
+    let content = rendered_text(&mut app);
+    assert!(
+        content.contains("Project default"),
+        "forward undoes the backward step: {content}"
+    );
+}
+
 #[test]
 fn remove_deletes_the_env_value_and_falls_back_to_the_default() {
     let (mut app, dir) = token_popup_app();
@@ -7694,14 +7728,33 @@ fn remove_deletes_the_env_value_and_falls_back_to_the_default() {
         app.project.resolved.values["base_url"], "http://localhost:8080",
         "the default shows through once the env value is gone"
     );
+    // The popup follows the removal to the new supplying scope: the
+    // default now supplies, so Write-to lands there with its stored
+    // value ready to edit (or remove in turn).
+    let content = rendered_text(&mut app);
+    assert!(content.contains("Project default"), "{content}");
+    assert!(
+        content.contains("http://localhost:8080"),
+        "the new supplier's stored value is on show: {content}"
+    );
+    let r = app
+        .hits
+        .rect_of(&crate::hit::Hit::ModalRemove)
+        .expect("the default stores a value, so it too can be removed");
+
+    // Removing again clears the default — nothing supplies any more.
+    app.handle_mouse(left_down(r.x, r.y));
+    assert!(!app.modals.is_empty(), "still open");
+    let vars_on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    assert!(!vars_on_disk.contains("default"), "{vars_on_disk}");
     let content = rendered_text(&mut app);
     assert!(
         content.contains("(not set)"),
-        "the value box shows the scope now stores nothing: {content}"
+        "no scope stores anything now: {content}"
     );
     assert!(
         app.hits.rect_of(&crate::hit::Hit::ModalRemove).is_none(),
-        "nothing left to remove at this scope"
+        "nothing left to remove"
     );
 }
 

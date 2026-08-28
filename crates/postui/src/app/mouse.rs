@@ -613,6 +613,7 @@ impl App {
                 | Hit::ConfirmChoice(_)
                 | Hit::ModalBody
                 | Hit::ModalField(_)
+                | Hit::ModalChoiceArrow { .. }
                 | Hit::ModalRowToggle(_)
                 | Hit::ModalAddRow
                 | Hit::ModalRemove
@@ -909,6 +910,25 @@ impl App {
                 }
                 false
             }
+            Hit::ModalChoiceArrow { field, dir } => {
+                if let Some(crate::components::modal::Modal::MultiPrompt {
+                    focus,
+                    fields,
+                    kind,
+                    ..
+                }) = self.modals.top_mut()
+                {
+                    *focus = field;
+                    if let Some(f) = fields.get_mut(field)
+                        && !f.choices.is_empty()
+                    {
+                        f.cycle(dir.into());
+                        crate::components::modal::resync_after_choice_cycle(kind, fields);
+                    }
+                    return self.update(Action::Render);
+                }
+                false
+            }
             Hit::ModalInput(i) => {
                 let Some(area) = self.hits.rect_of(&Hit::ModalInput(i)) else {
                     return false;
@@ -975,21 +995,18 @@ impl App {
                     .map(|f| f.input.text().to_string())
                     .unwrap_or_default();
                 let destination = destination_from_label(&chosen);
-                // The popup stays open so the cleared state is visible:
-                // on success the chosen scope's stored value becomes
-                // `None` (which is what hides the remove control) and the
-                // value box reseeds to empty, rendered "(not set)".
-                let changed = self.update(Action::RemoveVarValue { name, destination });
-                if !self.last_action_failed
-                    && let Some(Modal::MultiPrompt { fields, kind, .. }) = self.modals.top_mut()
-                    && let PromptKind::EditVarValue { scope_values, .. } = kind
-                {
-                    if let Some(entry) = scope_values.iter_mut().find(|(l, _)| *l == chosen) {
-                        entry.1 = None;
-                    }
-                    if let Some(value_field) = fields.iter_mut().find(|f| f.key == "value") {
-                        value_field.input = crate::components::line_input::LineInput::new("");
-                    }
+                // The popup stays open, rebuilt from scratch on success:
+                // the removal moved supply to the next wider scope, and
+                // reopening re-runs the supplying-scope math, so Write-to
+                // lands on the new supplier with its stored value ready
+                // to edit (or "(not set)" when nothing supplies at all).
+                let changed = self.update(Action::RemoveVarValue {
+                    name: name.clone(),
+                    destination,
+                });
+                if !self.last_action_failed {
+                    self.modals.pop();
+                    self.open_edit_value_popup(&name);
                 }
                 changed
             }
