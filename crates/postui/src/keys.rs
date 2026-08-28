@@ -265,8 +265,8 @@ impl Keymap {
 
     pub fn load() -> Self {
         let mut map = Self::default_bindings();
-        if let Some(dirs) = directories::ProjectDirs::from("", "", postui_core::APP_NAME) {
-            let path = dirs.config_dir().join("keys.toml");
+        if let Some(dir) = postui_core::config_dir() {
+            let path = dir.join("keys.toml");
             if let Ok(contents) = std::fs::read_to_string(path) {
                 // Bad override files are ignored; surfaced as a toast in a later stage.
                 let _ = map.apply_overrides(&contents);

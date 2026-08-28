@@ -296,8 +296,7 @@ pub fn load_ui_settings(path: &Path) -> (UiSettings, Vec<String>) {
 
 /// The path to the global config file: `<config dir>/config.toml`.
 pub fn config_file_path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", postui_core::APP_NAME)
-        .map(|d| d.config_dir().join("config.toml"))
+    postui_core::config_dir().map(|d| d.join("config.toml"))
 }
 
 /// Writes `name` as the top-level `theme` key in the config file at
@@ -317,22 +316,19 @@ pub fn save_ui_theme(path: &Path, name: &str) -> anyhow::Result<()> {
 
 /// The directory custom theme files live in: `<config dir>/themes`.
 pub fn themes_dir_path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", postui_core::APP_NAME)
-        .map(|d| d.config_dir().join("themes"))
+    postui_core::config_dir().map(|d| d.join("themes"))
 }
 
 /// The path to the terminal-color cache written after a successful OSC
 /// query: `<config dir>/terminal-colors.toml`. See `theme::cache`.
 pub fn terminal_colors_path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", postui_core::APP_NAME)
-        .map(|d| d.config_dir().join("terminal-colors.toml"))
+    postui_core::config_dir().map(|d| d.join("terminal-colors.toml"))
 }
 
 /// The path to the mouse-first-GUI UI-state file (currently just palette
 /// usage stats): `<config dir>/ui.toml`.
 pub fn ui_file_path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", postui_core::APP_NAME)
-        .map(|d| d.config_dir().join("ui.toml"))
+    postui_core::config_dir().map(|d| d.join("ui.toml"))
 }
 
 /// Expands a leading `~/` to the home directory. Paths not starting with

@@ -45,10 +45,9 @@ pub struct RequestListing {
     pub name: Option<String>,
 }
 
-/// The default project directory: `<config dir>/<APP_NAME>/default`.
+/// The default project directory: `<config dir>/default`.
 pub fn default_project_dir() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", crate::APP_NAME)
-        .map(|dirs| dirs.config_dir().join("default"))
+    crate::config_dir().map(|dir| dir.join("default"))
 }
 
 /// Ensures `root/requests/` exists.
