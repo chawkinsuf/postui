@@ -613,6 +613,8 @@ impl App {
                 | Hit::ConfirmChoice(_)
                 | Hit::ModalBody
                 | Hit::ModalField(_)
+                | Hit::ModalRowToggle(_)
+                | Hit::ModalAddRow
                 | Hit::ModalOutside
                 | Hit::DropdownRow(_)
                 | Hit::ChooserRow(_)
@@ -923,6 +925,24 @@ impl App {
             // per-variant logic here. Message's only button ("OK") also
             // maps to `ModalConfirm` — Enter and Esc already produce the
             // same close-with-no-actions result for `Modal::Message`.
+            Hit::ModalRowToggle(i) => {
+                if let Some(crate::components::modal::Modal::FieldsEditor(state)) =
+                    self.modals.top_mut()
+                {
+                    state.toggle(i);
+                    return self.update(Action::Render);
+                }
+                false
+            }
+            Hit::ModalAddRow => {
+                if let Some(crate::components::modal::Modal::FieldsEditor(state)) =
+                    self.modals.top_mut()
+                {
+                    state.add_row();
+                    return self.update(Action::Render);
+                }
+                false
+            }
             Hit::ModalCancel => {
                 let synth = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
                 let Some(res) = self.modals.handle_key(synth) else {

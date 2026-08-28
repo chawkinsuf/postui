@@ -488,13 +488,33 @@ impl VarPickerState {
             width: area.width.saturating_sub(2),
             height: FIELD_HEIGHT,
         };
-        let content = Line::from(vec![
-            Span::raw(self.input.clone()),
-            Span::styled("▏", Style::default().fg(theme.accent)),
-        ]);
+        // In SelectOption mode the input is only ever a filter over the
+        // option list ("the editing is the selection"), so it dresses as a
+        // search row — 🔍 prefix, ghost text, no focus ring — rather than
+        // an edit box. Insert mode keeps the edit-box look: what's typed
+        // there can become a new variable's name.
+        let content = match &self.mode {
+            PickerMode::SelectOption { .. } if self.input.is_empty() => Line::from(vec![
+                Span::styled("\u{1f50d} ", Style::default().fg(theme.text_muted)),
+                Span::styled("filter\u{2026}", Style::default().fg(theme.text_muted)),
+            ]),
+            PickerMode::SelectOption { .. } => Line::from(vec![
+                Span::styled("\u{1f50d} ", Style::default().fg(theme.text_muted)),
+                Span::raw(self.input.clone()),
+                Span::styled("▏", Style::default().fg(theme.accent)),
+            ]),
+            PickerMode::Insert => Line::from(vec![
+                Span::raw(self.input.clone()),
+                Span::styled("▏", Style::default().fg(theme.accent)),
+            ]),
+        };
+        let field_state = match &self.mode {
+            PickerMode::SelectOption { .. } => ControlState::Normal,
+            PickerMode::Insert => ControlState::Focused,
+        };
         TextField {
             content,
-            state: ControlState::Focused,
+            state: field_state,
         }
         .paint(frame.buffer_mut(), field_area, theme);
 
@@ -886,6 +906,34 @@ mod tests {
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(!content.contains("enter insert"), "{content}");
         assert!(!content.contains("esc cancel"), "{content}");
+    }
+
+    #[test]
+    fn select_mode_input_reads_as_a_filter_not_an_edit_box() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let entries = vec![SelectOption {
+            key: "alice".into(),
+            description: None,
+            value: Some("1001".into()),
+            preview: None,
+            selected: false,
+            values: None,
+        }];
+        let mut p = VarPickerState::new_select(entries, "user".into(), "user".into(), "qa".into());
+        let theme = Theme::dark();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0))
+            .unwrap();
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            content.contains("\u{1f50d}") && content.contains("filter"),
+            "the empty select-mode input shows a search glyph and ghost text: {content}"
+        );
     }
 
     #[test]

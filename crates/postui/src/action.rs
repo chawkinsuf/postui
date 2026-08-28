@@ -375,10 +375,6 @@ pub enum Action {
     DuplicateVar {
         name: String,
     },
-    /// Open the selector's field-list prompt, prefilled.
-    PromptEditSelectorFields {
-        selector: String,
-    },
     /// Open the single-name add-field prompt for a selector.
     PromptAddSelectorField {
         selector: String,

@@ -69,6 +69,10 @@ pub struct TokenInfo {
     /// it, and there is no reveal anywhere in the tooltip.
     pub secret: bool,
     pub source: TokenSource,
+    /// The declaration's description (a selector field carries its
+    /// selector's), when one is written — the tooltip's optional third
+    /// line.
+    pub description: Option<String>,
 }
 
 impl TokenInfo {
@@ -102,6 +106,9 @@ pub struct VarView {
     default_names: HashSet<String>,
     /// The active environment's name, when one is active.
     env_label: Option<String>,
+    /// Declared descriptions: a variable's own, or — for a selector field —
+    /// the owning selector's.
+    descriptions: IndexMap<String, String>,
 }
 
 impl VarView {
@@ -126,6 +133,22 @@ impl VarView {
                 .map(|(n, _)| n.clone())
                 .collect(),
             env_label: project.active_env.clone(),
+            descriptions: {
+                let mut d: IndexMap<String, String> = project
+                    .model
+                    .vars
+                    .iter()
+                    .filter_map(|(n, decl)| decl.description.clone().map(|desc| (n.clone(), desc)))
+                    .collect();
+                for decl in project.model.selectors.values() {
+                    if let Some(desc) = &decl.description {
+                        for field in &decl.fields {
+                            d.insert(field.clone(), desc.clone());
+                        }
+                    }
+                }
+                d
+            },
         }
     }
 
@@ -139,6 +162,7 @@ impl VarView {
                 value: Some(value.clone()),
                 secret: false,
                 source: TokenSource::Request,
+                description: self.descriptions.get(name).cloned(),
             };
         }
         let value = self.resolved.values.get(name).cloned();
@@ -171,6 +195,7 @@ impl VarView {
                 Some(VarMeta::Secret) | Some(VarMeta::MissingSecret)
             ),
             source,
+            description: self.descriptions.get(name).cloned(),
         }
     }
 
@@ -278,7 +303,19 @@ mod tests {
             env_names: ["base_url".to_string()].into_iter().collect(),
             default_names: HashSet::new(),
             env_label: Some("qa".into()),
+            descriptions: IndexMap::new(),
         }
+    }
+
+    #[test]
+    fn describe_carries_the_declared_description() {
+        let mut v = view();
+        v.descriptions.insert("base_url".into(), "API root".into());
+        assert_eq!(
+            v.describe("base_url").description.as_deref(),
+            Some("API root")
+        );
+        assert_eq!(v.describe("user").description, None);
     }
 
     #[test]

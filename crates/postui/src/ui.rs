@@ -181,7 +181,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 }
 
 /// Height of the variable tooltip: a padding row, the `name = value` line,
-/// the source line, and a closing padding row.
+/// the source line, and a closing padding row. A declared description adds
+/// one more line.
 const TOOLTIP_HEIGHT: u16 = 4;
 
 /// Draws the hover/caret tooltip for one `{{token}}` (spec §7): line 1 is
@@ -203,24 +204,30 @@ fn draw_var_tooltip(
     // the full value is always available in the Variable Manager.
     let line1 = ellipsize(&format!("{} = {}", tip.name, info.display_value()), 56);
     let line2 = info.source.label();
-    let text_w = line1.chars().count().max(line2.chars().count()) as u16;
+    let line3 = info.description.as_ref().map(|d| ellipsize(d, 56));
+    let height = TOOLTIP_HEIGHT + u16::from(line3.is_some());
+    let text_w = line1
+        .chars()
+        .count()
+        .max(line2.chars().count())
+        .max(line3.as_ref().map_or(0, |l| l.chars().count())) as u16;
     // 2 columns of padding each side, plus a column for the drop shadow.
     let width = (text_w + 4).min(screen.width.saturating_sub(1));
-    if width < 5 || screen.height < TOOLTIP_HEIGHT {
+    if width < 5 || screen.height < height {
         return;
     }
     let below = tip.anchor.bottom();
-    let y = if below + TOOLTIP_HEIGHT <= screen.bottom() {
+    let y = if below + height <= screen.bottom() {
         below
     } else {
-        tip.anchor.y.saturating_sub(TOOLTIP_HEIGHT)
+        tip.anchor.y.saturating_sub(height)
     };
     let x = tip
         .anchor
         .x
         .min(screen.right().saturating_sub(width + 1))
         .max(screen.x);
-    let area = Rect::new(x, y, width, TOOLTIP_HEIGHT);
+    let area = Rect::new(x, y, width, height);
     let buf = frame.buffer_mut();
     crate::paint::floating_panel(buf, area, screen, theme);
     let inner = width.saturating_sub(4) as usize;
@@ -242,6 +249,17 @@ fn draw_var_tooltip(
         theme.panel,
         false,
     );
+    if let Some(desc) = &line3 {
+        crate::paint::text(
+            buf,
+            x + 2,
+            y + 3,
+            &ellipsize(desc, inner),
+            theme.text_muted,
+            theme.panel,
+            false,
+        );
+    }
 }
 
 /// `s` cut to at most `max` characters, the last of which becomes `…`.

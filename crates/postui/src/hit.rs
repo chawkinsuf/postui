@@ -182,6 +182,11 @@ pub enum Hit {
     /// the caret, drag sweeps a selection, double click selects all —
     /// while the label row keeps `ModalField`'s plain focus-click.
     ModalInput(usize),
+    /// The ✕/↩ button of row `i` in the fields editor: marks the field for
+    /// removal (or restores it; an added row is dropped outright).
+    ModalRowToggle(usize),
+    /// The fields editor's "+ Add field" button.
+    ModalAddRow,
 }
 
 /// A terminal pointer-shape hint (Kitty's OSC 22 protocol, `\x1b]22;{shape}\x07`),

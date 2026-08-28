@@ -630,24 +630,39 @@ fn a_legacy_project_migrates_then_grows_a_group_whose_selection_drives_resolutio
     assert_eq!(app.project.active_env.as_deref(), Some("qa"));
     let keymap = Keymap::default_bindings();
 
-    // --- create a selector: the [+ Group] button, then its prompt ---
+    // --- create a selector: the [+ Selector] button takes just a name and
+    // defaults the field to it ---
     click(&mut app, Hit::VmNewSelector);
     type_text(&mut app, &keymap, "region");
-    key(&mut app, &keymap, KeyCode::Tab);
-    type_text(&mut app, &keymap, "zone,dc");
     key(&mut app, &keymap, KeyCode::Enter);
     // Declaring walks into the first-option prompt; this scenario adds its
     // options through the grid's ghost row instead, so dismiss it.
     key(&mut app, &keymap, KeyCode::Esc);
     assert_eq!(
         app.project.model.selectors["region"].fields,
-        ["zone", "dc"],
-        "the group is declared with its fields"
+        ["region"],
+        "the field defaults to the selector's own name"
     );
 
     // --- open it in the detail pane ---
     let row = left_row_of(&app, "region");
     click(&mut app, Hit::VmLeftRow(row));
+
+    // --- reshape the fields through the fields editor: rename the default
+    // field to `zone` and add `dc` ---
+    click(&mut app, Hit::VmEditFields);
+    for _ in 0.."region".len() {
+        key(&mut app, &keymap, KeyCode::Backspace);
+    }
+    type_text(&mut app, &keymap, "zone");
+    click(&mut app, Hit::ModalAddRow);
+    type_text(&mut app, &keymap, "dc");
+    key(&mut app, &keymap, KeyCode::Enter);
+    assert_eq!(
+        app.project.model.selectors["region"].fields,
+        ["zone", "dc"],
+        "the fields editor renames and adds in one apply"
+    );
 
     // --- two entries, typed into the ghost row ---
     add_entry(&mut app, &keymap, &["eu", "eu-west-1", "dub"]);

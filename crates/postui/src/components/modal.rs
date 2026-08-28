@@ -45,10 +45,10 @@ pub enum PromptKind {
     NewVariableAndInsert {
         completing: bool,
     },
-    /// `g` / the `+ Group` button (spec 3.4): a `Modal::MultiPrompt` with
-    /// a `name` field and a comma-separated `fields` field. Confirming
-    /// declares the selector and its field list in one write
-    /// (`VarStructOp::NewSelector`).
+    /// `g` / the `+ Selector` button: a single name prompt. Confirming
+    /// declares a one-field selector whose field is the name itself (the
+    /// common selection-set shape); more fields grow through the fields
+    /// editor afterward.
     NewSelector,
     /// One field name, appended to `selector`'s list.
     AddSelectorField {
@@ -57,18 +57,6 @@ pub enum PromptKind {
     /// `e`/`F2` on a variable row.
     RenameVariable {
         from: String,
-    },
-    /// Comma-separated field names, replacing the selector's current list.
-    SelectorFields {
-        selector: String,
-    },
-    /// The selector pane's `[Edit fields]` (Task 16, spec §3.4): a
-    /// `Modal::MultiPrompt` with one text slot per current field (keys
-    /// `f0`, `f1`, … — position *is* the identity, which is how a changed
-    /// text reads as a rename) plus a trailing empty slot for adding one.
-    /// Confirming emits `Action::ApplyGroupFields`.
-    GroupFields {
-        selector: String,
     },
     /// The option-row context menu's "Rename…" (Task 16): the text is the
     /// option's new name within `selector` in `env`.
@@ -117,6 +105,115 @@ pub enum PromptKind {
     EditVarValue {
         name: String,
     },
+}
+
+/// One row of the fields editor: the field's current on-disk name (`None`
+/// for a row added in this session), its editable text (typing renames),
+/// and whether the row is marked for removal (the ✕ button; a marked row
+/// shows ↩ to restore instead).
+pub struct FieldRow {
+    pub original: Option<String>,
+    pub input: LineInput,
+    pub removed: bool,
+}
+
+/// The `Modal::FieldsEditor` state (the selector pane's "Fields of X"):
+/// one editable row per current field plus any added rows, applied as one
+/// `Action::ApplyGroupFields` transaction on confirm. Position is still
+/// the identity underneath — the original rows are emitted in order, a
+/// removed row as an empty slot — but removal and addition are explicit
+/// buttons rather than blank-the-text conventions.
+pub struct FieldsEditorState {
+    pub selector: String,
+    pub rows: Vec<FieldRow>,
+    pub focus: usize,
+}
+
+impl FieldsEditorState {
+    pub fn new(selector: String, fields: &[String]) -> Self {
+        let rows = fields
+            .iter()
+            .map(|f| FieldRow {
+                original: Some(f.clone()),
+                input: LineInput::new(f),
+                removed: false,
+            })
+            .collect();
+        Self {
+            selector,
+            rows,
+            focus: 0,
+        }
+    }
+
+    /// The ✕/↩ button: flip row `i`'s removal mark. An added (never-saved)
+    /// row is simply dropped — there is nothing to restore.
+    pub fn toggle(&mut self, i: usize) {
+        let Some(row) = self.rows.get_mut(i) else {
+            return;
+        };
+        if row.original.is_none() {
+            self.rows.remove(i);
+            if self.focus >= self.rows.len() && self.focus > 0 {
+                self.focus = self.rows.len() - 1;
+            }
+            return;
+        }
+        row.removed = !row.removed;
+        if self.focus == i && row.removed {
+            self.focus_step(1);
+        }
+    }
+
+    /// The "+ Add field" button: append an empty row and focus it.
+    pub fn add_row(&mut self) {
+        self.rows.push(FieldRow {
+            original: None,
+            input: LineInput::new(""),
+            removed: false,
+        });
+        self.focus = self.rows.len() - 1;
+    }
+
+    /// Moves focus by `dir`, skipping removed rows, wrapping.
+    fn focus_step(&mut self, dir: i32) {
+        let n = self.rows.len() as i32;
+        if n == 0 {
+            return;
+        }
+        let mut i = self.focus as i32;
+        for _ in 0..n {
+            i = (i + dir).rem_euclid(n);
+            if !self.rows[i as usize].removed {
+                self.focus = i as usize;
+                return;
+            }
+        }
+    }
+
+    /// The slots `Action::ApplyGroupFields` wants: original rows in order
+    /// (removed = empty slot), then non-empty added rows.
+    fn slots(&self) -> Vec<String> {
+        let mut slots: Vec<String> = self
+            .rows
+            .iter()
+            .filter(|r| r.original.is_some())
+            .map(|r| {
+                if r.removed {
+                    String::new()
+                } else {
+                    r.input.text().trim().to_string()
+                }
+            })
+            .collect();
+        for row in self.rows.iter().filter(|r| r.original.is_none()) {
+            let text = row.input.text().trim();
+            if !row.removed && !text.is_empty() {
+                slots.push(text.to_string());
+            }
+        }
+        slots
+    }
 }
 
 /// One field of a `Modal::MultiPrompt`: a stable domain `key` (e.g.
@@ -175,15 +272,6 @@ impl PromptKind {
     fn is_secret(&self) -> bool {
         matches!(self, PromptKind::SecretValue { .. })
     }
-}
-
-/// Splits `text` on commas, trims each piece, and drops empty ones — the
-/// shared tokenizer for every comma-separated prompt kind.
-fn comma_tokens(text: &str) -> Vec<String> {
-    text.split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect()
 }
 
 pub enum Modal {
@@ -245,6 +333,10 @@ pub enum Modal {
         focus: usize,
         kind: PromptKind,
     },
+    /// The selector fields editor ("Fields of X"): one text row per field
+    /// with a ✕/↩ removal toggle, a "+ Add field" button, applied as one
+    /// `Action::ApplyGroupFields` on confirm.
+    FieldsEditor(FieldsEditorState),
 }
 
 /// One row of a `Modal::Dropdown` — a value in a select popup, or an option
@@ -360,6 +452,11 @@ impl ModalStack {
                 ..
             } => Some(if *on_path { path } else { name }),
             Modal::MultiPrompt { fields, focus, .. } => fields.get(*focus).map(|f| &f.input),
+            Modal::FieldsEditor(state) => state
+                .rows
+                .get(state.focus)
+                .filter(|r| !r.removed)
+                .map(|r| &r.input),
             _ => None,
         }
     }
@@ -375,6 +472,11 @@ impl ModalStack {
                 .get(*focus)
                 .filter(|f| f.choices.is_empty())
                 .map(|_| *focus),
+            Modal::FieldsEditor(state) => state
+                .rows
+                .get(state.focus)
+                .filter(|r| !r.removed)
+                .map(|_| state.focus),
             _ => None,
         }
     }
@@ -401,6 +503,14 @@ impl ModalStack {
                 }
                 *focus = i;
                 Some(&mut field.input)
+            }
+            Modal::FieldsEditor(state) => {
+                let row = state.rows.get_mut(i)?;
+                if row.removed {
+                    return None;
+                }
+                state.focus = i;
+                Some(&mut row.input)
             }
             _ => None,
         }
@@ -536,10 +646,10 @@ impl ModalStack {
                                 to: text.to_string(),
                             })])
                         }
-                        PromptKind::SelectorFields { selector } => {
-                            Some(vec![Action::VarStruct(VarStructOp::SetFields {
-                                selector: selector.clone(),
-                                fields: comma_tokens(text),
+                        PromptKind::NewSelector => {
+                            Some(vec![Action::VarStruct(VarStructOp::NewSelector {
+                                name: text.to_string(),
+                                fields: vec![text.to_string()],
                             })])
                         }
                         PromptKind::RenameOption {
@@ -558,9 +668,7 @@ impl ModalStack {
                         }]),
                         // These kinds are `Modal::MultiPrompt` only — never a
                         // single-input `Modal::Prompt`.
-                        PromptKind::NewSelector
-                        | PromptKind::GroupFields { .. }
-                        | PromptKind::NewOptionInline { .. }
+                        PromptKind::NewOptionInline { .. }
                         | PromptKind::EditOption { .. }
                         | PromptKind::ExtractVariable
                         | PromptKind::EditVarValue { .. } => {
@@ -737,27 +845,6 @@ impl ModalStack {
                                 description,
                             }]
                         }
-                        PromptKind::NewSelector => {
-                            let name = get("name").filter(|s| !s.is_empty())?.to_string();
-                            let fields = comma_tokens(get("fields").unwrap_or(""));
-                            vec![Action::VarStruct(VarStructOp::NewSelector { name, fields })]
-                        }
-                        // Position is the identity here: slot `i` stands
-                        // for the selector's current `i`th field, so the raw
-                        // per-slot text (empties included — an emptied slot
-                        // is how a field is removed) is what the app needs
-                        // to tell renames from additions and removals.
-                        PromptKind::GroupFields { selector } => {
-                            let slots = fields
-                                .iter()
-                                .map(|f| f.input.text().trim().to_string())
-                                .collect();
-                            vec![Action::ApplyGroupFields {
-                                selector: selector.clone(),
-                                slots,
-                                confirmed: false,
-                            }]
-                        }
                         PromptKind::ExtractVariable => {
                             let name = get("name").filter(|s| !s.is_empty())?.to_string();
                             let destination = match get("destination") {
@@ -796,6 +883,38 @@ impl ModalStack {
                 _ => {
                     if fields[*focus].choices.is_empty() {
                         fields[*focus].input.handle_key(key);
+                    }
+                    None // swallowed: modals capture all input
+                }
+            },
+            Modal::FieldsEditor(state) => match key.code {
+                KeyCode::Esc => Some(ModalResult {
+                    actions: vec![],
+                    close: true,
+                    ..Default::default()
+                }),
+                KeyCode::Enter => Some(ModalResult {
+                    actions: vec![Action::ApplyGroupFields {
+                        selector: state.selector.clone(),
+                        slots: state.slots(),
+                        confirmed: false,
+                    }],
+                    close: true,
+                    ..Default::default()
+                }),
+                KeyCode::Tab | KeyCode::Down => {
+                    state.focus_step(1);
+                    None // swallowed: modals capture all input
+                }
+                KeyCode::BackTab | KeyCode::Up => {
+                    state.focus_step(-1);
+                    None // swallowed: modals capture all input
+                }
+                _ => {
+                    if let Some(row) = state.rows.get_mut(state.focus)
+                        && !row.removed
+                    {
+                        row.input.handle_key(key);
                     }
                     None // swallowed: modals capture all input
                 }
@@ -1242,6 +1361,136 @@ impl ModalStack {
                     }
                     y += FIELD_HEIGHT + 1;
                 }
+
+                let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
+                draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered);
+            }
+            Modal::FieldsEditor(state) => {
+                // Top pad + title + blank, one `FIELD_HEIGHT` box per row,
+                // the add button, a gap, the cancel/confirm row, bottom pad.
+                let height = (3
+                    + state.rows.len() as u16 * FIELD_HEIGHT
+                    + BUTTON_HEIGHT
+                    + 1
+                    + BUTTON_HEIGHT
+                    + 1)
+                .min(screen.height);
+                let area = centered_rect(screen, 60.min(screen.width), height);
+                hits.register(area, crate::hit::Hit::ModalBody);
+                paint::floating_panel_settling(frame.buffer_mut(), area, screen, theme, t);
+                if t < 1.0 {
+                    return;
+                }
+
+                let title_y = area.y + 1;
+                paint::text(
+                    frame.buffer_mut(),
+                    area.x + 2,
+                    title_y,
+                    &format!("Fields of {}", state.selector),
+                    theme.text,
+                    theme.panel,
+                    true,
+                );
+
+                let field_x = area.x + 2;
+                // The row's text box stops short of a 4-column ✕/↩ zone.
+                let toggle_w: u16 = 4;
+                let field_w = area.width.saturating_sub(4 + toggle_w);
+                let mut y = title_y + 2;
+                for (i, row) in state.rows.iter().enumerate() {
+                    let focused = i == state.focus && !row.removed;
+                    let field_area = Rect {
+                        x: field_x,
+                        y,
+                        width: field_w,
+                        height: FIELD_HEIGHT,
+                    };
+                    if row.removed {
+                        // Marked for removal: the name, dim and struck,
+                        // where the box was.
+                        let name = row.input.text().to_string();
+                        let line = Line::from(ratatui::text::Span::styled(
+                            name,
+                            Style::default()
+                                .fg(theme.text_disabled)
+                                .add_modifier(ratatui::style::Modifier::CROSSED_OUT),
+                        ));
+                        TextField {
+                            content: line,
+                            state: ControlState::Disabled,
+                        }
+                        .paint(frame.buffer_mut(), field_area, theme);
+                    } else {
+                        TextField {
+                            content: row.input.draw_line_windowed(
+                                focused,
+                                theme,
+                                field_w.saturating_sub(2),
+                            ),
+                            state: if focused {
+                                ControlState::Focused
+                            } else {
+                                ControlState::Normal
+                            },
+                        }
+                        .paint(frame.buffer_mut(), field_area, theme);
+                        hits.register(field_area, crate::hit::Hit::ModalInput(i));
+                    }
+                    // The ✕ (or ↩ restore) button, on the box's middle row.
+                    let toggle_area = Rect {
+                        x: field_x + field_w + 1,
+                        y,
+                        width: toggle_w.saturating_sub(1),
+                        height: FIELD_HEIGHT,
+                    };
+                    let toggle_hit = crate::hit::Hit::ModalRowToggle(i);
+                    let toggle_hovered = hovered == Some(&toggle_hit);
+                    let glyph = if row.removed { "\u{21a9}" } else { "\u{2715}" };
+                    let fg = if toggle_hovered {
+                        theme.text
+                    } else {
+                        theme.text_muted
+                    };
+                    let bg = if toggle_hovered {
+                        theme.control_hover
+                    } else {
+                        theme.panel
+                    };
+                    paint::fill(frame.buffer_mut(), toggle_area, bg);
+                    paint::text(
+                        frame.buffer_mut(),
+                        toggle_area.x + 1,
+                        y + 1,
+                        glyph,
+                        fg,
+                        bg,
+                        false,
+                    );
+                    hits.register(toggle_area, toggle_hit);
+                    y += FIELD_HEIGHT;
+                }
+
+                // "+ Add field" under the rows, left-aligned.
+                let add_label = "+ Add field";
+                let add_area = Rect {
+                    x: field_x,
+                    y,
+                    width: paint::button_min_width(add_label).min(area.width.saturating_sub(4)),
+                    height: BUTTON_HEIGHT,
+                };
+                let add_hit = crate::hit::Hit::ModalAddRow;
+                Button {
+                    label: add_label,
+                    kind: ButtonKind::Secondary,
+                    state: if hovered == Some(&add_hit) {
+                        ControlState::Hover
+                    } else {
+                        ControlState::Normal
+                    },
+                }
+                .paint(frame.buffer_mut(), add_area, theme);
+                hits.register(add_area, add_hit);
 
                 let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
                 draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered);

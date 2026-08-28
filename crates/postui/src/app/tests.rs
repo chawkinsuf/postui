@@ -7143,7 +7143,7 @@ fn keyboard_n_and_g_open_the_new_var_and_new_group_prompts() {
     app.handle_key(&keymap, plain('g'));
     assert!(matches!(
         app.modals.top(),
-        Some(Modal::MultiPrompt {
+        Some(Modal::Prompt {
             kind: PromptKind::NewSelector,
             ..
         })
@@ -7239,7 +7239,7 @@ fn clicking_the_new_variable_button_opens_the_new_variable_prompt() {
     assert!(app.handle_mouse(left_down(rect.x + 1, rect.y + 1)));
     assert!(matches!(
         app.modals.top(),
-        Some(Modal::MultiPrompt {
+        Some(Modal::Prompt {
             kind: PromptKind::NewSelector,
             ..
         })
@@ -7247,7 +7247,7 @@ fn clicking_the_new_variable_button_opens_the_new_variable_prompt() {
 }
 
 #[test]
-fn prompt_new_group_takes_a_name_and_a_field_list() {
+fn prompt_new_selector_takes_a_name_and_defaults_its_field() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -7255,11 +7255,9 @@ fn prompt_new_group_takes_a_name_and_a_field_list() {
     let keymap = Keymap::default_bindings();
     app.update(Action::PromptNewSelector);
 
+    // Name only — the common case is a one-field selection set, so the
+    // field defaults to the selector's own name.
     for c in "creds".chars() {
-        app.handle_key(&keymap, plain(c));
-    }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-    for c in "user_id, customer_id".chars() {
         app.handle_key(&keymap, plain(c));
     }
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -7283,10 +7281,7 @@ fn prompt_new_group_takes_a_name_and_a_field_list() {
         .selectors
         .get("creds")
         .expect("selector created");
-    assert_eq!(
-        g.fields,
-        vec!["user_id".to_string(), "customer_id".to_string()]
-    );
+    assert_eq!(g.fields, vec!["creds".to_string()]);
     app.update(Action::ReloadProjectFiles);
     assert!(app.project.model.selectors.contains_key("creds"));
 }
@@ -7995,11 +7990,11 @@ fn add_new_entry_writes_to_the_active_envs_entries_table_selects_it_and_restores
     };
     assert!(matches!(kind, PromptKind::NewOptionInline { owner } if owner == "user"));
 
+    // The quick-create prompt is name + value only (no description field —
+    // that lives in the option's edit prompt).
     type_into_field(&mut app, &keymap, "carol");
     app.handle_key(&keymap, tab_key());
     type_into_field(&mut app, &keymap, "3003");
-    app.handle_key(&keymap, tab_key());
-    type_into_field(&mut app, &keymap, "temp hire");
     app.handle_key(&keymap, enter_key());
 
     assert!(app.modals.is_empty(), "closes back to the field");
@@ -8012,7 +8007,6 @@ fn add_new_entry_writes_to_the_active_envs_entries_table_selects_it_and_restores
     let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(env_doc.contains("[options.user.carol]"), "{env_doc}");
     assert!(env_doc.contains("3003"), "{env_doc}");
-    assert!(env_doc.contains("temp hire"), "{env_doc}");
 
     let shared_doc = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     assert!(
@@ -9437,6 +9431,147 @@ fn goto_group(app: &mut App, name: &str) {
     });
 }
 
+// -- The fields editor modal (per-row remove / add buttons) --------------
+
+fn fields_editor_app() -> (App, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    std::fs::write(
+        dir.path().join("variables.toml"),
+        "[selectors.creds]\nfields = [\"user_id\", \"customer_id\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("environments/qa.toml"),
+        "[options.creds.alice]\nuser_id = \"1001\"\ncustomer_id = \"c-77\"\n",
+    )
+    .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.anims.enabled = false;
+    app.update(Action::PromptGroupFields {
+        selector: "creds".into(),
+    });
+    (app, dir)
+}
+
+#[test]
+fn fields_editor_shows_a_row_per_field_with_remove_buttons_and_an_add_button() {
+    let (mut app, _dir) = fields_editor_app();
+    let Some(Modal::FieldsEditor(fe)) = app.modals.top() else {
+        panic!("expected the fields editor modal")
+    };
+    assert_eq!(fe.rows.len(), 2);
+    assert_eq!(fe.rows[0].input.text(), "user_id");
+    assert_eq!(fe.rows[1].input.text(), "customer_id");
+
+    rendered_text(&mut app);
+    assert!(
+        app.hits
+            .rect_of(&crate::hit::Hit::ModalRowToggle(0))
+            .is_some(),
+        "each row has a remove button"
+    );
+    assert!(
+        app.hits
+            .rect_of(&crate::hit::Hit::ModalRowToggle(1))
+            .is_some()
+    );
+    assert!(
+        app.hits.rect_of(&crate::hit::Hit::ModalAddRow).is_some(),
+        "an add-field button is present"
+    );
+}
+
+#[test]
+fn fields_editor_remove_button_marks_the_row_and_confirm_deletes_the_field() {
+    let (mut app, _dir) = fields_editor_app();
+    rendered_text(&mut app);
+    let r = app
+        .hits
+        .rect_of(&crate::hit::Hit::ModalRowToggle(1))
+        .unwrap();
+    app.handle_mouse(left_down(r.x, r.y));
+    let Some(Modal::FieldsEditor(fe)) = app.modals.top() else {
+        panic!("still open")
+    };
+    assert!(fe.rows[1].removed, "the ✕ marks the row for removal");
+
+    // Clicking again restores it...
+    rendered_text(&mut app);
+    let r = app
+        .hits
+        .rect_of(&crate::hit::Hit::ModalRowToggle(1))
+        .unwrap();
+    app.handle_mouse(left_down(r.x, r.y));
+    let Some(Modal::FieldsEditor(fe)) = app.modals.top() else {
+        panic!("still open")
+    };
+    assert!(!fe.rows[1].removed);
+
+    // ...remove it again and apply: the existing removal confirm guards.
+    rendered_text(&mut app);
+    let r = app
+        .hits
+        .rect_of(&crate::hit::Hit::ModalRowToggle(1))
+        .unwrap();
+    app.handle_mouse(left_down(r.x, r.y));
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let Some(Modal::Confirm { title, .. }) = app.modals.top() else {
+        panic!("a removal must confirm first")
+    };
+    assert!(title.contains("customer_id"), "{title}");
+    app.handle_key(&keymap, plain('y'));
+    assert_eq!(app.project.model.selectors["creds"].fields, vec!["user_id"]);
+}
+
+#[test]
+fn fields_editor_rename_types_into_the_row() {
+    let (mut app, _dir) = fields_editor_app();
+    let keymap = Keymap::default_bindings();
+    // Row 0 focused; retype it.
+    for _ in 0.."user_id".len() {
+        app.handle_key(
+            &keymap,
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+        );
+    }
+    for c in "uid".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.modals.is_empty(), "apply closes the editor");
+    assert_eq!(
+        app.project.model.selectors["creds"].fields,
+        vec!["uid", "customer_id"]
+    );
+}
+
+#[test]
+fn fields_editor_add_button_appends_a_focused_row() {
+    let (mut app, _dir) = fields_editor_app();
+    rendered_text(&mut app);
+    let r = app.hits.rect_of(&crate::hit::Hit::ModalAddRow).unwrap();
+    app.handle_mouse(left_down(r.x, r.y));
+    let Some(Modal::FieldsEditor(fe)) = app.modals.top() else {
+        panic!("still open")
+    };
+    assert_eq!(fe.rows.len(), 3);
+    assert_eq!(fe.focus, 2, "the new row takes focus");
+
+    let keymap = Keymap::default_bindings();
+    for c in "region".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.modals.is_empty());
+    assert_eq!(
+        app.project.model.selectors["creds"].fields,
+        vec!["user_id", "customer_id", "region"]
+    );
+}
+
 fn cell_rect(app: &mut App, row: usize, col: usize) -> ratatui::layout::Rect {
     rendered_text_tall(app);
     app.hits
@@ -9939,20 +10074,12 @@ fn the_new_entry_button_starts_the_ghost_row_and_edit_fields_opens_the_editor() 
     rendered_text_tall(&mut app);
     let r = app.hits.rect_of(&crate::hit::Hit::VmEditFields).unwrap();
     app.handle_mouse(left_down(r.x + 1, r.y + 1));
-    assert!(matches!(
-        app.modals.top(),
-        Some(Modal::MultiPrompt {
-            kind: PromptKind::GroupFields { .. },
-            ..
-        })
-    ));
-    // One slot per current field, plus the empty "add field" slot.
-    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
-        unreachable!()
+    // One editable row per current field.
+    let Some(Modal::FieldsEditor(fe)) = app.modals.top() else {
+        panic!("expected the fields editor")
     };
-    assert_eq!(fields.len(), 2);
-    assert_eq!(fields[0].input.text(), "user");
-    assert_eq!(fields[1].input.text(), "");
+    assert_eq!(fe.rows.len(), 1);
+    assert_eq!(fe.rows[0].input.text(), "user");
 }
 
 // -- Task 17: the mouse-parity sweep (spec §5) --------------------------

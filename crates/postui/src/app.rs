@@ -2669,15 +2669,11 @@ impl App {
                 true
             }
             Action::PromptNewSelector => {
-                use crate::components::modal::PromptField;
-                self.push_modal(Modal::MultiPrompt {
+                self.push_modal(Modal::Prompt {
                     title: "New selector".into(),
-                    fields: vec![
-                        PromptField::text("name", "Name", ""),
-                        PromptField::text("fields", "Fields (comma separated)", ""),
-                    ],
-                    focus: 0,
+                    input: LineInput::new(""),
                     kind: PromptKind::NewSelector,
+                    revealed: false,
                 });
                 true
             }
@@ -2792,22 +2788,6 @@ impl App {
                     title,
                     input: LineInput::new(&from),
                     kind: PromptKind::RenameVariable { from },
-                    revealed: false,
-                });
-                true
-            }
-            Action::PromptEditSelectorFields { selector } => {
-                let seed = self
-                    .project
-                    .model
-                    .selectors
-                    .get(&selector)
-                    .map(|g| g.fields.join(", "))
-                    .unwrap_or_default();
-                self.push_modal(Modal::Prompt {
-                    title: format!("Members of {selector}"),
-                    input: LineInput::new(&seed),
-                    kind: PromptKind::SelectorFields { selector },
                     revealed: false,
                 });
                 true
@@ -2937,7 +2917,7 @@ impl App {
 
             // -- Task 16: the selector options grid (spec §3.4) --
             Action::PromptGroupFields { selector } => {
-                use crate::components::modal::PromptField;
+                use crate::components::modal::FieldsEditorState;
                 let current = self
                     .project
                     .model
@@ -2945,27 +2925,9 @@ impl App {
                     .get(&selector)
                     .map(|g| g.fields.clone())
                     .unwrap_or_default();
-                // One slot per current field, in order — position is the
-                // identity, so an edited slot reads as a rename — plus one
-                // empty slot to add a field with.
-                let mut fields: Vec<PromptField> = current
-                    .iter()
-                    .enumerate()
-                    .map(|(i, f)| {
-                        PromptField::text(&format!("f{i}"), &format!("Field {}", i + 1), f)
-                    })
-                    .collect();
-                fields.push(PromptField::text(
-                    &format!("f{}", current.len()),
-                    "Add field",
-                    "",
-                ));
-                self.push_modal(Modal::MultiPrompt {
-                    title: format!("Fields of {selector}"),
-                    fields,
-                    focus: 0,
-                    kind: PromptKind::GroupFields { selector },
-                });
+                self.push_modal(Modal::FieldsEditor(FieldsEditorState::new(
+                    selector, &current,
+                )));
                 true
             }
             Action::ApplyGroupFields {
@@ -3024,12 +2986,14 @@ impl App {
             // -- Task 17: in-context flows (spec §6) --
             Action::OpenNewOptionInlinePrompt { owner } => {
                 use crate::components::modal::PromptField;
+                // No description field here: the quick-create flow stays
+                // lean; a description can be added later through the
+                // option's edit prompt in the Manager.
                 self.push_modal(Modal::MultiPrompt {
                     title: format!("Add option on {owner}"),
                     fields: vec![
                         PromptField::text("key", "Name", ""),
                         PromptField::text("value", "Value", ""),
-                        PromptField::text("description", "Description", ""),
                     ],
                     focus: 0,
                     kind: PromptKind::NewOptionInline { owner },
@@ -4083,13 +4047,22 @@ impl App {
                 return;
             }
             // A field belongs to exactly one selector, and shares the
-            // declaration namespace with variables and selectors.
-            let clash = self.project.model.selectors.iter().any(|(g, decl)| {
-                g == name || (g != &selector && decl.fields.iter().any(|f| f == name))
+            // declaration namespace with variables and selectors — a
+            // {{token}} has to name one thing. The toast says who owns the
+            // name so the rule is legible, not just enforced.
+            let owner = self.project.model.selectors.iter().find_map(|(g, decl)| {
+                if g == name {
+                    Some(format!("\"{name}\" is already a selector"))
+                } else if g != &selector && decl.fields.iter().any(|f| f == name) {
+                    Some(format!(
+                        "\"{name}\" is already a field of selector \"{g}\"; every field names one {{{{token}}}}, so it can only belong to one selector"
+                    ))
+                } else {
+                    None
+                }
             });
-            if clash {
-                self.toasts
-                    .push(format!("\"{name}\" already exists"), ToastKind::Error);
+            if let Some(msg) = owner {
+                self.toasts.push(msg, ToastKind::Error);
                 return;
             }
         }
