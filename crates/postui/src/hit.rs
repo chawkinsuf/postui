@@ -122,6 +122,11 @@ pub enum Hit {
     /// The variable form's `👁 reveal`/`hide` toggle beside a secret's
     /// "Value in <env>" field.
     VmRevealToggle,
+    /// The variable form's `✕ remove` control beside the "Value in <env>"
+    /// label — offered only while the environment actually stores a value
+    /// (or a secret) for the selected variable, and the explicit way to
+    /// un-set it (the value popup's Remove button's twin).
+    VmRemoveEnvValue,
     /// The variable form's title-row `[Rename]` button.
     VmRename,
     /// The variable form's title-row `[Delete]` button.

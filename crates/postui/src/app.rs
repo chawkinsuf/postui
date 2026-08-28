@@ -2606,6 +2606,25 @@ impl App {
                             self.last_action_failed = true;
                             return true;
                         };
+                        // A secret's stored value lives in the secrets
+                        // store, not the env file (the variable form's
+                        // remove control reaches here for secrets too).
+                        let secret = self.project.model.vars.get(&name).is_some_and(|d| d.secret);
+                        if secret {
+                            match self.project.remove_secret_for(&env, &name) {
+                                Ok(()) => {
+                                    self.toasts.push(
+                                        format!("removed {name}'s value for env {env}"),
+                                        ToastKind::Success,
+                                    );
+                                }
+                                Err(msg) => {
+                                    self.toasts.push(msg, ToastKind::Error);
+                                    self.last_action_failed = true;
+                                }
+                            }
+                            return true;
+                        }
                         let before = self.read_file_states(&self.project.var_file_paths());
                         match self
                             .project
@@ -3668,18 +3687,8 @@ impl App {
 
     fn apply_var_edit(&mut self, op: &VarEditOp) -> Result<(), String> {
         match op {
-            // An emptied value means "remove the stored pair" (there is no
-            // other way to un-set an env value from the form) — quietly a
-            // no-op when the env stores nothing to begin with.
             VarEditOp::SetEnvValue { env, name, value } => self.project.edit_env(env, |doc| {
-                if value.is_empty() {
-                    match postui_core::varedit::set_env_value(doc, name, None) {
-                        Err(postui_core::varedit::EditError::NotFound(_)) => Ok(doc.to_string()),
-                        r => r,
-                    }
-                } else {
-                    postui_core::varedit::set_env_value(doc, name, Some(value))
-                }
+                postui_core::varedit::set_env_value(doc, name, Some(value))
             }),
             VarEditOp::SetDefault { name, value } => self.project.edit_variables(|doc| {
                 postui_core::varedit::upsert_var(doc, name, None, Some(value))
@@ -3705,13 +3714,8 @@ impl App {
                     ))
                 }
             }
-            // Same emptied-means-remove contract as `SetEnvValue` above.
             VarEditOp::SetSecretValue { env, name, value } => {
-                if value.is_empty() {
-                    self.project.remove_secret_for(env, name)
-                } else {
-                    self.project.set_secret_for(env, name, value.clone())
-                }
+                self.project.set_secret_for(env, name, value.clone())
             }
             VarEditOp::SetOptionValue {
                 env,

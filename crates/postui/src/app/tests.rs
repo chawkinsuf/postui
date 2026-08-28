@@ -11523,14 +11523,12 @@ mod undo_tests {
     }
 
     /// User finding: there was no way to remove an env value from the
-    /// variable form — committing an emptied field wrote `name = ""`
-    /// instead. An empty commit now deletes the stored pair, so the
-    /// resolution falls back to the declaration default.
+    /// variable form. It gets an explicit `✕ remove` control beside the
+    /// "Value in <env>" label (mirroring the value popup's Remove button)
+    /// — an emptied field commit stays a verbatim write (`name = ""`),
+    /// deliberately not overloaded to mean removal.
     #[test]
-    fn committing_an_empty_env_value_removes_the_stored_pair() {
-        use crate::components::line_input::LineInput;
-        use crate::components::varmanager::VmField;
-
+    fn clicking_the_env_value_remove_control_removes_the_stored_pair() {
         let dir = tempfile::tempdir().unwrap();
         var_project(dir.path());
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -11539,10 +11537,13 @@ mod undo_tests {
             r == &crate::components::varmanager::VmRow::Var("base_url".into())
         });
 
-        app.varmanager.form.editing = Some((VmField::EnvValue, LineInput::new("")));
-        app.commit_var_form();
+        rendered_text_tall(&mut app);
+        let r = app
+            .hits
+            .rect_of(&crate::hit::Hit::VmRemoveEnvValue)
+            .expect("a stored env value offers the remove control");
+        app.handle_mouse(left_down(r.x, r.y));
 
-        assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
         let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
         assert!(!on_disk.contains("base_url"), "pair removed: {on_disk}");
         assert_eq!(
@@ -11559,10 +11560,11 @@ mod undo_tests {
         );
     }
 
-    /// Companion to the removal test: an empty commit when the env stores
-    /// nothing must be a quiet no-op, not a "not found" error toast.
+    /// With nothing stored there is nothing to remove, so the control
+    /// isn't offered — and an emptied commit writes `name = ""` verbatim
+    /// (an explicit empty value, not a removal).
     #[test]
-    fn committing_an_empty_env_value_with_nothing_stored_is_a_no_op() {
+    fn the_remove_control_is_absent_when_the_env_stores_nothing() {
         use crate::components::line_input::LineInput;
         use crate::components::varmanager::VmField;
 
@@ -11576,24 +11578,29 @@ mod undo_tests {
             r == &crate::components::varmanager::VmRow::Var("base_url".into())
         });
 
+        rendered_text_tall(&mut app);
+        assert!(
+            app.hits
+                .rect_of(&crate::hit::Hit::VmRemoveEnvValue)
+                .is_none(),
+            "no stored value, no remove control"
+        );
+
         app.varmanager.form.editing = Some((VmField::EnvValue, LineInput::new("")));
         app.commit_var_form();
-
         assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-        assert_eq!(
-            std::fs::read_to_string(&qa_path).unwrap(),
-            "[options.user.alice]\nuser = \"1001\"\n",
-            "nothing stored, nothing changed"
+        assert!(
+            std::fs::read_to_string(&qa_path)
+                .unwrap()
+                .contains("base_url = \"\""),
+            "an emptied commit writes the empty value verbatim"
         );
     }
 
-    /// The secret twin: an empty commit on a secret's value removes it
-    /// from the secrets store (memory and `.local/secrets.toml` both).
+    /// The secret twin: the remove control clears the stored secret from
+    /// the secrets store (memory and `.local/secrets.toml` both).
     #[test]
-    fn committing_an_empty_secret_value_removes_it_from_the_secrets_store() {
-        use crate::components::line_input::LineInput;
-        use crate::components::varmanager::VmField;
-
+    fn the_remove_control_clears_a_stored_secret_value() {
         let dir = tempfile::tempdir().unwrap();
         var_project(dir.path());
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -11603,18 +11610,17 @@ mod undo_tests {
             name: "api_key".into(),
             value: "s3cret".into(),
         }));
-        assert_eq!(
-            app.project.secrets.get("qa").and_then(|m| m.get("api_key")),
-            Some(&"s3cret".to_string())
-        );
         goto_row(&mut app, |r| {
             r == &crate::components::varmanager::VmRow::Var("api_key".into())
         });
 
-        app.varmanager.form.editing = Some((VmField::EnvValue, LineInput::new("")));
-        app.commit_var_form();
+        rendered_text_tall(&mut app);
+        let r = app
+            .hits
+            .rect_of(&crate::hit::Hit::VmRemoveEnvValue)
+            .expect("a stored secret offers the remove control");
+        app.handle_mouse(left_down(r.x, r.y));
 
-        assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
         assert_eq!(
             app.project.secrets.get("qa").and_then(|m| m.get("api_key")),
             None,

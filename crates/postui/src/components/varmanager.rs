@@ -1489,23 +1489,41 @@ impl VarManager {
                 theme.page,
                 false,
             );
+            // Small accent-colored inline controls, laid right-to-left
+            // from the label row's right edge.
+            let mut right = x0 + field_w;
+            let mut inline_control =
+                |buf: &mut Buffer, hits: &mut HitMap, label: &str, hit: Hit| {
+                    let style = if hovered == Some(&hit) {
+                        Style::default().bg(theme.accent).fg(theme.on_accent)
+                    } else {
+                        Style::default().fg(theme.accent)
+                    };
+                    let w = label.chars().count() as u16;
+                    let x = right.saturating_sub(w);
+                    buf.set_string(x, y, label, style);
+                    hits.register(Rect::new(x, y, w, 1), hit);
+                    right = x.saturating_sub(2);
+                };
             if secret {
                 let reveal_label = if self.form.revealed {
                     "\u{1f441} hide"
                 } else {
                     "\u{1f441} reveal"
                 };
-                let hit = Hit::VmRevealToggle;
-                let hovered_toggle = hovered == Some(&hit);
-                let style = if hovered_toggle {
-                    Style::default().bg(theme.accent).fg(theme.on_accent)
-                } else {
-                    Style::default().fg(theme.accent)
-                };
-                let rw = reveal_label.chars().count() as u16;
-                let rx = (x0 + field_w).saturating_sub(rw);
-                buf.set_string(rx, y, reveal_label, style);
-                hits.register(Rect::new(rx, y, rw, 1), hit);
+                inline_control(buf, hits, reveal_label, Hit::VmRevealToggle);
+            }
+            // The explicit way to un-set the stored value (the value
+            // popup's Remove button's twin) — only offered while the
+            // environment actually stores one; a bare default shows
+            // "(not set)" and has nothing here to remove.
+            let stored = match &ctx.active_env {
+                Some(env) if secret => ctx.secrets.get(env).is_some_and(|m| m.contains_key(name)),
+                Some(_) => ctx.env_data.values.contains_key(name),
+                None => false,
+            };
+            if stored {
+                inline_control(buf, hits, "\u{2715} remove", Hit::VmRemoveEnvValue);
             }
             y += 1;
         }

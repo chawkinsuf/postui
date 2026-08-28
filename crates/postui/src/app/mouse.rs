@@ -1263,6 +1263,17 @@ impl App {
                 self.varmanager.form.revealed = !self.varmanager.form.revealed;
                 self.update(Action::Render)
             }
+            Hit::VmRemoveEnvValue => {
+                let crate::components::varmanager::VmDetail::Var(name) =
+                    self.varmanager.detail.clone()
+                else {
+                    return false;
+                };
+                self.update(Action::RemoveVarValue {
+                    name,
+                    destination: crate::action::ExtractDestination::ActiveEnv,
+                })
+            }
             // Both buttons are on the variable form *and* the selector pane;
             // the rename/delete flows behind them already branch on what
             // the name is declared as.
