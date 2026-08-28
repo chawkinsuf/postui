@@ -271,10 +271,22 @@ pub enum Action {
     OpenVarPicker {
         completing: bool,
     },
-    /// Opens the same insert picker with its filter pre-seeded to a
-    /// variable name — what clicking an inline `{{token}}` does (spec §7),
-    /// so the picker comes up already narrowed to the token clicked.
-    OpenVarPickerFor(String),
+    /// The value control behind clicking an inline `{{token}}`: a selector
+    /// field opens the `SelectOption` picker (pick an option, every linked
+    /// field updates), a secret opens the masked secret prompt, a simple /
+    /// request-scoped name opens the value-edit popup (value +
+    /// write-destination scope), and an undefined name falls back to the
+    /// insert picker seeded with the name (its "new variable…" row is the
+    /// create flow).
+    OpenVarTokenPopup(String),
+    /// The value-edit popup's confirm: write `value` for `name` into the
+    /// chosen destination — the request's `[variables]`, the active
+    /// environment's flat value, or the declaration default.
+    ConfirmEditVarValue {
+        name: String,
+        value: String,
+        destination: ExtractDestination,
+    },
     /// Insert `text` at the currently focused text field: the URL line, an
     /// in-progress table cell edit, or the body buffer (Body tab +
     /// content focus). Toasts "nowhere to insert" when focus isn't on a

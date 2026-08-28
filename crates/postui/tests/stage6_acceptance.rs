@@ -112,17 +112,21 @@ async fn stage6_acceptance_flow() {
         description: Some("API root".into()),
     }));
 
-    // A one-field group — what an enumerated variable is in stage 7.
+    // A one-field selector — what an enumerated variable migrates into.
+    // Declaring one walks into the first-option prompt; this flow adds its
+    // options explicitly below, so dismiss it.
     app.update(Action::VarStruct(VarStructOp::NewSelector {
         name: "region".into(),
         fields: vec!["region".into()],
     }));
+    app.modals.pop();
 
-    // A group whose entries carry both fields at once.
+    // A selector whose options carry both fields at once.
     app.update(Action::VarStruct(VarStructOp::NewSelector {
         name: "creds".into(),
         fields: vec!["user_id".into(), "customer_id".into()],
     }));
+    app.modals.pop();
 
     // A secret variable — declared plain, then flipped (spec §3's
     // off->on transition, no default ever committed).

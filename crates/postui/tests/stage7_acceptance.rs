@@ -636,6 +636,9 @@ fn a_legacy_project_migrates_then_grows_a_group_whose_selection_drives_resolutio
     key(&mut app, &keymap, KeyCode::Tab);
     type_text(&mut app, &keymap, "zone,dc");
     key(&mut app, &keymap, KeyCode::Enter);
+    // Declaring walks into the first-option prompt; this scenario adds its
+    // options through the grid's ghost row instead, so dismiss it.
+    key(&mut app, &keymap, KeyCode::Esc);
     assert_eq!(
         app.project.model.selectors["region"].fields,
         ["zone", "dc"],

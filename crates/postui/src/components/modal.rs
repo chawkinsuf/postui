@@ -109,6 +109,14 @@ pub enum PromptKind {
     /// `Action::ConfirmExtractVariable`; the origin field to rewrite is
     /// re-read from current focus rather than carried here.
     ExtractVariable,
+    /// Clicking a simple variable's inline `{{token}}`
+    /// (`Action::OpenVarTokenPopup`): a `Modal::MultiPrompt` with a `value`
+    /// field seeded with the current value and a `destination` choice field
+    /// preselected to whichever scope supplies it today. Confirming emits
+    /// `Action::ConfirmEditVarValue`.
+    EditVarValue {
+        name: String,
+    },
 }
 
 /// One field of a `Modal::MultiPrompt`: a stable domain `key` (e.g.
@@ -554,7 +562,8 @@ impl ModalStack {
                         | PromptKind::GroupFields { .. }
                         | PromptKind::NewOptionInline { .. }
                         | PromptKind::EditOption { .. }
-                        | PromptKind::ExtractVariable => {
+                        | PromptKind::ExtractVariable
+                        | PromptKind::EditVarValue { .. } => {
                             unreachable!(
                                 "multi-field prompt kinds only ever back Modal::MultiPrompt"
                             )
@@ -757,6 +766,24 @@ impl ModalStack {
                                 _ => ExtractDestination::ProjectDefault,
                             };
                             vec![Action::ConfirmExtractVariable { name, destination }]
+                        }
+                        PromptKind::EditVarValue { name } => {
+                            // An emptied value is a legitimate edit (clear
+                            // the override), so no non-empty filter here.
+                            let value = fields
+                                .iter()
+                                .find(|f| f.key == "value")
+                                .map(|f| f.input.text().to_string())?;
+                            let destination = match get("destination") {
+                                Some("Active env value") => ExtractDestination::ActiveEnv,
+                                Some("This request") => ExtractDestination::Request,
+                                _ => ExtractDestination::ProjectDefault,
+                            };
+                            vec![Action::ConfirmEditVarValue {
+                                name: name.clone(),
+                                value,
+                                destination,
+                            }]
                         }
                         _ => return None, // not a MultiPrompt kind
                     };

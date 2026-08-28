@@ -1079,7 +1079,7 @@ impl App {
             // Clicking a drawn `{{token}}` opens the var picker already
             // filtered to that name (spec §7) — the shortest path from
             // "what is this?" to the variable itself.
-            Hit::VarToken(name) => self.update(Action::OpenVarPickerFor(name)),
+            Hit::VarToken(name) => self.update(Action::OpenVarTokenPopup(name)),
             // Like `VmFormField`/`VmEntryCell` above: the commit attempts at
             // the top of this function just ran, and a write failure
             // restores the original edit (still live) with its typed text.

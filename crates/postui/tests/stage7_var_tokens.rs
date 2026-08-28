@@ -285,24 +285,24 @@ fn a_secrets_tooltip_is_masked_and_never_reveals_the_value() {
 }
 
 #[test]
-fn clicking_a_token_opens_the_var_picker_prefiltered_to_it() {
+fn clicking_a_token_opens_the_value_popup_on_its_supplying_scope() {
     let mut app = app_with_vars();
     set_url(&mut app, "{{base_url}}/x");
     let r = token_rect(&mut app, "base_url");
     app.handle_mouse(left_down(r.x + 1, r.y));
 
     match app.modals.top() {
-        Some(Modal::VarPicker(state)) => {
-            assert_eq!(state.input(), "base_url", "the filter is seeded");
+        Some(Modal::MultiPrompt { title, fields, .. }) => {
+            assert_eq!(title, "{{base_url}}");
+            let value = fields.iter().find(|f| f.key == "value").unwrap();
+            assert_eq!(value.input.text(), "http://qa.test");
+            let scope = fields.iter().find(|f| f.key == "destination").unwrap();
+            assert_eq!(scope.input.text(), "Active env value");
         }
-        _ => panic!("expected a seeded var picker on top of the modal stack"),
+        _ => panic!("expected the value-edit popup on top of the modal stack"),
     }
     let frame = dump(&mut app);
     assert!(frame.contains("base_url"), "{frame}");
-    assert!(
-        !frame.contains("api_key"),
-        "the seed filters the other variables out: {frame}"
-    );
 }
 
 #[test]
@@ -341,12 +341,12 @@ fn tokens_in_table_cells_are_tinted_and_hoverable_without_disturbing_the_table()
         "the cell under the token keeps the hover styling"
     );
 
-    // ...and neither does clicking it (which opens the picker instead of
-    // starting a cell edit).
+    // ...and neither does clicking it (which opens the value popup
+    // instead of starting a cell edit).
     app.handle_mouse(left_down(r.x + 1, r.y));
     assert_eq!(app.editor.table.selected, Some(0));
     assert!(app.editor.table.editing.is_none(), "no cell edit started");
-    assert!(matches!(app.modals.top(), Some(Modal::VarPicker(_))));
+    assert!(matches!(app.modals.top(), Some(Modal::MultiPrompt { .. })));
 }
 
 #[test]

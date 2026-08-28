@@ -955,9 +955,10 @@ impl App {
     }
 
     /// Opens the insert var picker, optionally with its fuzzy filter
-    /// pre-seeded (clicking an inline `{{token}}` opens the picker already
-    /// narrowed to that name — spec §7). Shared by `Action::OpenVarPicker`'s
-    /// plain path and `Action::OpenVarPickerFor`.
+    /// pre-seeded (clicking an *undefined* inline `{{token}}` opens the
+    /// picker already narrowed to that name, its "new variable…" row being
+    /// the create flow). Shared by `Action::OpenVarPicker`'s plain path and
+    /// `Action::OpenVarTokenPopup`'s undefined-name fallback.
     fn open_insert_var_picker(&mut self, completing: bool, seed: Option<&str>) -> bool {
         use crate::components::modal::Modal;
         use crate::components::var_picker::{VarPickerState, insert_entries};
@@ -2516,9 +2517,71 @@ impl App {
                 }
                 self.open_insert_var_picker(completing, None)
             }
-            Action::OpenVarPickerFor(name) => {
+            Action::OpenVarTokenPopup(name) => {
                 self.apply(Action::ReloadProjectFiles);
-                self.open_insert_var_picker(false, Some(&name))
+                use postui_core::varmodel::VarMeta;
+                match self.project.resolved.meta.get(&name).cloned() {
+                    Some(VarMeta::SelectorMember { selector, .. }) => {
+                        return self.open_select_picker(name, selector);
+                    }
+                    Some(VarMeta::NeedsSelection) => {
+                        let Some(selector) = self
+                            .project
+                            .model
+                            .selectors
+                            .iter()
+                            .find(|(_, s)| s.fields.contains(&name))
+                            .map(|(n, _)| n.clone())
+                        else {
+                            return self.open_insert_var_picker(false, Some(&name));
+                        };
+                        return self.open_select_picker(name, selector);
+                    }
+                    Some(VarMeta::Secret) | Some(VarMeta::MissingSecret) => {
+                        self.push_modal(Modal::Prompt {
+                            title: format!("Secret {{{{{name}}}}}"),
+                            input: LineInput::new(""),
+                            kind: PromptKind::SecretValue {
+                                name,
+                                env: self.project.active_env.clone().unwrap_or_default(),
+                            },
+                            revealed: false,
+                        });
+                        return true;
+                    }
+                    Some(VarMeta::Simple) => return self.open_edit_value_popup(&name),
+                    None => {}
+                }
+                // Undeclared: a request-scoped or stray env value still has
+                // a value to edit; a name defined nowhere gets the insert
+                // picker, whose "new variable…" row is the create flow.
+                let has_value = self.editor.variables.contains_key(&name)
+                    || self.project.resolved.values.contains_key(&name);
+                if has_value {
+                    self.open_edit_value_popup(&name)
+                } else {
+                    self.open_insert_var_picker(false, Some(&name))
+                }
+            }
+            Action::ConfirmEditVarValue {
+                name,
+                value,
+                destination,
+            } => {
+                use crate::action::ExtractDestination;
+                let op = match destination {
+                    ExtractDestination::Request => VarEditOp::SetRequestVar { name, value },
+                    ExtractDestination::ActiveEnv => {
+                        let Some(env) = self.project.active_env.clone() else {
+                            self.toasts
+                                .push("no active environment to write to", ToastKind::Warning);
+                            return true;
+                        };
+                        VarEditOp::SetEnvValue { env, name, value }
+                    }
+                    ExtractDestination::ProjectDefault => VarEditOp::SetDefault { name, value },
+                };
+                self.apply(Action::VarEdit(op))
             }
             Action::OpenNewVariablePrompt {
                 prefill,
@@ -2855,6 +2918,14 @@ impl App {
                         }
                         self.varmanager.sync(&self.project);
                         self.record_var_file_step(before);
+                        // A selector with no options can't resolve, so a
+                        // fresh declaration walks straight into creating
+                        // its first option.
+                        if let VarStructOp::NewSelector { name, .. } = &op {
+                            self.apply(Action::OpenNewOptionInlinePrompt {
+                                owner: name.clone(),
+                            });
+                        }
                     }
                     Err(msg) => {
                         self.toasts.push(msg, ToastKind::Error);
@@ -3381,6 +3452,57 @@ impl App {
         }
     }
 
+    /// Builds and opens the value-edit popup for a simple (or
+    /// request-scoped / stray-env) variable's `{{token}}`: a `value` field
+    /// seeded with the current effective value and a `destination` choice
+    /// preselected to whichever scope supplies that value today — the
+    /// request's `[variables]` overlay, the active environment's flat
+    /// value, or the declaration default. Confirming dispatches
+    /// `Action::ConfirmEditVarValue`, which writes the chosen scope.
+    fn open_edit_value_popup(&mut self, name: &str) -> bool {
+        use crate::components::modal::{Modal, PromptField, PromptKind};
+
+        let request_value = self
+            .editor
+            .variables
+            .get(name)
+            .filter(|e| e.enabled)
+            .map(|e| e.value.clone());
+        let env_value = self.project.env_data.values.get(name).cloned();
+        let has_env = self.project.active_env.is_some();
+
+        let seed = request_value
+            .clone()
+            .or_else(|| self.project.resolved.values.get(name).cloned())
+            .unwrap_or_default();
+
+        let mut choices: Vec<&str> = vec!["Project default"];
+        if has_env {
+            choices.push("Active env value");
+        }
+        choices.push("This request");
+        let preselect = if request_value.is_some() {
+            "This request"
+        } else if has_env && env_value.is_some() {
+            "Active env value"
+        } else {
+            "Project default"
+        };
+
+        let mut destination = PromptField::choice("destination", "Write to", &choices);
+        destination.input = LineInput::new(preselect);
+
+        self.push_modal(Modal::MultiPrompt {
+            title: format!("{{{{{name}}}}}"),
+            fields: vec![PromptField::text("value", "Value", &seed), destination],
+            focus: 0,
+            kind: PromptKind::EditVarValue {
+                name: name.to_string(),
+            },
+        });
+        true
+    }
+
     /// Builds and opens the `SelectOption` picker (spec §6's first
     /// context) for `name`, a field of `selector`: rows are `selector`'s options
     /// in the active environment, each previewed as its per-field values,
@@ -3422,11 +3544,9 @@ impl App {
                 })
                 .unwrap_or_default();
         if options.is_empty() {
-            self.toasts.push(
-                format!("{selector} has no options here"),
-                ToastKind::Warning,
-            );
-            return true;
+            // Nothing to select yet — walk straight into creating the
+            // selector's first option in this environment.
+            return self.apply(Action::OpenNewOptionInlinePrompt { owner: selector });
         }
         self.push_modal(Modal::VarPicker(VarPickerState::new_select(
             options, name, selector, env_key,

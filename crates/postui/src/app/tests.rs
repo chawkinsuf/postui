@@ -7264,18 +7264,29 @@ fn prompt_new_group_takes_a_name_and_a_field_list() {
     }
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
+    // A fresh selector has no options yet, so the first-option prompt
+    // opens on top rather than leaving an unresolvable declaration.
+    let Some(Modal::MultiPrompt { kind, .. }) = app.modals.top() else {
+        panic!("expected the first-option prompt")
+    };
+    assert_eq!(
+        *kind,
+        PromptKind::NewOptionInline {
+            owner: "creds".into()
+        }
+    );
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
     let g = app
         .project
         .model
         .selectors
         .get("creds")
-        .expect("group created");
+        .expect("selector created");
     assert_eq!(
         g.fields,
         vec!["user_id".to_string(), "customer_id".to_string()]
     );
-    // and the empty group survives a reload (parse accepts fields = [])
     app.update(Action::ReloadProjectFiles);
     assert!(app.project.model.selectors.contains_key("creds"));
 }
@@ -7425,6 +7436,246 @@ fn ctrl_v_on_a_one_field_groups_token_opens_select_option_with_checkmark() {
         content.contains("\u{2713}"),
         "current pick is checked: {content}"
     );
+}
+
+// -- Clicking a token is a value control, not an insert picker ----------
+
+fn token_popup_app() -> (App, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.anims.enabled = false;
+    (app, dir)
+}
+
+#[test]
+fn clicking_a_selector_field_token_opens_the_select_picker() {
+    let (mut app, _dir) = token_popup_app();
+    app.project.set_selection_for("qa", "user", "alice");
+    app.editor.url = crate::components::line_input::LineInput::new("https://x/{{user}}");
+    render_once(&mut app);
+
+    let r = app
+        .hits
+        .rect_of(&crate::hit::Hit::VarToken("user".into()))
+        .expect("the token registers a hit");
+    app.handle_mouse(left_down(r.x, r.y));
+
+    let Some(Modal::VarPicker(p)) = app.modals.top() else {
+        panic!("clicking a selector-field token must open the select picker")
+    };
+    assert_eq!(
+        p.mode,
+        crate::components::var_picker::PickerMode::SelectOption {
+            name: "user".into(),
+            selector: "user".into(),
+        }
+    );
+}
+
+#[test]
+fn clicking_a_simple_var_token_opens_the_value_popup_on_its_supplying_scope() {
+    let (mut app, _dir) = token_popup_app();
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+
+    let Some(Modal::MultiPrompt {
+        title,
+        fields,
+        kind,
+        ..
+    }) = app.modals.top()
+    else {
+        panic!("a simple variable token must open the value popup")
+    };
+    assert_eq!(title, "{{base_url}}");
+    assert_eq!(
+        *kind,
+        PromptKind::EditVarValue {
+            name: "base_url".into()
+        }
+    );
+    let value = fields.iter().find(|f| f.key == "value").unwrap();
+    assert_eq!(value.input.text(), "https://qa.example.com");
+    let scope = fields.iter().find(|f| f.key == "destination").unwrap();
+    assert_eq!(
+        scope.input.text(),
+        "Active env value",
+        "the env supplies the value today, so the env scope is preselected"
+    );
+    assert!(
+        scope.choices.iter().any(|c| c == "This request"),
+        "{:?}",
+        scope.choices
+    );
+    assert!(
+        scope.choices.iter().any(|c| c == "Project default"),
+        "{:?}",
+        scope.choices
+    );
+}
+
+#[test]
+fn the_value_popup_preselects_the_request_scope_when_a_request_var_supplies_it() {
+    let (mut app, _dir) = token_popup_app();
+    app.editor.variables.insert(
+        "base_url".into(),
+        postui_core::model::Entry {
+            value: "http://req.local".into(),
+            enabled: true,
+        },
+    );
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+
+    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
+        panic!("expected the value popup")
+    };
+    let value = fields.iter().find(|f| f.key == "value").unwrap();
+    assert_eq!(value.input.text(), "http://req.local");
+    let scope = fields.iter().find(|f| f.key == "destination").unwrap();
+    assert_eq!(scope.input.text(), "This request");
+}
+
+#[test]
+fn the_value_popup_preselects_default_when_only_the_default_supplies_it() {
+    let (mut app, _dir) = token_popup_app();
+    // dev has no flat values, so base_url falls back to its default there.
+    app.update(Action::SwitchEnv(Some("dev".into())));
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+
+    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
+        panic!("expected the value popup")
+    };
+    let value = fields.iter().find(|f| f.key == "value").unwrap();
+    assert_eq!(value.input.text(), "http://localhost:8080");
+    let scope = fields.iter().find(|f| f.key == "destination").unwrap();
+    assert_eq!(scope.input.text(), "Project default");
+}
+
+#[test]
+fn confirming_the_value_popup_writes_the_env_scope_and_re_resolves() {
+    let (mut app, dir) = token_popup_app();
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    // Type a replacement value and confirm with the preselected env scope.
+    let keymap = Keymap::default_bindings();
+    for _ in 0.."https://qa.example.com".len() {
+        app.handle_key(
+            &keymap,
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+        );
+    }
+    for c in "https://qa2.example.com".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(app.modals.is_empty(), "confirm closes the popup");
+    let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(
+        on_disk.contains("base_url = \"https://qa2.example.com\""),
+        "{on_disk}"
+    );
+    assert_eq!(
+        app.project.resolved.values["base_url"], "https://qa2.example.com",
+        "linked tokens re-resolve immediately"
+    );
+}
+
+#[test]
+fn confirming_the_value_popup_on_the_default_scope_writes_variables_toml() {
+    let (mut app, dir) = token_popup_app();
+    app.update(Action::ConfirmEditVarValue {
+        name: "base_url".into(),
+        value: "http://new-default".into(),
+        destination: crate::action::ExtractDestination::ProjectDefault,
+    });
+    let on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    assert!(
+        on_disk.contains("default = \"http://new-default\""),
+        "{on_disk}"
+    );
+}
+
+#[test]
+fn confirming_the_value_popup_on_the_request_scope_sets_a_request_var() {
+    let (mut app, _dir) = token_popup_app();
+    app.update(Action::ConfirmEditVarValue {
+        name: "base_url".into(),
+        value: "http://req.local".into(),
+        destination: crate::action::ExtractDestination::Request,
+    });
+    assert_eq!(app.editor.variables["base_url"].value, "http://req.local");
+    assert!(app.editor.variables["base_url"].enabled);
+}
+
+#[test]
+fn clicking_a_secret_token_opens_the_masked_secret_prompt() {
+    let (mut app, _dir) = token_popup_app();
+    app.update(Action::OpenVarTokenPopup("api_key".into()));
+
+    let Some(Modal::Prompt { kind, .. }) = app.modals.top() else {
+        panic!("a secret token must open the masked secret prompt")
+    };
+    assert_eq!(
+        *kind,
+        PromptKind::SecretValue {
+            name: "api_key".into(),
+            env: "qa".into(),
+        }
+    );
+}
+
+#[test]
+fn clicking_a_token_of_a_selector_with_no_options_opens_the_add_option_prompt() {
+    let (mut app, _dir) = token_popup_app();
+    // dev has no options for the selector, so there is nothing to select
+    // yet — the popup walks straight into creating the first option.
+    app.update(Action::SwitchEnv(Some("dev".into())));
+    app.update(Action::OpenVarTokenPopup("user".into()));
+
+    let Some(Modal::MultiPrompt { kind, .. }) = app.modals.top() else {
+        panic!("expected the add-option prompt")
+    };
+    assert_eq!(
+        *kind,
+        PromptKind::NewOptionInline {
+            owner: "user".into()
+        }
+    );
+}
+
+#[test]
+fn declaring_a_new_selector_walks_into_its_first_option() {
+    let (mut app, _dir) = token_popup_app();
+    app.update(Action::VarStruct(VarStructOp::NewSelector {
+        name: "tier".into(),
+        fields: vec!["tier".into()],
+    }));
+
+    let Some(Modal::MultiPrompt { kind, .. }) = app.modals.top() else {
+        panic!("a fresh selector has no options; the first-option prompt must open")
+    };
+    assert_eq!(
+        *kind,
+        PromptKind::NewOptionInline {
+            owner: "tier".into()
+        }
+    );
+}
+
+#[test]
+fn clicking_an_undefined_token_still_opens_the_insert_picker_seeded() {
+    let (mut app, _dir) = token_popup_app();
+    app.update(Action::OpenVarTokenPopup("nope".into()));
+
+    let Some(Modal::VarPicker(p)) = app.modals.top() else {
+        panic!("an undefined name keeps the insert/create picker")
+    };
+    assert!(matches!(
+        p.mode,
+        crate::components::var_picker::PickerMode::Insert
+    ));
+    assert_eq!(p.input(), "nope");
 }
 
 #[test]
