@@ -254,20 +254,26 @@ impl PromptField {
         }
     }
 
-    /// Cycles a choice field's selection by `dir` (`-1`/`1`), wrapping. A
-    /// no-op on an ordinary text field.
+    /// Steps a choice field's selection by `dir` (`-1`/`1`), clamped at
+    /// the ends — a bounded stepper, not a loop, so the two ends orient
+    /// the user in the list. A no-op on an ordinary text field, and at
+    /// the end the step points past.
     pub(crate) fn cycle(&mut self, dir: i32) {
         if self.choices.is_empty() {
             return;
         }
-        let cur = self
-            .choices
+        let cur = self.choice_index() as i32;
+        let next = (cur + dir).clamp(0, self.choices.len() as i32 - 1);
+        self.input = LineInput::new(&self.choices[next as usize]);
+    }
+
+    /// The index of the currently selected choice (0 when the text
+    /// matches none — the seed always comes from the list).
+    pub(crate) fn choice_index(&self) -> usize {
+        self.choices
             .iter()
             .position(|c| c == self.input.text())
-            .unwrap_or(0);
-        let n = self.choices.len() as i32;
-        let next = ((cur as i32 + dir) % n + n) % n;
-        self.input = LineInput::new(&self.choices[next as usize]);
+            .unwrap_or(0)
     }
 }
 
@@ -1440,10 +1446,28 @@ impl ModalStack {
                         }
                         .paint(frame.buffer_mut(), field_area, theme);
                         let arrow_y = field_area.y + 1;
-                        for (glyph, x, dir) in [
-                            ("\u{2039}", field_x + 2, -1i8),
-                            ("\u{203a}", field_x + field_w.saturating_sub(3), 1),
+                        let at = field.choice_index();
+                        for (glyph, x, dir, live) in [
+                            ("\u{2039}", field_x + 2, -1i8, at > 0),
+                            (
+                                "\u{203a}",
+                                field_x + field_w.saturating_sub(3),
+                                1,
+                                at + 1 < field.choices.len(),
+                            ),
                         ] {
+                            // An arrow with nowhere to go greys out and
+                            // takes no clicks — the end stops are what
+                            // orient the user in the (unwrapped) list.
+                            if !live {
+                                frame.buffer_mut().set_string(
+                                    x,
+                                    arrow_y,
+                                    glyph,
+                                    Style::default().fg(theme.text_muted),
+                                );
+                                continue;
+                            }
                             let hit = crate::hit::Hit::ModalChoiceArrow { field: i, dir };
                             let style = if hovered == Some(&hit) {
                                 Style::default().bg(theme.accent).fg(theme.on_accent)

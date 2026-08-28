@@ -7488,8 +7488,8 @@ fn clicking_the_write_to_field_cycles_the_scope() {
     app.handle_mouse(left_down(r.x + 1, r.y + 1));
     assert_eq!(
         scope_text(&app),
-        "Active env value",
-        "and wraps within the supplying-or-narrower scopes"
+        "This request",
+        "no wrap: the last scope is an end stop"
     );
 }
 
@@ -7588,9 +7588,8 @@ fn cycling_the_write_to_scope_shows_that_scopes_current_value() {
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
     assert_eq!(
         field_texts(&app),
-        ("https://qa.example.com".into(), "Active env value".into()),
-        "only the supplying scope and narrower are offered, so the cycle \
-         wraps between the env value and the request override"
+        (String::new(), "This request".into()),
+        "no wrap: stepping right at the last scope stays put"
     );
 }
 
@@ -7676,37 +7675,48 @@ fn clicking_the_write_to_field_cycles_the_scope_and_reseeds_the_value_box() {
     );
 }
 
-/// The Write-to control's two arrows: `‹` cycles backward, `›` forward —
-/// a click-cycle in either direction runs the same reseed follow-up.
+/// The Write-to control is a bounded stepper, not a loop: each arrow
+/// steps one scope in its direction and greys out (unregistered) at its
+/// end, so the two ends orient you in the list.
 #[test]
-fn the_write_to_arrows_cycle_in_both_directions() {
+fn the_write_to_arrows_step_and_disable_at_the_ends() {
+    let left = crate::hit::Hit::ModalChoiceArrow { field: 1, dir: -1 };
+    let right = crate::hit::Hit::ModalChoiceArrow { field: 1, dir: 1 };
     let (mut app, _dir) = token_popup_app();
     // dev stores nothing, so all three scopes are on offer, preselected
-    // to "Project default" (the supplier).
+    // to "Project default" (the supplier, and the first choice).
     app.update(Action::SwitchEnv(Some("dev".into())));
     app.update(Action::OpenVarTokenPopup("base_url".into()));
     rendered_text(&mut app);
 
-    let l = app
-        .hits
-        .rect_of(&crate::hit::Hit::ModalChoiceArrow { field: 1, dir: -1 })
-        .expect("left arrow registered");
+    assert!(
+        app.hits.rect_of(&left).is_none(),
+        "at the first scope the left arrow is disabled"
+    );
+    let r = app.hits.rect_of(&right).expect("right arrow live");
+    app.handle_mouse(left_down(r.x, r.y));
+    let content = rendered_text(&mut app);
+    assert!(content.contains("Active env value"), "{content}");
+    assert!(
+        app.hits.rect_of(&left).is_some() && app.hits.rect_of(&right).is_some(),
+        "mid-list, both arrows are live"
+    );
+
+    let r = app.hits.rect_of(&right).unwrap();
+    app.handle_mouse(left_down(r.x, r.y));
+    let content = rendered_text(&mut app);
+    assert!(content.contains("This request"), "{content}");
+    assert!(
+        app.hits.rect_of(&right).is_none(),
+        "at the last scope the right arrow is disabled"
+    );
+
+    let l = app.hits.rect_of(&left).expect("left arrow live at the end");
     app.handle_mouse(left_down(l.x, l.y));
     let content = rendered_text(&mut app);
     assert!(
-        content.contains("This request"),
-        "backward from the first choice wraps to the last: {content}"
-    );
-
-    let r = app
-        .hits
-        .rect_of(&crate::hit::Hit::ModalChoiceArrow { field: 1, dir: 1 })
-        .expect("right arrow registered");
-    app.handle_mouse(left_down(r.x, r.y));
-    let content = rendered_text(&mut app);
-    assert!(
-        content.contains("Project default"),
-        "forward undoes the backward step: {content}"
+        content.contains("Active env value"),
+        "the left arrow steps back: {content}"
     );
 }
 
