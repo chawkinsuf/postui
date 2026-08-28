@@ -250,7 +250,7 @@ impl PromptField {
 
     /// Cycles a choice field's selection by `dir` (`-1`/`1`), wrapping. A
     /// no-op on an ordinary text field.
-    fn cycle(&mut self, dir: i32) {
+    pub(crate) fn cycle(&mut self, dir: i32) {
         if self.choices.is_empty() {
             return;
         }

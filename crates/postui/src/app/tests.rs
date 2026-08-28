@@ -7604,6 +7604,34 @@ fn confirming_the_value_popup_on_the_request_scope_sets_a_request_var() {
 }
 
 #[test]
+fn clicking_the_write_to_field_cycles_the_scope() {
+    let (mut app, _dir) = token_popup_app();
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    rendered_text(&mut app);
+
+    // The destination is field 1; a click advances to the next choice,
+    // wrapping — no keyboard needed.
+    let r = app
+        .hits
+        .rect_of(&crate::hit::Hit::ModalField(1))
+        .expect("the choice field takes clicks");
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    let scope_text = |app: &App| {
+        let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
+            panic!("popup still open")
+        };
+        fields[1].input.text().to_string()
+    };
+    assert_eq!(
+        scope_text(&app),
+        "This request",
+        "from the preselected env scope, one click advances"
+    );
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    assert_eq!(scope_text(&app), "Project default", "and wraps around");
+}
+
+#[test]
 fn clicking_a_secret_token_opens_the_masked_secret_prompt() {
     let (mut app, _dir) = token_popup_app();
     app.update(Action::OpenVarTokenPopup("api_key".into()));
@@ -8080,7 +8108,10 @@ fn inline_create_on_a_multi_field_group_hints_at_the_empty_fields() {
 }
 
 #[test]
-fn e_on_an_entry_edits_it_in_the_environment_that_holds_it() {
+fn typing_e_in_the_select_picker_filters_instead_of_editing() {
+    // Regression (user feedback): the select popup's input presents as a
+    // filter, so `e` must filter like any other letter, not hijack into
+    // the option edit prompt.
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -8089,11 +8120,40 @@ fn e_on_an_entry_edits_it_in_the_environment_that_holds_it() {
 
     focus_url_with_cursor_on(&mut app, "https://x/{{user}}", "{{user}}");
     app.update(Action::OpenVarPicker { completing: false });
-    // Row 0 is "alice" (first entry, file order).
     app.handle_key(
         &keymap,
         KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE),
     );
+
+    let Some(Modal::VarPicker(p)) = app.modals.top() else {
+        panic!("the picker stays open, filtering");
+    };
+    assert_eq!(p.input(), "e");
+}
+
+#[test]
+fn the_option_menus_edit_opens_the_prompt_in_the_environment_that_holds_it() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let keymap = Keymap::default_bindings();
+    goto_group(&mut app, "user");
+
+    // Row 0 is "alice" (first option, file order); its context menu's
+    // "Edit…" opens the full edit prompt (values + description).
+    let items = app
+        .varmanager
+        .entry_context_menu(&app.project, 0)
+        .expect("option menu");
+    let edit = items
+        .iter()
+        .find(|i| i.label.starts_with("Edit"))
+        .expect("an Edit… item")
+        .action
+        .clone()
+        .expect("enabled");
+    app.update(edit);
 
     let Some(Modal::MultiPrompt { kind, fields, .. }) = app.modals.top() else {
         panic!("expected the edit-option multi-prompt");
@@ -9892,7 +9952,12 @@ fn right_clicking_an_entry_row_opens_its_own_menu() {
     let labels: Vec<&str> = state.items.iter().map(|i| i.label.as_str()).collect();
     assert_eq!(
         labels,
-        vec!["Duplicate option", "Rename\u{2026}", "Delete\u{2026}"]
+        vec![
+            "Edit\u{2026}",
+            "Duplicate option",
+            "Rename\u{2026}",
+            "Delete\u{2026}"
+        ]
     );
 }
 
@@ -9937,7 +10002,7 @@ fn right_clicking_another_row_commits_the_live_cell_to_the_entry_it_belongs_to()
         panic!("no entry menu");
     };
     assert_eq!(
-        state.items[2].action,
+        state.items[3].action,
         Some(Action::ConfirmDeleteEntry {
             env: "qa".into(),
             selector: "user".into(),

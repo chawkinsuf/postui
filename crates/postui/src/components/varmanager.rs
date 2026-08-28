@@ -946,7 +946,18 @@ impl VarManager {
         let env = ctx.active_env.clone()?;
         let name = self.entry_at(ctx, i)?;
         let (selector, n) = (selector.clone(), name.clone());
+        let decl = postui_core::varmodel::selector_options(&ctx.env_data, &selector)
+            .and_then(|options| options.get(&n))?;
         Some(vec![
+            MenuItem::new(
+                "Edit\u{2026}",
+                Action::OpenEditOptionPrompt {
+                    owner: selector.clone(),
+                    key: n.clone(),
+                    description: decl.description.clone(),
+                    values: decl.values.clone(),
+                },
+            ),
             MenuItem::new(
                 "Duplicate option",
                 Action::VarStruct(VarStructOp::DuplicateOption {
@@ -2692,7 +2703,7 @@ fields = ["user_id", "customer_id"]
     }
 
     #[test]
-    fn the_entry_row_menu_offers_duplicate_rename_delete() {
+    fn the_entry_row_menu_offers_edit_duplicate_rename_delete() {
         let (_dir, ctx) = fixture();
         let mut vm = VarManager::default();
         select_group(&mut vm, &ctx, "creds");
@@ -2700,10 +2711,23 @@ fields = ["user_id", "customer_id"]
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         assert_eq!(
             labels,
-            vec!["Duplicate option", "Rename\u{2026}", "Delete\u{2026}"]
+            vec![
+                "Edit\u{2026}",
+                "Duplicate option",
+                "Rename\u{2026}",
+                "Delete\u{2026}"
+            ]
         );
+        let Some(Action::OpenEditOptionPrompt {
+            owner, key, values, ..
+        }) = &items[0].action
+        else {
+            panic!("Edit… opens the option edit prompt: {:?}", items[0].action)
+        };
+        assert_eq!((owner.as_str(), key.as_str()), ("creds", "bob"));
+        assert_eq!(values["user_id"], "2002");
         assert_eq!(
-            items[0].action,
+            items[1].action,
             Some(Action::VarStruct(VarStructOp::DuplicateOption {
                 env: "qa".into(),
                 selector: "creds".into(),
@@ -2711,7 +2735,7 @@ fields = ["user_id", "customer_id"]
             }))
         );
         assert_eq!(
-            items[1].action,
+            items[2].action,
             Some(Action::PromptRenameEntry {
                 env: "qa".into(),
                 selector: "creds".into(),
@@ -2719,7 +2743,7 @@ fields = ["user_id", "customer_id"]
             })
         );
         assert_eq!(
-            items[2].action,
+            items[3].action,
             Some(Action::ConfirmDeleteEntry {
                 env: "qa".into(),
                 selector: "creds".into(),

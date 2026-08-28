@@ -884,10 +884,19 @@ impl App {
             // anything.
             Hit::ModalBody => false,
             Hit::ModalField(i) => {
-                if let Some(crate::components::modal::Modal::MultiPrompt { focus, .. }) =
-                    self.modals.top_mut()
+                if let Some(crate::components::modal::Modal::MultiPrompt {
+                    focus, fields, ..
+                }) = self.modals.top_mut()
                 {
                     *focus = i;
+                    // A fixed-choice field has no caret to place — clicking
+                    // it advances to the next choice (wrapping), so the
+                    // mouse can drive it without knowing about ←/→.
+                    if let Some(field) = fields.get_mut(i)
+                        && !field.choices.is_empty()
+                    {
+                        field.cycle(1);
+                    }
                     return self.update(Action::Render);
                 }
                 false

@@ -401,41 +401,6 @@ impl VarPickerState {
                 self.input.pop();
                 self.refilter();
             }
-            // `e` on a highlighted option (Task 17, spec §6): edit its
-            // value(s)/description in place. Unmodified `e` doubles as the
-            // fuzzy filter's own text otherwise, so this only fires in
-            // `SelectOption` mode, where the filter is over option keys
-            // (not the far more `e`-prone declared variable names) and
-            // "arrow to a row, then edit" is the expected flow.
-            KeyCode::Char('e')
-                if key.modifiers.is_empty()
-                    && matches!(self.mode, PickerMode::SelectOption { .. }) =>
-            {
-                if self.selected == self.filtered.len() {
-                    return None; // the ghost row itself has nothing to edit
-                }
-                let &idx = self.filtered.get(self.selected)?;
-                let PickerMode::SelectOption { selector, .. } = &self.mode else {
-                    unreachable!("guarded above")
-                };
-                let owner = selector.clone();
-                let entry = &self.select_entries[idx];
-                let values = entry.values.clone().unwrap_or_else(|| {
-                    let mut m = IndexMap::new();
-                    m.insert("value".to_string(), entry.value.clone().unwrap_or_default());
-                    m
-                });
-                return Some(super::modal::ModalResult {
-                    actions: vec![Action::OpenEditOptionPrompt {
-                        owner,
-                        key: entry.key.clone(),
-                        description: entry.description.clone(),
-                        values,
-                    }],
-                    close: true,
-                    ..Default::default()
-                });
-            }
             KeyCode::Char(c) if key.modifiers.difference(KeyModifiers::SHIFT).is_empty() => {
                 self.input.push(c);
                 self.refilter();
@@ -1351,77 +1316,42 @@ mod tests {
     }
 
     #[test]
-    fn e_on_a_plain_var_option_opens_edit_prompt_prefilled_with_value_and_description() {
-        let entries = vec![SelectOption {
-            key: "alice".into(),
-            description: Some("admin".into()),
-            value: Some("qa-token".into()),
-            preview: None,
-            selected: false,
-            values: None,
-        }];
-        let mut p = VarPickerState::new_select(entries, "user".into(), "user".into(), "qa".into());
-        let res = p
-            .handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE))
-            .unwrap();
-        let mut values = IndexMap::new();
-        values.insert("value".to_string(), "qa-token".to_string());
-        assert_eq!(
-            res.actions,
-            vec![Action::OpenEditOptionPrompt {
-                owner: "user".into(),
-                key: "alice".into(),
-                description: Some("admin".into()),
-                values,
-            }]
-        );
-        assert!(res.close);
-    }
-
-    #[test]
-    fn e_on_a_group_option_opens_edit_prompt_prefilled_with_every_member() {
-        let mut values = IndexMap::new();
-        values.insert("user_id".to_string(), "1001".to_string());
-        values.insert("customer_id".to_string(), "c-77".to_string());
-        let entries = vec![SelectOption {
-            key: "alice".into(),
-            description: Some("admin".into()),
-            value: None,
-            preview: Some("admin \u{b7} user_id 1001 \u{b7} customer_id c-77".into()),
-            selected: false,
-            values: Some(values.clone()),
-        }];
-        let mut p =
-            VarPickerState::new_select(entries, "user_id".into(), "identity".into(), "qa".into());
-        let res = p
-            .handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE))
-            .unwrap();
-        assert_eq!(
-            res.actions,
-            vec![Action::OpenEditOptionPrompt {
-                owner: "identity".into(),
-                key: "alice".into(),
-                description: Some("admin".into()),
-                values,
-            }]
-        );
-    }
-
-    #[test]
-    fn e_on_the_ghost_row_is_a_no_op() {
-        let entries = vec![SelectOption {
-            key: "alice".into(),
-            description: None,
-            value: Some("x".into()),
-            preview: None,
-            selected: false,
-            values: None,
-        }];
-        let mut p = VarPickerState::new_select(entries, "user".into(), "user".into(), "qa".into());
-        p.handle_key(key(KeyCode::Down));
+    fn e_in_select_mode_types_into_the_filter_instead_of_editing() {
+        // Regression (user feedback): the input presents as a filter, so
+        // every printable key must filter — `e` used to hijack into the
+        // option edit prompt.
+        let entries = vec![
+            SelectOption {
+                key: "east".into(),
+                description: None,
+                value: Some("e-1".into()),
+                preview: None,
+                selected: false,
+                values: None,
+            },
+            SelectOption {
+                key: "west".into(),
+                description: None,
+                value: Some("w-1".into()),
+                preview: None,
+                selected: false,
+                values: None,
+            },
+        ];
+        let mut p = VarPickerState::new_select(entries, "zone".into(), "zone".into(), "qa".into());
         assert!(
             p.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE))
                 .is_none()
+        );
+        assert_eq!(p.input(), "e");
+        let res = p.handle_key(key(KeyCode::Enter)).unwrap();
+        assert!(
+            res.actions.iter().any(|a| matches!(
+                a,
+                Action::VarEdit(VarEditOp::SelectOption { option, .. }) if option == "east"
+            )),
+            "the filter narrowed to east and Enter selects it: {:?}",
+            res.actions
         );
     }
 
