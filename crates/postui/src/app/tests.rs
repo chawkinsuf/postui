@@ -11522,6 +11522,108 @@ mod undo_tests {
         assert_eq!(std::fs::read_to_string(&env_path).unwrap(), with_9);
     }
 
+    /// User finding: there was no way to remove an env value from the
+    /// variable form — committing an emptied field wrote `name = ""`
+    /// instead. An empty commit now deletes the stored pair, so the
+    /// resolution falls back to the declaration default.
+    #[test]
+    fn committing_an_empty_env_value_removes_the_stored_pair() {
+        use crate::components::line_input::LineInput;
+        use crate::components::varmanager::VmField;
+
+        let dir = tempfile::tempdir().unwrap();
+        var_project(dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_root(tx, dir.path().to_path_buf());
+        goto_row(&mut app, |r| {
+            r == &crate::components::varmanager::VmRow::Var("base_url".into())
+        });
+
+        app.varmanager.form.editing = Some((VmField::EnvValue, LineInput::new("")));
+        app.commit_var_form();
+
+        assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+        let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+        assert!(!on_disk.contains("base_url"), "pair removed: {on_disk}");
+        assert_eq!(
+            app.project.resolved.values["base_url"], "http://localhost:8080",
+            "resolution falls back to the declaration default"
+        );
+
+        let with_value = "base_url = \"https://qa.example.com\"\n\n[options.user.alice]\nuser = \"1001\"\n\n[options.user.bob]\nuser = \"2002\"\n";
+        app.update(Action::Undo);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap(),
+            with_value,
+            "undo restores the removed pair"
+        );
+    }
+
+    /// Companion to the removal test: an empty commit when the env stores
+    /// nothing must be a quiet no-op, not a "not found" error toast.
+    #[test]
+    fn committing_an_empty_env_value_with_nothing_stored_is_a_no_op() {
+        use crate::components::line_input::LineInput;
+        use crate::components::varmanager::VmField;
+
+        let dir = tempfile::tempdir().unwrap();
+        var_project(dir.path());
+        let qa_path = dir.path().join("environments/qa.toml");
+        std::fs::write(&qa_path, "[options.user.alice]\nuser = \"1001\"\n").unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_root(tx, dir.path().to_path_buf());
+        goto_row(&mut app, |r| {
+            r == &crate::components::varmanager::VmRow::Var("base_url".into())
+        });
+
+        app.varmanager.form.editing = Some((VmField::EnvValue, LineInput::new("")));
+        app.commit_var_form();
+
+        assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+        assert_eq!(
+            std::fs::read_to_string(&qa_path).unwrap(),
+            "[options.user.alice]\nuser = \"1001\"\n",
+            "nothing stored, nothing changed"
+        );
+    }
+
+    /// The secret twin: an empty commit on a secret's value removes it
+    /// from the secrets store (memory and `.local/secrets.toml` both).
+    #[test]
+    fn committing_an_empty_secret_value_removes_it_from_the_secrets_store() {
+        use crate::components::line_input::LineInput;
+        use crate::components::varmanager::VmField;
+
+        let dir = tempfile::tempdir().unwrap();
+        var_project(dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_root(tx, dir.path().to_path_buf());
+        app.update(Action::VarEdit(VarEditOp::SetSecretValue {
+            env: "qa".into(),
+            name: "api_key".into(),
+            value: "s3cret".into(),
+        }));
+        assert_eq!(
+            app.project.secrets.get("qa").and_then(|m| m.get("api_key")),
+            Some(&"s3cret".to_string())
+        );
+        goto_row(&mut app, |r| {
+            r == &crate::components::varmanager::VmRow::Var("api_key".into())
+        });
+
+        app.varmanager.form.editing = Some((VmField::EnvValue, LineInput::new("")));
+        app.commit_var_form();
+
+        assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+        assert_eq!(
+            app.project.secrets.get("qa").and_then(|m| m.get("api_key")),
+            None,
+            "the stored secret is gone"
+        );
+        let on_disk = std::fs::read_to_string(dir.path().join(".local/secrets.toml")).unwrap();
+        assert!(!on_disk.contains("api_key"), "{on_disk}");
+    }
+
     /// Reviewer finding: `commit_grid_edit` (the group entries grid's
     /// click-away/Enter commit) has the same gap as `commit_var_form` —
     /// called directly from `handle_key`, never through

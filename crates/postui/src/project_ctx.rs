@@ -419,6 +419,29 @@ impl ProjectContext {
         Ok(())
     }
 
+    /// Removes `name`'s stored secret value for `env` (memory and
+    /// `.local/secrets.toml` both), a quiet no-op when nothing is stored —
+    /// the write-through twin of [`Self::set_secret_for`], with its same
+    /// build-then-commit failure contract.
+    pub fn remove_secret_for(&mut self, env: &str, name: &str) -> Result<(), String> {
+        let mut secrets = self.secrets.clone();
+        if secrets
+            .get_mut(env)
+            .and_then(|m| m.shift_remove(name))
+            .is_none()
+        {
+            return Ok(());
+        }
+        if self.can_persist() {
+            postui_core::project::save_secrets(&self.root, &secrets).map_err(|e| e.to_string())?;
+        }
+        self.secrets = secrets;
+        if self.env_key() == env {
+            self.refresh_resolved();
+        }
+        Ok(())
+    }
+
     /// Builds the `PrepareContext` for sending: fully resolved variables
     /// (secret → selected option → env value → default, per spec §2) plus
     /// resolution metadata and the project's default headers.

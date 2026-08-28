@@ -231,23 +231,31 @@ pub struct VarFormState {
 
 /// The text a field shows when nothing is being typed into it — the seed a
 /// click begins editing from, and what a resting (non-edited) field
-/// displays. `EnvValue` reads the active environment's *resolved* value
-/// (default-if-no-override, secret plaintext included) so editing always
-/// starts from what the user actually sees; with no active environment it
-/// falls back to the declaration default, mirroring [`var_edit_op_for`]'s
-/// write-target fallback.
+/// displays. `EnvValue` reads only what the environment actually *stores*
+/// (the env file's flat value, or the secrets store for a secret) — never
+/// the resolved fallback, which made a bare default masquerade as an env
+/// value in this field. Unset reads empty, rendered "(not set)". With no
+/// active environment it falls back to the declaration default, mirroring
+/// [`var_edit_op_for`]'s write-target fallback.
 fn field_seed_text(ctx: &ProjectContext, name: &str, field: VmField) -> String {
     let decl = ctx.model.vars.get(name);
     match field {
         VmField::Description => decl.and_then(|d| d.description.clone()).unwrap_or_default(),
         VmField::Default => decl.and_then(|d| d.default.clone()).unwrap_or_default(),
-        VmField::EnvValue => {
-            if ctx.active_env.is_some() {
-                ctx.resolved.values.get(name).cloned().unwrap_or_default()
-            } else {
-                decl.and_then(|d| d.default.clone()).unwrap_or_default()
+        VmField::EnvValue => match &ctx.active_env {
+            Some(env) => {
+                if decl.is_some_and(|d| d.secret) {
+                    ctx.secrets
+                        .get(env)
+                        .and_then(|m| m.get(name))
+                        .cloned()
+                        .unwrap_or_default()
+                } else {
+                    ctx.env_data.values.get(name).cloned().unwrap_or_default()
+                }
             }
-        }
+            None => decl.and_then(|d| d.default.clone()).unwrap_or_default(),
+        },
     }
 }
 
@@ -2423,8 +2431,8 @@ fields = ["user_id", "customer_id"]
     }
 
     #[test]
-    fn field_seed_text_reads_description_default_and_the_resolved_env_value() {
-        let (_dir, ctx) = fixture();
+    fn field_seed_text_reads_description_default_and_the_stored_env_value() {
+        let (_dir, mut ctx) = fixture();
         assert_eq!(
             field_seed_text(&ctx, "base_url", VmField::Description),
             "API root"
@@ -2433,8 +2441,32 @@ fields = ["user_id", "customer_id"]
             field_seed_text(&ctx, "base_url", VmField::Default),
             "http://localhost:8080"
         );
-        // qa has no override, so the env-value seed falls back through to
-        // the resolved (default) value, matching what the field displays.
+        // qa stores nothing for base_url: the env-value field must read
+        // empty (rendered "(not set)"), never fall back to the default —
+        // showing the default here made it look like an env value existed.
+        assert_eq!(field_seed_text(&ctx, "base_url", VmField::EnvValue), "");
+        ctx.env_data
+            .values
+            .insert("base_url".into(), "https://qa.example.com".into());
+        assert_eq!(
+            field_seed_text(&ctx, "base_url", VmField::EnvValue),
+            "https://qa.example.com"
+        );
+
+        // A secret's stored value lives in the secrets store, not env_data.
+        assert_eq!(field_seed_text(&ctx, "api_key", VmField::EnvValue), "");
+        ctx.secrets
+            .entry("qa".to_string())
+            .or_default()
+            .insert("api_key".into(), "s3cret".into());
+        assert_eq!(
+            field_seed_text(&ctx, "api_key", VmField::EnvValue),
+            "s3cret"
+        );
+
+        // No active environment: the field edits the declaration default
+        // (var_edit_op_for's fallback), so it seeds from it.
+        ctx.active_env = None;
         assert_eq!(
             field_seed_text(&ctx, "base_url", VmField::EnvValue),
             "http://localhost:8080"
