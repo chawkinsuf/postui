@@ -886,17 +886,24 @@ impl App {
             Hit::ModalBody => false,
             Hit::ModalField(i) => {
                 if let Some(crate::components::modal::Modal::MultiPrompt {
-                    focus, fields, ..
+                    focus,
+                    fields,
+                    kind,
+                    ..
                 }) = self.modals.top_mut()
                 {
                     *focus = i;
                     // A fixed-choice field has no caret to place — clicking
                     // it advances to the next choice (wrapping), so the
-                    // mouse can drive it without knowing about ←/→.
+                    // mouse can drive it without knowing about ←/→. The
+                    // same kind-specific follow-up as the keyboard cycle
+                    // runs after it (the value popup reseeds its value
+                    // box from what the new scope stores).
                     if let Some(field) = fields.get_mut(i)
                         && !field.choices.is_empty()
                     {
                         field.cycle(1);
+                        crate::components::modal::resync_after_choice_cycle(kind, fields);
                     }
                     return self.update(Action::Render);
                 }

@@ -7655,6 +7655,27 @@ fn the_value_popup_offers_remove_only_where_a_value_is_stored() {
     );
 }
 
+/// User finding: only the keyboard cycle reseeded the value box — a
+/// *click* on the Write-to field cycled the choice but kept the previous
+/// scope's text, so an empty scope showed a value copied over from the
+/// last one instead of "(not set)".
+#[test]
+fn clicking_the_write_to_field_cycles_the_scope_and_reseeds_the_value_box() {
+    let (mut app, _dir) = token_popup_app();
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    rendered_text(&mut app);
+    // Fields are [value, destination]; a click on the choice field cycles
+    // it from "Active env value" (stored) to "This request" (nothing).
+    let r = app.hits.rect_of(&crate::hit::Hit::ModalField(1)).unwrap();
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    let content = rendered_text(&mut app);
+    assert!(content.contains("This request"), "{content}");
+    assert!(
+        content.contains("(not set)"),
+        "the empty scope's value box must reseed on a click-cycle too: {content}"
+    );
+}
+
 #[test]
 fn remove_deletes_the_env_value_and_falls_back_to_the_default() {
     let (mut app, dir) = token_popup_app();
