@@ -47,34 +47,34 @@ pub enum PromptKind {
     },
     /// `g` / the `+ Group` button (spec 3.4): a `Modal::MultiPrompt` with
     /// a `name` field and a comma-separated `fields` field. Confirming
-    /// declares the group and its field list in one write
-    /// (`VarStructOp::NewGroup`).
-    NewGroup,
-    /// One field name, appended to `group`'s list.
-    AddGroupMember {
-        group: String,
+    /// declares the selector and its field list in one write
+    /// (`VarStructOp::NewSelector`).
+    NewSelector,
+    /// One field name, appended to `selector`'s list.
+    AddSelectorField {
+        selector: String,
     },
     /// `e`/`F2` on a variable row.
     RenameVariable {
         from: String,
     },
-    /// Comma-separated field names, replacing the group's current list.
-    GroupMembers {
-        group: String,
+    /// Comma-separated field names, replacing the selector's current list.
+    SelectorFields {
+        selector: String,
     },
-    /// The group pane's `[Edit fields]` (Task 16, spec §3.4): a
+    /// The selector pane's `[Edit fields]` (Task 16, spec §3.4): a
     /// `Modal::MultiPrompt` with one text slot per current field (keys
     /// `f0`, `f1`, … — position *is* the identity, which is how a changed
     /// text reads as a rename) plus a trailing empty slot for adding one.
     /// Confirming emits `Action::ApplyGroupFields`.
     GroupFields {
-        group: String,
+        selector: String,
     },
-    /// The entry-row context menu's "Rename…" (Task 16): the text is the
-    /// entry's new name within `group` in `env`.
-    RenameEntry {
+    /// The option-row context menu's "Rename…" (Task 16): the text is the
+    /// option's new name within `selector` in `env`.
+    RenameOption {
         env: String,
-        group: String,
+        selector: String,
         from: String,
     },
     /// Send-time secret prompt (spec §3): `prepare()` reported `name`
@@ -96,7 +96,7 @@ pub enum PromptKind {
     },
     /// `e` on a highlighted `SelectOption` row (Task 17, spec §6): a
     /// `Modal::MultiPrompt` with one field per value (the option's own
-    /// `value`, or one per group member) plus a trailing `description`
+    /// `value`, or one per selector field) plus a trailing `description`
     /// field. Confirming emits `Action::ConfirmEditOption`, which writes to
     /// wherever the option currently lives.
     EditOption {
@@ -112,7 +112,7 @@ pub enum PromptKind {
 }
 
 /// One field of a `Modal::MultiPrompt`: a stable domain `key` (e.g.
-/// `"value"`, `"description"`, or a group member's own name) distinct from
+/// `"value"`, `"description"`, or a selector field's own name) distinct from
 /// its display `label`, a text buffer, and — for a fixed-choice field like
 /// `ExtractVariable`'s destination — the list of choices Left/Right cycle
 /// through instead of free typing (`choices.is_empty()` is an ordinary text
@@ -183,7 +183,7 @@ pub enum Modal {
         title: String,
         body: String,
     },
-    /// A choice prompt: each entry in `choices` is `(key, label, actions)` —
+    /// A choice prompt: each option in `choices` is `(key, label, actions)` —
     /// pressing `key` (case-insensitive) dispatches `actions` and closes the
     /// modal; `Esc` closes with no actions.
     Confirm {
@@ -239,7 +239,7 @@ pub enum Modal {
     },
 }
 
-/// One row of a `Modal::Dropdown` — a value in a select popup, or an entry
+/// One row of a `Modal::Dropdown` — a value in a select popup, or an option
 /// in a right-click context menu. `action: None` marks the row *disabled*:
 /// it still paints (so the menu's shape doesn't shift with context) but in
 /// the muted text color, takes no hover fill, and neither a click nor Enter
@@ -340,7 +340,7 @@ impl ModalStack {
     }
 
     /// The `LineInput` that currently owns the keyboard in the top modal,
-    /// if that modal is a text-entry kind — used by the app's ctrl+c
+    /// if that modal is a text-option kind — used by the app's ctrl+c
     /// copy-selection interception.
     pub fn focused_input(&self) -> Option<&LineInput> {
         match self.stack.last()? {
@@ -516,10 +516,10 @@ impl ModalStack {
                                 Action::InsertVarText(insert_text),
                             ])
                         }
-                        PromptKind::AddGroupMember { group } => {
-                            Some(vec![Action::AddGroupMember {
-                                group: group.clone(),
-                                member: text.to_string(),
+                        PromptKind::AddSelectorField { selector } => {
+                            Some(vec![Action::AddSelectorField {
+                                selector: selector.clone(),
+                                field: text.to_string(),
                             }])
                         }
                         PromptKind::RenameVariable { from } => {
@@ -528,27 +528,29 @@ impl ModalStack {
                                 to: text.to_string(),
                             })])
                         }
-                        PromptKind::GroupMembers { group } => {
+                        PromptKind::SelectorFields { selector } => {
                             Some(vec![Action::VarStruct(VarStructOp::SetFields {
-                                group: group.clone(),
+                                selector: selector.clone(),
                                 fields: comma_tokens(text),
                             })])
                         }
-                        PromptKind::RenameEntry { env, group, from } => {
-                            Some(vec![Action::VarStruct(VarStructOp::RenameEntry {
-                                env: env.clone(),
-                                group: group.clone(),
-                                from: from.clone(),
-                                to: text.to_string(),
-                            })])
-                        }
+                        PromptKind::RenameOption {
+                            env,
+                            selector,
+                            from,
+                        } => Some(vec![Action::VarStruct(VarStructOp::RenameOption {
+                            env: env.clone(),
+                            selector: selector.clone(),
+                            from: from.clone(),
+                            to: text.to_string(),
+                        })]),
                         PromptKind::SecretValue { name, .. } => Some(vec![Action::SetSecret {
                             name: name.clone(),
                             value: text.to_string(),
                         }]),
                         // These kinds are `Modal::MultiPrompt` only — never a
                         // single-input `Modal::Prompt`.
-                        PromptKind::NewGroup
+                        PromptKind::NewSelector
                         | PromptKind::GroupFields { .. }
                         | PromptKind::NewOptionInline { .. }
                         | PromptKind::EditOption { .. }
@@ -559,7 +561,7 @@ impl ModalStack {
                         }
                     };
                     // A well-formed-but-incomplete comma prompt (e.g. a
-                    // group option still missing a member) swallows Enter
+                    // selector option still missing a field) swallows Enter
                     // rather than closing on nonsense — same "not ready
                     // yet" treatment as the empty-text case above.
                     actions.map(|actions| ModalResult {
@@ -726,23 +728,23 @@ impl ModalStack {
                                 description,
                             }]
                         }
-                        PromptKind::NewGroup => {
+                        PromptKind::NewSelector => {
                             let name = get("name").filter(|s| !s.is_empty())?.to_string();
                             let fields = comma_tokens(get("fields").unwrap_or(""));
-                            vec![Action::VarStruct(VarStructOp::NewGroup { name, fields })]
+                            vec![Action::VarStruct(VarStructOp::NewSelector { name, fields })]
                         }
                         // Position is the identity here: slot `i` stands
-                        // for the group's current `i`th field, so the raw
+                        // for the selector's current `i`th field, so the raw
                         // per-slot text (empties included — an emptied slot
                         // is how a field is removed) is what the app needs
                         // to tell renames from additions and removals.
-                        PromptKind::GroupFields { group } => {
+                        PromptKind::GroupFields { selector } => {
                             let slots = fields
                                 .iter()
                                 .map(|f| f.input.text().trim().to_string())
                                 .collect();
                             vec![Action::ApplyGroupFields {
-                                group: group.clone(),
+                                selector: selector.clone(),
                                 slots,
                                 confirmed: false,
                             }]
@@ -1520,7 +1522,7 @@ mod tests {
         assert_eq!(clamped.height, 40);
     }
 
-    /// A two-field `MultiPrompt` (extract-to-variable, new group, …) must
+    /// A two-field `MultiPrompt` (extract-to-variable, new selector, …) must
     /// leave room for its bottom-anchored buttons: the old height estimate
     /// counted 2 rows per field instead of the label + `FIELD_HEIGHT` box
     /// it actually paints, so Cancel/Confirm landed *inside* the second
@@ -1536,7 +1538,7 @@ mod tests {
                 PromptField::text("dest", "Destination", "here"),
             ],
             focus: 0,
-            kind: PromptKind::NewGroup,
+            kind: PromptKind::NewSelector,
         });
 
         let theme = Theme::for_terminal();
@@ -1895,7 +1897,7 @@ mod tests {
             "the selected row must carry the dense accent bar in its first column"
         );
         assert_eq!(buffer[(row0.x, row0.y)].fg, theme.accent);
-        // The accent bar spans both content lines of the two-line entry.
+        // The accent bar spans both content lines of the two-line option.
         assert_eq!(
             buffer[(row0.x, row0.y + 1)].symbol(),
             "\u{258c}",

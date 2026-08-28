@@ -33,9 +33,9 @@ pub enum TokenSource {
     Env(String),
     /// The variable declaration's `default`.
     Default,
-    /// A group field, filled by the group's selected entry.
-    Group { group: String, selected: String },
-    /// A group field whose group has no (or a stale) selection.
+    /// A selector field, filled by the selector's selected option.
+    Selector { selector: String, selected: String },
+    /// A selector field whose selector has no (or a stale) selection.
     NeedsSelection,
     /// A secret with no value recorded for this environment.
     MissingSecret,
@@ -49,8 +49,8 @@ impl TokenSource {
             TokenSource::Request => "request var".to_string(),
             TokenSource::Env(env) => format!("env {env}"),
             TokenSource::Default => "default".to_string(),
-            TokenSource::Group { group, selected } => {
-                format!("group {group} \u{2192} \"{selected}\"")
+            TokenSource::Selector { selector, selected } => {
+                format!("selector {selector} \u{2192} \"{selected}\"")
             }
             TokenSource::NeedsSelection => "needs selection".to_string(),
             TokenSource::MissingSecret => "missing secret".to_string(),
@@ -145,8 +145,8 @@ impl VarView {
         let source = match self.resolved.meta.get(name) {
             Some(VarMeta::MissingSecret) => TokenSource::MissingSecret,
             Some(VarMeta::NeedsSelection) => TokenSource::NeedsSelection,
-            Some(VarMeta::GroupMember { group, selected }) => TokenSource::Group {
-                group: group.clone(),
+            Some(VarMeta::SelectorMember { selector, selected }) => TokenSource::Selector {
+                selector: selector.clone(),
                 selected: selected.clone(),
             },
             // A secret's value only ever comes from `.local/secrets.toml`,
@@ -310,7 +310,7 @@ mod tests {
     }
 
     #[test]
-    fn default_and_group_scopes_are_labelled() {
+    fn default_and_selector_scopes_are_labelled() {
         let mut v = view();
         v.resolved.values.insert("page".into(), "1".into());
         v.resolved.meta.insert("page".into(), VarMeta::Simple);
@@ -320,14 +320,14 @@ mod tests {
         v.resolved.values.insert("uid".into(), "1001".into());
         v.resolved.meta.insert(
             "uid".into(),
-            VarMeta::GroupMember {
-                group: "user".into(),
+            VarMeta::SelectorMember {
+                selector: "user".into(),
                 selected: "user 2".into(),
             },
         );
         assert_eq!(
             v.describe("uid").source.label(),
-            "group user \u{2192} \"user 2\""
+            "selector user \u{2192} \"user 2\""
         );
     }
 

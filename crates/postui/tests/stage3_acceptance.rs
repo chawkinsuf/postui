@@ -279,7 +279,7 @@ async fn stage3_acceptance_flow() {
         matches!(app.modals.top(), Some(Modal::VarPicker(_))),
         "typing {{{{ opens the variable picker"
     );
-    app.handle_key(&keymap, enter()); // first entry: declared order is base, then tok
+    app.handle_key(&keymap, enter()); // first option: declared order is base, then tok
     assert_eq!(
         app.editor.url.text(),
         "{{base}}",

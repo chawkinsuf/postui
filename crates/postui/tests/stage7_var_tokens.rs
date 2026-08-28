@@ -59,14 +59,14 @@ fn app_with_vars() -> App {
             Ok("[base_url]\ndefault = \"http://fallback\"\n\n\
                 [page]\ndefault = \"1\"\n\n\
                 [api_key]\nsecret = true\n\n\
-                [groups.user]\nfields = [\"uid\"]\n"
+                [selectors.user]\nfields = [\"uid\"]\n"
                 .to_string())
         })
         .unwrap();
     app.project
         .edit_env("qa", |_| {
             Ok("base_url = \"http://qa.test\"\n\n\
-                [entries.user.\"user 2\"]\nuid = \"1001\"\n"
+                [options.user.\"user 2\"]\nuid = \"1001\"\n"
                 .to_string())
         })
         .unwrap();
@@ -217,8 +217,8 @@ fn the_scope_line_names_default_group_request_and_missing_secret() {
     let frame = dump(&mut app);
     assert!(frame.contains("uid = 1001"), "{frame}");
     assert!(
-        frame.contains("group user \u{2192} \"user 2\""),
-        "the group and its selected entry: {frame}"
+        frame.contains("selector user \u{2192} \"user 2\""),
+        "the group and its selected option: {frame}"
     );
 
     // The request's own `[variables]` overlay outranks everything.

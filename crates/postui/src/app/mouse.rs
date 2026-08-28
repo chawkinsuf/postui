@@ -164,10 +164,10 @@ impl App {
                 // (see `on_hit`'s blanket rule): commit it *before*
                 // anything below reads or reshapes the rows underneath.
                 // Skipping this let a menu action (Delete…, Rename…) shift
-                // the entry rows out from under a still-live `GridEdit`,
+                // the option rows out from under a still-live `GridEdit`,
                 // whose row index would then address a different record —
                 // and the next click-away would write the typed text into
-                // that wrong entry.
+                // that wrong option.
                 self.commit_var_form();
                 self.commit_grid_edit();
                 // A commit that *failed* keeps its edit (spec §5: the typed
@@ -647,7 +647,7 @@ impl App {
         if !editing_this_field && !matches!(hit, Hit::VmRevealToggle) {
             self.commit_var_form();
         }
-        // …and the group grid's cell, likewise: any click that isn't on the
+        // …and the selector grid's cell, likewise: any click that isn't on the
         // cell already under edit commits it first, so clicking straight
         // from one cell to another never drops what was typed into the
         // first (Task 8's commit-first rule).
@@ -1098,7 +1098,7 @@ impl App {
             // chooser, reached from the screen that replaced the header.
             Hit::VmEnvSwitch => self.update(Action::OpenEnvChooser),
             Hit::VmNewVar => self.update(Action::PromptNewVar),
-            Hit::VmNewGroup => self.update(Action::PromptNewGroup),
+            Hit::VmNewSelector => self.update(Action::PromptNewSelector),
             // A second click on the field already under edit is inert (the
             // top-of-`on_hit` guard above left it alone precisely so this
             // check still sees the live edit). A click on any other field
@@ -1148,12 +1148,12 @@ impl App {
                 self.update(Action::Render)
             }
             Hit::VmEntryRadio(row) => {
-                let crate::components::varmanager::VmDetail::Group(group) =
+                let crate::components::varmanager::VmDetail::Group(selector) =
                     self.varmanager.detail.clone()
                 else {
                     return false;
                 };
-                let (Some(env), Some(entry)) = (
+                let (Some(env), Some(option)) = (
                     self.project.active_env.clone(),
                     self.varmanager.entry_at(&self.project, row),
                 ) else {
@@ -1161,13 +1161,13 @@ impl App {
                 };
                 self.varmanager.grid.cursor = (row, 0);
                 self.varmanager.focus = VmFocus::Grid;
-                self.update(Action::VarEdit(VarEditOp::SelectEntry {
+                self.update(Action::VarEdit(VarEditOp::SelectOption {
                     env,
-                    group,
-                    entry,
+                    selector,
+                    option,
                 }))
             }
-            Hit::VmNewEntry => {
+            Hit::VmNewOption => {
                 if self.project.active_env.is_none() {
                     self.toasts.push(
                         crate::components::varmanager::NO_ENV_HINT,
@@ -1175,25 +1175,26 @@ impl App {
                     );
                     return self.update(Action::Render);
                 }
-                let crate::components::varmanager::VmDetail::Group(group) =
+                let crate::components::varmanager::VmDetail::Group(selector) =
                     self.varmanager.detail.clone()
                 else {
                     return false;
                 };
-                // The ghost row *is* the new-entry affordance: put the
+                // The ghost row *is* the new-option affordance: put the
                 // cursor in its name cell and start typing.
-                let row = postui_core::varmodel::group_entries(&self.project.env_data, &group)
-                    .map_or(0, indexmap::IndexMap::len);
+                let row =
+                    postui_core::varmodel::selector_options(&self.project.env_data, &selector)
+                        .map_or(0, indexmap::IndexMap::len);
                 self.varmanager.start_cell_edit(&self.project, row, 0);
                 self.update(Action::Render)
             }
             Hit::VmEditFields => {
-                let crate::components::varmanager::VmDetail::Group(group) =
+                let crate::components::varmanager::VmDetail::Group(selector) =
                     self.varmanager.detail.clone()
                 else {
                     return false;
                 };
-                self.update(Action::PromptGroupFields { group })
+                self.update(Action::PromptGroupFields { selector })
             }
             Hit::VmSecretToggle => {
                 let crate::components::varmanager::VmDetail::Var(name) =
@@ -1207,7 +1208,7 @@ impl App {
                 self.varmanager.form.revealed = !self.varmanager.form.revealed;
                 self.update(Action::Render)
             }
-            // Both buttons are on the variable form *and* the group pane;
+            // Both buttons are on the variable form *and* the selector pane;
             // the rename/delete flows behind them already branch on what
             // the name is declared as.
             Hit::VmRename => {

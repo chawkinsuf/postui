@@ -1,11 +1,11 @@
-//! Stage-7 variable model: parsing `variables.toml` (variable declarations
-//! and group declarations listing their `fields`) and
+//! The variable model: parsing `variables.toml` (variable declarations
+//! and selector declarations listing their `fields`) and
 //! `environments/<env>.toml` (flat values for simple variables plus that
-//! environment's group `entries`).
+//! environment's selector `options`).
 //!
-//! A group is a set of linked fields with named entries — records, not a
-//! switcher (spec §3.1). Picking an entry fills every field of the group at
-//! once, and entries belong to one specific environment.
+//! A selector is a set of linked fields with named options — records you
+//! pick among. Selecting an option fills every field of the selector at
+//! once, and options belong to one specific environment.
 
 use indexmap::IndexMap;
 
@@ -17,15 +17,16 @@ pub struct VarDecl {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct GroupDecl {
+pub struct SelectorDecl {
     pub description: Option<String>,
-    /// Ordered field names; every entry of the group supplies all of them.
+    /// Ordered field names; every option of the selector supplies all of
+    /// them. Never empty: a selector with no fields is a parse error.
     pub fields: Vec<String>,
 }
 
-/// One named record of a group, in one environment.
+/// One named record of a selector, in one environment.
 #[derive(Debug, Clone, PartialEq)]
-pub struct EntryDecl {
+pub struct OptionDecl {
     pub description: Option<String>,
     /// field name → value
     pub values: IndexMap<String, String>,
@@ -34,20 +35,21 @@ pub struct EntryDecl {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct VarModel {
     pub vars: IndexMap<String, VarDecl>,
-    pub groups: IndexMap<String, GroupDecl>,
+    pub selectors: IndexMap<String, SelectorDecl>,
 }
 
-/// Flat values for simple variables plus this environment's group entries.
+/// Flat values for simple variables plus this environment's selector
+/// options.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct EnvData {
     pub values: IndexMap<String, String>,
-    /// group name → entry name → entry
-    pub entries: IndexMap<String, IndexMap<String, EntryDecl>>,
+    /// selector name → option name → option
+    pub options: IndexMap<String, IndexMap<String, OptionDecl>>,
 }
 
-/// One env's `group name → selected entry name`. Legacy per-variable
+/// One env's `selector name → selected option name`. Legacy per-variable
 /// selections use the same map (a migrated enumerated variable becomes a
-/// one-field group of the same name, so its key carries over unchanged).
+/// one-field selector of the same name, so its key carries over unchanged).
 pub type Selections = IndexMap<String, String>;
 
 /// One env's `name → secret value`.
@@ -57,12 +59,12 @@ pub type SecretValues = IndexMap<String, String>;
 #[derive(Debug, Clone, PartialEq)]
 pub enum VarMeta {
     Simple,
-    GroupMember {
-        group: String,
+    SelectorMember {
+        selector: String,
         selected: String,
     },
     Secret,
-    /// A group field whose group has no (or a stale) selection.
+    /// A selector field whose selector has no (or a stale) selection.
     NeedsSelection,
     /// Secret with no value for this env.
     MissingSecret,
@@ -74,7 +76,7 @@ pub enum VarMeta {
 pub struct Resolved {
     /// Names needing a selection or secret are omitted here.
     pub values: IndexMap<String, String>,
-    /// Every declared name (vars + group fields) has an entry.
+    /// Every declared name (vars + selector fields) has an entry.
     pub meta: IndexMap<String, VarMeta>,
 }
 
@@ -83,14 +85,16 @@ pub enum ModelError {
     #[error("could not parse TOML: {0}")]
     Toml(String),
     #[error(
-        "\"{0}\" is a reserved name and can't be used for a variable or group; rename it to something else"
+        "\"{0}\" is a reserved name and can't be used for a variable or selector; rename it to something else"
     )]
     ReservedName(String),
     #[error(
         "\"{0}\" is not a valid name; use only ASCII letters, digits, `_`, and `-`, and make it non-empty"
     )]
     InvalidName(String),
-    #[error("\"{0}\" is declared as both a variable and a group; rename one so the name is unique")]
+    #[error(
+        "\"{0}\" is declared as both a variable and a selector; rename one so the name is unique"
+    )]
     NameCollision(String),
     #[error("\"{0}\" must be a table, e.g. [{0}]")]
     NotATable(String),
@@ -100,89 +104,95 @@ pub enum ModelError {
     NotAString { table: String, field: String },
     #[error("[{table}] field \"{field}\" must be a boolean (true or false)")]
     NotABool { table: String, field: String },
-    #[error("[groups.{group}] field \"fields\" must be an array of variable names")]
-    FieldsNotArray { group: String },
-    #[error("[groups.{group}] is missing required field \"fields\"")]
-    MissingFields { group: String },
+    #[error("[selectors.{selector}] field \"fields\" must be an array of variable names")]
+    FieldsNotArray { selector: String },
+    #[error("[selectors.{selector}] is missing required field \"fields\"")]
+    MissingFields { selector: String },
+    #[error("[selectors.{selector}] has an empty field list; a selector needs at least one field")]
+    EmptyFields { selector: String },
     #[error(
         "variable \"{0}\" is secret = true and also sets a default; remove default so no secret value is committed to variables.toml"
     )]
     SecretWithDefault(String),
     #[error(
-        "group \"{group}\" lists field \"{field}\", which is declared secret = true; a secret can't be a group field"
+        "selector \"{selector}\" lists field \"{field}\", which is declared secret = true; a secret can't be a selector field"
     )]
-    FieldIsSecret { group: String, field: String },
+    FieldIsSecret { selector: String, field: String },
     #[error(
-        "group \"{group}\" lists field \"{field}\", which is also declared as a variable; a group field's value comes from the group's entries, so remove the [{field}] declaration"
+        "selector \"{selector}\" lists field \"{field}\", which is also declared as a variable; a selector field's value comes from the selector's options, so remove the [{field}] declaration"
     )]
-    FieldCollidesWithVar { group: String, field: String },
+    FieldCollidesWithVar { selector: String, field: String },
     #[error(
-        "\"{field}\" is a field of both group \"{first}\" and group \"{second}\"; a field can only belong to one group"
+        "\"{field}\" is a field of both selector \"{first}\" and selector \"{second}\"; a field can only belong to one selector"
     )]
-    FieldInMultipleGroups {
+    FieldInMultipleSelectors {
         field: String,
         first: String,
         second: String,
     },
-    #[error("[entries.{0}] must be a table (e.g. [entries.{0}.\"entry name\"])")]
-    EntriesNotTable(String),
-    #[error("[entries.{group}.\"{entry}\"] must be a table of field values")]
-    EntryNotTable { group: String, entry: String },
-    #[error("[entries.{group}.\"{entry}\"] field \"{field}\" must be a string")]
-    EntryFieldNotString {
-        group: String,
-        entry: String,
+    #[error("[options.{0}] must be a table (e.g. [options.{0}.\"option name\"])")]
+    OptionsNotTable(String),
+    #[error("[options.{selector}.\"{option}\"] must be a table of field values")]
+    OptionNotTable { selector: String, option: String },
+    #[error("[options.{selector}.\"{option}\"] field \"{field}\" must be a string")]
+    OptionFieldNotString {
+        selector: String,
+        option: String,
         field: String,
     },
     #[error(
-        "[entries.{0}] does not match a declared group; declare [groups.{0}] in variables.toml or fix the typo"
+        "[options.{0}] does not match a declared selector; declare [selectors.{0}] in variables.toml or fix the typo"
     )]
-    EntryForUndeclaredGroup(String),
+    OptionForUndeclaredSelector(String),
     #[error(
-        "[entries.{group}.\"{entry}\"] is missing field \"{field}\"; every entry must supply all of the group's fields"
+        "[options.{selector}.\"{option}\"] is missing field \"{field}\"; every option must supply all of the selector's fields"
     )]
-    EntryMissingField {
-        group: String,
-        entry: String,
+    OptionMissingField {
+        selector: String,
+        option: String,
         field: String,
     },
     #[error(
-        "[entries.{group}.\"{entry}\"] sets \"{field}\", which is not a field of group \"{group}\"; fix the typo or add \"{field}\" to the group's fields"
+        "[options.{selector}.\"{option}\"] sets \"{field}\", which is not a field of selector \"{selector}\"; fix the typo or add \"{field}\" to the selector's fields"
     )]
-    EntryUnknownField {
-        group: String,
-        entry: String,
+    OptionUnknownField {
+        selector: String,
+        option: String,
         field: String,
     },
-    #[error("[entries.{group}] has an entry with an empty name; give every entry a name")]
-    EntryEmptyName { group: String },
+    #[error("[options.{selector}] has an option with an empty name; give every option a name")]
+    OptionEmptyName { selector: String },
     #[error(
-        "[entries.{group}] has an entry named \"description\"; that name is reserved for an entry's own description, so rename the entry"
+        "[options.{selector}] has an option named \"description\"; that name is reserved for an option's own description, so rename the option"
     )]
-    EntryNameReserved { group: String },
+    OptionNameReserved { selector: String },
     #[error(
         "environment sets a flat value for secret variable \"{0}\"; secrets can't be committed to environments/<env>.toml"
     )]
     EnvValueForSecret(String),
     #[error(
-        "environment sets a flat value for \"{0}\", which is a group name; groups don't take a flat value, use [entries.{0}.\"<entry>\"] instead"
+        "environment sets a flat value for \"{0}\", which is a selector name; selectors don't take a flat value, use [options.{0}.\"<option>\"] instead"
     )]
-    EnvValueForGroup(String),
+    EnvValueForSelector(String),
     #[error(
-        "environment sets a flat value for \"{name}\", which is a field of group \"{group}\"; its value comes from the group's selected entry, not a flat value"
+        "environment sets a flat value for \"{name}\", which is a field of selector \"{selector}\"; its value comes from the selector's selected option, not a flat value"
     )]
-    EnvValueForField { name: String, group: String },
+    EnvValueForField { name: String, selector: String },
+    #[error(
+        "environment still uses the old [entries.*] tables; accept the migration prompt (or rename them to [options.*]) to load it"
+    )]
+    EnvLegacyEntries,
 }
 
 // ---------------------------------------------------------------------
 // variables.toml
 // ---------------------------------------------------------------------
 
-const RESERVED_NAMES: [&str; 3] = ["options", "groups", "entries"];
+const RESERVED_NAMES: [&str; 4] = ["options", "groups", "entries", "selectors"];
 
-/// The one key inside an entry table that is the entry's own description
-/// rather than a field value — and so the one name an entry may not have.
-pub const ENTRY_DESCRIPTION: &str = "description";
+/// The one key inside an option table that is the option's own description
+/// rather than a field value — and so the one name an option may not have.
+pub const OPTION_DESCRIPTION: &str = "description";
 
 fn is_reserved(name: &str) -> bool {
     RESERVED_NAMES.contains(&name)
@@ -270,30 +280,38 @@ fn parse_var_decl(value: &toml::Value, var_name: &str) -> Result<VarDecl, ModelE
     })
 }
 
-fn parse_group_decl(value: &toml::Value, group_name: &str) -> Result<GroupDecl, ModelError> {
-    let table_path = format!("groups.{group_name}");
+fn parse_selector_decl(
+    value: &toml::Value,
+    selector_name: &str,
+) -> Result<SelectorDecl, ModelError> {
+    let table_path = format!("selectors.{selector_name}");
     let table = as_table(value, &table_path)?;
     check_unknown_fields(table, &["description", "fields"], &table_path)?;
     let description = get_string(table, "description", &table_path)?;
     let fields_value = table
         .get("fields")
         .ok_or_else(|| ModelError::MissingFields {
-            group: group_name.to_string(),
+            selector: selector_name.to_string(),
         })?;
     let fields_array = fields_value
         .as_array()
         .ok_or_else(|| ModelError::FieldsNotArray {
-            group: group_name.to_string(),
+            selector: selector_name.to_string(),
         })?;
     let mut fields = Vec::new();
     for f in fields_array {
         let name = f.as_str().ok_or_else(|| ModelError::FieldsNotArray {
-            group: group_name.to_string(),
+            selector: selector_name.to_string(),
         })?;
         check_name(name)?;
         fields.push(name.to_string());
     }
-    Ok(GroupDecl {
+    if fields.is_empty() {
+        return Err(ModelError::EmptyFields {
+            selector: selector_name.to_string(),
+        });
+    }
+    Ok(SelectorDecl {
         description,
         fields,
     })
@@ -305,90 +323,94 @@ pub fn parse_variables(s: &str) -> Result<VarModel, ModelError> {
 
     let mut vars = IndexMap::new();
     for (name, value) in &top {
-        if name == "groups" {
+        if name == "selectors" {
             continue;
         }
         check_name(name)?;
         vars.insert(name.clone(), parse_var_decl(value, name)?);
     }
 
-    let mut groups = IndexMap::new();
-    // field name -> group name that has already claimed it
+    let mut selectors = IndexMap::new();
+    // field name -> selector name that has already claimed it
     let mut field_owner: IndexMap<String, String> = IndexMap::new();
-    if let Some(groups_value) = top.get("groups") {
-        let groups_table = as_table(groups_value, "groups")?;
-        for (group_name, value) in groups_table {
-            // A flat (non-table) entry under `[groups]` means someone tried
-            // to use the reserved name "groups" as a plain variable table
-            // (e.g. `[groups]\ndefault = "x"`) rather than declaring a
-            // nested `[groups.<name>]`.
+    if let Some(selectors_value) = top.get("selectors") {
+        let selectors_table = as_table(selectors_value, "selectors")?;
+        for (selector_name, value) in selectors_table {
+            // A flat (non-table) entry under `[selectors]` means someone
+            // tried to use the reserved name "selectors" as a plain
+            // variable table (e.g. `[selectors]\ndefault = "x"`) rather
+            // than declaring a nested `[selectors.<name>]`.
             if value.as_table().is_none() {
-                return Err(ModelError::ReservedName("groups".to_string()));
+                return Err(ModelError::ReservedName("selectors".to_string()));
             }
-            check_name(group_name)?;
-            if vars.contains_key(group_name) {
-                return Err(ModelError::NameCollision(group_name.clone()));
+            check_name(selector_name)?;
+            if vars.contains_key(selector_name) {
+                return Err(ModelError::NameCollision(selector_name.clone()));
             }
-            let decl = parse_group_decl(value, group_name)?;
+            let decl = parse_selector_decl(value, selector_name)?;
             for field in &decl.fields {
                 if let Some(existing) = field_owner.get(field) {
-                    return Err(ModelError::FieldInMultipleGroups {
+                    return Err(ModelError::FieldInMultipleSelectors {
                         field: field.clone(),
                         first: existing.clone(),
-                        second: group_name.clone(),
+                        second: selector_name.clone(),
                     });
                 }
-                field_owner.insert(field.clone(), group_name.clone());
-                // A group MAY share its name with one of its own fields
-                // (the one-field group a migrated enumerated variable
+                field_owner.insert(field.clone(), selector_name.clone());
+                // A selector MAY share its name with one of its own fields
+                // (the one-field selector a migrated enumerated variable
                 // becomes); it may not share it with a *variable*, which
                 // the NameCollision check above already rejected.
                 if let Some(var_decl) = vars.get(field) {
                     if var_decl.secret {
                         return Err(ModelError::FieldIsSecret {
-                            group: group_name.clone(),
+                            selector: selector_name.clone(),
                             field: field.clone(),
                         });
                     }
                     return Err(ModelError::FieldCollidesWithVar {
-                        group: group_name.clone(),
+                        selector: selector_name.clone(),
                         field: field.clone(),
                     });
                 }
             }
-            groups.insert(group_name.clone(), decl);
+            selectors.insert(selector_name.clone(), decl);
         }
     }
 
-    Ok(VarModel { vars, groups })
+    Ok(VarModel { vars, selectors })
 }
 
 // ---------------------------------------------------------------------
 // environments/<env>.toml
 // ---------------------------------------------------------------------
 
-fn parse_entry(value: &toml::Value, group: &str, entry: &str) -> Result<EntryDecl, ModelError> {
-    let table = value.as_table().ok_or_else(|| ModelError::EntryNotTable {
-        group: group.to_string(),
-        entry: entry.to_string(),
+fn parse_option(
+    value: &toml::Value,
+    selector: &str,
+    option: &str,
+) -> Result<OptionDecl, ModelError> {
+    let table = value.as_table().ok_or_else(|| ModelError::OptionNotTable {
+        selector: selector.to_string(),
+        option: option.to_string(),
     })?;
     let mut description = None;
     let mut values = IndexMap::new();
     for (field, field_value) in table {
         let s = field_value
             .as_str()
-            .ok_or_else(|| ModelError::EntryFieldNotString {
-                group: group.to_string(),
-                entry: entry.to_string(),
+            .ok_or_else(|| ModelError::OptionFieldNotString {
+                selector: selector.to_string(),
+                option: option.to_string(),
                 field: field.clone(),
             })?;
-        if field == ENTRY_DESCRIPTION {
+        if field == OPTION_DESCRIPTION {
             description = Some(s.to_string());
             continue;
         }
         values.insert(field.clone(), s.to_string());
     }
-    Ok(EntryDecl {
+    Ok(OptionDecl {
         description,
         values,
     })
@@ -399,35 +421,38 @@ pub fn parse_environment(s: &str) -> Result<EnvData, ModelError> {
         toml::from_str(s).map_err(|e| ModelError::Toml(e.to_string()))?;
 
     let mut values = IndexMap::new();
-    let mut entries: IndexMap<String, IndexMap<String, EntryDecl>> = IndexMap::new();
+    let mut options: IndexMap<String, IndexMap<String, OptionDecl>> = IndexMap::new();
 
     for (key, value) in &top {
         if key == "entries" {
-            let entries_table = as_table(value, "entries")?;
-            for (group, group_value) in entries_table {
-                let group_table = group_value
+            return Err(ModelError::EnvLegacyEntries);
+        }
+        if key == "options" {
+            let options_table = as_table(value, "options")?;
+            for (selector, selector_value) in options_table {
+                let selector_table = selector_value
                     .as_table()
-                    .ok_or_else(|| ModelError::EntriesNotTable(group.clone()))?;
-                let mut per_group = IndexMap::new();
-                for (entry_name, entry_value) in group_table {
-                    if entry_name.is_empty() {
-                        return Err(ModelError::EntryEmptyName {
-                            group: group.clone(),
+                    .ok_or_else(|| ModelError::OptionsNotTable(selector.clone()))?;
+                let mut per_selector = IndexMap::new();
+                for (option_name, option_value) in selector_table {
+                    if option_name.is_empty() {
+                        return Err(ModelError::OptionEmptyName {
+                            selector: selector.clone(),
                         });
                     }
-                    // `description` inside a group's entries table is an
-                    // entry's own description, never an entry name.
-                    if entry_name == ENTRY_DESCRIPTION {
-                        return Err(ModelError::EntryNameReserved {
-                            group: group.clone(),
+                    // `description` inside a selector's options table is an
+                    // option's own description, never an option name.
+                    if option_name == OPTION_DESCRIPTION {
+                        return Err(ModelError::OptionNameReserved {
+                            selector: selector.clone(),
                         });
                     }
-                    per_group.insert(
-                        entry_name.clone(),
-                        parse_entry(entry_value, group, entry_name)?,
+                    per_selector.insert(
+                        option_name.clone(),
+                        parse_option(option_value, selector, option_name)?,
                     );
                 }
-                entries.insert(group.clone(), per_group);
+                options.insert(selector.clone(), per_selector);
             }
             continue;
         }
@@ -438,23 +463,26 @@ pub fn parse_environment(s: &str) -> Result<EnvData, ModelError> {
         values.insert(key.clone(), s.to_string());
     }
 
-    Ok(EnvData { values, entries })
+    Ok(EnvData { values, options })
 }
 
-/// This environment's entries for `group`, or `None` when the group has no
-/// entries here.
-pub fn group_entries<'a>(env: &'a EnvData, group: &str) -> Option<&'a IndexMap<String, EntryDecl>> {
-    env.entries.get(group)
+/// This environment's options for `selector`, or `None` when the selector
+/// has no options here.
+pub fn selector_options<'a>(
+    env: &'a EnvData,
+    selector: &str,
+) -> Option<&'a IndexMap<String, OptionDecl>> {
+    env.options.get(selector)
 }
 
 // ---------------------------------------------------------------------
 // env validation
 // ---------------------------------------------------------------------
 
-/// Friendly errors: a flat value naming a secret, a group, or a group
-/// field; an `[entries.<group>]` table for an undeclared group; an entry
-/// missing one of its group's fields or setting a field the group doesn't
-/// declare.
+/// Friendly errors: a flat value naming a secret, a selector, or a
+/// selector field; an `[options.<selector>]` table for an undeclared
+/// selector; an option missing one of its selector's fields or setting a
+/// field the selector doesn't declare.
 pub fn validate_env(model: &VarModel, env: &EnvData) -> Result<(), ModelError> {
     for key in env.values.keys() {
         if let Some(decl) = model.vars.get(key) {
@@ -463,42 +491,42 @@ pub fn validate_env(model: &VarModel, env: &EnvData) -> Result<(), ModelError> {
             }
             continue;
         }
-        if model.groups.contains_key(key) {
-            return Err(ModelError::EnvValueForGroup(key.clone()));
+        if model.selectors.contains_key(key) {
+            return Err(ModelError::EnvValueForSelector(key.clone()));
         }
-        if let Some(group_name) = model
-            .groups
+        if let Some(selector_name) = model
+            .selectors
             .iter()
             .find(|(_, g)| g.fields.contains(key))
             .map(|(gname, _)| gname.clone())
         {
             return Err(ModelError::EnvValueForField {
                 name: key.clone(),
-                group: group_name,
+                selector: selector_name,
             });
         }
     }
 
-    for (group, group_entries) in &env.entries {
+    for (selector, selector_opts) in &env.options {
         let decl = model
-            .groups
-            .get(group)
-            .ok_or_else(|| ModelError::EntryForUndeclaredGroup(group.clone()))?;
-        for (entry_name, entry) in group_entries {
+            .selectors
+            .get(selector)
+            .ok_or_else(|| ModelError::OptionForUndeclaredSelector(selector.clone()))?;
+        for (option_name, option) in selector_opts {
             for field in &decl.fields {
-                if !entry.values.contains_key(field) {
-                    return Err(ModelError::EntryMissingField {
-                        group: group.clone(),
-                        entry: entry_name.clone(),
+                if !option.values.contains_key(field) {
+                    return Err(ModelError::OptionMissingField {
+                        selector: selector.clone(),
+                        option: option_name.clone(),
                         field: field.clone(),
                     });
                 }
             }
-            for field in entry.values.keys() {
+            for field in option.values.keys() {
                 if !decl.fields.contains(field) {
-                    return Err(ModelError::EntryUnknownField {
-                        group: group.clone(),
-                        entry: entry_name.clone(),
+                    return Err(ModelError::OptionUnknownField {
+                        selector: selector.clone(),
+                        option: option_name.clone(),
                         field: field.clone(),
                     });
                 }
@@ -518,10 +546,11 @@ pub fn validate_env(model: &VarModel, env: &EnvData) -> Result<(), ModelError> {
 ///
 /// Precedence per name, first hit wins (layers 1–2 — request overlay and
 /// script-set values — are applied elsewhere): secret value for the active
-/// env → the selected entry's value for a group field → flat env value →
-/// declaration default. Names needing a selection or a secret are omitted
-/// from `values` but still get a `meta` entry. Undeclared env values pass
-/// through into `values` with no `meta` entry (stage-3 leniency).
+/// env → the selected option's value for a selector field → flat env value
+/// → declaration default. Names needing a selection or a secret are
+/// omitted from `values` but still get a `meta` entry. Undeclared env
+/// values pass through into `values` with no `meta` entry (stage-3
+/// leniency).
 pub fn resolve_env(
     model: &VarModel,
     env: &EnvData,
@@ -553,26 +582,26 @@ pub fn resolve_env(
         meta.insert(name.clone(), VarMeta::Simple);
     }
 
-    for (group_name, group_decl) in &model.groups {
-        let selected = selections.get(group_name).and_then(|name| {
-            env.entries
-                .get(group_name)
-                .and_then(|entries| entries.get(name))
-                .map(|entry| (name, entry))
+    for (selector_name, selector_decl) in &model.selectors {
+        let selected = selections.get(selector_name).and_then(|name| {
+            env.options
+                .get(selector_name)
+                .and_then(|options| options.get(name))
+                .map(|option| (name, option))
         });
 
-        for field in &group_decl.fields {
+        for field in &selector_decl.fields {
             match selected {
-                Some((name, entry)) => {
-                    if let Some(value) = entry.values.get(field) {
+                Some((name, option)) => {
+                    if let Some(value) = option.values.get(field) {
                         values.insert(field.clone(), value.clone());
                     } else {
                         values.shift_remove(field);
                     }
                     meta.insert(
                         field.clone(),
-                        VarMeta::GroupMember {
-                            group: group_name.clone(),
+                        VarMeta::SelectorMember {
+                            selector: selector_name.clone(),
                             selected: name.clone(),
                         },
                     );
@@ -586,7 +615,7 @@ pub fn resolve_env(
     }
 
     let declared_fields: std::collections::HashSet<&str> = model
-        .groups
+        .selectors
         .values()
         .flat_map(|g| g.fields.iter().map(String::as_str))
         .collect();
@@ -609,7 +638,7 @@ mod tests {
     // -----------------------------------------------------------------
 
     #[test]
-    fn parses_vars_and_groups_with_fields() {
+    fn parses_vars_and_selectors_with_fields() {
         let m = parse_variables(
             r#"
 [base_url]
@@ -619,15 +648,15 @@ default = "http://localhost:8080"
 [api_key]
 secret = true
 
-[groups.user]
+[selectors.user]
 description = "Linked user/customer pair"
 fields = ["user_id", "customer_id"]
 "#,
         )
         .unwrap();
-        assert_eq!(m.groups["user"].fields, ["user_id", "customer_id"]);
+        assert_eq!(m.selectors["user"].fields, ["user_id", "customer_id"]);
         assert_eq!(
-            m.groups["user"].description.as_deref(),
+            m.selectors["user"].description.as_deref(),
             Some("Linked user/customer pair")
         );
         assert!(m.vars["api_key"].secret);
@@ -659,11 +688,34 @@ fields = ["user_id", "customer_id"]
 
     #[test]
     fn variable_named_groups_is_rejected_as_reserved() {
-        // `[groups]` is always the group container; a flat field under it
-        // (as if declaring a variable named "groups") is rejected.
+        // `groups` was the stage-7 selector container; it stays reserved so
+        // stale files fail loudly rather than reading as a variable.
         let err = parse_variables("[groups]\ndefault = \"x\"\n").unwrap_err();
         assert!(
             err.to_string().contains("\"groups\" is a reserved name"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn legacy_groups_table_is_rejected_as_reserved() {
+        // A stage-7 file's `[groups.user]` declaration parses as a table
+        // named "groups" — reserved, so it errors instead of loading wrong.
+        let err = parse_variables("[groups.user]\nfields = [\"user_id\"]\n").unwrap_err();
+        assert!(
+            err.to_string().contains("\"groups\" is a reserved name"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn variable_named_selectors_is_rejected_as_reserved() {
+        // `[selectors]` is always the selector container; a flat field
+        // under it (as if declaring a variable named "selectors") is
+        // rejected.
+        let err = parse_variables("[selectors]\ndefault = \"x\"\n").unwrap_err();
+        assert!(
+            err.to_string().contains("\"selectors\" is a reserved name"),
             "{err}"
         );
     }
@@ -675,39 +727,39 @@ fields = ["user_id", "customer_id"]
     }
 
     #[test]
-    fn group_colliding_with_a_variable_name_is_rejected() {
+    fn selector_colliding_with_a_variable_name_is_rejected() {
         let err = parse_variables(
             r#"
 [user]
 default = "x"
 
-[groups.user]
+[selectors.user]
 fields = ["user_id"]
 "#,
         )
         .unwrap_err();
         assert!(
             err.to_string()
-                .contains("\"user\" is declared as both a variable and a group"),
+                .contains("\"user\" is declared as both a variable and a selector"),
             "{err}"
         );
     }
 
     #[test]
-    fn field_in_two_groups_is_rejected() {
+    fn field_in_two_selectors_is_rejected() {
         let err = parse_variables(
             r#"
-[groups.a]
+[selectors.a]
 fields = ["shared"]
 
-[groups.b]
+[selectors.b]
 fields = ["shared"]
 "#,
         )
         .unwrap_err();
         assert!(
             err.to_string()
-                .contains("\"shared\" is a field of both group \"a\" and group \"b\""),
+                .contains("\"shared\" is a field of both selector \"a\" and selector \"b\""),
             "{err}"
         );
     }
@@ -719,7 +771,7 @@ fields = ["shared"]
 [user_id]
 default = "1"
 
-[groups.user]
+[selectors.user]
 fields = ["user_id"]
 "#,
         )
@@ -738,43 +790,53 @@ fields = ["user_id"]
 [token]
 secret = true
 
-[groups.user]
+[selectors.user]
 fields = ["token"]
 "#,
         )
         .unwrap_err();
         assert!(
             err.to_string()
-                .contains("which is declared secret = true; a secret can't be a group field"),
+                .contains("which is declared secret = true; a secret can't be a selector field"),
             "{err}"
         );
     }
 
     #[test]
-    fn group_may_share_its_name_with_its_own_single_field() {
-        let m = parse_variables("[groups.tier]\nfields = [\"tier\"]\n").unwrap();
-        assert_eq!(m.groups["tier"].fields, ["tier"]);
+    fn selector_may_share_its_name_with_its_own_single_field() {
+        let m = parse_variables("[selectors.tier]\nfields = [\"tier\"]\n").unwrap();
+        assert_eq!(m.selectors["tier"].fields, ["tier"]);
     }
 
     #[test]
-    fn group_without_fields_is_rejected() {
-        let err = parse_variables("[groups.user]\ndescription = \"x\"\n").unwrap_err();
+    fn selector_without_fields_is_rejected() {
+        let err = parse_variables("[selectors.user]\ndescription = \"x\"\n").unwrap_err();
         assert!(
             err.to_string()
-                .contains("[groups.user] is missing required field \"fields\""),
+                .contains("[selectors.user] is missing required field \"fields\""),
             "{err}"
         );
     }
 
     #[test]
-    fn group_fields_must_be_an_array_of_strings() {
-        let err = parse_variables("[groups.user]\nfields = \"user_id\"\n").unwrap_err();
+    fn selector_with_empty_fields_is_rejected() {
+        let err = parse_variables("[selectors.user]\nfields = []\n").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("[selectors.user] has an empty field list"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn selector_fields_must_be_an_array_of_strings() {
+        let err = parse_variables("[selectors.user]\nfields = \"user_id\"\n").unwrap_err();
         assert!(
             err.to_string()
                 .contains("field \"fields\" must be an array of variable names"),
             "{err}"
         );
-        let err = parse_variables("[groups.user]\nfields = [1]\n").unwrap_err();
+        let err = parse_variables("[selectors.user]\nfields = [1]\n").unwrap_err();
         assert!(
             err.to_string()
                 .contains("field \"fields\" must be an array of variable names"),
@@ -800,10 +862,11 @@ fields = ["token"]
                 .contains("[base_url] has unknown field \"value\""),
             "{err}"
         );
-        let err = parse_variables("[groups.user]\nfields = []\nmembers = []\n").unwrap_err();
+        let err =
+            parse_variables("[selectors.user]\nfields = [\"a\"]\nmembers = []\n").unwrap_err();
         assert!(
             err.to_string()
-                .contains("[groups.user] has unknown field \"members\""),
+                .contains("[selectors.user] has unknown field \"members\""),
             "{err}"
         );
     }
@@ -813,18 +876,18 @@ fields = ["token"]
     // -----------------------------------------------------------------
 
     #[test]
-    fn parses_env_entries_and_resolves_selection() {
+    fn parses_env_options_and_resolves_selection() {
         let m =
-            parse_variables("[groups.user]\nfields = [\"user_id\", \"customer_id\"]\n").unwrap();
+            parse_variables("[selectors.user]\nfields = [\"user_id\", \"customer_id\"]\n").unwrap();
         let e = parse_environment(
             r#"
 base_url = "https://stg.example.com"
 
-[entries.user."user 1"]
+[options.user."user 1"]
 user_id = "1001"
 customer_id = "cust-77"
 
-[entries.user."user 2"]
+[options.user."user 2"]
 description = "the premium one"
 user_id = "1002"
 customer_id = "cust-91"
@@ -832,16 +895,16 @@ customer_id = "cust-91"
         )
         .unwrap();
         assert_eq!(e.values["base_url"], "https://stg.example.com");
-        assert_eq!(e.entries["user"]["user 2"].values["customer_id"], "cust-91");
+        assert_eq!(e.options["user"]["user 2"].values["customer_id"], "cust-91");
         assert_eq!(
-            e.entries["user"]["user 2"].description.as_deref(),
+            e.options["user"]["user 2"].description.as_deref(),
             Some("the premium one")
         );
         assert!(
-            !e.entries["user"]["user 2"]
+            !e.options["user"]["user 2"]
                 .values
                 .contains_key("description"),
-            "an entry's description is not one of its fields"
+            "an option's description is not one of its fields"
         );
         validate_env(&m, &e).unwrap();
 
@@ -851,126 +914,135 @@ customer_id = "cust-91"
         assert_eq!(r.values["user_id"], "1002");
         assert_eq!(
             r.meta["customer_id"],
-            VarMeta::GroupMember {
-                group: "user".into(),
+            VarMeta::SelectorMember {
+                selector: "user".into(),
                 selected: "user 2".into()
             }
         );
     }
 
     #[test]
-    fn group_entries_looks_up_one_groups_entries() {
-        let e = parse_environment("[entries.user.\"user 1\"]\nuser_id = \"1\"\n").unwrap();
-        assert_eq!(group_entries(&e, "user").unwrap().len(), 1);
-        assert!(group_entries(&e, "nope").is_none());
+    fn legacy_env_entries_table_is_rejected() {
+        let err = parse_environment("[entries.user.\"user 1\"]\nuser_id = \"1\"\n").unwrap_err();
+        assert!(err.to_string().contains("old [entries.*] tables"), "{err}");
     }
 
     #[test]
-    fn entry_table_for_an_undeclared_group_is_rejected() {
+    fn selector_options_looks_up_one_selectors_options() {
+        let e = parse_environment("[options.user.\"user 1\"]\nuser_id = \"1\"\n").unwrap();
+        assert_eq!(selector_options(&e, "user").unwrap().len(), 1);
+        assert!(selector_options(&e, "nope").is_none());
+    }
+
+    #[test]
+    fn options_table_for_an_undeclared_selector_is_rejected() {
         let m = parse_variables("").unwrap();
-        let e = parse_environment("[entries.ghost.\"a\"]\nx = \"1\"\n").unwrap();
+        let e = parse_environment("[options.ghost.\"a\"]\nx = \"1\"\n").unwrap();
         let err = validate_env(&m, &e).unwrap_err();
         assert!(
             err.to_string()
-                .contains("[entries.ghost] does not match a declared group"),
+                .contains("[options.ghost] does not match a declared selector"),
             "{err}"
         );
     }
 
     #[test]
-    fn entry_missing_a_field_is_rejected() {
+    fn option_missing_a_field_is_rejected() {
         let m =
-            parse_variables("[groups.user]\nfields = [\"user_id\", \"customer_id\"]\n").unwrap();
-        let e = parse_environment("[entries.user.\"user 1\"]\nuser_id = \"1\"\n").unwrap();
+            parse_variables("[selectors.user]\nfields = [\"user_id\", \"customer_id\"]\n").unwrap();
+        let e = parse_environment("[options.user.\"user 1\"]\nuser_id = \"1\"\n").unwrap();
         let err = validate_env(&m, &e).unwrap_err();
         assert!(
             err.to_string()
-                .contains("[entries.user.\"user 1\"] is missing field \"customer_id\""),
+                .contains("[options.user.\"user 1\"] is missing field \"customer_id\""),
             "{err}"
         );
     }
 
     #[test]
-    fn entry_with_an_extra_field_is_rejected() {
-        let m = parse_variables("[groups.user]\nfields = [\"user_id\"]\n").unwrap();
-        let e = parse_environment("[entries.user.\"user 1\"]\nuser_id = \"1\"\nnope = \"2\"\n")
+    fn option_with_an_extra_field_is_rejected() {
+        let m = parse_variables("[selectors.user]\nfields = [\"user_id\"]\n").unwrap();
+        let e = parse_environment("[options.user.\"user 1\"]\nuser_id = \"1\"\nnope = \"2\"\n")
             .unwrap();
         let err = validate_env(&m, &e).unwrap_err();
         assert!(
             err.to_string().contains(
-                "[entries.user.\"user 1\"] sets \"nope\", which is not a field of group \"user\""
+                "[options.user.\"user 1\"] sets \"nope\", which is not a field of selector \"user\""
             ),
             "{err}"
         );
     }
 
     #[test]
-    fn entry_field_must_be_a_string() {
-        let err = parse_environment("[entries.user.\"user 1\"]\nuser_id = 1001\n").unwrap_err();
+    fn option_field_must_be_a_string() {
+        let err = parse_environment("[options.user.\"user 1\"]\nuser_id = 1001\n").unwrap_err();
         assert!(
             err.to_string()
-                .contains("[entries.user.\"user 1\"] field \"user_id\" must be a string"),
+                .contains("[options.user.\"user 1\"] field \"user_id\" must be a string"),
             "{err}"
         );
     }
 
     #[test]
-    fn entry_must_be_a_table() {
-        let err = parse_environment("[entries.user]\n\"user 1\" = \"nope\"\n").unwrap_err();
+    fn option_must_be_a_table() {
+        let err = parse_environment("[options.user]\n\"user 1\" = \"nope\"\n").unwrap_err();
         assert!(
             err.to_string()
-                .contains("[entries.user.\"user 1\"] must be a table of field values"),
+                .contains("[options.user.\"user 1\"] must be a table of field values"),
             "{err}"
         );
     }
 
     #[test]
-    fn entries_group_must_be_a_table() {
-        let err = parse_environment("[entries]\nuser = \"nope\"\n").unwrap_err();
+    fn options_selector_must_be_a_table() {
+        let err = parse_environment("[options]\nuser = \"nope\"\n").unwrap_err();
         assert!(
-            err.to_string().contains("[entries.user] must be a table"),
+            err.to_string().contains("[options.user] must be a table"),
             "{err}"
         );
     }
 
     #[test]
-    fn empty_entry_name_is_rejected() {
-        let err = parse_environment("[entries.user.\"\"]\nuser_id = \"1\"\n").unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("[entries.user] has an entry with an empty name"),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn an_entry_named_description_is_rejected() {
-        // `description` in an entries table is an entry's own description,
-        // so it can't double as an entry name.
-        let err = parse_environment("[entries.user.description]\nuser_id = \"1\"\n").unwrap_err();
+    fn empty_option_name_is_rejected() {
+        let err = parse_environment("[options.user.\"\"]\nuser_id = \"1\"\n").unwrap_err();
         assert!(
             err.to_string()
-                .contains("[entries.user] has an entry named \"description\""),
+                .contains("[options.user] has an option with an empty name"),
             "{err}"
         );
     }
 
     #[test]
-    fn flat_env_value_for_a_group_is_rejected() {
-        let m = parse_variables("[groups.user]\nfields = [\"user_id\"]\n").unwrap();
+    fn an_option_named_description_is_rejected() {
+        // `description` in an options table is an option's own description,
+        // so it can't double as an option name.
+        let err = parse_environment("[options.user.description]\nuser_id = \"1\"\n").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("[options.user] has an option named \"description\""),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn flat_env_value_for_a_selector_is_rejected() {
+        let m = parse_variables("[selectors.user]\nfields = [\"user_id\"]\n").unwrap();
         let e = parse_environment("user = \"x\"\n").unwrap();
         let err = validate_env(&m, &e).unwrap_err();
-        assert!(err.to_string().contains("which is a group name"), "{err}");
+        assert!(
+            err.to_string().contains("which is a selector name"),
+            "{err}"
+        );
     }
 
     #[test]
-    fn flat_env_value_for_a_group_field_is_rejected() {
-        let m = parse_variables("[groups.user]\nfields = [\"user_id\"]\n").unwrap();
+    fn flat_env_value_for_a_selector_field_is_rejected() {
+        let m = parse_variables("[selectors.user]\nfields = [\"user_id\"]\n").unwrap();
         let e = parse_environment("user_id = \"x\"\n").unwrap();
         let err = validate_env(&m, &e).unwrap_err();
         assert!(
             err.to_string()
-                .contains("which is a field of group \"user\""),
+                .contains("which is a field of selector \"user\""),
             "{err}"
         );
     }
@@ -992,12 +1064,12 @@ customer_id = "cust-91"
     // -----------------------------------------------------------------
 
     fn user_model() -> VarModel {
-        parse_variables("[groups.user]\nfields = [\"user_id\", \"customer_id\"]\n").unwrap()
+        parse_variables("[selectors.user]\nfields = [\"user_id\", \"customer_id\"]\n").unwrap()
     }
 
     fn user_env() -> EnvData {
         parse_environment(
-            "[entries.user.\"user 1\"]\nuser_id = \"1001\"\ncustomer_id = \"cust-77\"\n",
+            "[options.user.\"user 1\"]\nuser_id = \"1001\"\ncustomer_id = \"cust-77\"\n",
         )
         .unwrap()
     }
@@ -1018,7 +1090,7 @@ customer_id = "cust-91"
     #[test]
     fn stale_selection_degrades_to_needs_selection() {
         let mut sel = Selections::new();
-        sel.insert("user".into(), "deleted entry".into());
+        sel.insert("user".into(), "deleted option".into());
         let r = resolve_env(&user_model(), &user_env(), &sel, &SecretValues::new());
         assert_eq!(r.meta["user_id"], VarMeta::NeedsSelection);
         assert!(r.values.get("user_id").is_none());
@@ -1078,10 +1150,10 @@ customer_id = "cust-91"
     }
 
     #[test]
-    fn one_field_group_sharing_its_name_resolves_through_the_selection() {
-        let m = parse_variables("[groups.tier]\nfields = [\"tier\"]\n").unwrap();
+    fn one_field_selector_sharing_its_name_resolves_through_the_selection() {
+        let m = parse_variables("[selectors.tier]\nfields = [\"tier\"]\n").unwrap();
         let e = parse_environment(
-            "[entries.tier.gold]\ntier = \"g-1\"\n[entries.tier.free]\ntier = \"f-1\"\n",
+            "[options.tier.gold]\ntier = \"g-1\"\n[options.tier.free]\ntier = \"f-1\"\n",
         )
         .unwrap();
         validate_env(&m, &e).unwrap();
@@ -1091,8 +1163,8 @@ customer_id = "cust-91"
         assert_eq!(r.values["tier"], "g-1");
         assert_eq!(
             r.meta["tier"],
-            VarMeta::GroupMember {
-                group: "tier".into(),
+            VarMeta::SelectorMember {
+                selector: "tier".into(),
                 selected: "gold".into()
             }
         );

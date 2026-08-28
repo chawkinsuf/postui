@@ -1,5 +1,8 @@
-//! One-shot conversion of stage-6 variable files to the stage-7
-//! linked-records format (spec §3.3).
+//! One-shot conversion of older variable files to the selector/option
+//! format: stage-6 enumerated variables (`[<var>.options.*]`,
+//! `[groups.<g>]` with `members`, per-env `[options.*]` overrides) and the
+//! stage-7 linked-records spelling (`[groups.<g>]` with `fields`, per-env
+//! `[entries.*]`) both land as `[selectors.<g>]` + `[options.<g>."<name>"]`.
 
 use crate::varedit::{self, EditError};
 use indexmap::IndexMap;
@@ -40,13 +43,16 @@ struct LegacyVar {
     options: IndexMap<String, LegacyOption>,
 }
 
+/// A `[groups.<g>]` declaration — stage-6 (`members`, inline `options`) or
+/// stage-7 (`fields`) spelling; either way it becomes `[selectors.<g>]`.
 #[derive(Debug, Clone, Default)]
 struct LegacyGroup {
     fields: Vec<String>,
     options: IndexMap<String, LegacyOption>,
-    /// Whether this group still uses stage-6 spelling and so has to be
-    /// rewritten at all.
-    legacy: bool,
+    /// Whether this group still uses stage-6 spelling (`members` /
+    /// inline `options`) and so needs its keys reshaped, not just the
+    /// container renamed.
+    stage6: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -55,18 +61,25 @@ struct Legacy {
     groups: IndexMap<String, LegacyGroup>,
 }
 
-/// One environment's `[options]` table: name -> key -> field -> value.
-type EnvOptions = IndexMap<String, IndexMap<String, IndexMap<String, String>>>;
-
-/// One migrated entry.
+/// One environment's legacy tables: stage-6 `[options.*]` overrides (name
+/// -> key -> field -> value) and whether a stage-7 `[entries]` table is
+/// present (its records are already per-env and only need the container
+/// renamed).
 #[derive(Debug, Clone, Default)]
-struct EntryData {
+struct LegacyEnv {
+    stage6_options: IndexMap<String, IndexMap<String, IndexMap<String, String>>>,
+    has_entries: bool,
+}
+
+/// One migrated record.
+#[derive(Debug, Clone, Default)]
+struct OptionData {
     description: Option<String>,
     values: IndexMap<String, String>,
 }
 
-/// group -> entry name -> entry.
-type GroupEntries = IndexMap<String, IndexMap<String, EntryData>>;
+/// selector -> option name -> option.
+type SelectorOptions = IndexMap<String, IndexMap<String, OptionData>>;
 
 fn parse_legacy_group(value: &toml::Value, name: &str) -> Result<LegacyGroup, EditError> {
     let table = value
@@ -77,7 +90,7 @@ fn parse_legacy_group(value: &toml::Value, name: &str) -> Result<LegacyGroup, Ed
             "[groups.{name}] has both `members` and `fields`; keep only `fields`"
         )));
     }
-    let legacy = table.contains_key("members") || table.contains_key("options");
+    let stage6 = table.contains_key("members") || table.contains_key("options");
     let list = table
         .get("members")
         .or_else(|| table.get("fields"))
@@ -130,7 +143,7 @@ fn parse_legacy_group(value: &toml::Value, name: &str) -> Result<LegacyGroup, Ed
     Ok(LegacyGroup {
         fields,
         options,
-        legacy,
+        stage6,
     })
 }
 
@@ -147,7 +160,7 @@ fn parse_legacy_var(value: &toml::Value, name: &str) -> Result<LegacyVar, EditEr
     if let Some(opts) = table.get("options") {
         if table.contains_key("default") {
             return Err(parse_err(format!(
-                "[{name}] declares both `default` and `options`; a group has no declaration default, so remove one before migrating"
+                "[{name}] declares both `default` and `options`; a selector has no declaration default, so remove one before migrating"
             )));
         }
         let opts = opts
@@ -196,6 +209,9 @@ fn parse_legacy_vars(vars_doc: &str) -> Result<Legacy, EditError> {
     let top = top_level(vars_doc, "variables.toml")?;
     let mut legacy = Legacy::default();
     for (name, value) in &top {
+        if name == "selectors" {
+            continue;
+        }
         if name == "groups" {
             let groups = value
                 .as_table()
@@ -214,18 +230,31 @@ fn parse_legacy_vars(vars_doc: &str) -> Result<Legacy, EditError> {
     Ok(legacy)
 }
 
-fn parse_env_options(env: &str, doc: &str) -> Result<EnvOptions, EditError> {
+/// Reads one environment's legacy tables. An `[options.<name>]` table is
+/// stage-6 legacy only when `<name>` is a declared plain variable or a
+/// `[groups.*]` declaration — the shapes stage 6 could enumerate. Options
+/// for a declared `[selectors.*]` name are new-format and left untouched;
+/// options for a name declared nowhere are also left alone, so they
+/// surface as the ordinary undeclared-selector validation error rather
+/// than a migration prompt.
+fn parse_legacy_env(env: &str, doc: &str, legacy_names: &[String]) -> Result<LegacyEnv, EditError> {
     let top = top_level(doc, &format!("environments/{env}.toml"))?;
+    let mut out = LegacyEnv {
+        has_entries: top.contains_key("entries"),
+        ..LegacyEnv::default()
+    };
     let Some(options) = top.get("options") else {
-        return Ok(EnvOptions::new());
+        return Ok(out);
     };
     let options = options.as_table().ok_or_else(|| {
         parse_err(format!(
             "environments/{env}.toml: [options] must be a table"
         ))
     })?;
-    let mut out = EnvOptions::new();
     for (name, keys) in options {
+        if !legacy_names.contains(name) {
+            continue;
+        }
         let keys = keys.as_table().ok_or_else(|| {
             parse_err(format!(
                 "environments/{env}.toml: [options.{name}] must be a table"
@@ -246,27 +275,35 @@ fn parse_env_options(env: &str, doc: &str) -> Result<EnvOptions, EditError> {
             }
             per_name.insert(key.clone(), fields);
         }
-        out.insert(name.clone(), per_name);
+        out.stage6_options.insert(name.clone(), per_name);
     }
     Ok(out)
 }
 
-/// Drops the stage-6 `members`/`options` keys from every `[groups.*]`
-/// table, leaving the rest of the document (comments, order, blank lines)
-/// exactly as written.
-fn strip_group_legacy_keys(doc: &str) -> Result<String, EditError> {
+/// Renames `[groups]` to `[selectors]` in place (decor, order and comments
+/// preserved) and reshapes each declaration: stage-6 `members` becomes
+/// `fields`, and any inline `options` table is dropped (its records were
+/// already captured for the environment files).
+fn rewrite_groups_as_selectors(doc: &str) -> Result<String, EditError> {
     let mut doc = doc
         .parse::<DocumentMut>()
         .map_err(|e| parse_err(e.to_string()))?;
-    if let Some(groups) = doc
-        .as_table_mut()
-        .get_mut("groups")
-        .and_then(Item::as_table_mut)
-    {
-        let names: Vec<String> = groups.iter().map(|(k, _)| k.to_string()).collect();
+    let root = doc.as_table_mut();
+    if root.contains_key("groups") {
+        if root.contains_key("selectors") {
+            return Err(parse_err(
+                "variables.toml has both [groups.*] and [selectors.*]; move the [groups.*] declarations under [selectors.*] by hand",
+            ));
+        }
+        varedit::rename_key(root, "groups", "selectors");
+    }
+    if let Some(selectors) = root.get_mut("selectors").and_then(Item::as_table_mut) {
+        let names: Vec<String> = selectors.iter().map(|(k, _)| k.to_string()).collect();
         for name in names {
-            if let Some(table) = groups.get_mut(&name).and_then(Item::as_table_mut) {
-                table.remove("members");
+            if let Some(table) = selectors.get_mut(&name).and_then(Item::as_table_mut) {
+                if table.contains_key("members") {
+                    varedit::rename_key(table, "members", "fields");
+                }
                 table.remove("options");
             }
         }
@@ -274,23 +311,71 @@ fn strip_group_legacy_keys(doc: &str) -> Result<String, EditError> {
     Ok(doc.to_string())
 }
 
-/// Drops the whole `[options]` table from an environment document.
-fn strip_env_options(doc: &str) -> Result<String, EditError> {
+/// Renames a stage-7 `[entries]` table to `[options]` (decor preserved) and
+/// removes each stage-6 legacy name from any existing `[options]` table.
+/// When both containers exist, the entries subtrees are moved into the
+/// options table one by one instead of renamed wholesale.
+fn rewrite_env_containers(doc: &str, legacy_names: &[String]) -> Result<String, EditError> {
     let mut doc = doc
         .parse::<DocumentMut>()
         .map_err(|e| parse_err(e.to_string()))?;
-    doc.as_table_mut().remove("options");
+    let root = doc.as_table_mut();
+
+    if let Some(options) = root.get_mut("options").and_then(Item::as_table_mut) {
+        for name in legacy_names {
+            options.remove(name);
+        }
+        let now_empty = options.is_empty();
+        if now_empty {
+            root.remove("options");
+        }
+    }
+
+    if root.contains_key("entries") {
+        if let Some(existing) = root.get("options").and_then(Item::as_table) {
+            let clash: Vec<String> = existing.iter().map(|(k, _)| k.to_string()).collect();
+            let entries = root
+                .get_mut("entries")
+                .and_then(Item::as_table_mut)
+                .ok_or_else(|| parse_err("[entries] must be a table"))?;
+            let moved: Vec<(String, Item)> = {
+                let names: Vec<String> = entries.iter().map(|(k, _)| k.to_string()).collect();
+                for name in &names {
+                    if clash.contains(name) {
+                        return Err(parse_err(format!(
+                            "[entries.{name}] and [options.{name}] both exist; merge them by hand before migrating"
+                        )));
+                    }
+                }
+                names
+                    .into_iter()
+                    .filter_map(|name| entries.remove_entry(&name).map(|(k, v)| (k.to_string(), v)))
+                    .collect()
+            };
+            root.remove("entries");
+            let options = root
+                .get_mut("options")
+                .and_then(Item::as_table_mut)
+                .expect("checked present above");
+            for (name, item) in moved {
+                options.insert(&name, item);
+            }
+        } else {
+            varedit::rename_key(root, "entries", "options");
+        }
+    }
+
     Ok(doc.to_string())
 }
 
-fn write_entries(doc: &str, entries: &GroupEntries) -> Result<String, EditError> {
+fn write_options(doc: &str, options: &SelectorOptions) -> Result<String, EditError> {
     let mut text = doc.to_string();
-    for (group, per_group) in entries {
-        for (entry, data) in per_group {
-            text = varedit::upsert_entry(
+    for (selector, per_selector) in options {
+        for (option, data) in per_selector {
+            text = varedit::upsert_option(
                 &text,
-                group,
-                entry,
+                selector,
+                option,
                 data.description.as_deref(),
                 &data.values,
             )?;
@@ -299,41 +384,51 @@ fn write_entries(doc: &str, entries: &GroupEntries) -> Result<String, EditError>
     Ok(text)
 }
 
-/// True if `variables.toml` uses stage-6 syntax (`[<var>.options]`,
-/// `[groups.<g>]` with `members`, `[groups.<g>.options]`), or any
-/// environment document has a top-level `[options]` table.
+/// True if `variables.toml` uses a legacy syntax (`[<var>.options]`,
+/// `[groups.*]` in either spelling), any environment document has a
+/// stage-7 `[entries]` table, or an environment `[options.<name>]` table
+/// names a declared plain variable (the stage-6 per-env enumeration
+/// shape). An `[options.<name>]` table naming nothing declared is NOT a
+/// migration trigger — it's the ordinary undeclared-selector validation
+/// error.
 pub fn needs_migration(vars_doc: &str, env_docs: &[(String, String)]) -> bool {
+    let mut plain_vars: Vec<String> = Vec::new();
     if let Ok(top) = toml::from_str::<IndexMap<String, toml::Value>>(vars_doc) {
         for (name, value) in &top {
             if name == "groups" {
-                let has_legacy_group = value.as_table().is_some_and(|groups| {
-                    groups.values().any(|g| {
-                        g.as_table()
-                            .is_some_and(|t| t.contains_key("members") || t.contains_key("options"))
-                    })
-                });
-                if has_legacy_group {
-                    return true;
-                }
-            } else if value.as_table().is_some_and(|t| t.contains_key("options")) {
                 return true;
             }
+            if name == "selectors" {
+                continue;
+            }
+            if value.as_table().is_some_and(|t| t.contains_key("options")) {
+                return true;
+            }
+            plain_vars.push(name.clone());
         }
     }
     env_docs.iter().any(|(_, doc)| {
-        toml::from_str::<IndexMap<String, toml::Value>>(doc)
-            .is_ok_and(|top| top.contains_key("options"))
+        toml::from_str::<IndexMap<String, toml::Value>>(doc).is_ok_and(|top| {
+            if top.contains_key("entries") {
+                return true;
+            }
+            top.get("options")
+                .and_then(toml::Value::as_table)
+                .is_some_and(|options| options.keys().any(|name| plain_vars.contains(name)))
+        })
     })
 }
 
-/// Converts a stage-6 project to the stage-7 format. Nothing is written
-/// here: the caller decides whether to apply the returned texts.
+/// Converts a legacy project to the selector/option format. Nothing is
+/// written here: the caller decides whether to apply the returned texts.
 ///
-/// Enumerated variables become one-field groups of the same name; group
-/// `members` become `fields`; every declaration-level option value becomes
-/// an entry in *every* environment, with that environment's keyed
-/// overrides merged on top per field. Anything the stage-6 shapes could
-/// hold that the new format can't express is reported as
+/// Enumerated variables become one-field selectors of the same name;
+/// `[groups.*]` declarations become `[selectors.*]` in place (stage-6
+/// `members` becomes `fields`); every declaration-level option value
+/// becomes an option in *every* environment, with that environment's keyed
+/// overrides merged on top per field; stage-7 `[entries.*]` tables are
+/// renamed to `[options.*]` where they sit. Anything the legacy shapes
+/// could hold that the new format can't express is reported as
 /// [`EditError::Parse`] naming the offending path, so no construct is
 /// silently lost.
 pub fn migrate(
@@ -341,12 +436,18 @@ pub fn migrate(
     env_docs: &[(String, String)],
 ) -> Result<MigrationOutcome, EditError> {
     let legacy = parse_legacy_vars(vars_doc)?;
-    let mut env_options: Vec<(String, EnvOptions)> = Vec::new();
+    let legacy_names: Vec<String> = legacy
+        .vars
+        .keys()
+        .chain(legacy.groups.keys())
+        .cloned()
+        .collect();
+    let mut legacy_envs: Vec<(String, LegacyEnv)> = Vec::new();
     for (name, doc) in env_docs {
-        env_options.push((name.clone(), parse_env_options(name, doc)?));
+        legacy_envs.push((name.clone(), parse_legacy_env(name, doc, &legacy_names)?));
     }
 
-    // Variables that become one-field groups: those with declaration
+    // Variables that become one-field selectors: those with declaration
     // options, plus any plain variable an environment enumerates.
     let mut converted: Vec<String> = legacy
         .vars
@@ -354,15 +455,10 @@ pub fn migrate(
         .filter(|(_, v)| !v.options.is_empty())
         .map(|(name, _)| name.clone())
         .collect();
-    for (env, options) in &env_options {
-        for name in options.keys() {
+    for (_env, legacy_env) in &legacy_envs {
+        for name in legacy_env.stage6_options.keys() {
             if legacy.groups.contains_key(name) || converted.contains(name) {
                 continue;
-            }
-            if !legacy.vars.contains_key(name) {
-                return Err(parse_err(format!(
-                    "environments/{env}.toml: [options.{name}] does not match a declared variable or group"
-                )));
             }
             converted.push(name.clone());
         }
@@ -370,36 +466,39 @@ pub fn migrate(
 
     let mut notes = Vec::new();
 
-    // Every group's field list, keyed by group name.
-    let mut group_fields: IndexMap<String, Vec<String>> = IndexMap::new();
+    // Every selector's field list, keyed by name.
+    let mut selector_fields: IndexMap<String, Vec<String>> = IndexMap::new();
     for name in &converted {
-        group_fields.insert(name.clone(), vec![name.clone()]);
+        selector_fields.insert(name.clone(), vec![name.clone()]);
     }
     for (name, group) in &legacy.groups {
-        group_fields.insert(name.clone(), group.fields.clone());
+        selector_fields.insert(name.clone(), group.fields.clone());
     }
 
-    // Declaration-level option values, as entries.
-    let mut decl_entries: GroupEntries = IndexMap::new();
+    // Declaration-level option values, as per-env records.
+    let mut decl_options: SelectorOptions = IndexMap::new();
     for name in &converted {
         let var = &legacy.vars[name];
-        let mut per_group = IndexMap::new();
+        let mut per_selector = IndexMap::new();
         for (key, option) in &var.options {
-            per_group.insert(
+            per_selector.insert(
                 key.clone(),
-                EntryData {
+                OptionData {
                     description: option.description.clone(),
                     values: option.values.clone(),
                 },
             );
         }
-        decl_entries.insert(name.clone(), per_group);
+        decl_options.insert(name.clone(), per_selector);
         notes.push(format!(
-            "variable \"{name}\" became a one-field group with an entry per option"
+            "variable \"{name}\" became a one-field selector with an option per value"
         ));
     }
     for (name, group) in &legacy.groups {
-        let mut per_group = IndexMap::new();
+        if !group.stage6 {
+            notes.push(format!("group \"{name}\" became selector \"{name}\""));
+        }
+        let mut per_selector = IndexMap::new();
         for (key, option) in &group.options {
             let mut values = IndexMap::new();
             for field in &group.fields {
@@ -407,39 +506,36 @@ pub fn migrate(
                     Some(v) => v.clone(),
                     None => {
                         notes.push(format!(
-                            "entry \"{key}\" of group \"{name}\" had no value for \"{field}\"; filled in as empty"
+                            "option \"{key}\" of selector \"{name}\" had no value for \"{field}\"; filled in as empty"
                         ));
                         String::new()
                     }
                 };
                 values.insert(field.clone(), value);
             }
-            per_group.insert(
+            per_selector.insert(
                 key.clone(),
-                EntryData {
+                OptionData {
                     description: option.description.clone(),
                     values,
                 },
             );
         }
-        decl_entries.insert(name.clone(), per_group);
+        if !per_selector.is_empty() || !decl_options.contains_key(name) {
+            decl_options.insert(name.clone(), per_selector);
+        }
     }
 
     // ---- variables.toml ----
-    let rewrite_vars = !converted.is_empty() || legacy.groups.values().any(|g| g.legacy);
+    let rewrite_vars = !converted.is_empty() || !legacy.groups.is_empty();
     let new_variables = if rewrite_vars {
         let mut text = vars_doc.to_string();
         for name in &converted {
             text = varedit::delete_var(&text, name)?;
         }
-        text = strip_group_legacy_keys(&text)?;
-        for (name, group) in &legacy.groups {
-            if group.legacy {
-                text = varedit::upsert_group(&text, name, None, &group.fields)?;
-            }
-        }
+        text = rewrite_groups_as_selectors(&text)?;
         for name in &converted {
-            text = varedit::upsert_group(
+            text = varedit::upsert_selector(
                 &text,
                 name,
                 legacy.vars[name].description.as_deref(),
@@ -453,20 +549,22 @@ pub fn migrate(
 
     // ---- environments/<env>.toml ----
     let mut envs = Vec::new();
-    for ((env, doc), (_, options)) in env_docs.iter().zip(&env_options) {
-        let mut entries = decl_entries.clone();
-        for (name, keys) in options {
-            let fields = group_fields
+    for ((env, doc), (_, legacy_env)) in env_docs.iter().zip(&legacy_envs) {
+        let mut options = decl_options.clone();
+        for (name, keys) in &legacy_env.stage6_options {
+            let fields = selector_fields
                 .get(name)
-                .expect("every option owner is a group by now")
+                .expect("every legacy option owner is a selector by now")
                 .clone();
             let is_converted_var = converted.contains(name);
-            let per_group = entries.entry(name.clone()).or_default();
+            let per_selector = options.entry(name.clone()).or_default();
             for (key, row) in keys {
-                let slot = per_group.entry(key.clone()).or_insert_with(|| EntryData {
-                    description: None,
-                    values: fields.iter().map(|f| (f.clone(), String::new())).collect(),
-                });
+                let slot = per_selector
+                    .entry(key.clone())
+                    .or_insert_with(|| OptionData {
+                        description: None,
+                        values: fields.iter().map(|f| (f.clone(), String::new())).collect(),
+                    });
                 for (field, v) in row {
                     if field == "description" {
                         slot.description = Some(v.clone());
@@ -491,12 +589,17 @@ pub fn migrate(
             }
         }
 
-        let nothing_to_do =
-            options.is_empty() && entries.values().all(|per_group| per_group.is_empty());
+        let nothing_to_do = legacy_env.stage6_options.is_empty()
+            && !legacy_env.has_entries
+            && options.values().all(|per_selector| per_selector.is_empty());
         if nothing_to_do {
             continue;
         }
-        let text = write_entries(&strip_env_options(doc)?, &entries)?;
+        let legacy_names: Vec<String> = legacy_env.stage6_options.keys().cloned().collect();
+        let stripped = rewrite_env_containers(doc, &legacy_names)?;
+        // Records already renamed in place (stage-7 entries) don't need
+        // rewriting; only the in-memory conversions are written out.
+        let text = write_options(&stripped, &options)?;
         if text != *doc {
             envs.push((env.clone(), text));
         }
@@ -504,9 +607,13 @@ pub fn migrate(
 
     // ---- environments/default.toml ----
     let mut new_default_env = None;
-    if env_docs.is_empty() && decl_entries.values().any(|per_group| !per_group.is_empty()) {
-        new_default_env = Some(write_entries("", &decl_entries)?);
-        notes.push("created environments/default.toml to hold the migrated entries".to_string());
+    if env_docs.is_empty()
+        && decl_options
+            .values()
+            .any(|per_selector| !per_selector.is_empty())
+    {
+        new_default_env = Some(write_options("", &decl_options)?);
+        notes.push("created environments/default.toml to hold the migrated options".to_string());
     }
 
     Ok(MigrationOutcome {
@@ -545,24 +652,24 @@ customer_id = "c-77"
         let out = migrate(vars, &[qa_env]).unwrap();
         let new_vars = out.variables.unwrap();
         let m = crate::varmodel::parse_variables(&new_vars).unwrap();
-        assert_eq!(m.groups["tier"].fields, ["tier"]);
-        assert_eq!(m.groups["user"].fields, ["user_id", "customer_id"]);
+        assert_eq!(m.selectors["tier"].fields, ["tier"]);
+        assert_eq!(m.selectors["user"].fields, ["user_id", "customer_id"]);
         assert!(m.vars.is_empty());
         assert_eq!(
-            m.groups["tier"].description.as_deref(),
+            m.selectors["tier"].description.as_deref(),
             Some("pricing tier"),
-            "the variable's description moves to the group"
+            "the variable's description moves to the selector"
         );
         let (env_name, qa_text) = &out.envs[0];
         assert_eq!(env_name, "qa");
         let e = crate::varmodel::parse_environment(qa_text).unwrap();
-        assert_eq!(e.entries["tier"]["gold"].values["tier"], "g-qa"); // env override won
-        assert_eq!(e.entries["tier"]["free"].values["tier"], "f-1");
+        assert_eq!(e.options["tier"]["gold"].values["tier"], "g-qa"); // env override won
+        assert_eq!(e.options["tier"]["free"].values["tier"], "f-1");
         assert_eq!(
-            e.entries["tier"]["gold"].description.as_deref(),
+            e.options["tier"]["gold"].description.as_deref(),
             Some("the good one")
         );
-        assert_eq!(e.entries["user"]["alice"].values["customer_id"], "c-77");
+        assert_eq!(e.options["user"]["alice"].values["customer_id"], "c-77");
         crate::varmodel::validate_env(&m, &e).unwrap();
         assert!(
             out.notes.iter().any(|n| n.contains("tier")),
@@ -574,16 +681,87 @@ customer_id = "c-77"
     }
 
     #[test]
-    fn a_project_with_no_environments_gets_a_default_env_holding_the_entries() {
+    fn migrates_stage7_groups_and_entries_to_selectors_and_options() {
+        let vars = r#"# variables.toml
+
+[base_url]
+default = "http://localhost"
+
+# the linked pair
+[groups.user]
+description = "user with customer"
+fields = ["user_id", "customer_id"]
+"#;
+        let env = r#"# environments/qa.toml
+
+base_url = "https://qa.example.com"
+
+[entries.user."user 1"]
+user_id = "1001"
+customer_id = "c-77"
+"#;
+        assert!(needs_migration(
+            vars,
+            &[("qa".to_string(), env.to_string())]
+        ));
+        let out = migrate(vars, &[("qa".to_string(), env.to_string())]).unwrap();
+        let new_vars = out.variables.unwrap();
+        assert!(
+            new_vars.contains("# the linked pair\n[selectors.user]"),
+            "the declaration renames in place, comment kept: {new_vars}"
+        );
+        assert!(!new_vars.contains("[groups."), "{new_vars}");
+        let m = crate::varmodel::parse_variables(&new_vars).unwrap();
+        assert_eq!(m.selectors["user"].fields, ["user_id", "customer_id"]);
+        assert_eq!(
+            m.selectors["user"].description.as_deref(),
+            Some("user with customer")
+        );
+        let (_, qa_text) = &out.envs[0];
+        assert!(
+            qa_text.contains("[options.user.\"user 1\"]"),
+            "entries rename to options in place: {qa_text}"
+        );
+        assert!(!qa_text.contains("[entries."), "{qa_text}");
+        assert!(qa_text.starts_with("# environments/qa.toml\n"), "{qa_text}");
+        let e = crate::varmodel::parse_environment(qa_text).unwrap();
+        assert_eq!(e.options["user"]["user 1"].values["user_id"], "1001");
+        crate::varmodel::validate_env(&m, &e).unwrap();
+    }
+
+    #[test]
+    fn new_format_needs_no_migration_and_changes_nothing() {
+        let vars = "[base_url]\ndefault = \"x\"\n\n[selectors.user]\nfields = [\"user_id\"]\n";
+        let envs = vec![(
+            "qa".to_string(),
+            "base_url = \"y\"\n\n[options.user.\"user 1\"]\nuser_id = \"1\"\n".to_string(),
+        )];
+        assert!(!needs_migration(vars, &envs));
+        let out = migrate(vars, &envs).unwrap();
+        assert_eq!(out, MigrationOutcome::default());
+    }
+
+    #[test]
+    fn stage7_group_without_entries_still_renames_the_declaration() {
+        let vars = "[groups.user]\nfields = [\"user_id\"]\n";
+        assert!(needs_migration(vars, &[]));
+        let out = migrate(vars, &[]).unwrap();
+        assert!(out.new_default_env.is_none());
+        let m = crate::varmodel::parse_variables(&out.variables.unwrap()).unwrap();
+        assert_eq!(m.selectors["user"].fields, ["user_id"]);
+    }
+
+    #[test]
+    fn a_project_with_no_environments_gets_a_default_env_holding_the_options() {
         let vars = r#"[tier]
 [tier.options.gold]
 value = "g-1"
 "#;
         let out = migrate(vars, &[]).unwrap();
         assert!(out.envs.is_empty());
-        let text = out.new_default_env.expect("entries need somewhere to live");
+        let text = out.new_default_env.expect("options need somewhere to live");
         let e = crate::varmodel::parse_environment(&text).unwrap();
-        assert_eq!(e.entries["tier"]["gold"].values["tier"], "g-1");
+        assert_eq!(e.options["tier"]["gold"].values["tier"], "g-1");
         let m = crate::varmodel::parse_variables(&out.variables.unwrap()).unwrap();
         crate::varmodel::validate_env(&m, &e).unwrap();
         assert!(
@@ -593,27 +771,6 @@ value = "g-1"
             "{:?}",
             out.notes
         );
-    }
-
-    #[test]
-    fn no_entries_means_no_default_env_is_created() {
-        let vars = "[groups.user]\nmembers = [\"user_id\"]\n";
-        let out = migrate(vars, &[]).unwrap();
-        assert!(out.new_default_env.is_none());
-        let m = crate::varmodel::parse_variables(&out.variables.unwrap()).unwrap();
-        assert_eq!(m.groups["user"].fields, ["user_id"]);
-    }
-
-    #[test]
-    fn already_new_format_needs_no_migration_and_changes_nothing() {
-        let vars = "[base_url]\ndefault = \"x\"\n\n[groups.user]\nfields = [\"user_id\"]\n";
-        let envs = vec![(
-            "qa".to_string(),
-            "base_url = \"y\"\n\n[entries.user.\"user 1\"]\nuser_id = \"1\"\n".to_string(),
-        )];
-        assert!(!needs_migration(vars, &envs));
-        let out = migrate(vars, &envs).unwrap();
-        assert_eq!(out, MigrationOutcome::default());
     }
 
     #[test]
@@ -660,10 +817,9 @@ value = "g-qa"
         let (_, text) = &out.envs[0];
         assert!(text.starts_with("# environments/qa.toml\n"), "{text}");
         assert!(text.contains("# the qa API root\nbase_url ="), "{text}");
-        assert!(!text.contains("[options."), "{text}");
         let e = crate::varmodel::parse_environment(text).unwrap();
         assert_eq!(e.values["base_url"], "https://qa.example.com");
-        assert_eq!(e.entries["tier"]["gold"].values["tier"], "g-qa");
+        assert_eq!(e.options["tier"]["gold"].values["tier"], "g-qa");
     }
 
     #[test]
@@ -677,7 +833,7 @@ value = "g-qa"
     }
 
     #[test]
-    fn env_only_option_keys_become_entries_of_that_env_only() {
+    fn env_only_option_keys_become_options_of_that_env_only() {
         let vars = "[tier]\n[tier.options.gold]\nvalue = \"g-1\"\n";
         let envs = vec![
             (
@@ -689,19 +845,19 @@ value = "g-qa"
         ];
         let out = migrate(vars, &envs).unwrap();
         let qa = crate::varmodel::parse_environment(&out.envs[0].1).unwrap();
-        assert_eq!(qa.entries["tier"]["qa-only"].values["tier"], "q-1");
+        assert_eq!(qa.options["tier"]["qa-only"].values["tier"], "q-1");
         assert_eq!(
-            qa.entries["tier"]["qa-only"].description.as_deref(),
+            qa.options["tier"]["qa-only"].description.as_deref(),
             Some("just here")
         );
-        assert_eq!(qa.entries["tier"]["gold"].values["tier"], "g-1");
+        assert_eq!(qa.options["tier"]["gold"].values["tier"], "g-1");
         let prod = crate::varmodel::parse_environment(&out.envs[1].1).unwrap();
-        assert!(!prod.entries["tier"].contains_key("qa-only"));
-        assert_eq!(prod.entries["tier"]["gold"].values["tier"], "g-1");
+        assert!(!prod.options["tier"].contains_key("qa-only"));
+        assert_eq!(prod.options["tier"]["gold"].values["tier"], "g-1");
     }
 
     #[test]
-    fn a_plain_variable_enumerated_only_in_an_env_also_becomes_a_group() {
+    fn a_plain_variable_enumerated_only_in_an_env_also_becomes_a_selector() {
         let vars = "[shard]\ndescription = \"which shard\"\n";
         let envs = vec![(
             "qa".to_string(),
@@ -710,25 +866,53 @@ value = "g-qa"
         assert!(needs_migration(vars, &envs));
         let out = migrate(vars, &envs).unwrap();
         let m = crate::varmodel::parse_variables(&out.variables.unwrap()).unwrap();
-        assert_eq!(m.groups["shard"].fields, ["shard"]);
+        assert_eq!(m.selectors["shard"].fields, ["shard"]);
         assert!(m.vars.is_empty());
         let e = crate::varmodel::parse_environment(&out.envs[0].1).unwrap();
-        assert_eq!(e.entries["shard"]["east"].values["shard"], "e-1");
+        assert_eq!(e.options["shard"]["east"].values["shard"], "e-1");
         crate::varmodel::validate_env(&m, &e).unwrap();
     }
 
     #[test]
-    fn env_options_for_an_undeclared_name_is_an_error() {
+    fn new_format_env_options_are_left_alone_while_legacy_ones_convert() {
+        // `[options.region.*]` is new-format (region is a declared
+        // selector); `[options.shard.*]` is stage-6 legacy (shard is a
+        // plain variable). Only the legacy one is rewritten.
+        let vars = r#"[shard]
+
+[selectors.region]
+fields = ["region"]
+"#;
+        let env = r#"[options.region.east]
+region = "r-east"
+
+[options.shard.a]
+value = "s-a"
+"#;
+        let envs = vec![("qa".to_string(), env.to_string())];
+        assert!(needs_migration(vars, &envs));
+        let out = migrate(vars, &envs).unwrap();
+        let e = crate::varmodel::parse_environment(&out.envs[0].1).unwrap();
+        assert_eq!(e.options["region"]["east"].values["region"], "r-east");
+        assert_eq!(e.options["shard"]["a"].values["shard"], "s-a");
+        let m = crate::varmodel::parse_variables(&out.variables.unwrap()).unwrap();
+        assert_eq!(m.selectors["shard"].fields, ["shard"]);
+        assert_eq!(m.selectors["region"].fields, ["region"]);
+    }
+
+    #[test]
+    fn env_options_for_an_undeclared_name_is_not_a_migration_matter() {
+        // `[options.ghost.*]` with ghost declared nowhere is the ordinary
+        // undeclared-selector validation error, not a legacy shape — a
+        // migration prompt here would blank the whole model over a typo.
         let vars = "[base_url]\ndefault = \"x\"\n";
         let envs = vec![(
             "qa".to_string(),
             "[options.ghost.a]\nvalue = \"1\"\n".to_string(),
         )];
-        let err = migrate(vars, &envs).unwrap_err();
-        assert!(
-            matches!(&err, EditError::Parse(m) if m.contains("qa") && m.contains("options.ghost")),
-            "{err:?}"
-        );
+        assert!(!needs_migration(vars, &envs));
+        let out = migrate(vars, &envs).unwrap();
+        assert_eq!(out, MigrationOutcome::default());
     }
 
     #[test]
@@ -758,9 +942,9 @@ value = "g-qa"
     #[test]
     fn a_group_option_missing_a_member_is_filled_in_and_noted() {
         // Stage 6 let a group option omit a member (it simply resolved to
-        // nothing); stage 7 requires every entry to supply every field, so
-        // the gap is filled with an empty value and called out rather than
-        // silently invented.
+        // nothing); the new format requires every option to supply every
+        // field, so the gap is filled with an empty value and called out
+        // rather than silently invented.
         let vars = r#"[groups.user]
 members = ["user_id", "customer_id"]
 [groups.user.options.alice]
@@ -769,7 +953,7 @@ user_id = "1001"
         let out = migrate(vars, &[("qa".to_string(), String::new())]).unwrap();
         let m = crate::varmodel::parse_variables(&out.variables.unwrap()).unwrap();
         let e = crate::varmodel::parse_environment(&out.envs[0].1).unwrap();
-        assert_eq!(e.entries["user"]["alice"].values["customer_id"], "");
+        assert_eq!(e.options["user"]["alice"].values["customer_id"], "");
         crate::varmodel::validate_env(&m, &e).unwrap();
         assert!(
             out.notes
@@ -787,9 +971,13 @@ user_id = "1001"
             &[]
         ));
         assert!(needs_migration("[groups.user]\nmembers = [\"a\"]\n", &[]));
+        assert!(needs_migration("[groups.user]\nfields = [\"a\"]\n", &[]));
         assert!(needs_migration(
-            "[groups.user]\nfields = [\"a\"]\n[groups.user.options.x]\na = \"1\"\n",
-            &[]
+            "",
+            &[(
+                "qa".to_string(),
+                "[entries.user.\"u\"]\nuser_id = \"1\"\n".to_string()
+            )]
         ));
         assert!(needs_migration(
             "[base_url]\ndefault = \"x\"\n",
@@ -799,5 +987,12 @@ user_id = "1001"
             )]
         ));
         assert!(!needs_migration("", &[("qa".to_string(), String::new())]));
+        assert!(!needs_migration(
+            "[selectors.user]\nfields = [\"user_id\"]\n",
+            &[(
+                "qa".to_string(),
+                "[options.user.\"u\"]\nuser_id = \"1\"\n".to_string()
+            )]
+        ));
     }
 }

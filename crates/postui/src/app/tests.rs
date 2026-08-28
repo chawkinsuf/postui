@@ -1689,12 +1689,12 @@ fn clicking_the_manager_env_switcher_opens_the_environment_chooser() {
     assert!(content.contains("Environment: dev"), "{content}");
     assert!(
         content.contains("user (needs selection)"),
-        "dev has no entries for the group: {content}"
+        "dev has no entries for the selector: {content}"
     );
 }
 
 #[test]
-fn the_manager_left_list_lists_variables_then_groups() {
+fn the_manager_left_list_lists_variables_then_selectors() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1702,7 +1702,7 @@ fn the_manager_left_list_lists_variables_then_groups() {
     app.update(Action::OpenVarManager);
     let content = rendered_text(&mut app);
     assert!(
-        content.contains("VARIABLES") && content.contains("GROUPS"),
+        content.contains("VARIABLES") && content.contains("SELECTORS"),
         "{content}"
     );
     assert!(content.contains("base_url"), "{content}");
@@ -2139,7 +2139,7 @@ fn clicking_a_multi_prompt_field_moves_focus_there() {
             crate::components::modal::PromptField::text("fields", "Fields", ""),
         ],
         focus: 0,
-        kind: crate::components::modal::PromptKind::NewGroup,
+        kind: crate::components::modal::PromptKind::NewSelector,
     });
     render_once(&mut app);
     let second = app
@@ -4389,7 +4389,7 @@ fn insert_picker_lists_project_group_and_request_vars_with_badges_and_descriptio
 description = "API root"
 default = "http://localhost:8080"
 
-[groups.identity]
+[selectors.identity]
 description = "identity"
 fields = ["user_id", "customer_id"]
 "#,
@@ -6043,7 +6043,7 @@ fn var_project(dir: &std::path::Path) {
 description = "API root"
 default = "http://localhost:8080"
 
-[groups.user]
+[selectors.user]
 description = "acting user"
 fields = ["user"]
 
@@ -6056,7 +6056,7 @@ secret = true
     std::fs::write(dir.join("environments/dev.toml"), "").unwrap();
     std::fs::write(
         dir.join("environments/qa.toml"),
-        "base_url = \"https://qa.example.com\"\n\n[entries.user.alice]\nuser = \"1001\"\n\n[entries.user.bob]\nuser = \"2002\"\n",
+        "base_url = \"https://qa.example.com\"\n\n[options.user.alice]\nuser = \"1001\"\n\n[options.user.bob]\nuser = \"2002\"\n",
     )
     .unwrap();
     postui_core::project::save_local_state(
@@ -6164,10 +6164,10 @@ fn var_edit_set_entry_value_writes_one_field_of_the_entry_in_that_env() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
-    app.update(Action::VarEdit(VarEditOp::SetEntryValue {
+    app.update(Action::VarEdit(VarEditOp::SetOptionValue {
         env: "qa".into(),
-        group: "user".into(),
-        entry: "alice".into(),
+        selector: "user".into(),
+        option: "alice".into(),
         field: "user".into(),
         value: "9999".into(),
     }));
@@ -6222,10 +6222,10 @@ fn var_edit_select_records_the_choice_for_the_targeted_env_even_when_not_active(
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     assert_eq!(app.project.env_label(), "qa");
 
-    app.update(Action::VarEdit(VarEditOp::SelectEntry {
+    app.update(Action::VarEdit(VarEditOp::SelectOption {
         env: "dev".into(),
-        group: "user".into(),
-        entry: "bob".into(),
+        selector: "user".into(),
+        option: "bob".into(),
     }));
 
     assert_eq!(app.project.selections_for("dev")["user"], "bob");
@@ -6329,7 +6329,7 @@ fn var_struct_new_group_creates_group_with_members() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
-    app.update(Action::VarStruct(VarStructOp::NewGroup {
+    app.update(Action::VarStruct(VarStructOp::NewSelector {
         name: "creds".into(),
         fields: vec!["user_id".into(), "customer_id".into()],
     }));
@@ -6338,7 +6338,7 @@ fn var_struct_new_group_creates_group_with_members() {
     let g = app
         .project
         .model
-        .groups
+        .selectors
         .get("creds")
         .expect("group created");
     assert_eq!(
@@ -6353,7 +6353,7 @@ fn var_struct_new_entry_writes_every_field_into_the_active_env() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.update(Action::VarStruct(VarStructOp::NewGroup {
+    app.update(Action::VarStruct(VarStructOp::NewSelector {
         name: "creds".into(),
         fields: vec!["user_id".into(), "customer_id".into()],
     }));
@@ -6361,22 +6361,22 @@ fn var_struct_new_entry_writes_every_field_into_the_active_env() {
     let mut values = indexmap::IndexMap::new();
     values.insert("user_id".to_string(), "1001".to_string());
     values.insert("customer_id".to_string(), "c-77".to_string());
-    app.update(Action::VarStruct(VarStructOp::NewEntry {
+    app.update(Action::VarStruct(VarStructOp::NewOption {
         env: "qa".into(),
-        group: "creds".into(),
+        selector: "creds".into(),
         name: "alice".into(),
         description: None,
         values,
     }));
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    let entry = postui_core::varmodel::group_entries(&app.project.env_data, "creds")
+    let entry = postui_core::varmodel::selector_options(&app.project.env_data, "creds")
         .and_then(|entries| entries.get("alice"))
         .expect("entry created in the active env");
     assert_eq!(entry.values["user_id"], "1001");
     assert_eq!(entry.values["customer_id"], "c-77");
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
-    assert!(on_disk.contains("[entries.creds.alice]"), "{on_disk}");
+    assert!(on_disk.contains("[options.creds.alice]"), "{on_disk}");
 }
 
 #[test]
@@ -6413,7 +6413,7 @@ fn var_struct_rename_cascades_into_every_environments_flat_value() {
 [shard]
 description = "shard id"
 
-[groups.tier]
+[selectors.tier]
 fields = ["tier"]
 "#,
     )
@@ -6425,7 +6425,7 @@ fields = ["tier"]
     .unwrap();
     std::fs::write(
         dir.path().join("environments/qa.toml"),
-        "[entries.tier.gold]\ntier = \"g-1\"\n",
+        "[options.tier.gold]\ntier = \"g-1\"\n",
     )
     .unwrap();
     postui_core::project::save_local_state(
@@ -6458,7 +6458,7 @@ fields = ["tier"]
 
     let qa_on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(
-        qa_on_disk.contains("[entries.tier.gold]"),
+        qa_on_disk.contains("[options.tier.gold]"),
         "an unrelated group's entries stay untouched: {qa_on_disk}"
     );
 }
@@ -6497,19 +6497,19 @@ fn var_struct_delete_cascades_into_every_environments_entries_table() {
     std::fs::write(
         dir.path().join("variables.toml"),
         std::fs::read_to_string(dir.path().join("variables.toml")).unwrap()
-            + "\n[groups.region]\ndescription = \"deploy region\"\nfields = [\"region\"]\n",
+            + "\n[selectors.region]\ndescription = \"deploy region\"\nfields = [\"region\"]\n",
     )
     .unwrap();
     // qa is the active env (see var_project); entries for "region" there,
     // plus the same shape in the non-active "dev" env.
     std::fs::write(
         dir.path().join("environments/qa.toml"),
-        "base_url = \"https://qa.example.com\"\n[entries.region.east]\nregion = \"us-east-1\"\n",
+        "base_url = \"https://qa.example.com\"\n[options.region.east]\nregion = \"us-east-1\"\n",
     )
     .unwrap();
     std::fs::write(
         dir.path().join("environments/dev.toml"),
-        "[entries.region.west]\nregion = \"us-west-1\"\n",
+        "[options.region.west]\nregion = \"us-west-1\"\n",
     )
     .unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -6524,7 +6524,7 @@ fn var_struct_delete_cascades_into_every_environments_entries_table() {
     }));
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert!(!app.project.model.groups.contains_key("region"));
+    assert!(!app.project.model.selectors.contains_key("region"));
     let qa_on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(
         !qa_on_disk.contains("region"),
@@ -6542,7 +6542,7 @@ fn var_struct_delete_cascades_into_every_environments_entries_table() {
 }
 
 /// Finding 1, the group half: deleting a group must also strip every
-/// environment's `[entries.<group>]` table.
+/// environment's `[options.<group>]` table.
 #[test]
 fn var_struct_delete_group_cascades_into_every_environments_entries_table() {
     let dir = tempfile::tempdir().unwrap();
@@ -6550,7 +6550,7 @@ fn var_struct_delete_group_cascades_into_every_environments_entries_table() {
     app_new_group(dir.path(), "creds", &["user_id", "customer_id"]);
     std::fs::write(
         dir.path().join("environments/qa.toml"),
-        "base_url = \"https://qa.example.com\"\n\n[entries.user.alice]\nuser = \"1001\"\n\n[entries.creds.alice]\nuser_id = \"1001\"\ncustomer_id = \"c-1\"\n",
+        "base_url = \"https://qa.example.com\"\n\n[options.user.alice]\nuser = \"1001\"\n\n[options.creds.alice]\nuser_id = \"1001\"\ncustomer_id = \"c-1\"\n",
     )
     .unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -6561,14 +6561,14 @@ fn var_struct_delete_group_cascades_into_every_environments_entries_table() {
     }));
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert!(!app.project.model.groups.contains_key("creds"));
+    assert!(!app.project.model.selectors.contains_key("creds"));
     let qa_on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(!qa_on_disk.contains("creds"), "{qa_on_disk}");
 }
 
 /// Declares a variable-less group directly in `variables.toml` — a thin
 /// helper so the delete-cascade test above doesn't need a full
-/// `VarStructOp::NewGroup` round trip through a running `App`.
+/// `VarStructOp::NewSelector` round trip through a running `App`.
 fn app_new_group(dir: &std::path::Path, name: &str, members: &[&str]) {
     let existing = std::fs::read_to_string(dir.join("variables.toml")).unwrap();
     let members_list = members
@@ -6578,7 +6578,7 @@ fn app_new_group(dir: &std::path::Path, name: &str, members: &[&str]) {
         .join(", ");
     std::fs::write(
         dir.join("variables.toml"),
-        format!("{existing}\n[groups.{name}]\nfields = [{members_list}]\n"),
+        format!("{existing}\n[selectors.{name}]\nfields = [{members_list}]\n"),
     )
     .unwrap();
 }
@@ -6589,18 +6589,18 @@ fn var_struct_set_fields_replaces_the_group_list() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.update(Action::VarStruct(VarStructOp::NewGroup {
+    app.update(Action::VarStruct(VarStructOp::NewSelector {
         name: "creds".into(),
         fields: vec!["user_id".into()],
     }));
 
     app.update(Action::VarStruct(VarStructOp::SetFields {
-        group: "creds".into(),
+        selector: "creds".into(),
         fields: vec!["user_id".into(), "customer_id".into()],
     }));
 
     assert_eq!(
-        app.project.model.groups["creds"].fields,
+        app.project.model.selectors["creds"].fields,
         vec!["user_id".to_string(), "customer_id".to_string()]
     );
 }
@@ -6842,19 +6842,19 @@ fn delete_entry_removes_it_from_the_active_env() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
-    app.update(Action::VarStruct(VarStructOp::DeleteEntry {
+    app.update(Action::VarStruct(VarStructOp::DeleteOption {
         env: "qa".into(),
-        group: "user".into(),
+        selector: "user".into(),
         name: "bob".into(),
     }));
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    let entries = postui_core::varmodel::group_entries(&app.project.env_data, "user")
+    let entries = postui_core::varmodel::selector_options(&app.project.env_data, "user")
         .expect("the group still has entries here");
     assert!(!entries.contains_key("bob"));
     assert!(entries.contains_key("alice"), "the others are untouched");
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
-    assert!(!on_disk.contains("[entries.user.bob]"), "{on_disk}");
+    assert!(!on_disk.contains("[options.user.bob]"), "{on_disk}");
 }
 
 #[test]
@@ -6864,9 +6864,9 @@ fn delete_entry_that_is_already_gone_is_a_quiet_no_op() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
-    app.update(Action::VarStruct(VarStructOp::DeleteEntry {
+    app.update(Action::VarStruct(VarStructOp::DeleteOption {
         env: "qa".into(),
-        group: "user".into(),
+        selector: "user".into(),
         name: "carol".into(),
     }));
 
@@ -6882,9 +6882,9 @@ fn delete_entry_clears_the_selection_when_the_deleted_entry_was_selected() {
     app.project.set_selection("user", "alice");
     assert_eq!(app.project.resolved.values["user"], "1001");
 
-    app.update(Action::VarStruct(VarStructOp::DeleteEntry {
+    app.update(Action::VarStruct(VarStructOp::DeleteOption {
         env: "qa".into(),
-        group: "user".into(),
+        selector: "user".into(),
         name: "alice".into(),
     }));
 
@@ -7008,7 +7008,7 @@ fn confirm_demote_var_on_a_group_refuses_and_changes_nothing() {
         "a group must be refused with a message modal"
     );
     assert!(
-        app.project.model.groups.contains_key("user"),
+        app.project.model.selectors.contains_key("user"),
         "the declaration must be untouched"
     );
     assert!(!app.editor.variables.contains_key("user"));
@@ -7144,7 +7144,7 @@ fn keyboard_n_and_g_open_the_new_var_and_new_group_prompts() {
     assert!(matches!(
         app.modals.top(),
         Some(Modal::MultiPrompt {
-            kind: PromptKind::NewGroup,
+            kind: PromptKind::NewSelector,
             ..
         })
     ));
@@ -7234,13 +7234,13 @@ fn clicking_the_new_variable_button_opens_the_new_variable_prompt() {
     rendered_text(&mut app);
     let rect = app
         .hits
-        .rect_of(&crate::hit::Hit::VmNewGroup)
+        .rect_of(&crate::hit::Hit::VmNewSelector)
         .expect("+ Group button must be painted");
     assert!(app.handle_mouse(left_down(rect.x + 1, rect.y + 1)));
     assert!(matches!(
         app.modals.top(),
         Some(Modal::MultiPrompt {
-            kind: PromptKind::NewGroup,
+            kind: PromptKind::NewSelector,
             ..
         })
     ));
@@ -7253,7 +7253,7 @@ fn prompt_new_group_takes_a_name_and_a_field_list() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     let keymap = Keymap::default_bindings();
-    app.update(Action::PromptNewGroup);
+    app.update(Action::PromptNewSelector);
 
     for c in "creds".chars() {
         app.handle_key(&keymap, plain(c));
@@ -7268,7 +7268,7 @@ fn prompt_new_group_takes_a_name_and_a_field_list() {
     let g = app
         .project
         .model
-        .groups
+        .selectors
         .get("creds")
         .expect("group created");
     assert_eq!(
@@ -7277,7 +7277,7 @@ fn prompt_new_group_takes_a_name_and_a_field_list() {
     );
     // and the empty group survives a reload (parse accepts fields = [])
     app.update(Action::ReloadProjectFiles);
-    assert!(app.project.model.groups.contains_key("creds"));
+    assert!(app.project.model.selectors.contains_key("creds"));
 }
 
 #[test]
@@ -7287,15 +7287,15 @@ fn add_and_remove_group_members_one_at_a_time() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     let keymap = Keymap::default_bindings();
-    app.update(Action::VarStruct(VarStructOp::NewGroup {
+    app.update(Action::VarStruct(VarStructOp::NewSelector {
         name: "creds".into(),
         fields: vec![],
     }));
 
     // `a` flow: one member name per prompt, appended in order
     for member in ["user_id", "customer_id"] {
-        app.update(Action::PromptAddGroupMember {
-            group: "creds".into(),
+        app.update(Action::PromptAddSelectorField {
+            selector: "creds".into(),
         });
         for c in member.chars() {
             app.handle_key(&keymap, plain(c));
@@ -7303,14 +7303,14 @@ fn add_and_remove_group_members_one_at_a_time() {
         app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     }
     assert_eq!(
-        app.project.model.groups.get("creds").unwrap().fields,
+        app.project.model.selectors.get("creds").unwrap().fields,
         vec!["user_id".to_string(), "customer_id".to_string()]
     );
 
     // duplicate append toasts and changes nothing
     let toasts_before = app.toasts.messages().len();
-    app.update(Action::PromptAddGroupMember {
-        group: "creds".into(),
+    app.update(Action::PromptAddSelectorField {
+        selector: "creds".into(),
     });
     for c in "user_id".chars() {
         app.handle_key(&keymap, plain(c));
@@ -7318,14 +7318,20 @@ fn add_and_remove_group_members_one_at_a_time() {
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.toasts.messages().len() > toasts_before);
     assert_eq!(
-        app.project.model.groups.get("creds").unwrap().fields.len(),
+        app.project
+            .model
+            .selectors
+            .get("creds")
+            .unwrap()
+            .fields
+            .len(),
         2
     );
 
     // `d` flow: confirm-remove one member
-    app.update(Action::ConfirmRemoveGroupMember {
-        group: "creds".into(),
-        member: "user_id".into(),
+    app.update(Action::ConfirmRemoveSelectorField {
+        selector: "creds".into(),
+        field: "user_id".into(),
     });
     assert!(
         matches!(app.modals.top(), Some(Modal::Confirm { .. })),
@@ -7333,7 +7339,7 @@ fn add_and_remove_group_members_one_at_a_time() {
     );
     app.handle_key(&keymap, plain('y'));
     assert_eq!(
-        app.project.model.groups.get("creds").unwrap().fields,
+        app.project.model.selectors.get("creds").unwrap().fields,
         vec!["customer_id".to_string()]
     );
 }
@@ -7345,7 +7351,7 @@ fn group_project(dir: &std::path::Path) {
     std::fs::write(
         dir.join("variables.toml"),
         r#"
-[groups.identity]
+[selectors.identity]
 description = "identity"
 fields = ["user_id", "customer_id"]
 "#,
@@ -7354,12 +7360,12 @@ fields = ["user_id", "customer_id"]
     std::fs::write(
         dir.join("environments/qa.toml"),
         r#"
-[entries.identity.alice]
+[options.identity.alice]
 description = "admin"
 user_id = "1001"
 customer_id = "c-77"
 
-[entries.identity.bob]
+[options.identity.bob]
 description = "reader"
 user_id = "1002"
 customer_id = "c-78"
@@ -7407,7 +7413,7 @@ fn ctrl_v_on_a_one_field_groups_token_opens_select_option_with_checkmark() {
         p.mode,
         crate::components::var_picker::PickerMode::SelectOption {
             name: "user".into(),
-            group: "user".into(),
+            selector: "user".into(),
         }
     );
 
@@ -7439,7 +7445,7 @@ fn ctrl_v_on_group_member_token_shows_the_group_s_options_with_full_preview() {
         p.mode,
         crate::components::var_picker::PickerMode::SelectOption {
             name: "user_id".into(),
-            group: "identity".into(),
+            selector: "identity".into(),
         }
     );
 
@@ -7753,7 +7759,7 @@ fn add_new_entry_writes_to_the_active_envs_entries_table_selects_it_and_restores
     // Written to the ACTIVE ENV's entries table — entries only ever live
     // in an environment file (spec §3.1).
     let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
-    assert!(env_doc.contains("[entries.user.carol]"), "{env_doc}");
+    assert!(env_doc.contains("[options.user.carol]"), "{env_doc}");
     assert!(env_doc.contains("3003"), "{env_doc}");
     assert!(env_doc.contains("temp hire"), "{env_doc}");
 
@@ -7794,7 +7800,7 @@ fn inline_create_accepts_a_free_form_entry_name_with_a_space() {
         app.toasts.messages()
     );
     let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
-    assert!(env_doc.contains("[entries.user.\"user 1\"]"), "{env_doc}");
+    assert!(env_doc.contains("[options.user.\"user 1\"]"), "{env_doc}");
     assert!(env_doc.contains("9009"), "{env_doc}");
 }
 
@@ -8268,7 +8274,7 @@ fn opening_a_legacy_project_offers_the_migration_and_lists_its_notes() {
     // Until the user answers, the variables are inert rather than
     // half-parsed from a format the model doesn't speak.
     assert!(app.project.model.vars.is_empty());
-    assert!(app.project.model.groups.is_empty());
+    assert!(app.project.model.selectors.is_empty());
 }
 
 #[test]
@@ -8303,10 +8309,10 @@ fn confirming_the_migration_rewrites_the_files_leaves_baks_and_reloads() {
     let vars_after = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     assert!(!vars_after.contains("options"), "{vars_after}");
     let parsed = postui_core::varmodel::parse_variables(&vars_after).expect("new text parses");
-    assert_eq!(parsed.groups["tier"].fields, ["tier"]);
-    assert_eq!(parsed.groups["user"].fields, ["user_id", "customer_id"]);
+    assert_eq!(parsed.selectors["tier"].fields, ["tier"]);
+    assert_eq!(parsed.selectors["user"].fields, ["user_id", "customer_id"]);
     assert_eq!(
-        app.project.model.groups["user"].fields,
+        app.project.model.selectors["user"].fields,
         ["user_id", "customer_id"]
     );
     assert_eq!(
@@ -8317,9 +8323,9 @@ fn confirming_the_migration_rewrites_the_files_leaves_baks_and_reloads() {
 
     let qa_after = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     let env = postui_core::varmodel::parse_environment(&qa_after).expect("new env text parses");
-    assert_eq!(env.entries["tier"]["gold"].values["tier"], "g-qa");
+    assert_eq!(env.options["tier"]["gold"].values["tier"], "g-qa");
     assert_eq!(
-        app.project.env_data.entries["user"]["alice"].values["customer_id"],
+        app.project.env_data.options["user"]["alice"].values["customer_id"],
         "c-77"
     );
 
@@ -8387,7 +8393,7 @@ fn migrating_a_project_with_no_environments_creates_default_toml_for_the_entries
     let default_toml =
         std::fs::read_to_string(dir.path().join("environments/default.toml")).unwrap();
     let env = postui_core::varmodel::parse_environment(&default_toml).unwrap();
-    assert_eq!(env.entries["tier"]["gold"].values["tier"], "g-1");
+    assert_eq!(env.options["tier"]["gold"].values["tier"], "g-1");
     assert_eq!(app.project.environments, vec!["default".to_string()]);
     assert!(
         !dir.path().join("environments/default.toml.bak").exists(),
@@ -9276,7 +9282,7 @@ fn the_ghost_row_creates_an_entry_and_keeps_going_into_its_first_field() {
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
-    assert!(on_disk.contains("[entries.user.carol]"), "{on_disk}");
+    assert!(on_disk.contains("[options.user.carol]"), "{on_disk}");
     // The new entry is created with an empty value for every field, so it
     // validates — and the edit walks on into that first field cell.
     let edit = app
@@ -9292,7 +9298,7 @@ fn the_ghost_row_creates_an_entry_and_keeps_going_into_its_first_field() {
     }
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     let env = postui_core::project::load_environment(dir.path(), "qa").unwrap();
-    assert_eq!(env.entries["user"]["carol"].values["user"], "3003");
+    assert_eq!(env.options["user"]["carol"].values["user"], "3003");
 }
 
 #[test]
@@ -9331,7 +9337,7 @@ fn the_field_editor_renames_adds_and_removes_across_variables_and_every_env() {
     var_project(dir.path());
     std::fs::write(
         dir.path().join("environments/dev.toml"),
-        "[entries.user.dave]\nuser = \"7\"\n",
+        "[options.user.dave]\nuser = \"7\"\n",
     )
     .unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -9340,40 +9346,40 @@ fn the_field_editor_renames_adds_and_removes_across_variables_and_every_env() {
 
     // --- rename: slot 0 is the group's current field, retyped -----------
     app.update(Action::ApplyGroupFields {
-        group: "user".into(),
+        selector: "user".into(),
         slots: vec!["user_id".into()],
         confirmed: false,
     });
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert_eq!(app.project.model.groups["user"].fields, vec!["user_id"]);
+    assert_eq!(app.project.model.selectors["user"].fields, vec!["user_id"]);
     let qa = postui_core::project::load_environment(dir.path(), "qa").unwrap();
-    assert_eq!(qa.entries["user"]["alice"].values["user_id"], "1001");
+    assert_eq!(qa.options["user"]["alice"].values["user_id"], "1001");
     let dev = postui_core::project::load_environment(dir.path(), "dev").unwrap();
     assert_eq!(
-        dev.entries["user"]["dave"].values["user_id"], "7",
+        dev.options["user"]["dave"].values["user_id"], "7",
         "a non-active environment renames too"
     );
 
     // --- add: a slot past the current list -------------------------------
     app.update(Action::ApplyGroupFields {
-        group: "user".into(),
+        selector: "user".into(),
         slots: vec!["user_id".into(), "customer_id".into()],
         confirmed: false,
     });
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
     assert_eq!(
-        app.project.model.groups["user"].fields,
+        app.project.model.selectors["user"].fields,
         vec!["user_id", "customer_id"]
     );
     let qa = postui_core::project::load_environment(dir.path(), "qa").unwrap();
     assert_eq!(
-        qa.entries["user"]["alice"].values["customer_id"], "",
+        qa.options["user"]["alice"].values["customer_id"], "",
         "every existing entry gains the column, empty"
     );
 
     // --- remove: a cleared slot warns before deleting the column ---------
     app.update(Action::ApplyGroupFields {
-        group: "user".into(),
+        selector: "user".into(),
         slots: vec!["user_id".into(), String::new()],
         confirmed: false,
     });
@@ -9383,17 +9389,17 @@ fn the_field_editor_renames_adds_and_removes_across_variables_and_every_env() {
     assert!(body.contains("deleted from"), "{body}");
     assert!(body.contains("qa") && body.contains("dev"), "{body}");
     assert_eq!(
-        app.project.model.groups["user"].fields,
+        app.project.model.selectors["user"].fields,
         vec!["user_id", "customer_id"],
         "nothing has changed yet"
     );
 
     app.handle_key(&Keymap::default_bindings(), plain('y'));
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert_eq!(app.project.model.groups["user"].fields, vec!["user_id"]);
+    assert_eq!(app.project.model.selectors["user"].fields, vec!["user_id"]);
     let qa = postui_core::project::load_environment(dir.path(), "qa").unwrap();
     assert!(
-        !qa.entries["user"]["alice"]
+        !qa.options["user"]["alice"]
             .values
             .contains_key("customer_id"),
         "the column is gone from every entry"
@@ -9406,7 +9412,7 @@ fn renaming_a_group_moves_its_declaration_its_entries_and_its_selections() {
     var_project(dir.path());
     std::fs::write(
         dir.path().join("environments/dev.toml"),
-        "[entries.user.dave]\nuser = \"7\"\n",
+        "[options.user.dave]\nuser = \"7\"\n",
     )
     .unwrap();
     postui_core::project::save_local_state(
@@ -9440,16 +9446,16 @@ fn renaming_a_group_moves_its_declaration_its_entries_and_its_selections() {
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
     let vars = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
-    assert!(vars.contains("[groups.account]"), "{vars}");
-    assert!(!vars.contains("[groups.user]"), "{vars}");
+    assert!(vars.contains("[selectors.account]"), "{vars}");
+    assert!(!vars.contains("[selectors.user]"), "{vars}");
     for env in ["qa", "dev"] {
         let text =
             std::fs::read_to_string(dir.path().join(format!("environments/{env}.toml"))).unwrap();
         assert!(
-            text.contains("[entries.account."),
+            text.contains("[options.account."),
             "{env} entries moved: {text}"
         );
-        assert!(!text.contains("[entries.user."), "{env}: {text}");
+        assert!(!text.contains("[options.user."), "{env}: {text}");
     }
     // The selection follows the name in every environment…
     assert_eq!(app.project.selections_for("qa")["account"], "bob");
@@ -9479,9 +9485,9 @@ fn a_group_rename_onto_a_taken_name_changes_nothing() {
     }));
 
     assert!(!app.toasts.is_empty(), "the refusal is surfaced");
-    assert!(app.project.model.groups.contains_key("user"));
+    assert!(app.project.model.selectors.contains_key("user"));
     let qa = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
-    assert!(qa.contains("[entries.user.alice]"), "{qa}");
+    assert!(qa.contains("[options.user.alice]"), "{qa}");
 }
 
 #[test]
@@ -9500,7 +9506,7 @@ fn right_clicking_an_entry_row_opens_its_own_menu() {
     let labels: Vec<&str> = state.items.iter().map(|i| i.label.as_str()).collect();
     assert_eq!(
         labels,
-        vec!["Duplicate entry", "Rename\u{2026}", "Delete\u{2026}"]
+        vec!["Duplicate option", "Rename\u{2026}", "Delete\u{2026}"]
     );
 }
 
@@ -9533,11 +9539,11 @@ fn right_clicking_another_row_commits_the_live_cell_to_the_entry_it_belongs_to()
     );
     let env = postui_core::project::load_environment(dir.path(), "qa").unwrap();
     assert_eq!(
-        env.entries["user"]["bob"].values["user"], "20029",
+        env.options["user"]["bob"].values["user"], "20029",
         "the text landed in the entry it was typed into"
     );
     assert_eq!(
-        env.entries["user"]["alice"].values["user"], "1001",
+        env.options["user"]["alice"].values["user"], "1001",
         "the right-clicked entry is untouched"
     );
     // …and the menu is the one for the row that was right-clicked.
@@ -9548,7 +9554,7 @@ fn right_clicking_another_row_commits_the_live_cell_to_the_entry_it_belongs_to()
         state.items[2].action,
         Some(Action::ConfirmDeleteEntry {
             env: "qa".into(),
-            group: "user".into(),
+            selector: "user".into(),
             name: "alice".into(),
         })
     );
@@ -9674,7 +9680,7 @@ fn the_new_entry_button_starts_the_ghost_row_and_edit_fields_opens_the_editor() 
     goto_group(&mut app, "user");
 
     rendered_text_tall(&mut app);
-    let r = app.hits.rect_of(&crate::hit::Hit::VmNewEntry).unwrap();
+    let r = app.hits.rect_of(&crate::hit::Hit::VmNewOption).unwrap();
     app.handle_mouse(left_down(r.x + 1, r.y + 1));
     let edit = app.varmanager.grid.editing.as_ref().expect("ghost is live");
     assert_eq!((edit.row, edit.col), (2, 0));

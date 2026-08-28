@@ -4,7 +4,7 @@
 //! Every function here is pure text -> text: parse the document with
 //! `toml_edit::DocumentMut`, mutate only the addressed item, and return
 //! `doc.to_string()`. Write fidelity — comments, blank lines, ordering, and
-//! unrelated entries survive untouched — is the whole point (spec §7); see
+//! unrelated options survive untouched — is the whole point (spec §7); see
 //! the round-trip fixture tests below for the contract in practice.
 
 use indexmap::IndexMap;
@@ -40,10 +40,10 @@ fn not_found(msg: impl Into<String>) -> EditError {
 
 /// Gets-or-creates a nested table at `key` inside `parent`, as a real
 /// (non-inline) `Table`. Brand-new *container* tables should pass
-/// `implicit_if_new = true` so an empty ancestor (e.g. `entries` or
-/// `entries.<group>`) never prints its own header — only its leaves do,
-/// matching the `[entries.user."user 1"]` style. A table that is itself
-/// the addressed target (e.g. `[base_url]`, `[entries.user."user 1"]`)
+/// `implicit_if_new = true` so an empty ancestor (e.g. `options` or
+/// `options.<selector>`) never prints its own header — only its leaves do,
+/// matching the `[options.user."user 1"]` style. A table that is itself
+/// the addressed target (e.g. `[base_url]`, `[options.user."user 1"]`)
 /// should pass `false` so it always renders, even with no fields yet.
 fn table_mut<'a>(
     parent: &'a mut Table,
@@ -62,14 +62,14 @@ fn table_mut<'a>(
 }
 
 /// Order- and decor-preserving rename of a key within `parent`. Works both
-/// for a top-level table header (variable/group/entry rename — table header
+/// for a top-level table header (variable/selector/option rename — table header
 /// *print* order in toml_edit follows each table's own recorded
 /// `doc_position`, not map order, so this is a no-op risk there) and for a
 /// flat `key = value` field inside a table (field key rename inside an
-/// entry row — flat field print order *is* map order, so this matters
+/// option row — flat field print order *is* map order, so this matters
 /// there). Rebuilding unconditionally keeps both cases correct without
 /// needing to special-case which situation we're in.
-fn rename_key(parent: &mut Table, from: &str, to: &str) {
+pub(crate) fn rename_key(parent: &mut Table, from: &str, to: &str) {
     let implicit = parent.is_implicit();
     let decor = parent.decor().clone();
     let position = parent.position();
@@ -98,8 +98,8 @@ fn rename_key(parent: &mut Table, from: &str, to: &str) {
 
 /// Moves an existing `key` to the front of `parent`'s map order, keeping
 /// every key's decor. Flat `key = value` pairs print in map order, so this
-/// is what puts an entry's `description` above its field values even when
-/// the description is added to an entry that already has values.
+/// is what puts an option's `description` above its field values even when
+/// the description is added to an option that already has values.
 fn move_key_first(parent: &mut Table, key: &str) {
     let already_first = parent.iter().next().is_some_and(|(k, _)| k == key);
     if already_first || !parent.contains_key(key) {
@@ -125,14 +125,14 @@ fn move_key_first(parent: &mut Table, key: &str) {
     *parent = rebuilt;
 }
 
-/// Whether `name` already occupies either namespace a variable/group
-/// declaration could collide with: a top-level key, or a `[groups.<name>]`
-/// entry — variable and group names share one namespace (spec §1), so a
+/// Whether `name` already occupies either namespace a variable/selector
+/// declaration could collide with: a top-level key, or a `[selectors.<name>]`
+/// option — variable and selector names share one namespace (spec §1), so a
 /// rename target must be checked against both.
 fn name_exists(root: &Table, name: &str) -> bool {
     root.contains_key(name)
         || root
-            .get("groups")
+            .get("selectors")
             .and_then(Item::as_table)
             .is_some_and(|g| g.contains_key(name))
 }
@@ -179,10 +179,10 @@ fn join_decor_prefix(header: &str, existing: &str) -> String {
 /// *print first* in `parent` after a deletion. Table headers keep their
 /// leading decor on the `Table` itself; flat `key = value` pairs keep it on
 /// their `Key`'s `leaf_decor`. An implicit ancestor table with no flat
-/// children of its own (e.g. `entries`, kept invisible on purpose so only
-/// its leaves like `[entries.user."user 1"]` print) never prints its own
+/// children of its own (e.g. `options`, kept invisible on purpose so only
+/// its leaves like `[options.user."user 1"]` print) never prints its own
 /// decor, so this recurses into such a table's first child to find the
-/// entry that will actually be first on the page.
+/// option that will actually be first on the page.
 fn attach_header_to_new_first(parent: &mut Table, header: &str) {
     let Some(key) = parent.iter().next().map(|(k, _)| k.to_string()) else {
         return;
@@ -293,10 +293,10 @@ pub fn set_secret_flag(doc: &str, name: &str, secret: bool) -> Result<String, Ed
     Ok(doc.to_string())
 }
 
-/// Renames a variable's table header, cascading into every group's
+/// Renames a variable's table header, cascading into every selector's
 /// `fields` array. The environment-side half of a field rename — the key
-/// inside each `[entries.<group>."<entry>"]` row — is
-/// [`rename_entry_field`], which the caller loops across every
+/// inside each `[options.<selector>."<option>"]` row — is
+/// [`rename_option_field`], which the caller loops across every
 /// environment.
 pub fn rename_var(doc: &str, from: &str, to: &str) -> Result<String, EditError> {
     let mut doc = parse(doc)?;
@@ -311,15 +311,19 @@ pub fn rename_var(doc: &str, from: &str, to: &str) -> Result<String, EditError> 
     }
     rename_key(root, from, to);
 
-    if let Some(groups_table) = root.get_mut("groups").and_then(Item::as_table_mut) {
-        let group_names: Vec<String> = groups_table.iter().map(|(k, _)| k.to_string()).collect();
-        for gname in group_names {
-            let Some(group_table) = groups_table.get_mut(&gname).and_then(Item::as_table_mut)
+    if let Some(selectors_table) = root.get_mut("selectors").and_then(Item::as_table_mut) {
+        let selector_names: Vec<String> =
+            selectors_table.iter().map(|(k, _)| k.to_string()).collect();
+        for gname in selector_names {
+            let Some(selector_table) = selectors_table.get_mut(&gname).and_then(Item::as_table_mut)
             else {
                 continue;
             };
 
-            if let Some(arr) = group_table.get_mut("fields").and_then(Item::as_array_mut) {
+            if let Some(arr) = selector_table
+                .get_mut("fields")
+                .and_then(Item::as_array_mut)
+            {
                 for v in arr.iter_mut() {
                     if v.as_str() == Some(from) {
                         let decor = v.decor().clone();
@@ -335,15 +339,15 @@ pub fn rename_var(doc: &str, from: &str, to: &str) -> Result<String, EditError> 
 }
 
 /// Deletes a variable's table. `Conflict` if it's still a field of any
-/// group (remove it from the group first).
+/// selector (remove it from the selector first).
 pub fn delete_var(doc: &str, name: &str) -> Result<String, EditError> {
     let mut doc = parse(doc)?;
     let root = doc.as_table_mut();
     if !root.contains_key(name) {
         return Err(not_found(format!("variable \"{name}\" not found")));
     }
-    if let Some(groups_table) = root.get("groups").and_then(Item::as_table) {
-        for (gname, gitem) in groups_table.iter() {
+    if let Some(selectors_table) = root.get("selectors").and_then(Item::as_table) {
+        for (gname, gitem) in selectors_table.iter() {
             let Some(fields) = gitem
                 .as_table()
                 .and_then(|t| t.get("fields"))
@@ -353,7 +357,7 @@ pub fn delete_var(doc: &str, name: &str) -> Result<String, EditError> {
             };
             if fields.iter().any(|v| v.as_str() == Some(name)) {
                 return Err(EditError::Conflict(format!(
-                    "variable \"{name}\" is a field of group \"{gname}\"; remove it from the group first"
+                    "variable \"{name}\" is a field of selector \"{gname}\"; remove it from the selector first"
                 )));
             }
         }
@@ -362,18 +366,23 @@ pub fn delete_var(doc: &str, name: &str) -> Result<String, EditError> {
     Ok(doc.to_string())
 }
 
-/// Creates the group's table if absent, sets `description` when given, and
+/// Creates the selector's table if absent, sets `description` when given, and
 /// always sets `fields` to the given list.
-pub fn upsert_group(
+pub fn upsert_selector(
     doc: &str,
     name: &str,
     description: Option<&str>,
     fields: &[String],
 ) -> Result<String, EditError> {
+    if fields.is_empty() {
+        return Err(EditError::Conflict(format!(
+            "a selector needs at least one field; add a field before saving \"{name}\""
+        )));
+    }
     let mut doc = parse(doc)?;
     let root = doc.as_table_mut();
-    let groups = table_mut(root, "groups", true)?;
-    let g = table_mut(groups, name, false)?;
+    let selectors = table_mut(root, "selectors", true)?;
+    let g = table_mut(selectors, name, false)?;
     if let Some(d) = description {
         g["description"] = value(d);
     }
@@ -385,22 +394,22 @@ pub fn upsert_group(
     Ok(doc.to_string())
 }
 
-/// Renames a group's `[groups.<from>]` table header, decor and position
-/// preserved. `NotFound` if there is no such group; `Conflict` if `to`
+/// Renames a selector's `[selectors.<from>]` table header, decor and position
+/// preserved. `NotFound` if there is no such selector; `Conflict` if `to`
 /// isn't a valid name, or already occupies either namespace a declaration
-/// can collide with (a top-level variable table or another group) — a
+/// can collide with (a top-level variable table or another selector) — a
 /// rename that merged two declarations would silently lose one.
 ///
-/// The environment-side half — each environment's `[entries.<from>]`
-/// subtree — is [`rename_group_entries`], which the caller loops across
+/// The environment-side half — each environment's `[options.<from>]`
+/// subtree — is [`rename_selector_options`], which the caller loops across
 /// every environment. Both halves have to land together: an environment
-/// holding entries for a group the model no longer declares (and a group
-/// whose entries are still filed under the old name) both fail
+/// holding options for a selector the model no longer declares (and a selector
+/// whose options are still filed under the old name) both fail
 /// `validate_env`.
-pub fn rename_group(doc: &str, from: &str, to: &str) -> Result<String, EditError> {
+pub fn rename_selector(doc: &str, from: &str, to: &str) -> Result<String, EditError> {
     if !crate::vars::is_valid_var_name(to) {
         return Err(EditError::Conflict(format!(
-            "\"{to}\" is not a valid group name"
+            "\"{to}\" is not a valid selector name"
         )));
     }
     let mut doc = parse(doc)?;
@@ -410,28 +419,28 @@ pub fn rename_group(doc: &str, from: &str, to: &str) -> Result<String, EditError
             "\"{to}\" already exists; rename would merge two declarations into one"
         )));
     }
-    let groups = root
-        .get_mut("groups")
+    let selectors = root
+        .get_mut("selectors")
         .and_then(Item::as_table_mut)
         .filter(|g| g.contains_key(from))
-        .ok_or_else(|| not_found(format!("group \"{from}\" not found")))?;
-    rename_key(groups, from, to);
+        .ok_or_else(|| not_found(format!("selector \"{from}\" not found")))?;
+    rename_key(selectors, from, to);
     Ok(doc.to_string())
 }
 
-/// Deletes a group's table. `NotFound` if there is no such group. The
-/// environment-side half — the group's `[entries.<name>]` subtree — is
-/// [`delete_group_entries`], which the caller loops across every
+/// Deletes a selector's table. `NotFound` if there is no such selector. The
+/// environment-side half — the selector's `[options.<name>]` subtree — is
+/// [`delete_selector_options`], which the caller loops across every
 /// environment.
-pub fn delete_group(doc: &str, name: &str) -> Result<String, EditError> {
+pub fn delete_selector(doc: &str, name: &str) -> Result<String, EditError> {
     let mut doc = parse(doc)?;
     let root = doc.as_table_mut();
     let removed = root
-        .get_mut("groups")
+        .get_mut("selectors")
         .and_then(Item::as_table_mut)
         .and_then(|g| remove_transferring_header(g, name));
     if removed.is_none() {
-        return Err(not_found(format!("group \"{name}\" not found")));
+        return Err(not_found(format!("selector \"{name}\" not found")));
     }
     Ok(doc.to_string())
 }
@@ -463,43 +472,43 @@ pub fn set_env_value(doc: &str, name: &str, val: Option<&str>) -> Result<String,
     Ok(doc.to_string())
 }
 
-/// `description` inside an entries table is an entry's own description, so
-/// no entry may be named that — the model would read the entry back as a
+/// `description` inside an options table is an option's own description, so
+/// no option may be named that — the model would read the option back as a
 /// malformed description rather than a record.
-fn check_entry_name(name: &str) -> Result<(), EditError> {
-    if name == crate::varmodel::ENTRY_DESCRIPTION {
+fn check_option_name(name: &str) -> Result<(), EditError> {
+    if name == crate::varmodel::OPTION_DESCRIPTION {
         return Err(EditError::Conflict(format!(
-            "\"{name}\" is reserved for an entry's own description and can't be used as an entry name"
+            "\"{name}\" is reserved for an option's own description and can't be used as an option name"
         )));
     }
     Ok(())
 }
 
-/// This environment's `[entries.<group>]` table, if it has one.
-fn entries_group_mut<'a>(root: &'a mut Table, group: &str) -> Option<&'a mut Table> {
-    root.get_mut("entries")
+/// This environment's `[options.<selector>]` table, if it has one.
+fn options_selector_mut<'a>(root: &'a mut Table, selector: &str) -> Option<&'a mut Table> {
+    root.get_mut("options")
         .and_then(Item::as_table_mut)
-        .and_then(|entries| entries.get_mut(group))
+        .and_then(|options| options.get_mut(selector))
         .and_then(Item::as_table_mut)
 }
 
-/// Creates or updates `[entries.<group>."<entry>"]`, setting `description`
+/// Creates or updates `[options.<selector>."<option>"]`, setting `description`
 /// (written above the field values) when given plus every field in
-/// `values`. Fields already in the entry but absent from `values` are left
-/// alone — [`strip_entry_field`] is how a field leaves an entry.
-pub fn upsert_entry(
+/// `values`. Fields already in the option but absent from `values` are left
+/// alone — [`strip_option_field`] is how a field leaves an option.
+pub fn upsert_option(
     doc: &str,
-    group: &str,
-    entry: &str,
+    selector: &str,
+    option: &str,
     description: Option<&str>,
     values: &IndexMap<String, String>,
 ) -> Result<String, EditError> {
-    check_entry_name(entry)?;
+    check_option_name(option)?;
     let mut doc = parse(doc)?;
     let root = doc.as_table_mut();
-    let entries = table_mut(root, "entries", true)?;
-    let group_table = table_mut(entries, group, true)?;
-    let t = table_mut(group_table, entry, false)?;
+    let options = table_mut(root, "options", true)?;
+    let selector_table = table_mut(options, selector, true)?;
+    let t = table_mut(selector_table, option, false)?;
     if let Some(d) = description {
         t["description"] = value(d);
         move_key_first(t, "description");
@@ -510,92 +519,93 @@ pub fn upsert_entry(
     Ok(doc.to_string())
 }
 
-/// Renames one entry of `group`. `NotFound` if the group or the entry
+/// Renames one option of `selector`. `NotFound` if the selector or the option
 /// isn't in this environment; `Conflict` if `to` already exists (the
 /// rename would merge two records into one).
-pub fn rename_entry(doc: &str, group: &str, from: &str, to: &str) -> Result<String, EditError> {
-    check_entry_name(to)?;
+pub fn rename_option(doc: &str, selector: &str, from: &str, to: &str) -> Result<String, EditError> {
+    check_option_name(to)?;
     let mut doc = parse(doc)?;
     let root = doc.as_table_mut();
-    let g = entries_group_mut(root, group)
-        .ok_or_else(|| not_found(format!("group \"{group}\" has no entries here")))?;
+    let g = options_selector_mut(root, selector)
+        .ok_or_else(|| not_found(format!("selector \"{selector}\" has no options here")))?;
     if !g.contains_key(from) {
         return Err(not_found(format!(
-            "entry \"{from}\" not found in group \"{group}\""
+            "option \"{from}\" not found in selector \"{selector}\""
         )));
     }
     if from != to && g.contains_key(to) {
         return Err(EditError::Conflict(format!(
-            "entry \"{to}\" already exists in group \"{group}\"; rename would merge two entries into one"
+            "option \"{to}\" already exists in selector \"{selector}\"; rename would merge two options into one"
         )));
     }
     rename_key(g, from, to);
     Ok(doc.to_string())
 }
 
-/// Removes one entry of `group`. `NotFound` if it isn't there.
-pub fn delete_entry(doc: &str, group: &str, entry: &str) -> Result<String, EditError> {
+/// Removes one option of `selector`. `NotFound` if it isn't there.
+pub fn delete_option(doc: &str, selector: &str, option: &str) -> Result<String, EditError> {
     let mut doc = parse(doc)?;
     let root = doc.as_table_mut();
-    let removed = entries_group_mut(root, group).and_then(|g| remove_transferring_header(g, entry));
+    let removed =
+        options_selector_mut(root, selector).and_then(|g| remove_transferring_header(g, option));
     if removed.is_none() {
         return Err(not_found(format!(
-            "entry \"{entry}\" not found in group \"{group}\""
+            "option \"{option}\" not found in selector \"{selector}\""
         )));
     }
     Ok(doc.to_string())
 }
 
-/// Removes the whole `[entries.<group>]` subtree — the environment-side
-/// half of [`delete_group`]. No-op (never an error) when this environment
-/// has no entries for the group, since the caller loops it across every
+/// Removes the whole `[options.<selector>]` subtree — the environment-side
+/// half of [`delete_selector`]. No-op (never an error) when this environment
+/// has no options for the selector, since the caller loops it across every
 /// environment.
-pub fn delete_group_entries(doc: &str, group: &str) -> Result<String, EditError> {
+pub fn delete_selector_options(doc: &str, selector: &str) -> Result<String, EditError> {
     let mut doc = parse(doc)?;
     let root = doc.as_table_mut();
-    if let Some(entries) = root.get_mut("entries").and_then(Item::as_table_mut) {
-        remove_transferring_header(entries, group);
+    if let Some(options) = root.get_mut("options").and_then(Item::as_table_mut) {
+        remove_transferring_header(options, selector);
     }
     Ok(doc.to_string())
 }
 
-/// Renames this environment's `[entries.<from>]` subtree to
-/// `[entries.<to>]` — the environment-side half of [`rename_group`]. A
-/// no-op (never an error) when this environment has no entries for the
-/// group, since the caller loops it across every environment. `Conflict`
-/// when `to` already has its own entries table here: the rename would
-/// merge two groups' records into one.
-pub fn rename_group_entries(doc: &str, from: &str, to: &str) -> Result<String, EditError> {
+/// Renames this environment's `[options.<from>]` subtree to
+/// `[options.<to>]` — the environment-side half of [`rename_selector`]. A
+/// no-op (never an error) when this environment has no options for the
+/// selector, since the caller loops it across every environment. `Conflict`
+/// when `to` already has its own options table here: the rename would
+/// merge two selectors' records into one.
+pub fn rename_selector_options(doc: &str, from: &str, to: &str) -> Result<String, EditError> {
     let mut doc = parse(doc)?;
     let root = doc.as_table_mut();
-    let Some(entries) = root.get_mut("entries").and_then(Item::as_table_mut) else {
+    let Some(options) = root.get_mut("options").and_then(Item::as_table_mut) else {
         return Ok(doc.to_string());
     };
-    if !entries.contains_key(from) {
+    if !options.contains_key(from) {
         return Ok(doc.to_string());
     }
-    if from != to && entries.contains_key(to) {
+    if from != to && options.contains_key(to) {
         return Err(EditError::Conflict(format!(
-            "\"{to}\" already has entries in this environment; rename would merge two groups into one"
+            "\"{to}\" already has options in this environment; rename would merge two selectors into one"
         )));
     }
-    rename_key(entries, from, to);
+    rename_key(options, from, to);
     Ok(doc.to_string())
 }
 
-/// Gives every entry of `group` that lacks `field` an empty value for it —
-/// what a field *joining* its group does to the records already written
-/// for it, and the mirror image of [`strip_entry_field`]. Every entry of a
-/// group must supply every declared field (`validate_env`), so a field
+/// Gives every option of `selector` that lacks `field` an empty value for it —
+/// what a field *joining* its selector does to the records already written
+/// for it, and the mirror image of [`strip_option_field`]. Every option of a
+/// selector must supply every declared field (`validate_env`), so a field
 /// addition has to land in the environment files in the same breath as the
 /// declaration. Entries that already set the field keep their value;
-/// environments without the group pass through untouched.
-pub fn ensure_entry_field(doc: &str, group: &str, field: &str) -> Result<String, EditError> {
+/// environments without the selector pass through untouched.
+pub fn ensure_option_field(doc: &str, selector: &str, field: &str) -> Result<String, EditError> {
     let mut doc = parse(doc)?;
     let root = doc.as_table_mut();
-    if let Some(g) = entries_group_mut(root, group) {
-        for (_, entry) in g.iter_mut() {
-            if let Some(t) = entry.as_table_mut()
+    if let Some(g) = options_selector_mut(root, selector) {
+        for (_, option) in g.iter_mut() {
+            if let Some(t) = option.as_table_mut()
                 && !t.contains_key(field)
             {
                 t[field] = value("");
@@ -605,40 +615,40 @@ pub fn ensure_entry_field(doc: &str, group: &str, field: &str) -> Result<String,
     Ok(doc.to_string())
 }
 
-/// Renames a field key inside every entry of `group` — the
-/// environment-side half of [`rename_var`] for a group field. Entries
-/// without the field (and environments without the group) pass through
+/// Renames a field key inside every option of `selector` — the
+/// environment-side half of [`rename_var`] for a selector field. Entries
+/// without the field (and environments without the selector) pass through
 /// untouched.
-pub fn rename_entry_field(
+pub fn rename_option_field(
     doc: &str,
-    group: &str,
+    selector: &str,
     from: &str,
     to: &str,
 ) -> Result<String, EditError> {
     let mut doc = parse(doc)?;
     let root = doc.as_table_mut();
-    if let Some(g) = entries_group_mut(root, group) {
-        let entry_names: Vec<String> = g.iter().map(|(k, _)| k.to_string()).collect();
-        for name in entry_names {
-            if let Some(entry) = g.get_mut(&name).and_then(Item::as_table_mut)
-                && entry.contains_key(from)
+    if let Some(g) = options_selector_mut(root, selector) {
+        let option_names: Vec<String> = g.iter().map(|(k, _)| k.to_string()).collect();
+        for name in option_names {
+            if let Some(option) = g.get_mut(&name).and_then(Item::as_table_mut)
+                && option.contains_key(from)
             {
-                rename_key(entry, from, to);
+                rename_key(option, from, to);
             }
         }
     }
     Ok(doc.to_string())
 }
 
-/// Removes a field key from every entry of `group` — what a field leaving
-/// its group does to the values already recorded for it. Entries without
-/// the field (and environments without the group) pass through untouched.
-pub fn strip_entry_field(doc: &str, group: &str, field: &str) -> Result<String, EditError> {
+/// Removes a field key from every option of `selector` — what a field leaving
+/// its selector does to the values already recorded for it. Entries without
+/// the field (and environments without the selector) pass through untouched.
+pub fn strip_option_field(doc: &str, selector: &str, field: &str) -> Result<String, EditError> {
     let mut doc = parse(doc)?;
     let root = doc.as_table_mut();
-    if let Some(g) = entries_group_mut(root, group) {
-        for (_, entry) in g.iter_mut() {
-            if let Some(t) = entry.as_table_mut() {
+    if let Some(g) = options_selector_mut(root, selector) {
+        for (_, option) in g.iter_mut() {
+            if let Some(t) = option.as_table_mut() {
                 t.remove(field);
             }
         }
@@ -647,8 +657,8 @@ pub fn strip_entry_field(doc: &str, group: &str, field: &str) -> Result<String, 
 }
 
 /// Renames `from` to `to` wherever `from` appears in an environment file:
-/// its flat `from = "value"` pair (if any) and its `[entries.from]`
-/// table (if any, i.e. when `from` is a group) — the cascade `rename_var`
+/// its flat `from = "value"` pair (if any) and its `[options.from]`
+/// table (if any, i.e. when `from` is a selector) — the cascade `rename_var`
 /// itself doesn't (and can't;
 /// `rename_var` only ever sees `variables.toml`) do, so the Manager's
 /// rename op loops this across every environment after `rename_var`
@@ -661,39 +671,39 @@ pub fn rename_env_var(doc: &str, from: &str, to: &str) -> Result<String, EditErr
     let mut doc = parse(doc)?;
     let root = doc.as_table_mut();
     let has_flat = root.contains_key(from);
-    let has_entries = root
-        .get("entries")
+    let has_options = root
+        .get("options")
         .and_then(Item::as_table)
         .is_some_and(|e| e.contains_key(from));
-    if !has_flat && !has_entries {
+    if !has_flat && !has_options {
         return Ok(doc.to_string());
     }
     // Conflict check up front, before any mutation: a `to` that already
     // occupies the same slot `from` is being moved into would otherwise
-    // silently merge two entries into one (`rename_key`'s rebuild would
+    // silently merge two options into one (`rename_key`'s rebuild would
     // encounter `to` twice and the second insert wins, dropping the first).
     if from != to {
         let flat_conflict = has_flat && root.contains_key(to);
-        let entries_conflict = has_entries
+        let options_conflict = has_options
             && root
-                .get("entries")
+                .get("options")
                 .and_then(Item::as_table)
                 .is_some_and(|e| e.contains_key(to));
-        if flat_conflict || entries_conflict {
+        if flat_conflict || options_conflict {
             return Err(EditError::Conflict(format!(
-                "\"{to}\" already exists in this environment; rename would merge two entries into one"
+                "\"{to}\" already exists in this environment; rename would merge two options into one"
             )));
         }
     }
     if has_flat {
         rename_key(root, from, to);
     }
-    if has_entries {
-        let entries = root
-            .get_mut("entries")
+    if has_options {
+        let options = root
+            .get_mut("options")
             .and_then(Item::as_table_mut)
-            .expect("has_entries confirmed the table exists above");
-        rename_key(entries, from, to);
+            .expect("has_options confirmed the table exists above");
+        rename_key(options, from, to);
     }
     Ok(doc.to_string())
 }
@@ -743,16 +753,16 @@ pub enum PromoteTarget {
 /// already occupying that name in `vars_doc`:
 /// - a secret variable — promoting a plain value onto it would either
 ///   commit a secret or make the declaration invalid;
-/// - an existing group's own name — group and variable names share one
+/// - an existing selector's own name — selector and variable names share one
 ///   namespace (spec §1), so `upsert_var` would otherwise create a
-///   colliding top-level variable table alongside `[groups.<name>]`;
-/// - an existing group's field — that name's value comes from the group's
-///   selected entry, so writing a `default` onto it would be dead and
+///   colliding top-level variable table alongside `[selectors.<name>]`;
+/// - an existing selector's field — that name's value comes from the selector's
+///   selected option, so writing a `default` onto it would be dead and
 ///   misleading.
 ///
 /// In every conflict case the caller should offer a rename instead. The
 /// caller is responsible for removing the request's own `[variables]`
-/// entry.
+/// option.
 pub fn promote_var(
     vars_doc: &str,
     env_doc: Option<&str>,
@@ -775,13 +785,13 @@ pub fn promote_var(
         )));
     }
 
-    if let Some(groups_table) = root.get("groups").and_then(Item::as_table) {
-        if groups_table.contains_key(name) {
+    if let Some(selectors_table) = root.get("selectors").and_then(Item::as_table) {
+        if selectors_table.contains_key(name) {
             return Err(EditError::Conflict(format!(
-                "\"{name}\" is already a group name; group and variable names share one namespace"
+                "\"{name}\" is already a selector name; selector and variable names share one namespace"
             )));
         }
-        for (gname, gitem) in groups_table.iter() {
+        for (gname, gitem) in selectors_table.iter() {
             let is_field = gitem
                 .as_table()
                 .and_then(|t| t.get("fields"))
@@ -789,7 +799,7 @@ pub fn promote_var(
                 .is_some_and(|fields| fields.iter().any(|v| v.as_str() == Some(name)));
             if is_field {
                 return Err(EditError::Conflict(format!(
-                    "variable \"{name}\" is a field of group \"{gname}\"; its value comes from the group's selected entry"
+                    "variable \"{name}\" is a field of selector \"{gname}\"; its value comes from the selector's selected option"
                 )));
             }
         }
@@ -812,8 +822,8 @@ pub fn promote_var(
 }
 
 /// Removes every environment-level trace of `name`: its flat `name =
-/// "value"` pair (if any) and its whole `[entries.name]` subtree (if any,
-/// i.e. when `name` is a group). No-op (returns `doc` unchanged) when
+/// "value"` pair (if any) and its whole `[options.name]` subtree (if any,
+/// i.e. when `name` is a selector). No-op (returns `doc` unchanged) when
 /// neither exists — mirrors `rename_env_var`'s per-env-loop-friendly
 /// behavior, since the caller (the Manager's delete cascade) loops this
 /// across every environment unconditionally, most of which won't have
@@ -822,8 +832,8 @@ pub fn delete_env_var(doc: &str, name: &str) -> Result<String, EditError> {
     let mut doc = parse(doc)?;
     let root = doc.as_table_mut();
     remove_transferring_header(root, name);
-    if let Some(entries) = root.get_mut("entries").and_then(Item::as_table_mut) {
-        remove_transferring_header(entries, name);
+    if let Some(options) = root.get_mut("options").and_then(Item::as_table_mut) {
+        remove_transferring_header(options, name);
     }
     Ok(doc.to_string())
 }
@@ -833,8 +843,8 @@ mod tests {
     use super::*;
 
     /// Fixture mirrors spec §3.2's `variables.toml` example, plus a
-    /// one-field group (what a migrated enumerated variable becomes) so
-    /// both group shapes are exercised.
+    /// one-field selector (what a migrated enumerated variable becomes) so
+    /// both selector shapes are exercised.
     const VARS: &str = r#"# variables.toml
 
 [base_url]
@@ -845,11 +855,11 @@ default = "http://localhost:8080"
 description = "service API key"
 secret = true
 
-[groups.tier]
+[selectors.tier]
 description = "pricing tier"
 fields = ["tier"]
 
-[groups.test-user]
+[selectors.test-user]
 description = "user with linked customer"
 fields = ["user_id", "customer_id"]
 "#;
@@ -859,15 +869,15 @@ fields = ["user_id", "customer_id"]
 
 base_url = "https://qa.example.com"
 
-[entries.tier.gold]
+[options.tier.gold]
 description = "the good one"
 tier = "g-1"
 
-[entries.test-user."user 1"]
+[options.test-user."user 1"]
 user_id = "1001"
 customer_id = "c-77"
 
-[entries.test-user."user 2"]
+[options.test-user."user 2"]
 user_id = "1002"
 customer_id = "c-91"
 "#;
@@ -910,11 +920,11 @@ default = "http://localhost:9090"
 description = "service API key"
 secret = true
 
-[groups.tier]
+[selectors.tier]
 description = "pricing tier"
 fields = ["tier"]
 
-[groups.test-user]
+[selectors.test-user]
 description = "user with linked customer"
 fields = ["user_id", "customer_id"]
 "#
@@ -966,16 +976,16 @@ fields = ["user_id", "customer_id"]
     }
 
     #[test]
-    fn rename_var_cascades_into_group_fields() {
+    fn rename_var_cascades_into_selector_fields() {
         // The model forbids a field from also being a declared variable,
         // but `varedit` is text -> text and never parses the model, so a
         // hand-edited file carrying both must not come back half-renamed.
-        let vars = "[user_id]\ndescription = \"x\"\n\n[groups.test-user]\nfields = [\"user_id\", \"customer_id\"]\n";
+        let vars = "[user_id]\ndescription = \"x\"\n\n[selectors.test-user]\nfields = [\"user_id\", \"customer_id\"]\n";
         let out = rename_var(vars, "user_id", "uid").unwrap();
         assert!(out.contains("[uid]"), "{out}");
         assert!(
             out.contains("fields = [\"uid\", \"customer_id\"]"),
-            "the group's field list follows the rename:\n{out}"
+            "the selector's field list follows the rename:\n{out}"
         );
     }
 
@@ -986,7 +996,7 @@ fields = ["user_id", "customer_id"]
     }
 
     #[test]
-    fn rename_var_conflict_when_to_already_exists_as_a_group() {
+    fn rename_var_conflict_when_to_already_exists_as_a_selector() {
         let err = rename_var(VARS, "base_url", "test-user").unwrap_err();
         assert!(matches!(err, EditError::Conflict(_)));
     }
@@ -1040,13 +1050,14 @@ secret = true
     }
 
     #[test]
-    fn delete_var_conflict_when_still_a_group_field() {
-        let vars = "[user_id]\ndescription = \"x\"\n\n[groups.test-user]\nfields = [\"user_id\"]\n";
+    fn delete_var_conflict_when_still_a_selector_field() {
+        let vars =
+            "[user_id]\ndescription = \"x\"\n\n[selectors.test-user]\nfields = [\"user_id\"]\n";
         let err = delete_var(vars, "user_id").unwrap_err();
         assert_eq!(
             err,
             EditError::Conflict(
-                "variable \"user_id\" is a field of group \"test-user\"; remove it from the group first"
+                "variable \"user_id\" is a field of selector \"test-user\"; remove it from the selector first"
                     .to_string()
             )
         );
@@ -1062,8 +1073,8 @@ secret = true
     }
 
     #[test]
-    fn upsert_group_writes_fields_and_round_trips() {
-        let out = upsert_group(
+    fn upsert_selector_writes_fields_and_round_trips() {
+        let out = upsert_selector(
             "[base_url]\ndefault = \"x\"\n",
             "user",
             Some("linked pair"),
@@ -1075,23 +1086,36 @@ secret = true
             "{out}"
         );
         let m = reparses_vars(&out);
-        assert_eq!(m.groups["user"].fields, ["user_id", "customer_id"]);
-        assert_eq!(m.groups["user"].description.as_deref(), Some("linked pair"));
-    }
-
-    #[test]
-    fn upsert_group_with_no_fields_writes_an_empty_list_that_reparses() {
-        let out = upsert_group(VARS, "empty", None, &[]).unwrap();
-        assert!(out.contains("fields = []"), "{out}");
-        assert!(reparses_vars(&out).groups["empty"].fields.is_empty());
-    }
-
-    #[test]
-    fn upsert_group_replaces_fields_on_an_existing_group() {
-        let out = upsert_group(VARS, "test-user", None, &["user_id".to_string()]).unwrap();
-        assert_eq!(reparses_vars(&out).groups["test-user"].fields, ["user_id"]);
+        assert_eq!(m.selectors["user"].fields, ["user_id", "customer_id"]);
         assert_eq!(
-            reparses_vars(&out).groups["test-user"]
+            m.selectors["user"].description.as_deref(),
+            Some("linked pair")
+        );
+    }
+
+    #[test]
+    fn upsert_selector_with_no_fields_is_refused() {
+        // A selector needs at least one field (`varmodel::EmptyFields`), so
+        // writing an empty list would produce a file that no longer loads.
+        let err = upsert_selector(VARS, "empty", None, &[]).unwrap_err();
+        assert_eq!(
+            err,
+            EditError::Conflict(
+                "a selector needs at least one field; add a field before saving \"empty\""
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn upsert_selector_replaces_fields_on_an_existing_selector() {
+        let out = upsert_selector(VARS, "test-user", None, &["user_id".to_string()]).unwrap();
+        assert_eq!(
+            reparses_vars(&out).selectors["test-user"].fields,
+            ["user_id"]
+        );
+        assert_eq!(
+            reparses_vars(&out).selectors["test-user"]
                 .description
                 .as_deref(),
             Some("user with linked customer"),
@@ -1100,19 +1124,19 @@ secret = true
     }
 
     #[test]
-    fn delete_group_removes_the_group() {
-        let out = delete_group(VARS, "test-user").unwrap();
+    fn delete_selector_removes_the_selector() {
+        let out = delete_selector(VARS, "test-user").unwrap();
         assert!(!out.contains("test-user"));
-        assert!(!reparses_vars(&out).groups.contains_key("test-user"));
-        assert!(reparses_vars(&out).groups.contains_key("tier"));
+        assert!(!reparses_vars(&out).selectors.contains_key("test-user"));
+        assert!(reparses_vars(&out).selectors.contains_key("tier"));
     }
 
     #[test]
-    fn delete_group_not_found_on_missing_group() {
-        let err = delete_group(VARS, "nope").unwrap_err();
+    fn delete_selector_not_found_on_missing_selector() {
+        let err = delete_selector(VARS, "nope").unwrap_err();
         assert_eq!(
             err,
-            EditError::NotFound("group \"nope\" not found".to_string())
+            EditError::NotFound("selector \"nope\" not found".to_string())
         );
     }
 
@@ -1152,7 +1176,7 @@ base_url = "https://qa.example.com"
 # staging region override, remove once qa2 is retired
 region = "eu-west"
 
-[entries.tier.gold]
+[options.tier.gold]
 tier = "g-1"
 "#;
         let out = set_env_value(env, "region", Some("us-east")).unwrap();
@@ -1164,7 +1188,7 @@ base_url = "https://qa.example.com"
 # staging region override, remove once qa2 is retired
 region = "us-east"
 
-[entries.tier.gold]
+[options.tier.gold]
 tier = "g-1"
 "#
         );
@@ -1184,30 +1208,30 @@ tier = "g-1"
     }
 
     #[test]
-    fn upsert_entry_creates_and_updates_preserving_other_entries() {
+    fn upsert_option_creates_and_updates_preserving_other_options() {
         let doc = "base_url = \"x\"\n";
         let mut vals = IndexMap::new();
         vals.insert("user_id".to_string(), "1001".to_string());
         vals.insert("customer_id".to_string(), "cust-77".to_string());
-        let out = upsert_entry(doc, "user", "user 1", None, &vals).unwrap();
-        assert!(out.contains("[entries.user.\"user 1\"]"));
+        let out = upsert_option(doc, "user", "user 1", None, &vals).unwrap();
+        assert!(out.contains("[options.user.\"user 1\"]"));
         let mut vals2 = vals.clone();
         vals2.insert("user_id".to_string(), "9999".to_string());
-        let out2 = upsert_entry(&out, "user", "user 1", Some("admin"), &vals2).unwrap();
+        let out2 = upsert_option(&out, "user", "user 1", Some("admin"), &vals2).unwrap();
         assert!(out2.contains("9999") && out2.contains("description = \"admin\""));
-        assert_eq!(out2.matches("[entries.user.").count(), 1);
+        assert_eq!(out2.matches("[options.user.").count(), 1);
         let e = reparses_env(&out2);
-        assert_eq!(e.entries["user"]["user 1"].values["user_id"], "9999");
+        assert_eq!(e.options["user"]["user 1"].values["user_id"], "9999");
         assert_eq!(
-            e.entries["user"]["user 1"].description.as_deref(),
+            e.options["user"]["user 1"].description.as_deref(),
             Some("admin")
         );
         assert_eq!(e.values["base_url"], "x");
     }
 
     #[test]
-    fn upsert_entry_leaves_sibling_entries_alone() {
-        let out = upsert_entry(
+    fn upsert_option_leaves_sibling_options_alone() {
+        let out = upsert_option(
             ENV,
             "test-user",
             "user 3",
@@ -1216,18 +1240,18 @@ tier = "g-1"
         )
         .unwrap();
         let e = reparses_env(&out);
-        assert_eq!(e.entries["test-user"].len(), 3);
-        assert_eq!(e.entries["test-user"]["user 1"].values["user_id"], "1001");
+        assert_eq!(e.options["test-user"].len(), 3);
+        assert_eq!(e.options["test-user"]["user 1"].values["user_id"], "1001");
         assert_eq!(
-            e.entries["test-user"]["user 3"].values["customer_id"],
+            e.options["test-user"]["user 3"].values["customer_id"],
             "c-03"
         );
-        assert_eq!(e.entries["tier"]["gold"].values["tier"], "g-1");
+        assert_eq!(e.options["tier"]["gold"].values["tier"], "g-1");
     }
 
     #[test]
-    fn upsert_entry_quotes_awkward_entry_names() {
-        let out = upsert_entry(
+    fn upsert_option_quotes_awkward_option_names() {
+        let out = upsert_option(
             "",
             "user",
             "the \"big\" one, v2",
@@ -1237,15 +1261,15 @@ tier = "g-1"
         .unwrap();
         let e = reparses_env(&out);
         assert_eq!(
-            e.entries["user"]["the \"big\" one, v2"].values["user_id"],
+            e.options["user"]["the \"big\" one, v2"].values["user_id"],
             "1"
         );
     }
 
     #[test]
-    fn upsert_entry_writes_description_above_the_field_values() {
-        let out = upsert_entry("", "user", "u1", None, &vals(&[("user_id", "1")])).unwrap();
-        let out = upsert_entry(&out, "user", "u1", Some("later"), &vals(&[])).unwrap();
+    fn upsert_option_writes_description_above_the_field_values() {
+        let out = upsert_option("", "user", "u1", None, &vals(&[("user_id", "1")])).unwrap();
+        let out = upsert_option(&out, "user", "u1", Some("later"), &vals(&[])).unwrap();
         assert!(
             out.contains("description = \"later\"\nuser_id = \"1\""),
             "description goes first even when added after the values:\n{out}"
@@ -1254,11 +1278,11 @@ tier = "g-1"
     }
 
     #[test]
-    fn an_entry_may_not_be_named_description() {
-        // `description` inside an entries table is an entry's own
+    fn an_option_may_not_be_named_description() {
+        // `description` inside an options table is an option's own
         // description, so writing one under that name would produce a
         // document the model rejects.
-        let err = upsert_entry(
+        let err = upsert_option(
             ENV,
             "test-user",
             "description",
@@ -1269,230 +1293,233 @@ tier = "g-1"
         assert_eq!(
             err,
             EditError::Conflict(
-                "\"description\" is reserved for an entry's own description and can't be used as an entry name"
+                "\"description\" is reserved for an option's own description and can't be used as an option name"
                     .to_string()
             )
         );
         assert!(matches!(
-            rename_entry(ENV, "test-user", "user 1", "description"),
+            rename_option(ENV, "test-user", "user 1", "description"),
             Err(EditError::Conflict(_))
         ));
     }
 
     #[test]
-    fn rename_entry_preserves_value_order_and_unrelated_comments() {
-        let out = rename_entry(ENV, "test-user", "user 1", "the first user").unwrap();
+    fn rename_option_preserves_value_order_and_unrelated_comments() {
+        let out = rename_option(ENV, "test-user", "user 1", "the first user").unwrap();
         assert!(out.starts_with("# environments/qa.toml\n"));
         assert!(out.contains(
-            "[entries.test-user.\"the first user\"]\nuser_id = \"1001\"\ncustomer_id = \"c-77\"\n"
+            "[options.test-user.\"the first user\"]\nuser_id = \"1001\"\ncustomer_id = \"c-77\"\n"
         ));
         let e = reparses_env(&out);
         assert_eq!(
-            e.entries["test-user"].keys().collect::<Vec<_>>(),
+            e.options["test-user"].keys().collect::<Vec<_>>(),
             ["the first user", "user 2"]
         );
     }
 
     #[test]
-    fn rename_entry_conflict_when_target_exists() {
-        let err = rename_entry(ENV, "test-user", "user 1", "user 2").unwrap_err();
+    fn rename_option_conflict_when_target_exists() {
+        let err = rename_option(ENV, "test-user", "user 1", "user 2").unwrap_err();
         assert_eq!(
             err,
             EditError::Conflict(
-                "entry \"user 2\" already exists in group \"test-user\"; rename would merge two entries into one"
+                "option \"user 2\" already exists in selector \"test-user\"; rename would merge two options into one"
                     .to_string()
             )
         );
     }
 
     #[test]
-    fn rename_entry_not_found_for_missing_entry_or_group() {
+    fn rename_option_not_found_for_missing_option_or_selector() {
         assert_eq!(
-            rename_entry(ENV, "test-user", "nope", "x").unwrap_err(),
-            EditError::NotFound("entry \"nope\" not found in group \"test-user\"".to_string())
+            rename_option(ENV, "test-user", "nope", "x").unwrap_err(),
+            EditError::NotFound("option \"nope\" not found in selector \"test-user\"".to_string())
         );
         assert_eq!(
-            rename_entry(ENV, "ghost", "a", "b").unwrap_err(),
-            EditError::NotFound("group \"ghost\" has no entries here".to_string())
+            rename_option(ENV, "ghost", "a", "b").unwrap_err(),
+            EditError::NotFound("selector \"ghost\" has no options here".to_string())
         );
     }
 
     #[test]
-    fn delete_entry_removes_only_that_entry() {
-        let out = delete_entry(ENV, "test-user", "user 1").unwrap();
+    fn delete_option_removes_only_that_option() {
+        let out = delete_option(ENV, "test-user", "user 1").unwrap();
         let e = reparses_env(&out);
         assert_eq!(
-            e.entries["test-user"].keys().collect::<Vec<_>>(),
+            e.options["test-user"].keys().collect::<Vec<_>>(),
             ["user 2"]
         );
-        assert!(e.entries.contains_key("tier"));
+        assert!(e.options.contains_key("tier"));
     }
 
     #[test]
-    fn delete_entry_not_found_when_absent() {
+    fn delete_option_not_found_when_absent() {
         assert_eq!(
-            delete_entry(ENV, "test-user", "nope").unwrap_err(),
-            EditError::NotFound("entry \"nope\" not found in group \"test-user\"".to_string())
+            delete_option(ENV, "test-user", "nope").unwrap_err(),
+            EditError::NotFound("option \"nope\" not found in selector \"test-user\"".to_string())
         );
         assert_eq!(
-            delete_entry(ENV, "ghost", "nope").unwrap_err(),
-            EditError::NotFound("entry \"nope\" not found in group \"ghost\"".to_string())
+            delete_option(ENV, "ghost", "nope").unwrap_err(),
+            EditError::NotFound("option \"nope\" not found in selector \"ghost\"".to_string())
         );
     }
 
     #[test]
-    fn delete_group_entries_removes_the_whole_subtree() {
-        let out = delete_group_entries(ENV, "test-user").unwrap();
+    fn delete_selector_options_removes_the_whole_subtree() {
+        let out = delete_selector_options(ENV, "test-user").unwrap();
         assert!(!out.contains("test-user"));
         let e = reparses_env(&out);
-        assert!(!e.entries.contains_key("test-user"));
-        assert_eq!(e.entries["tier"]["gold"].values["tier"], "g-1");
+        assert!(!e.options.contains_key("test-user"));
+        assert_eq!(e.options["tier"]["gold"].values["tier"], "g-1");
     }
 
     #[test]
-    fn delete_group_entries_is_a_no_op_when_absent() {
-        assert_eq!(delete_group_entries(ENV, "ghost").unwrap(), ENV);
+    fn delete_selector_options_is_a_no_op_when_absent() {
+        assert_eq!(delete_selector_options(ENV, "ghost").unwrap(), ENV);
         assert_eq!(
-            delete_group_entries("base_url = \"x\"\n", "ghost").unwrap(),
+            delete_selector_options("base_url = \"x\"\n", "ghost").unwrap(),
             "base_url = \"x\"\n"
         );
     }
 
     #[test]
-    fn rename_entry_field_touches_every_entry_of_the_group() {
-        let out = rename_entry_field(ENV, "test-user", "user_id", "uid").unwrap();
+    fn rename_option_field_touches_every_option_of_the_selector() {
+        let out = rename_option_field(ENV, "test-user", "user_id", "uid").unwrap();
         let e = reparses_env(&out);
-        assert_eq!(e.entries["test-user"]["user 1"].values["uid"], "1001");
-        assert_eq!(e.entries["test-user"]["user 2"].values["uid"], "1002");
+        assert_eq!(e.options["test-user"]["user 1"].values["uid"], "1001");
+        assert_eq!(e.options["test-user"]["user 2"].values["uid"], "1002");
         assert_eq!(
-            e.entries["test-user"]["user 1"]
+            e.options["test-user"]["user 1"]
                 .values
                 .keys()
                 .collect::<Vec<_>>(),
             ["uid", "customer_id"],
             "the renamed key keeps its position"
         );
-        assert_eq!(e.entries["tier"]["gold"].values["tier"], "g-1");
+        assert_eq!(e.options["tier"]["gold"].values["tier"], "g-1");
     }
 
     #[test]
-    fn rename_entry_field_is_a_no_op_when_the_group_or_field_is_absent() {
-        assert_eq!(rename_entry_field(ENV, "ghost", "a", "b").unwrap(), ENV);
-        assert_eq!(rename_entry_field(ENV, "tier", "ghost", "b").unwrap(), ENV);
+    fn rename_option_field_is_a_no_op_when_the_selector_or_field_is_absent() {
+        assert_eq!(rename_option_field(ENV, "ghost", "a", "b").unwrap(), ENV);
+        assert_eq!(rename_option_field(ENV, "tier", "ghost", "b").unwrap(), ENV);
     }
 
     #[test]
-    fn strip_entry_field_removes_it_from_every_entry() {
-        let out = strip_entry_field(ENV, "test-user", "customer_id").unwrap();
+    fn strip_option_field_removes_it_from_every_option() {
+        let out = strip_option_field(ENV, "test-user", "customer_id").unwrap();
         let e = reparses_env(&out);
         assert!(
-            !e.entries["test-user"]["user 1"]
+            !e.options["test-user"]["user 1"]
                 .values
                 .contains_key("customer_id")
         );
         assert!(
-            !e.entries["test-user"]["user 2"]
+            !e.options["test-user"]["user 2"]
                 .values
                 .contains_key("customer_id")
         );
-        assert_eq!(e.entries["test-user"]["user 1"].values["user_id"], "1001");
+        assert_eq!(e.options["test-user"]["user 1"].values["user_id"], "1001");
     }
 
     #[test]
-    fn strip_entry_field_is_a_no_op_when_the_group_or_field_is_absent() {
-        assert_eq!(strip_entry_field(ENV, "ghost", "a").unwrap(), ENV);
-        assert_eq!(strip_entry_field(ENV, "tier", "ghost").unwrap(), ENV);
+    fn strip_option_field_is_a_no_op_when_the_selector_or_field_is_absent() {
+        assert_eq!(strip_option_field(ENV, "ghost", "a").unwrap(), ENV);
+        assert_eq!(strip_option_field(ENV, "tier", "ghost").unwrap(), ENV);
     }
 
     #[test]
-    fn ensure_entry_field_fills_only_the_entries_that_lack_it() {
-        let out = ensure_entry_field(ENV, "test-user", "region").unwrap();
+    fn ensure_option_field_fills_only_the_options_that_lack_it() {
+        let out = ensure_option_field(ENV, "test-user", "region").unwrap();
         let env = reparses_env(&out);
-        let entries = &env.entries["test-user"];
-        assert_eq!(entries["user 1"].values["region"], "");
-        assert_eq!(entries["user 2"].values["region"], "");
+        let options = &env.options["test-user"];
+        assert_eq!(options["user 1"].values["region"], "");
+        assert_eq!(options["user 2"].values["region"], "");
         // Existing values are never overwritten…
-        assert_eq!(entries["user 1"].values["user_id"], "1001");
-        let again = ensure_entry_field(&out, "test-user", "user_id").unwrap();
+        assert_eq!(options["user 1"].values["user_id"], "1001");
+        let again = ensure_option_field(&out, "test-user", "user_id").unwrap();
         assert_eq!(
-            reparses_env(&again).entries["test-user"]["user 1"].values["user_id"],
+            reparses_env(&again).options["test-user"]["user 1"].values["user_id"],
             "1001"
         );
-        // …and another group's entries are untouched.
-        assert!(!env.entries["tier"]["gold"].values.contains_key("region"));
+        // …and another selector's options are untouched.
+        assert!(!env.options["tier"]["gold"].values.contains_key("region"));
     }
 
     #[test]
-    fn ensure_entry_field_is_a_no_op_when_the_group_has_no_entries_here() {
-        assert_eq!(ensure_entry_field(ENV, "ghost", "a").unwrap(), ENV);
-        assert_eq!(ensure_entry_field("", "test-user", "a").unwrap(), "");
+    fn ensure_option_field_is_a_no_op_when_the_selector_has_no_options_here() {
+        assert_eq!(ensure_option_field(ENV, "ghost", "a").unwrap(), ENV);
+        assert_eq!(ensure_option_field("", "test-user", "a").unwrap(), "");
     }
 
     // -------------------------------------------------------------
-    // group rename: both halves
+    // selector rename: both halves
     // -------------------------------------------------------------
 
     #[test]
-    fn rename_group_moves_the_header_and_keeps_its_decor() {
-        let out = rename_group(VARS, "test-user", "customer").unwrap();
-        assert!(out.contains("[groups.customer]"), "{out}");
-        assert!(!out.contains("[groups.test-user]"), "{out}");
+    fn rename_selector_moves_the_header_and_keeps_its_decor() {
+        let out = rename_selector(VARS, "test-user", "customer").unwrap();
+        assert!(out.contains("[selectors.customer]"), "{out}");
+        assert!(!out.contains("[selectors.test-user]"), "{out}");
         assert!(
             out.contains(
-                "[groups.customer]\ndescription = \"user with linked customer\"\nfields = [\"user_id\", \"customer_id\"]\n"
+                "[selectors.customer]\ndescription = \"user with linked customer\"\nfields = [\"user_id\", \"customer_id\"]\n"
             ),
             "description, fields and their formatting survive: {out}"
         );
         // Everything else in the file is byte-identical.
         assert!(out.starts_with("# variables.toml\n"), "{out}");
-        assert!(out.contains("[groups.tier]"), "{out}");
+        assert!(out.contains("[selectors.tier]"), "{out}");
         let m = reparses_vars(&out);
-        assert_eq!(m.groups["customer"].fields, vec!["user_id", "customer_id"]);
-        assert!(!m.groups.contains_key("test-user"));
+        assert_eq!(
+            m.selectors["customer"].fields,
+            vec!["user_id", "customer_id"]
+        );
+        assert!(!m.selectors.contains_key("test-user"));
     }
 
     #[test]
-    fn rename_group_refuses_a_missing_group_a_taken_name_and_a_bad_name() {
+    fn rename_selector_refuses_a_missing_selector_a_taken_name_and_a_bad_name() {
         assert_eq!(
-            rename_group(VARS, "ghost", "x").unwrap_err(),
-            EditError::NotFound("group \"ghost\" not found".to_string())
+            rename_selector(VARS, "ghost", "x").unwrap_err(),
+            EditError::NotFound("selector \"ghost\" not found".to_string())
         );
         // A variable already holds the name…
         assert!(matches!(
-            rename_group(VARS, "test-user", "base_url").unwrap_err(),
+            rename_selector(VARS, "test-user", "base_url").unwrap_err(),
             EditError::Conflict(_)
         ));
-        // …and so does another group.
+        // …and so does another selector.
         assert!(matches!(
-            rename_group(VARS, "test-user", "tier").unwrap_err(),
+            rename_selector(VARS, "test-user", "tier").unwrap_err(),
             EditError::Conflict(_)
         ));
         assert!(matches!(
-            rename_group(VARS, "test-user", "not a name").unwrap_err(),
+            rename_selector(VARS, "test-user", "not a name").unwrap_err(),
             EditError::Conflict(_)
         ));
         // Renaming to itself is allowed (and inert).
-        assert_eq!(rename_group(VARS, "tier", "tier").unwrap(), VARS);
+        assert_eq!(rename_selector(VARS, "tier", "tier").unwrap(), VARS);
     }
 
     #[test]
-    fn rename_group_entries_moves_the_whole_subtree() {
-        let out = rename_group_entries(ENV, "test-user", "customer").unwrap();
-        assert!(out.contains("[entries.customer.\"user 1\"]"), "{out}");
-        assert!(out.contains("[entries.customer.\"user 2\"]"), "{out}");
+    fn rename_selector_options_moves_the_whole_subtree() {
+        let out = rename_selector_options(ENV, "test-user", "customer").unwrap();
+        assert!(out.contains("[options.customer.\"user 1\"]"), "{out}");
+        assert!(out.contains("[options.customer.\"user 2\"]"), "{out}");
         assert!(!out.contains("test-user"), "{out}");
         let env = reparses_env(&out);
-        assert_eq!(env.entries["customer"]["user 1"].values["user_id"], "1001");
-        assert!(env.entries.contains_key("tier"), "other groups stay put");
+        assert_eq!(env.options["customer"]["user 1"].values["user_id"], "1001");
+        assert!(env.options.contains_key("tier"), "other selectors stay put");
         assert_eq!(env.values["base_url"], "https://qa.example.com");
     }
 
     #[test]
-    fn rename_group_entries_no_ops_without_the_group_and_refuses_a_merge() {
-        assert_eq!(rename_group_entries(ENV, "ghost", "x").unwrap(), ENV);
-        assert_eq!(rename_group_entries("", "test-user", "x").unwrap(), "");
+    fn rename_selector_options_no_ops_without_the_selector_and_refuses_a_merge() {
+        assert_eq!(rename_selector_options(ENV, "ghost", "x").unwrap(), ENV);
+        assert_eq!(rename_selector_options("", "test-user", "x").unwrap(), "");
         assert!(matches!(
-            rename_group_entries(ENV, "test-user", "tier").unwrap_err(),
+            rename_selector_options(ENV, "test-user", "tier").unwrap_err(),
             EditError::Conflict(_)
         ));
     }
@@ -1505,7 +1532,7 @@ base_url = "https://qa.example.com"
 # staging region override, remove once qa2 is retired
 region = "eu-west"
 
-[entries.tier.gold]
+[options.tier.gold]
 tier = "g-1"
 "#;
         let out = rename_env_var(env, "region", "aws_region").unwrap();
@@ -1517,29 +1544,29 @@ base_url = "https://qa.example.com"
 # staging region override, remove once qa2 is retired
 aws_region = "eu-west"
 
-[entries.tier.gold]
+[options.tier.gold]
 tier = "g-1"
 "#
         );
     }
 
     #[test]
-    fn rename_env_var_renames_the_entries_table_key() {
+    fn rename_env_var_renames_the_options_table_key() {
         let out = rename_env_var(ENV, "test-user", "person").unwrap();
         let e = reparses_env(&out);
-        assert!(!e.entries.contains_key("test-user"));
-        assert_eq!(e.entries["person"]["user 1"].values["user_id"], "1001");
+        assert!(!e.options.contains_key("test-user"));
+        assert_eq!(e.options["person"]["user 1"].values["user_id"], "1001");
     }
 
     #[test]
-    fn rename_env_var_renames_both_the_flat_pair_and_its_entries_table() {
+    fn rename_env_var_renames_both_the_flat_pair_and_its_options_table() {
         // The Rename op doesn't know which shape each environment uses
-        // ahead of time (a name can have a flat pair here and entries
+        // ahead of time (a name can have a flat pair here and options
         // there), so it must handle either — or, as here, both — without
         // erroring.
         let env = r#"shard = "d-1"
 
-[entries.shard.east]
+[options.shard.east]
 shard = "e-1"
 "#;
         let out = rename_env_var(env, "shard", "region").unwrap();
@@ -1547,7 +1574,7 @@ shard = "e-1"
             out,
             r#"region = "d-1"
 
-[entries.region.east]
+[options.region.east]
 shard = "e-1"
 "#
         );
@@ -1560,14 +1587,14 @@ shard = "e-1"
         assert_eq!(
             err,
             EditError::Conflict(
-                "\"region\" already exists in this environment; rename would merge two entries into one"
+                "\"region\" already exists in this environment; rename would merge two options into one"
                     .to_string()
             )
         );
     }
 
     #[test]
-    fn rename_env_var_conflict_when_to_entries_table_already_exists() {
+    fn rename_env_var_conflict_when_to_options_table_already_exists() {
         let err = rename_env_var(ENV, "tier", "test-user").unwrap_err();
         assert!(matches!(err, EditError::Conflict(_)));
     }
@@ -1582,21 +1609,21 @@ shard = "e-1"
     }
 
     #[test]
-    fn delete_env_var_removes_the_flat_pair_and_the_entries_table() {
+    fn delete_env_var_removes_the_flat_pair_and_the_options_table() {
         let env = r#"base_url = "https://qa.example.com"
 shard = "d-1"
 
-[entries.shard.east]
+[options.shard.east]
 shard = "e-1"
 
-[entries.tier.gold]
+[options.tier.gold]
 tier = "g-1"
 "#;
         let out = delete_env_var(env, "shard").unwrap();
         let e = reparses_env(&out);
         assert!(!e.values.contains_key("shard"));
-        assert!(!e.entries.contains_key("shard"));
-        assert_eq!(e.entries["tier"]["gold"].values["tier"], "g-1");
+        assert!(!e.options.contains_key("shard"));
+        assert_eq!(e.options["tier"]["gold"].values["tier"], "g-1");
     }
 
     #[test]
@@ -1604,14 +1631,14 @@ tier = "g-1"
         let out = delete_env_var(ENV, "base_url").unwrap();
         let e = reparses_env(&out);
         assert!(e.values.is_empty());
-        assert_eq!(e.entries.len(), 2);
+        assert_eq!(e.options.len(), 2);
     }
 
     #[test]
-    fn delete_env_var_entries_table_only() {
+    fn delete_env_var_options_table_only() {
         let out = delete_env_var(ENV, "tier").unwrap();
         let e = reparses_env(&out);
-        assert!(!e.entries.contains_key("tier"));
+        assert!(!e.options.contains_key("tier"));
         assert_eq!(e.values["base_url"], "https://qa.example.com");
     }
 
@@ -1633,7 +1660,7 @@ tier = "g-1"
         body: Option<&str>,
     ) -> crate::model::HttpRequest {
         use crate::model::{Body, Entry, Method};
-        let entry = |v: &str| Entry {
+        let option = |v: &str| Entry {
             value: v.to_string(),
             enabled: true,
         };
@@ -1644,15 +1671,15 @@ tier = "g-1"
             substitute_body: false,
             params: params
                 .iter()
-                .map(|(k, v)| (k.to_string(), entry(v)))
+                .map(|(k, v)| (k.to_string(), option(v)))
                 .collect(),
             headers: headers
                 .iter()
-                .map(|(k, v)| (k.to_string(), entry(v)))
+                .map(|(k, v)| (k.to_string(), option(v)))
                 .collect(),
             variables: variables
                 .iter()
-                .map(|(k, v)| (k.to_string(), entry(v)))
+                .map(|(k, v)| (k.to_string(), option(v)))
                 .collect(),
             body: body.map(|t| Body::Json {
                 text: t.to_string(),
@@ -1783,7 +1810,7 @@ tier = "g-1"
     }
 
     #[test]
-    fn promote_var_onto_existing_group_name_is_conflict() {
+    fn promote_var_onto_existing_selector_name_is_conflict() {
         let err =
             promote_var(VARS, Some(ENV), "test-user", "x", PromoteTarget::Default).unwrap_err();
         assert!(matches!(err, EditError::Conflict(_)));
@@ -1796,12 +1823,12 @@ tier = "g-1"
     }
 
     #[test]
-    fn promote_var_onto_existing_group_field_is_conflict() {
+    fn promote_var_onto_existing_selector_field_is_conflict() {
         let err = promote_var(VARS, Some(ENV), "user_id", "x", PromoteTarget::Default).unwrap_err();
         assert_eq!(
             err,
             EditError::Conflict(
-                "variable \"user_id\" is a field of group \"test-user\"; its value comes from the group's selected entry"
+                "variable \"user_id\" is a field of selector \"test-user\"; its value comes from the selector's selected option"
                     .to_string()
             )
         );

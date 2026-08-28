@@ -16,7 +16,7 @@ pub struct Command {
     pub id: &'static str,
     pub name: &'static str,
     /// A one-line muted caption painted on the row directly under `name`
-    /// (spec: "bold title + muted description", two-line dense entries).
+    /// (spec: "bold title + muted description", two-line dense options).
     pub description: &'static str,
     pub action: Action,
 }
@@ -240,10 +240,10 @@ pub fn all_commands() -> Vec<Command> {
             action: Action::PromptNewVar,
         },
         Command {
-            id: "vars-new-group",
-            name: "Variables: new group…",
-            description: "Declare a new variable group",
-            action: Action::PromptNewGroup,
+            id: "vars-new-selector",
+            name: "Variables: new selector…",
+            description: "Declare a new variable selector",
+            action: Action::PromptNewSelector,
         },
         Command {
             id: "vars-extract",
@@ -279,7 +279,7 @@ pub fn all_commands() -> Vec<Command> {
 /// key, stable across a command's display `name`; the keymap's names are
 /// the rebind-by-name TOML keys) and happen to describe several of the
 /// same actions under different spellings — this table is the one place
-/// that reconciles them. Commands with no entry here (most of them: focus
+/// that reconciles them. Commands with no option here (most of them: focus
 /// moves, prompts, the palette itself has no self-referential binding,
 /// …) simply show no keybinding column, which is correct — they have none.
 fn keymap_action_name(command_id: &str) -> Option<&'static str> {
@@ -721,7 +721,7 @@ mod tests {
     }
 
     /// Task 17, spec §5: palette audit — every command the sweep added
-    /// (Response: search, Variables: new variable/group) is present with a
+    /// (Response: search, Variables: new variable/selector) is present with a
     /// stable kebab-case id, alongside the ids that already covered Body:
     /// format/minify/toggle-vars/open-in-$EDITOR and Request: duplicate.
     #[test]
@@ -736,7 +736,7 @@ mod tests {
             "request-duplicate",
             "response-search",
             "vars-new-variable",
-            "vars-new-group",
+            "vars-new-selector",
         ] {
             assert!(
                 ids.contains(&expected),
@@ -767,10 +767,10 @@ mod tests {
         assert_eq!(
             commands
                 .iter()
-                .find(|c| c.id == "vars-new-group")
+                .find(|c| c.id == "vars-new-selector")
                 .unwrap()
                 .action,
-            Action::PromptNewGroup
+            Action::PromptNewSelector
         );
     }
 
@@ -906,11 +906,14 @@ mod tests {
             .unwrap();
         let row0 = hits.rect_of(&crate::hit::Hit::PaletteRow(0)).unwrap();
         let row1 = hits.rect_of(&crate::hit::Hit::PaletteRow(1)).unwrap();
-        assert_eq!(row0.height, 2, "each entry's hit box covers both its lines");
+        assert_eq!(
+            row0.height, 2,
+            "each option's hit box covers both its lines"
+        );
         assert_eq!(
             row1.y - row0.y,
             2,
-            "consecutive entries sit back-to-back with no gap row between them"
+            "consecutive options sit back-to-back with no gap row between them"
         );
     }
 

@@ -113,13 +113,13 @@ async fn stage6_acceptance_flow() {
     }));
 
     // A one-field group — what an enumerated variable is in stage 7.
-    app.update(Action::VarStruct(VarStructOp::NewGroup {
+    app.update(Action::VarStruct(VarStructOp::NewSelector {
         name: "region".into(),
         fields: vec!["region".into()],
     }));
 
     // A group whose entries carry both fields at once.
-    app.update(Action::VarStruct(VarStructOp::NewGroup {
+    app.update(Action::VarStruct(VarStructOp::NewSelector {
         name: "creds".into(),
         fields: vec!["user_id".into(), "customer_id".into()],
     }));
@@ -172,9 +172,9 @@ async fn stage6_acceptance_flow() {
     app.update(Action::SwitchEnv(Some("prod".into())));
     let mut west = IndexMap::new();
     west.insert("region".to_string(), "west-9".to_string());
-    app.update(Action::VarStruct(VarStructOp::NewEntry {
+    app.update(Action::VarStruct(VarStructOp::NewOption {
         env: "prod".into(),
-        group: "region".into(),
+        selector: "region".into(),
         name: "west".into(),
         description: None,
         values: west,
@@ -184,9 +184,9 @@ async fn stage6_acceptance_flow() {
     assert_eq!(app.project.active_env.as_deref(), Some("qa"));
     let mut east = IndexMap::new();
     east.insert("region".to_string(), "east-1".to_string());
-    app.update(Action::VarStruct(VarStructOp::NewEntry {
+    app.update(Action::VarStruct(VarStructOp::NewOption {
         env: "qa".into(),
-        group: "region".into(),
+        selector: "region".into(),
         name: "east".into(),
         description: None,
         values: east,
@@ -194,20 +194,20 @@ async fn stage6_acceptance_flow() {
     let mut alice = IndexMap::new();
     alice.insert("user_id".to_string(), "1001".to_string());
     alice.insert("customer_id".to_string(), "c-77".to_string());
-    app.update(Action::VarStruct(VarStructOp::NewEntry {
+    app.update(Action::VarStruct(VarStructOp::NewOption {
         env: "qa".into(),
-        group: "creds".into(),
+        selector: "creds".into(),
         name: "alice".into(),
         description: None,
         values: alice,
     }));
     assert!(
-        postui_core::varmodel::group_entries(&app.project.env_data, "region")
+        postui_core::varmodel::selector_options(&app.project.env_data, "region")
             .is_some_and(|e| e.contains_key("east")),
         "qa's own entry landed"
     );
     assert!(
-        postui_core::varmodel::group_entries(&app.project.env_data, "creds")
+        postui_core::varmodel::selector_options(&app.project.env_data, "creds")
             .is_some_and(|e| e.contains_key("alice")),
         "the two-field group's entry landed too"
     );
@@ -245,7 +245,7 @@ async fn stage6_acceptance_flow() {
         "cursor on a group field's token opens the selection-context picker"
     );
     let keymap = postui::keys::Keymap::default_bindings();
-    app.handle_key(&keymap, enter()); // qa declares one entry: east
+    app.handle_key(&keymap, enter()); // qa declares one option: east
     assert!(app.modals.is_empty(), "confirming closes the picker");
     assert_eq!(
         app.project.selections_for("qa")["region"],
@@ -253,12 +253,12 @@ async fn stage6_acceptance_flow() {
         "picker confirm recorded the selection"
     );
 
-    // --- select the group's entry directly (VarEdit::SelectEntry is the
+    // --- select the group's entry directly (VarEdit::SelectOption is the
     // same wire type the picker itself dispatches on confirm) ----------
-    app.update(Action::VarEdit(VarEditOp::SelectEntry {
+    app.update(Action::VarEdit(VarEditOp::SelectOption {
         env: "qa".into(),
-        group: "creds".into(),
-        entry: "alice".into(),
+        selector: "creds".into(),
+        option: "alice".into(),
     }));
 
     // --- request-scope override: `trace_id` shadows the project default
@@ -284,10 +284,10 @@ async fn stage6_acceptance_flow() {
         "prod has no region selection yet: {:?}",
         app.project.resolved.values.get("region")
     );
-    app.update(Action::VarEdit(VarEditOp::SelectEntry {
+    app.update(Action::VarEdit(VarEditOp::SelectOption {
         env: "prod".into(),
-        group: "region".into(),
-        entry: "west".into(),
+        selector: "region".into(),
+        option: "west".into(),
     }));
     assert_eq!(app.project.resolved.values["region"], "west-9");
 
@@ -351,10 +351,10 @@ async fn stage6_acceptance_flow() {
         "[base_url]\n\
 description = \"API root\"\n\
 \n\
-[groups.region]\n\
+[selectors.region]\n\
 fields = [\"region\"]\n\
 \n\
-[groups.creds]\n\
+[selectors.creds]\n\
 fields = [\"user_id\", \"customer_id\"]\n\
 \n\
 [api_key]\n\
@@ -373,10 +373,10 @@ default = \"proj-trace\"\n\
         format!(
             "base_url = \"{}\"\n\
 \n\
-[entries.region.east]\n\
+[options.region.east]\n\
 region = \"east-1\"\n\
 \n\
-[entries.creds.alice]\n\
+[options.creds.alice]\n\
 user_id = \"1001\"\n\
 customer_id = \"c-77\"\n",
             server.uri()
@@ -389,7 +389,7 @@ customer_id = \"c-77\"\n",
         format!(
             "base_url = \"{}\"\n\
 \n\
-[entries.region.west]\n\
+[options.region.west]\n\
 region = \"west-9\"\n",
             server.uri()
         )

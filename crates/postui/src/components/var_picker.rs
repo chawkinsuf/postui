@@ -13,7 +13,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 /// Which of the three name sources an Insert-mode [`VarEntry`] comes from
-/// (spec §6: "scope-badged (request / project / group member)"). A name
+/// (spec §6: "scope-badged (request / project / selector member)"). A name
 /// shadowed at a more specific scope (a request `[variables]` entry
 /// overriding a project variable of the same name) is listed once, tagged
 /// with the scope that actually resolves — `Request` beats `Project`/
@@ -51,9 +51,9 @@ pub struct VarEntry {
 
 /// Builds the Insert-mode picker's entries (spec §6: "autocomplete over
 /// all defined names") from every source that declares one: project
-/// variables (`model.vars`, minus names that are actually group fields —
+/// variables (`model.vars`, minus names that are actually selector fields —
 /// a field may carry its own top-level table for a description, but it's
-/// listed once, as `Group`), group fields (`model.groups`), and the open
+/// listed once, as `Group`), selector fields (`model.selectors`), and the open
 /// request's own `[variables]` (`request_vars`; `None`/disabled entries
 /// show as unset rather than being dropped). A name defined at more than
 /// one scope (a request entry shadowing a project variable) appears once,
@@ -64,7 +64,7 @@ pub fn insert_entries(
     request_vars: &indexmap::IndexMap<String, postui_core::model::Entry>,
 ) -> Vec<VarEntry> {
     let group_fields: std::collections::HashSet<&str> = model
-        .groups
+        .selectors
         .values()
         .flat_map(|g| g.fields.iter().map(String::as_str))
         .collect();
@@ -84,8 +84,8 @@ pub fn insert_entries(
         });
     }
 
-    for group in model.groups.values() {
-        for field in &group.fields {
+    for selector in model.selectors.values() {
+        for field in &selector.fields {
             let description = model.vars.get(field).and_then(|d| d.description.clone());
             entries.push(VarEntry {
                 name: field.clone(),
@@ -122,14 +122,14 @@ pub fn insert_entries(
 /// contexts). `Insert` is today's autocomplete-over-all-names behavior
 /// (Task 15 upgrades its entries with scope badges). `SelectOption` is
 /// Task 14's second context: the cursor sat on an existing `{{name}}`
-/// token whose name is a group field — `name` is that token's own name
-/// and `group` is the owning group's. The rows shown are the group's
+/// token whose name is a selector field — `name` is that token's own name
+/// and `selector` is the owning selector's. The rows shown are the selector's
 /// *entries*, not the declared names, and `Enter` never touches the token
 /// text — it records a selection.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PickerMode {
     Insert,
-    SelectOption { name: String, group: String },
+    SelectOption { name: String, selector: String },
 }
 
 /// One entry row, as offered by the `SelectOption` picker: its name,
@@ -137,9 +137,9 @@ pub enum PickerMode {
 /// per-field values, e.g. "admin · user_id 1001 · customer_id c-77").
 /// `value` is the single-value form kept for a one-field preview — never
 /// set alongside `preview`. `selected` marks the env's current selection
-/// for this group with a ✓.
+/// for this selector with a ✓.
 #[derive(Clone)]
-pub struct SelectEntry {
+pub struct SelectOption {
     pub key: String,
     pub description: Option<String>,
     pub value: Option<String>,
@@ -147,14 +147,14 @@ pub struct SelectEntry {
     pub selected: bool,
     /// The raw per-field values this option carries — `None` for a plain
     /// variable option (whose single value lives in `value` instead);
-    /// `Some(member -> new value)` for a group option, in member order.
+    /// `Some(member -> new value)` for a selector option, in member order.
     /// `e` (Task 17, spec §6) prefills its edit-in-place fields from this
     /// rather than re-parsing `preview`'s formatted text.
     pub values: Option<IndexMap<String, String>>,
 }
 
 /// A fuzzy-filterable list of declared variables (`Insert` mode) or of one
-/// variable's/group's options (`SelectOption` mode). Structure mirrors
+/// variable's/selector's options (`SelectOption` mode). Structure mirrors
 /// `ChooserState`: typed input filters the active list by fuzzy-matching;
 /// arrows move the selection; `Enter` confirms (inserts a token in
 /// `Insert` mode, records a selection in `SelectOption` mode) and closes.
@@ -167,12 +167,12 @@ pub struct VarPickerState {
     input: String,
     selected: usize,
     entries: Vec<VarEntry>,
-    select_entries: Vec<SelectEntry>,
+    select_entries: Vec<SelectOption>,
     filtered: Vec<usize>,
     pub completing: bool,
     pub mode: PickerMode,
     /// The active environment's name, captured at open — `SelectOption`
-    /// mode's target for `VarEditOp::SelectEntry` and its toast. Unused (empty)
+    /// mode's target for `VarEditOp::SelectOption` and its toast. Unused (empty)
     /// in `Insert` mode.
     env: String,
     /// First visible row's index into `filtered`. See `ChooserState` for the
@@ -198,7 +198,7 @@ impl VarPickerState {
         }
     }
 
-    /// Opens `SelectOption` mode: `entries` are `group`'s entries in the
+    /// Opens `SelectOption` mode: `entries` are `selector`'s entries in the
     /// active environment (`name` is the token that led here — see
     /// [`PickerMode`]), with the env's current selection already marked.
     /// `env` is the active environment, captured for the `Enter` action.
@@ -216,7 +216,12 @@ impl VarPickerState {
         self.refilter();
     }
 
-    pub fn new_select(entries: Vec<SelectEntry>, name: String, group: String, env: String) -> Self {
+    pub fn new_select(
+        entries: Vec<SelectOption>,
+        name: String,
+        selector: String,
+        env: String,
+    ) -> Self {
         let filtered = (0..entries.len()).collect();
         Self {
             input: String::new(),
@@ -225,7 +230,7 @@ impl VarPickerState {
             select_entries: entries,
             filtered,
             completing: false,
-            mode: PickerMode::SelectOption { name, group },
+            mode: PickerMode::SelectOption { name, selector },
             env,
             scroll: 0,
             ensure_visible: true,
@@ -273,8 +278,8 @@ impl VarPickerState {
                     close: true,
                     ..Default::default()
                 }),
-                PickerMode::SelectOption { group, .. } => {
-                    let owner = group.clone();
+                PickerMode::SelectOption { selector, .. } => {
+                    let owner = selector.clone();
                     Some(super::modal::ModalResult {
                         actions: vec![Action::OpenNewOptionInlinePrompt { owner }],
                         close: true,
@@ -298,20 +303,20 @@ impl VarPickerState {
                     ..Default::default()
                 })
             }
-            PickerMode::SelectOption { group, .. } => {
-                // The selection is recorded under the *group's* name
-                // (spec §3.1: one selected entry per group, shared by
+            PickerMode::SelectOption { selector, .. } => {
+                // The selection is recorded under the *selector's* name
+                // (spec §3.1: one selected entry per selector, shared by
                 // every field) — the token's own name is only for display
                 // (the picker's title).
-                let owner = group.clone();
+                let owner = selector.clone();
                 let key = self.select_entries[idx].key.clone();
                 let toast = format!("{owner} \u{2192} {key} ({})", self.env);
                 Some(super::modal::ModalResult {
                     actions: vec![
-                        Action::VarEdit(VarEditOp::SelectEntry {
+                        Action::VarEdit(VarEditOp::SelectOption {
                             env: self.env.clone(),
-                            group: owner,
-                            entry: key,
+                            selector: owner,
+                            option: key,
                         }),
                         Action::ShowToast(toast, ToastKind::Success),
                     ],
@@ -410,10 +415,10 @@ impl VarPickerState {
                     return None; // the ghost row itself has nothing to edit
                 }
                 let &idx = self.filtered.get(self.selected)?;
-                let PickerMode::SelectOption { group, .. } = &self.mode else {
+                let PickerMode::SelectOption { selector, .. } = &self.mode else {
                     unreachable!("guarded above")
                 };
-                let owner = group.clone();
+                let owner = selector.clone();
                 let entry = &self.select_entries[idx];
                 let values = entry.values.clone().unwrap_or_else(|| {
                     let mut m = IndexMap::new();
@@ -463,8 +468,8 @@ impl VarPickerState {
         let title_y = area.y + 1;
         let title = match &self.mode {
             PickerMode::Insert => "Variables".to_string(),
-            PickerMode::SelectOption { group, .. } => {
-                format!("Select \u{2014} {group}")
+            PickerMode::SelectOption { selector, .. } => {
+                format!("Select \u{2014} {selector}")
             }
         };
         paint::text(
@@ -1008,7 +1013,7 @@ mod tests {
     #[test]
     fn select_mode_enter_emits_select_edit_and_toast() {
         let entries = vec![
-            SelectEntry {
+            SelectOption {
                 key: "alice".into(),
                 description: Some("admin".into()),
                 value: Some("qa-token".into()),
@@ -1016,7 +1021,7 @@ mod tests {
                 selected: false,
                 values: None,
             },
-            SelectEntry {
+            SelectOption {
                 key: "bob".into(),
                 description: None,
                 value: Some("qa-bob".into()),
@@ -1030,10 +1035,10 @@ mod tests {
         assert_eq!(
             res.actions,
             vec![
-                Action::VarEdit(VarEditOp::SelectEntry {
+                Action::VarEdit(VarEditOp::SelectOption {
                     env: "qa".into(),
-                    group: "user".into(),
-                    entry: "alice".into(),
+                    selector: "user".into(),
+                    option: "alice".into(),
                 }),
                 Action::ShowToast("user \u{2192} alice (qa)".into(), ToastKind::Success),
             ]
@@ -1043,7 +1048,7 @@ mod tests {
 
     #[test]
     fn select_mode_group_member_targets_the_group_name() {
-        let entries = vec![SelectEntry {
+        let entries = vec![SelectOption {
             key: "alice".into(),
             description: None,
             value: None,
@@ -1057,10 +1062,10 @@ mod tests {
         assert_eq!(
             res.actions,
             vec![
-                Action::VarEdit(VarEditOp::SelectEntry {
+                Action::VarEdit(VarEditOp::SelectOption {
                     env: "qa".into(),
-                    group: "identity".into(),
-                    entry: "alice".into(),
+                    selector: "identity".into(),
+                    option: "alice".into(),
                 }),
                 Action::ShowToast("identity \u{2192} alice (qa)".into(), ToastKind::Success),
             ]
@@ -1069,7 +1074,7 @@ mod tests {
 
     #[test]
     fn select_mode_esc_closes_without_editing() {
-        let entries = vec![SelectEntry {
+        let entries = vec![SelectOption {
             key: "alice".into(),
             description: None,
             value: Some("x".into()),
@@ -1085,7 +1090,7 @@ mod tests {
     #[test]
     fn select_mode_typing_filters_options() {
         let entries = vec![
-            SelectEntry {
+            SelectOption {
                 key: "alice".into(),
                 description: Some("admin".into()),
                 value: Some("qa-token".into()),
@@ -1093,7 +1098,7 @@ mod tests {
                 selected: false,
                 values: None,
             },
-            SelectEntry {
+            SelectOption {
                 key: "bob".into(),
                 description: Some("reader".into()),
                 value: Some("qa-bob".into()),
@@ -1109,10 +1114,10 @@ mod tests {
         let res = p.handle_key(key(KeyCode::Enter)).unwrap();
         assert_eq!(
             res.actions[0],
-            Action::VarEdit(VarEditOp::SelectEntry {
+            Action::VarEdit(VarEditOp::SelectOption {
                 env: "qa".into(),
-                group: "user".into(),
-                entry: "bob".into(),
+                selector: "user".into(),
+                option: "bob".into(),
             })
         );
     }
@@ -1123,7 +1128,7 @@ mod tests {
         use ratatui::backend::TestBackend;
 
         let entries = vec![
-            SelectEntry {
+            SelectOption {
                 key: "alice".into(),
                 description: None,
                 value: None,
@@ -1131,7 +1136,7 @@ mod tests {
                 selected: true,
                 values: None,
             },
-            SelectEntry {
+            SelectOption {
                 key: "bob".into(),
                 description: None,
                 value: None,
@@ -1229,7 +1234,7 @@ mod tests {
 
     #[test]
     fn select_mode_ghost_row_opens_new_option_inline_prompt() {
-        let entries = vec![SelectEntry {
+        let entries = vec![SelectOption {
             key: "alice".into(),
             description: Some("admin".into()),
             value: Some("qa-token".into()),
@@ -1252,7 +1257,7 @@ mod tests {
 
     #[test]
     fn select_mode_ghost_row_targets_the_group_name() {
-        let entries = vec![SelectEntry {
+        let entries = vec![SelectOption {
             key: "alice".into(),
             description: None,
             value: None,
@@ -1277,7 +1282,7 @@ mod tests {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
 
-        let entries = vec![SelectEntry {
+        let entries = vec![SelectOption {
             key: "alice".into(),
             description: None,
             value: Some("x".into()),
@@ -1299,7 +1304,7 @@ mod tests {
 
     #[test]
     fn e_on_a_plain_var_option_opens_edit_prompt_prefilled_with_value_and_description() {
-        let entries = vec![SelectEntry {
+        let entries = vec![SelectOption {
             key: "alice".into(),
             description: Some("admin".into()),
             value: Some("qa-token".into()),
@@ -1330,7 +1335,7 @@ mod tests {
         let mut values = IndexMap::new();
         values.insert("user_id".to_string(), "1001".to_string());
         values.insert("customer_id".to_string(), "c-77".to_string());
-        let entries = vec![SelectEntry {
+        let entries = vec![SelectOption {
             key: "alice".into(),
             description: Some("admin".into()),
             value: None,
@@ -1356,7 +1361,7 @@ mod tests {
 
     #[test]
     fn e_on_the_ghost_row_is_a_no_op() {
-        let entries = vec![SelectEntry {
+        let entries = vec![SelectOption {
             key: "alice".into(),
             description: None,
             value: Some("x".into()),

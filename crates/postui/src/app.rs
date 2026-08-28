@@ -626,7 +626,7 @@ impl App {
         self.ui_settings = ui_settings;
     }
 
-    /// Applies the named theme from the registry (the Terminal entry seeds
+    /// Applies the named theme from the registry (the Terminal option seeds
     /// from the startup query). An unknown name — a custom file deleted since
     /// the registry was built — degrades to the terminal theme.
     fn set_theme_by_name(&mut self, name: &str) {
@@ -647,7 +647,7 @@ impl App {
     /// in lockstep with the picker's highlighted row. Called after any key
     /// or click that may have moved the chooser's selection.
     /// Builds the theme picker's rows for the current polarity filter
-    /// (`theme_picker_dark`): one row per registry entry whose seed
+    /// (`theme_picker_dark`): one row per registry option whose seed
     /// background matches, in registry order.
     fn theme_picker_items(&self) -> Vec<crate::components::chooser::ChooserItem> {
         self.themes
@@ -929,7 +929,7 @@ impl App {
     }
 
     /// Builds the Vars tab's shadow hint map: `name → "overrides <env>:
-    /// <value>"` for every open-request `[variables]` entry that shares a
+    /// <value>"` for every open-request `[variables]` option that shares a
     /// name with a resolved project variable — masked (spec §3: secrets are
     /// masked everywhere by default) rather than the real value when the
     /// project variable is a secret.
@@ -962,8 +962,8 @@ impl App {
         use crate::components::modal::Modal;
         use crate::components::var_picker::{VarPickerState, insert_entries};
         let resolved = self.project.prepare_context().vars;
-        let entries = insert_entries(&self.project.model, &resolved, &self.editor.variables);
-        let mut state = VarPickerState::new(entries, completing);
+        let options = insert_entries(&self.project.model, &resolved, &self.editor.variables);
+        let mut state = VarPickerState::new(options, completing);
         if let Some(seed) = seed {
             state.seed_filter(seed);
         }
@@ -1724,7 +1724,7 @@ impl App {
                     EditorTab::Vars => &mut self.editor.variables,
                     EditorTab::Body => return true,
                 };
-                let Some((key, entry)) = map.get_index(i).map(|(k, e)| (k.clone(), e.clone()))
+                let Some((key, option)) = map.get_index(i).map(|(k, e)| (k.clone(), e.clone()))
                 else {
                     return true;
                 };
@@ -1735,7 +1735,7 @@ impl App {
                     n += 1;
                 }
                 let insert_at = (i + 1).min(map.len());
-                map.shift_insert(insert_at, new_key, entry);
+                map.shift_insert(insert_at, new_key, option);
                 self.editor.table.selected = Some(insert_at);
                 true
             }
@@ -2509,10 +2509,10 @@ impl App {
                 if !completing
                     && let Some((text, cursor)) =
                         self.focused_field_text().map(|(t, c)| (t.to_string(), c))
-                    && let Some((name, group)) =
+                    && let Some((name, selector)) =
                         Self::selection_picker_target(&self.project, &text, cursor)
                 {
-                    return self.open_select_picker(name, group);
+                    return self.open_select_picker(name, selector);
                 }
                 self.open_insert_var_picker(completing, None)
             }
@@ -2605,100 +2605,103 @@ impl App {
                 });
                 true
             }
-            Action::PromptNewGroup => {
+            Action::PromptNewSelector => {
                 use crate::components::modal::PromptField;
                 self.push_modal(Modal::MultiPrompt {
-                    title: "New group".into(),
+                    title: "New selector".into(),
                     fields: vec![
                         PromptField::text("name", "Name", ""),
                         PromptField::text("fields", "Fields (comma separated)", ""),
                     ],
                     focus: 0,
-                    kind: PromptKind::NewGroup,
+                    kind: PromptKind::NewSelector,
                 });
                 true
             }
-            Action::PromptAddGroupMember { group } => {
+            Action::PromptAddSelectorField { selector } => {
                 self.push_modal(Modal::Prompt {
-                    title: format!("Add member to {group}"),
+                    title: format!("Add field to {selector}"),
                     input: LineInput::new(""),
-                    kind: PromptKind::AddGroupMember { group },
+                    kind: PromptKind::AddSelectorField { selector },
                     revealed: false,
                 });
                 true
             }
-            Action::AddGroupMember { group, member } => {
+            Action::AddSelectorField { selector, field } => {
                 let current = self
                     .project
                     .model
-                    .groups
-                    .get(&group)
+                    .selectors
+                    .get(&selector)
                     .map(|g| g.fields.clone())
                     .unwrap_or_default();
-                if current.iter().any(|m| m == &member) {
+                if current.iter().any(|m| m == &field) {
                     self.toasts.push(
-                        format!("\"{member}\" is already a member of {group}"),
+                        format!("\"{field}\" is already a field of {selector}"),
                         ToastKind::Warning,
                     );
                     return true;
                 }
                 let mut fields = current;
-                fields.push(member);
-                self.apply(Action::VarStruct(VarStructOp::SetFields { group, fields }));
+                fields.push(field);
+                self.apply(Action::VarStruct(VarStructOp::SetFields {
+                    selector,
+                    fields,
+                }));
                 true
             }
-            Action::ConfirmRemoveGroupMember { group, member } => {
+            Action::ConfirmRemoveSelectorField { selector, field } => {
                 self.push_modal(Modal::Confirm {
-                    title: format!("Remove {member}"),
+                    title: format!("Remove {field}"),
                     body: format!(
-                        "Remove \"{member}\" from group \"{group}\"? Its values in the group's options are removed too."
+                        "Remove \"{field}\" from selector \"{selector}\"? Its values in the selector's options are removed too."
                     ),
                     choices: vec![
                         ('n', "Cancel".into(), vec![]),
                         (
                             'y',
                             "Remove".into(),
-                            vec![Action::RemoveGroupMember { group, member }],
+                            vec![Action::RemoveSelectorField { selector, field }],
                         ),
                     ],
                 });
                 true
             }
-            Action::RemoveGroupMember { group, member } => {
+            Action::RemoveSelectorField { selector, field } => {
                 // Env files first: variables.toml's validation runs against
-                // the active env, whose entries must no longer carry the
-                // field by the time the group's field list changes.
+                // the active env, whose options must no longer carry the
+                // field by the time the selector's field list changes.
                 let Some(fields) = self
                     .project
                     .model
-                    .groups
-                    .get(&group)
+                    .selectors
+                    .get(&selector)
                     .map(|g| g.fields.clone())
                 else {
                     self.toasts
-                        .push(format!("no group \"{group}\""), ToastKind::Error);
+                        .push(format!("no selector \"{selector}\""), ToastKind::Error);
                     return true;
                 };
                 let before = self.read_file_states(&self.project.var_file_paths());
-                let remaining: Vec<String> = fields.into_iter().filter(|f| f != &member).collect();
+                let remaining: Vec<String> = fields.into_iter().filter(|f| f != &field).collect();
                 let envs = postui_core::project::list_environments(&self.project.root);
                 let result = envs
                     .iter()
                     .try_for_each(|env| {
                         self.project.edit_env(env, |doc| {
-                            postui_core::varedit::strip_entry_field(doc, &group, &member)
+                            postui_core::varedit::strip_option_field(doc, &selector, &field)
                         })
                     })
                     .and_then(|()| {
                         self.project.edit_variables(|doc| {
-                            postui_core::varedit::upsert_group(doc, &group, None, &remaining)
+                            postui_core::varedit::upsert_selector(doc, &selector, None, &remaining)
                         })
                     });
                 match result {
                     Ok(()) => {
                         self.record_var_file_step(before);
                         self.toasts.push(
-                            format!("removed \"{member}\" from {group}"),
+                            format!("removed \"{field}\" from {selector}"),
                             ToastKind::Info,
                         );
                     }
@@ -2730,18 +2733,18 @@ impl App {
                 });
                 true
             }
-            Action::PromptEditGroupMembers { group } => {
+            Action::PromptEditSelectorFields { selector } => {
                 let seed = self
                     .project
                     .model
-                    .groups
-                    .get(&group)
+                    .selectors
+                    .get(&selector)
                     .map(|g| g.fields.join(", "))
                     .unwrap_or_default();
                 self.push_modal(Modal::Prompt {
-                    title: format!("Members of {group}"),
+                    title: format!("Members of {selector}"),
                     input: LineInput::new(&seed),
-                    kind: PromptKind::GroupMembers { group },
+                    kind: PromptKind::SelectorFields { selector },
                     revealed: false,
                 });
                 true
@@ -2861,14 +2864,14 @@ impl App {
                 true
             }
 
-            // -- Task 16: the group entries grid (spec §3.4) --
-            Action::PromptGroupFields { group } => {
+            // -- Task 16: the selector options grid (spec §3.4) --
+            Action::PromptGroupFields { selector } => {
                 use crate::components::modal::PromptField;
                 let current = self
                     .project
                     .model
-                    .groups
-                    .get(&group)
+                    .selectors
+                    .get(&selector)
                     .map(|g| g.fields.clone())
                     .unwrap_or_default();
                 // One slot per current field, in order — position is the
@@ -2887,46 +2890,58 @@ impl App {
                     "",
                 ));
                 self.push_modal(Modal::MultiPrompt {
-                    title: format!("Fields of {group}"),
+                    title: format!("Fields of {selector}"),
                     fields,
                     focus: 0,
-                    kind: PromptKind::GroupFields { group },
+                    kind: PromptKind::GroupFields { selector },
                 });
                 true
             }
             Action::ApplyGroupFields {
-                group,
+                selector,
                 slots,
                 confirmed,
             } => {
                 let before = self.read_file_states(&self.project.var_file_paths());
-                self.apply_group_fields(group, slots, confirmed);
+                self.apply_group_fields(selector, slots, confirmed);
                 self.record_var_file_step(before);
                 true
             }
-            Action::PromptRenameEntry { env, group, from } => {
+            Action::PromptRenameEntry {
+                env,
+                selector,
+                from,
+            } => {
                 self.push_modal(Modal::Prompt {
                     title: format!("Rename {from}"),
                     input: LineInput::new(&from),
-                    kind: PromptKind::RenameEntry { env, group, from },
+                    kind: PromptKind::RenameOption {
+                        env,
+                        selector,
+                        from,
+                    },
                     revealed: false,
                 });
                 true
             }
-            Action::ConfirmDeleteEntry { env, group, name } => {
+            Action::ConfirmDeleteEntry {
+                env,
+                selector,
+                name,
+            } => {
                 self.push_modal(Modal::Confirm {
                     title: format!("Delete {name}"),
                     body: format!(
-                        "Delete entry \"{name}\" of \"{group}\" from {env}? Its values are removed with it."
+                        "Delete option \"{name}\" of \"{selector}\" from {env}? Its values are removed with it."
                     ),
                     choices: vec![
                         ('n', "Cancel".into(), vec![]),
                         (
                             'y',
                             "Delete".into(),
-                            vec![Action::VarStruct(VarStructOp::DeleteEntry {
+                            vec![Action::VarStruct(VarStructOp::DeleteOption {
                                 env,
-                                group,
+                                selector,
                                 name,
                             })],
                         ),
@@ -2939,7 +2954,7 @@ impl App {
             Action::OpenNewOptionInlinePrompt { owner } => {
                 use crate::components::modal::PromptField;
                 self.push_modal(Modal::MultiPrompt {
-                    title: format!("Add entry on {owner}"),
+                    title: format!("Add option on {owner}"),
                     fields: vec![
                         PromptField::text("key", "Name", ""),
                         PromptField::text("value", "Value", ""),
@@ -2985,13 +3000,13 @@ impl App {
             } => {
                 if key.is_empty() {
                     self.toasts
-                        .push("entry name can't be empty", ToastKind::Error);
+                        .push("option name can't be empty", ToastKind::Error);
                     return true;
                 }
-                if key == postui_core::varmodel::ENTRY_DESCRIPTION {
+                if key == postui_core::varmodel::OPTION_DESCRIPTION {
                     self.toasts.push(
                         format!(
-                            "\"{key}\" is reserved for an entry's own description and can't be used as an entry name"
+                            "\"{key}\" is reserved for an option's own description and can't be used as an option name"
                         ),
                         ToastKind::Error,
                     );
@@ -3004,14 +3019,14 @@ impl App {
                     );
                     return true;
                 };
-                // The inline prompt collects one value, but an entry has
-                // to supply every field of its group or `validate_env`
+                // The inline prompt collects one value, but an option has
+                // to supply every field of its selector or `validate_env`
                 // rejects it: the typed value fills the first field and
                 // the rest start empty, for the Manager to fill in.
                 let fields = self
                     .project
                     .model
-                    .groups
+                    .selectors
                     .get(&owner)
                     .map(|g| g.fields.clone())
                     .unwrap_or_default();
@@ -3022,7 +3037,7 @@ impl App {
                 }
                 let before = self.read_file_states(&self.project.var_file_paths());
                 match self.project.edit_env(&env, |doc| {
-                    postui_core::varedit::upsert_entry(
+                    postui_core::varedit::upsert_option(
                         doc,
                         &owner,
                         &key,
@@ -3054,7 +3069,7 @@ impl App {
                 values,
                 description,
             } => {
-                // An entry belongs to exactly one environment, so the
+                // An option belongs to exactly one environment, so the
                 // edit always lands in the active env's file.
                 let Some(env) = self.project.active_env.clone() else {
                     self.toasts.push(
@@ -3065,7 +3080,7 @@ impl App {
                 };
                 let before = self.read_file_states(&self.project.var_file_paths());
                 let result = self.project.edit_env(&env, |doc| {
-                    postui_core::varedit::upsert_entry(
+                    postui_core::varedit::upsert_option(
                         doc,
                         &owner,
                         &key,
@@ -3156,7 +3171,7 @@ impl App {
                 let write_result: Result<(), String> = match destination {
                     ExtractDestination::ProjectDefault => {
                         if self.project.model.vars.contains_key(&name)
-                            || self.project.model.groups.contains_key(&name)
+                            || self.project.model.selectors.contains_key(&name)
                         {
                             Err(format!("\"{name}\" already exists"))
                         } else {
@@ -3172,7 +3187,7 @@ impl App {
                             return true;
                         };
                         // Same namespace-collision guard as `ProjectDefault`
-                        // (a group of this name would otherwise sit
+                        // (a selector of this name would otherwise sit
                         // alongside a same-named plain variable), plus the
                         // one `validate_env` would reject outright if we
                         // wrote a flat env value anyway: a secret variable
@@ -3182,7 +3197,7 @@ impl App {
                         // the fact — keeps the refusal a clean toast
                         // instead of a write attempt against a doc that
                         // `validate_env` would then reject.
-                        if self.project.model.groups.contains_key(&name) {
+                        if self.project.model.selectors.contains_key(&name) {
                             self.toasts
                                 .push(format!("\"{name}\" already exists"), ToastKind::Error);
                             return true;
@@ -3209,9 +3224,9 @@ impl App {
                     }
                     ExtractDestination::Request => {
                         // No structural-file hazard here — `[variables]`
-                        // entries are a separate resolution layer (spec §2)
+                        // options are a separate resolution layer (spec §2)
                         // with no `validate_env`-style cross-checks — but an
-                        // existing entry of the same name would otherwise be
+                        // existing option of the same name would otherwise be
                         // silently clobbered, same as `ProjectDefault`'s
                         // "already exists" refusal.
                         if self.editor.variables.contains_key(&name) {
@@ -3247,7 +3262,7 @@ impl App {
                         // Finding 2, same ruling as demote/promote: the
                         // `Request` destination's write only exists so far
                         // in the dirty editor buffer (both the new
-                        // `[variables]` entry above and the field text
+                        // `[variables]` option above and the field text
                         // `replace_focused_field_with_token` just
                         // committed) — save it synchronously rather than
                         // leaving it save-on-demand, so "extract to
@@ -3292,11 +3307,11 @@ impl App {
     }
 
     /// Whether `cursor` (a char index into `text`) sits on a `{{name}}`
-    /// token whose name is a group field in the active env
-    /// (spec §6's cursor-on-token rule) — and if so, the `(name, group)`
+    /// token whose name is a selector field in the active env
+    /// (spec §6's cursor-on-token rule) — and if so, the `(name, selector)`
     /// pair `PickerMode::SelectOption` wants: `name` is the token's own
-    /// name and `group` is the owning group's. `None` when the cursor
-    /// isn't on a token, or the token's name isn't a group field (a
+    /// name and `selector` is the owning selector's. `None` when the cursor
+    /// isn't on a token, or the token's name isn't a selector field (a
     /// simple/secret/undeclared name — `ctrl+v` there falls back to
     /// ordinary `Insert` autocomplete).
     fn selection_picker_target(
@@ -3314,15 +3329,15 @@ impl App {
             .find(|t| byte_off >= t.start && byte_off <= t.end)?;
         use postui_core::varmodel::VarMeta;
         match ctx.resolved.meta.get(&token.name) {
-            Some(VarMeta::GroupMember { group, .. }) => Some((token.name, group.clone())),
+            Some(VarMeta::SelectorMember { selector, .. }) => Some((token.name, selector.clone())),
             Some(VarMeta::NeedsSelection) => {
-                let group = ctx
+                let selector = ctx
                     .model
-                    .groups
+                    .selectors
                     .iter()
                     .find(|(_, g)| g.fields.contains(&token.name))
                     .map(|(n, _)| n.clone())?;
-                Some((token.name, group))
+                Some((token.name, selector))
             }
             _ => None,
         }
@@ -3367,47 +3382,54 @@ impl App {
     }
 
     /// Builds and opens the `SelectOption` picker (spec §6's first
-    /// context) for `name`, a field of `group`: rows are `group`'s entries
+    /// context) for `name`, a field of `selector`: rows are `selector`'s options
     /// in the active environment, each previewed as its per-field values,
     /// with the current selection marked with a ✓.
-    fn open_select_picker(&mut self, name: String, group: String) -> bool {
+    fn open_select_picker(&mut self, name: String, selector: String) -> bool {
         use crate::components::modal::Modal;
-        use crate::components::var_picker::{SelectEntry, VarPickerState};
+        use crate::components::var_picker::{SelectOption, VarPickerState};
         use postui_core::varmodel;
 
         let env_key = self.project.active_env.clone().unwrap_or_default();
-        let selected_key = self.project.selections_for(&env_key).get(&group).cloned();
-        let entries: Vec<SelectEntry> = varmodel::group_entries(&self.project.env_data, &group)
-            .map(|entries| {
-                entries
-                    .iter()
-                    .map(|(key, decl)| {
-                        let mut parts: Vec<String> = Vec::new();
-                        if let Some(desc) = &decl.description {
-                            parts.push(desc.clone());
-                        }
-                        for (field, value) in &decl.values {
-                            parts.push(format!("{field} {value}"));
-                        }
-                        SelectEntry {
-                            key: key.clone(),
-                            description: decl.description.clone(),
-                            value: None,
-                            preview: Some(parts.join(" \u{b7} ")),
-                            selected: selected_key.as_deref() == Some(key.as_str()),
-                            values: Some(decl.values.clone()),
-                        }
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        if entries.is_empty() {
-            self.toasts
-                .push(format!("{group} has no entries here"), ToastKind::Warning);
+        let selected_key = self
+            .project
+            .selections_for(&env_key)
+            .get(&selector)
+            .cloned();
+        let options: Vec<SelectOption> =
+            varmodel::selector_options(&self.project.env_data, &selector)
+                .map(|options| {
+                    options
+                        .iter()
+                        .map(|(key, decl)| {
+                            let mut parts: Vec<String> = Vec::new();
+                            if let Some(desc) = &decl.description {
+                                parts.push(desc.clone());
+                            }
+                            for (field, value) in &decl.values {
+                                parts.push(format!("{field} {value}"));
+                            }
+                            SelectOption {
+                                key: key.clone(),
+                                description: decl.description.clone(),
+                                value: None,
+                                preview: Some(parts.join(" \u{b7} ")),
+                                selected: selected_key.as_deref() == Some(key.as_str()),
+                                values: Some(decl.values.clone()),
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+        if options.is_empty() {
+            self.toasts.push(
+                format!("{selector} has no options here"),
+                ToastKind::Warning,
+            );
             return true;
         }
         self.push_modal(Modal::VarPicker(VarPickerState::new_select(
-            entries, name, group, env_key,
+            options, name, selector, env_key,
         )));
         true
     }
@@ -3462,38 +3484,40 @@ impl App {
                 } else if let Some(fields) = self
                     .project
                     .model
-                    .groups
+                    .selectors
                     .get(owner)
                     .map(|g| g.fields.clone())
                 {
                     self.project.edit_variables(|doc| {
-                        postui_core::varedit::upsert_group(doc, owner, Some(value), &fields)
+                        postui_core::varedit::upsert_selector(doc, owner, Some(value), &fields)
                     })
                 } else {
-                    Err(format!("\"{owner}\" is not a declared variable or group"))
+                    Err(format!(
+                        "\"{owner}\" is not a declared variable or selector"
+                    ))
                 }
             }
             VarEditOp::SetSecretValue { env, name, value } => {
                 self.project.set_secret_for(env, name, value.clone())
             }
-            VarEditOp::SetEntryValue {
+            VarEditOp::SetOptionValue {
                 env,
-                group,
-                entry,
+                selector,
+                option,
                 field,
                 value,
             } => {
-                // An entry's values live in one environment's file; the
-                // cell being edited is one field of that entry.
+                // An option's values live in one environment's file; the
+                // cell being edited is one field of that option.
                 let mut values = indexmap::IndexMap::new();
                 values.insert(field.clone(), value.clone());
                 self.project.edit_env(env, |doc| {
-                    postui_core::varedit::upsert_entry(doc, group, entry, None, &values)
+                    postui_core::varedit::upsert_option(doc, selector, option, None, &values)
                 })
             }
             VarEditOp::SetRequestVar { name, value } => {
                 match self.editor.variables.get_mut(name) {
-                    Some(entry) => entry.value = value.clone(),
+                    Some(option) => option.value = value.clone(),
                     None => {
                         self.editor.variables.insert(
                             name.clone(),
@@ -3506,8 +3530,12 @@ impl App {
                 }
                 Ok(())
             }
-            VarEditOp::SelectEntry { env, group, entry } => {
-                self.project.set_selection_for(env, group, entry);
+            VarEditOp::SelectOption {
+                env,
+                selector,
+                option,
+            } => {
+                self.project.set_selection_for(env, selector, option);
                 Ok(())
             }
         }
@@ -3522,7 +3550,7 @@ impl App {
     /// their env files.
     fn open_toggle_secret_confirm(&mut self, name: String) {
         let Some(decl) = self.project.model.vars.get(&name) else {
-            // A group (or a name that is not declared at all) has no
+            // A selector (or a name that is not declared at all) has no
             // secret flag to flip: only a variable declaration carries one.
             self.toasts.push(
                 format!("\"{name}\" is not a variable; only a variable can be secret"),
@@ -3596,7 +3624,7 @@ impl App {
 
     /// `P` on a `Var` row (spec §4): refuses (with a message modal, no
     /// mutation) a secret name — its resolved value would otherwise land in
-    /// a git-tracked request file — or a group (request scope is
+    /// a git-tracked request file — or a selector (request scope is
     /// simple-only per spec); otherwise opens the demote confirm,
     /// its body naming any *other* requests already referencing it.
     fn open_demote_confirm(&mut self, name: String) {
@@ -3615,10 +3643,10 @@ impl App {
             });
             return;
         }
-        if self.project.model.groups.contains_key(&name) {
+        if self.project.model.selectors.contains_key(&name) {
             self.push_modal(Modal::Message {
                 title: "Can't demote".into(),
-                body: format!("\"{name}\" is a group; request scope is simple values only."),
+                body: format!("\"{name}\" is a selector; request scope is simple values only."),
             });
             return;
         }
@@ -3666,8 +3694,10 @@ impl App {
         let name_taken = |ctx: &ProjectContext, n: &str| {
             n == "options"
                 || n == "groups"
+                || n == "entries"
+                || n == "selectors"
                 || ctx.model.vars.contains_key(n)
-                || ctx.model.groups.contains_key(n)
+                || ctx.model.selectors.contains_key(n)
         };
 
         match op {
@@ -3682,9 +3712,9 @@ impl App {
                     varedit::upsert_var(doc, name, description.as_deref(), None)
                 })
             }
-            VarStructOp::NewGroup { name, fields } => {
+            VarStructOp::NewSelector { name, fields } => {
                 if !is_valid_var_name(name) {
-                    return Err(format!("\"{name}\" is not a valid group name"));
+                    return Err(format!("\"{name}\" is not a valid selector name"));
                 }
                 if name_taken(&self.project, name) {
                     return Err(format!("\"{name}\" already exists"));
@@ -3695,7 +3725,7 @@ impl App {
                     }
                 }
                 self.project
-                    .edit_variables(|doc| varedit::upsert_group(doc, name, None, fields))
+                    .edit_variables(|doc| varedit::upsert_selector(doc, name, None, fields))
             }
             VarStructOp::Rename { from, to } => {
                 if !is_valid_var_name(to) {
@@ -3704,7 +3734,7 @@ impl App {
                 if name_taken(&self.project, to) {
                     return Err(format!("\"{to}\" already exists"));
                 }
-                if self.project.model.groups.contains_key(from) {
+                if self.project.model.selectors.contains_key(from) {
                     return self.apply_rename_group(from, to);
                 }
                 self.project
@@ -3714,7 +3744,7 @@ impl App {
                 // degrade to the default post-rename (no error, no
                 // warning, just a wrong-looking resolved value). Cascade
                 // into every environment's flat pair and its
-                // `[entries.<from>]` table too; `rename_env_var` no-ops
+                // `[options.<from>]` table too; `rename_env_var` no-ops
                 // for an environment with nothing to rename.
                 for env in self.project.environments.clone() {
                     self.project
@@ -3723,9 +3753,9 @@ impl App {
                 Ok(())
             }
             VarStructOp::Delete { name } => {
-                let is_group = self.project.model.groups.contains_key(name);
+                let is_group = self.project.model.selectors.contains_key(name);
                 if !is_group {
-                    // Mirror `delete_var`'s own "still a group member"
+                    // Mirror `delete_var`'s own "still a selector field"
                     // conflict up front, using the already-loaded model —
                     // before any environment file is touched, so a refusal
                     // here leaves everything unchanged (`apply_var_struct`'s
@@ -3734,16 +3764,16 @@ impl App {
                     if let Some(gname) = self
                         .project
                         .model
-                        .groups
+                        .selectors
                         .iter()
                         .find_map(|(gname, g)| g.fields.contains(name).then(|| gname.clone()))
                     {
                         return Err(format!(
-                            "variable \"{name}\" is a field of group \"{gname}\"; remove it from the group first"
+                            "variable \"{name}\" is a field of selector \"{gname}\"; remove it from the selector first"
                         ));
                     }
                 }
-                // Finding 1: `delete_var`/`delete_group` only ever touch
+                // Finding 1: `delete_var`/`delete_selector` only ever touch
                 // `variables.toml`. An env's `[options.<name>]` table for
                 // the deleted name would otherwise strand that env file —
                 // refused by `validate_env` in the ACTIVE env (a confusing
@@ -3761,10 +3791,10 @@ impl App {
                 for env in self.project.environments.clone() {
                     if is_group {
                         // The declaration's environment-side half: the whole
-                        // `[entries.<name>]` subtree, plus the recorded
-                        // selection that named one of those entries.
+                        // `[options.<name>]` subtree, plus the recorded
+                        // selection that named one of those options.
                         self.project
-                            .edit_env(&env, |doc| varedit::delete_group_entries(doc, name))?;
+                            .edit_env(&env, |doc| varedit::delete_selector_options(doc, name))?;
                         self.project.clear_selection_for(&env, name);
                     } else {
                         self.project
@@ -3773,80 +3803,84 @@ impl App {
                 }
                 if is_group {
                     self.project
-                        .edit_variables(|doc| varedit::delete_group(doc, name))
+                        .edit_variables(|doc| varedit::delete_selector(doc, name))
                 } else {
                     self.project
                         .edit_variables(|doc| varedit::delete_var(doc, name))
                 }
             }
             VarStructOp::ToggleSecret { name } => self.apply_toggle_secret(name),
-            VarStructOp::SetFields { group, fields } => {
+            VarStructOp::SetFields { selector, fields } => {
                 for f in fields {
                     if !is_valid_var_name(f) {
                         return Err(format!("\"{f}\" is not a valid field name"));
                     }
                 }
                 self.project
-                    .edit_variables(|doc| varedit::upsert_group(doc, group, None, fields))
+                    .edit_variables(|doc| varedit::upsert_selector(doc, selector, None, fields))
             }
             VarStructOp::Promote { name, target } => self.apply_promote(name, *target),
             VarStructOp::Demote { name } => self.apply_demote(name),
-            VarStructOp::NewEntry {
+            VarStructOp::NewOption {
                 env,
-                group,
+                selector,
                 name,
                 description,
                 values,
             } => self.project.edit_env(env, |doc| {
-                varedit::upsert_entry(doc, group, name, description.as_deref(), values)
+                varedit::upsert_option(doc, selector, name, description.as_deref(), values)
             }),
-            VarStructOp::RenameEntry {
+            VarStructOp::RenameOption {
                 env,
-                group,
+                selector,
                 from,
                 to,
             } => {
                 self.project
-                    .edit_env(env, |doc| varedit::rename_entry(doc, group, from, to))?;
-                // A selection names an entry by key: carry it across the
+                    .edit_env(env, |doc| varedit::rename_option(doc, selector, from, to))?;
+                // A selection names an option by key: carry it across the
                 // rename rather than leaving a dangling one behind.
                 if self
                     .project
                     .selections_for(env)
-                    .get(group)
+                    .get(selector)
                     .map(String::as_str)
                     == Some(from)
                 {
-                    self.project.set_selection_for(env, group, to);
+                    self.project.set_selection_for(env, selector, to);
                 }
                 Ok(())
             }
-            VarStructOp::DeleteEntry { env, group, name } => {
-                self.apply_delete_entry(env, group, name)
-            }
-            VarStructOp::DuplicateEntry { env, group, name } => {
-                self.apply_duplicate_entry(env, group, name)
-            }
+            VarStructOp::DeleteOption {
+                env,
+                selector,
+                name,
+            } => self.apply_delete_entry(env, selector, name),
+            VarStructOp::DuplicateOption {
+                env,
+                selector,
+                name,
+            } => self.apply_duplicate_entry(env, selector, name),
         }
     }
 
-    /// [`VarStructOp::Rename`] for a group. Both halves of the declaration
-    /// have to move at once: an environment's `[entries.<old>]` table names
-    /// a group the renamed model no longer declares, and the new name has
-    /// no entries yet — so `validate_env` refuses whichever half lands
+    /// [`VarStructOp::Rename`] for a selector. Both halves of the declaration
+    /// have to move at once: an environment's `[options.<old>]` table names
+    /// a selector the renamed model no longer declares, and the new name has
+    /// no options yet — so `validate_env` refuses whichever half lands
     /// first, in either order. `edit_variables_and_envs` builds and
     /// validates them together, then writes.
     ///
-    /// Selections name a group by key, so each environment's recorded
+    /// Selections name a selector by key, so each environment's recorded
     /// selection is carried across the rename (the same repair
-    /// [`VarStructOp::RenameEntry`] makes for an entry key) — otherwise a
-    /// renamed group would silently lose its "pick user 2" state
+    /// [`VarStructOp::RenameOption`] makes for an option key) — otherwise a
+    /// renamed selector would silently lose its "pick user 2" state
     /// everywhere.
     fn apply_rename_group(&mut self, from: &str, to: &str) -> Result<(), String> {
         use postui_core::varedit;
         self.project.edit_variables_and_envs(
-            |doc| varedit::rename_group(doc, from, to),
-            |doc| varedit::rename_group_entries(doc, from, to),
+            |doc| varedit::rename_selector(doc, from, to),
+            |doc| varedit::rename_selector_options(doc, from, to),
         )?;
         for env in self.project.environments.clone() {
             if let Some(key) = self.project.selections_for(&env).get(from).cloned() {
@@ -3861,30 +3895,30 @@ impl App {
     /// into renames, additions and removals, and applies all three in one
     /// transaction across `variables.toml` and every environment.
     ///
-    /// **Position is the identity.** Slot `i` *is* the group's current
+    /// **Position is the identity.** Slot `i` *is* the selector's current
     /// `i`th field: changed text renames it, cleared text removes it, and a
     /// slot past the current list adds a field. Rows are therefore never
     /// reordered — swapping two names reads as two renames (and is refused
     /// as a collision), which is the price of being able to rename a field
     /// at all through a plain list of text boxes.
     ///
-    /// Every one of the three needs both files at once: an entry must
-    /// supply exactly its group's declared fields (`validate_env`), so a
+    /// Every one of the three needs both files at once: an option must
+    /// supply exactly its selector's declared fields (`validate_env`), so a
     /// declaration whose new field list has landed alone is invalid until
-    /// the entries carry the same change.
-    fn apply_group_fields(&mut self, group: String, slots: Vec<String>, confirmed: bool) {
+    /// the options carry the same change.
+    fn apply_group_fields(&mut self, selector: String, slots: Vec<String>, confirmed: bool) {
         use postui_core::varedit;
         use postui_core::vars::is_valid_var_name;
 
         let Some(current) = self
             .project
             .model
-            .groups
-            .get(&group)
+            .selectors
+            .get(&selector)
             .map(|g| g.fields.clone())
         else {
             self.toasts.push(
-                format!("\"{group}\" is not a declared group"),
+                format!("\"{selector}\" is not a declared selector"),
                 ToastKind::Error,
             );
             return;
@@ -3910,7 +3944,7 @@ impl App {
                 }
             }
         }
-        // A prompt with fewer slots than the group has fields drops the
+        // A prompt with fewer slots than the selector has fields drops the
         // trailing ones (today only reachable if the field list grew
         // between opening and confirming the modal).
         for old in current.iter().skip(slots.len()) {
@@ -3928,10 +3962,10 @@ impl App {
                 );
                 return;
             }
-            // A field belongs to exactly one group, and shares the
-            // declaration namespace with variables and groups.
-            let clash = self.project.model.groups.iter().any(|(g, decl)| {
-                g == name || (g != &group && decl.fields.iter().any(|f| f == name))
+            // A field belongs to exactly one selector, and shares the
+            // declaration namespace with variables and selectors.
+            let clash = self.project.model.selectors.iter().any(|(g, decl)| {
+                g == name || (g != &selector && decl.fields.iter().any(|f| f == name))
             });
             if clash {
                 self.toasts
@@ -3955,17 +3989,17 @@ impl App {
                 .clone()
                 .into_iter()
                 .filter(|env| {
-                    postui_core::varmodel::group_entries(&self.env_data_for(env), &group)
+                    postui_core::varmodel::selector_options(&self.env_data_for(env), &selector)
                         .is_some_and(|e| !e.is_empty())
                 })
                 .collect();
             let where_ = if envs.is_empty() {
-                "no environment has entries for it yet".to_string()
+                "no environment has options for it yet".to_string()
             } else {
-                format!("every entry in {}", envs.join(", "))
+                format!("every option in {}", envs.join(", "))
             };
             self.push_modal(Modal::Confirm {
-                title: format!("Remove {} from {group}", removals.join(", ")),
+                title: format!("Remove {} from {selector}", removals.join(", ")),
                 body: format!(
                     "Values in this column will be deleted from {where_}. This cannot be undone."
                 ),
@@ -3975,7 +4009,7 @@ impl App {
                         'y',
                         "Remove".into(),
                         vec![Action::ApplyGroupFields {
-                            group: group.clone(),
+                            selector: selector.clone(),
                             slots,
                             confirmed: true,
                         }],
@@ -3986,9 +4020,9 @@ impl App {
         }
 
         // A renamed field that has its own `[name]` declaration renames
-        // through `rename_var` (which also rewrites the group's `fields`
+        // through `rename_var` (which also rewrites the selector's `fields`
         // array); one that doesn't exist as a declaration only lives in
-        // that array, which the closing `upsert_group` rewrites wholesale
+        // that array, which the closing `upsert_selector` rewrites wholesale
         // either way.
         let declared: Vec<bool> = renames
             .iter()
@@ -4002,18 +4036,18 @@ impl App {
                         out = varedit::rename_var(&out, from, to)?;
                     }
                 }
-                varedit::upsert_group(&out, &group, None, &fields)
+                varedit::upsert_selector(&out, &selector, None, &fields)
             },
             |doc| {
                 let mut out = doc.to_string();
                 for (from, to) in &renames {
-                    out = varedit::rename_entry_field(&out, &group, from, to)?;
+                    out = varedit::rename_option_field(&out, &selector, from, to)?;
                 }
                 for field in &removals {
-                    out = varedit::strip_entry_field(&out, &group, field)?;
+                    out = varedit::strip_option_field(&out, &selector, field)?;
                 }
                 for field in &additions {
-                    out = varedit::ensure_entry_field(&out, &group, field)?;
+                    out = varedit::ensure_option_field(&out, &selector, field)?;
                 }
                 Ok(out)
             },
@@ -4024,22 +4058,22 @@ impl App {
         }
     }
 
-    /// Commits whatever cell the group grid's [`EntryGridState::editing`]
+    /// Commits whatever cell the selector grid's [`OptionGridState::editing`]
     /// holds (click-away, click-another-cell, or `Enter`) — Task 8's rules,
     /// on the three kinds of cell the grid has: the ghost row's name cell
-    /// creates an entry (with an empty value for every field, so the new
+    /// creates an option (with an empty value for every field, so the new
     /// record validates) and continues into its first field cell, a real
-    /// entry's name cell renames it, and a field cell writes that one
+    /// option's name cell renames it, and a field cell writes that one
     /// value. Text that didn't change writes nothing.
     ///
     /// A write failure toasts and puts the edit back exactly as it was, so
     /// the typed text survives a retry (spec §5) — including the reserved
-    /// entry name `description`, which core refuses.
+    /// option name `description`, which core refuses.
     pub(crate) fn commit_grid_edit(&mut self) {
         let Some(edit) = self.varmanager.grid.editing.take() else {
             return;
         };
-        let VmDetail::Group(group) = self.varmanager.detail.clone() else {
+        let VmDetail::Group(selector) = self.varmanager.detail.clone() else {
             return;
         };
         let Some(env) = self.project.active_env.clone() else {
@@ -4049,18 +4083,18 @@ impl App {
         if value == edit.original {
             return;
         }
-        let entries: Vec<String> =
-            postui_core::varmodel::group_entries(&self.project.env_data, &group)
+        let options: Vec<String> =
+            postui_core::varmodel::selector_options(&self.project.env_data, &selector)
                 .map(|e| e.keys().cloned().collect())
                 .unwrap_or_default();
         let fields = self
             .project
             .model
-            .groups
-            .get(&group)
+            .selectors
+            .get(&selector)
             .map(|g| g.fields.clone())
             .unwrap_or_default();
-        let ghost = edit.row >= entries.len();
+        let ghost = edit.row >= options.len();
 
         // Same as `commit_var_form`: called directly from `handle_key`,
         // never through `self.apply`, so it needs its own capture.
@@ -4076,32 +4110,32 @@ impl App {
                 .iter()
                 .map(|f| (f.clone(), String::new()))
                 .collect::<indexmap::IndexMap<_, _>>();
-            self.apply_var_struct(&VarStructOp::NewEntry {
+            self.apply_var_struct(&VarStructOp::NewOption {
                 env,
-                group,
+                selector,
                 name: value.clone(),
                 description: None,
                 values,
             })
         } else if edit.col == 0 {
-            // Clearing a name is not a delete: leave the entry as it was.
+            // Clearing a name is not a delete: leave the option as it was.
             if value.is_empty() {
                 return;
             }
-            self.apply_var_struct(&VarStructOp::RenameEntry {
+            self.apply_var_struct(&VarStructOp::RenameOption {
                 env,
-                group,
-                from: entries[edit.row].clone(),
+                selector,
+                from: options[edit.row].clone(),
                 to: value,
             })
         } else {
             let Some(field) = fields.get(edit.col - 1).cloned() else {
                 return;
             };
-            self.apply_var_edit(&VarEditOp::SetEntryValue {
+            self.apply_var_edit(&VarEditOp::SetOptionValue {
                 env,
-                group,
-                entry: entries[edit.row].clone(),
+                selector,
+                option: options[edit.row].clone(),
                 field,
                 value,
             })
@@ -4111,7 +4145,7 @@ impl App {
                 self.varmanager.sync(&self.project);
                 self.record_var_file_step(before);
                 // The ghost flow keeps going left-to-right: the row that
-                // was the ghost is now a real entry (appended, so it keeps
+                // was the ghost is now a real option (appended, so it keeps
                 // its index) with its first field cell live.
                 if ghost && !fields.is_empty() {
                     self.varmanager.start_cell_edit(&self.project, edit.row, 1);
@@ -4124,28 +4158,33 @@ impl App {
         }
     }
 
-    /// [`VarStructOp::DuplicateEntry`]: copies one entry's description and
+    /// [`VarStructOp::DuplicateOption`]: copies one option's description and
     /// values to a fresh name in the same environment — `"<name> copy"`,
     /// then `"<name> copy-2"`, … while that is taken. Nothing else moves:
     /// the copy is unselected, and no other environment is touched.
-    fn apply_duplicate_entry(&mut self, env: &str, group: &str, name: &str) -> Result<(), String> {
+    fn apply_duplicate_entry(
+        &mut self,
+        env: &str,
+        selector: &str,
+        name: &str,
+    ) -> Result<(), String> {
         let env_data = self.env_data_for(env);
-        let entries = postui_core::varmodel::group_entries(&env_data, group)
-            .ok_or_else(|| format!("group \"{group}\" has no entries in {env}"))?;
-        let source = entries
+        let options = postui_core::varmodel::selector_options(&env_data, selector)
+            .ok_or_else(|| format!("selector \"{selector}\" has no options in {env}"))?;
+        let source = options
             .get(name)
-            .ok_or_else(|| format!("no entry \"{name}\" in {group}"))?
+            .ok_or_else(|| format!("no option \"{name}\" in {selector}"))?
             .clone();
         let mut copy = format!("{name} copy");
         let mut n = 2;
-        while entries.contains_key(&copy) {
+        while options.contains_key(&copy) {
             copy = format!("{name} copy-{n}");
             n += 1;
         }
         self.project.edit_env(env, |doc| {
-            postui_core::varedit::upsert_entry(
+            postui_core::varedit::upsert_option(
                 doc,
-                group,
+                selector,
                 &copy,
                 source.description.as_deref(),
                 &source.values,
@@ -4155,22 +4194,22 @@ impl App {
 
     /// [`Action::DuplicateVar`]: copies a declaration under `<name>-copy`
     /// (then `-copy-2`, …). A variable keeps its description, its default
-    /// and its secret flag; a group copies its field list only — entries
+    /// and its secret flag; a selector copies its field list only — options
     /// live in an environment, not in the declaration, and are left alone.
     fn apply_duplicate_var(&mut self, name: &str) -> Result<(), String> {
         use postui_core::varedit;
         let mut copy = format!("{name}-copy");
         let mut n = 2;
         while self.project.model.vars.contains_key(&copy)
-            || self.project.model.groups.contains_key(&copy)
+            || self.project.model.selectors.contains_key(&copy)
         {
             copy = format!("{name}-copy-{n}");
             n += 1;
         }
-        if let Some(group) = self.project.model.groups.get(name) {
-            let (fields, description) = (group.fields.clone(), group.description.clone());
+        if let Some(selector) = self.project.model.selectors.get(name) {
+            let (fields, description) = (selector.fields.clone(), selector.description.clone());
             return self.project.edit_variables(|doc| {
-                varedit::upsert_group(doc, &copy, description.as_deref(), &fields)
+                varedit::upsert_selector(doc, &copy, description.as_deref(), &fields)
             });
         }
         let decl = self
@@ -4203,30 +4242,30 @@ impl App {
         }
     }
 
-    /// [`VarStructOp::DeleteEntry`]: deletes one entry of `group` from
-    /// `env` (entries belong to one environment each — spec §3.1). An entry
+    /// [`VarStructOp::DeleteOption`]: deletes one option of `selector` from
+    /// `env` (options belong to one environment each — spec §3.1). An option
     /// that is already gone is a quiet no-op success (a stale row — nothing
     /// left to do). Also clears any per-env selection naming the deleted
-    /// entry, in every environment, so local state doesn't accumulate dead
+    /// option, in every environment, so local state doesn't accumulate dead
     /// selections (`resolve_env` already degrades a stale selection
     /// harmlessly, but there's no reason to leave it).
-    fn apply_delete_entry(&mut self, env: &str, group: &str, name: &str) -> Result<(), String> {
-        let present = postui_core::varmodel::group_entries(&self.env_data_for(env), group)
-            .is_some_and(|entries| entries.contains_key(name));
+    fn apply_delete_entry(&mut self, env: &str, selector: &str, name: &str) -> Result<(), String> {
+        let present = postui_core::varmodel::selector_options(&self.env_data_for(env), selector)
+            .is_some_and(|options| options.contains_key(name));
         if present {
             self.project.edit_env(env, |doc| {
-                postui_core::varedit::delete_entry(doc, group, name)
+                postui_core::varedit::delete_option(doc, selector, name)
             })?;
         }
         for other in self.project.environments.clone() {
             if self
                 .project
                 .selections_for(&other)
-                .get(group)
+                .get(selector)
                 .map(String::as_str)
                 == Some(name)
             {
-                self.project.clear_selection_for(&other, group);
+                self.project.clear_selection_for(&other, selector);
             }
         }
         Ok(())
@@ -4277,7 +4316,7 @@ impl App {
     }
 
     /// [`VarStructOp::Promote`] (spec §4): writes the request's own
-    /// `[variables]` entry into the project (default or the active
+    /// `[variables]` option into the project (default or the active
     /// environment), then removes it from the request now that the
     /// project owns it.
     fn apply_promote(
@@ -4285,7 +4324,7 @@ impl App {
         name: &str,
         target: postui_core::varedit::PromoteTarget,
     ) -> Result<(), String> {
-        let entry = self
+        let option = self
             .editor
             .variables
             .get(name)
@@ -4310,7 +4349,7 @@ impl App {
             &vars_text,
             env_text.as_deref(),
             name,
-            &entry.value,
+            &option.value,
             target,
         )
         .map_err(|e| e.to_string())?;
@@ -4321,7 +4360,7 @@ impl App {
         self.editor.variables.shift_remove(name);
         // Finding 2: the project side of the promote is durable the moment
         // `edit_variables`/`edit_env` above return `Ok` (both write
-        // atomically). The compensating half — removing the entry from the
+        // atomically). The compensating half — removing the option from the
         // request's own `[variables]` — only exists in the dirty editor
         // buffer until now; save it synchronously so "promote, then quit"
         // can't leave the old value stranded in both places. The project
@@ -4343,7 +4382,7 @@ impl App {
     /// declaration, and strips any flat value left behind in every
     /// environment (best-effort — an environment with nothing to strip is
     /// not an error). The caller (`open_demote_confirm`) has already
-    /// refused a secret name or a group before this ever runs.
+    /// refused a secret name or a selector before this ever runs.
     fn apply_demote(&mut self, name: &str) -> Result<(), String> {
         let value = self
             .project
@@ -4357,7 +4396,7 @@ impl App {
         }
         // The fallible write goes first: `apply_var_struct`'s documented
         // "Err leaves everything unchanged" contract means the editor must
-        // not gain a demoted entry unless the project actually lost the
+        // not gain a demoted option unless the project actually lost the
         // declaration.
         self.project
             .edit_variables(|doc| postui_core::varedit::delete_var(doc, name))?;
@@ -4439,12 +4478,12 @@ impl App {
     }
 
     /// Reads `after_paths`' current contents, drops any pair whose content
-    /// matches the corresponding `before` entry (position-paired — callers
+    /// matches the corresponding `before` option (position-paired — callers
     /// pass both in the same path order), and — when anything real
     /// remains — records a `FileStates` undo step for the rest.
     /// `record_no_coalesce`: a disk write is never a burst-coalescing
     /// candidate and must clear the redo stack (spec: new steps invalidate
-    /// stale redo entries).
+    /// stale redo options).
     fn record_file_step(
         &mut self,
         before: Vec<(PathBuf, Option<String>)>,
@@ -4483,7 +4522,7 @@ impl App {
     /// before the op ran. `var_file_paths` is re-listed from disk, so an op
     /// that creates or deletes an environment file changes the path set
     /// between `before` and now — `record_file_step` position-pairs
-    /// before/after, so this extends `before` with a `None` entry for any
+    /// before/after, so this extends `before` with a `None` option for any
     /// current path it doesn't already cover (i.e. the union of the
     /// before- and after-side path sets) before handing both to
     /// `record_file_step`.
@@ -4565,7 +4604,7 @@ impl App {
         let row = match hit {
             Hit::SidebarRow(i) | Hit::SidebarFolderArrow(i) => self.sidebar.rows.get(*i)?,
             Hit::VmLeftRow(i) => return self.varmanager.context_menu(*i),
-            // An entry row (either half of it — the radio and the cells all
+            // An option row (either half of it — the radio and the cells all
             // belong to the same record).
             Hit::VmEntryRadio(row) | Hit::VmEntryCell { row, .. } => {
                 return self.varmanager.entry_context_menu(&self.project, *row);
@@ -4994,7 +5033,7 @@ impl App {
     /// and retargets it to 1 over `ui_settings.anim_ms.focus` (90ms by
     /// default, config-tunable). Called wherever keyboard focus actually
     /// moves onto a control the address bar animates (today, just
-    /// `Action::FocusUrl` — the single entry point both the URL keyboard
+    /// `Action::FocusUrl` — the single option point both the URL keyboard
     /// shortcut and clicking `Hit::UrlBar` go through), so the newly
     /// focused control's lifted fill eases in rather than jumping.
     pub(crate) fn begin_focus_fade(&mut self) {
@@ -5194,30 +5233,30 @@ impl App {
         }
     }
 
-    /// A duration-comparison group's drive step: every `(key, move_dur)`
-    /// member retargets at the exact same instant, each easing over its
+    /// A duration-comparison selector's drive step: every `(key, move_dur)`
+    /// field retargets at the exact same instant, each easing over its
     /// own `move_dur` — so what's compared is purely "does this duration
     /// feel right", with every other variable (start time, target,
     /// underlying geometry) held fixed. Phase changes (move → dwell →
-    /// move …) are decided off a single "clock" member — the one with the
-    /// longest `move_dur` in the group — rather than each member's own
+    /// move …) are decided off a single "clock" field — the one with the
+    /// longest `move_dur` in the selector — rather than each field's own
     /// timer: by the time the clock's own move finishes, every faster
-    /// member has already arrived and been idling at its target, so
-    /// forcing the whole group into a dwell at that instant doesn't cut
-    /// any of them off mid-motion. `dwell_dur` is shared by every member.
+    /// field has already arrived and been idling at its target, so
+    /// forcing the whole selector into a dwell at that instant doesn't cut
+    /// any of them off mid-motion. `dwell_dur` is shared by every field.
     fn drive_testbed_group(
         &mut self,
-        members: &[(AnimKey, Duration)],
+        fields: &[(AnimKey, Duration)],
         dwell_dur: Duration,
         now: Instant,
     ) {
-        let &(clock_key, _) = members
+        let &(clock_key, _) = fields
             .iter()
             .max_by_key(|(_, dur)| *dur)
-            .expect("a duration-comparison group always has at least one member");
+            .expect("a duration-comparison selector always has at least one field");
 
         if self.anims.value(clock_key, now).is_none() {
-            for &(key, dur) in members {
+            for &(key, dur) in fields {
                 self.anims.snap(key, 0.0);
                 self.anims.retarget(key, 1.0, dur, now);
             }
@@ -5229,11 +5268,11 @@ impl App {
         let cur = self.anims.value_or(clock_key, now, 0.0);
         if self.anims.is_static(clock_key) {
             let target = if cur <= 0.5 { 1.0 } else { 0.0 };
-            for &(key, dur) in members {
+            for &(key, dur) in fields {
                 self.anims.retarget(key, target, dur, now);
             }
         } else {
-            for &(key, _) in members {
+            for &(key, _) in fields {
                 let v = self.anims.value_or(key, now, 0.0);
                 self.anims.retarget(key, v, dwell_dur, now);
             }
@@ -5452,12 +5491,12 @@ impl App {
         self.update(Action::Render)
     }
 
-    /// Keys while a group-grid cell owns the keyboard — the same contract
+    /// Keys while a selector-grid cell owns the keyboard — the same contract
     /// as [`Self::handle_var_form_key`]: `Esc` reverts (nothing is written,
     /// and the cell's resting text is read live from the project either
     /// way), `Enter` commits, anything else goes to the cell's own
     /// `LineInput`. `Tab` commits and steps one column right on the same
-    /// row, so a freshly created entry can be filled in without reaching
+    /// row, so a freshly created option can be filled in without reaching
     /// for the mouse; a commit that failed keeps its edit and stays put.
     fn handle_grid_key(&mut self, ev: KeyEvent) -> bool {
         match ev.code {
@@ -5480,13 +5519,13 @@ impl App {
     /// one step away in reading order (Task 8's table parity) — off the end
     /// of a row wraps to the next row's first column, and off the front of
     /// one wraps back to the previous row's last. The ghost row is the far
-    /// end in both directions: forward stops there (it becomes a real entry
+    /// end in both directions: forward stops there (it becomes a real option
     /// only once its name commits), and there is nothing before row 0's
     /// name cell.
     ///
     /// A commit that failed keeps its own edit (spec §5) and this leaves it
     /// exactly where it is; a ghost-row commit that already walked the edit
-    /// on into the new entry's first field is likewise left alone.
+    /// on into the new option's first field is likewise left alone.
     fn step_grid_edit(&mut self, dir: i32) {
         let at = self
             .varmanager
@@ -5499,16 +5538,16 @@ impl App {
         if self.varmanager.grid.editing.is_some() {
             return;
         }
-        let VmDetail::Group(group) = self.varmanager.detail.clone() else {
+        let VmDetail::Group(selector) = self.varmanager.detail.clone() else {
             return;
         };
         let ncols = 1 + self
             .project
             .model
-            .groups
-            .get(&group)
+            .selectors
+            .get(&selector)
             .map_or(0, |g| g.fields.len());
-        let last_row = postui_core::varmodel::group_entries(&self.project.env_data, &group)
+        let last_row = postui_core::varmodel::selector_options(&self.project.env_data, &selector)
             .map_or(0, indexmap::IndexMap::len);
         let flat = (row * ncols + col) as i32 + dir;
         let (next_row, next_col) = match flat {
@@ -5936,7 +5975,7 @@ impl App {
                     self.varmanager.sync(&self.project);
                 }
                 // If the open request's file went absent in this step, it
-                // either moved (a rename — another entry in the same
+                // either moved (a rename — another option in the same
                 // `target` gained content) or was genuinely deleted. A
                 // move retitles in place, following the forward rename's
                 // own behavior, rather than closing a still-open editor;

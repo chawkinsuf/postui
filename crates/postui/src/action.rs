@@ -190,7 +190,7 @@ pub enum Action {
     /// change to that state and on quit.
     PersistLocalState,
     /// Open the project chooser: every registered project plus a final
-    /// "open by path…" entry.
+    /// "open by path…" option.
     OpenProjectChooser,
     /// Open the theme picker (chooser modal listing the theme registry).
     OpenThemeChooser,
@@ -228,8 +228,8 @@ pub enum Action {
         name: String,
         path: String,
     },
-    /// Open the environment chooser: every `project.environments` entry
-    /// plus a final "no environment" entry and a "new environment…" entry.
+    /// Open the environment chooser: every `project.environments` option
+    /// plus a final "no environment" option and a "new environment…" option.
     /// With no environments the chooser still opens (just those two rows) —
     /// the create row is the escape hatch from the empty state.
     OpenEnvChooser,
@@ -260,7 +260,7 @@ pub enum Action {
     ToggleHeaderReveal,
     /// Open the variable picker: reload project files, then (barring the
     /// selection-context redirect — see `open_select_picker`) list every
-    /// defined name — project variables, group members, and the open
+    /// defined name — project variables, selector fields, and the open
     /// request's own `[variables]` — scope-badged, with a "new variable…"
     /// row at the end (Task 15, spec §6). `completing` is true when
     /// triggered by typing `{{` in a text field (Enter inserts just the
@@ -347,9 +347,9 @@ pub enum Action {
     // -- Variable Manager structural actions (spec §3.4/§5 action list) --
     /// `n` / the `+ Variable` button: open the new-variable name prompt.
     PromptNewVar,
-    /// `g` / the `+ Group` button: open the new-group prompt (name + a
+    /// `g` / the `+ Group` button: open the new-selector prompt (name + a
     /// comma-separated field list).
-    PromptNewGroup,
+    PromptNewSelector,
     /// `e`/`F2` on a variable row, or its context menu's "Rename…": open
     /// the rename prompt, prefilled.
     PromptRenameVar {
@@ -357,38 +357,38 @@ pub enum Action {
     },
     /// The left list's context-menu "Duplicate": copies `name`'s
     /// declaration under `<name>-copy` (then `-copy-2`, …). A variable
-    /// keeps its description and default; a group copies its field list
-    /// only — entries belong to an environment, not to the declaration, and
+    /// keeps its description and default; a selector copies its field list
+    /// only — options belong to an environment, not to the declaration, and
     /// are not duplicated with it.
     DuplicateVar {
         name: String,
     },
-    /// Open the group's field-list prompt, prefilled.
-    PromptEditGroupMembers {
-        group: String,
+    /// Open the selector's field-list prompt, prefilled.
+    PromptEditSelectorFields {
+        selector: String,
     },
-    /// Open the single-name add-field prompt for a group.
-    PromptAddGroupMember {
-        group: String,
+    /// Open the single-name add-field prompt for a selector.
+    PromptAddSelectorField {
+        selector: String,
     },
-    /// Confirmed add-member prompt: append `member` to `group`'s list.
-    /// Toasts (and changes nothing) when it's already a member.
-    AddGroupMember {
-        group: String,
-        member: String,
+    /// Confirmed add-field prompt: append `field` to `selector`'s list.
+    /// Toasts (and changes nothing) when it's already a field.
+    AddSelectorField {
+        selector: String,
+        field: String,
     },
-    /// `d`/`Delete` on a `GroupMember` row: open the remove confirm.
-    ConfirmRemoveGroupMember {
-        group: String,
-        member: String,
+    /// `d`/`Delete` on a `SelectorField` row: open the remove confirm.
+    ConfirmRemoveSelectorField {
+        selector: String,
+        field: String,
     },
-    /// Confirmed member removal: strip `member`'s per-option values from
-    /// every environment file first, then drop it from the group's list
+    /// Confirmed field removal: strip `field`'s per-option values from
+    /// every environment file first, then drop it from the selector's list
     /// and shared options in variables.toml (that order keeps each write
     /// valid against the model it's checked with).
-    RemoveGroupMember {
-        group: String,
-        member: String,
+    RemoveSelectorField {
+        selector: String,
+        field: String,
     },
     /// `d`/`Delete` on a left-list row: open the delete confirm, its body
     /// listing `varedit::scan_usage`'s referencing requests.
@@ -407,42 +407,42 @@ pub enum Action {
         name: String,
     },
     /// Open the demote confirm (spec §4), or a
-    /// message modal refusing it (a secret or a group).
+    /// message modal refusing it (a secret or a selector).
     ConfirmDemoteVar {
         name: String,
     },
     /// A confirmed structural mutation; `App::apply_var_struct` applies it.
     VarStruct(VarStructOp),
 
-    // -- Task 16: the group entries grid (spec §3.4) --
-    /// The group pane's `[Edit fields]` button / `m`: opens the field-list
+    // -- Task 16: the selector options grid (spec §3.4) --
+    /// The selector pane's `[Edit fields]` button / `m`: opens the field-list
     /// editor — a `Modal::MultiPrompt` with one text slot per current
     /// field, in order, plus a trailing empty "add field" slot.
     PromptGroupFields {
-        group: String,
+        selector: String,
     },
     /// The field-list editor's confirmed slots, positionally: slot `i` is
-    /// `group`'s current `i`th field (renamed when its text changed,
+    /// `selector`'s current `i`th field (renamed when its text changed,
     /// removed when it was cleared), and any slot past the current list is
     /// a new field. `confirmed` is false on the way in; a removal bounces
     /// through a confirm modal that re-dispatches this with it set, since
-    /// dropping a field deletes that column's values from every entry.
+    /// dropping a field deletes that column's values from every option.
     ApplyGroupFields {
-        group: String,
+        selector: String,
         slots: Vec<String>,
         confirmed: bool,
     },
-    /// The entry-row context menu's "Rename…": opens a prompt seeded with
-    /// the entry's current name.
+    /// The option-row context menu's "Rename…": opens a prompt seeded with
+    /// the option's current name.
     PromptRenameEntry {
         env: String,
-        group: String,
+        selector: String,
         from: String,
     },
-    /// The entry-row context menu's "Delete…": opens the delete confirm.
+    /// The option-row context menu's "Delete…": opens the delete confirm.
     ConfirmDeleteEntry {
         env: String,
-        group: String,
+        selector: String,
         name: String,
     },
 
@@ -457,7 +457,7 @@ pub enum Action {
     /// `e` on a highlighted `SelectOption` row: opens the value(s)/
     /// description edit prompt, prefilled from the option's current
     /// content — `values` is `{"value": ...}` for a plain variable option,
-    /// or one entry per member for a group option.
+    /// or one option per field for a selector option.
     OpenEditOptionPrompt {
         owner: String,
         key: String,

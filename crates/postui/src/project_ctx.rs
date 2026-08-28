@@ -50,8 +50,8 @@ pub struct ProjectContext {
 }
 
 /// Loads an environment's data, validating it against `model` (spec §3.2:
-/// a flat value for a secret, a group, or a group field, or an
-/// `[entries.*]` table for an undeclared group, is an error).
+/// a flat value for a secret, a selector, or a selector field, or an
+/// `[options.*]` table for an undeclared selector, is an error).
 fn load_and_validate_env(
     root: &Path,
     name: &str,
@@ -86,13 +86,13 @@ pub(crate) fn atomic_write(path: &Path, contents: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Drops any entry in `selections` naming an entry that no longer exists
-/// among `env`'s entries for that group (spec §1.3: "a selection naming a
+/// Drops any option in `selections` naming an option that no longer exists
+/// among `env`'s options for that selector (spec §1.3: "a selection naming a
 /// missing option key degrades to unselected ... with a toast on load").
 /// `resolve_env` already degrades a stale selection to `NeedsSelection` on
 /// its own, so this isn't required for correct resolution — it's purely so
-/// the user gets told once, and so the stale entry doesn't linger forever
-/// in `.local/state.toml`. Returns one warning per cleared entry, worded to
+/// the user gets told once, and so the stale option doesn't linger forever
+/// in `.local/state.toml`. Returns one warning per cleared option, worded to
 /// match the finding's example exactly.
 fn prune_stale_selections(
     model: &VarModel,
@@ -102,10 +102,10 @@ fn prune_stale_selections(
 ) -> Vec<String> {
     let stale: Vec<String> = selections
         .iter()
-        .filter(|(group, entry)| {
-            let entry_exists = model.groups.contains_key(group.as_str())
-                && varmodel::group_entries(env_data, group)
-                    .is_some_and(|entries| entries.contains_key(entry.as_str()));
+        .filter(|(selector, option)| {
+            let entry_exists = model.selectors.contains_key(selector.as_str())
+                && varmodel::selector_options(env_data, selector)
+                    .is_some_and(|options| options.contains_key(option.as_str()));
             !entry_exists
         })
         .map(|(name, _)| name.clone())
@@ -365,9 +365,9 @@ impl ProjectContext {
     /// Drops `name`'s recorded selection for `env`, if any — used when the
     /// option key it names is deleted out from under it (finding 3: a
     /// deleted-while-selected option would otherwise leave a stale
-    /// selection entry; `resolve_env` already degrades that to
+    /// selection option; `resolve_env` already degrades that to
     /// `NeedsSelection` harmlessly, but clearing it here keeps local state
-    /// tidy rather than accumulating dead entries). A no-op if `name` has
+    /// tidy rather than accumulating dead options). A no-op if `name` has
     /// no selection recorded for `env`.
     pub fn clear_selection_for(&mut self, env: &str, name: &str) {
         let Some(sel) = self.selections.get_mut(env) else {
@@ -544,7 +544,7 @@ impl ProjectContext {
     /// `<file>.bak` first (a plain write — it's the safety copy, not the
     /// live file), then the new text is written atomically, and
     /// `environments/default.toml` is created when the conversion needs
-    /// somewhere to put the migrated entries. Reloads everything
+    /// somewhere to put the migrated options. Reloads everything
     /// afterwards, so the model comes up on the new format. `Ok(notes)`
     /// are the conversion's human-readable notes, for a toast.
     pub fn apply_migration(&mut self) -> Result<Vec<String>, String> {
@@ -716,9 +716,9 @@ impl ProjectContext {
 
     /// One edit that has to change `variables.toml` *and* every environment
     /// file together, because neither half validates without the other:
-    /// renaming a group (an environment's `[entries.<old>]` names a group
-    /// the new model no longer declares — and the new name's entries don't
-    /// exist yet) and reshaping a group's field list (every entry must
+    /// renaming a selector (an environment's `[options.<old>]` names a selector
+    /// the new model no longer declares — and the new name's options don't
+    /// exist yet) and reshaping a selector's field list (every option must
     /// supply exactly the declared fields, so a rename/add/remove is
     /// invalid the moment one side lands alone). Doing it as two
     /// [`Self::edit_variables`]/[`Self::edit_env`] calls fails whichever
@@ -889,12 +889,12 @@ mod tests {
         postui_core::project::init_project(dir.path(), None).unwrap();
         std::fs::write(
             dir.path().join("variables.toml"),
-            "[groups.user]\nfields = [\"user\"]\n\n[api_key]\nsecret = true\n",
+            "[selectors.user]\nfields = [\"user\"]\n\n[api_key]\nsecret = true\n",
         )
         .unwrap();
         std::fs::write(
             dir.path().join("environments/qa.toml"),
-            "[entries.user.alice]\nuser = \"1001\"\n[entries.user.bob]\nuser = \"2002\"\n",
+            "[options.user.alice]\nuser = \"1001\"\n[options.user.bob]\nuser = \"2002\"\n",
         )
         .unwrap();
 
@@ -933,12 +933,12 @@ mod tests {
         postui_core::project::init_project(dir.path(), None).unwrap();
         std::fs::write(
             dir.path().join("variables.toml"),
-            "[groups.user]\nfields = [\"user\"]\n",
+            "[selectors.user]\nfields = [\"user\"]\n",
         )
         .unwrap();
         std::fs::write(
             dir.path().join("environments/qa.toml"),
-            "[entries.user.alice]\nuser = \"1001\"\n",
+            "[options.user.alice]\nuser = \"1001\"\n",
         )
         .unwrap();
         let mut selections = IndexMap::new();
@@ -984,12 +984,12 @@ mod tests {
         postui_core::project::init_project(dir.path(), None).unwrap();
         std::fs::write(
             dir.path().join("variables.toml"),
-            "[groups.user]\nfields = [\"user\"]\n",
+            "[selectors.user]\nfields = [\"user\"]\n",
         )
         .unwrap();
         std::fs::write(
             dir.path().join("environments/qa.toml"),
-            "[entries.user.alice]\nuser = \"1001\"\n",
+            "[options.user.alice]\nuser = \"1001\"\n",
         )
         .unwrap();
         let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
@@ -999,7 +999,7 @@ mod tests {
 
         std::fs::write(
             dir.path().join("environments/qa.toml"),
-            "[entries.user.bob]\nuser = \"2002\"\n",
+            "[options.user.bob]\nuser = \"2002\"\n",
         )
         .unwrap();
         bump_mtime(&dir.path().join("environments/qa.toml"));
@@ -1021,12 +1021,12 @@ mod tests {
         postui_core::project::init_project(dir.path(), None).unwrap();
         std::fs::write(
             dir.path().join("variables.toml"),
-            "[groups.user]\nfields = [\"user\"]\n",
+            "[selectors.user]\nfields = [\"user\"]\n",
         )
         .unwrap();
         std::fs::write(
             dir.path().join("environments/qa.toml"),
-            "[entries.user.alice]\nuser = \"1001\"\n",
+            "[options.user.alice]\nuser = \"1001\"\n",
         )
         .unwrap();
         let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
@@ -1048,12 +1048,12 @@ mod tests {
         postui_core::project::init_project(dir.path(), None).unwrap();
         std::fs::write(
             dir.path().join("variables.toml"),
-            "[groups.user]\nfields = [\"user\"]\n",
+            "[selectors.user]\nfields = [\"user\"]\n",
         )
         .unwrap();
-        let entries = "[entries.user.alice]\nuser = \"1001\"\n";
-        std::fs::write(dir.path().join("environments/qa.toml"), entries).unwrap();
-        std::fs::write(dir.path().join("environments/dev.toml"), entries).unwrap();
+        let options = "[options.user.alice]\nuser = \"1001\"\n";
+        std::fs::write(dir.path().join("environments/qa.toml"), options).unwrap();
+        std::fs::write(dir.path().join("environments/dev.toml"), options).unwrap();
         let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
         ctx.set_env(Some("qa".into()));
         ctx.set_selection("user", "alice");
@@ -1075,12 +1075,12 @@ mod tests {
         postui_core::project::init_project(dir.path(), None).unwrap();
         std::fs::write(
             dir.path().join("variables.toml"),
-            "[groups.user]\nfields = [\"user\"]\n",
+            "[selectors.user]\nfields = [\"user\"]\n",
         )
         .unwrap();
         std::fs::write(
             dir.path().join("environments/qa.toml"),
-            "[entries.user.alice]\nuser = \"1001\"\n[entries.user.bob]\nuser = \"2002\"\n",
+            "[options.user.alice]\nuser = \"1001\"\n[options.user.bob]\nuser = \"2002\"\n",
         )
         .unwrap();
         let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
@@ -1212,29 +1212,29 @@ mod tests {
         postui_core::project::init_project(dir.path(), None).unwrap();
         std::fs::write(
             dir.path().join("variables.toml"),
-            "[groups.user]\nfields = [\"user\"]\n",
+            "[selectors.user]\nfields = [\"user\"]\n",
         )
         .unwrap();
         std::fs::write(
             dir.path().join("environments/qa.toml"),
-            "[entries.user.alice]\nuser = \"9001\"\n",
+            "[options.user.alice]\nuser = \"9001\"\n",
         )
         .unwrap();
         let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
         ctx.set_env(Some("qa".into()));
-        assert_eq!(ctx.env_data.entries["user"]["alice"].values["user"], "9001");
+        assert_eq!(ctx.env_data.options["user"]["alice"].values["user"], "9001");
 
-        // break it: an [entries.*] table for an undeclared group
+        // break it: an [options.*] table for an undeclared selector
         std::fs::write(
             dir.path().join("environments/qa.toml"),
-            "[entries.nope.x]\nuser = \"1\"\n",
+            "[options.nope.x]\nuser = \"1\"\n",
         )
         .unwrap();
         bump_mtime(&dir.path().join("environments/qa.toml"));
         let (changed, warns) = ctx.reload_if_changed();
         assert!(changed && !warns.is_empty());
         assert_eq!(
-            ctx.env_data.entries["user"]["alice"].values["user"], "9001",
+            ctx.env_data.options["user"]["alice"].values["user"], "9001",
             "previous good env data kept"
         );
     }

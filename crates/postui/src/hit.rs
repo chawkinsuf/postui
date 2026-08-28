@@ -47,7 +47,7 @@ pub enum Hit {
     TableDelete(usize),
     /// One editable cell of a key/value table: `col` 0 is the key, 1 the
     /// value. `row == map.len()` is the ghost row — the always-present
-    /// empty row that becomes a real entry once its key is typed.
+    /// empty row that becomes a real option once its key is typed.
     TableCell {
         row: usize,
         col: u8,
@@ -111,7 +111,7 @@ pub enum Hit {
     VmEnvSwitch,
     /// The Manager top bar's `+ Variable` / `+ Group` buttons.
     VmNewVar,
-    VmNewGroup,
+    VmNewSelector,
     /// One field of the variable form's right pane (spec §3.4): click seeds
     /// it with its current text and a caret at the end, exactly like a
     /// table cell (Task 8's in-place model).
@@ -126,21 +126,21 @@ pub enum Hit {
     VmRename,
     /// The variable form's title-row `[Delete]` button.
     VmDelete,
-    /// The group grid's `◉`/`○` radio on entry row `i` (spec §3.4): a
-    /// click selects that entry for the active environment, which is what
-    /// makes every one of the group's fields resolve to its values.
+    /// The selector grid's `◉`/`○` radio on option row `i` (spec §3.4): a
+    /// click selects that option for the active environment, which is what
+    /// makes every one of the selector's fields resolve to its values.
     VmEntryRadio(usize),
-    /// One cell of the group grid: `col == 0` is the entry-name cell, `col
-    /// n` is the group's `n-1`th field. `row == entries.len()` is the ghost
-    /// row — the always-present empty row that becomes a real entry the
+    /// One cell of the selector grid: `col == 0` is the option-name cell, `col
+    /// n` is the selector's `n-1`th field. `row == options.len()` is the ghost
+    /// row — the always-present empty row that becomes a real option the
     /// moment its name cell commits non-empty (Task 8's table model).
     VmEntryCell {
         row: usize,
         col: usize,
     },
-    /// The group pane's `[+ Entry]` button.
-    VmNewEntry,
-    /// The group pane's `[Edit fields]` button: opens the field-list
+    /// The selector pane's `[+ Entry]` button.
+    VmNewOption,
+    /// The selector pane's `[Edit fields]` button: opens the field-list
     /// editor (one text slot per current field plus an empty one).
     VmEditFields,
     /// The variable form's promote/demote button — whichever of the two
@@ -200,7 +200,7 @@ pub enum PointerShape {
     Pointer,
     /// The I-beam cursor: surfaces where a click places a text caret or
     /// anchors a text selection. `UrlBar` and `BodyEditor` (free-text
-    /// entry), plus the response pane's selectable content — its bare
+    /// option), plus the response pane's selectable content — its bare
     /// background (`Pane(Response)`, the Raw/Headers views) and the Pretty
     /// view's `JsonRow` lines, whose clicks all anchor a selection sweep.
     /// The in-place table/form cell edits (`TableCell`, `VmFormField`,

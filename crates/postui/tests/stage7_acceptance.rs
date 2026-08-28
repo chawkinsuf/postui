@@ -610,12 +610,12 @@ fn a_legacy_project_migrates_then_grows_a_group_whose_selection_drives_resolutio
     assert!(app.modals.is_empty(), "answering closes the prompt");
     assert!(app.project.pending_migration().is_none());
     assert_eq!(
-        app.project.model.groups["user"].fields,
+        app.project.model.selectors["user"].fields,
         ["user_id", "customer_id"],
         "`members` became `fields`"
     );
     assert!(
-        app.project.model.groups.contains_key("tier"),
+        app.project.model.selectors.contains_key("tier"),
         "the enumerated variable became a one-field group"
     );
 
@@ -630,14 +630,14 @@ fn a_legacy_project_migrates_then_grows_a_group_whose_selection_drives_resolutio
     assert_eq!(app.project.active_env.as_deref(), Some("qa"));
     let keymap = Keymap::default_bindings();
 
-    // --- create a group: the [+ Group] button, then its prompt ---
-    click(&mut app, Hit::VmNewGroup);
+    // --- create a selector: the [+ Group] button, then its prompt ---
+    click(&mut app, Hit::VmNewSelector);
     type_text(&mut app, &keymap, "region");
     key(&mut app, &keymap, KeyCode::Tab);
     type_text(&mut app, &keymap, "zone,dc");
     key(&mut app, &keymap, KeyCode::Enter);
     assert_eq!(
-        app.project.model.groups["region"].fields,
+        app.project.model.selectors["region"].fields,
         ["zone", "dc"],
         "the group is declared with its fields"
     );
@@ -649,7 +649,7 @@ fn a_legacy_project_migrates_then_grows_a_group_whose_selection_drives_resolutio
     // --- two entries, typed into the ghost row ---
     add_entry(&mut app, &keymap, &["eu", "eu-west-1", "dub"]);
     add_entry(&mut app, &keymap, &["us", "us-east-1", "iad"]);
-    let entries = postui_core::varmodel::group_entries(&app.project.env_data, "region")
+    let entries = postui_core::varmodel::selector_options(&app.project.env_data, "region")
         .expect("the group has entries in qa");
     assert_eq!(entries.keys().collect::<Vec<_>>(), ["eu", "us"]);
     assert_eq!(entries["us"].values["dc"], "iad");
@@ -689,7 +689,7 @@ fn a_legacy_project_migrates_then_grows_a_group_whose_selection_drives_resolutio
         "the request shows the selected entry's value: {frame}"
     );
     assert!(
-        frame.contains("group region \u{2192} \"us\""),
+        frame.contains("selector region \u{2192} \"us\""),
         "...and names the group and entry it came from: {frame}"
     );
 }
@@ -706,7 +706,7 @@ fn left_row_of(app: &App, name: &str) -> usize {
 /// Types one whole entry into the group grid's ghost row: `cells[0]` is the
 /// entry name, the rest are its field values, `Tab` between them.
 fn add_entry(app: &mut App, keymap: &Keymap, cells: &[&str]) {
-    click(app, Hit::VmNewEntry);
+    click(app, Hit::VmNewOption);
     for (i, cell) in cells.iter().enumerate() {
         type_text(app, keymap, cell);
         if i + 1 < cells.len() {

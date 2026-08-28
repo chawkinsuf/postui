@@ -1,6 +1,6 @@
 //! The Variable Manager screen (spec §3.4): a master-detail layout —
 //! a top bar (environment switcher + the two "new" buttons), a fixed-width
-//! left list of every declared variable and group, and a detail pane for
+//! left list of every declared variable and selector, and a detail pane for
 //! whatever the list has selected.
 //!
 //! Task 14 built the skeleton: the top bar, the left list and its
@@ -9,7 +9,7 @@
 //! and [`draw_var_form`] — description/default/env-value fields edited in
 //! place exactly like Task 8's tables, plus the secret toggle, rename/delete
 //! buttons and the promote/demote button where the legacy `p`/`P`
-//! preconditions hold. The group face ([`EntryGridState`]) is still a
+//! preconditions hold. The selector face ([`OptionGridState`]) is still a
 //! placeholder for Task 16.
 
 use crate::action::Action;
@@ -47,7 +47,7 @@ pub enum VarEditOp {
     /// A variable's shared `default` in `variables.toml` —
     /// `varedit::upsert_var` via `ctx.edit_variables`.
     SetDefault { name: String, value: String },
-    /// A variable's or group's shared `description` in `variables.toml`.
+    /// A variable's or selector's shared `description` in `variables.toml`.
     SetDescription { owner: String, value: String },
     /// A secret variable's value in `env` — `ctx.set_secret`, which writes
     /// `.local/secrets.toml` (never `variables.toml`/the env file).
@@ -56,40 +56,40 @@ pub enum VarEditOp {
         name: String,
         value: String,
     },
-    /// One field of one entry: the edit lands in `env`'s
-    /// `[entries.<group>.<entry>]` table (`varedit::upsert_entry`), the
-    /// only place an entry's values live (spec §3.1). Every group grid
+    /// One field of one option: the edit lands in `env`'s
+    /// `[options.<selector>.<option>]` table (`varedit::upsert_option`), the
+    /// only place an option's values live (spec §3.1). Every selector grid
     /// cell but the name column commits through this.
-    SetEntryValue {
+    SetOptionValue {
         env: String,
-        group: String,
-        entry: String,
+        selector: String,
+        option: String,
         field: String,
         value: String,
     },
-    /// A request-scoped `[variables]` entry's value on the open request —
+    /// A request-scoped `[variables]` option's value on the open request —
     /// mutates `Editor::variables` directly and rides the editor's existing
     /// dirty/save path (no immediate write of its own).
     SetRequestVar { name: String, value: String },
-    /// Records `entry` as `group`'s selection in `env` — `ctx.set_selection`
-    /// (the group grid's radio column; also the var picker's confirm and
-    /// the ✓ action). Picking an entry is what makes every one of the
-    /// group's fields resolve, together, to that record's values.
-    SelectEntry {
+    /// Records `option` as `selector`'s selection in `env` — `ctx.set_selection`
+    /// (the selector grid's radio column; also the var picker's confirm and
+    /// the ✓ action). Picking an option is what makes every one of the
+    /// selector's fields resolve, together, to that record's values.
+    SelectOption {
         env: String,
-        group: String,
-        entry: String,
+        selector: String,
+        option: String,
     },
 }
 
 /// A structural mutation dispatched by the Variable Manager: unlike
 /// [`VarEditOp`] (one value), these add/remove/rename/reshape declarations
-/// and entries. Each applies through `ctx.edit_variables`/`edit_env` in
+/// and options. Each applies through `ctx.edit_variables`/`edit_env` in
 /// `App::apply_var_struct`.
 ///
 /// The declaration ops (`NewVar`..`Demote`) write `variables.toml`; the
-/// entry ops (`NewEntry`..`DuplicateEntry`) write one environment file
-/// each — entries belong to exactly one environment (spec §3.1), so every
+/// option ops (`NewOption`..`DuplicateOption`) write one environment file
+/// each — options belong to exactly one environment (spec §3.1), so every
 /// one of them names the `env` it targets.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VarStructOp {
@@ -98,23 +98,26 @@ pub enum VarStructOp {
         name: String,
         description: Option<String>,
     },
-    /// A new group and its field list (`+ Group` / `g`). Create-or-update:
-    /// `varedit::upsert_group` is the same verb either way.
-    NewGroup { name: String, fields: Vec<String> },
-    /// Rename a variable or a group. A group renames in both halves at
-    /// once (`varedit::rename_group` + `rename_group_entries` per
-    /// environment): an environment's `[entries.<old>]` table names a
-    /// group the renamed model no longer declares, so neither half is
+    /// A new selector and its field list (`+ Group` / `g`). Create-or-update:
+    /// `varedit::upsert_selector` is the same verb either way.
+    NewSelector { name: String, fields: Vec<String> },
+    /// Rename a variable or a selector. A selector renames in both halves at
+    /// once (`varedit::rename_selector` + `rename_selector_options` per
+    /// environment): an environment's `[options.<old>]` table names a
+    /// selector the renamed model no longer declares, so neither half is
     /// valid without the other. Any recorded selection follows the name.
     Rename { from: String, to: String },
-    /// Delete a variable or a group. A group cascades: every environment's
-    /// `[entries.<name>]` subtree goes with the declaration, and every
+    /// Delete a variable or a selector. A selector cascades: every environment's
+    /// `[options.<name>]` subtree goes with the declaration, and every
     /// environment's selection for it is cleared.
     Delete { name: String },
     /// Flip a variable's `secret` flag (spec §3's two transitions).
     ToggleSecret { name: String },
-    /// Replace a group's field list.
-    SetFields { group: String, fields: Vec<String> },
+    /// Replace a selector's field list.
+    SetFields {
+        selector: String,
+        fields: Vec<String>,
+    },
     /// Promote a request-scoped variable to the project (spec §4).
     Promote {
         name: String,
@@ -122,33 +125,33 @@ pub enum VarStructOp {
     },
     /// Demote a project variable into the open request (spec §4).
     Demote { name: String },
-    /// A new entry of `group` in `env` (`varedit::upsert_entry`).
-    NewEntry {
+    /// A new option of `selector` in `env` (`varedit::upsert_option`).
+    NewOption {
         env: String,
-        group: String,
+        selector: String,
         name: String,
         description: Option<String>,
         values: IndexMap<String, String>,
     },
-    /// Rename one entry of `group` within `env`.
-    RenameEntry {
+    /// Rename one option of `selector` within `env`.
+    RenameOption {
         env: String,
-        group: String,
+        selector: String,
         from: String,
         to: String,
     },
-    /// Delete one entry of `group` from `env`, clearing any selection that
+    /// Delete one option of `selector` from `env`, clearing any selection that
     /// named it.
-    DeleteEntry {
+    DeleteOption {
         env: String,
-        group: String,
+        selector: String,
         name: String,
     },
-    /// Copy one entry of `group` in `env` to a fresh name — `"<name> copy"`,
+    /// Copy one option of `selector` in `env` to a fresh name — `"<name> copy"`,
     /// then `"<name> copy-2"`, … on collision.
-    DuplicateEntry {
+    DuplicateOption {
         env: String,
-        group: String,
+        selector: String,
         name: String,
     },
 }
@@ -303,7 +306,7 @@ pub fn var_edit_op_for(
 /// git-tracked request file, or promoting a plain value onto it would make
 /// the declaration invalid — `promote_var`'s own conflict cases, moot here
 /// since a name reachable as `VmDetail::Var` is already a simple
-/// declaration, never a group name or field). Which direction applies
+/// declaration, never a selector name or field). Which direction applies
 /// depends on whether the open request already overrides `name` in its own
 /// `[variables]` — if so, "Promote" offers to move that override up into
 /// the project (`apply_promote` requires exactly this); otherwise, with a
@@ -335,41 +338,41 @@ pub fn promote_demote_action(
     }
 }
 
-/// One grid cell's in-progress edit (Task 8's `CellEdit`, for the group
+/// One grid cell's in-progress edit (Task 8's `CellEdit`, for the selector
 /// grid): which cell, the live buffer, and the text it started from so
 /// `Esc` can put it back.
 #[derive(Debug)]
 pub struct GridEdit {
-    /// Index into the group's entries — or `entries.len()`, the ghost row
-    /// that becomes a real entry the moment its name cell commits
+    /// Index into the selector's options — or `options.len()`, the ghost row
+    /// that becomes a real option the moment its name cell commits
     /// non-empty.
     pub row: usize,
-    /// `0` is the entry-name column; `n` is the group's `n-1`th field.
+    /// `0` is the option-name column; `n` is the selector's `n-1`th field.
     pub col: usize,
     pub input: LineInput,
     /// The cell's pre-edit text, for `Esc`-revert.
     pub original: String,
 }
 
-/// The detail pane's entries grid (spec §3.4): one row per entry of the
-/// selected group in the active environment, one column per group field,
-/// plus the radio column that says which entry the environment has
+/// The detail pane's options grid (spec §3.4): one row per option of the
+/// selected selector in the active environment, one column per selector field,
+/// plus the radio column that says which option the environment has
 /// selected. Editing is Task 8's in-place model, exactly — see
 /// [`VarFormState`] for the same contract on the variable form.
 #[derive(Debug, Default)]
-pub struct EntryGridState {
+pub struct OptionGridState {
     /// The keyboard cursor's `(row, col)`; `space`/`o`/`m` act here.
     pub cursor: (usize, usize),
     /// The cell under edit, or `None` when nothing in the grid owns the
     /// keyboard — consulted by the command-key gate in
     /// [`VarManager::handle_key`].
     pub editing: Option<GridEdit>,
-    /// First visible entry row.
+    /// First visible option row.
     pub scroll: usize,
 }
 
 /// Which of the screen's two keyboard focus stops has the keyboard: the
-/// left list, or the group pane's entries grid. Each keeps its own cursor,
+/// left list, or the selector pane's options grid. Each keeps its own cursor,
 /// so stepping out of the grid and back lands where it was. See
 /// [`VarManager::handle_key`] for the keys that move between them.
 ///
@@ -396,14 +399,14 @@ pub struct VarManager {
     /// First visible row of `left_rows`.
     pub left_scroll: usize,
     pub form: VarFormState,
-    pub grid: EntryGridState,
+    pub grid: OptionGridState,
     /// Which stop has the keyboard (see [`VmFocus`]).
     pub focus: VmFocus,
-    /// The group grid's entry-row region as of the last `draw` — the wheel
+    /// The selector grid's option-row region as of the last `draw` — the wheel
     /// scrolls the grid when the pointer is inside it, the left list
     /// otherwise. Empty when no grid is on screen.
     grid_area: Rect,
-    /// How many entry rows that region showed, for the wheel's clamp.
+    /// How many option rows that region showed, for the wheel's clamp.
     grid_visible: usize,
     /// Set by a keyboard move so the next `draw` snaps `left_scroll` to
     /// keep `left_cursor` visible; a wheel/drag gesture clears it (those
@@ -427,19 +430,19 @@ const GLYPH_CARET: &str = "\u{25be}"; // ▾
 const GLYPH_RADIO_ON: &str = "\u{25c9}"; // ◉
 const GLYPH_RADIO_OFF: &str = "\u{25cb}"; // ○
 
-/// The hint the group pane shows instead of a grid when no environment is
-/// active: entries belong to one environment each (spec §3.1), so there is
+/// The hint the selector pane shows instead of a grid when no environment is
+/// active: options belong to one environment each (spec §3.1), so there is
 /// nowhere for them to live until one is picked.
-pub const NO_ENV_HINT: &str = "entries live in environments \u{2014} pick or create one";
+pub const NO_ENV_HINT: &str = "options live in environments \u{2014} pick or create one";
 
 /// The ghost row's resting label.
-const GHOST_LABEL: &str = "+ entry";
+const GHOST_LABEL: &str = "+ option";
 
 /// Width of the grid's radio column (glyph + one column of gutter).
 const RADIO_W: u16 = 3;
 
 /// Where each grid column starts and how wide it is: `x[0]`/`w[0]` is the
-/// entry-name column, `x[n]` the group's `n-1`th field. Columns that would
+/// option-name column, `x[n]` the selector's `n-1`th field. Columns that would
 /// start past the pane's right edge are dropped, so a narrow pane simply
 /// shows fewer columns rather than painting over its own border.
 struct GridCols {
@@ -471,16 +474,16 @@ fn grid_columns(x0: u16, width: u16, ncols: usize) -> GridCols {
     cols
 }
 
-/// One group's entries in `ctx`'s active environment, as `(name, values)`
-/// pairs in file order. Empty when the group has no entries here (or there
+/// One selector's options in `ctx`'s active environment, as `(name, values)`
+/// pairs in file order. Empty when the selector has no options here (or there
 /// is no active environment).
-fn entry_rows(ctx: &ProjectContext, group: &str) -> Vec<(String, IndexMap<String, String>)> {
+fn entry_rows(ctx: &ProjectContext, selector: &str) -> Vec<(String, IndexMap<String, String>)> {
     if ctx.active_env.is_none() {
         return Vec::new();
     }
-    postui_core::varmodel::group_entries(&ctx.env_data, group)
-        .map(|entries| {
-            entries
+    postui_core::varmodel::selector_options(&ctx.env_data, selector)
+        .map(|options| {
+            options
                 .iter()
                 .map(|(name, e)| (name.clone(), e.values.clone()))
                 .collect()
@@ -489,17 +492,17 @@ fn entry_rows(ctx: &ProjectContext, group: &str) -> Vec<(String, IndexMap<String
 }
 
 /// The text grid cell `(row, col)` currently shows — the seed a click
-/// starts editing from. Empty for the ghost row and for a field an entry
+/// starts editing from. Empty for the ghost row and for a field an option
 /// doesn't set.
-fn grid_cell_text(ctx: &ProjectContext, group: &str, row: usize, col: usize) -> String {
-    let rows = entry_rows(ctx, group);
+fn grid_cell_text(ctx: &ProjectContext, selector: &str, row: usize, col: usize) -> String {
+    let rows = entry_rows(ctx, selector);
     let Some((name, values)) = rows.get(row) else {
         return String::new();
     };
     if col == 0 {
         return name.clone();
     }
-    let fields = group_fields(ctx, group);
+    let fields = group_fields(ctx, selector);
     fields
         .get(col - 1)
         .and_then(|f| values.get(f))
@@ -507,24 +510,24 @@ fn grid_cell_text(ctx: &ProjectContext, group: &str, row: usize, col: usize) -> 
         .unwrap_or_default()
 }
 
-/// `group`'s declared field list (empty for an undeclared name).
-fn group_fields(ctx: &ProjectContext, group: &str) -> Vec<String> {
+/// `selector`'s declared field list (empty for an undeclared name).
+fn group_fields(ctx: &ProjectContext, selector: &str) -> Vec<String> {
     ctx.model
-        .groups
-        .get(group)
+        .selectors
+        .get(selector)
         .map(|g| g.fields.clone())
         .unwrap_or_default()
 }
 
 /// The left list's rows: the VARIABLES section (every declared variable
-/// that isn't a group field — fields live inside their group's entries),
-/// then the GROUPS section.
+/// that isn't a selector field — fields live inside their selector's options),
+/// then the SELECTORS section.
 pub fn build_left_rows(ctx: &ProjectContext) -> Vec<VmRow> {
     let mut rows = vec![VmRow::SectionVars];
 
     let group_fields: std::collections::HashSet<&str> = ctx
         .model
-        .groups
+        .selectors
         .values()
         .flat_map(|g| g.fields.iter().map(String::as_str))
         .collect();
@@ -535,24 +538,24 @@ pub fn build_left_rows(ctx: &ProjectContext) -> Vec<VmRow> {
     }
 
     rows.push(VmRow::SectionGroups);
-    for name in ctx.model.groups.keys() {
+    for name in ctx.model.selectors.keys() {
         rows.push(VmRow::Group(name.clone()));
     }
     rows
 }
 
-/// A group's current selection in the active environment, as the left list
-/// shows it inline: the selected entry's name, or `None` when the group has
+/// A selector's current selection in the active environment, as the left list
+/// shows it inline: the selected option's name, or `None` when the selector has
 /// no (or a stale) selection here.
-fn active_selection(ctx: &ProjectContext, group: &str) -> Option<String> {
+fn active_selection(ctx: &ProjectContext, selector: &str) -> Option<String> {
     let env = ctx.active_env.as_deref()?;
-    let key = ctx.selections_for(env).get(group)?;
-    let entries = postui_core::varmodel::group_entries(&ctx.env_data, group)?;
-    entries.contains_key(key).then(|| key.clone())
+    let key = ctx.selections_for(env).get(selector)?;
+    let options = postui_core::varmodel::selector_options(&ctx.env_data, selector)?;
+    options.contains_key(key).then(|| key.clone())
 }
 
 /// Whether `name` currently resolves to a value in the active environment —
-/// false for a group field awaiting a selection, a secret with no value,
+/// false for a selector field awaiting a selection, a secret with no value,
 /// and a variable with neither default nor env value. Drives the left
 /// list's red dot.
 fn is_unresolved(ctx: &ProjectContext, name: &str) -> bool {
@@ -586,7 +589,7 @@ impl VarManager {
             VmRow::Group(name) => {
                 let target = VmDetail::Group(name.clone());
                 if self.detail != target {
-                    self.grid = EntryGridState::default();
+                    self.grid = OptionGridState::default();
                 }
                 self.detail = target;
             }
@@ -594,7 +597,7 @@ impl VarManager {
         }
     }
 
-    /// Click entry point for a form field (`Hit::VmFormField`): seeds
+    /// Click option point for a form field (`Hit::VmFormField`): seeds
     /// `field` with its current text and a caret at the end. A second click
     /// on the field already under edit is the caller's job to no-op (it
     /// must not restart the edit and lose what was typed) — this always
@@ -608,22 +611,22 @@ impl VarManager {
         self.form.editing = Some((field, LineInput::new(&seed)));
     }
 
-    /// Click entry point for a grid cell (`Hit::VmEntryCell`): seeds
+    /// Click option point for a grid cell (`Hit::VmEntryCell`): seeds
     /// `(row, col)` with its current text and a caret at the end, and puts
     /// the grid cursor there. Like [`Self::start_field_edit`], a second
     /// click on the cell already under edit is the caller's job to no-op.
-    /// A no-op with no group selected, and on a ghost-row cell other than
-    /// the name column (there is no entry yet for a value to belong to —
+    /// A no-op with no selector selected, and on a ghost-row cell other than
+    /// the name column (there is no option yet for a value to belong to —
     /// the click is redirected to the name cell by the caller).
     pub fn start_cell_edit(&mut self, ctx: &ProjectContext, row: usize, col: usize) {
-        let VmDetail::Group(group) = &self.detail else {
+        let VmDetail::Group(selector) = &self.detail else {
             return;
         };
-        let group = group.clone();
-        let rows = entry_rows(ctx, &group);
+        let selector = selector.clone();
+        let rows = entry_rows(ctx, &selector);
         let row = row.min(rows.len());
         let col = if row == rows.len() { 0 } else { col };
-        let original = grid_cell_text(ctx, &group, row, col);
+        let original = grid_cell_text(ctx, &selector, row, col);
         // Typing into a cell is the grid holding the keyboard, however the
         // edit was started — so `Esc` out of it lands in the grid, not back
         // in the left list.
@@ -637,12 +640,12 @@ impl VarManager {
         });
     }
 
-    /// The entry `row` names, or `None` for the ghost row / no group.
+    /// The option `row` names, or `None` for the ghost row / no selector.
     pub fn entry_at(&self, ctx: &ProjectContext, row: usize) -> Option<String> {
-        let VmDetail::Group(group) = &self.detail else {
+        let VmDetail::Group(selector) = &self.detail else {
             return None;
         };
-        entry_rows(ctx, group).get(row).map(|(n, _)| n.clone())
+        entry_rows(ctx, selector).get(row).map(|(n, _)| n.clone())
     }
 
     /// The row the commands act on — the left list's current selection.
@@ -661,12 +664,12 @@ impl VarManager {
         let gone = match &self.detail {
             VmDetail::None => false,
             VmDetail::Var(name) => !ctx.model.vars.contains_key(name),
-            VmDetail::Group(name) => !ctx.model.groups.contains_key(name),
+            VmDetail::Group(name) => !ctx.model.selectors.contains_key(name),
         };
         if gone {
             self.detail = VmDetail::None;
             self.form = VarFormState::default();
-            self.grid = EntryGridState::default();
+            self.grid = OptionGridState::default();
             self.focus = VmFocus::List;
         }
         self.ensure_visible = true;
@@ -710,24 +713,24 @@ impl VarManager {
     /// # Keyboard focus (spec §4's keyboard parity)
     ///
     /// The screen has two keyboard focus stops, [`VmFocus`]: the left list
-    /// and — when the detail pane is showing a group — its entries grid.
+    /// and — when the detail pane is showing a selector — its options grid.
     /// The left list owns the keyboard by default; `Right`/`Tab` step into
     /// the grid, and `Left` from its first column, `Esc`, or `BackTab` step
     /// back out. Each keeps its own cursor, so returning to the list lands
     /// where it was. Inside the grid the arrows move the cell cursor,
     /// `Enter` starts editing the focused cell, `space` selects the cursor
-    /// row's entry, and `e`/`d` rename/delete *that entry* rather than the
-    /// group (the list's own `e`/`d` still target the declaration — which
+    /// row's option, and `e`/`d` rename/delete *that option* rather than the
+    /// selector (the list's own `e`/`d` still target the declaration — which
     /// stop has focus is what tells them apart).
     pub fn handle_key(&mut self, ev: KeyEvent, ctx: &ProjectContext) -> Option<Action> {
         // The grid is a focus stop of its own: while it has the keyboard,
         // the arrows drive its cell cursor rather than the left list, and
-        // the commands act on the entry under that cursor.
+        // the commands act on the option under that cursor.
         if self.focus == VmFocus::Grid {
-            if let VmDetail::Group(group) = self.detail.clone() {
-                return self.handle_grid_focus_key(ev, ctx, &group);
+            if let VmDetail::Group(selector) = self.detail.clone() {
+                return self.handle_grid_focus_key(ev, ctx, &selector);
             }
-            // The pane stopped showing a group under it (deleted, or the
+            // The pane stopped showing a selector under it (deleted, or the
             // selection moved): the grid is gone, so the focus goes home.
             self.focus = VmFocus::List;
         }
@@ -743,7 +746,7 @@ impl VarManager {
             }
             // Into the grid, when there is one to step into.
             KeyCode::Right | KeyCode::Tab => {
-                if matches!(&self.detail, VmDetail::Group(g) if ctx.model.groups.contains_key(g))
+                if matches!(&self.detail, VmDetail::Group(g) if ctx.model.selectors.contains_key(g))
                     && ctx.active_env.is_some()
                     && self.form.editing.is_none()
                     && self.grid.editing.is_none()
@@ -757,28 +760,28 @@ impl VarManager {
         if self.form.editing.is_some() || self.grid.editing.is_some() {
             return None;
         }
-        // The group grid's own commands, on the group the detail pane has
+        // The selector grid's own commands, on the selector the detail pane has
         // open (spec §3.4's "old keys"). They come first so `o`/`m`/`space`
         // never fall through to a left-list command that would act on a
         // different row than the grid the user is looking at. Unlike the
         // focused-grid keys above, these work straight from the left list —
         // `o` and `m` need no cursor, and `space` uses the grid's own.
-        if let VmDetail::Group(group) = self.detail.clone() {
+        if let VmDetail::Group(selector) = self.detail.clone() {
             match ev.code {
                 KeyCode::Char('o') => {
-                    let row = entry_rows(ctx, &group).len();
+                    let row = entry_rows(ctx, &selector).len();
                     self.focus = VmFocus::Grid;
                     self.start_cell_edit(ctx, row, 0);
                     return None;
                 }
-                KeyCode::Char('m') => return Some(Action::PromptGroupFields { group }),
-                KeyCode::Char(' ') => return self.select_entry_action(ctx, &group),
+                KeyCode::Char('m') => return Some(Action::PromptGroupFields { selector }),
+                KeyCode::Char(' ') => return self.select_entry_action(ctx, &selector),
                 _ => {}
             }
         }
         match ev.code {
             KeyCode::Char('n') => Some(Action::PromptNewVar),
-            KeyCode::Char('g') => Some(Action::PromptNewGroup),
+            KeyCode::Char('g') => Some(Action::PromptNewSelector),
             KeyCode::Char('e') | KeyCode::F(2) => self.rename_action(),
             KeyCode::Char('d') | KeyCode::Delete => Some(Action::ConfirmDeleteVar {
                 name: self.selected_row()?.name()?.to_string(),
@@ -793,9 +796,9 @@ impl VarManager {
         }
     }
 
-    /// Keys while the entries grid is the focus stop (see
+    /// Keys while the options grid is the focus stop (see
     /// [`Self::handle_key`]'s focus notes). The cursor moves over the whole
-    /// grid, ghost row included — `Enter` there starts a new entry, exactly
+    /// grid, ghost row included — `Enter` there starts a new option, exactly
     /// like clicking it. `Esc`, `BackTab`, and `Left` from the first column
     /// hand the keyboard back to the left list rather than closing the
     /// screen; the screen's own `Esc` is then one more press away, which is
@@ -804,15 +807,15 @@ impl VarManager {
         &mut self,
         ev: KeyEvent,
         ctx: &ProjectContext,
-        group: &str,
+        selector: &str,
     ) -> Option<Action> {
         // A live cell edit owns every key (`App` routes those before this
         // is reached); nothing here may act behind its back.
         if self.grid.editing.is_some() {
             return None;
         }
-        let last_row = entry_rows(ctx, group).len(); // == the ghost row
-        let last_col = group_fields(ctx, group).len(); // == 1 + fields - 1
+        let last_row = entry_rows(ctx, selector).len(); // == the ghost row
+        let last_col = group_fields(ctx, selector).len(); // == 1 + fields - 1
         let (row, col) = &mut self.grid.cursor;
         *row = (*row).min(last_row);
         *col = (*col).min(last_col);
@@ -851,41 +854,41 @@ impl VarManager {
                 None
             }
             KeyCode::Char('m') => Some(Action::PromptGroupFields {
-                group: group.to_string(),
+                selector: selector.to_string(),
             }),
-            KeyCode::Char(' ') => self.select_entry_action(ctx, group),
-            // `e`/`d` here act on the entry under the cursor — the left
+            KeyCode::Char(' ') => self.select_entry_action(ctx, selector),
+            // `e`/`d` here act on the option under the cursor — the left
             // list's own `e`/`d`, which target the declaration, are one
             // focus stop away.
             KeyCode::Char('e') | KeyCode::F(2) => Some(Action::PromptRenameEntry {
                 env: ctx.active_env.clone()?,
-                group: group.to_string(),
+                selector: selector.to_string(),
                 from: self.entry_at(ctx, self.grid.cursor.0)?,
             }),
             KeyCode::Char('d') | KeyCode::Delete => Some(Action::ConfirmDeleteEntry {
                 env: ctx.active_env.clone()?,
-                group: group.to_string(),
+                selector: selector.to_string(),
                 name: self.entry_at(ctx, self.grid.cursor.0)?,
             }),
             KeyCode::Char('n') => Some(Action::PromptNewVar),
-            KeyCode::Char('g') => Some(Action::PromptNewGroup),
+            KeyCode::Char('g') => Some(Action::PromptNewSelector),
             _ => None,
         }
     }
 
-    /// `space`: select the entry the grid cursor is on for the active
+    /// `space`: select the option the grid cursor is on for the active
     /// environment. `None` on the ghost row (nothing to select yet) and
     /// with no active environment.
-    fn select_entry_action(&self, ctx: &ProjectContext, group: &str) -> Option<Action> {
-        Some(Action::VarEdit(VarEditOp::SelectEntry {
+    fn select_entry_action(&self, ctx: &ProjectContext, selector: &str) -> Option<Action> {
+        Some(Action::VarEdit(VarEditOp::SelectOption {
             env: ctx.active_env.clone()?,
-            group: group.to_string(),
-            entry: self.entry_at(ctx, self.grid.cursor.0)?,
+            selector: selector.to_string(),
+            option: self.entry_at(ctx, self.grid.cursor.0)?,
         }))
     }
 
     /// `e`/`F2` and the context menu's "Rename…". Both a variable and a
-    /// group rename through the same prompt: `VarStructOp::Rename` picks
+    /// selector rename through the same prompt: `VarStructOp::Rename` picks
     /// the right pair of core verbs from what the name is declared as.
     fn rename_action(&self) -> Option<Action> {
         Some(Action::PromptRenameVar {
@@ -908,10 +911,10 @@ impl VarManager {
                 MenuItem::new("Duplicate", Action::DuplicateVar { name: name.clone() }),
             ),
             // Duplicate is shown disabled rather than hidden, so the menu
-            // keeps its shape: a field belongs to exactly one group
+            // keeps its shape: a field belongs to exactly one selector
             // (`ModelError::FieldInTwoGroups`), so a copy carrying the same
             // field list can never be a valid model — there is nothing to
-            // duplicate a group *into* until fields can be renamed as part
+            // duplicate a selector *into* until fields can be renamed as part
             // of the copy.
             _ => (
                 MenuItem::new(
@@ -928,27 +931,27 @@ impl VarManager {
         ])
     }
 
-    /// The right-click menu for entry row `i` of the open group (spec
+    /// The right-click menu for option row `i` of the open selector (spec
     /// §3.4). `None` for the ghost row (nothing to act on yet) and when no
-    /// environment is active (there are no entries at all then).
+    /// environment is active (there are no options at all then).
     pub fn entry_context_menu(
         &self,
         ctx: &ProjectContext,
         i: usize,
     ) -> Option<Vec<crate::components::modal::MenuItem>> {
         use crate::components::modal::MenuItem;
-        let VmDetail::Group(group) = &self.detail else {
+        let VmDetail::Group(selector) = &self.detail else {
             return None;
         };
         let env = ctx.active_env.clone()?;
         let name = self.entry_at(ctx, i)?;
-        let (group, n) = (group.clone(), name.clone());
+        let (selector, n) = (selector.clone(), name.clone());
         Some(vec![
             MenuItem::new(
-                "Duplicate entry",
-                Action::VarStruct(VarStructOp::DuplicateEntry {
+                "Duplicate option",
+                Action::VarStruct(VarStructOp::DuplicateOption {
                     env: env.clone(),
-                    group: group.clone(),
+                    selector: selector.clone(),
                     name: n.clone(),
                 }),
             ),
@@ -956,13 +959,17 @@ impl VarManager {
                 "Rename\u{2026}",
                 Action::PromptRenameEntry {
                     env: env.clone(),
-                    group: group.clone(),
+                    selector: selector.clone(),
                     from: n,
                 },
             ),
             MenuItem::new(
                 "Delete\u{2026}",
-                Action::ConfirmDeleteEntry { env, group, name },
+                Action::ConfirmDeleteEntry {
+                    env,
+                    selector,
+                    name,
+                },
             ),
         ])
     }
@@ -975,8 +982,8 @@ impl VarManager {
         self.set_scroll((self.left_scroll as i32 + delta as i32).max(0) as usize);
     }
 
-    /// A wheel gesture at `(col, row)`: the group grid when the pointer is
-    /// over its entry rows, the left list everywhere else on the screen.
+    /// A wheel gesture at `(col, row)`: the selector grid when the pointer is
+    /// over its option rows, the left list everywhere else on the screen.
     /// (The grid is the only other scrollable region the Manager draws, and
     /// it has no scrollbar of its own — a grid tall enough to overflow is
     /// reached by wheeling over it.)
@@ -988,7 +995,7 @@ impl VarManager {
         self.handle_scroll(delta);
     }
 
-    /// Places the left list's viewport (the scrollbar drag's entry point).
+    /// Places the left list's viewport (the scrollbar drag's option point).
     pub fn set_scroll(&mut self, offset: usize) {
         let max = self.left_rows.len().saturating_sub(1);
         self.left_scroll = offset.min(max);
@@ -1024,7 +1031,7 @@ impl VarManager {
     /// Paints the screen: the top bar (environment switcher + `+ Variable` /
     /// `+ Group`), the fixed-width left list, and the detail pane —
     /// [`draw_var_form`] for a selected variable, a placeholder otherwise
-    /// (a selected group is Task 16's job).
+    /// (a selected selector is Task 16's job).
     ///
     /// `open_request` is the request-scope half of the variable form: the
     /// promote/demote button's precondition (whether the open request
@@ -1078,7 +1085,7 @@ impl VarManager {
                 fill(buf, right, theme.page);
                 self.draw_var_form(buf, right, theme, ctx, open_request, hits, hovered, &name);
             }
-            VmDetail::Group(name) if ctx.model.groups.contains_key(&name) => {
+            VmDetail::Group(name) if ctx.model.selectors.contains_key(&name) => {
                 let buf = frame.buffer_mut();
                 fill(buf, right, theme.page);
                 self.draw_entry_grid(buf, right, theme, ctx, hits, hovered, &name);
@@ -1089,10 +1096,10 @@ impl VarManager {
 
     /// The right pane for `VmDetail::Group(name)` (spec §3.4): a title row
     /// (`Group: name  [+ Entry] [Edit fields] [Rename] [Delete]`), then the
-    /// entries grid for the active environment — a radio column saying
-    /// which entry this environment has selected, the entry-name column,
+    /// options grid for the active environment — a radio column saying
+    /// which option this environment has selected, the option-name column,
     /// and one column per declared field — closed by the legend line. With
-    /// no active environment there is nowhere for entries to live, so the
+    /// no active environment there is nowhere for options to live, so the
     /// grid is replaced by [`NO_ENV_HINT`] (the top bar's environment
     /// switcher, drawn either way, is the way out of that state).
     #[allow(clippy::too_many_arguments)]
@@ -1104,7 +1111,7 @@ impl VarManager {
         ctx: &ProjectContext,
         hits: &mut HitMap,
         hovered: Option<&Hit>,
-        group: &str,
+        selector: &str,
     ) {
         if right.width < 8 || right.height < 3 {
             return;
@@ -1123,14 +1130,14 @@ impl VarManager {
 
         // --- title row: name + the pane's four buttons ------------------
         if y + BUTTON_HEIGHT <= bottom {
-            let label = format!("Group: {group}");
+            let label = format!("Selector: {selector}");
             text(buf, x0, y + 1, &label, theme.text, theme.page, true);
             let mut bx = right.x + right.width;
             for (lbl, kind, hit) in [
                 ("Delete", ButtonKind::Secondary, Hit::VmDelete),
                 ("Rename", ButtonKind::Secondary, Hit::VmRename),
                 ("Edit fields", ButtonKind::Secondary, Hit::VmEditFields),
-                ("+ Entry", ButtonKind::Primary, Hit::VmNewEntry),
+                ("+ Option", ButtonKind::Primary, Hit::VmNewOption),
             ] {
                 let w = button_min_width(lbl);
                 if bx < x0 + label.chars().count() as u16 + w + 3 {
@@ -1171,7 +1178,7 @@ impl VarManager {
         };
 
         // --- column headers ---------------------------------------------
-        let fields = group_fields(ctx, group);
+        let fields = group_fields(ctx, selector);
         let cols = grid_columns(x0, inner_w, 1 + fields.len());
         if y >= bottom || cols.x.is_empty() {
             return;
@@ -1196,14 +1203,14 @@ impl VarManager {
         }
         y += 1;
 
-        // --- entry rows (+ the always-present ghost row) ------------------
-        let rows = entry_rows(ctx, group);
-        let selected = ctx.selections_for(&env).get(group).cloned();
+        // --- option rows (+ the always-present ghost row) ------------------
+        let rows = entry_rows(ctx, selector);
+        let selected = ctx.selections_for(&env).get(selector).cloned();
         // The last line of the pane belongs to the legend.
         let rows_bottom = bottom.saturating_sub(1).max(y);
         let visible = (rows_bottom - y) as usize;
         let total = rows.len() + 1;
-        // A cursor that outlived the rows it pointed at (an entry deleted,
+        // A cursor that outlived the rows it pointed at (an option deleted,
         // a field removed) clamps back into the grid.
         self.grid.cursor.0 = self.grid.cursor.0.min(total - 1);
         self.grid.cursor.1 = self.grid.cursor.1.min(fields.len());
@@ -1673,7 +1680,7 @@ impl VarManager {
         .paint(buf, env_area, theme);
         hits.register(env_area, Hit::VmEnvSwitch);
 
-        // Right-aligned group, laid out from the bar's right edge inward so
+        // Right-aligned selector, laid out from the bar's right edge inward so
         // the buttons stay put as the environment name changes width. The
         // close button rides along as the mouse's way back to the main
         // screen (the header's vars chip toggles it too), labelled with the
@@ -1685,7 +1692,7 @@ impl VarManager {
                 ButtonKind::Secondary,
                 Hit::FooterChip(Action::CloseScreen),
             ),
-            ("+ Group", ButtonKind::Secondary, Hit::VmNewGroup),
+            ("+ Selector", ButtonKind::Secondary, Hit::VmNewSelector),
             ("+ Variable", ButtonKind::Primary, Hit::VmNewVar),
         ] {
             let w = button_min_width(label);
@@ -1806,7 +1813,7 @@ impl VarManager {
 }
 
 /// One left-list row's content: the section labels, a variable (name, lock
-/// badge, unresolved dot) or a group (`▶ name (entry)`).
+/// badge, unresolved dot) or a selector (`▶ name (option)`).
 fn paint_left_row(
     buf: &mut ratatui::buffer::Buffer,
     ctx: &ProjectContext,
@@ -1825,7 +1832,7 @@ fn paint_left_row(
             let label = if matches!(row, VmRow::SectionVars) {
                 "VARIABLES"
             } else {
-                "GROUPS"
+                "SELECTORS"
             };
             text(buf, list.x, y, label, theme.text_muted, bg, true);
         }
@@ -1861,7 +1868,7 @@ fn paint_left_row(
         }
         VmRow::Group(name) => {
             let selection = match active_selection(ctx, name) {
-                Some(entry) => format!("({entry})"),
+                Some(option) => format!("({option})"),
                 None => "(needs selection)".to_string(),
             };
             let label = format!("{GLYPH_GROUP} {name} {selection}");
@@ -1889,7 +1896,10 @@ fn draw_detail_placeholder(frame: &mut Frame, right: Rect, theme: &Theme) {
         buf,
         right.x + 2,
         right.y + 1,
-        super::chooser::clip("select a variable or group", right.width.saturating_sub(3)),
+        super::chooser::clip(
+            "select a variable or selector",
+            right.width.saturating_sub(3),
+        ),
         theme.text_muted,
         theme.page,
         false,
@@ -1906,7 +1916,7 @@ mod tests {
 
     /// A project with two envs (dev, qa; qa active); `base_url` simple with
     /// a default; `api_key` secret with no value anywhere (so it reads as
-    /// unresolved); group `creds` with two fields and two entries in qa,
+    /// unresolved); selector `creds` with two fields and two options in qa,
     /// `alice` selected there and nothing selected in dev.
     fn fixture() -> (tempfile::TempDir, ProjectContext) {
         let dir = tempfile::tempdir().unwrap();
@@ -1922,7 +1932,7 @@ default = "http://localhost:8080"
 description = "service key"
 secret = true
 
-[groups.creds]
+[selectors.creds]
 description = "paired ids"
 fields = ["user_id", "customer_id"]
 "#,
@@ -1931,7 +1941,7 @@ fields = ["user_id", "customer_id"]
         std::fs::write(dir.path().join("environments/dev.toml"), "").unwrap();
         std::fs::write(
             dir.path().join("environments/qa.toml"),
-            "[entries.creds.alice]\nuser_id = \"1001\"\ncustomer_id = \"c-77\"\n\n[entries.creds.bob]\nuser_id = \"2002\"\ncustomer_id = \"c-91\"\n",
+            "[options.creds.alice]\nuser_id = \"1001\"\ncustomer_id = \"c-77\"\n\n[options.creds.bob]\nuser_id = \"2002\"\ncustomer_id = \"c-91\"\n",
         )
         .unwrap();
 
@@ -1983,10 +1993,10 @@ fields = ["user_id", "customer_id"]
                 VmRow::SectionGroups,
                 VmRow::Group("creds".into()),
             ],
-            "group fields (user_id/customer_id) are not top-level rows"
+            "selector fields (user_id/customer_id) are not top-level rows"
         );
         assert!(content.contains("VARIABLES"), "{content}");
-        assert!(content.contains("GROUPS"), "{content}");
+        assert!(content.contains("SELECTORS"), "{content}");
         assert!(content.contains("creds (alice)"), "{content}");
         assert!(content.contains(GLYPH_LOCK), "secret badge: {content}");
         assert!(
@@ -2058,7 +2068,7 @@ fields = ["user_id", "customer_id"]
         assert_eq!(vm.detail, VmDetail::Var("base_url".into()));
         vm.handle_key(key(KeyCode::Down), &ctx);
         assert_eq!(vm.detail, VmDetail::Var("api_key".into()));
-        // Skips the GROUPS header.
+        // Skips the SELECTORS header.
         vm.handle_key(key(KeyCode::Down), &ctx);
         assert_eq!(vm.detail, VmDetail::Group("creds".into()));
         // …and stops at the end.
@@ -2077,9 +2087,9 @@ fields = ["user_id", "customer_id"]
         assert!(content.contains("Environment: qa"), "{content}");
         assert!(hits.rect_of(&Hit::VmEnvSwitch).is_some());
         assert!(hits.rect_of(&Hit::VmNewVar).is_some());
-        assert!(hits.rect_of(&Hit::VmNewGroup).is_some());
+        assert!(hits.rect_of(&Hit::VmNewSelector).is_some());
         assert!(content.contains("+ Variable"), "{content}");
-        assert!(content.contains("+ Group"), "{content}");
+        assert!(content.contains("+ Selector"), "{content}");
         assert!(content.contains("Close (esc)"), "{content}");
         assert!(
             hits.rect_of(&Hit::FooterChip(Action::CloseScreen))
@@ -2093,7 +2103,10 @@ fields = ["user_id", "customer_id"]
         let (_dir, ctx) = fixture();
         let mut vm = VarManager::default();
         let (content, _) = render(&mut vm, &ctx);
-        assert!(content.contains("select a variable or group"), "{content}");
+        assert!(
+            content.contains("select a variable or selector"),
+            "{content}"
+        );
     }
 
     #[test]
@@ -2108,7 +2121,7 @@ fields = ["user_id", "customer_id"]
         );
         assert_eq!(
             vm.handle_key(key(KeyCode::Char('g')), &ctx),
-            Some(Action::PromptNewGroup)
+            Some(Action::PromptNewSelector)
         );
 
         vm.select_row(1); // base_url
@@ -2144,19 +2157,19 @@ fields = ["user_id", "customer_id"]
             Some(Action::ConfirmDeleteVar {
                 name: "creds".into()
             }),
-            "delete works on a group row"
+            "delete works on a selector row"
         );
         assert_eq!(
             vm.handle_key(key(KeyCode::Char('e')), &ctx),
             Some(Action::PromptRenameVar {
                 from: "creds".into()
             }),
-            "a group renames through the same prompt a variable does"
+            "a selector renames through the same prompt a variable does"
         );
         assert_eq!(
             vm.handle_key(key(KeyCode::Char('s')), &ctx),
             None,
-            "a group has no secret flag"
+            "a selector has no secret flag"
         );
     }
 
@@ -2214,20 +2227,22 @@ fields = ["user_id", "customer_id"]
             })
         );
 
-        let group = vm.context_menu(vm.left_rows.len() - 1).expect("group menu");
+        let selector = vm
+            .context_menu(vm.left_rows.len() - 1)
+            .expect("selector menu");
         assert_eq!(
-            group[0].action,
+            selector[0].action,
             Some(Action::PromptRenameVar {
                 from: "creds".into()
             }),
-            "a group's rename is live"
+            "a selector's rename is live"
         );
         assert_eq!(
-            group[1].action, None,
-            "so is duplicate: a field can only belong to one group"
+            selector[1].action, None,
+            "so is duplicate: a field can only belong to one selector"
         );
         assert_eq!(
-            group[2].action,
+            selector[2].action,
             Some(Action::ConfirmDeleteVar {
                 name: "creds".into()
             })
@@ -2519,7 +2534,7 @@ fields = ["user_id", "customer_id"]
         assert!(hits.rect_of(&Hit::VmPromoteBtn).is_some());
     }
 
-    // --- Task 16: the group entries grid ---------------------------------
+    // --- Task 16: the selector options grid ---------------------------------
 
     fn select_group(vm: &mut VarManager, ctx: &ProjectContext, name: &str) {
         render(vm, ctx); // populates left_rows
@@ -2538,9 +2553,9 @@ fields = ["user_id", "customer_id"]
         select_group(&mut vm, &ctx, "creds");
         let (content, hits) = render(&mut vm, &ctx);
 
-        assert!(content.contains("Group: creds"), "{content}");
-        // One column per declared field, one row per entry of the active
-        // environment, each cell holding that entry's value.
+        assert!(content.contains("Selector: creds"), "{content}");
+        // One column per declared field, one row per option of the active
+        // environment, each cell holding that option's value.
         assert!(content.contains("USER_ID"), "{content}");
         assert!(content.contains("CUSTOMER_ID"), "{content}");
         for cell in ["alice", "1001", "c-77", "bob", "2002", "c-91"] {
@@ -2565,13 +2580,13 @@ fields = ["user_id", "customer_id"]
             }
         }
         // The ghost row's own name cell is clickable — that is the "start a
-        // new entry" gesture.
+        // new option" gesture.
         assert!(
             hits.rect_of(&Hit::VmEntryCell { row: 2, col: 0 }).is_some(),
             "ghost row cell"
         );
         for hit in [
-            Hit::VmNewEntry,
+            Hit::VmNewOption,
             Hit::VmEditFields,
             Hit::VmRename,
             Hit::VmDelete,
@@ -2608,7 +2623,7 @@ fields = ["user_id", "customer_id"]
         select_group(&mut vm, &ctx, "creds");
         let (content, hits) = render(&mut vm, &ctx);
         assert!(
-            content.contains("entries live in environments"),
+            content.contains("options live in environments"),
             "{content}"
         );
         assert!(
@@ -2628,24 +2643,24 @@ fields = ["user_id", "customer_id"]
         select_group(&mut vm, &ctx, "creds");
         render(&mut vm, &ctx);
 
-        // `space` selects the entry the grid cursor is on.
+        // `space` selects the option the grid cursor is on.
         vm.grid.cursor = (1, 0);
         assert_eq!(
             vm.handle_key(key(KeyCode::Char(' ')), &ctx),
-            Some(Action::VarEdit(VarEditOp::SelectEntry {
+            Some(Action::VarEdit(VarEditOp::SelectOption {
                 env: "qa".into(),
-                group: "creds".into(),
-                entry: "bob".into(),
+                selector: "creds".into(),
+                option: "bob".into(),
             }))
         );
         // `m` opens the field-list editor.
         assert_eq!(
             vm.handle_key(key(KeyCode::Char('m')), &ctx),
             Some(Action::PromptGroupFields {
-                group: "creds".into()
+                selector: "creds".into()
             })
         );
-        // `o` starts a new entry in the ghost row, in place.
+        // `o` starts a new option in the ghost row, in place.
         assert!(vm.handle_key(key(KeyCode::Char('o')), &ctx).is_none());
         let edit = vm.grid.editing.as_ref().expect("ghost row is live");
         assert_eq!((edit.row, edit.col), (2, 0));
@@ -2669,7 +2684,7 @@ fields = ["user_id", "customer_id"]
         assert_eq!(vm.grid.cursor, (0, 2));
 
         // A ghost-row click always lands in the name cell: there is no
-        // entry yet for a value to belong to.
+        // option yet for a value to belong to.
         vm.start_cell_edit(&ctx, 2, 2);
         let edit = vm.grid.editing.as_ref().unwrap();
         assert_eq!((edit.row, edit.col), (2, 0));
@@ -2681,17 +2696,17 @@ fields = ["user_id", "customer_id"]
         let (_dir, ctx) = fixture();
         let mut vm = VarManager::default();
         select_group(&mut vm, &ctx, "creds");
-        let items = vm.entry_context_menu(&ctx, 1).expect("entry menu");
+        let items = vm.entry_context_menu(&ctx, 1).expect("option menu");
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         assert_eq!(
             labels,
-            vec!["Duplicate entry", "Rename\u{2026}", "Delete\u{2026}"]
+            vec!["Duplicate option", "Rename\u{2026}", "Delete\u{2026}"]
         );
         assert_eq!(
             items[0].action,
-            Some(Action::VarStruct(VarStructOp::DuplicateEntry {
+            Some(Action::VarStruct(VarStructOp::DuplicateOption {
                 env: "qa".into(),
-                group: "creds".into(),
+                selector: "creds".into(),
                 name: "bob".into(),
             }))
         );
@@ -2699,7 +2714,7 @@ fields = ["user_id", "customer_id"]
             items[1].action,
             Some(Action::PromptRenameEntry {
                 env: "qa".into(),
-                group: "creds".into(),
+                selector: "creds".into(),
                 from: "bob".into(),
             })
         );
@@ -2707,7 +2722,7 @@ fields = ["user_id", "customer_id"]
             items[2].action,
             Some(Action::ConfirmDeleteEntry {
                 env: "qa".into(),
-                group: "creds".into(),
+                selector: "creds".into(),
                 name: "bob".into(),
             })
         );
