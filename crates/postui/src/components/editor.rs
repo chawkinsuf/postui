@@ -754,8 +754,9 @@ impl Editor {
     /// end of a selection anchored by the preceding left click. The head
     /// cell is included in the selection (edtui's inclusive-`end`
     /// semantics); dragging back onto the anchor cell collapses it.
-    /// Returns `false` when there is no live anchor or the point doesn't
-    /// resolve to a body position (e.g. the gutter).
+    /// Returns `false` only when there is no live anchor (or no rendered
+    /// body area) — unlike a click, a sweep that leaves the box keeps
+    /// selecting (see [`Self::body_cursor_for_drag`]).
     pub fn body_drag_to(&mut self, x: u16, y: u16) -> bool {
         if self.active_tab != EditorTab::Body {
             return false;
@@ -763,7 +764,7 @@ impl Editor {
         let Some(anchor) = self.body_sel_anchor else {
             return false;
         };
-        let Some(cursor) = self.body_cursor_for_click(x, y) else {
+        let Some(cursor) = self.body_cursor_for_drag(x, y) else {
             return false;
         };
         self.body.cursor = cursor;
@@ -1014,6 +1015,36 @@ impl Editor {
             last,
             self.body.lines.len_col(last).unwrap_or(0),
         ))
+    }
+
+    /// Like [`Self::body_cursor_for_click`], but drag-tolerant: a sweep
+    /// that leaves the box keeps selecting instead of freezing. The
+    /// pointer is clamped into the content rect horizontally (the gutter
+    /// and anything left of it read as column 0), and a pointer above the
+    /// box maps one buffer row above the viewport top per screen row of
+    /// overshoot — mirroring the below-the-box case, where the click walk
+    /// already continues past the viewport bottom. edtui's render scrolls
+    /// the viewport to keep the cursor visible, so each drag event out
+    /// the top/bottom also scrolls the view toward the pointer.
+    fn body_cursor_for_drag(&self, x: u16, y: u16) -> Option<edtui::Index2> {
+        let area = self.last_body_area?;
+        let gutter = line_number_gutter_width(self.body.lines.len());
+        let content_x = area.x.saturating_add(gutter);
+        let width = usize::from(area.width.saturating_sub(gutter));
+        if width == 0 {
+            return None;
+        }
+        let x = x.max(content_x);
+        if y >= area.y {
+            return self.body_cursor_for_click(x, y);
+        }
+        let overshoot = usize::from(area.y - y);
+        let top = self.body.viewport_offset().1;
+        let row = top.saturating_sub(overshoot);
+        let line = self.body.lines.iter_row().nth(row)?;
+        let segments = wrap_segments(line, width);
+        let col = column_in_wrapped_line(line, &segments, 0, usize::from(x - content_x));
+        Some(edtui::Index2::new(row, col))
     }
 }
 
@@ -5279,6 +5310,71 @@ mod body_click_tests {
         assert!(e.body.selection.is_some());
         e.body_drag_to(2, 0);
         assert!(e.body.selection.is_none());
+    }
+
+    /// A sweep that leaves the box out the LEFT (into the gutter or past
+    /// it) keeps selecting, snapping to column 0 of the row under the
+    /// pointer instead of freezing the selection at its last in-box state.
+    #[test]
+    fn drag_left_of_the_gutter_keeps_selecting_to_column_zero() {
+        let mut e = editor_with_body("hello\nworld\n");
+        e.handle_mouse(left_down(4, 0)); // caret (0,2), anchor planted
+        assert!(e.body_drag_to(0, 1), "off-left drag still consumed");
+        assert_eq!(e.body.cursor, Index2::new(1, 0));
+        // Inclusive-head-cell semantics, same as any in-box drag.
+        assert_eq!(e.body_selected_text().as_deref(), Some("llo\nw"));
+    }
+
+    /// A sweep that leaves the box out the TOP keeps selecting: each row
+    /// of overshoot targets one buffer row above the viewport top, and the
+    /// next render scrolls the viewport up to the new cursor (edtui keeps
+    /// the cursor visible), so holding the drag above the box walks the
+    /// selection — and the view — upward.
+    #[test]
+    fn drag_above_the_box_selects_upward_and_scrolls_on_render() {
+        let text: String = (0..30).map(|i| format!("line{i}\n")).collect();
+        let mut e = editor_with_body(&text);
+        // Park the box lower on the screen and scroll it mid-buffer.
+        let area = Rect {
+            y: 5,
+            ..AREA
+        };
+        e.last_body_area = Some(area);
+        e.body.set_viewport_offset(0, 15);
+
+        e.handle_mouse(left_down(4, 6)); // row 16 (top 15 + screen row 1)
+        assert_eq!(e.body.cursor.row, 16);
+        // Two rows above the box top: two buffer rows above the viewport.
+        assert!(e.body_drag_to(4, 3), "off-top drag still consumed");
+        assert_eq!(e.body.cursor.row, 13);
+        assert!(e.body.selection.is_some());
+
+        // The next render pulls the viewport up to the cursor.
+        let mut buf = Buffer::empty(area);
+        EditorView::new(&mut e.body)
+            .theme(EditorTheme::default().hide_status_line())
+            .wrap(true)
+            .line_numbers(LineNumbers::Absolute)
+            .render(area, &mut buf);
+        assert!(
+            e.body.viewport_offset().1 <= 13,
+            "render scrolls the viewport up to the dragged-to row (offset {})",
+            e.body.viewport_offset().1
+        );
+    }
+
+    /// A sweep below the box bottom maps one buffer row per screen row of
+    /// overshoot (the walk continues past the viewport), so dragging out
+    /// the bottom selects downward and the render scrolls after it.
+    #[test]
+    fn drag_below_the_box_selects_downward() {
+        let text: String = (0..30).map(|i| format!("line{i}\n")).collect();
+        let mut e = editor_with_body(&text);
+        e.handle_mouse(left_down(4, 2)); // row 2
+        // AREA is 10 rows tall (y 0..10); y=12 is two rows past the bottom.
+        assert!(e.body_drag_to(4, 12));
+        assert_eq!(e.body.cursor.row, 12);
+        assert!(e.body.selection.is_some());
     }
 
     fn skey(code: ratatui::crossterm::event::KeyCode) -> ratatui::crossterm::event::KeyEvent {
