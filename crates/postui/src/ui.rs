@@ -157,8 +157,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         &mut hits,
         app.hovered.as_ref(),
     );
-    app.toasts
-        .draw(frame, frame.area(), &app.theme, &app.anims, now);
     app.modals.draw(
         frame,
         frame.area(),
@@ -169,6 +167,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         &app.anims,
         now,
     );
+    // Toasts paint over the modal stack: a validation error raised by a
+    // modal's own confirm must arrive at full strength, not dimmed under
+    // the backdrop it is commenting on.
+    app.toasts
+        .draw(frame, frame.area(), &app.theme, &app.anims, now);
     app.hits = hits;
 
     // The variable tooltip is painted last of all, over every pane — after

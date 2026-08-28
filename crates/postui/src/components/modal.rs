@@ -99,11 +99,15 @@ pub enum PromptKind {
     ExtractVariable,
     /// Clicking a simple variable's inline `{{token}}`
     /// (`Action::OpenVarTokenPopup`): a `Modal::MultiPrompt` with a `value`
-    /// field seeded with the current value and a `destination` choice field
-    /// preselected to whichever scope supplies it today. Confirming emits
+    /// field and a `destination` choice field preselected to whichever
+    /// scope supplies the value today. `scope_values` holds what each
+    /// destination currently stores (destination label → value); cycling
+    /// the destination reseeds the value field from it, so the box always
+    /// shows what the chosen scope holds. Confirming emits
     /// `Action::ConfirmEditVarValue`.
     EditVarValue {
         name: String,
+        scope_values: Vec<(String, String)>,
     },
 }
 
@@ -271,6 +275,31 @@ impl PromptKind {
     /// prompt (spec §3: masked everywhere by default).
     fn is_secret(&self) -> bool {
         matches!(self, PromptKind::SecretValue { .. })
+    }
+}
+
+/// Kind-specific follow-up to cycling a choice field. For
+/// `EditVarValue`, the value field is reseeded with what the newly chosen
+/// destination currently stores — the box always shows what's being
+/// edited, not a leftover from the previous scope.
+pub(crate) fn resync_after_choice_cycle(kind: &PromptKind, fields: &mut [PromptField]) {
+    let PromptKind::EditVarValue { scope_values, .. } = kind else {
+        return;
+    };
+    let Some(dest) = fields
+        .iter()
+        .find(|f| f.key == "destination")
+        .map(|f| f.input.text().to_string())
+    else {
+        return;
+    };
+    let seed = scope_values
+        .iter()
+        .find(|(label, _)| *label == dest)
+        .map(|(_, v)| v.clone())
+        .unwrap_or_default();
+    if let Some(value_field) = fields.iter_mut().find(|f| f.key == "value") {
+        value_field.input = LineInput::new(&seed);
     }
 }
 
@@ -801,10 +830,12 @@ impl ModalStack {
                 }
                 KeyCode::Left if !fields[*focus].choices.is_empty() => {
                     fields[*focus].cycle(-1);
+                    resync_after_choice_cycle(kind, fields);
                     None // swallowed: modals capture all input
                 }
                 KeyCode::Right if !fields[*focus].choices.is_empty() => {
                     fields[*focus].cycle(1);
+                    resync_after_choice_cycle(kind, fields);
                     None // swallowed: modals capture all input
                 }
                 KeyCode::Enter => {
@@ -854,7 +885,7 @@ impl ModalStack {
                             };
                             vec![Action::ConfirmExtractVariable { name, destination }]
                         }
-                        PromptKind::EditVarValue { name } => {
+                        PromptKind::EditVarValue { name, .. } => {
                             // An emptied value is a legitimate edit (clear
                             // the override), so no non-empty filter here.
                             let value = fields

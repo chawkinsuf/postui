@@ -1798,16 +1798,19 @@ impl App {
                             format!("a request named {taken:?} already exists here"),
                             ToastKind::Error,
                         );
+                        self.last_action_failed = true;
                     }
                     Err(StorageError::InvalidSlug(_)) => {
                         self.toasts
                             .push("request name cannot be empty", ToastKind::Error);
+                        self.last_action_failed = true;
                     }
                     Err(e) => {
                         self.toasts.push(
                             format!("could not rename {}: {e}", self.request_display(&from)),
                             ToastKind::Error,
                         );
+                        self.last_action_failed = true;
                     }
                 }
                 true
@@ -2379,6 +2382,7 @@ impl App {
                             format!("cannot create environment: {e}")
                         };
                         self.toasts.push(msg, ToastKind::Warning);
+                        self.last_action_failed = true;
                     }
                 }
                 true
@@ -2655,7 +2659,10 @@ impl App {
                 let before = self.read_file_states(&self.project.var_file_paths());
                 match self.apply_var_edit(&op) {
                     Ok(()) => self.record_var_file_step(before),
-                    Err(msg) => self.toasts.push(msg, ToastKind::Error),
+                    Err(msg) => {
+                        self.toasts.push(msg, ToastKind::Error);
+                        self.last_action_failed = true;
+                    }
                 }
                 true
             }
@@ -2699,6 +2706,7 @@ impl App {
                         format!("\"{field}\" is already a field of {selector}"),
                         ToastKind::Warning,
                     );
+                    self.last_action_failed = true;
                     return true;
                 }
                 let mut fields = current;
@@ -2764,7 +2772,10 @@ impl App {
                             ToastKind::Info,
                         );
                     }
-                    Err(msg) => self.toasts.push(msg, ToastKind::Error),
+                    Err(msg) => {
+                        self.toasts.push(msg, ToastKind::Error);
+                        self.last_action_failed = true;
+                    }
                 }
                 true
             }
@@ -3036,6 +3047,7 @@ impl App {
                 if key.is_empty() {
                     self.toasts
                         .push("option name can't be empty", ToastKind::Error);
+                    self.last_action_failed = true;
                     return true;
                 }
                 if key == postui_core::varmodel::OPTION_DESCRIPTION {
@@ -3045,6 +3057,7 @@ impl App {
                         ),
                         ToastKind::Error,
                     );
+                    self.last_action_failed = true;
                     return true;
                 }
                 let Some(env) = self.project.active_env.clone() else {
@@ -3054,6 +3067,19 @@ impl App {
                     );
                     return true;
                 };
+                // Create means create: writing over an existing option of
+                // the same name from the add prompt would silently clobber
+                // its values.
+                if postui_core::varmodel::selector_options(&self.project.env_data, &owner)
+                    .is_some_and(|options| options.contains_key(&key))
+                {
+                    self.toasts.push(
+                        format!("option \"{key}\" already exists on {owner}"),
+                        ToastKind::Error,
+                    );
+                    self.last_action_failed = true;
+                    return true;
+                }
                 // The inline prompt collects one value, but an option has
                 // to supply every field of its selector or `validate_env`
                 // rejects it: the typed value fills the first field and
@@ -3194,6 +3220,7 @@ impl App {
                         format!("\"{name}\" is not a valid variable name"),
                         ToastKind::Error,
                     );
+                    self.last_action_failed = true;
                     return true;
                 }
                 let Some(text) = self.focused_field_text().map(|(t, _)| t.to_string()) else {
@@ -3235,6 +3262,7 @@ impl App {
                         if self.project.model.selectors.contains_key(&name) {
                             self.toasts
                                 .push(format!("\"{name}\" already exists"), ToastKind::Error);
+                            self.last_action_failed = true;
                             return true;
                         }
                         if let Some(decl) = self.project.model.vars.get(&name) {
@@ -3245,12 +3273,14 @@ impl App {
                                     ),
                                     ToastKind::Error,
                                 );
+                                self.last_action_failed = true;
                                 return true;
                             }
                         } else if let Err(msg) = self.project.edit_variables(|doc| {
                             postui_core::varedit::upsert_var(doc, &name, None, None)
                         }) {
                             self.toasts.push(msg, ToastKind::Error);
+                            self.last_action_failed = true;
                             return true;
                         }
                         self.project.edit_env(&env, |doc| {
@@ -3269,6 +3299,7 @@ impl App {
                                 format!("\"{name}\" already exists in this request's variables"),
                                 ToastKind::Error,
                             );
+                            self.last_action_failed = true;
                             return true;
                         }
                         self.editor.variables.insert(
@@ -3456,12 +3487,36 @@ impl App {
         let mut destination = PromptField::choice("destination", "Write to", &choices);
         destination.input = LineInput::new(preselect);
 
+        // What each destination currently stores, so cycling the scope can
+        // reseed the value field with what that scope holds.
+        let default_value = self
+            .project
+            .model
+            .vars
+            .get(name)
+            .and_then(|d| d.default.clone())
+            .unwrap_or_default();
+        let mut scope_values = vec![
+            ("Project default".to_string(), default_value),
+            (
+                "This request".to_string(),
+                request_value.clone().unwrap_or_default(),
+            ),
+        ];
+        if has_env {
+            scope_values.push((
+                "Active env value".to_string(),
+                env_value.clone().unwrap_or_default(),
+            ));
+        }
+
         self.push_modal(Modal::MultiPrompt {
             title: format!("{{{{{name}}}}}"),
             fields: vec![PromptField::text("value", "Value", &seed), destination],
             focus: 0,
             kind: PromptKind::EditVarValue {
                 name: name.to_string(),
+                scope_values,
             },
         });
         true
@@ -4005,6 +4060,7 @@ impl App {
                 format!("\"{selector}\" is not a declared selector"),
                 ToastKind::Error,
             );
+            self.last_action_failed = true;
             return;
         };
 
@@ -4044,25 +4100,24 @@ impl App {
                     format!("\"{name}\" is not a valid field name"),
                     ToastKind::Error,
                 );
+                self.last_action_failed = true;
                 return;
             }
             // A field belongs to exactly one selector, and shares the
             // declaration namespace with variables and selectors — a
-            // {{token}} has to name one thing. The toast says who owns the
-            // name so the rule is legible, not just enforced.
+            // {{token}} has to name one thing. The toast names the owner.
             let owner = self.project.model.selectors.iter().find_map(|(g, decl)| {
                 if g == name {
                     Some(format!("\"{name}\" is already a selector"))
                 } else if g != &selector && decl.fields.iter().any(|f| f == name) {
-                    Some(format!(
-                        "\"{name}\" is already a field of selector \"{g}\"; every field names one {{{{token}}}}, so it can only belong to one selector"
-                    ))
+                    Some(format!("\"{name}\" already belongs to selector \"{g}\""))
                 } else {
                     None
                 }
             });
             if let Some(msg) = owner {
                 self.toasts.push(msg, ToastKind::Error);
+                self.last_action_failed = true;
                 return;
             }
         }
@@ -4070,6 +4125,7 @@ impl App {
         if let Some(dup) = fields.iter().find(|f| !seen.insert((*f).clone())) {
             self.toasts
                 .push(format!("\"{dup}\" is listed twice"), ToastKind::Error);
+            self.last_action_failed = true;
             return;
         }
 
@@ -4865,16 +4921,19 @@ impl App {
                     format!("a request named {taken:?} already exists here"),
                     ToastKind::Error,
                 );
+                self.last_action_failed = true;
                 false
             }
             Err(StorageError::InvalidSlug(_)) => {
                 self.toasts
                     .push("request name cannot be empty", ToastKind::Error);
+                self.last_action_failed = true;
                 false
             }
             Err(e) => {
                 self.toasts
                     .push(format!("could not save {name}: {e}"), ToastKind::Error);
+                self.last_action_failed = true;
                 false
             }
         }
@@ -5878,8 +5937,9 @@ impl App {
     /// (declaring `name`) was refused.
     fn apply_modal_result(&mut self, res: ModalResult) -> bool {
         let mut changed = res.close;
+        let mut popped = None;
         if res.close {
-            let popped = self.modals.pop();
+            popped = self.modals.pop();
             // Overlay close is always instant.
             self.anims.snap(AnimKey::DropdownOpen, 1.0);
             self.anims.snap(AnimKey::ModalOpen, 1.0);
@@ -5908,12 +5968,34 @@ impl App {
         if let Some(id) = &res.usage {
             self.usage.record(id, crate::usage::now());
         }
+        let had_actions = !res.actions.is_empty();
         for a in res.actions {
             self.last_action_failed = false;
             changed |= self.update(a);
             if self.last_action_failed {
                 break;
             }
+        }
+        // A refused confirm re-opens the editor it came from, typed state
+        // intact — a validation error (name taken, field clash, …) must
+        // never cost the user their input. Only text-entry modals come
+        // back; a Confirm's choice failing just toasts.
+        if had_actions
+            && self.last_action_failed
+            && matches!(
+                popped,
+                Some(
+                    Modal::Prompt { .. }
+                        | Modal::MultiPrompt { .. }
+                        | Modal::FieldsEditor(_)
+                        | Modal::NewProject { .. }
+                )
+            )
+        {
+            // Straight onto the stack, not `push_modal`: the modal never
+            // visually left, so re-running the open animation would blink.
+            self.modals.push(popped.expect("matched Some above"));
+            changed = true;
         }
         changed
     }

@@ -3321,10 +3321,12 @@ fn new_request_duplicate_name_toasts_and_leaves_existing_file_alone() {
         app.handle_key(&keymap, plain(c));
     }
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(
-        app.modals.is_empty(),
-        "modal closes even though the save is rejected"
-    );
+    // The rejected name keeps the prompt open (typed text intact) so it
+    // can be corrected instead of retyped.
+    let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
+        panic!("the name prompt stays open after the rejection")
+    };
+    assert_eq!(input.text(), "api/ping");
     assert!(!app.toasts.is_empty(), "a duplicate name must toast");
     let existing = postui_core::storage::load_request(&app.project.root, "api/ping").unwrap();
     assert_eq!(
@@ -4535,7 +4537,12 @@ fn insert_picker_new_variable_confirm_with_a_reserved_name_toasts_and_inserts_no
     assert!(matches!(app.modals.top(), Some(Modal::Prompt { .. })));
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-    assert!(app.modals.is_empty(), "the prompt still closes on Enter");
+    // The refused name keeps the prompt open (typed text intact) so it
+    // can be fixed rather than retyped.
+    let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
+        panic!("the prompt stays open after the refusal")
+    };
+    assert_eq!(input.text(), "options");
     assert!(!app.toasts.is_empty(), "the reserved-name error toasts");
     assert_eq!(
         app.editor.url.text(),
@@ -7484,11 +7491,9 @@ fn clicking_a_simple_var_token_opens_the_value_popup_on_its_supplying_scope() {
         panic!("a simple variable token must open the value popup")
     };
     assert_eq!(title, "{{base_url}}");
-    assert_eq!(
-        *kind,
-        PromptKind::EditVarValue {
-            name: "base_url".into()
-        }
+    assert!(
+        matches!(kind, PromptKind::EditVarValue { name, .. } if name == "base_url"),
+        "unexpected kind"
     );
     let value = fields.iter().find(|f| f.key == "value").unwrap();
     assert_eq!(value.input.text(), "https://qa.example.com");
@@ -7629,6 +7634,137 @@ fn clicking_the_write_to_field_cycles_the_scope() {
     );
     app.handle_mouse(left_down(r.x + 1, r.y + 1));
     assert_eq!(scope_text(&app), "Project default", "and wraps around");
+}
+
+#[test]
+fn a_taken_name_keeps_the_new_variable_prompt_open_with_the_typed_text() {
+    let (mut app, _dir) = token_popup_app();
+    let keymap = Keymap::default_bindings();
+    app.update(Action::PromptNewVar);
+    for c in "base_url".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(!app.toasts.is_empty(), "the refusal is surfaced");
+    let Some(Modal::Prompt { input, kind, .. }) = app.modals.top() else {
+        panic!("the prompt must stay open so the name can be fixed")
+    };
+    assert_eq!(*kind, PromptKind::NewVariable);
+    assert_eq!(input.text(), "base_url");
+}
+
+#[test]
+fn a_taken_name_keeps_the_new_selector_prompt_open() {
+    let (mut app, _dir) = token_popup_app();
+    let keymap = Keymap::default_bindings();
+    app.update(Action::PromptNewSelector);
+    for c in "user".chars() {
+        // "user" is already a selector in the fixture.
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(!app.toasts.is_empty());
+    let Some(Modal::Prompt { input, kind, .. }) = app.modals.top() else {
+        panic!("the prompt must stay open")
+    };
+    assert_eq!(*kind, PromptKind::NewSelector);
+    assert_eq!(input.text(), "user");
+}
+
+#[test]
+fn a_refused_apply_keeps_the_fields_editor_open() {
+    let (mut app, _dir) = fields_editor_app();
+    let keymap = Keymap::default_bindings();
+    // Retype row 0 (user_id) as customer_id — a duplicate within the list.
+    for _ in 0.."user_id".len() {
+        app.handle_key(
+            &keymap,
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+        );
+    }
+    for c in "customer_id".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(!app.toasts.is_empty(), "the refusal is surfaced");
+    let Some(Modal::FieldsEditor(fe)) = app.modals.top() else {
+        panic!("the fields editor must stay open so the clash can be fixed")
+    };
+    assert_eq!(fe.rows[0].input.text(), "customer_id", "typed text kept");
+    assert_eq!(
+        app.project.model.selectors["creds"].fields,
+        vec!["user_id", "customer_id"],
+        "nothing was written"
+    );
+}
+
+#[test]
+fn cycling_the_write_to_scope_shows_that_scopes_current_value() {
+    let (mut app, _dir) = token_popup_app();
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    let keymap = Keymap::default_bindings();
+    // Focus the destination field and cycle: the value field follows,
+    // showing what is currently stored at each scope.
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    let field_texts = |app: &App| {
+        let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
+            panic!("popup open")
+        };
+        (
+            fields[0].input.text().to_string(),
+            fields[1].input.text().to_string(),
+        )
+    };
+    assert_eq!(
+        field_texts(&app),
+        ("https://qa.example.com".into(), "Active env value".into())
+    );
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    assert_eq!(
+        field_texts(&app),
+        (String::new(), "This request".into()),
+        "no request override yet, so the value box is empty"
+    );
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    assert_eq!(
+        field_texts(&app),
+        ("http://localhost:8080".into(), "Project default".into()),
+        "the declaration default shows for the default scope"
+    );
+}
+
+#[test]
+fn toasts_paint_undimmed_above_an_open_modal() {
+    let (mut app, _dir) = token_popup_app();
+    app.toasts.push("\"user\" already exists", ToastKind::Error);
+    let find_cell = |app: &mut App| {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        app.anims.finish_all();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width.saturating_sub(8) {
+                let text: String = (0..8).map(|i| buf[(x + i, y)].symbol()).collect();
+                if text.contains("already") {
+                    return Some(buf[(x, y)].fg);
+                }
+            }
+        }
+        None
+    };
+    let plain_fg = find_cell(&mut app).expect("toast visible with no modal");
+    app.update(Action::PromptNewVar);
+    let modal_fg = find_cell(&mut app).expect("toast visible over the modal");
+    assert_eq!(
+        plain_fg, modal_fg,
+        "the modal backdrop must not dim the toast"
+    );
 }
 
 #[test]
@@ -8430,9 +8566,15 @@ fn extract_to_active_env_refuses_a_name_colliding_with_an_existing_group() {
         1,          // Active env value
     );
 
-    assert!(app.modals.is_empty());
+    // The refusal keeps the prompt open with the typed name, so it can be
+    // fixed instead of retyped.
+    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
+        panic!("the extract prompt stays open after a refusal")
+    };
+    assert_eq!(fields[0].input.text(), "identity");
     let content = rendered_text(&mut app);
     assert!(content.contains("already exists"), "{content}");
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(
         app.editor.url.text(),
         "https://x/whatever",
@@ -8464,9 +8606,13 @@ fn extract_to_active_env_refuses_a_name_colliding_with_an_existing_secret() {
         1,         // Active env value
     );
 
-    assert!(app.modals.is_empty());
+    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
+        panic!("the extract prompt stays open after a refusal")
+    };
+    assert_eq!(fields[0].input.text(), "api_key");
     let content = rendered_text(&mut app);
     assert!(content.contains("secret"), "{content}");
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(
         app.editor.url.text(),
         "https://x/whatever",

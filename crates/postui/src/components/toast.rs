@@ -83,15 +83,22 @@ impl Toasts {
         });
     }
 
-    /// Stamps `expires_at` (`now + TOAST_LIFETIME`) on every toast that
-    /// doesn't have one yet -- i.e. every toast pushed since the last call
-    /// to this or `on_tick`. Not done in `push` itself, so the ~100
-    /// `Toasts::push` call sites across `app.rs` don't each need `now`
-    /// threaded through.
+    /// Stamps `expires_at` on every toast that doesn't have one yet --
+    /// i.e. every toast pushed since the last call to this or `on_tick`.
+    /// Not done in `push` itself, so the ~100 `Toasts::push` call sites
+    /// across `app.rs` don't each need `now` threaded through.
+    ///
+    /// The lifetime scales with reading time: [`TOAST_LIFETIME`] covers
+    /// the first 40 chars, then ~35ms per additional char, capped at 8s —
+    /// a long validation error stays readable instead of vanishing on the
+    /// same clock as a one-word "Saved".
     fn stamp_pending(&mut self, now: Instant) {
         for t in &mut self.entries {
             if t.expires_at.is_none() {
-                t.expires_at = Some(now + TOAST_LIFETIME);
+                let extra_chars = t.message.chars().count().saturating_sub(40) as u64;
+                let lifetime = (TOAST_LIFETIME + Duration::from_millis(extra_chars * 35))
+                    .min(Duration::from_secs(8));
+                t.expires_at = Some(now + lifetime);
             }
         }
     }
@@ -279,6 +286,26 @@ mod tests {
         assert!(!t.is_empty(), "alive one millisecond before expiry");
         t.on_tick(&mut anims, base + TOAST_LIFETIME);
         assert!(t.is_empty(), "expired at lifetime");
+    }
+
+    #[test]
+    fn a_long_message_lives_long_enough_to_read() {
+        // Lifetime scales with message length past the first ~40 chars —
+        // a one-word "Saved" gets the base 3s, a full-sentence error
+        // sticks around long enough to actually read.
+        let mut anims = Anims::new(true);
+        let mut t = Toasts::default();
+        let base = Instant::now();
+        let msg = "\"user_id\" already belongs to selector \"creds\" — pick a different field name";
+        t.push(msg, ToastKind::Error);
+        t.on_tick(&mut anims, base);
+        t.on_tick(&mut anims, base + TOAST_LIFETIME);
+        assert!(
+            !t.is_empty(),
+            "a long message must outlive the base lifetime"
+        );
+        t.on_tick(&mut anims, base + Duration::from_secs(9));
+        assert!(t.is_empty(), "but not forever");
     }
 
     /// A toast's `AnimKey::ToastFade(id)` entry must not outlive the toast
