@@ -7503,15 +7503,11 @@ fn clicking_a_simple_var_token_opens_the_value_popup_on_its_supplying_scope() {
         "Active env value",
         "the env supplies the value today, so the env scope is preselected"
     );
-    assert!(
-        scope.choices.iter().any(|c| c == "This request"),
-        "{:?}",
-        scope.choices
-    );
-    assert!(
-        scope.choices.iter().any(|c| c == "Project default"),
-        "{:?}",
-        scope.choices
+    assert_eq!(
+        scope.choices,
+        vec!["Active env value", "This request"],
+        "a shadowed wider scope (the default) is not offered — editing it \
+         here would change nothing visible"
     );
 }
 
@@ -7534,6 +7530,11 @@ fn the_value_popup_preselects_the_request_scope_when_a_request_var_supplies_it()
     assert_eq!(value.input.text(), "http://req.local");
     let scope = fields.iter().find(|f| f.key == "destination").unwrap();
     assert_eq!(scope.input.text(), "This request");
+    assert_eq!(
+        scope.choices,
+        vec!["This request"],
+        "a request override shadows everything wider"
+    );
 }
 
 #[test]
@@ -7550,6 +7551,11 @@ fn the_value_popup_preselects_default_when_only_the_default_supplies_it() {
     assert_eq!(value.input.text(), "http://localhost:8080");
     let scope = fields.iter().find(|f| f.key == "destination").unwrap();
     assert_eq!(scope.input.text(), "Project default");
+    assert_eq!(
+        scope.choices,
+        vec!["Project default", "Active env value", "This request"],
+        "nothing shadows the default, so every scope is on offer"
+    );
 }
 
 #[test]
@@ -7633,7 +7639,11 @@ fn clicking_the_write_to_field_cycles_the_scope() {
         "from the preselected env scope, one click advances"
     );
     app.handle_mouse(left_down(r.x + 1, r.y + 1));
-    assert_eq!(scope_text(&app), "Project default", "and wraps around");
+    assert_eq!(
+        scope_text(&app),
+        "Active env value",
+        "and wraps within the supplying-or-narrower scopes"
+    );
 }
 
 #[test]
@@ -7731,8 +7741,9 @@ fn cycling_the_write_to_scope_shows_that_scopes_current_value() {
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
     assert_eq!(
         field_texts(&app),
-        ("http://localhost:8080".into(), "Project default".into()),
-        "the declaration default shows for the default scope"
+        ("https://qa.example.com".into(), "Active env value".into()),
+        "only the supplying scope and narrower are offered, so the cycle \
+         wraps between the env value and the request override"
     );
 }
 

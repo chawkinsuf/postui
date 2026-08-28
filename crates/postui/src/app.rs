@@ -3471,18 +3471,26 @@ impl App {
             .or_else(|| self.project.resolved.values.get(name).cloned())
             .unwrap_or_default();
 
-        let mut choices: Vec<&str> = vec!["Project default"];
-        if has_env {
-            choices.push("Active env value");
-        }
-        choices.push("This request");
+        // Only the supplying scope and narrower are on offer: a scope
+        // shadowed by a higher-precedence value (request beats env beats
+        // default) would take the write and change nothing visible.
+        // Wider scopes stay editable in the Variable Manager.
+        let mut choices: Vec<&str> = Vec::new();
         let preselect = if request_value.is_some() {
             "This request"
         } else if has_env && env_value.is_some() {
             "Active env value"
         } else {
+            choices.push("Project default");
+            if has_env {
+                choices.push("Active env value");
+            }
             "Project default"
         };
+        if preselect == "Active env value" {
+            choices.push("Active env value");
+        }
+        choices.push("This request");
 
         let mut destination = PromptField::choice("destination", "Write to", &choices);
         destination.input = LineInput::new(preselect);
