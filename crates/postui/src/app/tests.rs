@@ -7779,6 +7779,85 @@ fn toasts_paint_undimmed_above_an_open_modal() {
 }
 
 #[test]
+fn the_value_popup_offers_remove_only_where_a_value_is_stored() {
+    let (mut app, _dir) = token_popup_app();
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    rendered_text(&mut app);
+    assert!(
+        app.hits.rect_of(&crate::hit::Hit::ModalRemove).is_some(),
+        "the env stores a value, so it can be removed"
+    );
+
+    // Cycle to "This request", which stores nothing — nothing to remove.
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    rendered_text(&mut app);
+    assert!(
+        app.hits.rect_of(&crate::hit::Hit::ModalRemove).is_none(),
+        "no stored value at this scope, no remove button"
+    );
+}
+
+#[test]
+fn remove_deletes_the_env_value_and_falls_back_to_the_default() {
+    let (mut app, dir) = token_popup_app();
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    rendered_text(&mut app);
+    let r = app.hits.rect_of(&crate::hit::Hit::ModalRemove).unwrap();
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+
+    assert!(app.modals.is_empty(), "removal closes the popup");
+    let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(!on_disk.contains("base_url"), "{on_disk}");
+    assert_eq!(
+        app.project.resolved.values["base_url"], "http://localhost:8080",
+        "the default shows through once the env value is gone"
+    );
+}
+
+#[test]
+fn remove_deletes_a_request_override() {
+    let (mut app, _dir) = token_popup_app();
+    app.editor.variables.insert(
+        "base_url".into(),
+        postui_core::model::Entry {
+            value: "http://req.local".into(),
+            enabled: true,
+        },
+    );
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    rendered_text(&mut app);
+    let r = app.hits.rect_of(&crate::hit::Hit::ModalRemove).unwrap();
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+
+    assert!(app.modals.is_empty());
+    assert!(
+        !app.editor.variables.contains_key("base_url"),
+        "the [variables] override is gone"
+    );
+}
+
+#[test]
+fn remove_deletes_the_default_when_it_is_the_supplier() {
+    let (mut app, dir) = token_popup_app();
+    // dev has no flat values, so the default supplies base_url there.
+    app.update(Action::SwitchEnv(Some("dev".into())));
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    rendered_text(&mut app);
+    let r = app.hits.rect_of(&crate::hit::Hit::ModalRemove).unwrap();
+    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+
+    assert!(app.modals.is_empty());
+    let on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    assert!(!on_disk.contains("default"), "{on_disk}");
+    assert!(
+        app.project.model.vars["base_url"].default.is_none(),
+        "the declaration keeps only its description"
+    );
+}
+
+#[test]
 fn clicking_a_secret_token_opens_the_masked_secret_prompt() {
     let (mut app, _dir) = token_popup_app();
     app.update(Action::OpenVarTokenPopup("api_key".into()));

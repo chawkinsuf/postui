@@ -275,6 +275,20 @@ pub fn upsert_var(
     Ok(doc.to_string())
 }
 
+/// Removes a variable's `default` line, leaving the rest of its table
+/// (description, secret) untouched. A variable without a default passes
+/// through unchanged; `NotFound` when the variable itself is missing.
+pub fn clear_default(doc: &str, name: &str) -> Result<String, EditError> {
+    let mut doc = parse(doc)?;
+    let root = doc.as_table_mut();
+    let t = root
+        .get_mut(name)
+        .and_then(Item::as_table_mut)
+        .ok_or_else(|| not_found(format!("variable \"{name}\" not found")))?;
+    t.remove("default");
+    Ok(doc.to_string())
+}
+
 /// Sets/clears `secret = true` on a variable. Turning secret on removes any
 /// `default` (a default would commit a secret value into the shared file).
 pub fn set_secret_flag(doc: &str, name: &str, secret: bool) -> Result<String, EditError> {
@@ -957,6 +971,28 @@ fields = ["user_id", "customer_id"]
         let out = set_secret_flag(VARS, "api_key", false).unwrap();
         assert!(out.contains("[api_key]\ndescription = \"service API key\"\n\n"));
         assert!(!reparses_vars(&out).vars["api_key"].secret);
+    }
+
+    #[test]
+    fn clear_default_removes_only_the_default_line() {
+        let out = clear_default(VARS, "base_url").unwrap();
+        assert!(!out.contains("localhost:8080"), "{out}");
+        assert!(
+            out.contains("[base_url]\ndescription = \"API root\"\n"),
+            "the description stays: {out}"
+        );
+        assert!(
+            reparses_vars(&out).vars["base_url"].default.is_none(),
+            "{out}"
+        );
+        // A variable with no default passes through unchanged...
+        let none = clear_default(&out, "base_url").unwrap();
+        assert_eq!(none, out);
+        // ...and a missing variable is NotFound.
+        assert_eq!(
+            clear_default(VARS, "nope").unwrap_err(),
+            EditError::NotFound("variable \"nope\" not found".to_string())
+        );
     }
 
     #[test]

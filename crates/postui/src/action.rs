@@ -287,6 +287,14 @@ pub enum Action {
         value: String,
         destination: ExtractDestination,
     },
+    /// The value-edit popup's "Remove" button: delete `name`'s stored
+    /// value at `destination` (drop the request `[variables]` entry, the
+    /// env flat pair, or the declaration `default`), letting the next
+    /// wider scope show through.
+    RemoveVarValue {
+        name: String,
+        destination: ExtractDestination,
+    },
     /// Insert `text` at the currently focused text field: the URL line, an
     /// in-progress table cell edit, or the body buffer (Body tab +
     /// content focus). Toasts "nowhere to insert" when focus isn't on a

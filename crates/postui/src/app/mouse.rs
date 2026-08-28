@@ -615,6 +615,7 @@ impl App {
                 | Hit::ModalField(_)
                 | Hit::ModalRowToggle(_)
                 | Hit::ModalAddRow
+                | Hit::ModalRemove
                 | Hit::ModalOutside
                 | Hit::DropdownRow(_)
                 | Hit::ChooserRow(_)
@@ -951,6 +952,31 @@ impl App {
                     return self.update(Action::Render);
                 }
                 false
+            }
+            Hit::ModalRemove => {
+                use crate::components::modal::{Modal, PromptKind, destination_from_label};
+                let Some(Modal::MultiPrompt { fields, kind, .. }) = self.modals.top() else {
+                    return false;
+                };
+                let PromptKind::EditVarValue { name, .. } = kind else {
+                    return false;
+                };
+                let destination = destination_from_label(
+                    fields
+                        .iter()
+                        .find(|f| f.key == "destination")
+                        .map(|f| f.input.text())
+                        .unwrap_or_default(),
+                );
+                let res = crate::components::modal::ModalResult {
+                    actions: vec![Action::RemoveVarValue {
+                        name: name.clone(),
+                        destination,
+                    }],
+                    close: true,
+                    ..Default::default()
+                };
+                self.apply_modal_result(res)
             }
             Hit::ModalCancel => {
                 let synth = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);

@@ -101,13 +101,15 @@ pub enum PromptKind {
     /// (`Action::OpenVarTokenPopup`): a `Modal::MultiPrompt` with a `value`
     /// field and a `destination` choice field preselected to whichever
     /// scope supplies the value today. `scope_values` holds what each
-    /// destination currently stores (destination label → value); cycling
-    /// the destination reseeds the value field from it, so the box always
-    /// shows what the chosen scope holds. Confirming emits
+    /// destination currently stores (destination label → value, `None`
+    /// when that scope stores nothing); cycling the destination reseeds
+    /// the value field from it, so the box always shows what the chosen
+    /// scope holds, and the Remove button shows only where there is a
+    /// stored value to delete. Confirming emits
     /// `Action::ConfirmEditVarValue`.
     EditVarValue {
         name: String,
-        scope_values: Vec<(String, String)>,
+        scope_values: Vec<(String, Option<String>)>,
     },
 }
 
@@ -296,10 +298,20 @@ pub(crate) fn resync_after_choice_cycle(kind: &PromptKind, fields: &mut [PromptF
     let seed = scope_values
         .iter()
         .find(|(label, _)| *label == dest)
-        .map(|(_, v)| v.clone())
+        .and_then(|(_, v)| v.clone())
         .unwrap_or_default();
     if let Some(value_field) = fields.iter_mut().find(|f| f.key == "value") {
         value_field.input = LineInput::new(&seed);
+    }
+}
+
+/// The `ExtractDestination` a Write-to label stands for — shared by the
+/// value popup's confirm and its Remove button.
+pub(crate) fn destination_from_label(label: &str) -> ExtractDestination {
+    match label {
+        "Active env value" => ExtractDestination::ActiveEnv,
+        "This request" => ExtractDestination::Request,
+        _ => ExtractDestination::ProjectDefault,
     }
 }
 
@@ -886,17 +898,15 @@ impl ModalStack {
                             vec![Action::ConfirmExtractVariable { name, destination }]
                         }
                         PromptKind::EditVarValue { name, .. } => {
-                            // An emptied value is a legitimate edit (clear
-                            // the override), so no non-empty filter here.
+                            // An emptied value is a legitimate edit, so no
+                            // non-empty filter here; removing the stored
+                            // value outright is the Remove button.
                             let value = fields
                                 .iter()
                                 .find(|f| f.key == "value")
                                 .map(|f| f.input.text().to_string())?;
-                            let destination = match get("destination") {
-                                Some("Active env value") => ExtractDestination::ActiveEnv,
-                                Some("This request") => ExtractDestination::Request,
-                                _ => ExtractDestination::ProjectDefault,
-                            };
+                            let destination =
+                                destination_from_label(get("destination").unwrap_or_default());
                             vec![Action::ConfirmEditVarValue {
                                 name: name.clone(),
                                 value,
@@ -1298,7 +1308,7 @@ impl ModalStack {
                 title,
                 fields,
                 focus,
-                ..
+                kind,
             } => {
                 // Each field costs a label row plus a `FIELD_HEIGHT` box;
                 // around them sit the top pad, the title, a blank row, a
@@ -1395,6 +1405,41 @@ impl ModalStack {
 
                 let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
                 draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered);
+                // The value popup's Remove: only when the chosen Write-to
+                // scope actually stores a value to delete.
+                if let PromptKind::EditVarValue { scope_values, .. } = kind {
+                    let chosen = fields
+                        .iter()
+                        .find(|f| f.key == "destination")
+                        .map(|f| f.input.text().to_string())
+                        .unwrap_or_default();
+                    let stored = scope_values
+                        .iter()
+                        .find(|(label, _)| *label == chosen)
+                        .and_then(|(_, v)| v.as_ref())
+                        .is_some();
+                    if stored {
+                        let label = "Remove";
+                        let remove_hit = crate::hit::Hit::ModalRemove;
+                        let btn = Rect {
+                            x: area.x + 2,
+                            y: buttons_y,
+                            width: paint::button_min_width(label),
+                            height: BUTTON_HEIGHT,
+                        };
+                        Button {
+                            label,
+                            kind: ButtonKind::Secondary,
+                            state: if hovered == Some(&remove_hit) {
+                                ControlState::Hover
+                            } else {
+                                ControlState::Normal
+                            },
+                        }
+                        .paint(frame.buffer_mut(), btn, theme);
+                        hits.register(btn, remove_hit);
+                    }
+                }
             }
             Modal::FieldsEditor(state) => {
                 // Top pad + title + blank, one `FIELD_HEIGHT` box per row,

@@ -187,6 +187,9 @@ pub enum Hit {
     ModalRowToggle(usize),
     /// The fields editor's "+ Add field" button.
     ModalAddRow,
+    /// The value popup's "Remove" button: deletes the stored value at the
+    /// chosen Write-to scope, so the next wider scope shows through.
+    ModalRemove,
 }
 
 /// A terminal pointer-shape hint (Kitty's OSC 22 protocol, `\x1b]22;{shape}\x07`),

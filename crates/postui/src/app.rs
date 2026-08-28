@@ -2587,6 +2587,63 @@ impl App {
                 };
                 self.apply(Action::VarEdit(op))
             }
+            Action::RemoveVarValue { name, destination } => {
+                use crate::action::ExtractDestination;
+                use postui_core::varedit;
+                match destination {
+                    ExtractDestination::Request => {
+                        self.no_coalesce = true;
+                        self.editor.variables.shift_remove(&name);
+                        self.toasts.push(
+                            format!("removed this request's {name} override"),
+                            ToastKind::Success,
+                        );
+                    }
+                    ExtractDestination::ActiveEnv => {
+                        let Some(env) = self.project.active_env.clone() else {
+                            self.toasts
+                                .push("no active environment", ToastKind::Warning);
+                            self.last_action_failed = true;
+                            return true;
+                        };
+                        let before = self.read_file_states(&self.project.var_file_paths());
+                        match self
+                            .project
+                            .edit_env(&env, |doc| varedit::set_env_value(doc, &name, None))
+                        {
+                            Ok(()) => {
+                                self.record_var_file_step(before);
+                                self.toasts.push(
+                                    format!("removed {name} from env {env}"),
+                                    ToastKind::Success,
+                                );
+                            }
+                            Err(msg) => {
+                                self.toasts.push(msg, ToastKind::Error);
+                                self.last_action_failed = true;
+                            }
+                        }
+                    }
+                    ExtractDestination::ProjectDefault => {
+                        let before = self.read_file_states(&self.project.var_file_paths());
+                        match self
+                            .project
+                            .edit_variables(|doc| varedit::clear_default(doc, &name))
+                        {
+                            Ok(()) => {
+                                self.record_var_file_step(before);
+                                self.toasts
+                                    .push(format!("removed {name}'s default"), ToastKind::Success);
+                            }
+                            Err(msg) => {
+                                self.toasts.push(msg, ToastKind::Error);
+                                self.last_action_failed = true;
+                            }
+                        }
+                    }
+                }
+                true
+            }
             Action::OpenNewVariablePrompt {
                 prefill,
                 completing,
@@ -3495,27 +3552,21 @@ impl App {
         let mut destination = PromptField::choice("destination", "Write to", &choices);
         destination.input = LineInput::new(preselect);
 
-        // What each destination currently stores, so cycling the scope can
-        // reseed the value field with what that scope holds.
+        // What each destination currently stores (`None` = nothing), so
+        // cycling the scope can reseed the value field, and the Remove
+        // button knows whether there is anything to delete there.
         let default_value = self
             .project
             .model
             .vars
             .get(name)
-            .and_then(|d| d.default.clone())
-            .unwrap_or_default();
+            .and_then(|d| d.default.clone());
         let mut scope_values = vec![
             ("Project default".to_string(), default_value),
-            (
-                "This request".to_string(),
-                request_value.clone().unwrap_or_default(),
-            ),
+            ("This request".to_string(), request_value.clone()),
         ];
         if has_env {
-            scope_values.push((
-                "Active env value".to_string(),
-                env_value.clone().unwrap_or_default(),
-            ));
+            scope_values.push(("Active env value".to_string(), env_value.clone()));
         }
 
         self.push_modal(Modal::MultiPrompt {
