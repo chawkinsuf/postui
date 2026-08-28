@@ -111,6 +111,10 @@ pub struct ReadyView {
     /// inclusive), in (visible line, char col) coordinates of the current
     /// view mode.
     sel: Option<((usize, usize), (usize, usize))>,
+    /// The inclusive cell span of a double-clicked word: while set, drag
+    /// sweeps extend by whole words from this span instead of by cells.
+    /// Cleared by any single click (`clear_sel`).
+    sel_word_anchor: Option<((usize, usize), (usize, usize))>,
 }
 
 impl ReadyView {
@@ -157,6 +161,7 @@ impl ReadyView {
             last_area: None,
             sel_anchor: None,
             sel: None,
+            sel_word_anchor: None,
         }
     }
 
@@ -465,6 +470,17 @@ impl ReadyView {
     fn clear_sel(&mut self) {
         self.sel = None;
         self.sel_anchor = None;
+        self.sel_word_anchor = None;
+    }
+
+    /// The inclusive cell span a double click at cell `(line, col)`
+    /// selects: the word/punctuation/whitespace run around `col` (see
+    /// [`word_nav::word_span_at`]), on that one line. `None` on an empty
+    /// line or a col past its last char.
+    fn word_cells_at(&self, line: usize, col: usize) -> Option<((usize, usize), (usize, usize))> {
+        let chars: Vec<char> = self.display_line_text(line)?.chars().collect();
+        let (s, e) = super::word_nav::word_span_at(&chars, col)?;
+        Some(((line, s), (line, e - 1)))
     }
 
     /// Extends a line-wise selection by `delta` lines (shift+Up/Down): the
@@ -734,17 +750,63 @@ impl Response {
         true
     }
 
+    /// Double-click word select: selects the character run under the click
+    /// (word, punctuation or whitespace — the same classes `word_nav` hops
+    /// by) and plants the word anchor a following drag extends from, whole
+    /// words at a time. A click past a line's last character selects
+    /// nothing (and returns `false`: no sweep to arm).
+    pub fn select_word_at(&mut self, x: u16, y: u16) -> bool {
+        use unicode_width::UnicodeWidthChar;
+        let Some(view) = self.view.as_mut() else {
+            return false;
+        };
+        view.clear_sel();
+        let Some((line, col)) = view.cell_at(x, y, false) else {
+            return false;
+        };
+        // `cell_at` clamps a click past the line end onto its last char;
+        // a double click there should select nothing, so re-check the
+        // clicked display column against the line's width.
+        let area = view.last_area.expect("cell_at resolved through last_area");
+        let disp_col = view.h_scroll + usize::from(x.saturating_sub(area.x));
+        let text = view.display_line_text(line).unwrap_or_default();
+        if disp_col >= text.chars().map(|c| c.width().unwrap_or(0)).sum() {
+            return false;
+        }
+        let Some(span) = view.word_cells_at(line, col) else {
+            return false;
+        };
+        view.sel = Some(span);
+        view.sel_anchor = Some(span.0);
+        view.sel_word_anchor = Some(span);
+        true
+    }
+
     /// Extends the selection sweep to the drag point (clamped onto the
     /// body area, so sweeping past an edge keeps selecting the nearest
     /// cells). Dragging back onto the anchor cell collapses the selection.
+    /// After a double click (word anchor set) the sweep extends by whole
+    /// words instead: the selection is the union of the anchor word and
+    /// the run under the pointer, so the anchor word always stays covered.
     pub fn drag_selection_to(&mut self, x: u16, y: u16) -> bool {
         let Some(view) = self.view.as_mut() else {
             return false;
         };
-        let Some(anchor) = view.sel_anchor else {
+        let Some(head) = view.cell_at(x, y, true) else {
             return false;
         };
-        let Some(head) = view.cell_at(x, y, true) else {
+        if let Some((ws, we)) = view.sel_word_anchor {
+            let (hs, he) = view.word_cells_at(head.0, head.1).unwrap_or((head, head));
+            view.sel = Some(if head > we {
+                (ws, he)
+            } else if head < ws {
+                (hs, we)
+            } else {
+                (ws, we)
+            });
+            return true;
+        }
+        let Some(anchor) = view.sel_anchor else {
             return false;
         };
         view.sel = (head != anchor).then_some((anchor, head));
@@ -1948,6 +2010,45 @@ mod tests {
         r.begin_selection_at(area.x, area.y);
         r.drag_selection_to(area.x + 50, area.y);
         assert_eq!(r.selected_text().as_deref(), Some("ab"));
+    }
+
+    #[test]
+    fn double_click_selects_the_word_under_it() {
+        let mut r = ready("hello world");
+        let (area, _) = render_buf(&mut r);
+        assert!(r.select_word_at(area.x + 7, area.y));
+        assert_eq!(r.selected_text().as_deref(), Some("world"));
+    }
+
+    #[test]
+    fn word_drag_extends_the_selection_by_whole_words() {
+        let mut r = ready("alpha beta gamma");
+        let (area, _) = render_buf(&mut r);
+        assert!(r.select_word_at(area.x + 1, area.y));
+        assert_eq!(r.selected_text().as_deref(), Some("alpha"));
+        // Dragging onto "beta" grows the selection a whole word at a time...
+        assert!(r.drag_selection_to(area.x + 7, area.y));
+        assert_eq!(r.selected_text().as_deref(), Some("alpha beta"));
+        // ...and dragging back onto the anchor word shrinks it again.
+        assert!(r.drag_selection_to(area.x + 1, area.y));
+        assert_eq!(r.selected_text().as_deref(), Some("alpha"));
+    }
+
+    #[test]
+    fn word_drag_backward_keeps_the_anchor_word_selected() {
+        let mut r = ready("alpha beta gamma");
+        let (area, _) = render_buf(&mut r);
+        assert!(r.select_word_at(area.x + 12, area.y)); // "gamma"
+        assert!(r.drag_selection_to(area.x + 7, area.y)); // back over "beta"
+        assert_eq!(r.selected_text().as_deref(), Some("beta gamma"));
+    }
+
+    #[test]
+    fn double_click_past_the_line_end_selects_nothing() {
+        let mut r = ready("ab\nlonger line");
+        let (area, _) = render_buf(&mut r);
+        assert!(!r.select_word_at(area.x + 30, area.y));
+        assert_eq!(r.selected_text(), None);
     }
 
     #[test]

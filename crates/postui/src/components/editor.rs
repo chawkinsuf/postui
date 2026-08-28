@@ -147,6 +147,10 @@ pub struct Editor {
     /// `body_drag_to`/shifted motions to rebuild `body.selection` as the
     /// moving end travels. `None` when no selection gesture is live.
     body_sel_anchor: Option<edtui::Index2>,
+    /// The inclusive cell span of a double-clicked word in the body: while
+    /// set, `body_drag_to` extends by whole words from this span instead
+    /// of by cells. Cleared by any single click.
+    body_word_anchor: Option<(edtui::Index2, edtui::Index2)>,
     pub active_tab: EditorTab,
     /// The last tab the user explicitly chose (click, alt+number, or
     /// arrow-cycling) — where `active_tab` returns whenever it can.
@@ -247,6 +251,7 @@ impl Default for Editor {
             body_hl_marker: None,
             body_handler: EditorEventHandler::emacs_mode(),
             body_sel_anchor: None,
+            body_word_anchor: None,
             active_tab: EditorTab::Headers,
             preferred_tab: EditorTab::Headers,
             sub_focus: SubFocus::Url,
@@ -739,15 +744,52 @@ impl Editor {
                 self.body.cursor = cursor;
             }
             // A plain click collapses any selection and plants the anchor a
-            // following drag will extend from.
+            // following drag will extend from. (On a double click the
+            // caller re-selects the word right after, via
+            // `body_select_word_at`.)
             self.body.selection = None;
             self.body_sel_anchor = Some(self.body.cursor);
+            self.body_word_anchor = None;
         }
         // Modeless invariant: whatever edtui's own handling did (its mouse
         // paths switch to Normal/Visual), the body editor never leaves
         // Insert.
         self.body.mode = EditorMode::Insert;
         true
+    }
+
+    /// Double-click word select: selects the character run under the click
+    /// (word, punctuation or whitespace — the same classes `word_nav` hops
+    /// by) and plants the word anchor a following drag extends from, whole
+    /// words at a time. A click past a line's last character (or below the
+    /// buffer) only places the caret, which the preceding
+    /// [`Self::handle_mouse`] already did — no selection.
+    pub fn body_select_word_at(&mut self, x: u16, y: u16) -> bool {
+        if self.active_tab != EditorTab::Body {
+            return false;
+        }
+        let Some(cursor) = self.body_cursor_for_click(x, y) else {
+            return false;
+        };
+        let Some(span) = self.body_word_cells(cursor) else {
+            return false;
+        };
+        self.set_body_selection_cells(span.0, span.1);
+        self.body.cursor = edtui::Index2::new(span.1.row, span.1.col + 1);
+        self.body_word_anchor = Some(span);
+        true
+    }
+
+    /// The inclusive cell span a double click at caret `i` selects: the
+    /// word/punctuation/whitespace run around `i.col` on its line. `None`
+    /// when the caret sits past the line's last char (nothing under it).
+    fn body_word_cells(&self, i: edtui::Index2) -> Option<(edtui::Index2, edtui::Index2)> {
+        let line = self.body.lines.iter_row().nth(i.row)?;
+        let (s, e) = super::word_nav::word_span_at(line, i.col)?;
+        Some((
+            edtui::Index2::new(i.row, s),
+            edtui::Index2::new(i.row, e - 1),
+        ))
     }
 
     /// Extends the body selection to the drag point `(x, y)`: the moving
@@ -757,14 +799,38 @@ impl Editor {
     /// Returns `false` only when there is no live anchor (or no rendered
     /// body area) — unlike a click, a sweep that leaves the box keeps
     /// selecting (see [`Self::body_cursor_for_drag`]).
+    /// After a double click (word anchor set) the sweep extends by whole
+    /// words instead: the selection is the union of the anchor word and
+    /// the run under the pointer, so the anchor word always stays covered.
     pub fn body_drag_to(&mut self, x: u16, y: u16) -> bool {
         if self.active_tab != EditorTab::Body {
             return false;
         }
-        let Some(anchor) = self.body_sel_anchor else {
+        let Some(cursor) = self.body_cursor_for_drag(x, y) else {
             return false;
         };
-        let Some(cursor) = self.body_cursor_for_drag(x, y) else {
+        if let Some((ws, we)) = self.body_word_anchor {
+            let head = self.clamp_to_cell(cursor);
+            let (hs, he) = self.body_word_cells(head).unwrap_or((head, head));
+            let key = |i: edtui::Index2| (i.row, i.col);
+            let (a, b) = if key(head) > key(we) {
+                (ws, he)
+            } else if key(head) < key(ws) {
+                (hs, we)
+            } else {
+                (ws, we)
+            };
+            self.set_body_selection_cells(a, b);
+            // The caret rides the moving end, like a plain sweep's does.
+            self.body.cursor = if key(head) < key(ws) {
+                a
+            } else {
+                edtui::Index2::new(b.row, b.col + 1)
+            };
+            self.body.mode = EditorMode::Insert;
+            return true;
+        }
+        let Some(anchor) = self.body_sel_anchor else {
             return false;
         };
         self.body.cursor = cursor;

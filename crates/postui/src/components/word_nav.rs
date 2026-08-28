@@ -29,6 +29,25 @@ pub fn prev_word_boundary(chars: &[char], col: usize) -> usize {
     i
 }
 
+/// The half-open span of the character run containing char index `col` —
+/// what a double click selects: a word run, a punctuation run, or a
+/// whitespace run, per the same classes the motions above hop by. `None`
+/// when `col` is past the last char (a click beyond the line selects
+/// nothing).
+pub fn word_span_at(chars: &[char], col: usize) -> Option<(usize, usize)> {
+    let class = |c: char| (c.is_whitespace(), is_word(c));
+    let k = class(*chars.get(col)?);
+    let mut s = col;
+    while s > 0 && class(chars[s - 1]) == k {
+        s -= 1;
+    }
+    let mut e = col + 1;
+    while e < chars.len() && class(chars[e]) == k {
+        e += 1;
+    }
+    Some((s, e))
+}
+
 /// The boundary a word-right motion from char index `col` lands on: skip any
 /// whitespace under the caret, then walk to the end of the run (word chars
 /// or punctuation) that follows. Already at the end stays at the end.
@@ -109,5 +128,33 @@ mod tests {
         let line = chars("");
         assert_eq!(next_word_boundary(&line, 0), 0);
         assert_eq!(prev_word_boundary(&line, 0), 0);
+    }
+
+    #[test]
+    fn span_covers_the_word_run_around_any_of_its_chars() {
+        let line = chars("foo bar_2 baz");
+        assert_eq!(word_span_at(&line, 4), Some((4, 9)));
+        assert_eq!(word_span_at(&line, 8), Some((4, 9)));
+        assert_eq!(word_span_at(&line, 0), Some((0, 3)));
+    }
+
+    #[test]
+    fn span_on_punctuation_covers_the_punctuation_run() {
+        let line = chars("{\"name\": 1}");
+        assert_eq!(word_span_at(&line, 0), Some((0, 2))); // {"
+        assert_eq!(word_span_at(&line, 7), Some((6, 8))); // ":
+    }
+
+    #[test]
+    fn span_on_whitespace_covers_the_whitespace_run() {
+        let line = chars("a   b");
+        assert_eq!(word_span_at(&line, 2), Some((1, 4)));
+    }
+
+    #[test]
+    fn span_past_the_end_is_none() {
+        let line = chars("ab");
+        assert_eq!(word_span_at(&line, 2), None);
+        assert_eq!(word_span_at(&chars(""), 0), None);
     }
 }

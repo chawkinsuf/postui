@@ -2329,6 +2329,53 @@ fn dragging_in_the_body_selects_and_ctrl_c_copies_it() {
 }
 
 #[test]
+fn double_click_in_body_selects_the_word_and_drag_extends_by_words() {
+    let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.set_body_text("alpha beta gamma\nsecond");
+    render_once(&mut app);
+    let area = app.editor.last_body_area.expect("body area recorded");
+    // 2 lines -> a 2-cell gutter; content column 0 is at area.x + 2.
+    app.handle_mouse(left_down(area.x + 2 + 1, area.y));
+    app.handle_mouse(left_down(area.x + 2 + 1, area.y)); // within 400ms => clicks == 2
+    assert_eq!(app.editor.body_selected_text().as_deref(), Some("alpha"));
+    // The double click armed a word-wise sweep: dragging onto "beta"
+    // extends the selection a whole word at a time.
+    assert!(app.handle_mouse(dragged(area.x + 2 + 7, area.y)));
+    app.handle_mouse(left_up(area.x + 2 + 7, area.y));
+    assert_eq!(
+        app.editor.body_selected_text().as_deref(),
+        Some("alpha beta")
+    );
+}
+
+#[test]
+fn double_click_in_response_selects_the_word_and_drag_extends_by_words() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, "plain text body"); // not JSON -> Raw view
+    render_once(&mut app);
+    let area = app
+        .session
+        .response
+        .view()
+        .unwrap()
+        .last_area
+        .expect("body area recorded");
+    app.handle_mouse(left_down(area.x + 1, area.y));
+    app.handle_mouse(left_down(area.x + 1, area.y)); // within 400ms => clicks == 2
+    assert_eq!(
+        app.session.response.selected_text().as_deref(),
+        Some("plain")
+    );
+    assert!(app.handle_mouse(dragged(area.x + 7, area.y)));
+    app.handle_mouse(left_up(area.x + 7, area.y));
+    assert_eq!(
+        app.session.response.selected_text().as_deref(),
+        Some("plain text")
+    );
+}
+
+#[test]
 fn body_selection_paints_with_the_selection_color() {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;

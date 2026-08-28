@@ -540,6 +540,22 @@ impl App {
         }
     }
 
+    /// A left click landing on response body text: a single click anchors
+    /// a cell-wise sweep, a double click selects the word under it (and
+    /// arms a word-wise sweep). Returns whether anything anchored — the
+    /// caller arms `TextDrag::Response` on `true`.
+    fn response_click_selection(
+        &mut self,
+        clicks: u8,
+        m: ratatui::crossterm::event::MouseEvent,
+    ) -> bool {
+        if clicks == 2 {
+            self.session.response.select_word_at(m.column, m.row)
+        } else {
+            self.session.response.begin_selection_at(m.column, m.row)
+        }
+    }
+
     /// The `▼`/`▲` search buttons: focus the response pane and step the
     /// match cycle, exactly as `n`/`N` do.
     fn step_response_search(&mut self, delta: i32) -> bool {
@@ -658,9 +674,7 @@ impl App {
                 // A click on the response pane's bare content (Raw and
                 // Headers register no per-row hits) anchors a selection
                 // sweep, exactly like a JsonRow click does in Pretty.
-                if p == PaneId::Response
-                    && self.session.response.begin_selection_at(m.column, m.row)
-                {
+                if p == PaneId::Response && self.response_click_selection(clicks, m) {
                     self.text_drag = Some(TextDrag::Response);
                 }
                 self.update(Action::FocusPane(p))
@@ -668,6 +682,11 @@ impl App {
             Hit::BodyEditor => {
                 self.update(Action::FocusPane(PaneId::Editor));
                 self.editor.handle_mouse(m);
+                if clicks == 2 {
+                    // Double click selects the word under it; the sweep
+                    // armed below then extends by whole words.
+                    self.editor.body_select_word_at(m.column, m.row);
+                }
                 // Arm a selection sweep: if the button now moves before it
                 // releases, the drag extends a selection from this click.
                 self.text_drag = Some(TextDrag::Body);
@@ -991,7 +1010,7 @@ impl App {
                 self.update(Action::FocusPane(PaneId::Response));
                 // The click also anchors a possible selection sweep (and
                 // collapses any previous selection), like any text click.
-                if self.session.response.begin_selection_at(m.column, m.row) {
+                if self.response_click_selection(clicks, m) {
                     self.text_drag = Some(TextDrag::Response);
                 }
                 self.update(Action::JsonRowClicked {
