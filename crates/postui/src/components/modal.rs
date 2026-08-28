@@ -1370,12 +1370,24 @@ impl ModalStack {
                         crate::hit::Hit::ModalField(i),
                     );
                     if field.choices.is_empty() {
-                        TextField {
-                            content: field.input.draw_line_windowed(
+                        // The value popup's empty value box reads "(not
+                        // set)" (the variable form's own wording) — the
+                        // chosen scope stores nothing, and typing replaces
+                        // the placeholder the moment the field is non-empty.
+                        let placeholder = matches!(kind, PromptKind::EditVarValue { .. })
+                            && field.key == "value"
+                            && field.input.text().is_empty();
+                        let content = if placeholder {
+                            Line::styled("(not set)", Style::default().fg(theme.text_muted))
+                        } else {
+                            field.input.draw_line_windowed(
                                 focused,
                                 theme,
                                 field_w.saturating_sub(2),
-                            ),
+                            )
+                        };
+                        TextField {
+                            content,
                             state: if focused {
                                 ControlState::Focused
                             } else {
