@@ -305,6 +305,29 @@ pub(crate) fn resync_after_choice_cycle(kind: &PromptKind, fields: &mut [PromptF
     }
 }
 
+/// The value popup's empty value box: a muted "(not set)" (the variable
+/// form's own wording), led by the same reversed-cell caret an empty
+/// `LineInput` draws when the field is focused — without it, a focused
+/// empty box gave no hint the input was selected.
+fn value_placeholder_line(focused: bool, theme: &Theme) -> Line<'static> {
+    use ratatui::style::Modifier;
+    use ratatui::text::Span;
+    let muted = Style::default().fg(theme.text_muted);
+    if focused {
+        Line::from(vec![
+            Span::styled(
+                " ",
+                Style::default()
+                    .fg(theme.text)
+                    .add_modifier(Modifier::REVERSED),
+            ),
+            Span::styled("(not set)", muted),
+        ])
+    } else {
+        Line::styled("(not set)", muted)
+    }
+}
+
 /// The `ExtractDestination` a Write-to label stands for — shared by the
 /// value popup's confirm and its Remove button.
 pub(crate) fn destination_from_label(label: &str) -> ExtractDestination {
@@ -1378,7 +1401,7 @@ impl ModalStack {
                             && field.key == "value"
                             && field.input.text().is_empty();
                         let content = if placeholder {
-                            Line::styled("(not set)", Style::default().fg(theme.text_muted))
+                            value_placeholder_line(focused, theme)
                         } else {
                             field.input.draw_line_windowed(
                                 focused,
@@ -1864,6 +1887,38 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    /// User finding: the "(not set)" placeholder swallowed the caret, so a
+    /// focused-but-empty value box gave no hint the input was selected.
+    /// Focused, the line leads with the same reversed-cell caret an empty
+    /// `LineInput` draws; unfocused it's just the muted placeholder.
+    #[test]
+    fn the_value_placeholder_shows_a_caret_when_focused() {
+        let theme = Theme::dark();
+        use ratatui::style::Modifier;
+
+        let focused = value_placeholder_line(true, &theme);
+        assert_eq!(focused.spans.len(), 2, "caret cell + placeholder text");
+        assert!(
+            focused.spans[0]
+                .style
+                .add_modifier
+                .contains(Modifier::REVERSED),
+            "the leading cell is the caret"
+        );
+        assert_eq!(focused.spans[1].content.as_ref(), "(not set)");
+
+        let resting = value_placeholder_line(false, &theme);
+        assert_eq!(resting.spans.len(), 1);
+        assert_eq!(resting.spans[0].content.as_ref(), "(not set)");
+        assert!(
+            !resting.spans[0]
+                .style
+                .add_modifier
+                .contains(Modifier::REVERSED),
+            "no caret while unfocused"
+        );
     }
 
     /// A disabled (instantly-jumping) `Anims` shared by every test's draw
