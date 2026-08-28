@@ -151,8 +151,7 @@ impl App {
                 // overlay — opening that row's menu, or nothing if there's
                 // nothing to menu. Only the dropdown gets this treatment;
                 // dialog modals keep the right button inert.
-                if hit == Hit::ModalOutside
-                    && matches!(self.modals.top(), Some(Modal::Dropdown(_)))
+                if hit == Hit::ModalOutside && matches!(self.modals.top(), Some(Modal::Dropdown(_)))
                 {
                     changed |= self.update(Action::Close);
                     match self.hits.hit_at_under_modal(m.column, m.row).cloned() {

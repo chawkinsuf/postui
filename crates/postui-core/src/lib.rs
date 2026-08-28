@@ -20,8 +20,7 @@ pub fn config_dir() -> Option<std::path::PathBuf> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        directories::ProjectDirs::from("", "", APP_NAME)
-            .map(|d| d.config_dir().to_path_buf())
+        directories::ProjectDirs::from("", "", APP_NAME).map(|d| d.config_dir().to_path_buf())
     }
 }
 

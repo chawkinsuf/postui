@@ -2053,7 +2053,8 @@ mod tests {
         let out = format!("{:?}", terminal.backend().buffer());
         assert!(out.contains("📝"), "editor icon: {out}");
         assert!(
-            hits.rect_of(&crate::hit::Hit::ResponseEditorButton).is_some(),
+            hits.rect_of(&crate::hit::Hit::ResponseEditorButton)
+                .is_some(),
             "the ✎ icon registers its hit"
         );
     }
