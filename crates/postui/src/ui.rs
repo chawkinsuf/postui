@@ -210,17 +210,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 }
 
-/// Height of the variable tooltip: a padding row, the `name = value` line,
-/// the source line, and a closing padding row. A declared description adds
-/// one more line.
-const TOOLTIP_HEIGHT: u16 = 4;
+/// Widest a tooltip line may run before the value wraps onto another row.
+const TOOLTIP_MAX_TEXT_W: usize = 56;
 
-/// Draws the hover/caret tooltip for one `{{token}}` (spec §7): line 1 is
-/// `name = value` — always `SECRET_MASK` for a secret, with no reveal
-/// anywhere — and line 2 names the scope the value came from (`request var`,
-/// `env qa`, `default`, `group user → "user 2"`, `needs selection`, `missing
-/// secret`). It sits under the token it belongs to, flipping above when
-/// there is no room below, and is clamped to stay inside `screen`.
+/// Draws the hover/caret tooltip for one `{{token}}` (spec §7): first the
+/// value — always `SECRET_MASK` for a secret, with no reveal anywhere,
+/// wrapped onto further rows rather than truncated so the whole value is
+/// readable — then a line naming the scope the value came from (`this
+/// request`, `env = qa`, `default`, `option = user 2`, `needs selection`,
+/// `missing secret`). It sits under the token it belongs to,
+/// flipping above when there is no room below, and is clamped to stay
+/// inside `screen`.
 fn draw_var_tooltip(
     frame: &mut Frame,
     screen: ratatui::layout::Rect,
@@ -230,15 +230,32 @@ fn draw_var_tooltip(
 ) {
     use ratatui::layout::Rect;
     let info = vars.describe(&tip.name);
-    // A long value would otherwise stretch the tooltip past the terminal;
-    // the full value is always available in the Variable Manager.
-    let line1 = ellipsize(&format!("{} = {}", tip.name, info.display_value()), 56);
+    let mut value_lines = wrap_chars(&info.display_value(), TOOLTIP_MAX_TEXT_W);
     let line2 = info.source.label();
-    let line3 = info.description.as_ref().map(|d| ellipsize(d, 56));
-    let height = TOOLTIP_HEIGHT + u16::from(line3.is_some());
-    let text_w = line1
-        .chars()
-        .count()
+    let line3 = info
+        .description
+        .as_ref()
+        .map(|d| ellipsize(d, TOOLTIP_MAX_TEXT_W));
+    // Padding rows top and bottom, the value rows, the source line, and an
+    // optional description line. A value taller than the terminal is cut
+    // to fit, the last surviving row ellipsized to say so.
+    let fixed = 3 + u16::from(line3.is_some());
+    let max_value_rows = screen.height.saturating_sub(fixed).max(1) as usize;
+    if value_lines.len() > max_value_rows {
+        value_lines.truncate(max_value_rows);
+        let last = value_lines.last_mut().unwrap();
+        *last = last
+            .chars()
+            .take(TOOLTIP_MAX_TEXT_W - 1)
+            .chain(std::iter::once('\u{2026}'))
+            .collect();
+    }
+    let height = fixed + value_lines.len() as u16;
+    let text_w = value_lines
+        .iter()
+        .map(|l| l.chars().count())
+        .max()
+        .unwrap_or(0)
         .max(line2.chars().count())
         .max(line3.as_ref().map_or(0, |l| l.chars().count())) as u16;
     // 2 columns of padding each side, plus a column for the drop shadow.
@@ -261,19 +278,23 @@ fn draw_var_tooltip(
     let buf = frame.buffer_mut();
     crate::paint::floating_panel(buf, area, screen, theme);
     let inner = width.saturating_sub(4) as usize;
+    let mut row = y + 1;
+    for line in &value_lines {
+        crate::paint::text(
+            buf,
+            x + 2,
+            row,
+            &ellipsize(line, inner),
+            theme.text,
+            theme.panel,
+            true,
+        );
+        row += 1;
+    }
     crate::paint::text(
         buf,
         x + 2,
-        y + 1,
-        &ellipsize(&line1, inner),
-        theme.text,
-        theme.panel,
-        true,
-    );
-    crate::paint::text(
-        buf,
-        x + 2,
-        y + 2,
+        row,
         &ellipsize(&line2, inner),
         theme.text_muted,
         theme.panel,
@@ -283,13 +304,27 @@ fn draw_var_tooltip(
         crate::paint::text(
             buf,
             x + 2,
-            y + 3,
+            row + 1,
             &ellipsize(desc, inner),
             theme.text_muted,
             theme.panel,
             false,
         );
     }
+}
+
+/// `s` hard-wrapped into chunks of at most `max` characters — values are
+/// often unbroken URLs or tokens, so there is no word boundary to prefer.
+/// Always yields at least one (possibly empty) line.
+fn wrap_chars(s: &str, max: usize) -> Vec<String> {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.is_empty() {
+        return vec![String::new()];
+    }
+    chars
+        .chunks(max.max(1))
+        .map(|c| c.iter().collect())
+        .collect()
 }
 
 /// `s` cut to at most `max` characters, the last of which becomes `…`.

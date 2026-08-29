@@ -534,10 +534,10 @@ fn hovering_a_url_token_pops_its_value_and_scope() {
 
     let frame = render(&mut app);
     assert!(
-        frame.contains("base_url = http://qa.test"),
+        frame.contains("http://qa.test"),
         "the tooltip names the value: {frame}"
     );
-    assert!(frame.contains("env qa"), "and its scope: {frame}");
+    assert!(frame.contains("env = qa"), "and its scope: {frame}");
 }
 
 // --- goal 6: in-place table editing --------------------------------------
@@ -706,12 +706,12 @@ fn a_legacy_project_migrates_then_grows_a_group_whose_selection_drives_resolutio
     });
     let frame = render(&mut app);
     assert!(
-        frame.contains("zone = us-east-1"),
+        frame.contains("us-east-1"),
         "the request shows the selected entry's value: {frame}"
     );
     assert!(
-        frame.contains("selector region \u{2192} \"us\""),
-        "...and names the group and entry it came from: {frame}"
+        frame.contains("option = us"),
+        "...and names the entry it came from: {frame}"
     );
 }
 

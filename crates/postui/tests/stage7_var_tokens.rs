@@ -155,11 +155,11 @@ fn hovering_a_token_shows_its_value_and_scope_and_leaving_drops_the_tooltip() {
     assert_eq!(tip.name, "base_url");
     let frame = dump(&mut app);
     assert!(
-        frame.contains("base_url = http://qa.test"),
+        frame.contains("http://qa.test"),
         "the tooltip shows the value: {frame}"
     );
     assert!(
-        frame.contains("env qa"),
+        frame.contains("env = qa"),
         "...and the scope it came from: {frame}"
     );
 
@@ -168,7 +168,7 @@ fn hovering_a_token_shows_its_value_and_scope_and_leaving_drops_the_tooltip() {
     app.handle_mouse(moved(away.right() - 1, away.y));
     assert!(app.var_token_tip().is_none(), "no lingering tooltip");
     let frame = dump(&mut app);
-    assert!(!frame.contains("env qa"), "tooltip is gone: {frame}");
+    assert!(!frame.contains("env = qa"), "tooltip is gone: {frame}");
 }
 
 /// A press moves the pointer too. Without that, a terminal that reports no
@@ -191,7 +191,7 @@ fn a_click_elsewhere_drops_a_tooltip_even_with_no_motion_event() {
     );
     let frame = dump(&mut app);
     assert!(
-        !frame.contains("env qa"),
+        !frame.contains("env = qa"),
         "and it is off the screen: {frame}"
     );
 }
@@ -204,10 +204,7 @@ fn the_scope_line_names_default_group_request_and_missing_secret() {
     set_url(&mut app, "{{page}}");
     hover_token(&mut app, "page");
     let frame = dump(&mut app);
-    assert!(
-        frame.contains("page = 1") && frame.contains("default"),
-        "{frame}"
-    );
+    assert!(frame.contains("default"), "{frame}");
 
     // A group field, once its group has a selection.
     app.project.set_selection("user", "user 2");
@@ -215,10 +212,10 @@ fn the_scope_line_names_default_group_request_and_missing_secret() {
     set_url(&mut app, "{{uid}}");
     hover_token(&mut app, "uid");
     let frame = dump(&mut app);
-    assert!(frame.contains("uid = 1001"), "{frame}");
+    assert!(frame.contains("1001"), "{frame}");
     assert!(
-        frame.contains("selector user \u{2192} \"user 2\""),
-        "the group and its selected option: {frame}"
+        frame.contains("option = user 2"),
+        "the selected option by name: {frame}"
     );
 
     // The request's own `[variables]` overlay outranks everything.
@@ -234,7 +231,7 @@ fn the_scope_line_names_default_group_request_and_missing_secret() {
     hover_token(&mut app, "base_url");
     let frame = dump(&mut app);
     assert!(
-        frame.contains("base_url = http://local") && frame.contains("request var"),
+        frame.contains("http://local") && frame.contains("this request"),
         "{frame}"
     );
 }
@@ -257,15 +254,42 @@ fn a_group_field_with_no_selection_reads_as_needs_selection() {
 }
 
 #[test]
+fn a_long_value_wraps_across_tooltip_rows_instead_of_truncating() {
+    let mut app = app_with_vars();
+    let long = format!("http://qa.test/{}/tail-end", "a".repeat(70));
+    app.project
+        .edit_env("qa", |_| Ok(format!("base_url = \"{long}\"\n")))
+        .unwrap();
+    app.update(Action::Render);
+    set_url(&mut app, "{{base_url}}/x");
+    hover_token(&mut app, "base_url");
+
+    let buf = draw(&mut app);
+    // Reassemble the drawn frame row by row and check every piece of the
+    // value made it to the screen — the head, the filler, and the tail
+    // (which only a wrapped, untruncated tooltip can show).
+    let rows: Vec<String> = (0..H)
+        .map(|y| (0..W).map(|x| buf[(x, y)].symbol()).collect())
+        .collect();
+    assert!(
+        rows.iter().any(|r| r.contains("http://qa.test/a")),
+        "the value's head is on screen: {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|r| r.contains("tail-end")),
+        "...and its tail survives on a later row: {rows:?}"
+    );
+    let frame = dump(&mut app);
+    assert!(!frame.contains('\u{2026}'), "nothing was ellipsized: {frame}");
+}
+
+#[test]
 fn a_secrets_tooltip_is_masked_and_never_reveals_the_value() {
     let mut app = app_with_vars();
     set_url(&mut app, "{{api_key}}");
     hover_token(&mut app, "api_key");
     let frame = dump(&mut app);
-    assert!(
-        frame.contains("api_key = \u{25cf}"),
-        "masked value: {frame}"
-    );
+    assert!(frame.contains("\u{25cf}"), "masked value: {frame}");
     assert!(
         !frame.contains("sk-qa-999"),
         "a secret is never shown in the clear: {frame}"
@@ -437,7 +461,7 @@ fn body_editor_tokens_are_tinted_and_hoverable() {
 
     app.handle_mouse(moved(r.x + 1, r.y));
     let frame = dump(&mut app);
-    assert!(frame.contains("base_url = http://qa.test"), "{frame}");
+    assert!(frame.contains("http://qa.test"), "{frame}");
 }
 
 #[test]
@@ -466,7 +490,7 @@ fn a_resting_caret_raises_the_same_tooltip_after_two_ticks() {
         .expect("resting past the dwell raises the tip");
     assert_eq!(tip.name, "base_url");
     let frame = dump(&mut app);
-    assert!(frame.contains("base_url = http://qa.test"), "{frame}");
+    assert!(frame.contains("http://qa.test"), "{frame}");
 
     // Moving the caret out of the token takes it away again.
     app.editor.url.set_cursor(13);

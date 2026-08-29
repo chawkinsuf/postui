@@ -46,12 +46,10 @@ pub enum TokenSource {
 impl TokenSource {
     pub fn label(&self) -> String {
         match self {
-            TokenSource::Request => "request var".to_string(),
-            TokenSource::Env(env) => format!("env {env}"),
+            TokenSource::Request => "this request".to_string(),
+            TokenSource::Env(env) => format!("env = {env}"),
             TokenSource::Default => "default".to_string(),
-            TokenSource::Selector { selector, selected } => {
-                format!("selector {selector} \u{2192} \"{selected}\"")
-            }
+            TokenSource::Selector { selected, .. } => format!("option = {selected}"),
             TokenSource::NeedsSelection => "needs selection".to_string(),
             TokenSource::MissingSecret => "missing secret".to_string(),
             TokenSource::Undefined => "not defined".to_string(),
@@ -362,10 +360,7 @@ mod tests {
                 selected: "user 2".into(),
             },
         );
-        assert_eq!(
-            v.describe("uid").source.label(),
-            "selector user \u{2192} \"user 2\""
-        );
+        assert_eq!(v.describe("uid").source.label(), "option = user 2");
     }
 
     #[test]
