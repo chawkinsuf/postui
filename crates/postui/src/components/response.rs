@@ -532,6 +532,8 @@ pub struct Response {
     view: Option<ReadyView>,
     /// Whether the pane is hidden — collapsed to just its header strip,
     /// with the editor taking the freed rows (`Action::ToggleResponseCollapse`).
+    /// A sticky layout preference: `Session::sync_open` carries it across
+    /// request switches instead of swapping it with the response.
     /// Session-only — never persisted.
     pub collapsed: bool,
 }

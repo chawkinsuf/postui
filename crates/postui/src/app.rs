@@ -857,14 +857,10 @@ impl App {
         self.editor.vars = vars;
         // The response pane always shows the open request's response;
         // whenever an action changed which request is open (any route),
-        // swap in that request's cached response — or an empty one.
+        // swap in that request's cached response — or an empty one. The
+        // collapse flag rides along (a layout preference, not response
+        // state), so a swap can't break the no-blank-screen rule.
         let swapped = self.session.sync_open(&self.editor.slug);
-        // The no-blank-screen rule (see `Action::ToggleTableCollapse`)
-        // also holds when a hidden response arrives by request switch: the
-        // swapped-in response keeps its state, so the editor expands.
-        if swapped && self.session.response.collapsed && self.table_collapsed {
-            self.table_collapsed = false;
-        }
         // The send button shows "sending" only when the in-flight send
         // belongs to the request being looked at.
         let editor_in_flight = self.session.in_flight_for(&self.editor.slug);
@@ -912,12 +908,11 @@ impl App {
         );
     }
 
-    /// Keeps `AnimKey::ResponseCollapse` chasing the *open* response's
+    /// Keeps `AnimKey::ResponseCollapse` chasing the response pane's
     /// `collapsed` flag the same way [`Self::sync_pane_collapse_anim`]
-    /// chases `table_collapsed`. The flag is per-request state
-    /// (`session.sync_open` swaps it with the response), so the toggle
-    /// action alone can't own the anim: switching to a request whose
-    /// response isn't collapsed must re-open the pane too.
+    /// chases `table_collapsed`. The flag lives on `session.response` but
+    /// is a sticky layout preference (`session.sync_open` carries it
+    /// across request switches).
     fn sync_response_collapse_anim(&mut self) {
         let target = self.session.response.collapsed;
         if target == self.response_collapsed_target {

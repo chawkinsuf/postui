@@ -56,6 +56,9 @@ impl Session {
             return false;
         }
         let outgoing = std::mem::take(&mut self.response);
+        // The pane's collapse is a layout preference, not part of any one
+        // request's response — it rides along instead of swapping.
+        let collapsed = outgoing.collapsed;
         // An Empty response carries nothing worth restoring; keeping the
         // cache to requests that actually have a result bounds its size to
         // the requests used this session.
@@ -63,6 +66,7 @@ impl Session {
             self.cache.insert(self.open_slug.clone(), outgoing);
         }
         self.response = self.cache.remove(open).unwrap_or_default();
+        self.response.collapsed = collapsed;
         self.open_slug = open.clone();
         true
     }
@@ -190,7 +194,10 @@ impl Session {
         }
         self.send_generation += 1;
         self.cache.clear();
+        // The collapse layout preference survives even a project switch.
+        let collapsed = self.response.collapsed;
         self.response = Response::default();
+        self.response.collapsed = collapsed;
         self.open_slug = None;
     }
 }
@@ -251,6 +258,25 @@ mod tests {
         assert_eq!(body_of(&s.response), Some("from a"));
         open(&mut s, "b");
         assert_eq!(body_of(&s.response), Some("from b"));
+    }
+
+    #[test]
+    fn collapsed_is_a_layout_preference_that_sticks_across_request_switches() {
+        let mut s = Session::default();
+        open(&mut s, "a");
+        s.response
+            .set_state(ResponseState::Ready(data("from a")), 0);
+        s.response.collapsed = true;
+
+        open(&mut s, "b");
+        assert!(s.response.collapsed, "collapse follows to the next request");
+
+        s.response.collapsed = false;
+        open(&mut s, "a");
+        assert!(
+            !s.response.collapsed,
+            "re-expanding sticks too — a's cached response must not bring the old flag back"
+        );
     }
 
     #[test]

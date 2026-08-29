@@ -5114,12 +5114,11 @@ fn collapse_on_the_body_tab_shrinks_editor_to_chrome_too() {
     );
 }
 
-/// The `AnimKey::ResponseCollapse` target is per-request state
-/// (`session.response.collapsed`), but the anim is global: switching to a
-/// request whose response isn't collapsed must re-open the pane rather
-/// than leave the layout squashed under a stale 1.0.
+/// The response pane's collapse is a layout preference, not per-request
+/// state: switching to another request keeps the pane hidden instead of
+/// swapping the flag with the response.
 #[test]
-fn response_collapse_reopens_when_switching_to_an_expanded_request() {
+fn response_collapse_sticks_when_switching_requests() {
     // Disabled anims: each retarget lands instantly, so the layout can be
     // asserted right after the update that moves it.
     let mut app = App::new_for_test_with_anims(false);
@@ -5132,16 +5131,17 @@ fn response_collapse_reopens_when_switching_to_an_expanded_request() {
         "toggle collapses the pane"
     );
 
-    // Opening a different request swaps in that request's own response,
-    // which is not collapsed.
+    // Opening a different request swaps in that request's own response;
+    // the collapse rides along.
     app.editor.slug = Some("other".into());
     app.update(Action::Render);
-    assert!(!app.session.response.collapsed);
+    assert!(app.session.response.collapsed);
     render_once(&mut app);
-    let reopened = app.hits.rect_of(&Hit::Pane(PaneId::Response)).unwrap();
-    assert!(
-        reopened.height > hidden.height,
-        "the pane re-opens with the swapped-in response: {reopened:?}"
+    let still_hidden = app.hits.rect_of(&Hit::Pane(PaneId::Response)).unwrap();
+    assert_eq!(
+        still_hidden.height,
+        crate::components::response::COLLAPSED_HEIGHT,
+        "the pane stays collapsed on the next request: {still_hidden:?}"
     );
 }
 
@@ -5167,14 +5167,13 @@ fn hiding_the_expanded_editor_swaps_the_panels() {
     );
 }
 
-/// The same no-blank-screen rule holds when a hidden response arrives by
-/// request switch rather than by toggle: the swapped-in response keeps its
-/// hidden state, so the editor expands.
+/// With collapse riding across request switches, the no-blank-screen rule
+/// needs only the toggles: a switch never changes either flag, so the two
+/// panes can't both arrive hidden.
 #[test]
-fn switching_to_a_hidden_response_while_the_editor_is_hidden_expands_the_editor() {
+fn no_blank_screen_across_request_switches() {
     let mut app = App::new_for_test_with_anims(false);
-    // Hide request A's response, then switch away — A caches as hidden
-    // (a non-Empty state, so `sync_open` keeps its cache slot).
+    // Hide request A's response, then switch away — the collapse follows.
     app.editor.slug = Some("a".into());
     app.update(Action::Render);
     app.session
@@ -5183,20 +5182,18 @@ fn switching_to_a_hidden_response_while_the_editor_is_hidden_expands_the_editor(
     app.update(Action::ToggleResponseCollapse);
     app.editor.slug = Some("b".into());
     app.update(Action::Render);
-    assert!(!app.session.response.collapsed);
+    assert!(app.session.response.collapsed, "collapse sticks on B");
 
-    // Hide the editor on B, then switch back to A: both flags would be
-    // set — the editor must re-open.
+    // Hiding the editor on B swaps the panels (toggle-time rule), and a
+    // switch back to A changes neither flag: no blank screen.
     app.update(Action::ToggleTableCollapse);
+    assert!(!app.session.response.collapsed, "panels swapped");
     app.editor.slug = Some("a".into());
     app.update(Action::Render);
+    assert!(app.table_collapsed, "the editor stays hidden");
     assert!(
-        app.session.response.collapsed,
-        "A's response is still hidden"
-    );
-    assert!(
-        !app.table_collapsed,
-        "the editor expands instead of leaving the screen blank"
+        !app.session.response.collapsed,
+        "the response stays expanded"
     );
 }
 
