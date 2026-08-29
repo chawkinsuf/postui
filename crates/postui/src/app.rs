@@ -2343,15 +2343,14 @@ impl App {
                     Some(active) => self.project.environments.iter().position(|n| n == active),
                     None => Some(self.project.environments.len()),
                 };
-                // Anchored under whichever env button is on screen: the
-                // var manager's switcher when that screen is up, else the
-                // header chip. A keyboard open with neither drawn (bare
-                // test frames) falls back to the method dropdown's
-                // zero-rect, which `draw_dropdown` clamps on-screen.
+                // Anchored under the header's env chip — the one env
+                // button, visible on every screen. A keyboard open with
+                // no frame drawn yet (bare test apps) falls back to the
+                // method dropdown's zero-rect, which `draw_dropdown`
+                // clamps on-screen.
                 let anchor = self
                     .hits
-                    .rect_of(&Hit::VmEnvSwitch)
-                    .or_else(|| self.hits.rect_of(&Hit::HeaderEnv))
+                    .rect_of(&Hit::HeaderEnv)
                     .unwrap_or_else(|| ratatui::layout::Rect::new(0, 0, 0, 0));
                 self.push_modal(Modal::Dropdown(DropdownState {
                     anchor,

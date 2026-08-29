@@ -108,7 +108,6 @@ pub enum Hit {
     VmLeftRow(usize),
     /// The Manager top bar's `Environment: <name> ▾` button: opens the same
     /// environment chooser the header's env chip does.
-    VmEnvSwitch,
     /// The Manager top bar's `+ Variable` / `+ Group` buttons.
     VmNewVar,
     VmNewSelector,

@@ -439,7 +439,6 @@ pub const LEFT_W: u16 = 28;
 const GLYPH_GROUP: &str = "\u{25b6}"; // ▶
 const GLYPH_LOCK: &str = "\u{1f512}"; // 🔒
 const GLYPH_UNRESOLVED: &str = "\u{25cf}"; // ●
-const GLYPH_CARET: &str = "\u{25be}"; // ▾
 const GLYPH_RADIO_ON: &str = "\u{25c9}"; // ◉
 const GLYPH_RADIO_OFF: &str = "\u{25cb}"; // ○
 
@@ -1300,7 +1299,7 @@ impl VarManager {
             height: area.height - bar.height,
             ..area
         };
-        self.draw_top_bar(frame, bar, theme, ctx, hits, hovered);
+        self.draw_top_bar(frame, bar, theme, hits, hovered);
 
         let left = Rect {
             width: LEFT_W.min(body.width),
@@ -1928,7 +1927,6 @@ impl VarManager {
         frame: &mut Frame,
         bar: Rect,
         theme: &Theme,
-        ctx: &ProjectContext,
         hits: &mut HitMap,
         hovered: Option<&Hit>,
     ) {
@@ -1946,27 +1944,14 @@ impl VarManager {
             }
         };
 
-        let env_label = format!("Environment: {} {GLYPH_CARET}", ctx.env_label());
-        let env_w = button_min_width(&env_label).min(bar.width);
-        let env_area = Rect {
-            x: bar.x + 1,
-            y: bar.y,
-            width: env_w,
-            height: BUTTON_HEIGHT,
-        };
-        Button {
-            label: &env_label,
-            kind: ButtonKind::Secondary,
-            state: state_of(&Hit::VmEnvSwitch),
-        }
-        .paint(buf, env_area, theme);
-        hits.register(env_area, Hit::VmEnvSwitch);
-
-        // Right-aligned selector, laid out from the bar's right edge inward so
-        // the buttons stay put as the environment name changes width. The
-        // close button rides along as the mouse's way back to the main
-        // screen (the header's vars chip toggles it too), labelled with the
-        // key that does the same thing.
+        // Right-aligned buttons, laid out from the bar's right edge inward.
+        // Environment switching lives in the header's env chip (still
+        // visible on this screen and opening the same anchored dropdown),
+        // so the bar carries no switcher of its own. The close button
+        // rides along as the mouse's way back to the main screen (the
+        // header's vars chip toggles it too), labelled with the key that
+        // does the same thing.
+        let left_edge = bar.x + 1;
         let mut x = bar.x + bar.width;
         for (label, kind, hit) in [
             (
@@ -1978,7 +1963,7 @@ impl VarManager {
             ("+ Variable", ButtonKind::Primary, Hit::VmNewVar),
         ] {
             let w = button_min_width(label);
-            if x < env_area.x + env_area.width + w + 2 {
+            if x < left_edge + w + 2 {
                 break;
             }
             x -= w + 1;
@@ -2362,12 +2347,10 @@ fields = ["user_id", "customer_id"]
     }
 
     #[test]
-    fn top_bar_registers_the_env_switch_and_both_new_buttons() {
+    fn top_bar_registers_both_new_buttons() {
         let (_dir, ctx) = fixture();
         let mut vm = VarManager::default();
         let (content, hits) = render(&mut vm, &ctx);
-        assert!(content.contains("Environment: qa"), "{content}");
-        assert!(hits.rect_of(&Hit::VmEnvSwitch).is_some());
         assert!(hits.rect_of(&Hit::VmNewVar).is_some());
         assert!(hits.rect_of(&Hit::VmNewSelector).is_some());
         assert!(content.contains("+ Variable"), "{content}");
@@ -2939,10 +2922,8 @@ fields = ["user_id", "customer_id"]
             hits.rect_of(&Hit::VmEntryCell { row: 0, col: 0 }).is_none(),
             "no grid without an environment"
         );
-        assert!(
-            hits.rect_of(&Hit::VmEnvSwitch).is_some(),
-            "the way out of that state is still on screen"
-        );
+        // The way out of that state is the header's env chip, which the
+        // app draws above this component on every screen.
     }
 
     #[test]

@@ -1256,7 +1256,6 @@ impl App {
             }
             // The Manager's environment switcher is the header env chip's
             // chooser, reached from the screen that replaced the header.
-            Hit::VmEnvSwitch => self.update(Action::OpenEnvChooser),
             Hit::VmNewVar => self.update(Action::PromptNewVar),
             Hit::VmNewSelector => self.update(Action::PromptNewSelector),
             // A second click on the field already under edit is inert (the

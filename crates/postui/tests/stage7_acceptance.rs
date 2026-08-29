@@ -622,11 +622,11 @@ fn a_legacy_project_migrates_then_grows_a_group_whose_selection_drives_resolutio
     // --- into the Manager, from the header chip ---
     click(&mut app, Hit::HeaderVars);
     assert_eq!(app.screen, postui::app::Screen::VarManager);
-    // Entries belong to an environment, so pick one — from the Manager's
-    // own `Environment: … \u{25be}` switcher. `qa` is the only one.
+    // Entries belong to an environment, so pick one — from the header's
+    // env chip, still on screen above the Manager. `qa` is the only one.
     assert_eq!(app.project.active_env, None);
-    click(&mut app, Hit::VmEnvSwitch);
-    // The switcher opens an anchored dropdown; one click on `qa` (row 0)
+    click(&mut app, Hit::HeaderEnv);
+    // The chip opens an anchored dropdown; one click on `qa` (row 0)
     // activates it and closes the menu.
     click(&mut app, Hit::DropdownRow(0));
     assert_eq!(app.project.active_env.as_deref(), Some("qa"));

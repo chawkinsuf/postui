@@ -1713,33 +1713,35 @@ fn header_buffer_shows_dropdown_glyph_for_project_and_env() {
 }
 
 #[test]
-fn clicking_the_manager_env_switcher_opens_the_environment_chooser() {
+fn the_header_env_chip_still_switches_environments_on_the_manager_screen() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.update(Action::OpenVarManager);
     render_once(&mut app);
-    assert!(rendered_text(&mut app).contains("Environment: qa"));
+    assert!(rendered_text(&mut app).contains("qa \u{25be}"));
 
+    // The manager has no switcher of its own — the header's env chip is
+    // the one env button, and it stays clickable on this screen.
     let r = app
         .hits
-        .rect_of(&crate::hit::Hit::VmEnvSwitch)
-        .expect("env switcher registered");
-    app.handle_mouse(left_down(r.x + 2, r.y + 1));
+        .rect_of(&crate::hit::Hit::HeaderEnv)
+        .expect("header env chip registered on the manager screen");
+    app.handle_mouse(left_down(r.x + 1, r.y));
     match app.modals.top() {
         Some(Modal::Dropdown(state)) => assert_eq!(
             state.anchor, r,
-            "the dropdown anchors to the switcher button itself"
+            "the dropdown anchors to the header env chip"
         ),
-        _ => panic!("the switcher opens the same env dropdown the header env chip does"),
+        _ => panic!("the header env chip opens the env dropdown from the manager screen too"),
     }
 
-    // Switching relabels the bar and the group's inline selection with it.
+    // Switching relabels the chip and the group's inline selection with it.
     app.update(Action::Close);
     app.update(Action::SwitchEnv(Some("dev".into())));
     let content = rendered_text(&mut app);
-    assert!(content.contains("Environment: dev"), "{content}");
+    assert!(content.contains("dev \u{25be}"), "{content}");
     assert!(
         content.contains("user (needs selection)"),
         "dev has no entries for the selector: {content}"
@@ -5956,7 +5958,10 @@ fn alt_v_opens_the_manager_and_renders_its_title() {
     assert_eq!(app.screen, crate::app::Screen::VarManager);
     let content = rendered_text(&mut app);
     assert!(content.contains("VARIABLES"), "the left list's own heading");
-    assert!(content.contains("Environment:"), "{content}");
+    assert!(
+        content.contains("no env \u{25be}"),
+        "the header's env chip is the manager screen's env control: {content}"
+    );
 }
 
 #[test]
