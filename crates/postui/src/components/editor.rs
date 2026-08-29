@@ -1852,18 +1852,19 @@ impl Editor {
         // The copy-URL chip claims a fixed slice at the well's right edge;
         // the text window is narrowed to leave room for it so the two never
         // overlap.
+        // The lock + copy chips cluster at the well's right edge; the text
+        // window is narrowed to leave room for both so they never overlap.
         let chip_w = COPY_CHIP_WIDTH.min(url_area.width);
-        // The TLS lock claims the well's left edge (browser-style: the lock
-        // sits beside the URL it vouches for); the text window starts after
-        // it, keeping the URL_PAD breathing room from the lock's zone.
-        let lock_w = LOCK_CHIP_WIDTH.min(url_area.width);
+        let lock_w = LOCK_CHIP_WIDTH.min(url_area.width.saturating_sub(chip_w));
+        // The text is inset URL_PAD columns from the method segment so it
+        // isn't flush against the badge.
         let url_text_area = Rect {
-            x: url_area.x + (lock_w + URL_PAD).min(url_area.width),
+            x: url_area.x + URL_PAD.min(url_area.width),
             width: url_area
                 .width
-                .saturating_sub(lock_w)
                 .saturating_sub(URL_PAD)
-                .saturating_sub(chip_w),
+                .saturating_sub(chip_w)
+                .saturating_sub(lock_w),
             ..url_area
         };
         let mut url_line = self
@@ -1889,32 +1890,28 @@ impl Editor {
         });
 
         // --- TLS lock ----------------------------------------------------
-        // The certificate-verification toggle, drawn (and registered) after
-        // the URL text so it sits on top and wins the hit test over
-        // `UrlBar`, like the copy chip. Closed lock = verifying (quiet,
-        // well-colored ground); open lock = `insecure` (warning-tinted
-        // ground — terminals draw emoji in their own colors, so the state
-        // color goes on the background, and the open shackle carries the
-        // shape signal). Click dispatches `Action::ToggleInsecure` through
-        // the existing `Hit::FooterChip` routing.
+        // The certificate-verification toggle, clustered with the copy chip
+        // at the well's right edge and styled exactly like it (drawn and
+        // registered after the URL text so it wins the hit test over
+        // `UrlBar`). Closed lock = verifying, open lock = `insecure` — the
+        // shackle alone carries the state, deliberately without a warning
+        // treatment: skipping verification is routine for local
+        // development, not an alarm. Click dispatches
+        // `Action::ToggleInsecure` through the existing `Hit::FooterChip`
+        // routing.
         if lock_w == LOCK_CHIP_WIDTH {
             let lock_area = Rect {
-                x: url_area.x,
+                x: url_area.x + url_area.width.saturating_sub(chip_w + lock_w),
                 y: text_y,
                 width: lock_w,
                 height: 1,
             };
             let lock_hit = crate::hit::Hit::FooterChip(Action::ToggleInsecure);
             let lock_hovered = ctx.hovered == Some(&lock_hit);
-            let resting = if self.insecure {
-                theme.tint(theme.warning, url_fill)
+            let lock_bg = if lock_hovered {
+                mix(url_fill, theme.tint(theme.accent, url_fill), ctx.hover_t())
             } else {
                 url_fill
-            };
-            let lock_bg = if lock_hovered {
-                mix(resting, theme.tint(theme.accent, url_fill), ctx.hover_t())
-            } else {
-                resting
             };
             fill(buf, lock_area, lock_bg);
             let glyph = if self.insecure {
@@ -4160,7 +4157,7 @@ mod tests {
         );
 
         e.insecure = true;
-        let (unlocked, _) = draw_editor(&mut e);
+        let (unlocked, hits) = draw_editor(&mut e);
         assert!(
             unlocked.contains("🔓"),
             "insecure shows an open lock: {unlocked}"
@@ -4169,6 +4166,18 @@ mod tests {
         assert!(
             !unlocked.contains("tls {{"),
             "the old tab-row chip is gone: {unlocked}"
+        );
+
+        // The lock clusters with the copy chip at the well's right edge —
+        // immediately inside it, not at the left of the URL text.
+        let lock = hits
+            .rect_of(&Hit::FooterChip(Action::ToggleInsecure))
+            .unwrap();
+        let copy = hits.rect_of(&Hit::CopyUrl).unwrap();
+        assert_eq!(
+            lock.x + lock.width,
+            copy.x,
+            "lock sits flush against the copy chip: lock={lock:?} copy={copy:?}"
         );
     }
 
@@ -4577,20 +4586,14 @@ url = "https://api.example.com/users""#,
             url_row.contains("https://x/y"),
             "url text must share the method label's row: {url_row}"
         );
-        // The lock chip claims the well's left edge, and the URL text is
-        // inset URL_PAD columns after its zone — not flush against it.
-        let left_zone: String = (0..LOCK_CHIP_WIDTH + URL_PAD)
+        // The URL text is inset from the method segment, not flush against it.
+        let gap: String = (0..2)
             .filter_map(|dx| {
                 buf.cell((method_area.x + method_area.width + dx, text_y))
                     .map(|c| c.symbol())
             })
             .collect();
-        // (the two-cell emoji reads back as one symbol plus a blank
-        // continuation cell, so 6 cells yield 6 symbols with 4 blanks)
-        assert_eq!(
-            left_zone, " 🔒    ",
-            "lock zone then 2 padding columns before the URL text"
-        );
+        assert_eq!(gap, "  ", "2 columns of left padding before the URL text");
     }
 
     /// Draws the address bar with an explicit `anims`/`now` (rather than
