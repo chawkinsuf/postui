@@ -536,11 +536,29 @@ pub struct Response {
     /// request switches instead of swapping it with the response.
     /// Session-only — never persisted.
     pub collapsed: bool,
+    /// Display copy of the app-wide split (see [`crate::split`]), mirrored
+    /// in by `App::update` before every draw — same pattern as
+    /// `Editor::table_collapsed` — so the header's cluster can light the
+    /// segment for the pane's current share. `collapsed` above stays the
+    /// authority on this pane's own minimized flag.
+    pub split: crate::split::SplitState,
 }
 
 impl Response {
     pub fn state(&self) -> &ResponseState {
         &self.state
+    }
+
+    /// The split state the header cluster draws: the mirrored app-wide
+    /// copy with this pane's own `collapsed` flag folded in as the
+    /// authority — a standalone render (tests) that only sets `collapsed`
+    /// still lights the right segment.
+    fn draw_split(&self) -> crate::split::SplitState {
+        crate::split::SplitState {
+            response_minimized: self.collapsed,
+            editor_minimized: self.split.editor_minimized && !self.collapsed,
+            ratio: self.split.ratio,
+        }
     }
 
     /// The only way to change state, so the view (tree, cursor, search) is
@@ -1059,6 +1077,7 @@ impl Component for Response {
     ) {
         let inner = pane_surface(frame.buffer_mut(), area, ctx.theme);
         let t = ctx.theme;
+        let split = self.draw_split();
 
         let data = match &self.state {
             ResponseState::Ready(data) => data,
@@ -1097,7 +1116,7 @@ impl Component for Response {
                             false,
                         );
                     }
-                    draw_collapse_toggle(frame.buffer_mut(), hits, strip, true, t.panel, ctx);
+                    draw_split_cluster(frame.buffer_mut(), hits, strip, self.draw_split(), ctx);
                     return;
                 }
                 let muted = Style::default().fg(t.text_muted);
@@ -1141,7 +1160,7 @@ impl Component for Response {
                 frame.render_widget(widget, inner);
                 // The same hide toggle the Ready header offers, so the
                 // pane can be put away before a response exists.
-                draw_collapse_toggle(frame.buffer_mut(), hits, inner, false, t.page, ctx);
+                draw_split_cluster(frame.buffer_mut(), hits, inner, self.draw_split(), ctx);
                 return;
             }
         };
@@ -1159,7 +1178,7 @@ impl Component for Response {
             ])
             .split(inner);
 
-        draw_header_strip(frame, hits, rows[0], data, view, self.collapsed, ctx);
+        draw_header_strip(frame, hits, rows[0], data, view, split, ctx);
 
         let mut body_area = rows[1];
         crate::paint::fill(frame.buffer_mut(), body_area, t.page);
@@ -1243,9 +1262,10 @@ fn draw_header_strip(
     area: Rect,
     data: &crate::http::ResponseData,
     view: &ReadyView,
-    collapsed: bool,
+    split: crate::split::SplitState,
     ctx: &DrawCtx,
 ) {
+    let collapsed = split.response_minimized;
     let t = ctx.theme;
     let buf = frame.buffer_mut();
     crate::paint::fill(buf, area, t.panel);
@@ -1277,9 +1297,9 @@ fn draw_header_strip(
         crate::paint::text(buf, x, area.y, &s, t.text_muted, t.panel, false);
     }
 
-    // Row 0 (right): the pane's hide/show toggle, mirroring the editor
-    // table's own collapse affordance.
-    draw_collapse_toggle(buf, hits, area, collapsed, t.panel, ctx);
+    // Row 0 (right): the pane's minimize/half/expand cluster, mirroring
+    // the editor's own.
+    draw_split_cluster(buf, hits, area, split, ctx);
 
     // Hidden (or mid-slide with only the one row left): row 0 is the whole
     // strip — the tabs and icon actions slid away with the body, leaving
@@ -1344,36 +1364,36 @@ fn draw_header_strip(
     }
 }
 
-/// Paints the pane's right-aligned `⌄ hide`/`› show` toggle on `area`'s
-/// top row over `bg` and registers its hit. Shared by the Ready header
-/// strip and every non-Ready state, so the pane can be hidden before a
-/// response exists.
-fn draw_collapse_toggle(
+/// Paints the pane's right-aligned minimize/half/expand cluster on
+/// `area`'s top row and registers its hits. Shared by the Ready header
+/// strip and every non-Ready state, so the pane can be resized before a
+/// response exists. `split` is the display copy mirrored onto
+/// `Response::split`, with this pane's own `collapsed` flag folded in as
+/// the authority on its minimized state.
+fn draw_split_cluster(
     buf: &mut ratatui::buffer::Buffer,
     hits: &mut crate::hit::HitMap,
     area: Rect,
-    collapsed: bool,
-    bg: ratatui::style::Color,
+    split: crate::split::SplitState,
     ctx: &DrawCtx,
 ) {
-    let t = ctx.theme;
-    let toggle_label = if collapsed {
-        "\u{203a} show"
-    } else {
-        "\u{2304} hide"
+    let pane = crate::split::SplitPane::Response;
+    let x = area
+        .right()
+        .saturating_sub(crate::paint::SPLIT_CLUSTER_WIDTH + 1);
+    let hovered = match ctx.hovered {
+        Some(crate::hit::Hit::SplitButton(p, b)) if *p == pane => Some(*b),
+        _ => None,
     };
-    let toggle_w = toggle_label.chars().count() as u16;
-    let toggle_x = area.right().saturating_sub(toggle_w + 1);
-    let toggle_fg = if ctx.hovered == Some(&crate::hit::Hit::ResponseCollapse) {
-        t.text
-    } else {
-        t.text_muted
-    };
-    crate::paint::text(buf, toggle_x, area.y, toggle_label, toggle_fg, bg, false);
-    hits.register(
-        Rect::new(toggle_x, area.y, toggle_w, 1),
-        crate::hit::Hit::ResponseCollapse,
-    );
+    let rects = crate::paint::SplitCluster {
+        pane,
+        state: split,
+        hovered,
+    }
+    .paint(buf, x, area.y, ctx.theme);
+    for (rect, button) in rects {
+        hits.register(rect, crate::hit::Hit::SplitButton(pane, button));
+    }
 }
 
 /// A [`crate::paint::TabStrip::tabs`]-shaped label list: `(text, badge)`
@@ -3206,53 +3226,61 @@ mod tests {
         );
     }
 
-    /// The header's right edge offers the pane's hide/show toggle,
-    /// mirroring the editor table's collapse affordance.
+    /// Every rect of the pane's minimize/half/expand cluster, in
+    /// on-screen order, or a panic when any segment is missing.
+    fn cluster_rects(hits: &crate::hit::HitMap) -> [Rect; 3] {
+        crate::paint::SPLIT_BUTTONS.map(|b| {
+            hits.rect_of(&crate::hit::Hit::SplitButton(
+                crate::split::SplitPane::Response,
+                b,
+            ))
+            .unwrap_or_else(|| panic!("{b:?} segment registered"))
+        })
+    }
+
+    /// The header's right edge offers the pane's minimize/half/expand
+    /// cluster, mirroring the editor's — clickable in every state,
+    /// collapsed included.
     #[test]
-    fn header_offers_a_hide_toggle_that_reads_show_while_collapsed() {
+    fn header_offers_the_split_cluster() {
         let mut r = ready(r#"{"a": 1}"#);
-        let (out, hits) = render_hovered(&mut r, None);
-        assert!(out.contains("hide"), "{out}");
-        let toggle = hits
-            .rect_of(&crate::hit::Hit::ResponseCollapse)
-            .expect("toggle registered");
-        assert_eq!(toggle.y, 0, "toggle sits on the header's top row");
-        assert!(toggle.x > 40, "right-aligned in a 60-wide pane: {toggle:?}");
+        let (_, hits) = render_hovered(&mut r, None);
+        let [min, half, expand] = cluster_rects(&hits);
+        for rect in [min, half, expand] {
+            assert_eq!(rect.y, 0, "cluster sits on the header's top row");
+            assert_eq!(rect.width, crate::paint::SPLIT_SEGMENT_WIDTH);
+        }
+        assert!(min.x < half.x && half.x < expand.x, "share grows rightward");
+        assert!(
+            expand.x + expand.width > 50,
+            "right-aligned in a 60-wide pane: {expand:?}"
+        );
 
         r.collapsed = true;
-        let (out, hits) = render_hovered(&mut r, None);
-        assert!(out.contains("show"), "{out}");
-        assert!(
-            hits.rect_of(&crate::hit::Hit::ResponseCollapse).is_some(),
-            "toggle stays clickable while collapsed"
-        );
+        let (_, hits) = render_hovered(&mut r, None);
+        cluster_rects(&hits);
     }
 
     /// The pane can be hidden before any response exists: every non-Ready
-    /// state offers the same hide toggle the Ready header strip does.
+    /// state offers the same cluster the Ready header strip does.
     #[test]
-    fn empty_state_offers_the_hide_toggle() {
+    fn empty_state_offers_the_split_cluster() {
         let mut r = Response::default();
-        let out = render(&mut r);
-        assert!(out.contains("hide"), "{out}");
         let hits = render_hits(&mut r);
-        assert!(
-            hits.rect_of(&crate::hit::Hit::ResponseCollapse).is_some(),
-            "toggle clickable with no response yet"
-        );
+        cluster_rects(&hits);
     }
 
     /// Collapsed with no response: the pane is nothing but its one-row
-    /// strip — the centered empty-state message is gone, only `› show`
-    /// remains.
+    /// strip — the centered empty-state message is gone, only the
+    /// cluster remains.
     #[test]
-    fn collapsed_empty_state_shows_only_the_show_toggle() {
+    fn collapsed_empty_state_shows_only_the_cluster() {
         let mut r = Response {
             collapsed: true,
             ..Default::default()
         };
         let out = render_sized(&mut r, 60, 1);
-        assert!(out.contains("show"), "{out}");
+        assert!(out.contains('\u{2584}'), "the cluster's glyphs stay: {out}");
         assert!(!out.contains("Send a request"), "{out}");
     }
 
@@ -3270,7 +3298,7 @@ mod tests {
         r.collapsed = true;
         let out = render_sized(&mut r, 60, 1);
         assert!(out.contains("sending"), "{out}");
-        assert!(out.contains("show"), "{out}");
+        assert!(out.contains('\u{2584}'), "the cluster stays: {out}");
         assert!(!out.contains("esc to cancel"), "{out}");
     }
 
@@ -3293,10 +3321,7 @@ mod tests {
         );
         assert!(hits.rect_of(&crate::hit::Hit::SaveBodyButton).is_none());
         assert!(hits.rect_of(&crate::hit::Hit::CopyBodyButton).is_none());
-        assert!(
-            hits.rect_of(&crate::hit::Hit::ResponseCollapse).is_some(),
-            "the show toggle stays"
-        );
+        cluster_rects(&hits); // the split cluster stays
     }
 
     /// The icon buttons carry no hover tooltip (a one-line floating label

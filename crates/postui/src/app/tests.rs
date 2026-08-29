@@ -5045,12 +5045,15 @@ fn collapse_hides_body_and_fades_the_tab_labels_out() {
     );
 
     // Hiding hides the controls too: the tab labels (count included) fade
-    // out entirely, leaving only the `› show` toggle on the row.
+    // out entirely, leaving only the split cluster on the row.
     assert!(
         !content.contains("Params · 3"),
         "tab labels are invisible while hidden: {content}"
     );
-    assert!(content.contains("show"), "{content}");
+    assert!(
+        content.contains('\u{2580}'),
+        "the cluster's glyphs stay: {content}"
+    );
 }
 
 #[test]
@@ -5060,9 +5063,18 @@ fn collapse_toggle_click_and_key() {
     render_once(&mut app);
     assert!(!app.table_collapsed);
 
-    let r = app.hits.rect_of(&Hit::TableCollapse).unwrap();
+    let r = app
+        .hits
+        .rect_of(&Hit::SplitButton(
+            crate::split::SplitPane::Editor,
+            crate::split::SplitButton::Minimize,
+        ))
+        .unwrap();
     app.handle_mouse(left_down(r.x, r.y));
-    assert!(app.table_collapsed, "click toggles collapse on");
+    assert!(
+        app.table_collapsed,
+        "clicking minimize collapses the editor"
+    );
 
     app.handle_key(&Keymap::default_bindings(), alt('p'));
     assert!(!app.table_collapsed, "alt+p toggles it back off");
@@ -11465,6 +11477,84 @@ fn toggle_response_collapse_flips_the_flag_and_eases_the_anim() {
     );
     app.update(Action::ToggleResponseCollapse);
     assert!(!app.session.response.collapsed, "toggles back open");
+}
+
+/// `Action::SplitButton` (the panes' minimize/half/expand clusters) drives
+/// the five-state split: half moves the ratio stop and eases
+/// `AnimKey::SplitRatio`; minimize/expand set the same endpoint flags the
+/// old toggles did, keeping the ratio sticky for re-opening.
+#[test]
+fn split_buttons_update_the_split_and_ease_the_ratio_anim() {
+    use crate::split::{SplitButton, SplitPane, SplitRatio};
+    let mut app = App::new_for_test_with_anims(true);
+    assert_eq!(app.split_ratio, SplitRatio::Even);
+
+    // Half from 50/50 shrinks the response to its quarter, easing the
+    // ratio rather than snapping.
+    app.update(Action::SplitButton(SplitPane::Response, SplitButton::Half));
+    assert_eq!(app.split_ratio, SplitRatio::EditorBig);
+    assert!(!app.session.response.collapsed);
+    assert!(!app.table_collapsed);
+    let now = std::time::Instant::now();
+    assert!(
+        !app.anims.is_done(crate::anim::AnimKey::SplitRatio, now),
+        "the ratio must ease between stops, not snap"
+    );
+
+    // Minimize collapses the response exactly like the old toggle; the
+    // ratio stop survives underneath.
+    app.update(Action::SplitButton(
+        SplitPane::Response,
+        SplitButton::Minimize,
+    ));
+    assert!(app.session.response.collapsed);
+    assert_eq!(app.split_ratio, SplitRatio::EditorBig, "ratio is sticky");
+
+    // Expand gives the response the whole column by minimizing the editor.
+    app.update(Action::SplitButton(
+        SplitPane::Response,
+        SplitButton::Expand,
+    ));
+    assert!(app.table_collapsed);
+    assert!(!app.session.response.collapsed);
+
+    // The editor's own cluster drives the same shared state.
+    app.update(Action::SplitButton(SplitPane::Editor, SplitButton::Half));
+    assert!(!app.table_collapsed);
+    assert_eq!(
+        app.split_ratio,
+        SplitRatio::ResponseBig,
+        "editor at 0% goes to its quarter share"
+    );
+}
+
+/// The split is a persisted layout preference: cluster presses and the
+/// keyboard toggles record it in the project's `.local/state.toml`, and
+/// opening the project seeds the split back from it.
+#[test]
+fn split_persists_to_local_state_and_reseeds_on_open() {
+    use crate::split::{SplitButton, SplitPane};
+    let mut app = App::new_for_test();
+    app.update(Action::SplitButton(SplitPane::Response, SplitButton::Half));
+    let root = app.project.root.clone();
+    let saved = |root: &std::path::Path| {
+        postui_core::project::load_local_state(root)
+            .unwrap()
+            .main_split
+    };
+    assert_eq!(saved(&root).as_deref(), Some("editor-big"));
+
+    app.update(Action::ToggleResponseCollapse);
+    assert_eq!(saved(&root).as_deref(), Some("editor-full"));
+
+    // A fresh app on the same root wakes up with the saved split.
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let reopened = App::with_root(tx, root.clone());
+    assert!(
+        reopened.session.response.collapsed,
+        "the minimized response comes back minimized"
+    );
+    drop(app); // keeps the temp project alive until the reopened app is done
 }
 
 /// A tab switch that changes whether the table is actually showing (while

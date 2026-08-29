@@ -84,6 +84,11 @@ pub enum AnimKey {
     /// driven by `Action::ToggleResponseCollapse` with the same easing and
     /// duration as [`AnimKey::PaneCollapse`].
     ResponseCollapse,
+    /// The editor's share of the main column while both panes are shown
+    /// (see `layout::compute_layout`'s `editor_share`), easing between
+    /// the split's 0.25 / 0.50 / 0.75 stops with the same duration as
+    /// [`AnimKey::PaneCollapse`]. Driven by `Action::SplitButton`.
+    SplitRatio,
     SendBreathe,
     ToastFade(u64),
 }

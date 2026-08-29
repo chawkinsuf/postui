@@ -280,7 +280,10 @@ fn a_long_value_wraps_across_tooltip_rows_instead_of_truncating() {
         "...and its tail survives on a later row: {rows:?}"
     );
     let frame = dump(&mut app);
-    assert!(!frame.contains('\u{2026}'), "nothing was ellipsized: {frame}");
+    assert!(
+        !frame.contains('\u{2026}'),
+        "nothing was ellipsized: {frame}"
+    );
 }
 
 #[test]

@@ -37,6 +37,11 @@ pub struct ProjectContext {
     /// caller can restore the previously-open request. Not kept in sync
     /// afterward — it's a one-shot startup value.
     local_open_request: Option<String>,
+    /// The editor/response split token from `.local/state.toml` (see
+    /// `crate::split::SplitState::to_token`). Unlike `local_open_request`
+    /// this *is* kept in sync: `App` writes it here before persisting
+    /// whenever the split changes.
+    pub main_split: Option<String>,
     /// Set when the on-disk files still use stage-6 syntax (spec §3.3):
     /// the conversion the confirm modal offers to apply. While it is
     /// `Some`, `model`/`env_data` are left at their defaults — nothing
@@ -268,6 +273,7 @@ impl ProjectContext {
             selections: local_state.selections,
             stamps,
             local_open_request: local_state.open_request,
+            main_split: local_state.main_split,
             pending_migration,
             migration_declined: false,
         };
@@ -633,6 +639,7 @@ impl ProjectContext {
         let state = postui_core::project::LocalState {
             environment: self.active_env.clone(),
             open_request: open_request.map(|s| s.to_string()),
+            main_split: self.main_split.clone(),
             expanded: self.expanded.iter().cloned().collect(),
             selections: self.selections.clone(),
         };
@@ -645,7 +652,7 @@ impl ProjectContext {
     /// everything else (environment/expanded/selections) straight from
     /// `self` — the authoritative in-memory copy, no need to round-trip it
     /// through disk first.
-    fn persist_local_state_keep_open_request(&self) {
+    pub(crate) fn persist_local_state_keep_open_request(&self) {
         if !self.can_persist() {
             return;
         }

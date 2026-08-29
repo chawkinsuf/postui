@@ -249,6 +249,13 @@ pub struct App {
     /// Mirror of [`Self::pane_collapsed_target`] for the Response pane's
     /// collapse anim — see [`Self::sync_response_collapse_anim`].
     response_collapsed_target: bool,
+    /// The editor's share of the main column while both panes are shown —
+    /// the split's settled ratio stop (see [`crate::split`]). Sticky
+    /// through minimize/expand so re-opening lands where the user left it.
+    pub split_ratio: crate::split::SplitRatio,
+    /// The last `split_ratio` value `AnimKey::SplitRatio` was driven
+    /// toward — see [`Self::sync_split_ratio_anim`].
+    split_ratio_target: crate::split::SplitRatio,
     /// The most recent left-click's hit and when it landed, used to detect
     /// a double-click (same hit, within 400ms).
     last_click: Option<(Hit, std::time::Instant)>,
@@ -555,6 +562,9 @@ impl App {
         match postui_core::storage::ensure_project(&app.project.root) {
             Ok(()) => {
                 app.refresh_sidebar();
+                // Restore this project's saved layout split alongside its
+                // open request.
+                app.seed_split_from_project();
                 // Restore the request that was open when this project was
                 // last used — the same restore a project *switch* already
                 // performs. Without it the sidebar draws a selection whose
@@ -765,6 +775,8 @@ impl App {
             table_collapsed: false,
             pane_collapsed_target: false,
             response_collapsed_target: false,
+            split_ratio: crate::split::SplitRatio::default(),
+            split_ratio_target: crate::split::SplitRatio::default(),
             last_click: None,
             last_action_failed: false,
             _test_rx: None,
@@ -867,8 +879,13 @@ impl App {
         self.editor.sending = editor_in_flight.is_some();
         self.editor.send_started = editor_in_flight.map(|f| f.started);
         self.editor.table_collapsed = self.table_collapsed;
+        // Display copies for the panes' split clusters — the app state
+        // stays the authority, the components only light segments from it.
+        self.editor.split = self.split_state();
+        self.session.response.split = self.split_state();
         self.sync_pane_collapse_anim();
         self.sync_response_collapse_anim();
+        self.sync_split_ratio_anim();
         self.sync_editor_tab_underline();
         // Any toast pushed by `apply(action)` above gets its slide-in
         // started here rather than inside `Toasts::push` itself — `push`
@@ -927,6 +944,65 @@ impl App {
         self.anims.retarget(
             AnimKey::ResponseCollapse,
             target_v,
+            self.ui_settings.anim_ms.pane_collapse,
+            now,
+        );
+    }
+
+    /// Records the current split as the project's persisted layout
+    /// preference (`.local/state.toml`'s `main_split`). Best-effort, like
+    /// every local-state save.
+    fn persist_split(&mut self) {
+        self.project.main_split = Some(self.split_state().to_token().to_string());
+        self.project.persist_local_state_keep_open_request();
+    }
+
+    /// Seeds the split from the project's saved layout preference — the
+    /// reopen half of [`Self::persist_split`]. An absent or unrecognized
+    /// token leaves the default split in place.
+    fn seed_split_from_project(&mut self) {
+        let Some(s) = self
+            .project
+            .main_split
+            .as_deref()
+            .and_then(crate::split::SplitState::from_token)
+        else {
+            return;
+        };
+        self.table_collapsed = s.editor_minimized;
+        self.session.response.collapsed = s.response_minimized;
+        self.split_ratio = s.ratio;
+    }
+
+    /// The whole split state the panes' button clusters read and drive —
+    /// the two endpoint flags plus the ratio stop, in one value.
+    pub fn split_state(&self) -> crate::split::SplitState {
+        crate::split::SplitState {
+            editor_minimized: self.table_collapsed,
+            response_minimized: self.session.response.collapsed,
+            ratio: self.split_ratio,
+        }
+    }
+
+    /// Keeps `AnimKey::SplitRatio` chasing `split_ratio`'s editor share
+    /// the same way [`Self::sync_pane_collapse_anim`] chases
+    /// `table_collapsed`: whenever the stop changes, eases from wherever
+    /// the share currently sits to the new stop.
+    fn sync_split_ratio_anim(&mut self) {
+        let target = self.split_ratio;
+        if target == self.split_ratio_target {
+            return;
+        }
+        let previous = self.split_ratio_target;
+        self.split_ratio_target = target;
+        let now = Instant::now();
+        if self.anims.value(AnimKey::SplitRatio, now).is_none() {
+            self.anims
+                .snap(AnimKey::SplitRatio, previous.editor_share());
+        }
+        self.anims.retarget(
+            AnimKey::SplitRatio,
+            target.editor_share(),
             self.ui_settings.anim_ms.pane_collapse,
             now,
         );
@@ -1475,6 +1551,7 @@ impl App {
                 if self.table_collapsed && self.session.response.collapsed {
                     self.session.response.collapsed = false;
                 }
+                self.persist_split();
                 true
             }
             Action::ToggleResponseCollapse => {
@@ -1489,7 +1566,22 @@ impl App {
                 if self.session.response.collapsed && self.table_collapsed {
                     self.table_collapsed = false;
                 }
+                self.persist_split();
                 true
+            }
+            Action::SplitButton(pane, button) => {
+                let prev = self.split_state();
+                let next = prev.apply(pane, button);
+                self.table_collapsed = next.editor_minimized;
+                self.session.response.collapsed = next.response_minimized;
+                self.split_ratio = next.ratio;
+                // `sync_pane_collapse_anim` / `sync_response_collapse_anim`
+                // / `sync_split_ratio_anim` (run on every `update`) ease
+                // whichever of the three the press actually moved.
+                if next != prev {
+                    self.persist_split();
+                }
+                next != prev
             }
             Action::FormatBody => {
                 self.no_coalesce = true;
@@ -2228,6 +2320,10 @@ impl App {
                             .push(format!("could not open project: {e}"), ToastKind::Error);
                     }
                 }
+                // The layout split is per-project local state too: restore
+                // the incoming project's saved split alongside its open
+                // request.
+                self.seed_split_from_project();
                 match self.project.local_open_request() {
                     Some(slug)
                         if postui_core::storage::load_request(&self.project.root, &slug)

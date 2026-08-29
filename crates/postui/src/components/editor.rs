@@ -198,6 +198,11 @@ pub struct Editor {
     /// params/headers table body (header/rows/ghost/edge) is skipped and the
     /// tab strip's `⌄ hide`/`› show` toggle flips to `› show`.
     pub table_collapsed: bool,
+    /// Display copy of the app-wide split (see [`crate::split`]), mirrored
+    /// in by `App::update` before every draw — same pattern as
+    /// `table_collapsed` above — so the tab strip's cluster can light the
+    /// segment for the pane's current share.
+    pub split: crate::split::SplitState,
     /// The Headers tab's read-only computed-headers section (spec §6):
     /// everything that will actually be sent beyond the editable request
     /// rows above — default headers (struck through when overridden), the
@@ -262,6 +267,7 @@ impl Default for Editor {
             last_url_text_area: None,
             send_started: None,
             table_collapsed: false,
+            split: crate::split::SplitState::default(),
             computed: ComputedHeadersView::default(),
         }
     }
@@ -2200,39 +2206,36 @@ impl Editor {
             }
         }
 
-        // --- collapse toggle (right-aligned) ---
-        // Drawn on top of the same row's plain (unfilled) background, which
-        // is why `on` here is `theme.page` — the app's own background,
-        // never explicitly painted over this row.
+        // --- split cluster (right-aligned) ---
+        // The pane's minimize/half/expand buttons, mirroring the Response
+        // header's cluster. One-column right inset, matching the Response
+        // pane's so the two line up on screen.
         let buf = frame.buffer_mut();
-        let toggle_label = if self.table_collapsed {
-            "\u{203a} show"
-        } else {
-            "\u{2304} hide"
+        let pane = crate::split::SplitPane::Editor;
+        // `table_collapsed` stays the authority on this pane's own
+        // minimized flag, so a standalone render still lights the right
+        // segment.
+        let split = crate::split::SplitState {
+            editor_minimized: self.table_collapsed,
+            response_minimized: self.split.response_minimized && !self.table_collapsed,
+            ratio: self.split.ratio,
         };
-        let toggle_hovered = ctx.hovered == Some(&crate::hit::Hit::TableCollapse);
-        let toggle_w = toggle_label.chars().count() as u16;
-        // One-column right inset, matching the Response pane's toggle so
-        // the two line up on screen.
-        let toggle_x = area.right().saturating_sub(toggle_w + 1);
-        let toggle_fg = if toggle_hovered {
-            theme.text
-        } else {
-            theme.text_muted
+        let hovered = match ctx.hovered {
+            Some(crate::hit::Hit::SplitButton(p, b)) if *p == pane => Some(*b),
+            _ => None,
         };
-        crate::paint::text(
-            buf,
-            toggle_x,
-            area.y,
-            toggle_label,
-            toggle_fg,
-            theme.page,
-            false,
-        );
-        hits.register(
-            Rect::new(toggle_x, area.y, toggle_w, 1),
-            crate::hit::Hit::TableCollapse,
-        );
+        let cluster_x = area
+            .right()
+            .saturating_sub(crate::paint::SPLIT_CLUSTER_WIDTH + 1);
+        let rects = crate::paint::SplitCluster {
+            pane,
+            state: split,
+            hovered,
+        }
+        .paint(buf, cluster_x, area.y, theme);
+        for (rect, button) in rects {
+            hits.register(rect, crate::hit::Hit::SplitButton(pane, button));
+        }
     }
 
     /// Rows the computed-headers section will draw: every `self.computed`
@@ -3280,8 +3283,7 @@ mod tests {
         let first = &buf[(content_x, area.y)];
         assert_eq!(first.symbol(), "a", "expected the first char of line 1");
         assert_eq!(
-            first.bg,
-            theme.selection,
+            first.bg, theme.selection,
             "the drag head cell paints with the selection fill"
         );
     }
@@ -3759,6 +3761,15 @@ mod tests {
         );
     }
 
+    /// Every rect of the pane's minimize/half/expand cluster, in
+    /// on-screen order, or a panic when any segment is missing.
+    fn cluster_rects(hits: &crate::hit::HitMap) -> [Rect; 3] {
+        crate::paint::SPLIT_BUTTONS.map(|b| {
+            hits.rect_of(&Hit::SplitButton(crate::split::SplitPane::Editor, b))
+                .unwrap_or_else(|| panic!("{b:?} segment registered"))
+        })
+    }
+
     /// Draws `e` at 120x14 (wide enough for every toolbar chip, Body tab
     /// included) and returns (buffer content, hits) — shared by the
     /// toolbar tests below.
@@ -3847,15 +3858,12 @@ mod tests {
             }))
             .is_none()
         );
-        assert!(
-            hits.rect_of(&Hit::TableCollapse).is_some(),
-            "the collapse toggle stays"
-        );
+        cluster_rects(&hits); // the split cluster stays
     }
 
     /// Hiding hides the controls too: with the table collapsed the tab
     /// labels fade out entirely (settled: not painted at all) and take no
-    /// clicks — only the `› show` toggle keeps the row.
+    /// clicks — only the split cluster keeps the row.
     #[test]
     fn hidden_tab_labels_fade_out_and_take_no_clicks() {
         let mut e = Editor {
@@ -3868,11 +3876,8 @@ mod tests {
             hits.rect_of(&Hit::EditorTab(0)).is_none(),
             "hidden tabs take no clicks"
         );
-        assert!(
-            hits.rect_of(&Hit::TableCollapse).is_some(),
-            "the show toggle stays"
-        );
-        assert!(out.contains("show"), "{out}");
+        cluster_rects(&hits); // the split cluster stays
+        assert!(out.contains('\u{2580}'), "the cluster's glyphs stay: {out}");
     }
 
     /// Hiding puts away the tab content, not the request's controls: the
@@ -3893,7 +3898,7 @@ mod tests {
         assert!(hits.rect_of(&Hit::UrlBar).is_some(), "URL stays editable");
         assert!(hits.rect_of(&Hit::SendButton).is_some());
         assert!(hits.rect_of(&Hit::MethodSelector).is_some());
-        assert!(hits.rect_of(&Hit::TableCollapse).is_some());
+        cluster_rects(&hits); // the split cluster stays too
     }
 
     fn draw_editor_sized(e: &mut Editor, w: u16, h: u16) -> crate::hit::HitMap {
@@ -3939,30 +3944,29 @@ mod tests {
             (expanded_url.y, expanded_url.height),
             "address bar keeps its exact expanded geometry while hidden"
         );
-        let toggle = hits
-            .rect_of(&Hit::TableCollapse)
-            .expect("the show toggle fits");
-        assert_eq!(toggle.y, ADDRESS_BAR_HEIGHT, "toggle on the strip row");
+        let [min, ..] = cluster_rects(&hits);
+        assert_eq!(min.y, ADDRESS_BAR_HEIGHT, "cluster on the strip row");
     }
 
-    /// The editor's hide/show toggle right-aligns with the same inset the
-    /// Response pane's toggle uses (2 cols in from the pane edge: 1 for
-    /// `pane_surface`, 1 for the toggle's own margin) — expanded and
-    /// hidden alike, so the two panes' toggles line up on screen.
+    /// The editor's split cluster right-aligns with the same inset the
+    /// Response pane's cluster uses (2 cols in from the pane edge: 1 for
+    /// `pane_surface`, 1 for the cluster's own margin) — expanded and
+    /// hidden alike, so the two panes' clusters line up on screen.
     #[test]
-    fn collapse_toggle_aligns_with_the_response_panes_inset() {
+    fn split_cluster_aligns_with_the_response_panes_inset() {
         let mut e = Editor::default();
         let (_, hits) = draw_editor(&mut e);
-        let expanded = hits.rect_of(&Hit::TableCollapse).unwrap();
-        assert_eq!(expanded.x + expanded.width, 120 - 2, "{expanded:?}");
+        let [.., expand] = cluster_rects(&hits);
+        assert_eq!(expand.x + expand.width, 120 - 2, "{expand:?}");
 
         let mut e = Editor {
             table_collapsed: true,
             ..Editor::default()
         };
         let hits = draw_editor_sized(&mut e, 120, COLLAPSED_HEIGHT);
-        let hidden = hits.rect_of(&Hit::TableCollapse).unwrap();
-        assert_eq!(hidden.x + hidden.width, 120 - 2, "{hidden:?}");
+        let [min, half, expand] = cluster_rects(&hits);
+        assert_eq!(expand.x + expand.width, 120 - 2, "{expand:?}");
+        assert!(min.x < half.x && half.x < expand.x);
     }
 
     /// Un-hiding eases the pane taller while the expanded constraints are
@@ -4202,12 +4206,12 @@ x-a = "1"
             "header count lives inside its tab: {content}"
         );
 
-        // No standalone count chip left of the collapse toggle any more:
-        // the cell two columns left of the `⌄ hide` toggle (where the chip
-        // used to end) must be plain page background.
-        let toggle = hits.rect_of(&crate::hit::Hit::TableCollapse).unwrap();
+        // No standalone count chip left of the split cluster any more:
+        // the cell two columns left of the cluster (where the chip used
+        // to end) must be plain page background.
+        let [min, ..] = cluster_rects(&hits);
         let buf = terminal.backend().buffer();
-        let cell = buf.cell((toggle.x - 2, toggle.y)).unwrap();
+        let cell = buf.cell((min.x - 2, min.y)).unwrap();
         assert_eq!(
             cell.bg, theme.page,
             "no count chip at the strip's right edge: {cell:?}"
@@ -4884,7 +4888,7 @@ url = "https://api.example.com/users""#,
         terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
 
         let layout =
-            crate::layout::compute_layout(ratatui::layout::Rect::new(0, 0, 120, 40), 0.0, 0.0);
+            crate::layout::compute_layout(ratatui::layout::Rect::new(0, 0, 120, 40), 0.0, 0.0, 0.5);
         let buf = terminal.backend().buffer();
         // Deep into the pane's lower region, well past the address bar, tab
         // bar, and the empty table's few header/ghost/edge rows.

@@ -52,11 +52,10 @@ pub enum Hit {
         row: usize,
         col: u8,
     },
-    /// The `⌄ hide` / `› show` toggle at the tab strip's right edge.
-    TableCollapse,
-    /// The Response pane's hide/show toggle at the right edge of its
-    /// header strip: click dispatches `Action::ToggleResponseCollapse`.
-    ResponseCollapse,
+    /// One segment of a pane's minimize/half/expand cluster (see
+    /// [`crate::paint::SplitCluster`]): click dispatches the matching
+    /// `Action::SplitButton`.
+    SplitButton(crate::split::SplitPane, crate::split::SplitButton),
     /// Raw mouse event forwarded to edtui (click-to-place, wheel).
     BodyEditor,
     ResponseTab(crate::components::response::ViewMode),

@@ -144,6 +144,12 @@ pub fn all_commands() -> Vec<Command> {
             action: Action::ToggleResponseCollapse,
         },
         Command {
+            id: "editor-toggle",
+            name: "Editor: hide/show panel",
+            description: "Collapse the editor pane to its address bar, or bring it back",
+            action: Action::ToggleTableCollapse,
+        },
+        Command {
             id: "project-choose",
             name: "Project: choose…",
             description: "Switch to another registered project",

@@ -47,7 +47,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             0.0
         },
     );
-    let layout = compute_layout(frame.area(), collapse_t, response_t);
+    let ratio_t = app.anims.value_or(
+        crate::anim::AnimKey::SplitRatio,
+        now,
+        app.split_ratio.editor_share(),
+    );
+    let layout = compute_layout(frame.area(), collapse_t, response_t, ratio_t);
     let focus = app.focus;
     let screen = app.screen;
     let mut hits = std::mem::take(&mut app.hits);
@@ -400,7 +405,7 @@ mod tests {
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).unwrap();
         let layout =
-            crate::layout::compute_layout(ratatui::layout::Rect::new(0, 0, 120, 40), 0.0, 0.0);
+            crate::layout::compute_layout(ratatui::layout::Rect::new(0, 0, 120, 40), 0.0, 0.0, 0.5);
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let buf = terminal.backend().buffer();
 

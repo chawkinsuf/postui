@@ -22,6 +22,10 @@ pub struct ProjectMeta {
 pub struct LocalState {
     pub environment: Option<String>,
     pub open_request: Option<String>,
+    /// The editor/response split the UI last settled on, as an opaque
+    /// token owned by the UI layer (postui's `split` module); `None` (or
+    /// a token the UI doesn't recognize) means the default split.
+    pub main_split: Option<String>,
     pub expanded: Vec<String>,
     /// Per-environment `name → selected option key`, shared by variables
     /// and groups (spec §1.3).
@@ -427,6 +431,7 @@ mod tests {
         let state = LocalState {
             environment: Some("qa".into()),
             open_request: Some("users/list".into()),
+            main_split: Some("editor-big".into()),
             expanded: vec!["users".into()],
             selections,
         };

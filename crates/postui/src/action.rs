@@ -57,6 +57,10 @@ pub enum Action {
     /// strip, editor taking the freed rows) and shown. Session-only —
     /// never persisted.
     ToggleResponseCollapse,
+    /// One of a pane's minimize/half/expand split buttons was pressed:
+    /// applies [`crate::split::SplitState::apply`] to the current split
+    /// and persists the result as the project's layout preference.
+    SplitButton(crate::split::SplitPane, crate::split::SplitButton),
     /// Start a new row on the active table tab (Params/Headers/Vars):
     /// focuses the editor's table and begins editing the ghost row's key
     /// cell, exactly like clicking "+ Add …". Inert on the Body tab.

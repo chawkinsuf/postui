@@ -40,9 +40,13 @@ pub struct AppLayout {
     pub footer: Rect,
 }
 
+/// `editor_share` is the Editor pane's fraction of the main column while
+/// both panes are visible — the eased `AnimKey::SplitRatio` value, moving
+/// between the settled stops 0.25 / 0.50 / 0.75 (see [`crate::split`]).
+///
 /// `collapse_t` is the eased `AnimKey::PaneCollapse` value (Task 14):
-/// `0.0` is the Editor pane's normal 50/50 split with the Response pane;
-/// `1.0` is the Editor pane hidden — shrunk to exactly its
+/// `0.0` is the Editor pane's normal `editor_share` split with the
+/// Response pane; `1.0` is the Editor pane hidden — shrunk to exactly its
 /// [`editor::COLLAPSED_HEIGHT`]-row strip (address bar + `› show` row),
 /// with the Response pane taking every row that frees up. Values strictly
 /// between the two interpolate the Editor pane's height (rounded to whole
@@ -50,18 +54,18 @@ pub struct AppLayout {
 /// endpoints' actual split heights, so the row boundary itself eases
 /// smoothly rather than snapping.
 ///
-/// The two endpoints are each computed with `Layout::split` exactly as
-/// before (once for the 50/50 split, once for the strip/`Min(0)` split),
-/// so callers that only ever need the settled state (every existing test)
-/// can keep passing `0.0`/`1.0` unchanged.
-///
 /// `response_t` is the eased `AnimKey::ResponseCollapse` value: `1.0` is
 /// the Response pane hidden — shrunk to exactly its
 /// [`crate::components::response::COLLAPSED_HEIGHT`]-row strip (the header
 /// strip's first row), with the Editor pane taking every freed row.
 /// Applied after (and overriding) `collapse_t`'s split: with both at `1.0`
 /// the editor keeps the leftover rows as empty page below its strip.
-pub fn compute_layout(area: Rect, collapse_t: f32, response_t: f32) -> AppLayout {
+pub fn compute_layout(
+    area: Rect,
+    collapse_t: f32,
+    response_t: f32,
+    editor_share: f32,
+) -> AppLayout {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -80,10 +84,23 @@ pub fn compute_layout(area: Rect, collapse_t: f32, response_t: f32) -> AppLayout
         ])
         .split(body);
     let t = collapse_t.clamp(0.0, 1.0);
-    let expanded = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(cols[2]);
+    // The both-panes-visible split at `editor_share` — the endpoint every
+    // collapse interpolation below starts from. Computed by hand rather
+    // than `Constraint::Percentage` so the share (itself animated between
+    // the 25/50/75 stops) can be any fraction.
+    let expanded = {
+        let editor_h = (cols[2].height as f32 * editor_share.clamp(0.0, 1.0)).round() as u16;
+        let editor_h = editor_h.min(cols[2].height);
+        [
+            Rect::new(cols[2].x, cols[2].y, cols[2].width, editor_h),
+            Rect::new(
+                cols[2].x,
+                cols[2].y.saturating_add(editor_h),
+                cols[2].width,
+                cols[2].height - editor_h,
+            ),
+        ]
+    };
     let (editor, response) = if t <= 0.0 {
         (expanded[0], expanded[1])
     } else {
@@ -167,7 +184,7 @@ mod tests {
     #[test]
     fn layout_partitions_area() {
         let area = Rect::new(0, 0, 120, 40);
-        let l = compute_layout(area, 0.0, 0.0);
+        let l = compute_layout(area, 0.0, 0.0, 0.5);
         assert_eq!(l.header.height, 3);
         assert_eq!(l.footer.height, 3);
         assert_eq!(l.header.y, 0);
@@ -188,8 +205,8 @@ mod tests {
     #[test]
     fn collapsed_editor_shrinks_to_chrome_and_response_takes_the_rest() {
         let area = Rect::new(0, 0, 120, 40);
-        let expanded = compute_layout(area, 0.0, 0.0);
-        let collapsed = compute_layout(area, 1.0, 0.0);
+        let expanded = compute_layout(area, 0.0, 0.0, 0.5);
+        let collapsed = compute_layout(area, 1.0, 0.0, 0.5);
         assert_eq!(
             collapsed.editor.height,
             editor::COLLAPSED_HEIGHT,
@@ -209,8 +226,8 @@ mod tests {
     #[test]
     fn collapsed_response_shrinks_to_its_header_and_editor_takes_the_rest() {
         let area = Rect::new(0, 0, 120, 40);
-        let expanded = compute_layout(area, 0.0, 0.0);
-        let collapsed = compute_layout(area, 0.0, 1.0);
+        let expanded = compute_layout(area, 0.0, 0.0, 0.5);
+        let collapsed = compute_layout(area, 0.0, 1.0, 0.5);
         assert_eq!(
             collapsed.response.height,
             crate::components::response::COLLAPSED_HEIGHT,
@@ -230,9 +247,9 @@ mod tests {
     #[test]
     fn mid_collapse_height_sits_strictly_between_both_endpoints() {
         let area = Rect::new(0, 0, 120, 40);
-        let expanded = compute_layout(area, 0.0, 0.0);
-        let collapsed = compute_layout(area, 1.0, 0.0);
-        let mid = compute_layout(area, 0.5, 0.0);
+        let expanded = compute_layout(area, 0.0, 0.0, 0.5);
+        let collapsed = compute_layout(area, 1.0, 0.0, 0.5);
+        let mid = compute_layout(area, 0.5, 0.0, 0.5);
         assert!(
             mid.editor.height < expanded.editor.height,
             "mid-collapse editor is shorter than fully expanded"
@@ -251,18 +268,18 @@ mod tests {
     #[test]
     fn collapse_t_clamps_outside_zero_one() {
         let area = Rect::new(0, 0, 120, 40);
-        let below = compute_layout(area, -0.5, 0.0);
-        let above = compute_layout(area, 1.5, 0.0);
-        assert_eq!(below.editor, compute_layout(area, 0.0, 0.0).editor);
-        assert_eq!(above.editor, compute_layout(area, 1.0, 0.0).editor);
+        let below = compute_layout(area, -0.5, 0.0, 0.5);
+        let above = compute_layout(area, 1.5, 0.0, 0.5);
+        assert_eq!(below.editor, compute_layout(area, 0.0, 0.0, 0.5).editor);
+        assert_eq!(above.editor, compute_layout(area, 1.0, 0.0, 0.5).editor);
     }
 
     #[test]
     fn mid_response_collapse_sits_strictly_between_both_endpoints() {
         let area = Rect::new(0, 0, 120, 40);
-        let expanded = compute_layout(area, 0.0, 0.0);
-        let collapsed = compute_layout(area, 0.0, 1.0);
-        let mid = compute_layout(area, 0.0, 0.5);
+        let expanded = compute_layout(area, 0.0, 0.0, 0.5);
+        let collapsed = compute_layout(area, 0.0, 1.0, 0.5);
+        let mid = compute_layout(area, 0.0, 0.5, 0.5);
         assert!(mid.response.height < expanded.response.height);
         assert!(mid.response.height > collapsed.response.height);
         assert_eq!(
@@ -272,21 +289,90 @@ mod tests {
         );
     }
 
+    /// `editor_share` moves the settled row boundary: 0.75 gives the
+    /// editor about three quarters of the column, 0.25 about one quarter,
+    /// and the two panes always exactly fill the same span.
+    #[test]
+    fn editor_share_moves_the_row_split_between_quarter_stops() {
+        let area = Rect::new(0, 0, 120, 40);
+        let small = compute_layout(area, 0.0, 0.0, 0.25);
+        let even = compute_layout(area, 0.0, 0.0, 0.5);
+        let big = compute_layout(area, 0.0, 0.0, 0.75);
+        let column = even.editor.height + even.response.height;
+        for (l, share) in [(&small, 0.25), (&even, 0.5), (&big, 0.75)] {
+            assert_eq!(l.editor.height + l.response.height, column);
+            assert_eq!(l.editor.y + l.editor.height, l.response.y);
+            let want = column as f32 * share;
+            assert!(
+                (l.editor.height as f32 - want).abs() <= 1.0,
+                "share {share}: editor {} rows, wanted about {want}",
+                l.editor.height
+            );
+        }
+        assert!(small.editor.height < even.editor.height);
+        assert!(even.editor.height < big.editor.height);
+    }
+
+    /// A share strictly between two stops (the ratio anim mid-flight)
+    /// lands the boundary strictly between them too.
+    #[test]
+    fn mid_share_sits_strictly_between_the_stops() {
+        let area = Rect::new(0, 0, 120, 40);
+        let even = compute_layout(area, 0.0, 0.0, 0.5);
+        let big = compute_layout(area, 0.0, 0.0, 0.75);
+        let mid = compute_layout(area, 0.0, 0.0, 0.625);
+        assert!(mid.editor.height > even.editor.height);
+        assert!(mid.editor.height < big.editor.height);
+    }
+
+    /// The minimized strips ignore the share: a collapse animates from
+    /// whatever ratio the column held, but the settled strip heights are
+    /// the panes' fixed chrome.
+    #[test]
+    fn collapse_endpoints_keep_their_strip_heights_at_any_share() {
+        let area = Rect::new(0, 0, 120, 40);
+        for share in [0.25, 0.5, 0.75] {
+            let editor_min = compute_layout(area, 1.0, 0.0, share);
+            assert_eq!(editor_min.editor.height, editor::COLLAPSED_HEIGHT);
+            let response_min = compute_layout(area, 0.0, 1.0, share);
+            assert_eq!(
+                response_min.response.height,
+                crate::components::response::COLLAPSED_HEIGHT
+            );
+        }
+    }
+
+    /// Mid-collapse the boundary eases from the *share's* boundary, not
+    /// the even split's: collapsing the editor from 75/25 must start high.
+    #[test]
+    fn mid_collapse_interpolates_from_the_shares_own_boundary() {
+        let area = Rect::new(0, 0, 120, 40);
+        let big = compute_layout(area, 0.0, 0.0, 0.75);
+        let mid = compute_layout(area, 0.5, 0.0, 0.75);
+        let collapsed = compute_layout(area, 1.0, 0.0, 0.75);
+        assert!(mid.editor.height < big.editor.height);
+        assert!(mid.editor.height > collapsed.editor.height);
+        assert!(
+            mid.editor.height > compute_layout(area, 0.5, 0.0, 0.5).editor.height,
+            "the 75-share mid-collapse is taller than the even split's"
+        );
+    }
+
     /// A collapsed response wins the freed rows even while the editor is
     /// itself collapsed — the editor pane simply shows its strip atop
     /// empty page.
     #[test]
     fn response_collapse_takes_precedence_over_editor_collapse() {
         let area = Rect::new(0, 0, 120, 40);
-        let both = compute_layout(area, 1.0, 1.0);
+        let both = compute_layout(area, 1.0, 1.0, 0.5);
         assert_eq!(
             both.response.height,
             crate::components::response::COLLAPSED_HEIGHT
         );
         assert_eq!(
             both.editor.height + both.response.height,
-            compute_layout(area, 0.0, 0.0).editor.height
-                + compute_layout(area, 0.0, 0.0).response.height
+            compute_layout(area, 0.0, 0.0, 0.5).editor.height
+                + compute_layout(area, 0.0, 0.0, 0.5).response.height
         );
     }
 }
