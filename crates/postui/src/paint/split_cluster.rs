@@ -61,14 +61,23 @@ impl SplitCluster {
             let i = SPLIT_BUTTONS.iter().position(|b| *b == button).unwrap() as u16;
             let rect = Rect::new(x + i * SPLIT_SEGMENT_WIDTH, y, SPLIT_SEGMENT_WIDTH, 1);
             let hovered = self.hovered == Some(button);
-            // The same face language `Button` uses, one row tall: lit
-            // segments live on the accent (lifting on hover), neutral
-            // ones on the control fill.
-            let (fill, fg) = match (active == Some(button), hovered) {
-                (true, false) => (theme.accent, theme.on_accent),
-                (true, true) => (theme.accent_edge_light, theme.on_accent),
-                (false, true) => (theme.control_hover, theme.text),
-                (false, false) => (theme.control, theme.text_muted),
+            // Every segment sits on the control fill (lifting on hover,
+            // like Button). The lit segment glows through its *glyph*,
+            // not its fill: the glyphs are block characters, so an
+            // accent-filled face would be covered by its own dark glyph
+            // and read as a hole — instead the mini-map shape itself
+            // lights up accent.
+            let fill = if hovered {
+                theme.control_hover
+            } else {
+                theme.control
+            };
+            let fg = if active == Some(button) {
+                theme.accent
+            } else if hovered {
+                theme.text
+            } else {
+                theme.text_muted
             };
             crate::paint::fill(buf, rect, fill);
             crate::paint::text(
@@ -155,7 +164,11 @@ mod tests {
     }
 
     #[test]
-    fn the_current_share_segment_is_lit_in_accent() {
+    fn the_current_share_segments_glyph_glows_in_accent() {
+        // The glyphs are block characters: a glyph drawn in a dark ink
+        // over an accent fill *covers* the fill and reads as a hole, so
+        // "lit" is the glyph itself glowing accent on the normal control
+        // fill — the mini-map shape lights up.
         let theme = Theme::dark();
         let (term, rects) = paint(SplitCluster {
             pane: SplitPane::Response,
@@ -163,17 +176,17 @@ mod tests {
             hovered: None,
         });
         let half = rects[1].0;
-        assert_eq!(cell(&term, half.x + 1, 0).bg, theme.accent);
-        assert_eq!(cell(&term, half.x + 1, 0).fg, theme.on_accent);
+        assert_eq!(cell(&term, half.x + 1, 0).fg, theme.accent);
+        assert_eq!(cell(&term, half.x + 1, 0).bg, theme.control);
         assert_eq!(
-            cell(&term, rects[0].0.x + 1, 0).bg,
-            theme.control,
-            "the other segments stay neutral"
+            cell(&term, rects[0].0.x + 1, 0).fg,
+            theme.text_muted,
+            "the other segments' glyphs stay muted"
         );
     }
 
     #[test]
-    fn hover_lifts_a_neutral_segment_and_the_lit_one() {
+    fn hover_lifts_a_segments_fill_lit_or_not() {
         let theme = Theme::dark();
         let (term, rects) = paint(SplitCluster {
             pane: SplitPane::Editor,
@@ -184,15 +197,16 @@ mod tests {
         assert_eq!(cell(&term, expand.x + 1, 0).bg, theme.control_hover);
         assert_eq!(cell(&term, expand.x + 1, 0).fg, theme.text);
 
-        // Hovering the active segment lifts its accent, like Button does.
+        // Hovering the lit segment lifts its fill too; the glyph keeps
+        // its accent glow.
         let (term, rects) = paint(SplitCluster {
             pane: SplitPane::Editor,
             state: SplitState::default(),
             hovered: Some(SplitButton::Half),
         });
         let half = rects[1].0;
-        assert_eq!(cell(&term, half.x + 1, 0).bg, theme.accent_edge_light);
-        assert_eq!(cell(&term, half.x + 1, 0).fg, theme.on_accent);
+        assert_eq!(cell(&term, half.x + 1, 0).bg, theme.control_hover);
+        assert_eq!(cell(&term, half.x + 1, 0).fg, theme.accent);
     }
 
     #[test]
