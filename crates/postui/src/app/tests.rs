@@ -4376,6 +4376,16 @@ fn toggle_body_vars_flips_flag_and_shows_badge() {
     assert!(content.contains("vars"), "expected a vars badge: {content}");
 }
 
+#[test]
+fn toggle_insecure_flips_the_editor_flag() {
+    let mut app = App::new_for_test();
+    assert!(!app.editor.insecure);
+    app.update(Action::ToggleInsecure);
+    assert!(app.editor.insecure);
+    app.update(Action::ToggleInsecure);
+    assert!(!app.editor.insecure);
+}
+
 fn app_with_vars() -> App {
     let mut app = App::new_for_test();
     std::fs::write(

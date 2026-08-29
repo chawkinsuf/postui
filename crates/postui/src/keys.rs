@@ -128,6 +128,7 @@ pub(crate) fn named_actions() -> Vec<(&'static str, Action)> {
         ("minify_body", Action::MinifyBody),
         ("body_clear", Action::BodyClear),
         ("toggle_body_vars", Action::ToggleBodyVars),
+        ("toggle_insecure", Action::ToggleInsecure),
         ("open_body_editor", Action::OpenBodyInEditor),
         ("save", Action::SaveRequest),
         ("send", Action::Send),
@@ -193,6 +194,7 @@ impl Keymap {
             ("alt+g", Action::MinifyBody),
             ("alt+x", Action::BodyClear),
             ("alt+b", Action::ToggleBodyVars),
+            ("alt+t", Action::ToggleInsecure),
             ("ctrl+s", Action::SaveRequest),
             ("ctrl+r", Action::Send),
             ("ctrl+enter", Action::Send),
@@ -403,6 +405,7 @@ mod tests {
         assert_eq!(get("alt+g"), Some(Action::MinifyBody));
         assert_eq!(get("alt+x"), Some(Action::BodyClear));
         assert_eq!(get("alt+b"), Some(Action::ToggleBodyVars));
+        assert_eq!(get("alt+t"), Some(Action::ToggleInsecure));
         assert_eq!(get("alt+e"), Some(Action::OpenBodyInEditor));
         assert_eq!(
             get("ctrl+e"),

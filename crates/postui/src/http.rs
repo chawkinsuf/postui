@@ -42,6 +42,12 @@ pub struct Clients {
     insecure: reqwest::Client,
 }
 
+impl Default for Clients {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Clients {
     pub fn new() -> Self {
         // Same fallback story as `client_with_timeout`: `build()` only fails

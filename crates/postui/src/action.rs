@@ -259,6 +259,9 @@ pub enum Action {
     /// Flip `editor.substitute_body` — whether `{{var}}` tokens in the body
     /// are substituted at send time.
     ToggleBodyVars,
+    /// Flip `editor.insecure` — whether TLS certificate verification is
+    /// skipped when sending this request.
+    ToggleInsecure,
     /// Flip whether the Headers tab's computed-headers section shows
     /// secrets in the clear (`editor.computed.revealed`).
     ToggleHeaderReveal,

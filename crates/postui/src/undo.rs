@@ -70,6 +70,7 @@ pub fn coalesce_key(before: &HttpRequest, after: &HttpRequest) -> Option<Coalesc
     let name = before.name != after.name;
     let other = before.method != after.method
         || before.substitute_body != after.substitute_body
+        || before.insecure != after.insecure
         || before.params != after.params
         || before.headers != after.headers
         || before.variables != after.variables;
@@ -393,6 +394,13 @@ mod tests {
         b.name = Some("n".into());
         assert_eq!(coalesce_key(&req("z"), &b), None);
         assert_eq!(coalesce_key(&req("a"), &req("ab")), Some(CoalesceKey::Url));
+    }
+
+    #[test]
+    fn coalesce_key_none_when_insecure_flips_alongside_a_url_edit() {
+        let mut b = req("ab");
+        b.insecure = true;
+        assert_eq!(coalesce_key(&req("a"), &b), None);
     }
 
     #[test]

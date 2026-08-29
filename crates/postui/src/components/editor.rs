@@ -2198,13 +2198,36 @@ impl Editor {
 
             // The "vars" indicator sits right after the tab blocks, on the
             // labels row.
+            let last_rect = rects[tabs.len() - 1];
+            let mut x = last_rect.x + last_rect.width + 2;
             if self.substitute_body {
-                let last_rect = rects[tabs.len() - 1];
-                let x = last_rect.x + last_rect.width + 2;
                 frame.render_widget(
                     Paragraph::new(Line::styled("vars ", Style::default().fg(theme.accent))),
                     Rect::new(x, area.y, 5, 1),
                 );
+                x += 6;
+            }
+            // The TLS-verification chip follows: request-level like the
+            // save/vars indicators, always visible so a request that skips
+            // certificate checks can't hide it. Clickable both ways;
+            // warning-toned when verification is off.
+            if !self.table_collapsed {
+                let (tls_label, tls_color) = if self.insecure {
+                    ("tls {{off}}", theme.warning)
+                } else {
+                    ("tls {{on}}", theme.text_muted)
+                };
+                let w = tls_label.chars().count() as u16;
+                let tls_rect = Rect::new(x, area.y, w, 1);
+                let hovered_chip =
+                    ctx.hovered == Some(&crate::hit::Hit::FooterChip(Action::ToggleInsecure));
+                let style = if hovered_chip {
+                    Style::default().fg(theme.text)
+                } else {
+                    Style::default().fg(tls_color)
+                };
+                frame.render_widget(Paragraph::new(Line::styled(tls_label, style)), tls_rect);
+                hits.register(tls_rect, crate::hit::Hit::FooterChip(Action::ToggleInsecure));
             }
             if fade_t > 0.0 {
                 // Mid-slide: blend the whole strip toward the page it sits
@@ -4100,6 +4123,22 @@ mod tests {
         e.substitute_body = true;
         let (on, _) = draw_editor(&mut e);
         assert!(on.contains("{{on}}"), "{on}");
+    }
+
+    #[test]
+    fn tls_chip_on_the_tab_row_reflects_insecure_state() {
+        let mut e = Editor::default();
+        let (on, hits) = draw_editor(&mut e);
+        assert!(on.contains("tls {{on}}"), "verifying state shows on: {on}");
+        assert!(
+            hits.rect_of(&Hit::FooterChip(Action::ToggleInsecure))
+                .is_some(),
+            "the chip is clickable"
+        );
+
+        e.insecure = true;
+        let (off, _) = draw_editor(&mut e);
+        assert!(off.contains("tls {{off}}"), "insecure state shows off: {off}");
     }
 
     #[test]

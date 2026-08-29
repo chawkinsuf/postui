@@ -1604,6 +1604,11 @@ impl App {
                 self.editor.substitute_body = !self.editor.substitute_body;
                 true
             }
+            Action::ToggleInsecure => {
+                self.no_coalesce = true;
+                self.editor.insecure = !self.editor.insecure;
+                true
+            }
             Action::ToggleHeaderReveal => {
                 self.editor.computed.revealed = !self.editor.computed.revealed;
                 true

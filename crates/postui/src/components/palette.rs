@@ -138,6 +138,12 @@ pub fn all_commands() -> Vec<Command> {
             action: Action::ToggleBodyVars,
         },
         Command {
+            id: "tls-toggle-verify",
+            name: "TLS: toggle certificate verification",
+            description: "Skip or restore TLS certificate checks for this request (insecure)",
+            action: Action::ToggleInsecure,
+        },
+        Command {
             id: "response-toggle",
             name: "Response: hide/show panel",
             description: "Collapse the response pane to its header, or bring it back",
