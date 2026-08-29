@@ -73,7 +73,16 @@ pub fn draw_header(
     hits.register(project_rect, Hit::HeaderProject);
     x += project_w + 1;
 
-    let env_label = format!(" {env} \u{25be} ");
+    // On the manager screen this chip is the only environment control, and
+    // the environment decides what the whole screen edits ("Value in
+    // <env>", selector grids) — so it announces itself there: full
+    // "Environment:" label, bright bold text. Elsewhere it stays the
+    // quiet muted chip.
+    let env_label = if vars_active {
+        format!(" Environment: {env} \u{25be} ")
+    } else {
+        format!(" {env} \u{25be} ")
+    };
     let env_w = env_label.chars().count() as u16;
     let env_rect = Rect {
         x,
@@ -86,15 +95,20 @@ pub fn draw_header(
     } else {
         theme.control
     };
+    let env_fg = if vars_active {
+        theme.text
+    } else {
+        theme.text_muted
+    };
     fill(buf, env_rect, env_bg);
     text(
         buf,
         env_rect.x,
         mid_y,
         &env_label,
-        theme.text_muted,
+        env_fg,
         env_bg,
-        false,
+        vars_active,
     );
     hits.register(env_rect, Hit::HeaderEnv);
     x += env_w + 1;
@@ -282,6 +296,28 @@ mod tests {
         assert_eq!(c.bg, theme.control);
         assert_eq!(c.fg, theme.text_muted);
         assert_eq!(c.symbol(), "q"); // first char of "qa"
+    }
+
+    #[test]
+    fn env_chip_announces_itself_on_the_manager_screen() {
+        let theme = Theme::dark();
+        let backend = TestBackend::new(60, HEADER_HEIGHT);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = HitMap::default();
+        terminal
+            .draw(|f: &mut Frame| {
+                draw_header(f, f.area(), &theme, "alpha", "qa", true, &mut hits, None)
+            })
+            .unwrap();
+        let rect = hits.rect_of(&Hit::HeaderEnv).expect("env hit registered");
+        // Full label — the chip is the manager screen's only env control.
+        let label: String = (rect.x..rect.x + rect.width)
+            .map(|x| cell(&terminal, x, rect.y).symbol().to_string())
+            .collect();
+        assert_eq!(label, " Environment: qa \u{25be} ");
+        let c = cell(&terminal, rect.x + 1, rect.y);
+        assert_eq!(c.fg, theme.text, "bright, not muted");
+        assert!(c.modifier.contains(Modifier::BOLD));
     }
 
     #[test]
