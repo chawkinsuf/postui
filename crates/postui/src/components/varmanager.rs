@@ -1977,6 +1977,25 @@ impl VarManager {
             Button { label, kind, state }.paint(buf, rect, theme);
             hits.register(rect, hit);
         }
+
+        // Where the bar's own env switcher used to sit: a standing pointer
+        // at the header chip, since the environment picks what this whole
+        // screen edits. Drawn after the buttons so it clips to whatever
+        // room they left rather than colliding on a narrow bar.
+        let hint = "select an environment to edit its values";
+        let room = x.saturating_sub(left_edge + 1) as usize;
+        let hint: String = hint.chars().take(room).collect();
+        if !hint.is_empty() {
+            text(
+                buf,
+                left_edge + 1,
+                bar.y + BUTTON_HEIGHT / 2,
+                &hint,
+                theme.text_muted,
+                theme.panel,
+                false,
+            );
+        }
     }
 
     fn draw_left(
@@ -2351,6 +2370,10 @@ fields = ["user_id", "customer_id"]
         let (_dir, ctx) = fixture();
         let mut vm = VarManager::default();
         let (content, hits) = render(&mut vm, &ctx);
+        assert!(
+            content.contains("select an environment to edit its values"),
+            "the standing pointer at the header env chip: {content}"
+        );
         assert!(hits.rect_of(&Hit::VmNewVar).is_some());
         assert!(hits.rect_of(&Hit::VmNewSelector).is_some());
         assert!(content.contains("+ Variable"), "{content}");
