@@ -1982,7 +1982,7 @@ impl VarManager {
         // at the header chip, since the environment picks what this whole
         // screen edits. Drawn after the buttons so it clips to whatever
         // room they left rather than colliding on a narrow bar.
-        let hint = "select an environment to edit its values";
+        let hint = "select an environment to edit its variables";
         let room = x.saturating_sub(left_edge + 1) as usize;
         let hint: String = hint.chars().take(room).collect();
         if !hint.is_empty() {
@@ -2371,7 +2371,7 @@ fields = ["user_id", "customer_id"]
         let mut vm = VarManager::default();
         let (content, hits) = render(&mut vm, &ctx);
         assert!(
-            content.contains("select an environment to edit its values"),
+            content.contains("select an environment to edit its variables"),
             "the standing pointer at the header env chip: {content}"
         );
         assert!(hits.rect_of(&Hit::VmNewVar).is_some());
