@@ -3548,6 +3548,43 @@ impl App {
         }
     }
 
+    /// The value popup's remove — shared by the clicked "✕ remove"
+    /// (`Hit::ModalRemove`) and its keyboard chord (`alt+d`): removes the
+    /// chosen Write-to scope's stored value, then rebuilds the popup so
+    /// Write-to lands on the next supplier with its value ready to edit.
+    /// Inert (returns `false`) unless the top modal is the value popup
+    /// and the chosen scope actually stores something — mirroring when
+    /// the ✕ is painted at all.
+    pub(crate) fn remove_from_value_popup(&mut self) -> bool {
+        use crate::components::modal::{Modal, PromptKind, chosen_scope, destination_from_label};
+        let Some(Modal::MultiPrompt { fields, kind, .. }) = self.modals.top() else {
+            return false;
+        };
+        let PromptKind::EditVarValue { name, scope_values } = kind else {
+            return false;
+        };
+        let name = name.clone();
+        let (chosen, stored) = chosen_scope(fields, scope_values);
+        if !stored {
+            return false;
+        }
+        let destination = destination_from_label(&chosen);
+        // The popup stays open, rebuilt from scratch on success: the
+        // removal moved supply to the next wider scope, and reopening
+        // re-runs the supplying-scope math, so Write-to lands on the new
+        // supplier with its stored value ready to edit (or "(not set)"
+        // when nothing supplies at all).
+        let changed = self.update(Action::RemoveVarValue {
+            name: name.clone(),
+            destination,
+        });
+        if !self.last_action_failed {
+            self.modals.pop();
+            self.open_edit_value_popup(&name);
+        }
+        changed
+    }
+
     /// Builds and opens the value-edit popup for a simple (or
     /// request-scoped / stray-env) variable's `{{token}}`: a `value` field
     /// seeded with the current effective value and a `destination` choice
@@ -5518,6 +5555,23 @@ impl App {
 
         // 2. Modals capture all remaining input.
         if !self.modals.is_empty() {
+            // The value popup's remove chord needs App (it removes, then
+            // rebuilds the popup), so it can't live in the modal's own
+            // key handler like the fields editor's chords do. Inert when
+            // the chosen scope stores nothing — same as the unpainted ✕.
+            if ev.modifiers.contains(KeyModifiers::ALT)
+                && ev.code == KeyCode::Char('d')
+                && matches!(
+                    self.modals.top(),
+                    Some(crate::components::modal::Modal::MultiPrompt {
+                        kind: crate::components::modal::PromptKind::EditVarValue { .. },
+                        ..
+                    })
+                )
+            {
+                self.remove_from_value_popup();
+                return true; // swallowed even when inert — never typed
+            }
             let Some(res) = self.modals.handle_key(ev) else {
                 self.sync_theme_preview();
                 return true; // typed into modal
@@ -5559,7 +5613,15 @@ impl App {
             if self.screen == Screen::VarManager && self.varmanager.grid.editing.is_some() {
                 return self.handle_grid_key(ev);
             }
-            if let Some(a) = self.varmanager.handle_key(ev, &self.project) {
+            let open_request = self
+                .editor
+                .slug
+                .is_some()
+                .then(|| self.editor.current_request());
+            if let Some(a) = self
+                .varmanager
+                .handle_key(ev, &self.project, open_request.as_ref())
+            {
                 return self.update(a);
             }
             return true; // swallowed: no fallback to the global keymap

@@ -146,9 +146,29 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     // The Variable Manager screen swaps in its own chip set — the per-pane
-    // chips' actions target requests, which aren't on screen there.
-    let vm_chips =
-        (app.screen == Screen::VarManager).then(|| app.varmanager.footer_chips(&app.project));
+    // chips' actions target requests, which aren't on screen there. An
+    // open modal with chips of its own wins over both: while it captures
+    // the keyboard, its quick actions are the only ones that work.
+    let modal_chips = app.modals.footer_chips();
+    let globals_live = modal_chips.is_none();
+    // A plain `q` reaches the quit binding only where nothing consumes it
+    // first: no modal (they capture all input), the Main screen (other
+    // screens swallow unbound plain keys), and a pane that doesn't route
+    // typing into a text input.
+    let plain_q_quits = app.modals.is_empty()
+        && app.screen == Screen::Main
+        && matches!(focus, PaneId::Sidebar | PaneId::Response);
+    let vm_chips = modal_chips.or_else(|| {
+        (app.screen == Screen::VarManager).then(|| {
+            let open_request = app
+                .editor
+                .slug
+                .is_some()
+                .then(|| app.editor.current_request());
+            app.varmanager
+                .footer_chips(&app.project, open_request.as_ref())
+        })
+    });
     crate::components::footer::draw_footer(
         frame,
         layout.footer,
@@ -159,6 +179,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         app.editor.is_dirty(),
         app.editor.active_tab.add_row_label(),
         vm_chips,
+        globals_live,
+        plain_q_quits,
         &mut hits,
         app.hovered.as_ref(),
     );

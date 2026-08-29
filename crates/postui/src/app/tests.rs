@@ -7741,6 +7741,64 @@ fn the_value_popup_offers_remove_only_where_a_value_is_stored() {
     );
 }
 
+/// The keyboard mirror of the popup's "✕ remove": `alt+d` removes the
+/// chosen Write-to scope's stored value and rebuilds the popup on the
+/// next supplier, exactly like the click. Where the chosen scope stores
+/// nothing (no ✕ painted), the chord is inert.
+#[test]
+fn the_value_popup_alt_d_removes_the_chosen_scopes_value() {
+    let (mut app, _dir) = token_popup_app();
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, alt('d'));
+
+    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
+        panic!("the popup rebuilds on the next supplier after a removal")
+    };
+    let scope = fields.iter().find(|f| f.key == "destination").unwrap();
+    assert_eq!(
+        scope.input.text(),
+        "Project default",
+        "the env value is gone, so the default supplies now"
+    );
+    let value = fields.iter().find(|f| f.key == "value").unwrap();
+    assert_eq!(value.input.text(), "http://localhost:8080");
+
+    // Cycle to "This request" (stores nothing): alt+d must be inert.
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    app.handle_key(&keymap, alt('d'));
+    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
+        panic!("an inert alt+d must not close the popup")
+    };
+    let scope = fields.iter().find(|f| f.key == "destination").unwrap();
+    assert_eq!(scope.input.text(), "This request", "nothing was removed");
+}
+
+/// The value popup's footer chips teach its keys and name the scope the
+/// remove chord would hit — and the remove chip only shows where the ✕
+/// itself would (the chosen scope stores something).
+#[test]
+fn the_value_popup_advertises_its_chords_in_the_footer() {
+    let (mut app, _dir) = token_popup_app();
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    let content = rendered_text(&mut app);
+    assert!(content.contains("write to"), "{content}");
+    assert!(
+        content.contains("remove env value"),
+        "the chip names the chosen scope: {content}"
+    );
+
+    // Cycle to "This request", which stores nothing — no remove chip.
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    let content = rendered_text(&mut app);
+    assert!(!content.contains("remove env value"), "{content}");
+    assert!(!content.contains("remove request value"), "{content}");
+}
+
 /// User finding: only the keyboard cycle reseeded the value box — a
 /// *click* on the Write-to field cycled the choice but kept the previous
 /// scope's text, so an empty scope showed a value copied over from the
@@ -9894,6 +9952,171 @@ fn fields_editor_add_button_appends_a_focused_row() {
     );
 }
 
+/// The keyboard mirror of the add button: `alt+a` appends a row and
+/// focuses it, so a keyboard-only user can grow a selector's fields.
+#[test]
+fn fields_editor_alt_a_appends_a_focused_row() {
+    let (mut app, _dir) = fields_editor_app();
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, alt('a'));
+    let Some(Modal::FieldsEditor(fe)) = app.modals.top() else {
+        panic!("still open")
+    };
+    assert_eq!(fe.rows.len(), 3, "alt+a appends a row");
+    assert_eq!(fe.focus, 2, "the new row takes focus");
+
+    for c in "region".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.modals.is_empty());
+    assert_eq!(
+        app.project.model.selectors["creds"].fields,
+        vec!["user_id", "customer_id", "region"]
+    );
+}
+
+/// The keyboard mirror of a row's ✕/↩ toggle: `alt+d` marks the focused
+/// row removed (focus stepping off it, as the click does), and pressing
+/// it again on that row restores it.
+#[test]
+fn fields_editor_alt_d_toggles_removal_of_the_focused_row() {
+    let (mut app, _dir) = fields_editor_app();
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, alt('d'));
+    let Some(Modal::FieldsEditor(fe)) = app.modals.top() else {
+        panic!("still open")
+    };
+    assert!(
+        fe.rows[0].removed,
+        "alt+d marks the focused row for removal"
+    );
+    assert_eq!(fe.focus, 1, "focus steps off the removed row");
+
+    // Step back onto the removed row — it must be landable, or the
+    // keyboard could never restore it — and flip it back.
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    let Some(Modal::FieldsEditor(fe)) = app.modals.top() else {
+        panic!("still open")
+    };
+    assert_eq!(fe.focus, 0, "focus can land on a removed row");
+    app.handle_key(&keymap, alt('d'));
+    let Some(Modal::FieldsEditor(fe)) = app.modals.top() else {
+        panic!("still open")
+    };
+    assert!(!fe.rows[0].removed, "alt+d on a removed row restores it");
+
+    // Remove the second field and apply: the removal confirm guards.
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(&keymap, alt('d'));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let Some(Modal::Confirm { title, .. }) = app.modals.top() else {
+        panic!("a removal must confirm first")
+    };
+    assert!(title.contains("customer_id"), "{title}");
+    app.handle_key(&keymap, plain('y'));
+    assert_eq!(app.project.model.selectors["creds"].fields, vec!["user_id"]);
+}
+
+/// While the fields editor is open, the footer swaps to *its* context
+/// actions — the discoverability layer for the alt chords — instead of
+/// the screen's chips, whose verbs aren't reachable under a modal.
+#[test]
+fn fields_editor_advertises_its_chords_in_the_footer() {
+    let (mut app, _dir) = fields_editor_app();
+    let content = rendered_text(&mut app);
+    assert!(content.contains("add field"), "{content}");
+    assert!(content.contains("remove field"), "{content}");
+    assert!(content.contains("apply"), "{content}");
+    assert!(
+        !content.contains("new selector"),
+        "the screen's own chips give way while the modal is open: {content}"
+    );
+
+    // On a removed row the same chord restores — the chip says so.
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, alt('d'));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    let content = rendered_text(&mut app);
+    assert!(content.contains("restore field"), "{content}");
+}
+
+/// The quit chip's keycap tells the truth: `q` only where a plain `q`
+/// actually quits (Main screen, non-typing pane, no modal); everywhere
+/// typing owns plain keys — a modal open, the editor's text areas, the
+/// Variable Manager — it shows the pre-empting `^C` combo instead.
+#[test]
+fn the_quit_chip_shows_ctrl_c_wherever_plain_q_would_type() {
+    let (mut app, _dir) = sidebar_test_app();
+    app.focus = PaneId::Sidebar;
+    let content = rendered_text(&mut app);
+    assert!(content.contains("q  quit"), "{content}");
+
+    // The editor pane routes plain keys into its inputs.
+    app.focus = PaneId::Editor;
+    let content = rendered_text(&mut app);
+    assert!(content.contains("^C  quit"), "{content}");
+    assert!(!content.contains("q  quit"), "{content}");
+
+    // A modal captures everything; only the modified combo quits.
+    app.focus = PaneId::Sidebar;
+    app.update(Action::PromptNewRequest);
+    let content = rendered_text(&mut app);
+    assert!(content.contains("^C  quit"), "{content}");
+    app.handle_key(
+        &Keymap::default_bindings(),
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+    );
+
+    // Non-Main screens swallow unbound plain keys, `q` included.
+    app.update(Action::OpenVarManager);
+    let content = rendered_text(&mut app);
+    assert!(content.contains("^C  quit"), "{content}");
+}
+
+/// While any screen-owning modal is open, the footer shows that modal's
+/// live keys and the scrim stops above it — a dimmed toolbar reads as
+/// inactive, and these chips are exactly the keys that DO work.
+#[test]
+fn the_scrim_leaves_the_footer_bright_under_every_modal() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    let (mut app, _dir) = fields_editor_app();
+
+    let footer_bg = |app: &mut App| {
+        app.anims.finish_all();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+        let buf = terminal.backend().buffer();
+        // (1, 22): the footer's content row; (40, 11): mid-screen backdrop.
+        (
+            buf.cell((1, 22)).unwrap().bg,
+            buf.cell((40, 11)).unwrap().bg,
+        )
+    };
+
+    let panel = app.theme.panel;
+    let (footer, _) = footer_bg(&mut app);
+    assert_eq!(footer, panel, "fields editor: the footer stays undimmed");
+
+    // A plain message modal — no chords of its own — still keeps the
+    // footer bright, showing its enter/esc keys.
+    app.modals.pop();
+    let (_, backdrop_before) = footer_bg(&mut app);
+    app.push_modal(Modal::Message {
+        title: "note".into(),
+        body: "hello".into(),
+    });
+    let (footer, backdrop) = footer_bg(&mut app);
+    assert_eq!(footer, panel, "message modal: the footer stays undimmed");
+    assert_ne!(
+        backdrop, backdrop_before,
+        "the scrim still dims the screen above the footer"
+    );
+    let content = rendered_text(&mut app);
+    assert!(content.contains("close"), "{content}");
+}
+
 fn cell_rect(app: &mut App, row: usize, col: usize) -> ratatui::layout::Rect {
     rendered_text_tall(app);
     app.hits
@@ -10080,7 +10303,7 @@ fn vm_footer_advertises_the_option_verbs_while_the_grid_has_focus() {
         selector: "user".into(),
         name: "alice".into(),
     };
-    let chips = app.varmanager.footer_chips(&app.project);
+    let chips = app.varmanager.footer_chips(&app.project, None);
     assert!(
         chips
             .iter()
@@ -10103,6 +10326,201 @@ fn vm_footer_advertises_the_option_verbs_while_the_grid_has_focus() {
     );
 }
 
+/// The variable form is a keyboard area like the options grid: `Right`
+/// from the list enters it with a field cursor, arrows move over the
+/// fields, `Enter` edits in place, and `Esc` steps back out to the list
+/// — the form is no longer reachable only by clicking.
+#[test]
+fn keyboard_enters_the_variable_form_and_edits_its_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
+    });
+
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    assert_eq!(app.varmanager.focus, VmFocus::Form, "Right enters the form");
+
+    // Description first; Down to the default; Enter starts the in-place
+    // edit clicking the field would.
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let (field, input) = app.varmanager.form.editing.as_ref().expect("editing");
+    assert_eq!(*field, crate::components::varmanager::VmField::Default);
+    assert_eq!(input.text(), "http://localhost:8080");
+
+    app.handle_key(&keymap, plain('9'));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.varmanager.form.editing.is_none(), "Enter commits");
+    let on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    assert!(on_disk.contains("http://localhost:80809"), "{on_disk}");
+
+    // Esc leaves the form for the list; one more Esc would close the
+    // screen, same leave-the-inner-thing-first rhythm as the grid.
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(app.varmanager.focus, VmFocus::List);
+    assert_eq!(app.screen, Screen::VarManager, "the screen stays open");
+}
+
+/// With the form focused, the footer advertises the form's own quick
+/// actions and the keys work: `s` flips the secret flag, and — with the
+/// cursor on the env-value field, while the env stores one — `x` clears
+/// the stored value, the inline "✕ remove" control's keyboard twin.
+#[test]
+fn form_focus_advertises_and_handles_the_field_verbs() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    // The open request overrides base_url, so promote applies too.
+    request_with_var(dir.path(), "ping", "base_url", "http://req.local");
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("ping".into()));
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
+    });
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    assert_eq!(app.varmanager.focus, VmFocus::Form);
+
+    let secret = Action::ToggleSecretVar {
+        name: "base_url".into(),
+    };
+    let chips = app.varmanager.footer_chips(&app.project, None);
+    assert!(
+        chips
+            .iter()
+            .any(|(k, l, a)| *k == "s" && *l == "secret" && a.as_ref() == Some(&secret)),
+        "{chips:?}"
+    );
+    assert!(
+        !chips.iter().any(|(_, l, _)| *l == "clear env value"),
+        "off the env-value field, no clear chip: {chips:?}"
+    );
+
+    // Down to the env-value field: qa stores one, so `x` clears it.
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    let clear = Action::RemoveVarValue {
+        name: "base_url".into(),
+        destination: crate::action::ExtractDestination::ActiveEnv,
+    };
+    assert_eq!(
+        app.varmanager.form_cursor,
+        crate::components::varmanager::VmField::EnvValue,
+        "two downs land on the env-value field"
+    );
+    let chips = app.varmanager.footer_chips(&app.project, None);
+    assert!(
+        chips
+            .iter()
+            .any(|(k, l, a)| *k == "x" && *l == "clear env value" && a.as_ref() == Some(&clear)),
+        "{chips:?}"
+    );
+    app.handle_key(&keymap, plain('x'));
+    let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(!on_disk.contains("base_url"), "{on_disk}");
+    let chips = app.varmanager.footer_chips(&app.project, None);
+    assert!(
+        !chips.iter().any(|(_, l, _)| *l == "clear env value"),
+        "nothing stored, nothing to clear: {chips:?}"
+    );
+
+    // The open request overrides this name, so promote is on offer, and
+    // `p` opens the same promote prompt the button does.
+    let promote = Action::PromptPromoteVar {
+        name: "base_url".into(),
+    };
+    let open_request = app.editor.current_request();
+    let chips = app
+        .varmanager
+        .footer_chips(&app.project, Some(&open_request));
+    assert!(
+        chips
+            .iter()
+            .any(|(k, l, a)| *k == "p" && *l == "promote" && a.as_ref() == Some(&promote)),
+        "{chips:?}"
+    );
+    app.handle_key(&keymap, plain('p'));
+    assert!(!app.modals.is_empty(), "p opens the promote prompt");
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    // `s` works from the form area, not just the list — through the same
+    // make-secret confirm the list's `s` opens.
+    app.handle_key(&keymap, plain('s'));
+    assert!(!app.modals.is_empty(), "s opens the secret confirm");
+    app.handle_key(&keymap, plain('y'));
+    assert!(
+        app.project.model.vars["base_url"].secret,
+        "s flips the secret flag from the form area"
+    );
+}
+
+/// On a secret variable, `r` in the form area flips the reveal toggle —
+/// the 👁 control's keyboard twin — and the footer hint tracks its state.
+#[test]
+fn form_focus_r_toggles_reveal_on_a_secret_variable() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("api_key".into())
+    });
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+
+    let chips = app.varmanager.footer_chips(&app.project, None);
+    assert!(
+        chips.iter().any(|(k, l, _)| *k == "r" && *l == "reveal"),
+        "{chips:?}"
+    );
+    app.handle_key(&keymap, plain('r'));
+    assert!(app.varmanager.form.revealed, "r reveals the secret");
+    let chips = app.varmanager.footer_chips(&app.project, None);
+    assert!(
+        chips.iter().any(|(k, l, _)| *k == "r" && *l == "hide"),
+        "{chips:?}"
+    );
+    app.handle_key(&keymap, plain('r'));
+    assert!(!app.varmanager.form.revealed);
+}
+
+/// With a selector open in the detail pane, the footer advertises `m`
+/// "edit fields" — the key existed but nothing taught it, which left the
+/// fields editor mouse-only in practice.
+#[test]
+fn vm_footer_advertises_edit_fields_on_a_selector() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+
+    let edit_fields = Action::PromptGroupFields {
+        selector: "user".into(),
+    };
+    let chips = app.varmanager.footer_chips(&app.project, None);
+    assert!(
+        chips
+            .iter()
+            .any(|(k, l, a)| *k == "m" && *l == "edit fields" && a.as_ref() == Some(&edit_fields)),
+        "{chips:?}"
+    );
+
+    // On a plain variable there is no fields editor to advertise.
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
+    });
+    let chips = app.varmanager.footer_chips(&app.project, None);
+    assert!(
+        !chips.iter().any(|(_, l, _)| *l == "edit fields"),
+        "{chips:?}"
+    );
+}
+
 /// User finding: with a variable's form open but the left cursor on a
 /// section header, the rename/delete chips rendered as plain hints. They
 /// fall back to the open detail's name so they stay clickable.
@@ -10116,7 +10534,7 @@ fn vm_footer_rename_delete_act_on_the_open_form_from_a_header_row() {
         r == &crate::components::varmanager::VmRow::Var("base_url".into())
     });
     app.varmanager.left_cursor = 0; // the "VARIABLES" section header
-    let chips = app.varmanager.footer_chips(&app.project);
+    let chips = app.varmanager.footer_chips(&app.project, None);
     assert!(
         chips.iter().any(|(k, _, a)| *k == "e"
             && *a
@@ -10149,7 +10567,7 @@ fn vm_footer_drops_chips_with_no_target() {
     app.update(Action::OpenVarManager);
     let keys: Vec<&str> = app
         .varmanager
-        .footer_chips(&app.project)
+        .footer_chips(&app.project, None)
         .iter()
         .map(|(k, _, _)| *k)
         .collect();
@@ -10161,7 +10579,7 @@ fn vm_footer_drops_chips_with_no_target() {
     app.varmanager.grid.cursor = (2, 0); // alice, bob, then the ghost
     let keys: Vec<&str> = app
         .varmanager
-        .footer_chips(&app.project)
+        .footer_chips(&app.project, None)
         .iter()
         .map(|(k, _, _)| *k)
         .collect();

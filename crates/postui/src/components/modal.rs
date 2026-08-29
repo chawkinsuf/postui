@@ -174,20 +174,15 @@ impl FieldsEditorState {
         self.focus = self.rows.len() - 1;
     }
 
-    /// Moves focus by `dir`, skipping removed rows, wrapping.
+    /// Moves focus by `dir`, wrapping. Removed rows stay landable — the
+    /// keyboard's only route to restoring one (`alt+d`) is to focus it;
+    /// typing into a removed row is still blocked at the key handler.
     fn focus_step(&mut self, dir: i32) {
         let n = self.rows.len() as i32;
         if n == 0 {
             return;
         }
-        let mut i = self.focus as i32;
-        for _ in 0..n {
-            i = (i + dir).rem_euclid(n);
-            if !self.rows[i as usize].removed {
-                self.focus = i as usize;
-                return;
-            }
-        }
+        self.focus = (self.focus as i32 + dir).rem_euclid(n) as usize;
     }
 
     /// The slots `Action::ApplyGroupFields` wants: original rows in order
@@ -320,6 +315,26 @@ fn value_placeholder_line(focused: bool, theme: &Theme) -> Line<'static> {
     } else {
         Line::styled("(not set)", muted)
     }
+}
+
+/// The value popup's chosen Write-to label and whether that scope stores
+/// a value — the predicate behind the "✕ remove" affordance, shared by
+/// its painter, its footer chip, and the remove itself (click or alt+d).
+pub(crate) fn chosen_scope(
+    fields: &[PromptField],
+    scope_values: &[(String, Option<String>)],
+) -> (String, bool) {
+    let chosen = fields
+        .iter()
+        .find(|f| f.key == "destination")
+        .map(|f| f.input.text().to_string())
+        .unwrap_or_default();
+    let stored = scope_values
+        .iter()
+        .find(|(label, _)| *label == chosen)
+        .and_then(|(_, v)| v.as_ref())
+        .is_some();
+    (chosen, stored)
 }
 
 /// The `ExtractDestination` a Write-to label stands for — shared by the
@@ -576,6 +591,89 @@ impl ModalStack {
 
     pub fn top(&self) -> Option<&Modal> {
         self.stack.last()
+    }
+
+    /// The footer's context chips for the top modal — every screen-owning
+    /// modal has some, so while one is open the footer always describes
+    /// the keys that actually work (the modal captures everything else)
+    /// and stays undimmed (see `draw`'s backdrop). The chords with no
+    /// on-modal affordance of their own live here as their only signpost:
+    /// they're alt combos because the modals' rows are text inputs.
+    /// `None` only for `Dropdown` — an anchored popup that never dims or
+    /// owns the screen — leaving the footer to the screen underneath.
+    ///
+    /// The labels double as scope confirmation: the value popup's remove
+    /// chip names the Write-to scope it would clear, and the fields
+    /// editor's flips to "restore field" on a removed row.
+    pub fn footer_chips(&self) -> Option<Vec<(&'static str, &'static str, Option<Action>)>> {
+        match self.top()? {
+            Modal::FieldsEditor(state) => {
+                let removed = state.rows.get(state.focus).is_some_and(|r| r.removed);
+                Some(vec![
+                    ("alt+a", "add field", None),
+                    (
+                        "alt+d",
+                        if removed {
+                            "restore field"
+                        } else {
+                            "remove field"
+                        },
+                        None,
+                    ),
+                    ("enter", "apply", None),
+                    ("esc", "cancel", None),
+                ])
+            }
+            Modal::MultiPrompt { fields, kind, .. } => {
+                let mut chips: Vec<(&'static str, &'static str, Option<Action>)> = Vec::new();
+                if let PromptKind::EditVarValue { scope_values, .. } = kind {
+                    let (chosen, stored) = chosen_scope(fields, scope_values);
+                    chips.push(("←→", "write to", None));
+                    if stored {
+                        chips.push((
+                            "alt+d",
+                            match destination_from_label(&chosen) {
+                                ExtractDestination::ActiveEnv => "remove env value",
+                                ExtractDestination::Request => "remove request value",
+                                ExtractDestination::ProjectDefault => "remove default",
+                            },
+                            None,
+                        ));
+                    }
+                } else if fields.len() > 1 {
+                    chips.push(("tab", "next field", None));
+                }
+                chips.push(("enter", "save", None));
+                chips.push(("esc", "cancel", None));
+                Some(chips)
+            }
+            Modal::Message { .. } => Some(vec![("enter", "close", None)]),
+            // The confirm's own buttons carry their answer keys; the
+            // footer adds only the universal way out.
+            Modal::Confirm { .. } => Some(vec![("esc", "cancel", None)]),
+            Modal::Prompt { .. } | Modal::NewProject { .. } => {
+                Some(vec![("enter", "save", None), ("esc", "cancel", None)])
+            }
+            Modal::Chooser(_) => Some(vec![
+                ("↑↓", "navigate", None),
+                ("enter", "select", None),
+                ("esc", "close", None),
+            ]),
+            Modal::VarPicker(_) => Some(vec![
+                ("↑↓", "navigate", None),
+                ("a–z", "filter", None),
+                ("enter", "select", None),
+                ("esc", "close", None),
+            ]),
+            Modal::Palette(_) => Some(vec![
+                ("↑↓", "navigate", None),
+                ("enter", "run", None),
+                ("esc", "close", None),
+            ]),
+            // An anchored popup, not a screen-owning modal: the screen's
+            // own chips stay put (and nothing dims).
+            Modal::Dropdown(_) => None,
+        }
     }
 
     /// Every modal on the stack, bottom first — for asking "is one of
@@ -958,6 +1056,18 @@ impl ModalStack {
                     state.focus_step(-1);
                     None // swallowed: modals capture all input
                 }
+                // The keyboard mirrors of the "+ Add field" button and a
+                // row's ✕/↩ toggle — the rows are text inputs, so the
+                // quick actions live on alt chords that typing can never
+                // collide with.
+                KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    state.add_row();
+                    None
+                }
+                KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    state.toggle(state.focus);
+                    None
+                }
                 _ => {
                     if let Some(row) = state.rows.get_mut(state.focus)
                         && !row.removed
@@ -1010,6 +1120,21 @@ impl ModalStack {
         anims: &crate::anim::Anims,
         now: std::time::Instant,
     ) {
+        // While the footer is showing this modal's chips (every
+        // screen-owning modal — see `footer_chips`), it is part of the
+        // modal's UI: the scrim stops above it so the live keys it
+        // advertises don't read as inactive, and a click there is not
+        // "outside the modal".
+        let backdrop = if self.footer_chips().is_some() {
+            Rect {
+                height: screen
+                    .height
+                    .saturating_sub(crate::components::footer::FOOTER_HEIGHT),
+                ..screen
+            }
+        } else {
+            screen
+        };
         let Some(top) = self.stack.last_mut() else {
             return;
         };
@@ -1027,12 +1152,12 @@ impl ModalStack {
             anims.value_or(crate::anim::AnimKey::ModalOpen, now, 1.0)
         };
         if !is_dropdown {
-            paint::dim_backdrop(frame.buffer_mut(), screen, t);
+            paint::dim_backdrop(frame.buffer_mut(), backdrop, t);
         }
         // Registered before the modal's own hits so any click landing
         // outside them (topmost-wins in `HitMap`) closes the modal, same as
         // Esc — live for every variant, not just Dropdown.
-        hits.register(screen, crate::hit::Hit::ModalOutside);
+        hits.register(backdrop, crate::hit::Hit::ModalOutside);
         match top {
             Modal::Message { title, body } => {
                 let area = centered_rect(screen, 60.min(screen.width), 13.min(screen.height));
@@ -1468,16 +1593,7 @@ impl ModalStack {
                 // form uses, right-aligned on the value field's label row
                 // (registered after `ModalField(0)`, so it wins the hit).
                 if let PromptKind::EditVarValue { scope_values, .. } = kind {
-                    let chosen = fields
-                        .iter()
-                        .find(|f| f.key == "destination")
-                        .map(|f| f.input.text().to_string())
-                        .unwrap_or_default();
-                    let stored = scope_values
-                        .iter()
-                        .find(|(label, _)| *label == chosen)
-                        .and_then(|(_, v)| v.as_ref())
-                        .is_some();
+                    let (_, stored) = chosen_scope(fields, scope_values);
                     if stored {
                         let label = "\u{2715} remove";
                         let remove_hit = crate::hit::Hit::ModalRemove;

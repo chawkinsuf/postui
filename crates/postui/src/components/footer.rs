@@ -119,6 +119,16 @@ pub fn draw_footer(
     // actions target options/declarations rather than the main screen's
     // requests. The right-aligned save/palette/quit chips stay put.
     chips_override: Option<Vec<(&'static str, &'static str, Option<Action>)>>,
+    // `false` while an open modal supplies the chips: it captures the
+    // keyboard, so the save group and palette chip — whose shortcuts go
+    // dead under it — hide rather than advertise keys that won't work.
+    // Quit stays (the modified quit combo pre-empts everything).
+    globals_live: bool,
+    // Whether a plain `q` actually reaches `Action::Quit` right now. Where
+    // it doesn't — a modal open, a non-Main screen, the editor's text
+    // areas — the quit chip's keycap shows the pre-empting `^C` combo
+    // instead of advertising a key that would just type.
+    plain_q_quits: bool,
     hits: &mut HitMap,
     hovered: Option<&Hit>,
 ) {
@@ -130,62 +140,71 @@ pub fn draw_footer(
     }
     let mid_y = area.y + area.height / 2;
 
-    let quit_w = chip_width(&QUIT_CHIP);
+    let quit_chip = if plain_q_quits {
+        QUIT_CHIP
+    } else {
+        ("^C", "quit", Some(Action::Quit))
+    };
+    let quit_w = chip_width(&quit_chip);
     let quit_x = (area.x + area.width).saturating_sub(quit_w + 1);
     paint_chip_row(
         buf,
         mid_y,
         quit_x,
         quit_x + quit_w,
-        &[QUIT_CHIP],
+        &[quit_chip],
         theme,
         hits,
         hovered,
     );
 
-    // The palette chip sits right-aligned, one gap column left of quit.
-    let palette_w = chip_width(&PALETTE_CHIP);
-    let palette_x = quit_x.saturating_sub(palette_w + 1);
-    paint_chip_row(
-        buf,
-        mid_y,
-        palette_x,
-        quit_x,
-        &[PALETTE_CHIP],
-        theme,
-        hits,
-        hovered,
-    );
+    let right_limit = if globals_live {
+        // The palette chip sits right-aligned, one gap column left of quit.
+        let palette_w = chip_width(&PALETTE_CHIP);
+        let palette_x = quit_x.saturating_sub(palette_w + 1);
+        paint_chip_row(
+            buf,
+            mid_y,
+            palette_x,
+            quit_x,
+            &[PALETTE_CHIP],
+            theme,
+            hits,
+            hovered,
+        );
 
-    // The global save/discard group: request-level actions available from
-    // every pane (ctrl+s is a global binding), right-aligned left of the
-    // palette/quit pair with a wider gap so it reads as its own group.
-    // Discard only exists while there are unsaved edits to walk back; it
-    // slots in left of save so save keeps its right-anchored spot and
-    // doesn't jump when discard comes and goes.
-    const GROUP_GAP: u16 = 8;
-    let save_label = if dirty { "save •" } else { "save" };
-    let mut group: Vec<(&'static str, &'static str, Option<Action>)> = Vec::new();
-    if dirty {
-        group.push(("↩", "discard", Some(Action::ConfirmDiscardChanges)));
-    }
-    group.push(("^S", save_label, Some(Action::SaveRequest)));
-    let group_w: u16 = group.iter().map(chip_width).sum::<u16>() + 2 * (group.len() as u16 - 1);
-    let group_x = palette_x.saturating_sub(GROUP_GAP + group_w);
-    paint_chip_row(
-        buf,
-        mid_y,
-        group_x,
-        group_x + group_w,
-        &group,
-        theme,
-        hits,
-        hovered,
-    );
+        // The global save/discard group: request-level actions available from
+        // every pane (ctrl+s is a global binding), right-aligned left of the
+        // palette/quit pair with a wider gap so it reads as its own group.
+        // Discard only exists while there are unsaved edits to walk back; it
+        // slots in left of save so save keeps its right-anchored spot and
+        // doesn't jump when discard comes and goes.
+        const GROUP_GAP: u16 = 8;
+        let save_label = if dirty { "save •" } else { "save" };
+        let mut group: Vec<(&'static str, &'static str, Option<Action>)> = Vec::new();
+        if dirty {
+            group.push(("↩", "discard", Some(Action::ConfirmDiscardChanges)));
+        }
+        group.push(("^S", save_label, Some(Action::SaveRequest)));
+        let group_w: u16 = group.iter().map(chip_width).sum::<u16>() + 2 * (group.len() as u16 - 1);
+        let group_x = palette_x.saturating_sub(GROUP_GAP + group_w);
+        paint_chip_row(
+            buf,
+            mid_y,
+            group_x,
+            group_x + group_w,
+            &group,
+            theme,
+            hits,
+            hovered,
+        );
 
-    // Per-pane chips stop one column shy of the save group so the two
-    // never collide.
-    let right_limit = group_x.saturating_sub(1);
+        // Per-pane chips stop one column shy of the save group so the two
+        // never collide.
+        group_x.saturating_sub(1)
+    } else {
+        quit_x.saturating_sub(1)
+    };
     let chips = chips_override
         .unwrap_or_else(|| footer_chips(focus, shift_enter_send, sending, add_row_label));
     paint_chip_row(
@@ -313,6 +332,8 @@ mod tests {
                     dirty,
                     Some("add header"),
                     None,
+                    true,
+                    true,
                     &mut hits,
                     None,
                 )
@@ -448,6 +469,8 @@ mod tests {
                     false,
                     Some("add header"),
                     None,
+                    true,
+                    true,
                     &mut hits,
                     None,
                 )
@@ -488,6 +511,8 @@ mod tests {
                     false,
                     Some("add header"),
                     None,
+                    true,
+                    true,
                     &mut hits,
                     None,
                 )
@@ -531,6 +556,8 @@ mod tests {
                     false,
                     Some("add header"),
                     None,
+                    true,
+                    true,
                     &mut hits,
                     None,
                 )
@@ -563,6 +590,8 @@ mod tests {
                     false,
                     Some("add header"),
                     None,
+                    true,
+                    true,
                     &mut hits,
                     None,
                 )
@@ -629,6 +658,8 @@ mod tests {
                     false,
                     Some("add header"),
                     None,
+                    true,
+                    true,
                     &mut hits,
                     None,
                 )
@@ -681,6 +712,8 @@ mod tests {
                     false,
                     Some("add header"),
                     None,
+                    true,
+                    true,
                     &mut hits,
                     None,
                 )
@@ -772,6 +805,8 @@ mod tests {
                     false,
                     Some("add header"),
                     None,
+                    true,
+                    true,
                     &mut hits,
                     None,
                 )

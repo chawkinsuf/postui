@@ -1082,36 +1082,7 @@ impl App {
                 }
                 false
             }
-            Hit::ModalRemove => {
-                use crate::components::modal::{Modal, PromptKind, destination_from_label};
-                let Some(Modal::MultiPrompt { fields, kind, .. }) = self.modals.top() else {
-                    return false;
-                };
-                let PromptKind::EditVarValue { name, .. } = kind else {
-                    return false;
-                };
-                let name = name.clone();
-                let chosen = fields
-                    .iter()
-                    .find(|f| f.key == "destination")
-                    .map(|f| f.input.text().to_string())
-                    .unwrap_or_default();
-                let destination = destination_from_label(&chosen);
-                // The popup stays open, rebuilt from scratch on success:
-                // the removal moved supply to the next wider scope, and
-                // reopening re-runs the supplying-scope math, so Write-to
-                // lands on the new supplier with its stored value ready
-                // to edit (or "(not set)" when nothing supplies at all).
-                let changed = self.update(Action::RemoveVarValue {
-                    name: name.clone(),
-                    destination,
-                });
-                if !self.last_action_failed {
-                    self.modals.pop();
-                    self.open_edit_value_popup(&name);
-                }
-                changed
-            }
+            Hit::ModalRemove => self.remove_from_value_popup(),
             Hit::ModalCancel => {
                 let synth = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
                 let Some(res) = self.modals.handle_key(synth) else {
