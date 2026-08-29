@@ -37,8 +37,39 @@ async fn main() -> anyhow::Result<()> {
         DisableFocusChange,
         DisableBracketedPaste
     );
+    drain_pending_input();
     ratatui::restore();
     result
+}
+
+/// Swallows input the terminal emitted between the app's last read and its
+/// processing of `DisableMouseCapture` — mostly mouse-motion reports, since
+/// the pointer is usually moving right as the user quits. Left in the tty
+/// buffer, those bytes would be typed at whatever reads stdin next (the
+/// shell after exit, `$EDITOR` during a round-trip) as `35;196;23M` garbage.
+/// Must run while raw mode is still on, i.e. before `ratatui::restore()`.
+/// The short poll gives the terminal time to process the disable; the
+/// deadline caps the wait in case reports keep streaming in.
+///
+/// `poll` returning `Ok(false)` before its timeout elapsed is not "quiet":
+/// crossterm maps a waker interrupt to `Ok(false)`, and `EventStream::drop`
+/// (as `run` returns) fires that waker with no reader waiting, so the stale
+/// wake surfaces here as an instant empty poll. Only a timeout that actually
+/// ran its full course means the buffer has gone quiet.
+fn drain_pending_input() {
+    use ratatui::crossterm::event::{poll, read};
+    const QUIET: Duration = Duration::from_millis(25);
+    let deadline = std::time::Instant::now() + Duration::from_millis(250);
+    while std::time::Instant::now() < deadline {
+        let started = std::time::Instant::now();
+        match poll(QUIET) {
+            Ok(true) => {
+                let _ = read();
+            }
+            Ok(false) if started.elapsed() < QUIET => continue,
+            _ => break,
+        }
+    }
 }
 
 /// Writes a Kitty pointer-shape hint (OSC 22, task 8d): `\x1b]22;{shape}\x07`,
@@ -327,6 +358,7 @@ fn run_editor_and_restore(
         DisableFocusChange,
         DisableBracketedPaste
     );
+    drain_pending_input();
     ratatui::restore();
 
     let status = std::process::Command::new(&program)
