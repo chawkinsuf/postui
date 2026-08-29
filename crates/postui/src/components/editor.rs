@@ -2530,8 +2530,21 @@ impl Editor {
                 // here", so only the focused editor shows one — and while a
                 // selection is live the highlighted range is the visual
                 // focus, so the block caret hides rather than dangling at
-                // the selection's edge.
-                if !focused || self.body.selection.is_some() {
+                // the selection's edge. Hiding must respect the selection
+                // fill though: edtui repaints the caret cell with
+                // `cursor_style` on top of everything, and the caret rides
+                // a drag sweep's moving end — its head cell. A plain
+                // `hide_cursor` (= base style) there erases the head
+                // cell's highlight (the first char of the first line, on
+                // an upward whole-lines sweep).
+                if let Some(sel) = self.body.selection.as_ref() {
+                    edtui_theme = if sel.contains(&self.body.cursor) {
+                        edtui_theme
+                            .cursor_style(Style::default().bg(theme.selection).fg(theme.text))
+                    } else {
+                        edtui_theme.hide_cursor()
+                    };
+                } else if !focused {
                     edtui_theme = edtui_theme.hide_cursor();
                 }
                 let view = EditorView::new(&mut self.body)
@@ -3163,6 +3176,67 @@ mod tests {
             }
         }
         panic!("{needle:?} not found in the body area");
+    }
+
+    /// edtui repaints the caret cell on top of everything with
+    /// `cursor_style` — and the caret rides the moving end of a drag
+    /// sweep, i.e. the selection's head cell. A `hide_cursor` (= base
+    /// style) caret erased that cell's selection highlight: on an upward
+    /// whole-lines drag, the first char of the first line rendered
+    /// unselected. The head cell must paint as selected.
+    #[test]
+    fn drag_head_cell_keeps_its_selection_highlight() {
+        use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        let theme = Theme::dark();
+        let mut e = body_editor("alpha\nbravo\ncharlie");
+        e.method = Method::Post;
+
+        let draw = |e: &mut Editor| {
+            let theme = Theme::dark();
+            let ctx = DrawCtx {
+                theme: &theme,
+                focused: true,
+                hovered: None,
+                dragging: false,
+                anims: test_anims(),
+                now: std::time::Instant::now(),
+            };
+            let backend = TestBackend::new(120, 24);
+            let mut terminal = Terminal::new(backend).unwrap();
+            let mut hits = crate::hit::HitMap::default();
+            terminal
+                .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
+                .unwrap();
+            terminal.backend().buffer().clone()
+        };
+
+        // First draw records the body area the mouse math maps through.
+        draw(&mut e);
+        let area = e.last_body_area.unwrap();
+        let content_x = area.x + line_number_gutter_width(e.body.lines.len());
+
+        // Press past the end of "charlie", sweep up onto the first char.
+        e.handle_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: content_x + 20,
+            row: area.y + 2,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(e.body_drag_to(content_x, area.y));
+        assert_eq!(
+            e.body_selected_text().as_deref(),
+            Some("alpha\nbravo\ncharlie"),
+            "the selection state itself covers everything"
+        );
+
+        let buf = draw(&mut e);
+        let first = &buf[(content_x, area.y)];
+        assert_eq!(first.symbol(), "a", "expected the first char of line 1");
+        assert_eq!(
+            first.bg,
+            theme.selection,
+            "the drag head cell paints with the selection fill"
+        );
     }
 
     #[test]
@@ -5466,6 +5540,20 @@ mod body_click_tests {
         assert!(e.body_drag_to(4, 12));
         assert_eq!(e.body.cursor.row, 12);
         assert!(e.body.selection.is_some());
+    }
+
+    /// The user's whole-lines gesture: press past the end of the last
+    /// line, sweep up-left onto the first char of the first line. The
+    /// head cell is included, so the first char is selected too.
+    #[test]
+    fn upward_drag_onto_the_first_char_includes_it() {
+        let mut e = editor_with_body("alpha\nbravo\ncharlie\n");
+        e.handle_mouse(left_down(20, 2)); // past "charlie": caret (2,7)
+        assert!(e.body_drag_to(2, 0)); // first char of line 0
+        assert_eq!(
+            e.body_selected_text().as_deref(),
+            Some("alpha\nbravo\ncharlie")
+        );
     }
 
     #[test]
