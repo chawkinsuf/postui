@@ -795,7 +795,10 @@ impl Editor {
     /// Extends the body selection to the drag point `(x, y)`: the moving
     /// end of a selection anchored by the preceding left click. The head
     /// cell is included in the selection (edtui's inclusive-`end`
-    /// semantics); dragging back onto the anchor cell collapses it.
+    /// semantics) — except a downward sweep onto a row's first cell,
+    /// which ends at the end of the line above instead (the pointer sits
+    /// on the boundary before that char). Dragging back onto the anchor
+    /// cell collapses it.
     /// Returns `false` only when there is no live anchor (or no rendered
     /// body area) — unlike a click, a sweep that leaves the box keeps
     /// selecting (see [`Self::body_cursor_for_drag`]).
@@ -834,7 +837,30 @@ impl Editor {
             return false;
         };
         self.body.cursor = cursor;
-        self.set_body_selection(anchor, cursor);
+        // A downward sweep whose pointer sits on a row's first cell stops
+        // at the boundary *before* that char: the selection ends at the
+        // end of the line above instead of grabbing the row's first char.
+        // (Upward, the head cell is the sweep's leading edge and stays
+        // included — landing on a row start does select its first char.)
+        if cursor.col == 0 && cursor.row > anchor.row {
+            let row = cursor.row - 1;
+            let len = self.body.lines.len_col(row).unwrap_or(0);
+            if anchor.row == row && anchor.col >= len {
+                // The anchor caret already sits at (or past) that end —
+                // only the line break lies inside the sweep: nothing to
+                // select.
+                self.body.selection = None;
+            } else {
+                // Straight to the cell setter: the head may legitimately
+                // land on the anchor's own cell (press on a line's last
+                // char, drag just past its break) — a one-char selection,
+                // not the never-left-its-cell case `set_body_selection`
+                // clears.
+                self.set_body_selection_cells(anchor, edtui::Index2::new(row, len));
+            }
+        } else {
+            self.set_body_selection(anchor, cursor);
+        }
         self.body.mode = EditorMode::Insert;
         true
     }
@@ -5459,6 +5485,17 @@ mod body_click_tests {
         assert_eq!(e.body_selected_text().as_deref(), Some("hello\nwor"));
     }
 
+    /// Sweeping down onto a row's first cell must not grab that row's
+    /// first char: the pointer sits on the boundary before it, so the
+    /// selection ends at the end of the line above.
+    #[test]
+    fn downward_drag_onto_a_row_start_ends_at_the_line_above() {
+        let mut e = editor_with_body("hello\nworld\n");
+        e.handle_mouse(left_down(2, 0)); // caret (0,0), anchor planted
+        assert!(e.body_drag_to(2, 1)); // pointer on row 1's first cell
+        assert_eq!(e.body_selected_text().as_deref(), Some("hello"));
+    }
+
     #[test]
     fn a_plain_click_clears_the_selection() {
         let mut e = editor_with_body("hello\nworld\n");
@@ -5489,8 +5526,9 @@ mod body_click_tests {
         e.handle_mouse(left_down(4, 0)); // caret (0,2), anchor planted
         assert!(e.body_drag_to(0, 1), "off-left drag still consumed");
         assert_eq!(e.body.cursor, Index2::new(1, 0));
-        // Inclusive-head-cell semantics, same as any in-box drag.
-        assert_eq!(e.body_selected_text().as_deref(), Some("llo\nw"));
+        // Column 0 on a downward sweep is the boundary before the row's
+        // first char: the selection ends at the end of the line above.
+        assert_eq!(e.body_selected_text().as_deref(), Some("llo"));
     }
 
     /// A sweep that leaves the box out the TOP keeps selecting: each row

@@ -786,7 +786,9 @@ impl Response {
 
     /// Extends the selection sweep to the drag point (clamped onto the
     /// body area, so sweeping past an edge keeps selecting the nearest
-    /// cells). Dragging back onto the anchor cell collapses the selection.
+    /// cells). A downward sweep onto a row's first cell ends at the end
+    /// of the line above instead of grabbing that row's first char.
+    /// Dragging back onto the anchor cell collapses the selection.
     /// After a double click (word anchor set) the sweep extends by whole
     /// words instead: the selection is the union of the anchor word and
     /// the run under the pointer, so the anchor word always stays covered.
@@ -811,6 +813,19 @@ impl Response {
         let Some(anchor) = view.sel_anchor else {
             return false;
         };
+        // A downward sweep whose pointer sits on a row's first cell stops
+        // at the boundary *before* that char: the selection ends at the
+        // end of the line above instead of grabbing the row's first char.
+        // (Upward, the head cell is the sweep's leading edge and stays
+        // included — landing on a row start does select its first char.)
+        if head.1 == 0 && head.0 > anchor.0 {
+            let row = head.0 - 1;
+            let last = view
+                .display_line_text(row)
+                .map_or(0, |t| t.chars().count().saturating_sub(1));
+            view.sel = Some((anchor, (row, last)));
+            return true;
+        }
         view.sel = (head != anchor).then_some((anchor, head));
         true
     }
@@ -2003,6 +2018,18 @@ mod tests {
         assert!(r.begin_selection_at(area.x, area.y));
         assert!(r.drag_selection_to(area.x + 2, area.y + 1));
         assert_eq!(r.selected_text().as_deref(), Some("hello world\nsec"));
+    }
+
+    /// Sweeping down onto a row's first cell must not grab that row's
+    /// first char: the pointer sits on the boundary before it, so the
+    /// selection ends at the end of the line above.
+    #[test]
+    fn downward_drag_onto_a_row_start_ends_at_the_line_above() {
+        let mut r = ready("hello\nworld\nthird");
+        let (area, _) = render_buf(&mut r);
+        assert!(r.begin_selection_at(area.x, area.y));
+        assert!(r.drag_selection_to(area.x, area.y + 2));
+        assert_eq!(r.selected_text().as_deref(), Some("hello\nworld"));
     }
 
     #[test]
