@@ -1727,10 +1727,13 @@ fn clicking_the_manager_env_switcher_opens_the_environment_chooser() {
         .rect_of(&crate::hit::Hit::VmEnvSwitch)
         .expect("env switcher registered");
     app.handle_mouse(left_down(r.x + 2, r.y + 1));
-    assert!(
-        matches!(app.modals.top(), Some(Modal::Chooser(_))),
-        "the switcher opens the same chooser the header env chip does"
-    );
+    match app.modals.top() {
+        Some(Modal::Dropdown(state)) => assert_eq!(
+            state.anchor, r,
+            "the dropdown anchors to the switcher button itself"
+        ),
+        _ => panic!("the switcher opens the same env dropdown the header env chip does"),
+    }
 
     // Switching relabels the bar and the group's inline selection with it.
     app.update(Action::Close);
@@ -1889,10 +1892,13 @@ fn click_header_env_opens_env_chooser() {
     let r = app.hits.rect_of(&crate::hit::Hit::HeaderEnv).unwrap();
     assert!(app.modals.is_empty());
     app.handle_mouse(left_down(r.x, r.y));
-    assert!(
-        matches!(app.modals.top(), Some(Modal::Chooser(_))),
-        "clicking the env name should fire OpenEnvChooser"
-    );
+    match app.modals.top() {
+        Some(Modal::Dropdown(state)) => assert_eq!(
+            state.anchor, r,
+            "the dropdown anchors to the header env chip"
+        ),
+        _ => panic!("clicking the env name should open the env dropdown"),
+    }
 }
 
 #[test]
@@ -4202,9 +4208,13 @@ fn env_chooser_includes_no_environment_entry() {
     let (mut app, _dir) = app_with_envs();
     app.update(Action::SwitchEnv(Some("qa".into())));
     app.update(Action::OpenEnvChooser);
-    let Some(Modal::Chooser(_)) = app.modals.top() else {
-        panic!("expected chooser")
+    let Some(Modal::Dropdown(state)) = app.modals.top() else {
+        panic!("expected dropdown")
     };
+    assert!(
+        state.items.iter().any(|it| it.label == "no environment"),
+        "the dropdown offers a way back to no-env"
+    );
     app.update(Action::Close);
     app.update(Action::SwitchEnv(None));
     assert_eq!(app.project.env_label(), "no env");
@@ -4215,23 +4225,28 @@ fn env_chooser_opens_on_the_active_environment() {
     let (mut app, _dir) = app_with_envs();
     app.update(Action::SwitchEnv(Some("qa".into())));
     app.update(Action::OpenEnvChooser);
-    let Some(Modal::Chooser(state)) = app.modals.top() else {
-        panic!("expected chooser")
+    let Some(Modal::Dropdown(state)) = app.modals.top() else {
+        panic!("expected dropdown")
     };
     assert_eq!(
-        state.selected_label(),
-        Some("qa"),
-        "the chooser opens on the active env, not row 0"
+        state.items[state.selected].label, "qa",
+        "the dropdown opens on the active env, not row 0"
+    );
+    assert_eq!(
+        state.current,
+        Some(state.selected),
+        "the ✓ marker sits on the active env"
     );
     app.update(Action::Close);
 
     // With no env active it opens on the "no environment" row.
     app.update(Action::SwitchEnv(None));
     app.update(Action::OpenEnvChooser);
-    let Some(Modal::Chooser(state)) = app.modals.top() else {
-        panic!("expected chooser")
+    let Some(Modal::Dropdown(state)) = app.modals.top() else {
+        panic!("expected dropdown")
     };
-    assert_eq!(state.selected_label(), Some("no environment"));
+    assert_eq!(state.items[state.selected].label, "no environment");
+    assert_eq!(state.current, Some(state.selected));
 }
 
 #[test]
@@ -4239,11 +4254,15 @@ fn env_chooser_new_environment_row_opens_prompt() {
     let (mut app, _dir) = app_with_envs();
     let keymap = Keymap::default_bindings();
     app.update(Action::OpenEnvChooser);
-    assert!(matches!(app.modals.top(), Some(Modal::Chooser(_))));
-    // "new" filters to the "new environment…" row alone (prod/qa/"no
-    // environment" don't match), so Enter confirms it
-    for c in "new".chars() {
-        app.handle_key(&keymap, plain(c));
+    let rows = match app.modals.top() {
+        Some(Modal::Dropdown(state)) => state.items.len(),
+        _ => panic!("expected dropdown"),
+    };
+    // "new environment…" is always the last row; Down past the end stays
+    // put, so over-stepping then Enter lands on it regardless of where
+    // the cursor opened.
+    for _ in 0..rows {
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     }
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(
@@ -4309,9 +4328,12 @@ fn create_env_invalid_or_duplicate_name_toasts_and_keeps_active_env() {
 fn env_chooser_with_no_environments_still_opens_with_create_row() {
     let mut app = App::new_for_test();
     app.update(Action::OpenEnvChooser);
-    assert!(
-        matches!(app.modals.top(), Some(Modal::Chooser(_))),
-        "empty project opens the chooser (no-env + create rows), not a toast"
+    let Some(Modal::Dropdown(state)) = app.modals.top() else {
+        panic!("empty project opens the dropdown (no-env + create rows), not a toast")
+    };
+    assert_eq!(
+        state.items.last().map(|it| it.label.as_str()),
+        Some("new environment…")
     );
 }
 
@@ -5371,27 +5393,25 @@ fn dropdown_push_never_touches_modal_open() {
     );
 }
 
-/// Regression for a review finding: `Action::OpenEnvChooser` originally
-/// pushed straight onto `self.modals` (a two-line `self.modals\n.push(...)`
-/// form a single-line grep for `self.modals.push(` missed) instead of going
-/// through `push_modal`, so the Environments chooser never retargeted
-/// `AnimKey::ModalOpen` on open. Mirrors
-/// `modal_open_retargets_only_on_empty_to_non_empty_push`, but for this
-/// specific push site, so a future modal-opening action that bypasses
-/// `push_modal` fails a test rather than only a grep sweep.
+/// Successor to a review-finding regression test: when the env chooser was
+/// a centered modal, its push site once bypassed `push_modal` and skipped
+/// the `AnimKey::ModalOpen` retarget. Now that it opens as an anchored
+/// `Modal::Dropdown` (which never touches `ModalOpen`), the equivalent
+/// guarantee is that the open runs `begin_dropdown_open` — a push site
+/// that skips it would pop the menu in with no settle.
 #[test]
-fn env_chooser_open_retargets_modal_open_on_empty_to_non_empty_push() {
+fn env_chooser_open_starts_the_dropdown_settle() {
     let (mut app, _dir) = app_with_envs();
     let now = std::time::Instant::now();
 
     app.update(Action::OpenEnvChooser);
     assert!(
-        matches!(app.modals.top(), Some(Modal::Chooser(_))),
-        "sanity: the chooser actually opened"
+        matches!(app.modals.top(), Some(Modal::Dropdown(_))),
+        "sanity: the dropdown actually opened"
     );
     assert!(
-        app.anims.value(AnimKey::ModalOpen, now).unwrap() < 1.0,
-        "opening the env chooser on an empty stack must start the settle animation short of 1"
+        app.anims.value(AnimKey::DropdownOpen, now).unwrap() < 1.0,
+        "opening the env dropdown must start the open settle short of 1"
     );
 }
 

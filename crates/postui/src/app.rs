@@ -2325,38 +2325,41 @@ impl App {
             }
             Action::OpenEnvChooser => {
                 self.apply(Action::ReloadProjectFiles);
-                use crate::components::chooser::{ChooserItem, ChooserState};
+                use crate::components::modal::{DropdownState, MenuItem};
                 self.project.environments =
                     postui_core::project::list_environments(&self.project.root);
-                let mut items: Vec<ChooserItem> = self
+                let mut items: Vec<MenuItem> = self
                     .project
                     .environments
                     .iter()
-                    .map(|name| ChooserItem {
-                        label: name.clone(),
-                        detail: None,
-                        actions: vec![Action::SwitchEnv(Some(name.clone()))],
-                        id: Some(name.clone()),
-                    })
+                    .map(|name| MenuItem::new(name.clone(), Action::SwitchEnv(Some(name.clone()))))
                     .collect();
-                items.push(ChooserItem {
-                    label: "no environment".into(),
-                    detail: None,
-                    actions: vec![Action::SwitchEnv(None)],
-                    // The no-env row's id is the empty string — matching
-                    // `env_key()`'s spelling of "no environment".
-                    id: Some(String::new()),
-                });
-                items.push(ChooserItem {
-                    label: "new environment…".into(),
-                    detail: None,
-                    actions: vec![Action::OpenNewEnvPrompt],
-                    ..Default::default()
-                });
-                let mut state = ChooserState::new("Environments", items);
-                // Open on the active environment, not row 0.
-                state.select_id(self.project.active_env.as_deref().unwrap_or(""));
-                self.push_modal(Modal::Chooser(state));
+                items.push(MenuItem::new("no environment", Action::SwitchEnv(None)));
+                items.push(MenuItem::new("new environment…", Action::OpenNewEnvPrompt));
+                // The ✓ (and the opening cursor) sits on the active
+                // environment; with none active, on the "no environment"
+                // row just after the env rows.
+                let current = match self.project.active_env.as_deref() {
+                    Some(active) => self.project.environments.iter().position(|n| n == active),
+                    None => Some(self.project.environments.len()),
+                };
+                // Anchored under whichever env button is on screen: the
+                // var manager's switcher when that screen is up, else the
+                // header chip. A keyboard open with neither drawn (bare
+                // test frames) falls back to the method dropdown's
+                // zero-rect, which `draw_dropdown` clamps on-screen.
+                let anchor = self
+                    .hits
+                    .rect_of(&Hit::VmEnvSwitch)
+                    .or_else(|| self.hits.rect_of(&Hit::HeaderEnv))
+                    .unwrap_or_else(|| ratatui::layout::Rect::new(0, 0, 0, 0));
+                self.push_modal(Modal::Dropdown(DropdownState {
+                    anchor,
+                    items,
+                    selected: current.unwrap_or(0),
+                    current,
+                }));
+                self.begin_dropdown_open();
                 true
             }
             Action::OpenNewEnvPrompt => {
