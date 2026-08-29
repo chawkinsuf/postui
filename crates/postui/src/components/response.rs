@@ -786,9 +786,11 @@ impl Response {
 
     /// Extends the selection sweep to the drag point (clamped onto the
     /// body area, so sweeping past an edge keeps selecting the nearest
-    /// cells). A downward sweep onto a row's first cell ends at the end
-    /// of the line above instead of grabbing that row's first char.
-    /// Dragging back onto the anchor cell collapses the selection.
+    /// cells). At the ragged edges the pointer reads as a boundary: a
+    /// downward sweep onto a row's first cell ends at the end of the
+    /// line above, and an upward sweep past a row's end starts at the
+    /// start of the row below. Dragging back onto the anchor cell
+    /// collapses the selection.
     /// After a double click (word anchor set) the sweep extends by whole
     /// words instead: the selection is the union of the anchor word and
     /// the run under the pointer, so the anchor word always stays covered.
@@ -813,11 +815,16 @@ impl Response {
         let Some(anchor) = view.sel_anchor else {
             return false;
         };
-        // A downward sweep whose pointer sits on a row's first cell stops
-        // at the boundary *before* that char: the selection ends at the
-        // end of the line above instead of grabbing the row's first char.
-        // (Upward, the head cell is the sweep's leading edge and stays
-        // included — landing on a row start does select its first char.)
+        // A drag's head is a boundary at the ragged edges: a downward
+        // sweep whose pointer sits on a row's first cell stops at the
+        // boundary *before* that char — the selection ends at the end of
+        // the line above instead of grabbing the row's first char — and
+        // an upward sweep whose pointer sits past a row's end starts at
+        // the boundary *after* its last char — the selection starts at
+        // the start of the row below instead of grabbing that last char.
+        // In between, the head cell is the sweep's leading edge and is
+        // included: down-drags take the char under the pointer, up-drags
+        // landing on a row start take its first char.
         if head.1 == 0 && head.0 > anchor.0 {
             let row = head.0 - 1;
             let last = view
@@ -825,6 +832,22 @@ impl Response {
                 .map_or(0, |t| t.chars().count().saturating_sub(1));
             view.sel = Some((anchor, (row, last)));
             return true;
+        }
+        if head.0 < anchor.0 {
+            // `cell_at` clamped a pointer past the row's end onto its
+            // last char; re-check the pointed display column against the
+            // row's width to tell the two apart (an empty row has no
+            // last char to spuriously grab — it stays in the sweep).
+            use unicode_width::UnicodeWidthChar;
+            let area = view.last_area.expect("cell_at resolved through last_area");
+            let xx = x.clamp(area.x, area.x + area.width.max(1) - 1);
+            let disp_col = view.h_scroll + usize::from(xx - area.x);
+            let text = view.display_line_text(head.0).unwrap_or_default();
+            let width: usize = text.chars().map(|c| c.width().unwrap_or(0)).sum();
+            if width > 0 && disp_col >= width {
+                view.sel = Some((anchor, (head.0 + 1, 0)));
+                return true;
+            }
         }
         view.sel = (head != anchor).then_some((anchor, head));
         true
@@ -2018,6 +2041,18 @@ mod tests {
         assert!(r.begin_selection_at(area.x, area.y));
         assert!(r.drag_selection_to(area.x + 2, area.y + 1));
         assert_eq!(r.selected_text().as_deref(), Some("hello world\nsec"));
+    }
+
+    /// Sweeping up with the pointer past a line's end must not grab that
+    /// line's last char: the pointer sits past the boundary after it, so
+    /// the selection starts at the start of the row below.
+    #[test]
+    fn upward_drag_past_a_line_end_starts_at_the_row_below() {
+        let mut r = ready("ab\nworld\nthird");
+        let (area, _) = render_buf(&mut r);
+        assert!(r.begin_selection_at(area.x + 4, area.y + 1)); // 'd'
+        assert!(r.drag_selection_to(area.x + 8, area.y)); // past "ab"
+        assert_eq!(r.selected_text().as_deref(), Some("world"));
     }
 
     /// Sweeping down onto a row's first cell must not grab that row's

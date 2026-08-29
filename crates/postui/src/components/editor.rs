@@ -795,10 +795,11 @@ impl Editor {
     /// Extends the body selection to the drag point `(x, y)`: the moving
     /// end of a selection anchored by the preceding left click. The head
     /// cell is included in the selection (edtui's inclusive-`end`
-    /// semantics) — except a downward sweep onto a row's first cell,
-    /// which ends at the end of the line above instead (the pointer sits
-    /// on the boundary before that char). Dragging back onto the anchor
-    /// cell collapses it.
+    /// semantics) — except at the ragged edges, where the pointer sits on
+    /// a boundary: a downward sweep onto a row's first cell ends at the
+    /// end of the line above, and an upward sweep past a row's end starts
+    /// at the start of the row below. Dragging back onto the anchor cell
+    /// collapses it.
     /// Returns `false` only when there is no live anchor (or no rendered
     /// body area) — unlike a click, a sweep that leaves the box keeps
     /// selecting (see [`Self::body_cursor_for_drag`]).
@@ -837,12 +838,32 @@ impl Editor {
             return false;
         };
         self.body.cursor = cursor;
-        // A downward sweep whose pointer sits on a row's first cell stops
-        // at the boundary *before* that char: the selection ends at the
-        // end of the line above instead of grabbing the row's first char.
-        // (Upward, the head cell is the sweep's leading edge and stays
-        // included — landing on a row start does select its first char.)
-        if cursor.col == 0 && cursor.row > anchor.row {
+        // A drag's head is a boundary at the ragged edges: a downward
+        // sweep whose pointer sits on a row's first cell stops at the
+        // boundary *before* that char — the selection ends at the end of
+        // the line above instead of grabbing the row's first char — and
+        // an upward sweep whose pointer sits past a row's end starts at
+        // the boundary *after* its last char — the selection starts at
+        // the start of the row below instead of grabbing that last char.
+        // In between, the head cell is the sweep's leading edge and is
+        // included: down-drags take the char under the pointer, up-drags
+        // landing on a row start take its first char.
+        let up_past_end = cursor.row < anchor.row && {
+            let len = self.body.lines.len_col(cursor.row).unwrap_or(0);
+            // An empty row has no last char to spuriously grab; keep it
+            // in the sweep so its line break stays selected.
+            len > 0 && cursor.col >= len
+        };
+        if up_past_end {
+            let row = cursor.row + 1;
+            if anchor.row == row && anchor.col == 0 {
+                // The anchor caret already sits at that start — only the
+                // line break lies inside the sweep: nothing to select.
+                self.body.selection = None;
+            } else {
+                self.set_body_selection_cells(edtui::Index2::new(row, 0), anchor);
+            }
+        } else if cursor.col == 0 && cursor.row > anchor.row {
             let row = cursor.row - 1;
             let len = self.body.lines.len_col(row).unwrap_or(0);
             if anchor.row == row && anchor.col >= len {
@@ -5483,6 +5504,17 @@ mod body_click_tests {
         e.handle_mouse(left_down(2, 0));
         e.body_drag_to(4, 1);
         assert_eq!(e.body_selected_text().as_deref(), Some("hello\nwor"));
+    }
+
+    /// Sweeping up with the pointer past a line's end must not grab that
+    /// line's last char: the pointer sits past the boundary after it, so
+    /// the selection starts at the start of the row below.
+    #[test]
+    fn upward_drag_past_a_line_end_starts_at_the_row_below() {
+        let mut e = editor_with_body("ab\nworld\n");
+        e.handle_mouse(left_down(6, 1)); // caret (1,4), on 'd'
+        assert!(e.body_drag_to(8, 0)); // pointer past the end of "ab"
+        assert_eq!(e.body_selected_text().as_deref(), Some("world"));
     }
 
     /// Sweeping down onto a row's first cell must not grab that row's
