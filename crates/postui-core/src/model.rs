@@ -193,6 +193,11 @@ pub struct HttpRequest {
     /// TOML so untouched requests don't churn in diffs.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub substitute_body: bool,
+    /// Whether TLS certificate verification is skipped when sending this
+    /// request (curl's `-k`/`--insecure`). Opt-in per request; `false` is
+    /// the default and is omitted from the TOML.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub insecure: bool,
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
     pub params: IndexMap<String, Entry>,
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
@@ -221,6 +226,9 @@ impl HttpRequest {
         doc["url"] = value(&self.url);
         if self.substitute_body {
             doc["substitute_body"] = value(true);
+        }
+        if self.insecure {
+            doc["insecure"] = value(true);
         }
         let kv_table = |map: &IndexMap<String, Entry>| {
             let mut t = Table::new();
@@ -289,6 +297,7 @@ mod tests {
             method: Method::Post,
             url: "https://api.example.com/users".into(),
             substitute_body: false,
+            insecure: false,
             params,
             headers,
             variables: IndexMap::new(),
@@ -428,6 +437,27 @@ mod tests {
             .is_err(),
             "unknown body type"
         );
+    }
+
+    #[test]
+    fn insecure_defaults_false_and_is_omitted_from_toml() {
+        let req = sample();
+        assert!(!req.insecure);
+        let out = req.to_toml_string();
+        assert!(!out.contains("insecure"), "no insecure line:\n{out}");
+        let back = HttpRequest::from_toml_str(&out).unwrap();
+        assert!(!back.insecure);
+    }
+
+    #[test]
+    fn insecure_true_round_trips() {
+        let mut req = sample();
+        req.insecure = true;
+        let out = req.to_toml_string();
+        assert!(out.contains("insecure = true"), "emitted when true:\n{out}");
+        let back = HttpRequest::from_toml_str(&out).unwrap();
+        assert!(back.insecure);
+        assert_eq!(back, req);
     }
 
     #[test]

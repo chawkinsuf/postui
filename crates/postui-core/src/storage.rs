@@ -443,6 +443,7 @@ mod tests {
             method: Method::Get,
             url: "https://x.test".into(),
             substitute_body: false,
+            insecure: false,
             params: Default::default(),
             headers: Default::default(),
             variables: Default::default(),

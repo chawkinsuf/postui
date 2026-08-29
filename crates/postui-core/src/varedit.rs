@@ -1705,6 +1705,7 @@ tier = "g-1"
             method: Method::Get,
             url: url.to_string(),
             substitute_body: false,
+            insecure: false,
             params: params
                 .iter()
                 .map(|(k, v)| (k.to_string(), option(v)))

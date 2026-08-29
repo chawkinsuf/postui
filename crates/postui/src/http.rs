@@ -33,6 +33,39 @@ pub fn client() -> reqwest::Client {
     reqwest::Client::new()
 }
 
+/// The two clients a send can go out on: the normal verifying one and one
+/// that skips TLS certificate verification, for requests flagged
+/// `insecure = true`. Both are built once up front — a reqwest `Client` is
+/// an Arc'd pool, and keeping the pair beats rebuilding per send.
+pub struct Clients {
+    verifying: reqwest::Client,
+    insecure: reqwest::Client,
+}
+
+impl Clients {
+    pub fn new() -> Self {
+        // Same fallback story as `client_with_timeout`: `build()` only fails
+        // on TLS backend init, and if the insecure variant somehow can't be
+        // built, failing closed (a verifying client) is the safe default.
+        Self {
+            verifying: client(),
+            insecure: reqwest::Client::builder()
+                .danger_accept_invalid_certs(true)
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
+        }
+    }
+
+    /// Picks the client `req` should be sent on.
+    pub fn for_request(&self, req: &PreparedRequest) -> &reqwest::Client {
+        if req.insecure {
+            &self.insecure
+        } else {
+            &self.verifying
+        }
+    }
+}
+
 /// Like [`client`] but with a total timeout, for tests that need a request
 /// to die quickly on its own (the real client never times out).
 pub fn client_with_timeout(timeout: Duration) -> reqwest::Client {
@@ -122,6 +155,28 @@ mod tests {
         // No #[tokio::test] here on purpose: this is the load-bearing check
         // for App staying constructible in plain sync tests.
         let _c = client();
+        let _cs = Clients::new();
+    }
+
+    #[test]
+    fn for_request_picks_the_insecure_client_only_when_flagged() {
+        let clients = Clients::new();
+        let mut req = PreparedRequest {
+            method: postui_core::model::Method::Get,
+            url: "https://x.test".into(),
+            headers: vec![],
+            body: None,
+            insecure: false,
+        };
+        assert!(
+            std::ptr::eq(clients.for_request(&req), &clients.verifying),
+            "unflagged request uses the verifying client"
+        );
+        req.insecure = true;
+        assert!(
+            std::ptr::eq(clients.for_request(&req), &clients.insecure),
+            "flagged request uses the insecure client"
+        );
     }
 
     /// A server that sends its headers immediately but stalls before the
@@ -151,6 +206,7 @@ mod tests {
             url: format!("http://{addr}/"),
             headers: vec![],
             body: None,
+            insecure: false,
         };
         let resp = send(&client, &req).await.unwrap();
         server.join().unwrap();

@@ -59,6 +59,7 @@ fn seed(app: &mut App, slugs: &[&str]) {
         method: postui_core::model::Method::Get,
         url: "https://example.test/x".into(),
         substitute_body: false,
+        insecure: false,
         params: Default::default(),
         headers: Default::default(),
         variables: Default::default(),

@@ -255,6 +255,7 @@ mod tests {
             method: Method::Get,
             url: url.into(),
             substitute_body: false,
+            insecure: false,
             params: Default::default(),
             headers: Default::default(),
             variables: Default::default(),

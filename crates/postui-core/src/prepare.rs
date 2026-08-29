@@ -10,6 +10,9 @@ pub struct PreparedRequest {
     pub url: String,
     pub headers: Vec<(String, String)>,
     pub body: Option<String>,
+    /// Skip TLS certificate verification for this send (the request's
+    /// `insecure` flag, carried through so the transport can pick a client).
+    pub insecure: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -254,6 +257,7 @@ pub fn prepare(
             url,
             headers,
             body,
+            insecure: req.insecure,
         },
         warnings,
     ))
@@ -667,6 +671,7 @@ mod tests {
             method: Method::Get,
             url: url.into(),
             substitute_body: false,
+            insecure: false,
             params: IndexMap::new(),
             headers: IndexMap::new(),
             variables: IndexMap::new(),
@@ -684,6 +689,18 @@ mod tests {
             value: v.into(),
             enabled: false,
         }
+    }
+
+    #[test]
+    fn insecure_flag_is_carried_onto_the_prepared_request() {
+        let r = base("https://x.test");
+        let (p, _) = prepare(&r, &PrepareContext::default()).unwrap();
+        assert!(!p.insecure, "verifying is the default");
+
+        let mut r = base("https://x.test");
+        r.insecure = true;
+        let (p, _) = prepare(&r, &PrepareContext::default()).unwrap();
+        assert!(p.insecure);
     }
 
     #[test]

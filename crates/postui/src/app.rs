@@ -172,12 +172,13 @@ pub struct App {
     /// Where to save `usage` back to. `None` in tests, so test runs never
     /// touch the real `ui.toml`.
     usage_path: Option<PathBuf>,
-    /// The HTTP client used for every send. Built eagerly and cheaply
+    /// The HTTP clients used for every send (verifying + insecure, picked
+    /// per request). Built eagerly and cheaply
     /// (`reqwest::Client::builder().build()` needs no running Tokio
     /// reactor — verified in `http::tests::client_builds_without_a_tokio_runtime`
     /// — so `App` stays constructible in the many plain `#[test]`s that
     /// never touch the network).
-    pub client: reqwest::Client,
+    pub clients: crate::http::Clients,
     /// Sender for background tasks (e.g. in-flight requests) to push
     /// `Action`s back into the main loop without blocking on it.
     pub tx: UnboundedSender<Action>,
@@ -757,7 +758,7 @@ impl App {
             keymap: crate::keys::Keymap::default_bindings(),
             usage: crate::usage::UsageStore::default(),
             usage_path: None,
-            client: crate::http::client(),
+            clients: crate::http::Clients::new(),
             tx,
             pending_terminal_action: None,
             hits: HitMap::default(),
@@ -1856,6 +1857,7 @@ impl App {
                     method: postui_core::model::Method::Get,
                     url: String::new(),
                     substitute_body: false,
+                    insecure: false,
                     params: Default::default(),
                     headers: Default::default(),
                     variables: Default::default(),
@@ -2059,7 +2061,7 @@ impl App {
                 }
                 let generation = self.session.begin_send(&self.editor.slug);
                 let tx = self.tx.clone();
-                let client = self.client.clone();
+                let client = self.clients.for_request(&prepared).clone();
                 let task = tokio::spawn(async move {
                     match crate::http::send(&client, &prepared).await {
                         Ok(data) => {

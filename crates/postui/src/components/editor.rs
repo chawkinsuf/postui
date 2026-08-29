@@ -111,6 +111,9 @@ pub struct Editor {
     pub method: Method,
     pub url: LineInput,
     pub substitute_body: bool,
+    /// Whether TLS certificate verification is skipped at send time
+    /// (`insecure = true` in the request TOML).
+    pub insecure: bool,
     pub params: IndexMap<String, Entry>,
     pub headers: IndexMap<String, Entry>,
     /// Request-scoped `[variables]`, edited by the Vars tab (shares the
@@ -245,6 +248,7 @@ impl Default for Editor {
             method: Method::Get,
             url: LineInput::new(""),
             substitute_body: false,
+            insecure: false,
             params: IndexMap::new(),
             headers: IndexMap::new(),
             variables: IndexMap::new(),
@@ -287,6 +291,7 @@ impl Editor {
         self.method = req.method;
         self.url = LineInput::new(&req.url);
         self.substitute_body = req.substitute_body;
+        self.insecure = req.insecure;
         self.params = req.params.clone();
         self.headers = req.headers.clone();
         self.variables = req.variables.clone();
@@ -311,6 +316,7 @@ impl Editor {
         self.method = req.method;
         self.url = LineInput::new(&req.url);
         self.substitute_body = req.substitute_body;
+        self.insecure = req.insecure;
         self.params = req.params.clone();
         self.headers = req.headers.clone();
         self.variables = req.variables.clone();
@@ -393,6 +399,7 @@ impl Editor {
             method: self.method,
             url: self.url.text().to_string(),
             substitute_body: self.substitute_body,
+            insecure: self.insecure,
             params: self.params.clone(),
             headers: self.headers.clone(),
             variables: self.variables.clone(),
@@ -4084,6 +4091,7 @@ mod tests {
         let mut e = Editor {
             active_tab: EditorTab::Body,
             substitute_body: false,
+            insecure: false,
             ..Editor::default()
         };
         let (off, _) = draw_editor(&mut e);
@@ -4092,6 +4100,20 @@ mod tests {
         e.substitute_body = true;
         let (on, _) = draw_editor(&mut e);
         assert!(on.contains("{{on}}"), "{on}");
+    }
+
+    #[test]
+    fn insecure_round_trips_through_load_and_current_request() {
+        let mut e = Editor::default();
+        assert!(!e.insecure, "defaults to verifying TLS");
+        let req = HttpRequest {
+            insecure: true,
+            url: "https://self-signed.test".into(),
+            ..e.current_request()
+        };
+        e.load(None, req);
+        assert!(e.insecure);
+        assert!(e.current_request().insecure);
     }
 
     #[test]
