@@ -1686,6 +1686,10 @@ const URL_PAD: u16 = 2;
 /// Fixed width, in cells, of the `❐` copy-URL chip at the URL well's right
 /// edge (`" ❐ "` — one glyph column, one padding column each side).
 const COPY_CHIP_WIDTH: u16 = 3;
+/// Fixed width, in cells, of the `🔒`/`🔓` TLS-verification lock at the URL
+/// well's left edge (`" 🔒 "` — the two-cell emoji plus one padding column
+/// each side, the row-trash zone's anatomy).
+const LOCK_CHIP_WIDTH: u16 = 4;
 /// Height of the tab bar row — the second row of that split.
 pub const TAB_BAR_HEIGHT: u16 = 2;
 /// Height of the toolbar chip row holding the Body tab's
@@ -1849,12 +1853,15 @@ impl Editor {
         // the text window is narrowed to leave room for it so the two never
         // overlap.
         let chip_w = COPY_CHIP_WIDTH.min(url_area.width);
-        // The text is inset URL_PAD columns from the method segment so it
-        // isn't flush against the badge.
+        // The TLS lock claims the well's left edge (browser-style: the lock
+        // sits beside the URL it vouches for); the text window starts after
+        // it, keeping the URL_PAD breathing room from the lock's zone.
+        let lock_w = LOCK_CHIP_WIDTH.min(url_area.width);
         let url_text_area = Rect {
-            x: url_area.x + URL_PAD.min(url_area.width),
+            x: url_area.x + (lock_w + URL_PAD).min(url_area.width),
             width: url_area
                 .width
+                .saturating_sub(lock_w)
                 .saturating_sub(URL_PAD)
                 .saturating_sub(chip_w),
             ..url_area
@@ -1880,6 +1887,44 @@ impl Editor {
             height: 1,
             ..url_text_area
         });
+
+        // --- TLS lock ----------------------------------------------------
+        // The certificate-verification toggle, drawn (and registered) after
+        // the URL text so it sits on top and wins the hit test over
+        // `UrlBar`, like the copy chip. Closed lock = verifying (quiet,
+        // well-colored ground); open lock = `insecure` (warning-tinted
+        // ground — terminals draw emoji in their own colors, so the state
+        // color goes on the background, and the open shackle carries the
+        // shape signal). Click dispatches `Action::ToggleInsecure` through
+        // the existing `Hit::FooterChip` routing.
+        if lock_w == LOCK_CHIP_WIDTH {
+            let lock_area = Rect {
+                x: url_area.x,
+                y: text_y,
+                width: lock_w,
+                height: 1,
+            };
+            let lock_hit = crate::hit::Hit::FooterChip(Action::ToggleInsecure);
+            let lock_hovered = ctx.hovered == Some(&lock_hit);
+            let resting = if self.insecure {
+                theme.tint(theme.warning, url_fill)
+            } else {
+                url_fill
+            };
+            let lock_bg = if lock_hovered {
+                mix(resting, theme.tint(theme.accent, url_fill), ctx.hover_t())
+            } else {
+                resting
+            };
+            fill(buf, lock_area, lock_bg);
+            let glyph = if self.insecure {
+                " \u{1F513} " // 🔓
+            } else {
+                " \u{1F512} " // 🔒
+            };
+            text(buf, lock_area.x, text_y, glyph, theme.text_muted, lock_bg, false);
+            hits.register(lock_area, lock_hit);
+        }
 
         // --- copy-URL chip ---------------------------------------------
         // A `Chip`-style tinted pill at the well's right edge; hover tints
@@ -2198,36 +2243,13 @@ impl Editor {
 
             // The "vars" indicator sits right after the tab blocks, on the
             // labels row.
-            let last_rect = rects[tabs.len() - 1];
-            let mut x = last_rect.x + last_rect.width + 2;
             if self.substitute_body {
+                let last_rect = rects[tabs.len() - 1];
+                let x = last_rect.x + last_rect.width + 2;
                 frame.render_widget(
                     Paragraph::new(Line::styled("vars ", Style::default().fg(theme.accent))),
                     Rect::new(x, area.y, 5, 1),
                 );
-                x += 6;
-            }
-            // The TLS-verification chip follows: request-level like the
-            // save/vars indicators, always visible so a request that skips
-            // certificate checks can't hide it. Clickable both ways;
-            // warning-toned when verification is off.
-            if !self.table_collapsed {
-                let (tls_label, tls_color) = if self.insecure {
-                    ("tls {{off}}", theme.warning)
-                } else {
-                    ("tls {{on}}", theme.text_muted)
-                };
-                let w = tls_label.chars().count() as u16;
-                let tls_rect = Rect::new(x, area.y, w, 1);
-                let hovered_chip =
-                    ctx.hovered == Some(&crate::hit::Hit::FooterChip(Action::ToggleInsecure));
-                let style = if hovered_chip {
-                    Style::default().fg(theme.text)
-                } else {
-                    Style::default().fg(tls_color)
-                };
-                frame.render_widget(Paragraph::new(Line::styled(tls_label, style)), tls_rect);
-                hits.register(tls_rect, crate::hit::Hit::FooterChip(Action::ToggleInsecure));
             }
             if fade_t > 0.0 {
                 // Mid-slide: blend the whole strip toward the page it sits
@@ -4126,19 +4148,28 @@ mod tests {
     }
 
     #[test]
-    fn tls_chip_on_the_tab_row_reflects_insecure_state() {
+    fn tls_lock_in_the_address_bar_reflects_insecure_state() {
         let mut e = Editor::default();
-        let (on, hits) = draw_editor(&mut e);
-        assert!(on.contains("tls {{on}}"), "verifying state shows on: {on}");
+        let (locked, hits) = draw_editor(&mut e);
+        assert!(locked.contains("🔒"), "verifying shows a closed lock: {locked}");
+        assert!(!locked.contains("🔓"), "{locked}");
         assert!(
             hits.rect_of(&Hit::FooterChip(Action::ToggleInsecure))
                 .is_some(),
-            "the chip is clickable"
+            "the lock is clickable"
         );
 
         e.insecure = true;
-        let (off, _) = draw_editor(&mut e);
-        assert!(off.contains("tls {{off}}"), "insecure state shows off: {off}");
+        let (unlocked, _) = draw_editor(&mut e);
+        assert!(
+            unlocked.contains("🔓"),
+            "insecure shows an open lock: {unlocked}"
+        );
+        assert!(!unlocked.contains("🔒"), "{unlocked}");
+        assert!(
+            !unlocked.contains("tls {{"),
+            "the old tab-row chip is gone: {unlocked}"
+        );
     }
 
     #[test]
@@ -4546,14 +4577,20 @@ url = "https://api.example.com/users""#,
             url_row.contains("https://x/y"),
             "url text must share the method label's row: {url_row}"
         );
-        // The URL text is inset from the method segment, not flush against it.
-        let gap: String = (0..2)
+        // The lock chip claims the well's left edge, and the URL text is
+        // inset URL_PAD columns after its zone — not flush against it.
+        let left_zone: String = (0..LOCK_CHIP_WIDTH + URL_PAD)
             .filter_map(|dx| {
                 buf.cell((method_area.x + method_area.width + dx, text_y))
                     .map(|c| c.symbol())
             })
             .collect();
-        assert_eq!(gap, "  ", "2 columns of left padding before the URL text");
+        // (the two-cell emoji reads back as one symbol plus a blank
+        // continuation cell, so 6 cells yield 6 symbols with 4 blanks)
+        assert_eq!(
+            left_zone, " 🔒    ",
+            "lock zone then 2 padding columns before the URL text"
+        );
     }
 
     /// Draws the address bar with an explicit `anims`/`now` (rather than
