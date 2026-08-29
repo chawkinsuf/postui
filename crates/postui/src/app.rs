@@ -62,6 +62,15 @@ pub enum TextDrag {
     Response,
     /// A sweep inside the top modal's text box `i` (see `Hit::ModalInput`).
     ModalInput(usize),
+    /// A sweep inside the table cell under edit (`TableEditorState::editing`
+    /// names which one).
+    TableCell,
+    /// A sweep inside the variable form's field under edit
+    /// (`VarFormState::editing` names which one).
+    VmField,
+    /// A sweep inside the selector-grid cell under edit
+    /// (`OptionGridState::editing` names which one).
+    VmCell,
 }
 
 /// Which full-frame screen is showing. `ui::draw` and `App::handle_key`
@@ -2088,7 +2097,7 @@ impl App {
                         label,
                         detail: Some(path.display().to_string()),
                         actions: vec![Action::SwitchProject(path.clone())],
-                        ..Default::default()
+                        id: Some(path.display().to_string()),
                     });
                 }
                 items.push(ChooserItem {
@@ -2097,7 +2106,10 @@ impl App {
                     actions: vec![Action::PromptOpenProjectPath],
                     ..Default::default()
                 });
-                self.push_modal(Modal::Chooser(ChooserState::new("Projects", items)));
+                let mut state = ChooserState::new("Projects", items);
+                // Open on the current project, not row 0.
+                state.select_id(&self.project.root.display().to_string());
+                self.push_modal(Modal::Chooser(state));
                 true
             }
             Action::OpenThemeChooser => {
@@ -2324,14 +2336,16 @@ impl App {
                         label: name.clone(),
                         detail: None,
                         actions: vec![Action::SwitchEnv(Some(name.clone()))],
-                        ..Default::default()
+                        id: Some(name.clone()),
                     })
                     .collect();
                 items.push(ChooserItem {
                     label: "no environment".into(),
                     detail: None,
                     actions: vec![Action::SwitchEnv(None)],
-                    ..Default::default()
+                    // The no-env row's id is the empty string — matching
+                    // `env_key()`'s spelling of "no environment".
+                    id: Some(String::new()),
                 });
                 items.push(ChooserItem {
                     label: "new environment…".into(),
@@ -2339,7 +2353,10 @@ impl App {
                     actions: vec![Action::OpenNewEnvPrompt],
                     ..Default::default()
                 });
-                self.push_modal(Modal::Chooser(ChooserState::new("Environments", items)));
+                let mut state = ChooserState::new("Environments", items);
+                // Open on the active environment, not row 0.
+                state.select_id(self.project.active_env.as_deref().unwrap_or(""));
+                self.push_modal(Modal::Chooser(state));
                 true
             }
             Action::OpenNewEnvPrompt => {
@@ -3022,21 +3039,13 @@ impl App {
                 self.record_var_file_step(before);
                 true
             }
-            Action::PromptRenameEntry {
-                env,
-                selector,
-                from,
-            } => {
-                self.push_modal(Modal::Prompt {
-                    title: format!("Rename {from}"),
-                    input: LineInput::new(&from),
-                    kind: PromptKind::RenameOption {
-                        env,
-                        selector,
-                        from,
-                    },
-                    revealed: false,
-                });
+            Action::StartOptionNameEdit { row } => {
+                if !matches!(&self.varmanager.detail, VmDetail::Group(_))
+                    || self.project.active_env.is_none()
+                {
+                    return false;
+                }
+                self.varmanager.start_cell_edit(&self.project, row, 0);
                 true
             }
             Action::ConfirmDeleteEntry {
@@ -3062,6 +3071,27 @@ impl App {
                         ),
                     ],
                 });
+                true
+            }
+            Action::StartNewOptionEdit => {
+                if self.project.active_env.is_none() {
+                    self.toasts.push(
+                        crate::components::varmanager::NO_ENV_HINT,
+                        ToastKind::Warning,
+                    );
+                    return true;
+                }
+                let crate::components::varmanager::VmDetail::Group(selector) =
+                    self.varmanager.detail.clone()
+                else {
+                    return false;
+                };
+                // The ghost row *is* the new-option affordance: put the
+                // cursor in its name cell and start typing.
+                let row =
+                    postui_core::varmodel::selector_options(&self.project.env_data, &selector)
+                        .map_or(0, indexmap::IndexMap::len);
+                self.varmanager.start_cell_edit(&self.project, row, 0);
                 true
             }
 

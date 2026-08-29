@@ -16,6 +16,11 @@ pub struct LineInput {
     /// moving end is the cursor. `None` (or equal to the cursor) means no
     /// selection.
     anchor: Option<usize>,
+    /// The word span a double click selected, kept while its drag sweep is
+    /// live so [`Self::extend_mouse_selection_to`] grows the selection
+    /// word-by-word (the body editor's word-sweep behavior). Cleared by
+    /// any plain caret placement or edit.
+    word_anchor: Option<(usize, usize)>,
 }
 
 impl LineInput {
@@ -25,6 +30,7 @@ impl LineInput {
             text: text.to_string(),
             cursor,
             anchor: None,
+            word_anchor: None,
         }
     }
 
@@ -41,6 +47,7 @@ impl LineInput {
     pub fn set_cursor(&mut self, idx: usize) {
         self.cursor = idx.min(self.len_chars());
         self.anchor = None;
+        self.word_anchor = None;
     }
 
     /// The selected char range as half-open `(start, end)` with
@@ -62,18 +69,60 @@ impl LineInput {
 
     pub fn clear_selection(&mut self) {
         self.anchor = None;
+        self.word_anchor = None;
     }
 
     pub fn select_all(&mut self) {
         self.anchor = Some(0);
         self.cursor = self.len_chars();
+        self.word_anchor = None;
+    }
+
+    /// Selects the word under char index `idx` — the double-click gesture,
+    /// matching the body editor's word select — and remembers its span so
+    /// a following drag extends the selection word-by-word. On a gap
+    /// (whitespace, or past the end) it just places the caret there
+    /// instead.
+    pub fn select_word_at(&mut self, idx: usize) {
+        let chars: Vec<char> = self.text.chars().collect();
+        let idx = idx.min(chars.len());
+        if let Some((start, end)) = super::word_nav::word_span_at(&chars, idx) {
+            self.anchor = Some(start);
+            self.cursor = end;
+            self.word_anchor = Some((start, end));
+        } else {
+            self.set_cursor(idx);
+        }
     }
 
     /// Anchors a mouse selection at the current cursor; subsequent
-    /// [`Self::set_cursor_extending`] calls grow the selection to the drag
-    /// point.
+    /// [`Self::extend_mouse_selection_to`] calls grow the selection to the
+    /// drag point.
     pub fn begin_mouse_selection(&mut self) {
         self.anchor = Some(self.cursor);
+        self.word_anchor = None;
+    }
+
+    /// Extends the live mouse selection to char index `idx`: word-wise
+    /// when the sweep began with a double-click word select (the selection
+    /// is the union of the anchored word and the word under the pointer —
+    /// the body editor's word-sweep behavior), by character otherwise.
+    pub fn extend_mouse_selection_to(&mut self, idx: usize) {
+        let Some((ws, we)) = self.word_anchor else {
+            self.set_cursor_extending(idx);
+            return;
+        };
+        let chars: Vec<char> = self.text.chars().collect();
+        let idx = idx.min(chars.len());
+        let (s, e) = super::word_nav::word_span_at(&chars, idx).unwrap_or((idx, idx));
+        if s < ws {
+            // Sweeping left: the anchored word's end stays fixed.
+            self.anchor = Some(we);
+            self.cursor = s;
+        } else {
+            self.anchor = Some(ws);
+            self.cursor = e.max(we);
+        }
     }
 
     /// Moves the cursor (clamped) while keeping the selection anchor, so a
@@ -94,6 +143,7 @@ impl LineInput {
         self.text.replace_range(bs..be, "");
         self.cursor = start;
         self.anchor = None;
+        self.word_anchor = None;
         true
     }
 
@@ -119,6 +169,7 @@ impl LineInput {
         self.text.insert_str(at, s);
         self.cursor += s.chars().count();
         self.anchor = None;
+        self.word_anchor = None;
     }
 
     /// Pastes `text` at the caret: a live selection is replaced (GUI

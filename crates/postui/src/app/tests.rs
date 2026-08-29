@@ -1122,6 +1122,56 @@ fn two_fast_clicks_on_a_cell_leave_exactly_one_edit_session() {
 }
 
 #[test]
+fn table_cell_click_places_the_caret_and_drag_sweeps_a_selection() {
+    let mut app = app_with_one_param();
+    render_once(&mut app);
+    let cell = app
+        .hits
+        .rect_of(&Hit::TableCell { row: 0, col: 0 })
+        .unwrap();
+    // Click at the cell's left edge: the edit opens with the caret at the
+    // clicked column, not at the end.
+    app.handle_mouse(left_down(cell.x, cell.y));
+    let edit = app.editor.table.editing.as_ref().expect("editing");
+    assert_eq!(edit.input.text(), "page");
+    assert_eq!(edit.input.cursor(), 0, "the caret follows the pointer");
+
+    // Button-held motion sweeps a selection, and keeps sweeping past the
+    // cell's edge (the drag clamps rather than dropping).
+    assert!(app.handle_mouse(dragged(cell.x + 2, cell.y)));
+    let edit = app.editor.table.editing.as_ref().unwrap();
+    assert_eq!(edit.input.selected_text().as_deref(), Some("pa"));
+    assert!(app.handle_mouse(dragged(cell.x + cell.width + 10, cell.y + 3)));
+    let edit = app.editor.table.editing.as_ref().unwrap();
+    assert_eq!(edit.input.selected_text().as_deref(), Some("page"));
+    app.handle_mouse(left_up(cell.x + cell.width + 10, cell.y + 3));
+    assert!(app.text_drag.is_none(), "release ends the sweep");
+}
+
+#[test]
+fn table_cell_double_click_selects_the_word() {
+    let mut app = app_with_one_param();
+    render_once(&mut app);
+    let cell = app
+        .hits
+        .rect_of(&Hit::TableCell { row: 0, col: 0 })
+        .unwrap();
+    app.handle_mouse(left_down(cell.x + 1, cell.y));
+    render_once(&mut app);
+    let cell = app
+        .hits
+        .rect_of(&Hit::TableCell { row: 0, col: 0 })
+        .unwrap();
+    app.handle_mouse(left_down(cell.x + 1, cell.y)); // within 400ms => clicks == 2
+    let edit = app.editor.table.editing.as_ref().expect("editing");
+    assert_eq!(
+        edit.input.selected_text().as_deref(),
+        Some("page"),
+        "double click selects the word under the pointer"
+    );
+}
+
+#[test]
 fn clicking_the_ghost_row_and_typing_creates_the_row_when_it_commits() {
     let mut app = app_with_one_param();
     click_hit(&mut app, Hit::TableCell { row: 1, col: 0 });
@@ -3511,12 +3561,17 @@ fn modal_prompt_field_supports_click_to_place_drag_select_and_double_click() {
     let input = app.modals.focused_input().expect("prompt input");
     assert_eq!(input.selection(), Some((2, 4)), "drag swept a selection");
 
-    // A second click within the double-click window selects the whole
-    // text (the sweep's own press was click #1).
+    // A second click within the double-click window selects the word
+    // under the pointer (the sweep's own press was click #1) — here the
+    // whole text, since "hello" is one word run.
     app.handle_mouse(left_up(r.x + 2 + 2, r.y + 1));
     app.handle_mouse(left_down(r.x + 2 + 2, r.y + 1));
     let input = app.modals.focused_input().expect("prompt input");
-    assert_eq!(input.selection(), Some((0, 5)), "double click selects all");
+    assert_eq!(
+        input.selection(),
+        Some((0, 5)),
+        "double click selects the word"
+    );
 }
 
 #[tokio::test]
@@ -4156,6 +4211,30 @@ fn env_chooser_includes_no_environment_entry() {
 }
 
 #[test]
+fn env_chooser_opens_on_the_active_environment() {
+    let (mut app, _dir) = app_with_envs();
+    app.update(Action::SwitchEnv(Some("qa".into())));
+    app.update(Action::OpenEnvChooser);
+    let Some(Modal::Chooser(state)) = app.modals.top() else {
+        panic!("expected chooser")
+    };
+    assert_eq!(
+        state.selected_label(),
+        Some("qa"),
+        "the chooser opens on the active env, not row 0"
+    );
+    app.update(Action::Close);
+
+    // With no env active it opens on the "no environment" row.
+    app.update(Action::SwitchEnv(None));
+    app.update(Action::OpenEnvChooser);
+    let Some(Modal::Chooser(state)) = app.modals.top() else {
+        panic!("expected chooser")
+    };
+    assert_eq!(state.selected_label(), Some("no environment"));
+}
+
+#[test]
 fn env_chooser_new_environment_row_opens_prompt() {
     let (mut app, _dir) = app_with_envs();
     let keymap = Keymap::default_bindings();
@@ -4651,7 +4730,7 @@ fn ctrl_c_copies_a_var_form_selection_on_the_varmanager_screen() {
 }
 
 #[test]
-fn url_bar_drag_selects_and_double_click_selects_all() {
+fn url_bar_drag_selects_and_double_click_selects_the_word() {
     let mut app = App::new_for_test();
     app.editor.url = crate::components::line_input::LineInput::new("https://example.com");
     render_once(&mut app);
@@ -4663,15 +4742,23 @@ fn url_bar_drag_selects_and_double_click_selects_all() {
     app.handle_mouse(left_up(area.x + 5, area.y));
     assert_eq!(app.editor.url.selected_text().as_deref(), Some("https"));
 
-    // A double click selects the whole URL. (Reset the click pairing so
-    // the sweep's Down above can't count as this pair's first click.)
+    // A double click selects the word under the pointer — the scheme run,
+    // not the whole URL (punctuation like `://` bounds it). (Reset the
+    // click pairing so the sweep's Down above can't count as this pair's
+    // first click.)
     app.last_click = None;
     app.handle_mouse(left_down(area.x + 2, area.y));
     app.handle_mouse(left_down(area.x + 2, area.y)); // within 400ms => clicks == 2
+    assert_eq!(app.editor.url.selected_text().as_deref(), Some("https"));
+
+    // Dragging on from the double click extends word by word: onto
+    // "example" the selection grows to the run between the two words.
+    assert!(app.handle_mouse(dragged(area.x + 10, area.y)));
     assert_eq!(
         app.editor.url.selected_text().as_deref(),
-        Some("https://example.com")
+        Some("https://example")
     );
+    app.handle_mouse(left_up(area.x + 10, area.y));
 
     // A later plain click collapses the selection.
     app.handle_mouse(left_down(area.x + 1, area.y));
@@ -9270,8 +9357,10 @@ fn clicking_the_env_value_field_typing_and_clicking_away_writes_the_env_file() {
         r == &crate::components::varmanager::VmRow::Var("base_url".into())
     });
 
+    // Click at the field's right edge: a click places the caret at the
+    // pointer, and these assertions want it at the end of the text.
     let r = field_rect(&mut app, VmField::EnvValue);
-    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    app.handle_mouse(left_down(r.x + r.width - 2, r.y + 1));
     assert!(app.varmanager.form.editing.is_some(), "the field is live");
 
     let keymap = Keymap::default_bindings();
@@ -9308,9 +9397,11 @@ fn enter_commits_a_field_edit_and_esc_reverts_it() {
     });
     let keymap = Keymap::default_bindings();
 
-    // Esc reverts: the typed digit never reaches disk.
+    // Esc reverts: the typed digit never reaches disk. (Right-edge clicks
+    // throughout: a click places the caret at the pointer, and the
+    // assertions want the typed char at the end of the text.)
     let r = field_rect(&mut app, VmField::Description);
-    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    app.handle_mouse(left_down(r.x + r.width - 2, r.y + 1));
     app.handle_key(&keymap, plain('!'));
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.varmanager.form.editing.is_none());
@@ -9322,7 +9413,7 @@ fn enter_commits_a_field_edit_and_esc_reverts_it() {
 
     // Enter commits.
     let r = field_rect(&mut app, VmField::Description);
-    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    app.handle_mouse(left_down(r.x + r.width - 2, r.y + 1));
     app.handle_key(&keymap, plain('!'));
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.varmanager.form.editing.is_none());
@@ -9346,8 +9437,10 @@ fn clicking_directly_from_one_field_into_another_commits_the_first() {
         r == &crate::components::varmanager::VmRow::Var("base_url".into())
     });
 
+    // Right-edge click: the caret follows the pointer, and the '!' must
+    // land at the end of the text.
     let r = field_rect(&mut app, VmField::Description);
-    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    app.handle_mouse(left_down(r.x + r.width - 2, r.y + 1));
     let keymap = Keymap::default_bindings();
     for c in "!".chars() {
         app.handle_key(&keymap, plain(c));
@@ -9851,8 +9944,10 @@ fn editing_a_field_cell_and_clicking_away_rewrites_the_env_file() {
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     goto_group(&mut app, "user");
 
+    // Mid-cell clicks: the caret follows the pointer, and a click past the
+    // short value text still lands the caret at its end.
     let r = cell_rect(&mut app, 0, 1);
-    app.handle_mouse(left_down(r.x, r.y));
+    app.handle_mouse(left_down(r.x + 10, r.y));
     assert!(app.varmanager.grid.editing.is_some(), "the cell is live");
 
     let keymap = Keymap::default_bindings();
@@ -9861,7 +9956,7 @@ fn editing_a_field_cell_and_clicking_away_rewrites_the_env_file() {
     // Clicking a *different* cell commits the first one (Task 8's
     // commit-first rule) and starts editing the one clicked.
     let other = cell_rect(&mut app, 1, 1);
-    app.handle_mouse(left_down(other.x, other.y));
+    app.handle_mouse(left_down(other.x + 10, other.y));
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
@@ -9876,6 +9971,250 @@ fn editing_a_field_cell_and_clicking_away_rewrites_the_env_file() {
     assert!(app.varmanager.grid.editing.is_none());
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(!on_disk.contains("2002x"), "esc reverted: {on_disk}");
+}
+
+/// User finding: there was no button for deleting an option — only the `d`
+/// key and the right-click menu. Each option row gets an explicit `🗑`
+/// (the table editor's row-trash twin) opening the same delete confirm.
+#[test]
+fn clicking_an_option_rows_trash_opens_the_delete_confirm() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+
+    rendered_text_tall(&mut app);
+    let r = app
+        .hits
+        .rect_of(&crate::hit::Hit::VmEntryDelete(0))
+        .expect("each option row registers a trash zone");
+    app.handle_mouse(left_down(r.x + 1, r.y));
+    let Some(Modal::Confirm { title, .. }) = app.modals.top() else {
+        panic!("the trash opens the delete-option confirm");
+    };
+    assert_eq!(title, "Delete alice");
+}
+
+#[test]
+fn grid_cell_click_places_the_caret_and_drag_sweeps_a_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+
+    let r = cell_rect(&mut app, 0, 1);
+    app.handle_mouse(left_down(r.x, r.y));
+    let edit = app.varmanager.grid.editing.as_ref().expect("editing");
+    assert_eq!(edit.input.text(), "1001");
+    assert_eq!(edit.input.cursor(), 0, "the caret follows the pointer");
+
+    assert!(app.handle_mouse(dragged(r.x + 3, r.y)));
+    let edit = app.varmanager.grid.editing.as_ref().unwrap();
+    assert_eq!(edit.input.selected_text().as_deref(), Some("100"));
+    // The sweep keeps going outside the cell's rect (drag-out-of-the-box).
+    assert!(app.handle_mouse(dragged(r.x + r.width + 5, r.y + 2)));
+    let edit = app.varmanager.grid.editing.as_ref().unwrap();
+    assert_eq!(edit.input.selected_text().as_deref(), Some("1001"));
+    app.handle_mouse(left_up(r.x + r.width + 5, r.y + 2));
+    assert!(app.text_drag.is_none(), "release ends the sweep");
+}
+
+#[test]
+fn form_field_double_click_selects_the_word_and_drag_sweeps() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
+    });
+
+    // Text starts 2 columns into the field ("API root"); a double click on
+    // its first cell selects the word under it.
+    let r = field_rect(&mut app, VmField::Description);
+    app.handle_mouse(left_down(r.x + 2, r.y + 1));
+    app.handle_mouse(left_down(r.x + 2, r.y + 1)); // within 400ms => clicks == 2
+    let (_, input) = app.varmanager.form.editing.as_ref().expect("editing");
+    assert_eq!(input.selected_text().as_deref(), Some("API"));
+
+    // Dragging on from the double click extends the selection word by
+    // word — onto "root" grows it to the whole phrase, back onto the
+    // anchored word shrinks it again (the body editor's word sweep).
+    assert!(app.handle_mouse(dragged(r.x + 2 + 6, r.y + 1)));
+    let (_, input) = app.varmanager.form.editing.as_ref().unwrap();
+    assert_eq!(input.selected_text().as_deref(), Some("API root"));
+    assert!(app.handle_mouse(dragged(r.x + 2 + 1, r.y + 1)));
+    let (_, input) = app.varmanager.form.editing.as_ref().unwrap();
+    assert_eq!(input.selected_text().as_deref(), Some("API"));
+    app.handle_mouse(left_up(r.x + 2 + 1, r.y + 1));
+
+    // A fresh click collapses the selection; a drag sweeps a new one.
+    app.last_click = None;
+    app.handle_mouse(left_down(r.x + 2, r.y + 1));
+    let (_, input) = app.varmanager.form.editing.as_ref().unwrap();
+    assert_eq!(input.selection(), None);
+    assert!(app.handle_mouse(dragged(r.x + 2 + 8, r.y + 1)));
+    let (_, input) = app.varmanager.form.editing.as_ref().unwrap();
+    assert_eq!(input.selected_text().as_deref(), Some("API root"));
+}
+
+/// The Variable Manager screen's footer advertises its own verbs (the main
+/// screen's per-pane chips act on requests, which aren't on screen there);
+/// with the grid focused, `d` is the clickable delete-option chip the user
+/// asked for.
+#[test]
+fn vm_footer_advertises_the_option_verbs_while_the_grid_has_focus() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    assert_eq!(app.varmanager.focus, VmFocus::Grid);
+
+    let delete = Action::ConfirmDeleteEntry {
+        env: "qa".into(),
+        selector: "user".into(),
+        name: "alice".into(),
+    };
+    let chips = app.varmanager.footer_chips(&app.project);
+    assert!(
+        chips
+            .iter()
+            .any(|(k, l, a)| *k == "d" && *l == "delete option" && a.as_ref() == Some(&delete)),
+        "{chips:?}"
+    );
+    // Every grid chip is clickable here — "new option" included (it drives
+    // the same ghost-row edit the `o` key does).
+    assert!(
+        chips.iter().all(|(_, _, a)| a.is_some()),
+        "no plain-hint chips with a real row under the cursor: {chips:?}"
+    );
+    // And the drawn footer registers it as a clickable chip.
+    rendered_text_tall(&mut app);
+    assert!(
+        app.hits
+            .rect_of(&crate::hit::Hit::FooterChip(delete))
+            .is_some(),
+        "the chip is click-registered"
+    );
+}
+
+/// User finding: with a variable's form open but the left cursor on a
+/// section header, the rename/delete chips rendered as plain hints. They
+/// fall back to the open detail's name so they stay clickable.
+#[test]
+fn vm_footer_rename_delete_act_on_the_open_form_from_a_header_row() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
+    });
+    app.varmanager.left_cursor = 0; // the "VARIABLES" section header
+    let chips = app.varmanager.footer_chips(&app.project);
+    assert!(
+        chips.iter().any(|(k, _, a)| *k == "e"
+            && *a
+                == Some(Action::PromptRenameVar {
+                    from: "base_url".into()
+                })),
+        "{chips:?}"
+    );
+    assert!(
+        chips.iter().any(|(k, _, a)| *k == "d"
+            && *a
+                == Some(Action::ConfirmDeleteVar {
+                    name: "base_url".into()
+                })),
+        "{chips:?}"
+    );
+}
+
+/// User finding: chips with no target rendered as dead, unclickable text.
+/// They're dropped instead — with nothing open, only new-variable/-selector
+/// show; on the ghost row, only the new-option chip.
+#[test]
+fn vm_footer_drops_chips_with_no_target() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    // Fresh open: nothing selected, no detail — no rename/delete chips.
+    app.update(Action::OpenVarManager);
+    let keys: Vec<&str> = app
+        .varmanager
+        .footer_chips(&app.project)
+        .iter()
+        .map(|(k, _, _)| *k)
+        .collect();
+    assert_eq!(keys, vec!["n", "g"]);
+
+    // Grid focus with the cursor on the ghost row: only "new option".
+    goto_group(&mut app, "user");
+    app.varmanager.focus = VmFocus::Grid;
+    app.varmanager.grid.cursor = (2, 0); // alice, bob, then the ghost
+    let keys: Vec<&str> = app
+        .varmanager
+        .footer_chips(&app.project)
+        .iter()
+        .map(|(k, _, _)| *k)
+        .collect();
+    assert_eq!(keys, vec!["o"]);
+}
+
+/// The option-row "rename" is the inline name-cell edit — the `e` key and
+/// the context menu's "Rename" both open it, and committing the changed
+/// name renames on disk. No modal anywhere.
+#[test]
+fn option_rename_is_the_inline_name_cell_edit() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    let keymap = Keymap::default_bindings();
+
+    // The context menu's "Rename" seeds the name cell in place.
+    app.update(Action::StartOptionNameEdit { row: 1 });
+    assert!(app.modals.is_empty(), "no rename modal");
+    let edit = app.varmanager.grid.editing.as_ref().expect("inline edit");
+    assert_eq!((edit.row, edit.col), (1, 0));
+    assert_eq!(edit.input.text(), "bob");
+
+    // Committing a changed name IS the rename.
+    type_chars(&mut app, "by");
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let qa = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(qa.contains("[options.user.bobby]"), "{qa}");
+    assert!(!qa.contains("[options.user.bob]\n"), "{qa}");
+
+    // The grid's `e` key opens the same inline edit on the cursor row.
+    app.varmanager.focus = VmFocus::Grid;
+    app.varmanager.grid.cursor = (0, 1);
+    app.handle_key(&keymap, plain('e'));
+    assert!(app.modals.is_empty(), "no rename modal");
+    let edit = app.varmanager.grid.editing.as_ref().expect("inline edit");
+    assert_eq!((edit.row, edit.col), (0, 0), "e targets the name cell");
+    assert_eq!(edit.input.text(), "alice");
+}
+
+#[test]
+fn start_new_option_edit_action_opens_the_ghost_rows_name_cell() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+    app.update(Action::StartNewOptionEdit);
+    let edit = app.varmanager.grid.editing.as_ref().expect("ghost edit");
+    assert_eq!((edit.row, edit.col), (2, 0), "alice, bob, then the ghost");
+    assert_eq!(edit.input.text(), "");
 }
 
 #[test]
@@ -10119,12 +10458,13 @@ fn right_clicking_an_entry_row_opens_its_own_menu() {
         panic!("no entry menu");
     };
     let labels: Vec<&str> = state.items.iter().map(|i| i.label.as_str()).collect();
+    // "Rename" has no ellipsis: it starts the inline name-cell edit.
     assert_eq!(
         labels,
         vec![
             "Edit\u{2026}",
             "Duplicate option",
-            "Rename\u{2026}",
+            "Rename",
             "Delete\u{2026}"
         ]
     );
@@ -10143,9 +10483,10 @@ fn right_clicking_another_row_commits_the_live_cell_to_the_entry_it_belongs_to()
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     goto_group(&mut app, "user");
 
-    // Type into bob's (row 1) value cell…
+    // Type into bob's (row 1) value cell… (mid-cell click: the caret
+    // follows the pointer, and the '9' must land at the end)
     let r = cell_rect(&mut app, 1, 1);
-    app.handle_mouse(left_down(r.x, r.y));
+    app.handle_mouse(left_down(r.x + 10, r.y));
     app.handle_key(&Keymap::default_bindings(), plain('9'));
     assert!(app.varmanager.grid.editing.is_some());
 
@@ -10192,8 +10533,10 @@ fn right_clicking_commits_a_live_form_field() {
         r == &crate::components::varmanager::VmRow::Var("base_url".into())
     });
 
+    // Right-edge click: the caret follows the pointer, and the '9' must
+    // land at the end of the text.
     let r = field_rect(&mut app, VmField::EnvValue);
-    app.handle_mouse(left_down(r.x + 1, r.y + 1));
+    app.handle_mouse(left_down(r.x + r.width - 2, r.y + 1));
     app.handle_key(&Keymap::default_bindings(), plain('9'));
 
     let row = app.varmanager.left_cursor;
@@ -11435,8 +11778,10 @@ mod undo_tests {
         let env_path = dir.path().join("environments/qa.toml");
         let before_text = std::fs::read_to_string(&env_path).unwrap();
 
+        // Right-edge click: the caret follows the pointer, and the '9'
+        // must land at the end of the text.
         let r = field_rect(&mut app, VmField::EnvValue);
-        app.handle_mouse(left_down(r.x + 1, r.y + 1));
+        app.handle_mouse(left_down(r.x + r.width - 2, r.y + 1));
         let keymap = Keymap::default_bindings();
         app.handle_key(&keymap, plain('9'));
         // Click away commits (Task 8's commit-first rule).
@@ -11579,13 +11924,15 @@ mod undo_tests {
         let env_path = dir.path().join("environments/qa.toml");
         let before_text = std::fs::read_to_string(&env_path).unwrap();
 
+        // Mid-cell clicks: the caret follows the pointer, and a click past
+        // the short value text still lands the caret at its end.
         let r = cell_rect(&mut app, 0, 1);
-        app.handle_mouse(left_down(r.x, r.y));
+        app.handle_mouse(left_down(r.x + 10, r.y));
         let keymap = Keymap::default_bindings();
         app.handle_key(&keymap, plain('9'));
         // Clicking a different cell commits the first one.
         let other = cell_rect(&mut app, 1, 1);
-        app.handle_mouse(left_down(other.x, other.y));
+        app.handle_mouse(left_down(other.x + 10, other.y));
 
         assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
         let with_9 = std::fs::read_to_string(&env_path).unwrap();

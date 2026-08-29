@@ -20,7 +20,7 @@ pub enum Col {
 
 impl Col {
     /// The `Hit::TableCell` column index this cell registers under.
-    fn index(self) -> u8 {
+    pub fn index(self) -> u8 {
         match self {
             Col::Key => 0,
             Col::Value => 1,

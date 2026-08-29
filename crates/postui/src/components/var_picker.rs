@@ -223,9 +223,12 @@ impl VarPickerState {
         env: String,
     ) -> Self {
         let filtered = (0..entries.len()).collect();
+        // Open with the cursor on the env's current option (the row already
+        // carrying the ◉ mark), not row 0.
+        let selected = entries.iter().position(|o| o.selected).unwrap_or(0);
         Self {
             input: String::new(),
-            selected: 0,
+            selected,
             entries: Vec::new(),
             select_entries: entries,
             filtered,
@@ -1044,6 +1047,9 @@ mod tests {
             },
         ];
         let mut p = VarPickerState::new_select(entries, "user".into(), "user".into(), "qa".into());
+        // The cursor opens on the env's current option (bob), not row 0.
+        assert_eq!(p.selected(), 1);
+        p.handle_key(key(KeyCode::Up));
         let res = p.handle_key(key(KeyCode::Enter)).unwrap();
         assert_eq!(
             res.actions,

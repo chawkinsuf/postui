@@ -151,7 +151,10 @@ pub enum Hit {
         row: usize,
         col: usize,
     },
-    /// The selector pane's `[+ Entry]` button.
+    /// The selector grid's per-row `🗑` delete on option row `i` (the
+    /// table editor's row-trash twin): opens the delete-option confirm.
+    VmEntryDelete(usize),
+    /// The selector pane's `[+ Option]` button.
     VmNewOption,
     /// The selector pane's `[Edit fields]` button: opens the field-list
     /// editor (one text slot per current field plus an empty one).

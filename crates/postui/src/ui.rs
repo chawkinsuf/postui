@@ -145,6 +145,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         }
     }
 
+    // The Variable Manager screen swaps in its own chip set — the per-pane
+    // chips' actions target requests, which aren't on screen there.
+    let vm_chips =
+        (app.screen == Screen::VarManager).then(|| app.varmanager.footer_chips(&app.project));
     crate::components::footer::draw_footer(
         frame,
         layout.footer,
@@ -154,6 +158,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         app.editor.sending,
         app.editor.is_dirty(),
         app.editor.active_tab.add_row_label(),
+        vm_chips,
         &mut hits,
         app.hovered.as_ref(),
     );

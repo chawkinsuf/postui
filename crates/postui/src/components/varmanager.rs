@@ -438,6 +438,9 @@ const GHOST_LABEL: &str = "+ option";
 /// Width of the grid's radio column (glyph + one column of gutter).
 const RADIO_W: u16 = 3;
 
+/// The option row's `🗑` zone: space + two-cell emoji + space.
+const TRASH_W: u16 = 4;
+
 /// Where each grid column starts and how wide it is: `x[0]`/`w[0]` is the
 /// option-name column, `x[n]` the selector's `n-1`th field. Columns that would
 /// start past the pane's right edge are dropped, so a narrow pane simply
@@ -643,6 +646,79 @@ impl VarManager {
             return None;
         };
         entry_rows(ctx, selector).get(row).map(|(n, _)| n.clone())
+    }
+
+    /// The footer's context chips while the Variable Manager is on screen
+    /// (the main screen's per-pane chips make no sense here — their actions
+    /// target requests). Grid focus advertises the option-row verbs
+    /// (`space`/`d` on the cursor's option); anywhere else, the
+    /// declaration-level verbs on the left list's selection. A chip whose
+    /// target is missing (ghost row, no env, no selection) is dropped
+    /// outright — a dead, unclickable chip advertises a key that would do
+    /// nothing.
+    pub fn footer_chips(
+        &self,
+        ctx: &ProjectContext,
+    ) -> Vec<(&'static str, &'static str, Option<Action>)> {
+        let mut chips: Vec<(&'static str, &'static str, Option<Action>)> =
+            if let (VmDetail::Group(selector), VmFocus::Grid) = (&self.detail, self.focus) {
+                let target = ctx
+                    .active_env
+                    .clone()
+                    .zip(self.entry_at(ctx, self.grid.cursor.0));
+                vec![
+                    (
+                        "space",
+                        "select",
+                        target.clone().map(|(env, option)| {
+                            Action::VarEdit(VarEditOp::SelectOption {
+                                env,
+                                selector: selector.clone(),
+                                option,
+                            })
+                        }),
+                    ),
+                    (
+                        "d",
+                        "delete option",
+                        target.map(|(env, name)| Action::ConfirmDeleteEntry {
+                            env,
+                            selector: selector.clone(),
+                            name,
+                        }),
+                    ),
+                    // Last on purpose: `paint_chip_row` drops trailing
+                    // chips on a narrow footer, and the ghost row and the
+                    // `[+ Option]` button already cover this one.
+                    ("o", "new option", Some(Action::StartNewOptionEdit)),
+                ]
+            } else {
+                // The list cursor's row when it names something, else
+                // whatever the detail pane has open — so the chips stay
+                // clickable while a form is on screen even when the cursor
+                // sits on a section header.
+                let name = self
+                    .selected_row()
+                    .and_then(VmRow::name)
+                    .or_else(|| self.detail.name())
+                    .map(str::to_string);
+                vec![
+                    ("n", "new variable", Some(Action::PromptNewVar)),
+                    ("g", "new selector", Some(Action::PromptNewSelector)),
+                    (
+                        "e",
+                        "rename",
+                        name.clone().map(|from| Action::PromptRenameVar { from }),
+                    ),
+                    (
+                        "d",
+                        "delete",
+                        name.map(|name| Action::ConfirmDeleteVar { name }),
+                    ),
+                ]
+            };
+        chips.retain(|(_, _, a)| a.is_some());
+        chips
     }
 
     /// The row the commands act on — the left list's current selection.
@@ -856,12 +932,12 @@ impl VarManager {
             KeyCode::Char(' ') => self.select_entry_action(ctx, selector),
             // `e`/`d` here act on the option under the cursor — the left
             // list's own `e`/`d`, which target the declaration, are one
-            // focus stop away.
-            KeyCode::Char('e') | KeyCode::F(2) => Some(Action::PromptRenameEntry {
-                env: ctx.active_env.clone()?,
-                selector: selector.to_string(),
-                from: self.entry_at(ctx, self.grid.cursor.0)?,
-            }),
+            // focus stop away. Rename is the inline name-cell edit
+            // (committing a changed name IS the rename), not a modal.
+            KeyCode::Char('e') | KeyCode::F(2) => {
+                self.start_cell_edit(ctx, self.grid.cursor.0, 0);
+                None
+            }
             KeyCode::Char('d') | KeyCode::Delete => Some(Action::ConfirmDeleteEntry {
                 env: ctx.active_env.clone()?,
                 selector: selector.to_string(),
@@ -963,14 +1039,9 @@ impl VarManager {
                     name: n.clone(),
                 }),
             ),
-            MenuItem::new(
-                "Rename\u{2026}",
-                Action::PromptRenameEntry {
-                    env: env.clone(),
-                    selector: selector.clone(),
-                    from: n,
-                },
-            ),
+            // No ellipsis: rename is the inline name-cell edit, not a
+            // dialog.
+            MenuItem::new("Rename", Action::StartOptionNameEdit { row: i }),
             MenuItem::new(
                 "Delete\u{2026}",
                 Action::ConfirmDeleteEntry {
@@ -1249,7 +1320,9 @@ impl VarManager {
             }
             let ghost = i == rows.len();
             let hovered_row = match hovered {
-                Some(Hit::VmEntryCell { row, .. }) | Some(Hit::VmEntryRadio(row)) => *row == i,
+                Some(Hit::VmEntryCell { row, .. })
+                | Some(Hit::VmEntryRadio(row))
+                | Some(Hit::VmEntryDelete(row)) => *row == i,
                 _ => false,
             };
             // The keyboard cursor only paints while the grid actually has
@@ -1321,9 +1394,36 @@ impl VarManager {
                         Some(v) if !v.is_empty() => (v.as_str(), theme.text),
                         _ => ("(empty)", theme.text_muted),
                     };
+                    // The last column's text stops short of the row's trash
+                    // zone so a long value never runs under the glyph.
+                    let cw = if col + 1 == cols.x.len() {
+                        cw.saturating_sub(TRASH_W + 1)
+                    } else {
+                        cw
+                    };
                     text(buf, cx, ry, super::chooser::clip(shown, cw), fg, bg, false);
                 }
                 hits.register(Rect::new(cx, ry, cw, 1), Hit::VmEntryCell { row: i, col });
+            }
+
+            // Per-row `🗑` delete at the right edge (the table editor's
+            // row-trash twin — spec: destructive actions get an explicit
+            // control). Hidden while a cell edit is live on the row: the
+            // last column's windowed input owns those cells, and a stray
+            // click mid-edit must not read as delete.
+            let editing_row = self.grid.editing.as_ref().is_some_and(|e| e.row == i);
+            if !ghost && !editing_row && inner_w > TRASH_W + 1 {
+                let trash_x = x0 + inner_w - (TRASH_W + 1);
+                let trash_hit = Hit::VmEntryDelete(i);
+                let (dfg, dbg) = if hovered == Some(&trash_hit) {
+                    (theme.on_accent, theme.error)
+                } else {
+                    (theme.text_muted, bg)
+                };
+                // VS16 pins the trash to two-cell emoji presentation, the
+                // same treatment `table_editor::draw_row_buttons` uses.
+                text(buf, trash_x, ry, " \u{1F5D1}\u{FE0F} ", dfg, dbg, false);
+                hits.register(Rect::new(trash_x, ry, TRASH_W, 1), trash_hit);
             }
         }
 
@@ -2751,12 +2851,14 @@ fields = ["user_id", "customer_id"]
         select_group(&mut vm, &ctx, "creds");
         let items = vm.entry_context_menu(&ctx, 1).expect("option menu");
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        // "Rename" carries no ellipsis: it starts the inline name-cell
+        // edit rather than opening a dialog.
         assert_eq!(
             labels,
             vec![
                 "Edit\u{2026}",
                 "Duplicate option",
-                "Rename\u{2026}",
+                "Rename",
                 "Delete\u{2026}"
             ]
         );
@@ -2778,11 +2880,7 @@ fields = ["user_id", "customer_id"]
         );
         assert_eq!(
             items[2].action,
-            Some(Action::PromptRenameEntry {
-                env: "qa".into(),
-                selector: "creds".into(),
-                from: "bob".into(),
-            })
+            Some(Action::StartOptionNameEdit { row: 1 })
         );
         assert_eq!(
             items[3].action,

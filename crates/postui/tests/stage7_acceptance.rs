@@ -626,6 +626,9 @@ fn a_legacy_project_migrates_then_grows_a_group_whose_selection_drives_resolutio
     // own `Environment: … \u{25be}` switcher. `qa` is the only one.
     assert_eq!(app.project.active_env, None);
     click(&mut app, Hit::VmEnvSwitch);
+    // The chooser opens on the current "no environment" row, so the first
+    // click on `qa` moves the highlight and the second confirms it.
+    click(&mut app, Hit::ChooserRow(0));
     click(&mut app, Hit::ChooserRow(0));
     assert_eq!(app.project.active_env.as_deref(), Some("qa"));
     let keymap = Keymap::default_bindings();

@@ -53,6 +53,9 @@ impl App {
                         }
                         Some(TextDrag::Url) => self.url_drag_to(m.column),
                         Some(TextDrag::ModalInput(i)) => self.modal_input_drag_to(i, m.column),
+                        Some(TextDrag::TableCell) => self.table_cell_drag_to(m.column),
+                        Some(TextDrag::VmField) => self.vm_field_drag_to(m.column),
+                        Some(TextDrag::VmCell) => self.vm_cell_drag_to(m.column),
                         None => false,
                     };
                 }
@@ -472,7 +475,7 @@ impl App {
         }
         let start = self.editor.url.window_start(true, area.width);
         let col = usize::from(column.clamp(area.x, area.x + area.width - 1) - area.x);
-        self.editor.url.set_cursor_extending(start + col);
+        self.editor.url.extend_mouse_selection_to(start + col);
         true
     }
 
@@ -493,7 +496,72 @@ impl App {
         let start = input.window_start(true, inner_w);
         let text_x = area.x + 2;
         let col = usize::from(column.clamp(text_x, text_x + inner_w - 1) - text_x);
-        input.set_cursor_extending(start + col);
+        input.extend_mouse_selection_to(start + col);
+        true
+    }
+
+    /// Like [`Self::url_drag_to`], for the table cell under edit. The cell
+    /// draws its input unwindowed at the hit rect's left edge, so the
+    /// mapping is a plain column offset.
+    fn table_cell_drag_to(&mut self, column: u16) -> bool {
+        let Some(edit) = self.editor.table.editing.as_mut() else {
+            return false;
+        };
+        let hit = Hit::TableCell {
+            row: edit.row,
+            col: edit.col.index(),
+        };
+        let Some(area) = self.hits.rect_of(&hit) else {
+            return false;
+        };
+        if area.width == 0 {
+            return false;
+        }
+        let col = usize::from(column.clamp(area.x, area.x + area.width - 1) - area.x);
+        edit.input.extend_mouse_selection_to(col);
+        true
+    }
+
+    /// Like [`Self::modal_input_drag_to`], for the variable form's field
+    /// under edit — the same `TextField` geometry (text starts 2 columns
+    /// in, windowed to `width - 2`).
+    fn vm_field_drag_to(&mut self, column: u16) -> bool {
+        let Some((field, input)) = self.varmanager.form.editing.as_mut() else {
+            return false;
+        };
+        let Some(area) = self.hits.rect_of(&Hit::VmFormField(*field)) else {
+            return false;
+        };
+        let inner_w = area.width.saturating_sub(2);
+        if inner_w == 0 {
+            return false;
+        }
+        let start = input.window_start(true, inner_w);
+        let text_x = area.x + 2;
+        let col = usize::from(column.clamp(text_x, text_x + inner_w - 1) - text_x);
+        input.extend_mouse_selection_to(start + col);
+        true
+    }
+
+    /// Like [`Self::url_drag_to`], for the selector-grid cell under edit
+    /// (drawn windowed at the hit rect's own left edge).
+    fn vm_cell_drag_to(&mut self, column: u16) -> bool {
+        let Some(edit) = self.varmanager.grid.editing.as_mut() else {
+            return false;
+        };
+        let hit = Hit::VmEntryCell {
+            row: edit.row,
+            col: edit.col,
+        };
+        let Some(area) = self.hits.rect_of(&hit) else {
+            return false;
+        };
+        if area.width == 0 {
+            return false;
+        }
+        let start = edit.input.window_start(true, area.width);
+        let col = usize::from(column.clamp(area.x, area.x + area.width - 1) - area.x);
+        edit.input.extend_mouse_selection_to(start + col);
         true
     }
 
@@ -807,11 +875,44 @@ impl App {
             Hit::TableCell { row, col } => {
                 self.update(Action::FocusPane(PaneId::Editor));
                 self.editor.sub_focus = SubFocus::Content;
-                let outcome = self
+                let cell_col = crate::components::table_editor::Col::from_index(col);
+                let already_editing = self
                     .editor
-                    .click_table_cell(row, crate::components::table_editor::Col::from_index(col));
-                if let Some(w) = outcome.warning {
-                    self.toasts.push(w, ToastKind::Warning);
+                    .table
+                    .editing
+                    .as_ref()
+                    .is_some_and(|e| e.row == row && e.col == cell_col);
+                if !already_editing {
+                    let outcome = self.editor.click_table_cell(row, cell_col);
+                    if let Some(w) = outcome.warning {
+                        self.toasts.push(w, ToastKind::Warning);
+                    }
+                }
+                // Place the caret at the clicked column (the cell draws its
+                // text unwindowed at the hit rect's left edge) and anchor a
+                // possible drag sweep; a double click selects the word,
+                // exactly like the body editor. Skipped when a commit
+                // collapsed rows out from under the click — the edit then
+                // isn't the cell the pointer was on, so the seeded
+                // caret-at-end stays.
+                if let Some(area) = self.hits.rect_of(&Hit::TableCell { row, col })
+                    && let Some(edit) = self
+                        .editor
+                        .table
+                        .editing
+                        .as_mut()
+                        .filter(|e| e.row == row && e.col == cell_col)
+                {
+                    let idx = usize::from(m.column.saturating_sub(area.x));
+                    if clicks == 2 {
+                        edit.input.select_word_at(idx);
+                    } else {
+                        edit.input.set_cursor(idx);
+                        edit.input.begin_mouse_selection();
+                    }
+                    // Either click anchors a possible drag sweep —
+                    // word-wise after a double click.
+                    self.text_drag = Some(TextDrag::TableCell);
                 }
                 self.update(Action::Render)
             }
@@ -836,27 +937,27 @@ impl App {
                 // this arm rather than merely resembling it.
                 self.update(Action::FocusUrl);
                 if let Some(area) = self.editor.last_url_text_area {
-                    if clicks == 2 {
-                        // Address-bar convention: double click selects the
-                        // whole URL.
-                        self.editor.url.select_all();
+                    // Map the clicked column back to a char index: the
+                    // drawn window starts at 0 unfocused, or scrolls to
+                    // keep the caret visible when already focused
+                    // (mirroring `LineInput::draw_line_windowed`).
+                    let start = if was_focused {
+                        (self.editor.url.cursor() + 1).saturating_sub(area.width.max(1) as usize)
                     } else {
-                        // Map the clicked column back to a char index: the
-                        // drawn window starts at 0 unfocused, or scrolls to
-                        // keep the caret visible when already focused
-                        // (mirroring `LineInput::draw_line_windowed`).
-                        let start = if was_focused {
-                            (self.editor.url.cursor() + 1)
-                                .saturating_sub(area.width.max(1) as usize)
-                        } else {
-                            0
-                        };
-                        let col = m.column.saturating_sub(area.x) as usize;
+                        0
+                    };
+                    let col = m.column.saturating_sub(area.x) as usize;
+                    if clicks == 2 {
+                        // Double click selects the word under the pointer,
+                        // exactly like the body editor.
+                        self.editor.url.select_word_at(start + col);
+                    } else {
                         self.editor.url.set_cursor(start + col);
-                        // The click also anchors a possible drag sweep.
                         self.editor.url.begin_mouse_selection();
-                        self.text_drag = Some(TextDrag::Url);
                     }
+                    // Either click also anchors a possible drag sweep —
+                    // word-wise after a double click.
+                    self.text_drag = Some(TextDrag::Url);
                 }
                 self.update(Action::Render)
             }
@@ -938,21 +1039,22 @@ impl App {
                 let Some(input) = self.modals.focus_input(i) else {
                     return false;
                 };
+                // Map the clicked column back to a char index through the
+                // same window math the field drew with at click time
+                // (unfocused fields draw from 0).
+                let start = input.window_start(was_focused, inner_w.max(1));
+                let col = usize::from(m.column.saturating_sub(area.x + 2));
                 if clicks == 2 {
-                    // Same convention as the URL bar: double click selects
-                    // the whole text.
-                    input.select_all();
+                    // Double click selects the word under the pointer,
+                    // exactly like the body editor.
+                    input.select_word_at(start + col);
                 } else {
-                    // Map the clicked column back to a char index through
-                    // the same window math the field drew with at click
-                    // time (unfocused fields draw from 0), then anchor a
-                    // possible drag sweep.
-                    let start = input.window_start(was_focused, inner_w.max(1));
-                    let col = usize::from(m.column.saturating_sub(area.x + 2));
                     input.set_cursor(start + col);
                     input.begin_mouse_selection();
-                    self.text_drag = Some(TextDrag::ModalInput(i));
                 }
+                // Either click also anchors a possible drag sweep —
+                // word-wise after a double click.
+                self.text_drag = Some(TextDrag::ModalInput(i));
                 self.update(Action::Render)
             }
             // The painted Cancel/Confirm buttons deliver exactly what
@@ -1197,19 +1299,45 @@ impl App {
             // and this must not clobber that with the newly clicked field
             // — the click is absorbed and the original edit stays live.
             Hit::VmFormField(field) => {
-                if self
+                let already_editing = self
                     .varmanager
                     .form
                     .editing
                     .as_ref()
-                    .is_some_and(|(f, _)| *f == field)
+                    .is_some_and(|(f, _)| *f == field);
+                if !already_editing {
+                    if self.varmanager.form.editing.is_some() {
+                        return self.update(Action::Render);
+                    }
+                    self.varmanager.start_field_edit(&self.project, field);
+                }
+                // Map the click through the field's `TextField` geometry
+                // (text 2 columns in, windowed to `width - 2` — the drawn
+                // window starts at 0 unless the field was already under
+                // edit): caret at the clicked column, anchor a possible
+                // drag sweep, word select on double click.
+                if let Some(area) = self.hits.rect_of(&Hit::VmFormField(field))
+                    && let Some((_, input)) = self
+                        .varmanager
+                        .form
+                        .editing
+                        .as_mut()
+                        .filter(|(f, _)| *f == field)
                 {
-                    return false;
+                    let inner_w = area.width.saturating_sub(2).max(1);
+                    let start = input.window_start(already_editing, inner_w);
+                    let col = usize::from(m.column.saturating_sub(area.x + 2));
+                    let idx = start + col;
+                    if clicks == 2 {
+                        input.select_word_at(idx);
+                    } else {
+                        input.set_cursor(idx);
+                        input.begin_mouse_selection();
+                    }
+                    // Either click anchors a possible drag sweep —
+                    // word-wise after a double click.
+                    self.text_drag = Some(TextDrag::VmField);
                 }
-                if self.varmanager.form.editing.is_some() {
-                    return self.update(Action::Render);
-                }
-                self.varmanager.start_field_edit(&self.project, field);
                 self.update(Action::Render)
             }
             // The grid's cells follow `VmFormField`'s rules exactly: a
@@ -1218,20 +1346,45 @@ impl App {
             // original edit (holding the text that couldn't be written)
             // stays live.
             Hit::VmEntryCell { row, col } => {
-                if self
+                let already_editing = self
                     .varmanager
                     .grid
                     .editing
                     .as_ref()
-                    .is_some_and(|e| e.row == row && e.col == col)
+                    .is_some_and(|e| e.row == row && e.col == col);
+                if !already_editing {
+                    if self.varmanager.grid.editing.is_some() {
+                        return self.update(Action::Render);
+                    }
+                    self.varmanager.grid.cursor = (row, col);
+                    self.varmanager.start_cell_edit(&self.project, row, col);
+                }
+                // Caret at the clicked column (the cell draws windowed at
+                // the hit rect's own left edge; the resting text draws from
+                // 0), anchor a possible drag sweep, word select on double
+                // click. A ghost-row click gets redirected to the empty
+                // name cell by `start_cell_edit`, so the filter skips it.
+                if let Some(area) = self.hits.rect_of(&Hit::VmEntryCell { row, col })
+                    && let Some(edit) = self
+                        .varmanager
+                        .grid
+                        .editing
+                        .as_mut()
+                        .filter(|e| e.row == row && e.col == col)
                 {
-                    return false;
+                    let start = edit.input.window_start(already_editing, area.width.max(1));
+                    let col = usize::from(m.column.saturating_sub(area.x));
+                    let idx = start + col;
+                    if clicks == 2 {
+                        edit.input.select_word_at(idx);
+                    } else {
+                        edit.input.set_cursor(idx);
+                        edit.input.begin_mouse_selection();
+                    }
+                    // Either click anchors a possible drag sweep —
+                    // word-wise after a double click.
+                    self.text_drag = Some(TextDrag::VmCell);
                 }
-                if self.varmanager.grid.editing.is_some() {
-                    return self.update(Action::Render);
-                }
-                self.varmanager.grid.cursor = (row, col);
-                self.varmanager.start_cell_edit(&self.project, row, col);
                 self.update(Action::Render)
             }
             Hit::VmEntryRadio(row) => {
@@ -1254,25 +1407,28 @@ impl App {
                     option,
                 }))
             }
-            Hit::VmNewOption => {
-                if self.project.active_env.is_none() {
-                    self.toasts.push(
-                        crate::components::varmanager::NO_ENV_HINT,
-                        crate::components::toast::ToastKind::Warning,
-                    );
-                    return self.update(Action::Render);
-                }
+            Hit::VmEntryDelete(row) => {
                 let crate::components::varmanager::VmDetail::Group(selector) =
                     self.varmanager.detail.clone()
                 else {
                     return false;
                 };
-                // The ghost row *is* the new-option affordance: put the
-                // cursor in its name cell and start typing.
-                let row =
-                    postui_core::varmodel::selector_options(&self.project.env_data, &selector)
-                        .map_or(0, indexmap::IndexMap::len);
-                self.varmanager.start_cell_edit(&self.project, row, 0);
+                let (Some(env), Some(name)) = (
+                    self.project.active_env.clone(),
+                    self.varmanager.entry_at(&self.project, row),
+                ) else {
+                    return false;
+                };
+                self.varmanager.grid.cursor = (row, 0);
+                self.varmanager.focus = VmFocus::Grid;
+                self.update(Action::ConfirmDeleteEntry {
+                    env,
+                    selector,
+                    name,
+                })
+            }
+            Hit::VmNewOption => {
+                self.update(Action::StartNewOptionEdit);
                 self.update(Action::Render)
             }
             Hit::VmEditFields => {

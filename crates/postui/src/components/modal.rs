@@ -58,13 +58,6 @@ pub enum PromptKind {
     RenameVariable {
         from: String,
     },
-    /// The option-row context menu's "Rename…" (Task 16): the text is the
-    /// option's new name within `selector` in `env`.
-    RenameOption {
-        env: String,
-        selector: String,
-        from: String,
-    },
     /// Send-time secret prompt (spec §3): `prepare()` reported `name`
     /// missing for the active environment (`env`, display only — never a
     /// secret value). Confirming dispatches `Action::SetSecret`. The
@@ -717,16 +710,6 @@ impl ModalStack {
                                 fields: vec![text.to_string()],
                             })])
                         }
-                        PromptKind::RenameOption {
-                            env,
-                            selector,
-                            from,
-                        } => Some(vec![Action::VarStruct(VarStructOp::RenameOption {
-                            env: env.clone(),
-                            selector: selector.clone(),
-                            from: from.clone(),
-                            to: text.to_string(),
-                        })]),
                         PromptKind::SecretValue { name, .. } => Some(vec![Action::SetSecret {
                             name: name.clone(),
                             value: text.to_string(),

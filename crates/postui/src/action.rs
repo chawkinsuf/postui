@@ -443,12 +443,12 @@ pub enum Action {
         slots: Vec<String>,
         confirmed: bool,
     },
-    /// The option-row context menu's "Rename…": opens a prompt seeded with
-    /// the option's current name.
-    PromptRenameEntry {
-        env: String,
-        selector: String,
-        from: String,
+    /// The option-row context menu's "Rename": starts the inline edit of
+    /// row `row`'s name cell — committing a changed name IS the rename
+    /// (`VarStructOp::RenameOption`), the same way `Enter` on the cell
+    /// works, so there is no rename modal.
+    StartOptionNameEdit {
+        row: usize,
     },
     /// The option-row context menu's "Delete…": opens the delete confirm.
     ConfirmDeleteEntry {
@@ -456,6 +456,10 @@ pub enum Action {
         selector: String,
         name: String,
     },
+    /// The `[+ Option]` button and the grid footer's "new option" chip:
+    /// puts the grid cursor in the ghost row's name cell and starts typing
+    /// (the `o` key's path). Toasts `NO_ENV_HINT` with no active env.
+    StartNewOptionEdit,
 
     // -- Task 17: in-context flows (spec §6) --
     /// The `SelectOption` picker's "add new option…" ghost row: opens the

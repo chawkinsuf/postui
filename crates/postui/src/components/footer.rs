@@ -114,6 +114,11 @@ pub fn draw_footer(
     sending: bool,
     dirty: bool,
     add_row_label: Option<&'static str>,
+    // Replaces the per-pane chips wholesale when `Some` — the Variable
+    // Manager screen's own chip set (`VarManager::footer_chips`), whose
+    // actions target options/declarations rather than the main screen's
+    // requests. The right-aligned save/palette/quit chips stay put.
+    chips_override: Option<Vec<(&'static str, &'static str, Option<Action>)>>,
     hits: &mut HitMap,
     hovered: Option<&Hit>,
 ) {
@@ -181,7 +186,8 @@ pub fn draw_footer(
     // Per-pane chips stop one column shy of the save group so the two
     // never collide.
     let right_limit = group_x.saturating_sub(1);
-    let chips = footer_chips(focus, shift_enter_send, sending, add_row_label);
+    let chips = chips_override
+        .unwrap_or_else(|| footer_chips(focus, shift_enter_send, sending, add_row_label));
     paint_chip_row(
         buf,
         mid_y,
@@ -306,6 +312,7 @@ mod tests {
                     false,
                     dirty,
                     Some("add header"),
+                    None,
                     &mut hits,
                     None,
                 )
@@ -440,6 +447,7 @@ mod tests {
                     false,
                     false,
                     Some("add header"),
+                    None,
                     &mut hits,
                     None,
                 )
@@ -479,6 +487,7 @@ mod tests {
                     false,
                     false,
                     Some("add header"),
+                    None,
                     &mut hits,
                     None,
                 )
@@ -521,6 +530,7 @@ mod tests {
                     false,
                     false,
                     Some("add header"),
+                    None,
                     &mut hits,
                     None,
                 )
@@ -552,6 +562,7 @@ mod tests {
                     false,
                     false,
                     Some("add header"),
+                    None,
                     &mut hits,
                     None,
                 )
@@ -617,6 +628,7 @@ mod tests {
                     false,
                     false,
                     Some("add header"),
+                    None,
                     &mut hits,
                     None,
                 )
@@ -668,6 +680,7 @@ mod tests {
                     false,
                     false,
                     Some("add header"),
+                    None,
                     &mut hits,
                     None,
                 )
@@ -758,6 +771,7 @@ mod tests {
                     false,
                     false,
                     Some("add header"),
+                    None,
                     &mut hits,
                     None,
                 )
