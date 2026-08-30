@@ -1607,6 +1607,14 @@ impl App {
             Action::ToggleInsecure => {
                 self.no_coalesce = true;
                 self.editor.insecure = !self.editor.insecure;
+                if self.editor.insecure {
+                    self.toasts.push(
+                        "TLS verification disabled for this request",
+                        ToastKind::Warning,
+                    );
+                } else {
+                    self.toasts.push("TLS verification enabled", ToastKind::Info);
+                }
                 true
             }
             Action::ToggleHeaderReveal => {

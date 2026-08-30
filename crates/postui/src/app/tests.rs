@@ -4386,6 +4386,21 @@ fn toggle_insecure_flips_the_editor_flag() {
     assert!(!app.editor.insecure);
 }
 
+#[test]
+fn toggle_insecure_toasts_the_new_state() {
+    let mut app = App::new_for_test();
+    app.update(Action::ToggleInsecure);
+    assert_eq!(
+        app.toasts.messages().last().copied(),
+        Some("TLS verification disabled for this request")
+    );
+    app.update(Action::ToggleInsecure);
+    assert_eq!(
+        app.toasts.messages().last().copied(),
+        Some("TLS verification enabled")
+    );
+}
+
 fn app_with_vars() -> App {
     let mut app = App::new_for_test();
     std::fs::write(
