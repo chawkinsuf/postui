@@ -1686,10 +1686,10 @@ const URL_PAD: u16 = 2;
 /// Fixed width, in cells, of the `❐` copy-URL chip at the URL well's right
 /// edge (`" ❐ "` — one glyph column, one padding column each side).
 const COPY_CHIP_WIDTH: u16 = 3;
-/// Fixed width, in cells, of the `🔒`/`🔓` TLS-verification lock at the URL
-/// well's left edge (`" 🔒 "` — the two-cell emoji plus one padding column
-/// each side, the row-trash zone's anatomy).
-const LOCK_CHIP_WIDTH: u16 = 4;
+/// Fixed width, in cells, of the `󰌾`/`󰍀` TLS-verification lock at the URL
+/// well's left edge (`" 󰌾 "` — a single-cell Nerd Font glyph plus one
+/// padding column each side, the copy chip's anatomy).
+const LOCK_CHIP_WIDTH: u16 = 3;
 /// Height of the tab bar row — the second row of that split.
 pub const TAB_BAR_HEIGHT: u16 = 2;
 /// Height of the toolbar chip row holding the Body tab's
@@ -1890,18 +1890,20 @@ impl Editor {
         });
 
         // --- TLS lock ----------------------------------------------------
-        // The certificate-verification toggle, clustered with the copy chip
-        // at the well's right edge and styled exactly like it (drawn and
+        // The certificate-verification toggle, holding the well's rightmost
+        // slot with the copy chip just inside it, styled exactly like it
+        // (drawn and
         // registered after the URL text so it wins the hit test over
-        // `UrlBar`). Closed lock = verifying, open lock = `insecure` — the
-        // shackle alone carries the state, deliberately without a warning
+        // `UrlBar`). Filled lock = verifying, outline lock = `insecure` —
+        // the glyphs differ in fill (and, in some fonts, an open shackle on
+        // the outline), deliberately without a warning
         // treatment: skipping verification is routine for local
         // development, not an alarm. Click dispatches
         // `Action::ToggleInsecure` through the existing `Hit::FooterChip`
         // routing.
         if lock_w == LOCK_CHIP_WIDTH {
             let lock_area = Rect {
-                x: url_area.x + url_area.width.saturating_sub(chip_w + lock_w),
+                x: url_area.x + url_area.width.saturating_sub(lock_w),
                 y: text_y,
                 width: lock_w,
                 height: 1,
@@ -1913,24 +1915,29 @@ impl Editor {
             } else {
                 url_fill
             };
+            let lock_fg = if lock_hovered {
+                theme.text
+            } else {
+                theme.text_muted
+            };
             fill(buf, lock_area, lock_bg);
             let glyph = if self.insecure {
-                " \u{1F513} " // 🔓
+                " \u{F0340} " // 󰍀 nf-md-lock_outline
             } else {
-                " \u{1F512} " // 🔒
+                " \u{F033E} " // 󰌾 nf-md-lock
             };
-            text(buf, lock_area.x, text_y, glyph, theme.text_muted, lock_bg, false);
+            text(buf, lock_area.x, text_y, glyph, lock_fg, lock_bg, false);
             hits.register(lock_area, lock_hit);
         }
 
         // --- copy-URL chip ---------------------------------------------
-        // A `Chip`-style tinted pill at the well's right edge; hover tints
+        // A `Chip`-style tinted pill just inside the lock; hover tints
         // it toward the well's accent-tinted color, blending in over the
         // shared hover fade like every other hovered control here. Drawn
         // (and registered) after the URL text/token painting above, so it
         // sits on top and wins the hit test over `UrlBar` beneath it.
         let chip_area = Rect {
-            x: url_area.x + url_area.width.saturating_sub(chip_w),
+            x: url_area.x + url_area.width.saturating_sub(lock_w + chip_w),
             y: text_y,
             width: chip_w,
             height: 1,
@@ -4148,8 +4155,11 @@ mod tests {
     fn tls_lock_in_the_address_bar_reflects_insecure_state() {
         let mut e = Editor::default();
         let (locked, hits) = draw_editor(&mut e);
-        assert!(locked.contains("🔒"), "verifying shows a closed lock: {locked}");
-        assert!(!locked.contains("🔓"), "{locked}");
+        assert!(
+            locked.contains('\u{F033E}'),
+            "verifying shows a filled lock: {locked}"
+        );
+        assert!(!locked.contains('\u{F0340}'), "{locked}");
         assert!(
             hits.rect_of(&Hit::FooterChip(Action::ToggleInsecure))
                 .is_some(),
@@ -4159,25 +4169,25 @@ mod tests {
         e.insecure = true;
         let (unlocked, hits) = draw_editor(&mut e);
         assert!(
-            unlocked.contains("🔓"),
-            "insecure shows an open lock: {unlocked}"
+            unlocked.contains('\u{F0340}'),
+            "insecure shows an outline lock: {unlocked}"
         );
-        assert!(!unlocked.contains("🔒"), "{unlocked}");
+        assert!(!unlocked.contains('\u{F033E}'), "{unlocked}");
         assert!(
             !unlocked.contains("tls {{"),
             "the old tab-row chip is gone: {unlocked}"
         );
 
-        // The lock clusters with the copy chip at the well's right edge —
-        // immediately inside it, not at the left of the URL text.
+        // The lock holds the well's rightmost slot, with the copy chip
+        // flush against its inner edge.
         let lock = hits
             .rect_of(&Hit::FooterChip(Action::ToggleInsecure))
             .unwrap();
         let copy = hits.rect_of(&Hit::CopyUrl).unwrap();
         assert_eq!(
-            lock.x + lock.width,
-            copy.x,
-            "lock sits flush against the copy chip: lock={lock:?} copy={copy:?}"
+            copy.x + copy.width,
+            lock.x,
+            "copy chip sits flush against the lock: lock={lock:?} copy={copy:?}"
         );
     }
 
