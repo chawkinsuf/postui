@@ -31,8 +31,9 @@ pub(crate) fn footer_chips(
     // address bar's own actions: copy url + tls verify.
     url_focused: bool,
     // A data row of the active table is selected (content focus, no cell
-    // edit live): advertise its toggle/delete keys.
-    table_row_selected: Option<usize>,
+    // edit live): advertise its toggle/delete keys. `(index, enabled)` —
+    // the toggle chip names the state change it would make.
+    table_row_selected: Option<(usize, bool)>,
 ) -> Vec<(&'static str, &'static str, Option<Action>)> {
     let chips: Vec<(&'static str, &'static str, Option<Action>)> = match focus {
         PaneId::Sidebar => vec![
@@ -85,11 +86,12 @@ pub(crate) fn footer_chips(
                 // inert.
                 chips.insert(1, ("alt+a", label, Some(Action::TableAddRow)));
             }
-            if let Some(i) = table_row_selected {
+            if let Some((i, enabled)) = table_row_selected {
                 // Keyboard twins of the expanded row's ● toggle and 🗑
                 // delete buttons; the ␣ keycap keeps the row narrow.
+                let toggle_label = if enabled { "disable" } else { "enable" };
                 let pos = chips.len() - 2; // before vars + navigate
-                chips.insert(pos, ("␣", "toggle", Some(Action::ToggleTableRow(i))));
+                chips.insert(pos, ("␣", toggle_label, Some(Action::ToggleTableRow(i))));
                 chips.insert(
                     pos + 1,
                     ("d", "delete", Some(Action::ConfirmDeleteTableRow(i))),
@@ -152,7 +154,7 @@ pub fn draw_footer(
     // See `footer_chips`: the editor pane's focus sits on the address bar.
     url_focused: bool,
     // See `footer_chips`: a data row of the active table is selected.
-    table_row_selected: Option<usize>,
+    table_row_selected: Option<(usize, bool)>,
     // Replaces the per-pane chips wholesale when `Some` — a modal's own
     // chip set, or the Variable Manager screen's
     // (`VarManager::footer_chips`), whose actions target
@@ -549,22 +551,36 @@ mod tests {
     /// buttons.
     #[test]
     fn selected_table_row_adds_toggle_and_delete_chips() {
+        // The toggle chip names the state change it would make: an enabled
+        // row offers "disable", a disabled one "enable".
         let chips = footer_chips(
             PaneId::Editor,
             false,
             false,
             Some("add header"),
             false,
-            Some(2),
+            Some((2, true)),
         );
-        assert!(
-            chips.iter().any(|(k, l, a)| *k == "␣"
-                && *l == "toggle"
-                && *a == Some(Action::ToggleTableRow(2)))
-        );
+        assert!(chips.iter().any(|(k, l, a)| *k == "␣"
+            && *l == "disable"
+            && *a == Some(Action::ToggleTableRow(2))));
         assert!(chips.iter().any(|(k, l, a)| *k == "d"
             && *l == "delete"
             && *a == Some(Action::ConfirmDeleteTableRow(2))));
+
+        let chips = footer_chips(
+            PaneId::Editor,
+            false,
+            false,
+            Some("add header"),
+            false,
+            Some((2, false)),
+        );
+        assert!(
+            chips
+                .iter()
+                .any(|(_, l, a)| *l == "enable" && *a == Some(Action::ToggleTableRow(2)))
+        );
 
         let chips = footer_chips(
             PaneId::Editor,
@@ -577,7 +593,7 @@ mod tests {
         assert!(
             !chips
                 .iter()
-                .any(|(_, l, _)| *l == "toggle" || *l == "delete"),
+                .any(|(_, l, _)| *l == "disable" || *l == "enable" || *l == "delete"),
             "no row selected: no row chips"
         );
     }

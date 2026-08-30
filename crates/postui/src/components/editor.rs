@@ -2063,6 +2063,18 @@ impl Editor {
         map.get_index(i).map(|(k, _)| k.clone())
     }
 
+    /// Row `i`'s enabled flag on the active table tab. `true` out of range
+    /// or on Body — callers only ask about real rows.
+    pub fn table_row_enabled(&self, i: usize) -> bool {
+        let map = match self.active_tab {
+            EditorTab::Params => &self.params,
+            EditorTab::Headers => &self.headers,
+            EditorTab::Vars => &self.variables,
+            EditorTab::Body => return true,
+        };
+        map.get_index(i).is_none_or(|(_, e)| e.enabled)
+    }
+
     /// How many rows the active tab's table has (the ghost row's index).
     pub fn table_len(&self) -> usize {
         match self.active_tab {

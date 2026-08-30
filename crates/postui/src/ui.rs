@@ -187,6 +187,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             .table
             .selected
             .filter(|s| *s < app.editor.table_len())
+            .map(|i| (i, app.editor.table_row_enabled(i)))
     })
     .flatten();
     crate::components::footer::draw_footer(
