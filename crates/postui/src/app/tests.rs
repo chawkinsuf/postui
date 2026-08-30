@@ -951,6 +951,9 @@ fn app_with_one_param() -> App {
 fn add_row_chip_label_follows_the_active_tab() {
     let mut app = App::new_for_test();
     app.focus = PaneId::Editor;
+    // On the address bar the add chip gives way to copy/tls; the label
+    // sweep below is about content focus.
+    app.editor.sub_focus = SubFocus::Content;
     let frame = |app: &mut App| {
         render_once(app);
         use ratatui::Terminal;
@@ -11174,7 +11177,14 @@ fn every_named_action_is_mouse_reachable() {
     let mut mouse_reachable: Vec<Action> = vec![Action::Quit, Action::OpenPalette];
     for pane in [PaneId::Sidebar, PaneId::Editor, PaneId::Response] {
         mouse_reachable.extend(
-            crate::components::footer::footer_chips(pane, false, false, Some("add header"))
+            crate::components::footer::footer_chips(pane, false, false, Some("add header"), false)
+                .into_iter()
+                .filter_map(|(_, _, a)| a),
+        );
+        // The address-bar variant swaps in chips of its own (copy url,
+        // tls verify) — enumerate those too.
+        mouse_reachable.extend(
+            crate::components::footer::footer_chips(pane, false, false, Some("add header"), true)
                 .into_iter()
                 .filter_map(|(_, _, a)| a),
         );

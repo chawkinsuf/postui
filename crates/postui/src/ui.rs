@@ -183,6 +183,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         app.editor.sending,
         app.editor.is_dirty(),
         app.editor.active_tab.add_row_label(),
+        matches!(
+            app.editor.sub_focus,
+            crate::components::editor::SubFocus::Method | crate::components::editor::SubFocus::Url
+        ),
         vm_chips,
         globals_live,
         plain_q_quits,

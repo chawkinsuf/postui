@@ -26,6 +26,10 @@ pub(crate) fn footer_chips(
     shift_enter_send: bool,
     sending: bool,
     add_row_label: Option<&'static str>,
+    // The editor pane's focus sits on the address bar (method or URL).
+    // There alt+a targets no visible table, so its chip gives way to the
+    // address bar's own actions: copy url + tls verify.
+    url_focused: bool,
 ) -> Vec<(&'static str, &'static str, Option<Action>)> {
     let chips: Vec<(&'static str, &'static str, Option<Action>)> = match focus {
         PaneId::Sidebar => vec![
@@ -59,10 +63,23 @@ pub(crate) fn footer_chips(
                 // alt+1/2/3 still work where the terminal passes them through.
                 ("↑↓←→", "navigate", None),
             ];
-            // Named for what it adds on the active tab ("add header" on
-            // Headers, …); hidden on the Body tab, where the action is
-            // inert.
-            if let Some(label) = add_row_label {
+            if url_focused {
+                // Labels lean on context — with the address bar focused,
+                // "copy" is the URL and "tls" is the padlock. Kept short so
+                // the vars chip survives the 120-col dirty footer.
+                chips.insert(
+                    1,
+                    (
+                        "alt+y",
+                        "copy",
+                        Some(Action::CopyToClipboard(crate::action::CopyTarget::Url)),
+                    ),
+                );
+                chips.insert(2, ("alt+t", "tls", Some(Action::ToggleInsecure)));
+            } else if let Some(label) = add_row_label {
+                // Named for what it adds on the active tab ("add header" on
+                // Headers, …); hidden on the Body tab, where the action is
+                // inert.
                 chips.insert(1, ("alt+a", label, Some(Action::TableAddRow)));
             }
             chips
@@ -114,6 +131,8 @@ pub fn draw_footer(
     sending: bool,
     dirty: bool,
     add_row_label: Option<&'static str>,
+    // See `footer_chips`: the editor pane's focus sits on the address bar.
+    url_focused: bool,
     // Replaces the per-pane chips wholesale when `Some` — the Variable
     // Manager screen's own chip set (`VarManager::footer_chips`), whose
     // actions target options/declarations rather than the main screen's
@@ -205,8 +224,9 @@ pub fn draw_footer(
     } else {
         quit_x.saturating_sub(1)
     };
-    let chips = chips_override
-        .unwrap_or_else(|| footer_chips(focus, shift_enter_send, sending, add_row_label));
+    let chips = chips_override.unwrap_or_else(|| {
+        footer_chips(focus, shift_enter_send, sending, add_row_label, url_focused)
+    });
     paint_chip_row(
         buf,
         mid_y,
@@ -331,6 +351,7 @@ mod tests {
                     false,
                     dirty,
                     Some("add header"),
+                    false,
                     None,
                     true,
                     true,
@@ -344,9 +365,9 @@ mod tests {
 
     #[test]
     fn send_chip_advertises_shift_enter_only_when_the_terminal_reports_it() {
-        let with = footer_chips(PaneId::Editor, true, false, Some("add header"));
+        let with = footer_chips(PaneId::Editor, true, false, Some("add header"), false);
         assert!(with.iter().any(|(k, l, _)| *k == "⇧enter" && *l == "send"));
-        let without = footer_chips(PaneId::Editor, false, false, Some("add header"));
+        let without = footer_chips(PaneId::Editor, false, false, Some("add header"), false);
         assert!(without.iter().any(|(k, l, _)| *k == "^R" && *l == "send"));
     }
 
@@ -355,7 +376,7 @@ mod tests {
     /// of a send key that would do nothing.
     #[test]
     fn send_chip_becomes_esc_cancel_while_the_open_request_is_in_flight() {
-        let sending = footer_chips(PaneId::Editor, false, true, Some("add header"));
+        let sending = footer_chips(PaneId::Editor, false, true, Some("add header"), false);
         assert!(
             sending
                 .iter()
@@ -415,7 +436,7 @@ mod tests {
     /// longer a second ^S.
     #[test]
     fn editor_context_chips_offer_vars_and_no_duplicate_save() {
-        let chips = footer_chips(PaneId::Editor, false, false, Some("add header"));
+        let chips = footer_chips(PaneId::Editor, false, false, Some("add header"), false);
         assert!(chips.iter().any(|(k, l, a)| *k == "alt+shift+v"
             && *l == "vars"
             && *a == Some(Action::OpenVarPicker { completing: false })));
@@ -424,6 +445,42 @@ mod tests {
                 .iter()
                 .any(|(_, _, a)| *a == Some(Action::SaveRequest)),
             "save lives in the global right-side group, not the context chips"
+        );
+    }
+
+    /// With the address bar focused, alt+a targets no visible table, so
+    /// its chip gives way to the address bar's own actions: copy the
+    /// resolved URL and toggle TLS verification.
+    #[test]
+    fn address_bar_focus_swaps_add_row_for_copy_url_and_tls_chips() {
+        let chips = footer_chips(PaneId::Editor, false, false, Some("add header"), true);
+        assert!(
+            !chips
+                .iter()
+                .any(|(_, _, a)| *a == Some(Action::TableAddRow)),
+            "add-row is inert while the address bar is focused"
+        );
+        assert!(chips.iter().any(|(k, l, a)| *k == "alt+y"
+            && *l == "copy"
+            && *a == Some(Action::CopyToClipboard(crate::action::CopyTarget::Url))));
+        assert!(
+            chips.iter().any(|(k, l, a)| *k == "alt+t"
+                && *l == "tls"
+                && *a == Some(Action::ToggleInsecure))
+        );
+
+        let chips = footer_chips(PaneId::Editor, false, false, Some("add header"), false);
+        assert!(
+            chips
+                .iter()
+                .any(|(_, _, a)| *a == Some(Action::TableAddRow)),
+            "content focus keeps the add-row chip"
+        );
+        assert!(
+            !chips
+                .iter()
+                .any(|(_, _, a)| *a == Some(Action::ToggleInsecure)),
+            "address-bar chips stay off the content-focus footer"
         );
     }
 
@@ -468,6 +525,7 @@ mod tests {
                     false,
                     false,
                     Some("add header"),
+                    false,
                     None,
                     true,
                     true,
@@ -510,6 +568,7 @@ mod tests {
                     false,
                     false,
                     Some("add header"),
+                    false,
                     None,
                     true,
                     true,
@@ -555,6 +614,7 @@ mod tests {
                     false,
                     false,
                     Some("add header"),
+                    false,
                     None,
                     true,
                     true,
@@ -589,6 +649,7 @@ mod tests {
                     false,
                     false,
                     Some("add header"),
+                    false,
                     None,
                     true,
                     true,
@@ -657,6 +718,7 @@ mod tests {
                     false,
                     false,
                     Some("add header"),
+                    false,
                     None,
                     true,
                     true,
@@ -711,6 +773,7 @@ mod tests {
                     false,
                     false,
                     Some("add header"),
+                    false,
                     None,
                     true,
                     true,
@@ -804,6 +867,7 @@ mod tests {
                     false,
                     false,
                     Some("add header"),
+                    false,
                     None,
                     true,
                     true,

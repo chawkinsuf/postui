@@ -1613,7 +1613,8 @@ impl App {
                         ToastKind::Warning,
                     );
                 } else {
-                    self.toasts.push("TLS verification enabled", ToastKind::Info);
+                    self.toasts
+                        .push("TLS verification enabled", ToastKind::Info);
                 }
                 true
             }

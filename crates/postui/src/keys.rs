@@ -129,6 +129,10 @@ pub(crate) fn named_actions() -> Vec<(&'static str, Action)> {
         ("body_clear", Action::BodyClear),
         ("toggle_body_vars", Action::ToggleBodyVars),
         ("toggle_insecure", Action::ToggleInsecure),
+        (
+            "copy_url",
+            Action::CopyToClipboard(crate::action::CopyTarget::Url),
+        ),
         ("open_body_editor", Action::OpenBodyInEditor),
         ("save", Action::SaveRequest),
         ("send", Action::Send),
@@ -195,6 +199,10 @@ impl Keymap {
             ("alt+x", Action::BodyClear),
             ("alt+b", Action::ToggleBodyVars),
             ("alt+t", Action::ToggleInsecure),
+            (
+                "alt+y",
+                Action::CopyToClipboard(crate::action::CopyTarget::Url),
+            ),
             ("ctrl+s", Action::SaveRequest),
             ("ctrl+r", Action::Send),
             ("ctrl+enter", Action::Send),
@@ -406,6 +414,10 @@ mod tests {
         assert_eq!(get("alt+x"), Some(Action::BodyClear));
         assert_eq!(get("alt+b"), Some(Action::ToggleBodyVars));
         assert_eq!(get("alt+t"), Some(Action::ToggleInsecure));
+        assert_eq!(
+            get("alt+y"),
+            Some(Action::CopyToClipboard(crate::action::CopyTarget::Url))
+        );
         assert_eq!(get("alt+e"), Some(Action::OpenBodyInEditor));
         assert_eq!(
             get("ctrl+e"),
