@@ -977,6 +977,44 @@ fn add_row_chip_label_follows_the_active_tab() {
     );
 }
 
+/// While a new row is already being added (the ghost-row edit), the
+/// footer stops advertising "add param"/"add header" — the add is
+/// already underway. Editing an EXISTING row keeps the chip: adding
+/// another row is still a sensible next action there.
+#[test]
+fn add_row_chip_hides_only_while_a_new_row_is_being_added() {
+    let mut app = app_with_one_param();
+    app.editor.sub_focus = SubFocus::Content;
+    render_once(&mut app);
+    assert!(
+        app.hits
+            .rect_of(&Hit::FooterChip(Action::TableAddRow))
+            .is_some(),
+        "no edit live: the add chip shows"
+    );
+
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    assert!(app.editor.table.editing.is_some(), "a cell edit began");
+    render_once(&mut app);
+    assert!(
+        app.hits
+            .rect_of(&Hit::FooterChip(Action::TableAddRow))
+            .is_some(),
+        "editing an existing row: the add chip stays"
+    );
+
+    app.update(Action::TableAddRow);
+    let edit = app.editor.table.editing.as_ref().expect("ghost-row edit");
+    assert_eq!(edit.row, app.editor.params.len(), "on the ghost row");
+    render_once(&mut app);
+    assert!(
+        app.hits
+            .rect_of(&Hit::FooterChip(Action::TableAddRow))
+            .is_none(),
+        "already adding a row: the add chip hides"
+    );
+}
+
 /// alt+a starts a new row on whichever table tab is active — from any
 /// focus, so adding a header never needs a mouse trip to the ghost row.
 #[test]

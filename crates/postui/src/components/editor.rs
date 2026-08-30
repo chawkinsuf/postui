@@ -2100,6 +2100,22 @@ impl Editor {
         self.table.begin_add(map);
     }
 
+    /// Whether the live table edit sits on the ghost row — a new row is
+    /// mid-add, so "add row" is already underway (the footer hides its
+    /// add chip). Editing an existing row doesn't count.
+    pub fn adding_row(&self) -> bool {
+        let map = match self.active_tab {
+            EditorTab::Params => &self.params,
+            EditorTab::Headers => &self.headers,
+            EditorTab::Vars => &self.variables,
+            EditorTab::Body => return false,
+        };
+        self.table
+            .editing
+            .as_ref()
+            .is_some_and(|e| e.row == map.len())
+    }
+
     /// Commits any in-progress table cell edit into the active tab's map —
     /// the click-away / focus-loss path. Its warning is the caller's to
     /// surface.

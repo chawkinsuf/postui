@@ -182,7 +182,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         app.shift_enter_send,
         app.editor.sending,
         app.editor.is_dirty(),
-        app.editor.active_tab.add_row_label(),
+        // No add chip while a new row is already mid-add (the ghost-row
+        // edit); editing an existing row keeps it.
+        (!app.editor.adding_row())
+            .then(|| app.editor.active_tab.add_row_label())
+            .flatten(),
         matches!(
             app.editor.sub_focus,
             crate::components::editor::SubFocus::Method | crate::components::editor::SubFocus::Url
