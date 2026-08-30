@@ -399,10 +399,18 @@ impl TableEditorState {
                 // `map.len()` is the ghost row, so the keyboard can reach it
                 // the same way the mouse can (and an empty table still has
                 // that one stop to land on).
-                self.selected = Some(match self.selected {
+                let next = match self.selected {
                     None => 0, // nothing selected: Down selects the first row
                     Some(s) => (s + 1).min(map.len()),
-                });
+                };
+                if next == map.len() {
+                    // Landing on the ghost row opens its key cell for
+                    // typing right away, like the real rows' in-place
+                    // editing; an untouched ghost commits to nothing.
+                    self.begin_add(map);
+                } else {
+                    self.selected = Some(next);
+                }
                 TableOutcome::consumed()
             }
             KeyCode::Char('k') | KeyCode::Up => {
@@ -502,7 +510,15 @@ impl TableEditorState {
                 } else {
                     here + 1
                 };
-                self.exit_editing(target, map);
+                // Down onto the ghost row keeps the typing flow open —
+                // same auto-edit as arriving there in nav mode. Up never
+                // re-opens it, so the cursor can always climb out (on an
+                // empty table the ghost is row 0 and Up must escape).
+                if ev.code == KeyCode::Down && target >= map.len() {
+                    self.begin_add(map);
+                } else {
+                    self.exit_editing(target, map);
+                }
                 TableOutcome::maybe_warn(warning)
             }
             KeyCode::BackTab => self.walk_cell(map, &edit, false),
@@ -1172,6 +1188,49 @@ mod tests {
         }
     }
 
+    // --- ghost row auto-edit ----------------------------------------------
+
+    /// Arrowing onto the ghost row opens its key-cell edit right away —
+    /// the same immediate typing the real rows offer — instead of a bare
+    /// selection that still needs Enter.
+    #[test]
+    fn down_onto_the_ghost_row_opens_the_add_edit() {
+        let mut map = map_of(&[("page", "2")]);
+        let mut t = TableEditorState::default();
+        t.handle_key(key(KeyCode::Down), &mut map); // row 0
+        assert!(t.editing.is_none(), "a real row: selection only");
+        t.handle_key(key(KeyCode::Down), &mut map); // ghost row
+        assert!(t.editing_ghost(map.len()), "the ghost opened for typing");
+        let edit = t.editing.as_ref().unwrap();
+        assert_eq!(edit.col, Col::Key);
+        assert_eq!(edit.input.text(), "");
+    }
+
+    /// Same when the cursor carries out of a live cell edit: Down from the
+    /// last real row's cell lands on the ghost already editing.
+    #[test]
+    fn down_out_of_a_cell_edit_onto_the_ghost_row_opens_the_add_edit() {
+        let mut map = map_of(&[("page", "2")]);
+        let mut t = TableEditorState::default();
+        t.click_cell(0, Col::Value, &mut map);
+        t.handle_key(key(KeyCode::Down), &mut map);
+        assert!(t.editing_ghost(map.len()), "the ghost opened for typing");
+        assert_eq!(map.len(), 1, "the real row committed unchanged");
+    }
+
+    /// Leaving the auto-opened ghost untouched creates nothing.
+    #[test]
+    fn leaving_the_auto_opened_ghost_untouched_saves_no_row() {
+        let mut map = map_of(&[("page", "2")]);
+        let mut t = TableEditorState::default();
+        t.handle_key(key(KeyCode::Down), &mut map);
+        t.handle_key(key(KeyCode::Down), &mut map); // ghost, editing
+        t.handle_key(key(KeyCode::Up), &mut map); // straight back out
+        assert!(t.editing.is_none());
+        assert_eq!(map.len(), 1, "no empty header appeared");
+        assert_eq!(t.selected, Some(0), "cursor parked back on the real row");
+    }
+
     // --- click entry point ------------------------------------------------
 
     #[test]
@@ -1368,12 +1427,18 @@ mod tests {
         t.handle_key(key(KeyCode::Char('j')), &mut map);
         assert_eq!(t.selected, Some(2), "the ghost row is reachable");
         assert!(
+            t.editing_ghost(map.len()),
+            "and opens for typing on arrival"
+        );
+        assert!(
             t.handle_key(key(KeyCode::Down), &mut map).consumed,
             "clamped at the ghost row, still consumed"
         );
         assert_eq!(t.selected, Some(2));
-        t.handle_key(key(KeyCode::Char('k')), &mut map);
+        t.handle_key(key(KeyCode::Up), &mut map);
+        assert!(t.editing.is_none(), "Up leaves the untouched ghost edit");
         assert_eq!(t.selected, Some(1));
+        assert_eq!(map.len(), 2, "no empty row appeared");
         t.handle_key(key(KeyCode::Up), &mut map);
         assert_eq!(t.selected, Some(0));
         assert!(
