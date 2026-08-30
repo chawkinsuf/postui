@@ -1015,6 +1015,56 @@ fn add_row_chip_hides_only_while_a_new_row_is_being_added() {
     );
 }
 
+#[test]
+fn toggle_table_row_action_flips_the_entry() {
+    let mut app = app_with_one_param();
+    assert!(app.editor.params["page"].enabled);
+    app.update(Action::ToggleTableRow(0));
+    assert!(!app.editor.params["page"].enabled);
+    app.update(Action::ToggleTableRow(0));
+    assert!(app.editor.params["page"].enabled);
+    app.update(Action::ToggleTableRow(5)); // out of range: inert
+    assert!(app.editor.params["page"].enabled);
+}
+
+/// With a data row selected, the footer advertises its toggle/delete keys;
+/// they leave with the selection (and never appear for the ghost row or a
+/// live cell edit, where space/d would type).
+#[test]
+fn selected_row_footer_chips_come_and_go_with_the_selection() {
+    let mut app = app_with_one_param();
+    app.editor.sub_focus = SubFocus::Content;
+    render_once(&mut app);
+    assert!(
+        app.hits
+            .rect_of(&Hit::FooterChip(Action::ToggleTableRow(0)))
+            .is_none(),
+        "nothing selected: no row chips"
+    );
+
+    app.editor.table.selected = Some(0);
+    render_once(&mut app);
+    assert!(
+        app.hits
+            .rect_of(&Hit::FooterChip(Action::ToggleTableRow(0)))
+            .is_some()
+    );
+    assert!(
+        app.hits
+            .rect_of(&Hit::FooterChip(Action::ConfirmDeleteTableRow(0)))
+            .is_some()
+    );
+
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
+    render_once(&mut app);
+    assert!(
+        app.hits
+            .rect_of(&Hit::FooterChip(Action::ToggleTableRow(0)))
+            .is_none(),
+        "cell edit live: space/d type, so the chips hide"
+    );
+}
+
 /// alt+a starts a new row on whichever table tab is active — from any
 /// focus, so adding a header never needs a mouse trip to the ghost row.
 #[test]
@@ -11215,16 +11265,30 @@ fn every_named_action_is_mouse_reachable() {
     let mut mouse_reachable: Vec<Action> = vec![Action::Quit, Action::OpenPalette];
     for pane in [PaneId::Sidebar, PaneId::Editor, PaneId::Response] {
         mouse_reachable.extend(
-            crate::components::footer::footer_chips(pane, false, false, Some("add header"), false)
-                .into_iter()
-                .filter_map(|(_, _, a)| a),
+            crate::components::footer::footer_chips(
+                pane,
+                false,
+                false,
+                Some("add header"),
+                false,
+                None,
+            )
+            .into_iter()
+            .filter_map(|(_, _, a)| a),
         );
         // The address-bar variant swaps in chips of its own (copy url,
         // tls verify) — enumerate those too.
         mouse_reachable.extend(
-            crate::components::footer::footer_chips(pane, false, false, Some("add header"), true)
-                .into_iter()
-                .filter_map(|(_, _, a)| a),
+            crate::components::footer::footer_chips(
+                pane,
+                false,
+                false,
+                Some("add header"),
+                true,
+                None,
+            )
+            .into_iter()
+            .filter_map(|(_, _, a)| a),
         );
     }
 

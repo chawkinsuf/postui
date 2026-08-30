@@ -68,6 +68,9 @@ pub enum Action {
     /// Open the delete confirmation for row `i` of the active params/headers
     /// table (from the `d`/`Delete` key or the row's `✕` affordance).
     ConfirmDeleteTableRow(usize),
+    /// Flip row `i`'s enabled flag on the active params/headers/vars table —
+    /// the footer chip twin of the space key and the row's ● toggle button.
+    ToggleTableRow(usize),
     /// Actually delete row `i` from the active params/headers table (the
     /// confirm modal's "Delete" choice).
     DeleteTableRow(usize),

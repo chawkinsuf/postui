@@ -1817,6 +1817,19 @@ impl App {
                 }
                 true
             }
+            Action::ToggleTableRow(i) => {
+                self.no_coalesce = true;
+                let map = match self.editor.active_tab {
+                    EditorTab::Params => &mut self.editor.params,
+                    EditorTab::Headers => &mut self.editor.headers,
+                    EditorTab::Vars => &mut self.editor.variables,
+                    EditorTab::Body => return true,
+                };
+                if let Some((_, e)) = map.get_index_mut(i) {
+                    e.enabled = !e.enabled;
+                }
+                true
+            }
             Action::DeleteTableRow(i) => {
                 self.no_coalesce = true;
                 let map = match self.editor.active_tab {

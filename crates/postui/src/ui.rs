@@ -172,8 +172,23 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 .then(|| app.editor.current_request());
             app.varmanager
                 .footer_chips(&app.project, open_request.as_ref())
+                .into_iter()
+                .map(|(k, l, a)| (k.to_string(), l.to_string(), a))
+                .collect()
         })
     });
+    // A selected data row (content focus, no cell edit — space/d would
+    // type into one) advertises its toggle/delete keys.
+    let table_row_selected = (focus == PaneId::Editor
+        && app.editor.sub_focus == crate::components::editor::SubFocus::Content
+        && app.editor.table.editing.is_none())
+    .then(|| {
+        app.editor
+            .table
+            .selected
+            .filter(|s| *s < app.editor.table_len())
+    })
+    .flatten();
     crate::components::footer::draw_footer(
         frame,
         layout.footer,
@@ -191,6 +206,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             app.editor.sub_focus,
             crate::components::editor::SubFocus::Method | crate::components::editor::SubFocus::Url
         ),
+        table_row_selected,
         vm_chips,
         globals_live,
         plain_q_quits,

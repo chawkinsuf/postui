@@ -605,11 +605,21 @@ impl ModalStack {
     /// The labels double as scope confirmation: the value popup's remove
     /// chip names the Write-to scope it would clear, and the fields
     /// editor's flips to "restore field" on a removed row.
-    pub fn footer_chips(&self) -> Option<Vec<(&'static str, &'static str, Option<Action>)>> {
-        match self.top()? {
+    pub fn footer_chips(&self) -> Option<Vec<crate::components::footer::FooterChip>> {
+        // The confirm's chips are its own answer keys — runtime values, so
+        // they're built owned here rather than in the static list below.
+        if let Modal::Confirm { choices, .. } = self.top()? {
+            let mut chips: Vec<crate::components::footer::FooterChip> = choices
+                .iter()
+                .map(|(key, label, _)| (key.to_string(), label.to_lowercase(), None))
+                .collect();
+            chips.push(("esc".into(), "cancel".into(), None));
+            return Some(chips);
+        }
+        let chips: Vec<(&'static str, &'static str, Option<Action>)> = match self.top()? {
             Modal::FieldsEditor(state) => {
                 let removed = state.rows.get(state.focus).is_some_and(|r| r.removed);
-                Some(vec![
+                vec![
                     ("alt+a", "add field", None),
                     (
                         "alt+d",
@@ -622,7 +632,7 @@ impl ModalStack {
                     ),
                     ("enter", "apply", None),
                     ("esc", "cancel", None),
-                ])
+                ]
             }
             Modal::MultiPrompt { fields, kind, .. } => {
                 let mut chips: Vec<(&'static str, &'static str, Option<Action>)> = Vec::new();
@@ -645,35 +655,40 @@ impl ModalStack {
                 }
                 chips.push(("enter", "save", None));
                 chips.push(("esc", "cancel", None));
-                Some(chips)
+                chips
             }
-            Modal::Message { .. } => Some(vec![("enter", "close", None)]),
-            // The confirm's own buttons carry their answer keys; the
-            // footer adds only the universal way out.
-            Modal::Confirm { .. } => Some(vec![("esc", "cancel", None)]),
+            Modal::Message { .. } => vec![("enter", "close", None)],
+            // Handled above — its chips are the runtime answer keys.
+            Modal::Confirm { .. } => unreachable!("Confirm returned early"),
             Modal::Prompt { .. } | Modal::NewProject { .. } => {
-                Some(vec![("enter", "save", None), ("esc", "cancel", None)])
+                vec![("enter", "save", None), ("esc", "cancel", None)]
             }
-            Modal::Chooser(_) => Some(vec![
+            Modal::Chooser(_) => vec![
                 ("↑↓", "navigate", None),
                 ("enter", "select", None),
                 ("esc", "close", None),
-            ]),
-            Modal::VarPicker(_) => Some(vec![
+            ],
+            Modal::VarPicker(_) => vec![
                 ("↑↓", "navigate", None),
                 ("a–z", "filter", None),
                 ("enter", "select", None),
                 ("esc", "close", None),
-            ]),
-            Modal::Palette(_) => Some(vec![
+            ],
+            Modal::Palette(_) => vec![
                 ("↑↓", "navigate", None),
                 ("enter", "run", None),
                 ("esc", "close", None),
-            ]),
+            ],
             // An anchored popup, not a screen-owning modal: the screen's
             // own chips stay put (and nothing dims).
-            Modal::Dropdown(_) => None,
-        }
+            Modal::Dropdown(_) => return None,
+        };
+        Some(
+            chips
+                .into_iter()
+                .map(|(k, l, a)| (k.to_string(), l.to_string(), a))
+                .collect(),
+        )
     }
 
     /// Every modal on the stack, bottom first — for asking "is one of
@@ -2272,6 +2287,30 @@ mod tests {
         let content = draw_modal(&mut m);
         assert!(!content.contains("tab switch"), "{content}");
         assert!(!content.contains("esc cancel"), "{content}");
+    }
+
+    /// The confirm modal's footer chips are its own answer keys — the
+    /// footer names which key activates which button, plus the universal
+    /// esc way out.
+    #[test]
+    fn confirm_modal_footer_chips_advertise_each_choice_key() {
+        let mut m = ModalStack::default();
+        m.push(Modal::Confirm {
+            title: "Discard changes".into(),
+            body: "Revert?".into(),
+            choices: vec![
+                ('d', "Discard changes".into(), vec![]),
+                ('k', "Keep".into(), vec![]),
+            ],
+        });
+        let chips = m.footer_chips().expect("a confirm supplies chips");
+        assert!(
+            chips
+                .iter()
+                .any(|(k, l, a)| k == "d" && l == "discard changes" && a.is_none())
+        );
+        assert!(chips.iter().any(|(k, l, _)| k == "k" && l == "keep"));
+        assert!(chips.iter().any(|(k, l, _)| k == "esc" && l == "cancel"));
     }
 
     #[test]

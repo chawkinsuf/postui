@@ -30,6 +30,9 @@ pub(crate) fn footer_chips(
     // There alt+a targets no visible table, so its chip gives way to the
     // address bar's own actions: copy url + tls verify.
     url_focused: bool,
+    // A data row of the active table is selected (content focus, no cell
+    // edit live): advertise its toggle/delete keys.
+    table_row_selected: Option<usize>,
 ) -> Vec<(&'static str, &'static str, Option<Action>)> {
     let chips: Vec<(&'static str, &'static str, Option<Action>)> = match focus {
         PaneId::Sidebar => vec![
@@ -82,6 +85,16 @@ pub(crate) fn footer_chips(
                 // inert.
                 chips.insert(1, ("alt+a", label, Some(Action::TableAddRow)));
             }
+            if let Some(i) = table_row_selected {
+                // Keyboard twins of the expanded row's ● toggle and 🗑
+                // delete buttons; the ␣ keycap keeps the row narrow.
+                let pos = chips.len() - 2; // before vars + navigate
+                chips.insert(pos, ("␣", "toggle", Some(Action::ToggleTableRow(i))));
+                chips.insert(
+                    pos + 1,
+                    ("d", "delete", Some(Action::ConfirmDeleteTableRow(i))),
+                );
+            }
             chips
         }
         PaneId::Response => vec![
@@ -104,6 +117,11 @@ pub(crate) fn footer_chips(
     };
     chips
 }
+
+/// An owned footer chip — keycap, label, action — for chip sets built at
+/// runtime (a confirm modal's own answer keys, the Variable Manager's
+/// name-carrying actions) rather than the static per-pane lists.
+pub type FooterChip = (String, String, Option<Action>);
 
 /// The command-palette chip: always present regardless of focus, so it
 /// sits right-aligned next to the quit hint rather than trailing the
@@ -133,11 +151,14 @@ pub fn draw_footer(
     add_row_label: Option<&'static str>,
     // See `footer_chips`: the editor pane's focus sits on the address bar.
     url_focused: bool,
-    // Replaces the per-pane chips wholesale when `Some` — the Variable
-    // Manager screen's own chip set (`VarManager::footer_chips`), whose
-    // actions target options/declarations rather than the main screen's
-    // requests. The right-aligned save/palette/quit chips stay put.
-    chips_override: Option<Vec<(&'static str, &'static str, Option<Action>)>>,
+    // See `footer_chips`: a data row of the active table is selected.
+    table_row_selected: Option<usize>,
+    // Replaces the per-pane chips wholesale when `Some` — a modal's own
+    // chip set, or the Variable Manager screen's
+    // (`VarManager::footer_chips`), whose actions target
+    // options/declarations rather than the main screen's requests. The
+    // right-aligned save/palette/quit chips stay put.
+    chips_override: Option<Vec<FooterChip>>,
     // `false` while an open modal supplies the chips: it captures the
     // keyboard, so the save group and palette chip — whose shortcuts go
     // dead under it — hide rather than advertise keys that won't work.
@@ -224,9 +245,26 @@ pub fn draw_footer(
     } else {
         quit_x.saturating_sub(1)
     };
-    let chips = chips_override.unwrap_or_else(|| {
-        footer_chips(focus, shift_enter_send, sending, add_row_label, url_focused)
-    });
+    // `paint_chip_row` works on borrowed strs; an override's owned chips
+    // borrow from `owned`, the static per-pane list is used as-is.
+    let owned: Vec<FooterChip>;
+    let chips: Vec<(&str, &str, Option<Action>)> = match chips_override {
+        Some(c) => {
+            owned = c;
+            owned
+                .iter()
+                .map(|(k, l, a)| (k.as_str(), l.as_str(), a.clone()))
+                .collect()
+        }
+        None => footer_chips(
+            focus,
+            shift_enter_send,
+            sending,
+            add_row_label,
+            url_focused,
+            table_row_selected,
+        ),
+    };
     paint_chip_row(
         buf,
         mid_y,
@@ -353,6 +391,7 @@ mod tests {
                     Some("add header"),
                     false,
                     None,
+                    None,
                     true,
                     true,
                     &mut hits,
@@ -365,9 +404,16 @@ mod tests {
 
     #[test]
     fn send_chip_advertises_shift_enter_only_when_the_terminal_reports_it() {
-        let with = footer_chips(PaneId::Editor, true, false, Some("add header"), false);
+        let with = footer_chips(PaneId::Editor, true, false, Some("add header"), false, None);
         assert!(with.iter().any(|(k, l, _)| *k == "⇧enter" && *l == "send"));
-        let without = footer_chips(PaneId::Editor, false, false, Some("add header"), false);
+        let without = footer_chips(
+            PaneId::Editor,
+            false,
+            false,
+            Some("add header"),
+            false,
+            None,
+        );
         assert!(without.iter().any(|(k, l, _)| *k == "^R" && *l == "send"));
     }
 
@@ -376,7 +422,7 @@ mod tests {
     /// of a send key that would do nothing.
     #[test]
     fn send_chip_becomes_esc_cancel_while_the_open_request_is_in_flight() {
-        let sending = footer_chips(PaneId::Editor, false, true, Some("add header"), false);
+        let sending = footer_chips(PaneId::Editor, false, true, Some("add header"), false, None);
         assert!(
             sending
                 .iter()
@@ -436,7 +482,14 @@ mod tests {
     /// longer a second ^S.
     #[test]
     fn editor_context_chips_offer_vars_and_no_duplicate_save() {
-        let chips = footer_chips(PaneId::Editor, false, false, Some("add header"), false);
+        let chips = footer_chips(
+            PaneId::Editor,
+            false,
+            false,
+            Some("add header"),
+            false,
+            None,
+        );
         assert!(chips.iter().any(|(k, l, a)| *k == "alt+shift+v"
             && *l == "vars"
             && *a == Some(Action::OpenVarPicker { completing: false })));
@@ -453,7 +506,7 @@ mod tests {
     /// resolved URL and toggle TLS verification.
     #[test]
     fn address_bar_focus_swaps_add_row_for_copy_url_and_tls_chips() {
-        let chips = footer_chips(PaneId::Editor, false, false, Some("add header"), true);
+        let chips = footer_chips(PaneId::Editor, false, false, Some("add header"), true, None);
         assert!(
             !chips
                 .iter()
@@ -469,7 +522,14 @@ mod tests {
                 && *a == Some(Action::ToggleInsecure))
         );
 
-        let chips = footer_chips(PaneId::Editor, false, false, Some("add header"), false);
+        let chips = footer_chips(
+            PaneId::Editor,
+            false,
+            false,
+            Some("add header"),
+            false,
+            None,
+        );
         assert!(
             chips
                 .iter()
@@ -481,6 +541,44 @@ mod tests {
                 .iter()
                 .any(|(_, _, a)| *a == Some(Action::ToggleInsecure)),
             "address-bar chips stay off the content-focus footer"
+        );
+    }
+
+    /// A selected data row advertises its own quick actions — the
+    /// keyboard twins of the expanded row's ● toggle and 🗑 delete
+    /// buttons.
+    #[test]
+    fn selected_table_row_adds_toggle_and_delete_chips() {
+        let chips = footer_chips(
+            PaneId::Editor,
+            false,
+            false,
+            Some("add header"),
+            false,
+            Some(2),
+        );
+        assert!(
+            chips.iter().any(|(k, l, a)| *k == "␣"
+                && *l == "toggle"
+                && *a == Some(Action::ToggleTableRow(2)))
+        );
+        assert!(chips.iter().any(|(k, l, a)| *k == "d"
+            && *l == "delete"
+            && *a == Some(Action::ConfirmDeleteTableRow(2))));
+
+        let chips = footer_chips(
+            PaneId::Editor,
+            false,
+            false,
+            Some("add header"),
+            false,
+            None,
+        );
+        assert!(
+            !chips
+                .iter()
+                .any(|(_, l, _)| *l == "toggle" || *l == "delete"),
+            "no row selected: no row chips"
         );
     }
 
@@ -527,6 +625,7 @@ mod tests {
                     Some("add header"),
                     false,
                     None,
+                    None,
                     true,
                     true,
                     &mut hits,
@@ -569,6 +668,7 @@ mod tests {
                     false,
                     Some("add header"),
                     false,
+                    None,
                     None,
                     true,
                     true,
@@ -616,6 +716,7 @@ mod tests {
                     Some("add header"),
                     false,
                     None,
+                    None,
                     true,
                     true,
                     &mut hits,
@@ -650,6 +751,7 @@ mod tests {
                     false,
                     Some("add header"),
                     false,
+                    None,
                     None,
                     true,
                     true,
@@ -720,6 +822,7 @@ mod tests {
                     Some("add header"),
                     false,
                     None,
+                    None,
                     true,
                     true,
                     &mut hits,
@@ -774,6 +877,7 @@ mod tests {
                     false,
                     Some("add header"),
                     false,
+                    None,
                     None,
                     true,
                     true,
@@ -868,6 +972,7 @@ mod tests {
                     false,
                     Some("add header"),
                     false,
+                    None,
                     None,
                     true,
                     true,
