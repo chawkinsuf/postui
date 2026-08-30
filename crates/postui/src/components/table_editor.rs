@@ -766,6 +766,7 @@ impl TableEditorState {
         (y + 3).min(bottom)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_ghost_row(
         &self,
         buf: &mut ratatui::buffer::Buffer,
@@ -1280,8 +1281,10 @@ mod tests {
     fn selected_ghost_row_draws_expanded_with_its_add_label() {
         let theme = Theme::dark();
         let map = map_of(&[("page", "2")]);
-        let mut t = TableEditorState::default();
-        t.selected = Some(1); // the ghost
+        let t = TableEditorState {
+            selected: Some(1), // the ghost
+            ..TableEditorState::default()
+        };
         let ctx = ctx(&theme, None);
         let mut hits = HitMap::default();
         let terminal = draw_to(&t, &map, &ctx, &mut hits);
