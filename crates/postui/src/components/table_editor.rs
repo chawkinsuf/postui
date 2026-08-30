@@ -399,18 +399,10 @@ impl TableEditorState {
                 // `map.len()` is the ghost row, so the keyboard can reach it
                 // the same way the mouse can (and an empty table still has
                 // that one stop to land on).
-                let next = match self.selected {
+                self.selected = Some(match self.selected {
                     None => 0, // nothing selected: Down selects the first row
                     Some(s) => (s + 1).min(map.len()),
-                };
-                if next == map.len() {
-                    // Landing on the ghost row opens its key cell for
-                    // typing right away, like the real rows' in-place
-                    // editing; an untouched ghost commits to nothing.
-                    self.begin_add(map);
-                } else {
-                    self.selected = Some(next);
-                }
+                });
                 TableOutcome::consumed()
             }
             KeyCode::Char('k') | KeyCode::Up => {
@@ -510,15 +502,7 @@ impl TableEditorState {
                 } else {
                     here + 1
                 };
-                // Down onto the ghost row keeps the typing flow open —
-                // same auto-edit as arriving there in nav mode. Up never
-                // re-opens it, so the cursor can always climb out (on an
-                // empty table the ghost is row 0 and Up must escape).
-                if ev.code == KeyCode::Down && target >= map.len() {
-                    self.begin_add(map);
-                } else {
-                    self.exit_editing(target, map);
-                }
+                self.exit_editing(target, map);
                 TableOutcome::maybe_warn(warning)
             }
             KeyCode::BackTab => self.walk_cell(map, &edit, false),
@@ -681,9 +665,14 @@ impl TableEditorState {
         // --- the ghost row -------------------------------------------------
         // Always present, one past the data rows: an empty row that becomes
         // a real entry as soon as its key cell commits non-empty. While it
-        // is being typed it draws like any other active row.
+        // is being typed it draws like any other active row; with the
+        // cursor merely resting on it, it expands like a selected row but
+        // keeps its add label — Enter is what starts the add.
         if y < bottom {
-            if ghost_editing {
+            if !ghost_editing && self.selected == Some(map_len) {
+                y = self
+                    .draw_ghost_row_selected(buf, hits, area, y, bottom, map_len, add_label, ctx);
+            } else if ghost_editing {
                 let entry = Entry {
                     // A value typed before the key shows while the key is
                     // being typed, not just once the row commits.
@@ -717,6 +706,66 @@ impl TableEditorState {
     /// its name cell. Both its cells are clickable — clicking either starts
     /// typing a new row.
     #[allow(clippy::too_many_arguments)]
+    /// The ghost row with the keyboard cursor resting on it: the same
+    /// 3-line pill a selected data row gets, but still labelled by
+    /// `add_label` — nothing exists yet to show cells or buttons for.
+    /// Enter (or a click) is what actually opens the add edit.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_ghost_row_selected(
+        &self,
+        buf: &mut ratatui::buffer::Buffer,
+        hits: &mut HitMap,
+        area: Rect,
+        y: u16,
+        bottom: u16,
+        row: usize,
+        add_label: &str,
+        ctx: &DrawCtx,
+    ) -> u16 {
+        let theme = ctx.theme;
+        let text_row = y + 1;
+        let highlight = if ctx.focused {
+            RowHighlight::Selected
+        } else {
+            RowHighlight::Hover
+        };
+        let hover_t = ctx.hover_t();
+        let bg = ListRow::resolve_fill(theme, highlight, theme.control, hover_t);
+        if y < bottom {
+            fill(buf, Rect::new(area.x, y, area.width, 1), bg);
+        }
+        ListRow {
+            highlight,
+            zebra: None,
+        }
+        .paint(
+            buf,
+            text_row,
+            area.x,
+            area.width,
+            theme.control,
+            hover_t,
+            theme,
+        );
+        if text_row + 1 < bottom {
+            fill(buf, Rect::new(area.x, text_row + 1, area.width, 1), bg);
+        }
+        let cols = columns(area.x + 1, area.width.saturating_sub(1));
+        if text_row < bottom {
+            // The lit label reads as "the cursor is here"; unfocused it
+            // demotes to the plain ghost row's muted tone.
+            let fg = if ctx.focused {
+                theme.text
+            } else {
+                theme.text_muted
+            };
+            text(buf, cols.name_x, text_row, add_label, fg, bg, false);
+        }
+        hits.register(Rect::new(area.x, y, area.width, 3), Hit::TableRow(row));
+        Self::register_cells(hits, cols_span(&cols, area), text_row, row);
+        (y + 3).min(bottom)
+    }
+
     fn draw_ghost_row(
         &self,
         buf: &mut ratatui::buffer::Buffer,
@@ -1188,47 +1237,63 @@ mod tests {
         }
     }
 
-    // --- ghost row auto-edit ----------------------------------------------
+    // --- ghost row selection ----------------------------------------------
 
-    /// Arrowing onto the ghost row opens its key-cell edit right away —
-    /// the same immediate typing the real rows offer — instead of a bare
-    /// selection that still needs Enter.
+    /// Arrowing onto the ghost row selects it like any other row — no edit
+    /// yet; Enter is what opens the add edit, same as the real rows.
     #[test]
-    fn down_onto_the_ghost_row_opens_the_add_edit() {
+    fn down_onto_the_ghost_row_selects_it_and_enter_opens_the_add_edit() {
         let mut map = map_of(&[("page", "2")]);
         let mut t = TableEditorState::default();
         t.handle_key(key(KeyCode::Down), &mut map); // row 0
-        assert!(t.editing.is_none(), "a real row: selection only");
         t.handle_key(key(KeyCode::Down), &mut map); // ghost row
-        assert!(t.editing_ghost(map.len()), "the ghost opened for typing");
+        assert_eq!(t.selected, Some(1));
+        assert!(t.editing.is_none(), "selection only, like the real rows");
+        t.handle_key(key(KeyCode::Enter), &mut map);
+        assert!(t.editing_ghost(map.len()), "Enter opens the add edit");
         let edit = t.editing.as_ref().unwrap();
         assert_eq!(edit.col, Col::Key);
         assert_eq!(edit.input.text(), "");
     }
 
-    /// Same when the cursor carries out of a live cell edit: Down from the
-    /// last real row's cell lands on the ghost already editing.
+    /// Moving off a selected-but-untouched ghost creates nothing.
     #[test]
-    fn down_out_of_a_cell_edit_onto_the_ghost_row_opens_the_add_edit() {
+    fn leaving_the_selected_ghost_untouched_saves_no_row() {
         let mut map = map_of(&[("page", "2")]);
         let mut t = TableEditorState::default();
-        t.click_cell(0, Col::Value, &mut map);
         t.handle_key(key(KeyCode::Down), &mut map);
-        assert!(t.editing_ghost(map.len()), "the ghost opened for typing");
-        assert_eq!(map.len(), 1, "the real row committed unchanged");
+        t.handle_key(key(KeyCode::Down), &mut map); // ghost selected
+        t.handle_key(key(KeyCode::Up), &mut map); // straight back out
+        assert_eq!(map.len(), 1, "no empty header appeared");
+        assert_eq!(t.selected, Some(0));
+        // Same through the edit: Enter in, Up straight out.
+        t.handle_key(key(KeyCode::Down), &mut map);
+        t.handle_key(key(KeyCode::Enter), &mut map);
+        t.handle_key(key(KeyCode::Up), &mut map);
+        assert!(t.editing.is_none());
+        assert_eq!(map.len(), 1, "an untouched add edit saves nothing");
     }
 
-    /// Leaving the auto-opened ghost untouched creates nothing.
+    /// With the cursor resting on it, the ghost row draws expanded — the
+    /// selected-row pill — but keeps its add label until Enter.
     #[test]
-    fn leaving_the_auto_opened_ghost_untouched_saves_no_row() {
-        let mut map = map_of(&[("page", "2")]);
+    fn selected_ghost_row_draws_expanded_with_its_add_label() {
+        let theme = Theme::dark();
+        let map = map_of(&[("page", "2")]);
         let mut t = TableEditorState::default();
-        t.handle_key(key(KeyCode::Down), &mut map);
-        t.handle_key(key(KeyCode::Down), &mut map); // ghost, editing
-        t.handle_key(key(KeyCode::Up), &mut map); // straight back out
-        assert!(t.editing.is_none());
-        assert_eq!(map.len(), 1, "no empty header appeared");
-        assert_eq!(t.selected, Some(0), "cursor parked back on the real row");
+        t.selected = Some(1); // the ghost
+        let ctx = ctx(&theme, None);
+        let mut hits = HitMap::default();
+        let terminal = draw_to(&t, &map, &ctx, &mut hits);
+        let row = hits
+            .rect_of(&Hit::TableRow(1))
+            .expect("the ghost row is registered");
+        assert_eq!(row.height, 3, "expanded to the 3-line pill");
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(
+            content.contains("+ Add"),
+            "the add label survives: {content}"
+        );
     }
 
     // --- click entry point ------------------------------------------------
@@ -1426,19 +1491,14 @@ mod tests {
         t.handle_key(key(KeyCode::Char('j')), &mut map);
         t.handle_key(key(KeyCode::Char('j')), &mut map);
         assert_eq!(t.selected, Some(2), "the ghost row is reachable");
-        assert!(
-            t.editing_ghost(map.len()),
-            "and opens for typing on arrival"
-        );
+        assert!(t.editing.is_none(), "selection only — Enter starts the add");
         assert!(
             t.handle_key(key(KeyCode::Down), &mut map).consumed,
             "clamped at the ghost row, still consumed"
         );
         assert_eq!(t.selected, Some(2));
-        t.handle_key(key(KeyCode::Up), &mut map);
-        assert!(t.editing.is_none(), "Up leaves the untouched ghost edit");
+        t.handle_key(key(KeyCode::Char('k')), &mut map);
         assert_eq!(t.selected, Some(1));
-        assert_eq!(map.len(), 2, "no empty row appeared");
         t.handle_key(key(KeyCode::Up), &mut map);
         assert_eq!(t.selected, Some(0));
         assert!(
@@ -2052,7 +2112,9 @@ mod tests {
             "resting fill, not the lift"
         );
 
-        // Ghost-row cursor: a pure cursor, so it vanishes entirely.
+        // Ghost-row cursor: like the data rows, the expansion persists (it
+        // feeds table_geometry) while the styling demotes — resting fill,
+        // muted add label.
         let t = TableEditorState {
             selected: Some(map.len()),
             ..TableEditorState::default()
@@ -2060,8 +2122,10 @@ mod tests {
         let mut hits = HitMap::default();
         let terminal = draw_to(&t, &map, &unfocused, &mut hits);
         let buf = terminal.backend().buffer();
-        let ghost = hits.rect_of(&Hit::TableCell { row: 1, col: 0 }).unwrap();
-        let cell = buf.cell((ghost.x, ghost.y)).unwrap();
+        let ghost = hits.rect_of(&Hit::TableRow(1)).unwrap();
+        assert_eq!(ghost.height, 3, "expanded ghost survives losing focus");
+        let label = hits.rect_of(&Hit::TableCell { row: 1, col: 0 }).unwrap();
+        let cell = buf.cell((label.x, label.y)).unwrap();
         assert_eq!(cell.bg, theme.control, "ghost cursor lift hidden");
         assert_eq!(cell.fg, theme.text_muted, "ghost label stays muted");
     }

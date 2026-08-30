@@ -2158,7 +2158,10 @@ impl Editor {
         let active = self
             .table
             .active_index(map_len)
-            .or_else(|| self.table.editing_ghost(map_len).then_some(map_len));
+            .or_else(|| self.table.editing_ghost(map_len).then_some(map_len))
+            // The cursor resting on the ghost row expands it like any
+            // selected row (still showing its add label).
+            .or_else(|| (self.table.selected == Some(map_len)).then_some(map_len));
         let active_hint = active.is_some_and(|_| {
             self.active_tab == EditorTab::Vars
                 && self
