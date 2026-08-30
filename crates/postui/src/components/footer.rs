@@ -64,14 +64,14 @@ pub(crate) fn footer_chips(
                 ("↑↓←→", "navigate", None),
             ];
             if url_focused {
-                // Labels lean on context — with the address bar focused,
-                // "copy" is the URL and "tls" is the padlock. Kept short so
-                // the vars chip survives the 120-col dirty footer.
+                // "tls" leans on context (the padlock sits in the focused
+                // bar); labels stay tight so the vars chip survives the
+                // 120-col dirty footer.
                 chips.insert(
                     1,
                     (
                         "alt+y",
-                        "copy",
+                        "copy url",
                         Some(Action::CopyToClipboard(crate::action::CopyTarget::Url)),
                     ),
                 );
@@ -461,7 +461,7 @@ mod tests {
             "add-row is inert while the address bar is focused"
         );
         assert!(chips.iter().any(|(k, l, a)| *k == "alt+y"
-            && *l == "copy"
+            && *l == "copy url"
             && *a == Some(Action::CopyToClipboard(crate::action::CopyTarget::Url))));
         assert!(
             chips.iter().any(|(k, l, a)| *k == "alt+t"
