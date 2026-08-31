@@ -8375,7 +8375,10 @@ fn blocked_send_toast_names_first_needs_selection_var_with_a_picker_hint() {
     let content = rendered_text(&mut app);
     assert!(content.contains("need a selection"), "{content}");
     assert!(
-        content.contains("press alt+shift+v to select user"),
+        content.contains(&format!(
+            "press {}+shift+v to select user",
+            crate::keys::alt_label()
+        )),
         "{content}"
     );
 }
@@ -9197,7 +9200,10 @@ fn variables_screen_footer_hides_the_dead_save_group_but_keeps_palette_and_quit(
             .is_none(),
         "no clickable save chip on the Variables screen"
     );
-    assert!(content.contains("^P"), "palette works here and stays: {content}");
+    assert!(
+        content.contains("^P"),
+        "palette works here and stays: {content}"
+    );
     assert!(
         !content.contains("^C"),
         "plain q quits here now, so the quit keycap is honest again: {content}"
@@ -9219,7 +9225,10 @@ fn var_edit_set_option_description_writes_and_clearing_removes_it() {
     }));
     let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(env_doc.contains("boss"), "{env_doc}");
-    assert!(!env_doc.contains("admin"), "replaced, not appended: {env_doc}");
+    assert!(
+        !env_doc.contains("admin"),
+        "replaced, not appended: {env_doc}"
+    );
 
     app.update(Action::VarEdit(VarEditOp::SetOptionDescription {
         env: "qa".into(),
@@ -11969,7 +11978,10 @@ fn cycle_split_steps_through_every_stop_and_wraps() {
         app.update(Action::CycleSplit);
         seen.push(app.split_state().stop());
     }
-    assert_eq!(seen, [ResponseBig, ResponseFull, EditorFull, EditorBig, Even]);
+    assert_eq!(
+        seen,
+        [ResponseBig, ResponseFull, EditorFull, EditorBig, Even]
+    );
 }
 
 /// The split is a persisted layout preference: chip presses and the

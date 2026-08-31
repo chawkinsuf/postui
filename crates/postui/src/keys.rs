@@ -1,6 +1,35 @@
 use crate::action::Action;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::borrow::Cow;
 use std::collections::HashMap;
+
+/// The modifier name keycaps and hints show for ALT: macs label the key
+/// "option", so a macOS build advertises `opt+b` while the combo strings
+/// themselves stay spelled `alt+b` everywhere else (`KeyCombo::parse`,
+/// keys.toml overrides, chip data tuples, tests' key synthesis).
+pub fn alt_label() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "opt"
+    } else {
+        "alt"
+    }
+}
+
+/// Rewrites a display label's leading `alt+` to the platform spelling
+/// (`opt+` on macOS — same width, so precomputed keycap layouts hold).
+/// Prefix-only on purpose: keycap labels are app-authored (`alt+shift+v`),
+/// and the other labels that share the chip painter (methods, statuses,
+/// counts) never start with `alt+`.
+pub fn display_keycap(label: &str) -> Cow<'_, str> {
+    relabel_alt(label, alt_label())
+}
+
+fn relabel_alt<'a>(label: &'a str, alt: &str) -> Cow<'a, str> {
+    match label.strip_prefix("alt+") {
+        Some(rest) if alt != "alt" => Cow::Owned(format!("{alt}+{rest}")),
+        _ => Cow::Borrowed(label),
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct KeyCombo {
@@ -96,6 +125,26 @@ impl KeyCombo {
             modifiers: mods,
         }
     }
+}
+
+/// Folds cmd+arrow — SUPER, which only kitty-protocol terminals report
+/// (see `postui --setup`) — into the key it means on macOS: cmd+left/right
+/// are Home/End, cmd+up/down are ctrl+Home/ctrl+End (buffer start/end).
+/// SHIFT rides along so cmd+shift+arrow selects to the same target. Done
+/// once at the top of `App::handle_key` so every component sees the GUI
+/// spelling it already implements.
+pub fn normalize_super_arrows(ev: KeyEvent) -> KeyEvent {
+    if !ev.modifiers.contains(KeyModifiers::SUPER) {
+        return ev;
+    }
+    let (code, extra) = match ev.code {
+        KeyCode::Left => (KeyCode::Home, KeyModifiers::NONE),
+        KeyCode::Right => (KeyCode::End, KeyModifiers::NONE),
+        KeyCode::Up => (KeyCode::Home, KeyModifiers::CONTROL),
+        KeyCode::Down => (KeyCode::End, KeyModifiers::CONTROL),
+        _ => return ev,
+    };
+    KeyEvent::new(code, (ev.modifiers - KeyModifiers::SUPER) | extra)
 }
 
 pub struct Keymap {
@@ -324,7 +373,7 @@ impl Keymap {
 fn format_combo(combo: &KeyCombo) -> String {
     let mut parts = Vec::new();
     if combo.modifiers.contains(KeyModifiers::ALT) {
-        parts.push("alt".to_string());
+        parts.push(alt_label().to_string());
     }
     let (implicit_shift, key) = match combo.code {
         KeyCode::Char(c) if c.is_ascii_uppercase() => (true, c.to_ascii_lowercase().to_string()),
@@ -392,6 +441,43 @@ mod tests {
         let c = KeyCombo::parse("alt+right").unwrap();
         assert_eq!(c.code, KeyCode::Right);
         assert_eq!(c.modifiers, KeyModifiers::ALT);
+    }
+
+    #[test]
+    fn relabel_alt_swaps_only_the_keycap_prefix() {
+        assert_eq!(relabel_alt("alt+b", "opt"), "opt+b");
+        assert_eq!(relabel_alt("alt+shift+v", "opt"), "opt+shift+v");
+        // Identity spelling borrows; non-keycap labels pass through.
+        assert_eq!(relabel_alt("alt+b", "alt"), "alt+b");
+        assert_eq!(relabel_alt("GET", "opt"), "GET");
+        assert_eq!(relabel_alt("^P", "opt"), "^P");
+    }
+
+    #[test]
+    fn super_arrows_normalize_to_home_end() {
+        let n = |code, mods| normalize_super_arrows(KeyEvent::new(code, mods));
+        let ev = n(KeyCode::Left, KeyModifiers::SUPER);
+        assert_eq!((ev.code, ev.modifiers), (KeyCode::Home, KeyModifiers::NONE));
+        let ev = n(KeyCode::Right, KeyModifiers::SUPER | KeyModifiers::SHIFT);
+        assert_eq!((ev.code, ev.modifiers), (KeyCode::End, KeyModifiers::SHIFT));
+        let ev = n(KeyCode::Up, KeyModifiers::SUPER);
+        assert_eq!(
+            (ev.code, ev.modifiers),
+            (KeyCode::Home, KeyModifiers::CONTROL)
+        );
+        let ev = n(KeyCode::Down, KeyModifiers::SUPER);
+        assert_eq!(
+            (ev.code, ev.modifiers),
+            (KeyCode::End, KeyModifiers::CONTROL)
+        );
+        // Untouched: plain arrows and super over non-arrows.
+        let ev = n(KeyCode::Left, KeyModifiers::NONE);
+        assert_eq!((ev.code, ev.modifiers), (KeyCode::Left, KeyModifiers::NONE));
+        let ev = n(KeyCode::Char('a'), KeyModifiers::SUPER);
+        assert_eq!(
+            (ev.code, ev.modifiers),
+            (KeyCode::Char('a'), KeyModifiers::SUPER)
+        );
     }
 
     #[test]

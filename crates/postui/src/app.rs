@@ -2082,7 +2082,10 @@ impl App {
                             (*cause == postui_core::prepare::UnresolvedCause::NeedsSelection)
                                 .then(|| name.clone())
                         }) {
-                            msg.push_str(&format!(" \u{2014} press alt+shift+v to select {name}"));
+                            msg.push_str(&format!(
+                                " \u{2014} press {}+shift+v to select {name}",
+                                crate::keys::alt_label()
+                            ));
                         }
                         self.toasts.push(msg, ToastKind::Error);
                         return true;
@@ -5686,6 +5689,7 @@ impl App {
     /// `self.update(..)` call's result along the branch taken, plus any
     /// modal state change (close/typing) that bypasses `update`.
     pub fn handle_key(&mut self, keymap: &Keymap, ev: KeyEvent) -> bool {
+        let ev = crate::keys::normalize_super_arrows(ev);
         let combo = KeyCombo::from_event(&ev);
         let global = keymap.lookup(&combo);
         let modified = ev
@@ -5722,7 +5726,10 @@ impl App {
             if modified
                 && global == Some(Action::OpenThemeChooser)
                 && self.theme_preview.is_some()
-                && matches!(self.modals.top(), Some(crate::components::modal::Modal::Chooser(_)))
+                && matches!(
+                    self.modals.top(),
+                    Some(crate::components::modal::Modal::Chooser(_))
+                )
             {
                 return self.update(Action::Close);
             }

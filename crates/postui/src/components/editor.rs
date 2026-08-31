@@ -3910,7 +3910,10 @@ mod tests {
             "pill, one gap column, then the control's left end cap"
         );
         assert_eq!(pill.y, first.y, "same row as the control");
-        assert!(content.contains(" alt+w "), "{content}");
+        assert!(
+            content.contains(&format!(" {}+w ", crate::keys::alt_label())),
+            "{content}"
+        );
     }
 
     /// Draws `e` at 120x14 (wide enough for every toolbar chip, Body tab
@@ -4221,7 +4224,10 @@ mod tests {
             !content.contains("select all"),
             "the select-all chip is gone (ctrl+a covers it): {content}"
         );
-        assert!(content.contains("alt+e"), "{content}");
+        assert!(
+            content.contains(&format!("{}+e", crate::keys::alt_label())),
+            "{content}"
+        );
         assert!(content.contains("clear"), "{content}");
         assert!(hits.rect_of(&Hit::FooterChip(Action::BodyClear)).is_some());
     }

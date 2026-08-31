@@ -25,7 +25,10 @@ impl Chip<'_> {
     /// `self.color` still yields a light (but tinted-down) fill most of
     /// the time, since `tint` only blends 22% toward the surface.
     pub fn paint(&self, buf: &mut Buffer, x: u16, y: u16, on: Color, theme: &Theme) -> u16 {
-        let s = format!(" {} ", self.label);
+        // Keycap labels swap `alt+` for the platform spelling here, at the
+        // single paint funnel, so the chip data tuples (and the actions
+        // keyed off them) keep the canonical `alt+` strings.
+        let s = format!(" {} ", crate::keys::display_keycap(self.label));
         let width = s.chars().count() as u16;
         let bg = theme.tint(self.color, on);
         // A dark lift of the fill itself, rather than `theme.page`, so

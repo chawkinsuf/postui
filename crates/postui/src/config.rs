@@ -350,6 +350,8 @@ pub enum CliParse {
     Root(Option<PathBuf>),
     /// A leading-dash argument (`--help`, `-x`, ...): print usage and exit.
     Usage,
+    /// `--setup`: print terminal keyboard-config guidance and exit.
+    Setup,
 }
 
 /// Parses `postui`'s single optional argument. Any value starting with `-`
@@ -357,6 +359,7 @@ pub enum CliParse {
 /// project directory, since no real path starts with a dash without `./`.
 pub fn parse_cli(arg: Option<String>) -> CliParse {
     match arg {
+        Some(s) if s == "--setup" => CliParse::Setup,
         Some(s) if s.starts_with('-') => CliParse::Usage,
         Some(s) => CliParse::Root(Some(expand_tilde(&s))),
         None => CliParse::Root(None),
@@ -667,6 +670,13 @@ mod tests {
     fn parse_cli_leading_dash_is_usage() {
         assert_eq!(parse_cli(Some("--help".into())), CliParse::Usage);
         assert_eq!(parse_cli(Some("-x".into())), CliParse::Usage);
+    }
+
+    #[test]
+    fn parse_cli_setup_flag() {
+        assert_eq!(parse_cli(Some("--setup".into())), CliParse::Setup);
+        // Not a prefix match: anything else dashed is still usage.
+        assert_eq!(parse_cli(Some("--setup-x".into())), CliParse::Usage);
     }
 
     #[test]

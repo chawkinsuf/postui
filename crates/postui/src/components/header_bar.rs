@@ -368,7 +368,10 @@ mod tests {
             .rect_of(&Hit::HeaderEnvCycle)
             .expect("env-cycle pill registered");
         assert_eq!(rect.x, env_rect.x + env_rect.width + 1);
-        assert_eq!(row_text(&term, &rect), " alt+c ");
+        assert_eq!(
+            row_text(&term, &rect),
+            format!(" {}+c ", crate::keys::alt_label())
+        );
         assert_eq!(
             cell(&term, rect.x + 1, rect.y).bg,
             theme.tint(theme.text_muted, theme.control),
@@ -401,7 +404,10 @@ mod tests {
             cycle_rect.x + cycle_rect.width + 8,
             "a group gap after the env-cycle pill"
         );
-        assert_eq!(row_text(&term, &rect), " Variable Manager  alt+v ");
+        assert_eq!(
+            row_text(&term, &rect),
+            format!(" Variable Manager  {}+v ", crate::keys::alt_label())
+        );
         let label_cell = cell(&term, rect.x + 1, rect.y);
         assert_eq!(label_cell.symbol(), "V");
         assert_eq!(label_cell.fg, theme.text, "prominent label, not muted");
@@ -441,7 +447,10 @@ mod tests {
         let (term, hits) = render_wide(&theme, "alpha", "qa", false, None, 110);
         let rect = hits.rect_of(&Hit::HeaderTheme).unwrap();
         assert_eq!(rect.x + rect.width, 110 - 3, "right-aligned");
-        assert_eq!(row_text(&term, &rect), " Theme  alt+b ");
+        assert_eq!(
+            row_text(&term, &rect),
+            format!(" Theme  {}+b ", crate::keys::alt_label())
+        );
         let label_cell = cell(&term, rect.x + 1, rect.y);
         assert_eq!(label_cell.symbol(), "T");
         assert_eq!(label_cell.fg, theme.text, "prominent label, not muted");
@@ -467,14 +476,8 @@ mod tests {
     #[test]
     fn variable_manager_chip_stays_when_the_theme_chip_drops() {
         let theme = Theme::dark();
-        let (_term, hits) = render_wide(
-            &theme,
-            "a-rather-long-project",
-            "staging",
-            false,
-            None,
-            60,
-        );
+        let (_term, hits) =
+            render_wide(&theme, "a-rather-long-project", "staging", false, None, 60);
         assert!(hits.rect_of(&Hit::HeaderVars).is_some());
         assert!(hits.rect_of(&Hit::HeaderTheme).is_none());
     }

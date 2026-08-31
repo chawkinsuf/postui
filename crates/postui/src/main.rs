@@ -20,6 +20,17 @@ async fn main() -> anyhow::Result<()> {
     let cli_root = match cli {
         postui::config::CliParse::Usage => {
             println!("usage: postui [directory]");
+            println!("       postui --setup    terminal keyboard setup (macOS opt/cmd keys)");
+            return Ok(());
+        }
+        postui::config::CliParse::Setup => {
+            print!(
+                "{}",
+                postui::setup::setup_text(
+                    cfg!(target_os = "macos"),
+                    postui::setup::detect_from_env()
+                )
+            );
             return Ok(());
         }
         postui::config::CliParse::Root(root) => root,
