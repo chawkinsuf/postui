@@ -2255,6 +2255,10 @@ impl Editor {
                 if self.table_collapsed { 1.0 } else { 0.0 },
             )
             .clamp(0.0, 1.0);
+        // Where the strip row's left-side content (tabs + the "vars"
+        // badge) ends: the split control's keycap pill below must never
+        // paint over it on a narrow pane.
+        let mut strip_end = area.x;
         if fade_t < 1.0 {
             let rects = {
                 let buf = frame.buffer_mut();
@@ -2278,13 +2282,15 @@ impl Editor {
 
             // The "vars" indicator sits right after the tab blocks, on the
             // labels row.
+            let last_rect = rects[tabs.len() - 1];
+            strip_end = last_rect.x + last_rect.width;
             if self.substitute_body {
-                let last_rect = rects[tabs.len() - 1];
                 let x = last_rect.x + last_rect.width + 2;
                 frame.render_widget(
                     Paragraph::new(Line::styled("vars ", Style::default().fg(theme.accent))),
                     Rect::new(x, area.y, 5, 1),
                 );
+                strip_end = x + 5;
             }
             if fade_t > 0.0 {
                 // Mid-slide: blend the whole strip toward the page it sits
@@ -2321,6 +2327,36 @@ impl Editor {
         .paint(buf, control_x, area.y, theme);
         for (rect, stop) in rects {
             hits.register(rect, crate::hit::Hit::SplitStop(stop));
+        }
+        // The control advertises its own shortcut in place — an `alt+w`
+        // keycap pill one gap column to its left, itself a clickable
+        // cycle button (the footer no longer carries a "split" chip).
+        let cycle_hit = crate::hit::Hit::FooterChip(Action::CycleSplit);
+        let pill_on = if ctx.hovered == Some(&cycle_hit) {
+            theme.control_hover
+        } else {
+            theme.control
+        };
+        let pill_label = " alt+w ";
+        let pill_w = pill_label.chars().count() as u16;
+        let pill_x = control_x.saturating_sub(pill_w + 1);
+        // On a pane too narrow to fit it clear of the tab strip (and the
+        // "vars" badge), the pill drops — the control itself stays.
+        if pill_x > strip_end {
+            crate::paint::Chip {
+                label: "alt+w",
+                color: theme.text_muted,
+            }
+            .paint(buf, pill_x, area.y, pill_on, theme);
+            hits.register(
+                Rect {
+                    x: pill_x,
+                    y: area.y,
+                    width: pill_w,
+                    height: 1,
+                },
+                cycle_hit,
+            );
         }
     }
 
@@ -3854,6 +3890,27 @@ mod tests {
             hits.rect_of(&Hit::SplitStop(s))
                 .unwrap_or_else(|| panic!("{s:?} chip registered"))
         })
+    }
+
+    /// The split control advertises its own shortcut in place: an `alt+w`
+    /// keycap pill one gap column left of the control, clickable as a
+    /// cycle button (`Hit::FooterChip(Action::CycleSplit)`), replacing
+    /// the old footer "split" chip.
+    #[test]
+    fn split_control_advertises_its_keycap_beside_it() {
+        let mut e = Editor::default();
+        let (content, hits) = draw_editor(&mut e);
+        let pill = hits
+            .rect_of(&Hit::FooterChip(Action::CycleSplit))
+            .expect("split keycap pill registered");
+        let [first, ..] = control_rects(&hits);
+        assert_eq!(
+            pill.x + pill.width + 2,
+            first.x,
+            "pill, one gap column, then the control's left end cap"
+        );
+        assert_eq!(pill.y, first.y, "same row as the control");
+        assert!(content.contains(" alt+w "), "{content}");
     }
 
     /// Draws `e` at 120x14 (wide enough for every toolbar chip, Body tab

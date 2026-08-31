@@ -647,6 +647,10 @@ impl App {
             Action::OpenProjectChooser, // Hit::HeaderProject
             Action::OpenEnvChooser,     // Hit::HeaderEnv
             Action::CycleEnv,           // Hit::HeaderEnvCycle
+            // The split control's own keycap pill (editor tab-bar row)
+            // registers Hit::FooterChip(CycleSplit) outside `footer_chips`,
+            // so the parity sweep's Group A never sees it.
+            Action::CycleSplit,
             Action::OpenVarManager,     // Hit::HeaderVars
             Action::OpenThemeChooser,   // Hit::HeaderTheme
             Action::OpenMethodDropdown, // Hit::MethodSelector

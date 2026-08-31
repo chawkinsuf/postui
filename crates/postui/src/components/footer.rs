@@ -63,9 +63,8 @@ pub(crate) fn footer_chips(
                     "vars",
                     Some(Action::OpenVarPicker { completing: false }),
                 ),
-                // One key steps the pane split through its five stops —
-                // the keyboard twin of the tab-bar row's split control.
-                ("alt+w", "split", Some(Action::CycleSplit)),
+                // The split cycle's alt+w is advertised beside the split
+                // control itself (the tab-bar row's keycap pill), not here.
                 // Arrows are the primary route (method ← URL ↓ tabs ↓ content);
                 // alt+1/2/3 still work where the terminal passes them through.
                 ("↑↓←→", "navigate", None),
@@ -93,7 +92,7 @@ pub(crate) fn footer_chips(
                 // Keyboard twins of the expanded row's ● toggle and 🗑
                 // delete buttons; the ␣ keycap keeps the row narrow.
                 let toggle_label = if enabled { "disable" } else { "enable" };
-                let pos = chips.len() - 3; // before vars + split + navigate
+                let pos = chips.len() - 2; // before vars + navigate
                 chips.insert(pos, ("␣", toggle_label, Some(Action::ToggleTableRow(i))));
                 chips.insert(
                     pos + 1,
@@ -118,7 +117,6 @@ pub(crate) fn footer_chips(
                 )),
             ),
             ("/", "search", Some(Action::OpenResponseSearch)),
-            ("alt+w", "split", Some(Action::CycleSplit)),
         ],
     };
     chips
@@ -563,6 +561,22 @@ mod tests {
                 .any(|(_, _, a)| *a == Some(Action::ToggleInsecure)),
             "address-bar chips stay off the content-focus footer"
         );
+    }
+
+    /// The split shortcut is advertised beside the split control itself
+    /// (the editor tab-bar row's keycap pill), not as a footer chip — no
+    /// pane's footer list carries it.
+    #[test]
+    fn no_footer_list_carries_the_split_chip() {
+        for pane in [PaneId::Sidebar, PaneId::Editor, PaneId::Response] {
+            for url_focused in [false, true] {
+                let chips = footer_chips(pane, false, false, Some("add header"), url_focused, None);
+                assert!(
+                    !chips.iter().any(|(_, _, a)| *a == Some(Action::CycleSplit)),
+                    "{pane:?} url_focused={url_focused} still advertises split"
+                );
+            }
+        }
     }
 
     /// A selected data row advertises its own quick actions — the
