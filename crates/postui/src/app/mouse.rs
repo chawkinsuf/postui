@@ -646,6 +646,7 @@ impl App {
             Action::Close,              // Hit::ModalOutside
             Action::OpenProjectChooser, // Hit::HeaderProject
             Action::OpenEnvChooser,     // Hit::HeaderEnv
+            Action::CycleEnv,           // Hit::HeaderEnvCycle
             Action::OpenVarManager,     // Hit::HeaderVars
             Action::OpenThemeChooser,   // Hit::HeaderTheme
             Action::OpenMethodDropdown, // Hit::MethodSelector
@@ -764,6 +765,7 @@ impl App {
             }
             Hit::HeaderProject => self.update(Action::OpenProjectChooser),
             Hit::HeaderEnv => self.update(Action::OpenEnvChooser),
+            Hit::HeaderEnvCycle => self.update(Action::CycleEnv),
             Hit::HeaderTheme => self.update(Action::OpenThemeChooser),
             Hit::HeaderVars => {
                 if self.screen == crate::app::Screen::VarManager {

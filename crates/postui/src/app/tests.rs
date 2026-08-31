@@ -1994,6 +1994,22 @@ fn click_header_env_opens_env_chooser() {
     }
 }
 
+/// The keycap pill beside the env chip is a real cycle button: clicking
+/// it steps the environment exactly as alt+c does, no chooser involved.
+#[test]
+fn click_header_env_cycle_pill_cycles_the_environment() {
+    let (mut app, _dir) = app_with_envs();
+    render_once(&mut app);
+    let r = app
+        .hits
+        .rect_of(&crate::hit::Hit::HeaderEnvCycle)
+        .expect("env-cycle pill registered in the header");
+    assert_eq!(app.project.env_label(), "no env");
+    app.handle_mouse(left_down(r.x + 1, r.y));
+    assert_eq!(app.project.env_label(), "prod");
+    assert!(app.modals.is_empty(), "cycling opens no dropdown");
+}
+
 #[test]
 fn click_footer_palette_chip_opens_palette() {
     let mut app = App::new_for_test();

@@ -13,6 +13,9 @@ pub enum Hit {
     Pane(PaneId),
     HeaderProject,
     HeaderEnv,
+    /// The `alt+c` keycap pill beside the env chip: cycles the active
+    /// environment on click, same as the key itself.
+    HeaderEnvCycle,
     /// The header's "vars" chip: toggles the Variable Manager screen.
     HeaderVars,
     /// The right-aligned "theme" chip on the app bar: opens the theme
