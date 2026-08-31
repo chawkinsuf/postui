@@ -6318,6 +6318,41 @@ fn ctrl_p_still_opens_the_palette_on_top_of_the_manager_screen() {
     );
 }
 
+/// alt+b opens the theme chooser — from Main, and (whitelisted under the
+/// same modal-on-top rule as the palette) from the Manager screen too.
+#[test]
+fn alt_b_opens_the_theme_chooser_on_main_and_the_manager_screen() {
+    let mut app = App::new_for_test();
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, alt('b'));
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Chooser(_))),
+        "alt+b opens the theme chooser"
+    );
+    app.update(Action::Close);
+
+    app.handle_key(&keymap, alt('v'));
+    assert_eq!(app.screen, crate::app::Screen::VarManager);
+    app.handle_key(&keymap, alt('b'));
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Chooser(_))),
+        "alt+b escapes the manager screen's input capture"
+    );
+    assert_eq!(app.screen, crate::app::Screen::VarManager);
+}
+
+/// ToggleInsecure moved off alt+t to make room for the theme chooser.
+#[test]
+fn alt_i_toggles_insecure() {
+    let mut app = App::new_for_test();
+    let keymap = Keymap::default_bindings();
+    assert!(!app.editor.insecure);
+    app.handle_key(&keymap, alt('i'));
+    assert!(app.editor.insecure, "alt+i toggles TLS verification off");
+    app.handle_key(&keymap, alt('i'));
+    assert!(!app.editor.insecure);
+}
+
 // --- Task 11: Manager navigation + in-place value editing (spec §5) -------
 
 fn var_project(dir: &std::path::Path) {

@@ -6419,7 +6419,8 @@ impl App {
 /// The only global actions a modified (ctrl/alt) combo may still trigger
 /// while a non-`Main` screen (e.g. the Variable Manager) has captured
 /// input: opening a modal on top of the screen (today, just the command
-/// palette — the spec's "the modal stack works on top unchanged"), the
+/// palette and the theme chooser — the spec's "the modal stack works on
+/// top unchanged"), the
 /// screen open/close actions themselves, quit, and cycling the active
 /// environment (alt+c) — the one Main shortcut whose target state, the
 /// active env, is also meaningful inside the Variable Manager (it shows
@@ -6433,6 +6434,7 @@ fn screen_escape_whitelist(action: &Action) -> bool {
     matches!(
         action,
         Action::OpenPalette
+            | Action::OpenThemeChooser
             | Action::OpenVarManager
             | Action::CloseScreen
             | Action::Quit

@@ -65,7 +65,7 @@ pub(crate) fn footer_chips(
                 ),
                 // One key steps the pane split through its five stops —
                 // the keyboard twin of the tab-bar row's split control.
-                ("alt+s", "split", Some(Action::CycleSplit)),
+                ("alt+w", "split", Some(Action::CycleSplit)),
                 // Arrows are the primary route (method ← URL ↓ tabs ↓ content);
                 // alt+1/2/3 still work where the terminal passes them through.
                 ("↑↓←→", "navigate", None),
@@ -82,7 +82,7 @@ pub(crate) fn footer_chips(
                         Some(Action::CopyToClipboard(crate::action::CopyTarget::Url)),
                     ),
                 );
-                chips.insert(2, ("alt+t", "tls", Some(Action::ToggleInsecure)));
+                chips.insert(2, ("alt+i", "tls", Some(Action::ToggleInsecure)));
             } else if let Some(label) = add_row_label {
                 // Named for what it adds on the active tab ("add header" on
                 // Headers, …); hidden on the Body tab, where the action is
@@ -118,7 +118,7 @@ pub(crate) fn footer_chips(
                 )),
             ),
             ("/", "search", Some(Action::OpenResponseSearch)),
-            ("alt+s", "split", Some(Action::CycleSplit)),
+            ("alt+w", "split", Some(Action::CycleSplit)),
         ],
     };
     chips
@@ -538,7 +538,7 @@ mod tests {
             && *l == "copy url"
             && *a == Some(Action::CopyToClipboard(crate::action::CopyTarget::Url))));
         assert!(
-            chips.iter().any(|(k, l, a)| *k == "alt+t"
+            chips.iter().any(|(k, l, a)| *k == "alt+i"
                 && *l == "tls"
                 && *a == Some(Action::ToggleInsecure))
         );

@@ -129,6 +129,7 @@ pub(crate) fn named_actions() -> Vec<(&'static str, Action)> {
         ("body_clear", Action::BodyClear),
         ("toggle_body_vars", Action::ToggleBodyVars),
         ("toggle_insecure", Action::ToggleInsecure),
+        ("theme_choose", Action::OpenThemeChooser),
         (
             "copy_url",
             Action::CopyToClipboard(crate::action::CopyTarget::Url),
@@ -198,8 +199,9 @@ impl Keymap {
             ("alt+f", Action::FormatBody),
             ("alt+g", Action::MinifyBody),
             ("alt+x", Action::BodyClear),
-            ("alt+b", Action::ToggleBodyVars),
-            ("alt+t", Action::ToggleInsecure),
+            ("alt+s", Action::ToggleBodyVars),
+            ("alt+i", Action::ToggleInsecure),
+            ("alt+b", Action::OpenThemeChooser),
             (
                 "alt+y",
                 Action::CopyToClipboard(crate::action::CopyTarget::Url),
@@ -218,7 +220,7 @@ impl Keymap {
             ("alt+shift+v", Action::OpenVarPicker { completing: false }),
             ("alt+a", Action::TableAddRow),
             ("alt+p", Action::ToggleTableCollapse),
-            ("alt+s", Action::CycleSplit),
+            ("alt+w", Action::CycleSplit),
             ("alt+v", Action::OpenVarManager),
             ("ctrl+shift+e", Action::ExtractToVariable),
             ("ctrl+shift+d", Action::DuplicateRequest),
@@ -414,8 +416,11 @@ mod tests {
         assert_eq!(get("alt+f"), Some(Action::FormatBody));
         assert_eq!(get("alt+g"), Some(Action::MinifyBody));
         assert_eq!(get("alt+x"), Some(Action::BodyClear));
-        assert_eq!(get("alt+b"), Some(Action::ToggleBodyVars));
-        assert_eq!(get("alt+t"), Some(Action::ToggleInsecure));
+        assert_eq!(get("alt+s"), Some(Action::ToggleBodyVars));
+        assert_eq!(get("alt+i"), Some(Action::ToggleInsecure));
+        assert_eq!(get("alt+b"), Some(Action::OpenThemeChooser));
+        assert_eq!(get("alt+w"), Some(Action::CycleSplit));
+        assert_eq!(get("alt+t"), None, "alt+t is free again");
         assert_eq!(
             get("alt+y"),
             Some(Action::CopyToClipboard(crate::action::CopyTarget::Url))

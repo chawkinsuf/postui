@@ -2431,7 +2431,7 @@ impl Editor {
         let chips: Vec<(&str, &str, Option<Action>)> = vec![
             ("alt+f", "format", Some(Action::FormatBody)),
             ("alt+g", "minify", Some(Action::MinifyBody)),
-            ("alt+b", sub_label, Some(Action::ToggleBodyVars)),
+            ("alt+s", sub_label, Some(Action::ToggleBodyVars)),
             ("alt+e", "$EDITOR", Some(Action::OpenBodyInEditor)),
             ("alt+x", "clear", Some(Action::BodyClear)),
         ];
