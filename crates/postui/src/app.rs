@@ -2864,10 +2864,13 @@ impl App {
                 true
             }
             Action::OpenVarManager => {
-                if self.screen != Screen::VarManager {
-                    self.prior_focus = self.focus;
-                    self.screen = Screen::VarManager;
+                // A toggle: alt+v (and the header vars chip) close the
+                // manager they opened.
+                if self.screen == Screen::VarManager {
+                    return self.update(Action::CloseScreen);
                 }
+                self.prior_focus = self.focus;
+                self.screen = Screen::VarManager;
                 true
             }
             Action::CloseScreen => {

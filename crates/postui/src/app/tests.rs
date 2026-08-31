@@ -6142,15 +6142,23 @@ fn modals_still_open_and_close_on_top_of_the_manager_screen() {
 }
 
 #[test]
-fn plain_q_does_not_quit_from_the_manager_screen() {
-    let mut app = App::new_for_test();
+fn plain_q_types_into_a_live_grid_edit_instead_of_quitting() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
     let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, alt('v'));
-    assert_eq!(app.screen, crate::app::Screen::VarManager);
+    goto_group(&mut app, "user");
+    app.varmanager.start_cell_edit(&app.project, 0, 1);
 
     app.handle_key(&keymap, plain('q'));
-    assert!(!app.should_quit, "q is not the palette and must not quit");
-    assert_eq!(app.screen, crate::app::Screen::VarManager);
+    assert!(!app.should_quit, "a live edit owns the keyboard");
+    let edit = app.varmanager.grid.editing.as_ref().unwrap();
+    assert!(edit.input.text().ends_with('q'), "{:?}", edit.input.text());
+    // ...and the quit chip's keycap goes back to the honest ^C while the
+    // edit is live.
+    let content = rendered_text_tall(&mut app);
+    assert!(content.contains("^C  quit"), "{content}");
 }
 
 #[test]
@@ -6519,7 +6527,10 @@ fn var_edit_a_failed_write_toasts_and_writes_nothing() {
 /// panicking if none does — `rendered_text` first so `left_rows` is
 /// populated (the list only rebuilds inside `draw`).
 fn goto_row(app: &mut App, pred: impl Fn(&crate::components::varmanager::VmRow) -> bool) {
-    app.update(Action::OpenVarManager);
+    // OpenVarManager is a toggle now — only open when not already there.
+    if app.screen != crate::app::Screen::VarManager {
+        app.update(Action::OpenVarManager);
+    }
     rendered_text(app);
     let i = app
         .varmanager
@@ -9050,6 +9061,28 @@ fn clicking_off_the_quick_add_option_prompt_still_cancels() {
 }
 
 #[test]
+fn alt_v_toggles_the_variable_manager_closed_and_restores_focus() {
+    let mut app = App::new_for_test();
+    app.update(Action::FocusPane(PaneId::Response));
+    let keymap = Keymap::default_bindings();
+    let alt_v = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT);
+
+    app.handle_key(&keymap, alt_v);
+    assert_eq!(app.screen, Screen::VarManager);
+    app.handle_key(&keymap, alt_v);
+    assert_eq!(app.screen, Screen::Main, "alt+v closes the open manager");
+    assert_eq!(app.focus, PaneId::Response, "prior focus restored");
+}
+
+#[test]
+fn plain_q_quits_from_the_variable_manager() {
+    let mut app = App::new_for_test();
+    app.update(Action::OpenVarManager);
+    app.handle_key(&Keymap::default_bindings(), plain('q'));
+    assert!(app.should_quit);
+}
+
+#[test]
 fn variables_screen_footer_hides_the_dead_save_group_but_keeps_palette_and_quit() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
@@ -9069,7 +9102,10 @@ fn variables_screen_footer_hides_the_dead_save_group_but_keeps_palette_and_quit(
         "no clickable save chip on the Variables screen"
     );
     assert!(content.contains("^P"), "palette works here and stays: {content}");
-    assert!(content.contains("^C"), "quit stays: {content}");
+    assert!(
+        !content.contains("^C"),
+        "plain q quits here now, so the quit keycap is honest again: {content}"
+    );
 }
 
 #[test]
@@ -10384,10 +10420,11 @@ fn the_quit_chip_shows_ctrl_c_wherever_plain_q_would_type() {
         KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
     );
 
-    // Non-Main screens swallow unbound plain keys, `q` included.
+    // The manager binds plain q to quit in every focus stop, so the chip
+    // advertises it there.
     app.update(Action::OpenVarManager);
     let content = rendered_text(&mut app);
-    assert!(content.contains("^C  quit"), "{content}");
+    assert!(content.contains("q  quit"), "{content}");
 }
 
 /// While any screen-owning modal is open, the footer shows that modal's

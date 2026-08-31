@@ -161,8 +161,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // screens swallow unbound plain keys), and a pane that doesn't route
     // typing into a text input.
     let plain_q_quits = app.modals.is_empty()
-        && app.screen == Screen::Main
-        && matches!(focus, PaneId::Sidebar | PaneId::Response);
+        && (app.screen == Screen::Main && matches!(focus, PaneId::Sidebar | PaneId::Response)
+            // The manager binds plain q to quit in every focus stop; only
+            // a live edit types it.
+            || app.screen == Screen::VarManager
+                && app.varmanager.form.editing.is_none()
+                && app.varmanager.grid.editing.is_none());
     let vm_chips = modal_chips.or_else(|| {
         (app.screen == Screen::VarManager).then(|| {
             let open_request = app

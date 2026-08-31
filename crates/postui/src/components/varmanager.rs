@@ -914,6 +914,7 @@ impl VarManager {
                 self.form.revealed = !self.form.revealed;
                 Some(Action::Render)
             }
+            KeyCode::Char('q') => Some(Action::Quit),
             _ => None,
         }
     }
@@ -1019,6 +1020,10 @@ impl VarManager {
         }
         match ev.code {
             KeyCode::Esc => return Some(Action::CloseScreen),
+            // `q` is free as a command letter in every focus stop, so the
+            // manager keeps the app-wide quit (the footer's quit chip
+            // advertises it); live edits never reach here.
+            KeyCode::Char('q') => return Some(Action::Quit),
             KeyCode::Up => {
                 self.move_cursor(-1);
                 return None;
@@ -1188,6 +1193,7 @@ impl VarManager {
             }),
             KeyCode::Char('n') => Some(Action::PromptNewVar),
             KeyCode::Char('g') => Some(Action::PromptNewSelector),
+            KeyCode::Char('q') => Some(Action::Quit),
             _ => None,
         }
     }
@@ -3184,6 +3190,44 @@ fields = ["user_id", "customer_id"]
         assert_eq!(chips.len(), 2, "{chips:?}");
         assert!(chips.iter().any(|(k, _, _)| *k == "enter"), "{chips:?}");
         assert!(chips.iter().any(|(k, _, _)| *k == "esc"), "{chips:?}");
+    }
+
+    /// `q` is unused as a command letter in every manager focus stop, so
+    /// it quits the app from all of them — but never while a live edit
+    /// owns the keyboard (there it must type).
+    #[test]
+    fn q_quits_from_every_focus_stop_but_types_into_a_live_edit() {
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        // List focus.
+        render(&mut vm, &ctx);
+        assert_eq!(
+            vm.handle_key(key(KeyCode::Char('q')), &ctx, None),
+            Some(Action::Quit)
+        );
+        // Grid focus.
+        select_group(&mut vm, &ctx, "creds");
+        vm.focus = VmFocus::Grid;
+        assert_eq!(
+            vm.handle_key(key(KeyCode::Char('q')), &ctx, None),
+            Some(Action::Quit)
+        );
+        // A live cell edit owns every key: no quit.
+        vm.start_cell_edit(&ctx, 0, 1);
+        assert_eq!(vm.handle_key(key(KeyCode::Char('q')), &ctx, None), None);
+        vm.grid.editing = None;
+        // Form focus.
+        let i = vm
+            .left_rows
+            .iter()
+            .position(|r| r == &VmRow::Var("base_url".into()))
+            .unwrap();
+        vm.select_row(i);
+        vm.focus = VmFocus::Form;
+        assert_eq!(
+            vm.handle_key(key(KeyCode::Char('q')), &ctx, None),
+            Some(Action::Quit)
+        );
     }
 
     #[test]
