@@ -673,7 +673,7 @@ impl App {
                 | Hit::TableCheckbox(_)
                 | Hit::TableDelete(_)
                 | Hit::TableCell { .. }
-                | Hit::SplitButton(crate::split::SplitPane::Editor, _)
+                | Hit::SplitStop(_)
                 | Hit::ModalCancel
                 | Hit::ModalConfirm
                 | Hit::ConfirmChoice(_)
@@ -924,7 +924,7 @@ impl App {
                 };
                 self.update(Action::ConfirmDeleteTableRow(i))
             }
-            Hit::SplitButton(pane, button) => self.update(Action::SplitButton(pane, button)),
+            Hit::SplitStop(stop) => self.update(Action::SplitStop(stop)),
             Hit::UrlBar => {
                 let was_focused = self.editor.sub_focus == SubFocus::Url;
                 // `Action::FocusUrl` is exactly "focus Editor, sub-focus

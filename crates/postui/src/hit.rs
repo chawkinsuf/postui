@@ -52,10 +52,10 @@ pub enum Hit {
         row: usize,
         col: u8,
     },
-    /// One segment of a pane's minimize/half/expand cluster (see
-    /// [`crate::paint::SplitCluster`]): click dispatches the matching
-    /// `Action::SplitButton`.
-    SplitButton(crate::split::SplitPane, crate::split::SplitButton),
+    /// One chip of the five-stop split control (see
+    /// [`crate::paint::SplitControl`]): click dispatches the matching
+    /// `Action::SplitStop`.
+    SplitStop(crate::split::SplitStop),
     /// Raw mouse event forwarded to edtui (click-to-place, wheel).
     BodyEditor,
     ResponseTab(crate::components::response::ViewMode),

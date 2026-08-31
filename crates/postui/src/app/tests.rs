@@ -5161,14 +5161,14 @@ fn collapse_hides_body_and_fades_the_tab_labels_out() {
     );
 
     // Hiding hides the controls too: the tab labels (count included) fade
-    // out entirely, leaving only the split cluster on the row.
+    // out entirely, leaving only the split control on the row.
     assert!(
         !content.contains("Params · 3"),
         "tab labels are invisible while hidden: {content}"
     );
     assert!(
-        content.contains('\u{2580}'),
-        "the cluster's glyphs stay: {content}"
+        content.contains('\u{2586}'),
+        "the split control's chips stay: {content}"
     );
 }
 
@@ -5181,15 +5181,12 @@ fn collapse_toggle_click_and_key() {
 
     let r = app
         .hits
-        .rect_of(&Hit::SplitButton(
-            crate::split::SplitPane::Editor,
-            crate::split::SplitButton::Minimize,
-        ))
+        .rect_of(&Hit::SplitStop(crate::split::SplitStop::ResponseFull))
         .unwrap();
     app.handle_mouse(left_down(r.x, r.y));
     assert!(
         app.table_collapsed,
-        "clicking minimize collapses the editor"
+        "clicking the response-full chip collapses the editor"
     );
 
     app.handle_key(&Keymap::default_bindings(), alt('p'));
@@ -11616,19 +11613,19 @@ fn toggle_response_collapse_flips_the_flag_and_eases_the_anim() {
     assert!(!app.session.response.collapsed, "toggles back open");
 }
 
-/// `Action::SplitButton` (the panes' minimize/half/expand clusters) drives
-/// the five-state split: half moves the ratio stop and eases
-/// `AnimKey::SplitRatio`; minimize/expand set the same endpoint flags the
-/// old toggles did, keeping the ratio sticky for re-opening.
+/// `Action::SplitStop` (the split control's five chips) drives the
+/// five-state split: a ratio chip moves the stop and eases
+/// `AnimKey::SplitRatio`; the endpoint chips set the same flags the old
+/// toggles did, keeping the ratio sticky underneath.
 #[test]
-fn split_buttons_update_the_split_and_ease_the_ratio_anim() {
-    use crate::split::{SplitButton, SplitPane, SplitRatio};
+fn split_stops_update_the_split_and_ease_the_ratio_anim() {
+    use crate::split::{SplitRatio, SplitStop};
     let mut app = App::new_for_test_with_anims(true);
     assert_eq!(app.split_ratio, SplitRatio::Even);
 
-    // Half from 50/50 shrinks the response to its quarter, easing the
+    // 75/25 from 50/50 shrinks the response to its quarter, easing the
     // ratio rather than snapping.
-    app.update(Action::SplitButton(SplitPane::Response, SplitButton::Half));
+    app.update(Action::SplitStop(SplitStop::EditorBig));
     assert_eq!(app.split_ratio, SplitRatio::EditorBig);
     assert!(!app.session.response.collapsed);
     assert!(!app.table_collapsed);
@@ -11638,41 +11635,48 @@ fn split_buttons_update_the_split_and_ease_the_ratio_anim() {
         "the ratio must ease between stops, not snap"
     );
 
-    // Minimize collapses the response exactly like the old toggle; the
-    // ratio stop survives underneath.
-    app.update(Action::SplitButton(
-        SplitPane::Response,
-        SplitButton::Minimize,
-    ));
+    // The editor-full chip collapses the response exactly like the old
+    // toggle; the ratio stop survives underneath.
+    app.update(Action::SplitStop(SplitStop::EditorFull));
     assert!(app.session.response.collapsed);
     assert_eq!(app.split_ratio, SplitRatio::EditorBig, "ratio is sticky");
 
-    // Expand gives the response the whole column by minimizing the editor.
-    app.update(Action::SplitButton(
-        SplitPane::Response,
-        SplitButton::Expand,
-    ));
+    // The response-full chip gives the response the whole column by
+    // minimizing the editor — one click from the opposite endpoint.
+    app.update(Action::SplitStop(SplitStop::ResponseFull));
     assert!(app.table_collapsed);
     assert!(!app.session.response.collapsed);
 
-    // The editor's own cluster drives the same shared state.
-    app.update(Action::SplitButton(SplitPane::Editor, SplitButton::Half));
+    // A ratio chip reopens both panes straight at its stop.
+    app.update(Action::SplitStop(SplitStop::ResponseBig));
     assert!(!app.table_collapsed);
-    assert_eq!(
-        app.split_ratio,
-        SplitRatio::ResponseBig,
-        "editor at 0% goes to its quarter share"
-    );
+    assert_eq!(app.split_ratio, SplitRatio::ResponseBig);
 }
 
-/// The split is a persisted layout preference: cluster presses and the
+/// `Action::CycleSplit` (the footer's `alt+s` context chip) steps the
+/// split through the five stops in on-screen order and wraps — the
+/// one-key keyboard route to every state the control's chips reach.
+#[test]
+fn cycle_split_steps_through_every_stop_and_wraps() {
+    use crate::split::SplitStop::*;
+    let mut app = App::new_for_test();
+    assert_eq!(app.split_state().stop(), Even);
+    let mut seen = vec![];
+    for _ in 0..5 {
+        app.update(Action::CycleSplit);
+        seen.push(app.split_state().stop());
+    }
+    assert_eq!(seen, [ResponseBig, ResponseFull, EditorFull, EditorBig, Even]);
+}
+
+/// The split is a persisted layout preference: chip presses and the
 /// keyboard toggles record it in the project's `.local/state.toml`, and
 /// opening the project seeds the split back from it.
 #[test]
 fn split_persists_to_local_state_and_reseeds_on_open() {
-    use crate::split::{SplitButton, SplitPane};
+    use crate::split::SplitStop;
     let mut app = App::new_for_test();
-    app.update(Action::SplitButton(SplitPane::Response, SplitButton::Half));
+    app.update(Action::SplitStop(SplitStop::EditorBig));
     let root = app.project.root.clone();
     let saved = |root: &std::path::Path| {
         postui_core::project::load_local_state(root)

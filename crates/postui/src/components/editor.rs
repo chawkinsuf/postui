@@ -2293,35 +2293,34 @@ impl Editor {
             }
         }
 
-        // --- split cluster (right-aligned) ---
-        // The pane's minimize/half/expand buttons, mirroring the Response
-        // header's cluster. One-column right inset, matching the Response
-        // pane's so the two line up on screen.
+        // --- split control (right-aligned) ---
+        // The whole column's five-stop control: one chip per settled
+        // state, so any layout is one click away — and it lives on this
+        // fixed row, never repositioning itself mid-click the way
+        // buttons on the response header would.
         let buf = frame.buffer_mut();
-        let pane = crate::split::SplitPane::Editor;
         // `table_collapsed` stays the authority on this pane's own
         // minimized flag, so a standalone render still lights the right
-        // segment.
+        // chip.
         let split = crate::split::SplitState {
             editor_minimized: self.table_collapsed,
             response_minimized: self.split.response_minimized && !self.table_collapsed,
             ratio: self.split.ratio,
         };
         let hovered = match ctx.hovered {
-            Some(crate::hit::Hit::SplitButton(p, b)) if *p == pane => Some(*b),
+            Some(crate::hit::Hit::SplitStop(s)) => Some(*s),
             _ => None,
         };
-        let cluster_x = area
+        let control_x = area
             .right()
-            .saturating_sub(crate::paint::SPLIT_CLUSTER_WIDTH + 1);
-        let rects = crate::paint::SplitCluster {
-            pane,
+            .saturating_sub(crate::paint::SPLIT_CONTROL_WIDTH + 1);
+        let rects = crate::paint::SplitControl {
             state: split,
             hovered,
         }
-        .paint(buf, cluster_x, area.y, theme);
-        for (rect, button) in rects {
-            hits.register(rect, crate::hit::Hit::SplitButton(pane, button));
+        .paint(buf, control_x, area.y, theme);
+        for (rect, stop) in rects {
+            hits.register(rect, crate::hit::Hit::SplitStop(stop));
         }
     }
 
@@ -3848,12 +3847,12 @@ mod tests {
         );
     }
 
-    /// Every rect of the pane's minimize/half/expand cluster, in
-    /// on-screen order, or a panic when any segment is missing.
-    fn cluster_rects(hits: &crate::hit::HitMap) -> [Rect; 3] {
-        crate::paint::SPLIT_BUTTONS.map(|b| {
-            hits.rect_of(&Hit::SplitButton(crate::split::SplitPane::Editor, b))
-                .unwrap_or_else(|| panic!("{b:?} segment registered"))
+    /// Every chip rect of the five-stop split control, in on-screen
+    /// order, or a panic when any chip is missing.
+    fn control_rects(hits: &crate::hit::HitMap) -> [Rect; 5] {
+        crate::split::SplitStop::ALL.map(|s| {
+            hits.rect_of(&Hit::SplitStop(s))
+                .unwrap_or_else(|| panic!("{s:?} chip registered"))
         })
     }
 
@@ -3945,7 +3944,7 @@ mod tests {
             }))
             .is_none()
         );
-        cluster_rects(&hits); // the split cluster stays
+        control_rects(&hits); // the split control stays
     }
 
     /// Hiding hides the controls too: with the table collapsed the tab
@@ -3963,8 +3962,8 @@ mod tests {
             hits.rect_of(&Hit::EditorTab(0)).is_none(),
             "hidden tabs take no clicks"
         );
-        cluster_rects(&hits); // the split cluster stays
-        assert!(out.contains('\u{2580}'), "the cluster's glyphs stay: {out}");
+        control_rects(&hits); // the split control stays
+        assert!(out.contains('\u{2586}'), "the control's chips stay: {out}");
     }
 
     /// Hiding puts away the tab content, not the request's controls: the
@@ -3985,7 +3984,7 @@ mod tests {
         assert!(hits.rect_of(&Hit::UrlBar).is_some(), "URL stays editable");
         assert!(hits.rect_of(&Hit::SendButton).is_some());
         assert!(hits.rect_of(&Hit::MethodSelector).is_some());
-        cluster_rects(&hits); // the split cluster stays too
+        control_rects(&hits); // the split control stays too
     }
 
     fn draw_editor_sized(e: &mut Editor, w: u16, h: u16) -> crate::hit::HitMap {
@@ -4031,29 +4030,33 @@ mod tests {
             (expanded_url.y, expanded_url.height),
             "address bar keeps its exact expanded geometry while hidden"
         );
-        let [min, ..] = cluster_rects(&hits);
-        assert_eq!(min.y, ADDRESS_BAR_HEIGHT, "cluster on the strip row");
+        let [first, ..] = control_rects(&hits);
+        assert_eq!(first.y, ADDRESS_BAR_HEIGHT, "control on the strip row");
     }
 
-    /// The editor's split cluster right-aligns with the same inset the
-    /// Response pane's cluster uses (2 cols in from the pane edge: 1 for
-    /// `pane_surface`, 1 for the cluster's own margin) — expanded and
-    /// hidden alike, so the two panes' clusters line up on screen.
+    /// The split control right-aligns 2 cols in from the pane edge (1
+    /// for `pane_surface`, 1 for its own margin) — expanded and hidden
+    /// alike, so it never moves as the split changes. Its five chips run
+    /// in stop order, boundary sliding down left to right.
     #[test]
-    fn split_cluster_aligns_with_the_response_panes_inset() {
+    fn split_control_keeps_its_right_inset_in_every_state() {
         let mut e = Editor::default();
         let (_, hits) = draw_editor(&mut e);
-        let [.., expand] = cluster_rects(&hits);
-        assert_eq!(expand.x + expand.width, 120 - 2, "{expand:?}");
+        let [.., last] = control_rects(&hits);
+        // The last chip ends one cell shy of the 2-col inset: the
+        // control's right end cap takes that cell.
+        assert_eq!(last.x + last.width, 120 - 3, "{last:?}");
 
         let mut e = Editor {
             table_collapsed: true,
             ..Editor::default()
         };
         let hits = draw_editor_sized(&mut e, 120, COLLAPSED_HEIGHT);
-        let [min, half, expand] = cluster_rects(&hits);
-        assert_eq!(expand.x + expand.width, 120 - 2, "{expand:?}");
-        assert!(min.x < half.x && half.x < expand.x);
+        let rects = control_rects(&hits);
+        assert_eq!(rects[4].x + rects[4].width, 120 - 3, "{:?}", rects[4]);
+        for pair in rects.windows(2) {
+            assert!(pair[0].x < pair[1].x, "chips in on-screen order");
+        }
     }
 
     /// Un-hiding eases the pane taller while the expanded constraints are
@@ -4348,10 +4351,10 @@ x-a = "1"
             "header count lives inside its tab: {content}"
         );
 
-        // No standalone count chip left of the split cluster any more:
-        // the cell two columns left of the cluster (where the chip used
+        // No standalone count chip left of the split control any more:
+        // the cell two columns left of the control (where the chip used
         // to end) must be plain page background.
-        let [min, ..] = cluster_rects(&hits);
+        let [min, ..] = control_rects(&hits);
         let buf = terminal.backend().buffer();
         let cell = buf.cell((min.x - 2, min.y)).unwrap();
         assert_eq!(

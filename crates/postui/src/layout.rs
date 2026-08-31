@@ -87,9 +87,20 @@ pub fn compute_layout(
     // The both-panes-visible split at `editor_share` — the endpoint every
     // collapse interpolation below starts from. Computed by hand rather
     // than `Constraint::Percentage` so the share (itself animated between
-    // the 25/50/75 stops) can be any fraction.
+    // the 25/50/75 stops) can be any fraction. The share divides the
+    // *content* rows — what's left after both panes' fixed chrome (the
+    // editor's address bar + tab bar, the response's header strip) — so
+    // "editor at 25%" means a quarter of the usable space for the table,
+    // not a quarter minus the address bar.
     let expanded = {
-        let editor_h = (cols[2].height as f32 * editor_share.clamp(0.0, 1.0)).round() as u16;
+        let editor_chrome = editor::CHROME_HEIGHT.min(cols[2].height);
+        let response_chrome = crate::components::response::HEADER_STRIP_HEIGHT;
+        let content = cols[2]
+            .height
+            .saturating_sub(editor_chrome)
+            .saturating_sub(response_chrome);
+        let editor_h =
+            editor_chrome + (content as f32 * editor_share.clamp(0.0, 1.0)).round() as u16;
         let editor_h = editor_h.min(cols[2].height);
         [
             Rect::new(cols[2].x, cols[2].y, cols[2].width, editor_h),
@@ -289,20 +300,25 @@ mod tests {
         );
     }
 
-    /// `editor_share` moves the settled row boundary: 0.75 gives the
-    /// editor about three quarters of the column, 0.25 about one quarter,
-    /// and the two panes always exactly fill the same span.
+    /// `editor_share` divides the column's *content* rows — what's left
+    /// after both panes' fixed chrome — so 0.25 gives the editor its
+    /// chrome plus a quarter of the usable space, not a quarter of the
+    /// raw column with the address bar eating into it. The two panes
+    /// always exactly fill the same span.
     #[test]
-    fn editor_share_moves_the_row_split_between_quarter_stops() {
+    fn editor_share_divides_the_content_rows_after_both_panes_chrome() {
         let area = Rect::new(0, 0, 120, 40);
         let small = compute_layout(area, 0.0, 0.0, 0.25);
         let even = compute_layout(area, 0.0, 0.0, 0.5);
         let big = compute_layout(area, 0.0, 0.0, 0.75);
         let column = even.editor.height + even.response.height;
+        let content = column
+            - editor::CHROME_HEIGHT
+            - crate::components::response::HEADER_STRIP_HEIGHT;
         for (l, share) in [(&small, 0.25), (&even, 0.5), (&big, 0.75)] {
             assert_eq!(l.editor.height + l.response.height, column);
             assert_eq!(l.editor.y + l.editor.height, l.response.y);
-            let want = column as f32 * share;
+            let want = editor::CHROME_HEIGHT as f32 + content as f32 * share;
             assert!(
                 (l.editor.height as f32 - want).abs() <= 1.0,
                 "share {share}: editor {} rows, wanted about {want}",

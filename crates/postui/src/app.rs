@@ -883,7 +883,6 @@ impl App {
         // Display copies for the panes' split clusters — the app state
         // stays the authority, the components only light segments from it.
         self.editor.split = self.split_state();
-        self.session.response.split = self.split_state();
         self.sync_pane_collapse_anim();
         self.sync_response_collapse_anim();
         self.sync_split_ratio_anim();
@@ -975,14 +974,32 @@ impl App {
         self.split_ratio = s.ratio;
     }
 
-    /// The whole split state the panes' button clusters read and drive —
-    /// the two endpoint flags plus the ratio stop, in one value.
+    /// The whole split state the split control reads and drives — the
+    /// two endpoint flags plus the ratio stop, in one value.
     pub fn split_state(&self) -> crate::split::SplitState {
         crate::split::SplitState {
             editor_minimized: self.table_collapsed,
             response_minimized: self.session.response.collapsed,
             ratio: self.split_ratio,
         }
+    }
+
+    /// Jumps the split to `stop` — the shared body of `Action::SplitStop`
+    /// (a control chip click) and `Action::CycleSplit` (the keyboard
+    /// cycle). Returns whether anything actually moved.
+    fn apply_split_stop(&mut self, stop: crate::split::SplitStop) -> bool {
+        let prev = self.split_state();
+        let next = prev.apply(stop);
+        self.table_collapsed = next.editor_minimized;
+        self.session.response.collapsed = next.response_minimized;
+        self.split_ratio = next.ratio;
+        // `sync_pane_collapse_anim` / `sync_response_collapse_anim` /
+        // `sync_split_ratio_anim` (run on every `update`) ease whichever
+        // of the three the jump actually moved.
+        if next != prev {
+            self.persist_split();
+        }
+        next != prev
     }
 
     /// Keeps `AnimKey::SplitRatio` chasing `split_ratio`'s editor share
@@ -1570,20 +1587,8 @@ impl App {
                 self.persist_split();
                 true
             }
-            Action::SplitButton(pane, button) => {
-                let prev = self.split_state();
-                let next = prev.apply(pane, button);
-                self.table_collapsed = next.editor_minimized;
-                self.session.response.collapsed = next.response_minimized;
-                self.split_ratio = next.ratio;
-                // `sync_pane_collapse_anim` / `sync_response_collapse_anim`
-                // / `sync_split_ratio_anim` (run on every `update`) ease
-                // whichever of the three the press actually moved.
-                if next != prev {
-                    self.persist_split();
-                }
-                next != prev
-            }
+            Action::SplitStop(stop) => self.apply_split_stop(stop),
+            Action::CycleSplit => self.apply_split_stop(self.split_state().stop().next()),
             Action::FormatBody => {
                 self.no_coalesce = true;
                 self.transform_body(postui_core::json::format)

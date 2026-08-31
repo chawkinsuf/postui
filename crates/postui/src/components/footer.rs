@@ -63,6 +63,9 @@ pub(crate) fn footer_chips(
                     "vars",
                     Some(Action::OpenVarPicker { completing: false }),
                 ),
+                // One key steps the pane split through its five stops —
+                // the keyboard twin of the tab-bar row's split control.
+                ("alt+s", "split", Some(Action::CycleSplit)),
                 // Arrows are the primary route (method ← URL ↓ tabs ↓ content);
                 // alt+1/2/3 still work where the terminal passes them through.
                 ("↑↓←→", "navigate", None),
@@ -90,7 +93,7 @@ pub(crate) fn footer_chips(
                 // Keyboard twins of the expanded row's ● toggle and 🗑
                 // delete buttons; the ␣ keycap keeps the row narrow.
                 let toggle_label = if enabled { "disable" } else { "enable" };
-                let pos = chips.len() - 2; // before vars + navigate
+                let pos = chips.len() - 3; // before vars + split + navigate
                 chips.insert(pos, ("␣", toggle_label, Some(Action::ToggleTableRow(i))));
                 chips.insert(
                     pos + 1,
@@ -115,6 +118,7 @@ pub(crate) fn footer_chips(
                 )),
             ),
             ("/", "search", Some(Action::OpenResponseSearch)),
+            ("alt+s", "split", Some(Action::CycleSplit)),
         ],
     };
     chips

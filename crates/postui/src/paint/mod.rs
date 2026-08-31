@@ -14,7 +14,7 @@ pub mod frac;
 pub mod panel;
 pub mod ring;
 pub mod rows;
-pub mod split_cluster;
+pub mod split_control;
 
 pub use button::{BUTTON_HEIGHT, Button, ButtonKind, button_min_width};
 pub use chip::{Chip, TabStrip};
@@ -23,8 +23,8 @@ pub use frac::frac_vspan;
 pub use panel::{dim_backdrop, fade_to, floating_panel, floating_panel_settling};
 pub use ring::ring;
 pub use rows::{ListRow, RowHighlight};
-pub use split_cluster::{
-    SPLIT_BUTTONS, SPLIT_CLUSTER_WIDTH, SPLIT_SEGMENT_WIDTH, SplitCluster, split_glyph,
+pub use split_control::{
+    SPLIT_CONTROL_WIDTH, SPLIT_SEGMENT_WIDTH, SplitControl, split_glyph,
 };
 
 /// How far a Disabled control's label/content blends toward its own fill
