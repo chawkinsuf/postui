@@ -9002,6 +9002,87 @@ fn confirm_edit_option_writes_every_field_into_the_active_envs_entry() {
 }
 
 #[test]
+fn variables_screen_footer_hides_the_dead_save_group_but_keeps_palette_and_quit() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+
+    // `ctrl+s` is not on the non-Main screens' global whitelist — the key
+    // is swallowed here, so the footer must not advertise it. Palette and
+    // quit still work and stay.
+    let content = rendered_text_tall(&mut app);
+    assert!(!content.contains("^S"), "{content}");
+    assert!(
+        app.hits
+            .rect_of(&crate::hit::Hit::FooterChip(Action::SaveRequest))
+            .is_none(),
+        "no clickable save chip on the Variables screen"
+    );
+    assert!(content.contains("^P"), "palette works here and stays: {content}");
+    assert!(content.contains("^C"), "quit stays: {content}");
+}
+
+#[test]
+fn var_edit_set_option_description_writes_and_clearing_removes_it() {
+    let dir = tempfile::tempdir().unwrap();
+    group_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    app.update(Action::VarEdit(VarEditOp::SetOptionDescription {
+        env: "qa".into(),
+        selector: "identity".into(),
+        option: "alice".into(),
+        description: Some("boss".into()),
+    }));
+    let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(env_doc.contains("boss"), "{env_doc}");
+    assert!(!env_doc.contains("admin"), "replaced, not appended: {env_doc}");
+
+    app.update(Action::VarEdit(VarEditOp::SetOptionDescription {
+        env: "qa".into(),
+        selector: "identity".into(),
+        option: "alice".into(),
+        description: None,
+    }));
+    let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(!env_doc.contains("boss"), "{env_doc}");
+    assert!(env_doc.contains("1001"), "values untouched: {env_doc}");
+}
+
+#[test]
+fn committing_the_description_cell_writes_through_and_an_emptied_one_removes() {
+    let dir = tempfile::tempdir().unwrap();
+    group_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.varmanager.detail = crate::components::varmanager::VmDetail::Group("identity".into());
+    app.varmanager.sync(&app.project);
+
+    // Cols: 0 entry, 1 user_id, 2 customer_id, 3 description.
+    app.varmanager.start_cell_edit(&app.project, 0, 3);
+    let edit = app.varmanager.grid.editing.as_mut().unwrap();
+    assert_eq!(edit.input.text(), "admin", "seeded from the stored text");
+    edit.input = crate::components::line_input::LineInput::new("head admin");
+    app.commit_grid_edit();
+    let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(env_doc.contains("head admin"), "{env_doc}");
+
+    app.varmanager.start_cell_edit(&app.project, 0, 3);
+    let edit = app.varmanager.grid.editing.as_mut().unwrap();
+    edit.input = crate::components::line_input::LineInput::new("");
+    app.commit_grid_edit();
+    let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(
+        !env_doc.contains("head admin"),
+        "an emptied description leaves the file: {env_doc}"
+    );
+    assert!(env_doc.contains("1001"), "values untouched: {env_doc}");
+}
+
+#[test]
 fn confirm_edit_option_with_an_emptied_description_removes_it_from_the_env_file() {
     let dir = tempfile::tempdir().unwrap();
     group_project(dir.path());
@@ -10494,7 +10575,7 @@ fn vm_footer_advertises_the_option_verbs_while_the_grid_has_focus() {
     assert!(
         chips
             .iter()
-            .any(|(k, l, a)| *k == "d" && *l == "delete option" && a.as_ref() == Some(&delete)),
+            .any(|(k, l, a)| *k == "d" && *l == "delete" && a.as_ref() == Some(&delete)),
         "{chips:?}"
     );
     // Every grid chip is clickable here — "new option" included (it drives
@@ -10799,13 +10880,14 @@ fn option_rename_is_the_inline_name_cell_edit() {
     assert!(qa.contains("[options.user.bobby]"), "{qa}");
     assert!(!qa.contains("[options.user.bob]\n"), "{qa}");
 
-    // The grid's `e` key opens the same inline edit on the cursor row.
+    // The grid's `F2` opens the same inline edit on the cursor row (`e` is
+    // the full Edit prompt now).
     app.varmanager.focus = VmFocus::Grid;
     app.varmanager.grid.cursor = (0, 1);
-    app.handle_key(&keymap, plain('e'));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE));
     assert!(app.modals.is_empty(), "no rename modal");
     let edit = app.varmanager.grid.editing.as_ref().expect("inline edit");
-    assert_eq!((edit.row, edit.col), (0, 0), "e targets the name cell");
+    assert_eq!((edit.row, edit.col), (0, 0), "F2 targets the name cell");
     assert_eq!(edit.input.text(), "alice");
 }
 

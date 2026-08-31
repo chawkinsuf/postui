@@ -170,6 +170,11 @@ pub fn draw_footer(
     // dead under it — hide rather than advertise keys that won't work.
     // Quit stays (the modified quit combo pre-empts everything).
     globals_live: bool,
+    // `false` on non-Main screens: `ctrl+s` isn't on their global
+    // whitelist (`screen_escape_whitelist`), so the save/discard group's
+    // keys are swallowed there — same no-dead-keys rule as `globals_live`,
+    // but the palette (whitelisted) stays.
+    save_group_live: bool,
     // Whether a plain `q` actually reaches `Action::Quit` right now. Where
     // it doesn't — a modal open, a non-Main screen, the editor's text
     // areas — the quit chip's keycap shows the pre-empting `^C` combo
@@ -219,35 +224,44 @@ pub fn draw_footer(
             hovered,
         );
 
-        // The global save/discard group: request-level actions available from
-        // every pane (ctrl+s is a global binding), right-aligned left of the
-        // palette/quit pair with a wider gap so it reads as its own group.
-        // Discard only exists while there are unsaved edits to walk back; it
-        // slots in left of save so save keeps its right-anchored spot and
-        // doesn't jump when discard comes and goes.
-        const GROUP_GAP: u16 = 8;
-        let save_label = if dirty { "save •" } else { "save" };
-        let mut group: Vec<(&'static str, &'static str, Option<Action>)> = Vec::new();
-        if dirty {
-            group.push(("↩", "discard", Some(Action::ConfirmDiscardChanges)));
-        }
-        group.push(("^S", save_label, Some(Action::SaveRequest)));
-        let group_w: u16 = group.iter().map(chip_width).sum::<u16>() + 2 * (group.len() as u16 - 1);
-        let group_x = palette_x.saturating_sub(GROUP_GAP + group_w);
-        paint_chip_row(
-            buf,
-            mid_y,
-            group_x,
-            group_x + group_w,
-            &group,
-            theme,
-            hits,
-            hovered,
-        );
+        if save_group_live {
+            // The global save/discard group: request-level actions available
+            // from every pane (ctrl+s is a global binding), right-aligned
+            // left of the palette/quit pair with a wider gap so it reads as
+            // its own group. Discard only exists while there are unsaved
+            // edits to walk back; it slots in left of save so save keeps its
+            // right-anchored spot and doesn't jump when discard comes and
+            // goes.
+            const GROUP_GAP: u16 = 8;
+            let save_label = if dirty { "save •" } else { "save" };
+            let mut group: Vec<(&'static str, &'static str, Option<Action>)> = Vec::new();
+            if dirty {
+                group.push(("↩", "discard", Some(Action::ConfirmDiscardChanges)));
+            }
+            group.push(("^S", save_label, Some(Action::SaveRequest)));
+            let group_w: u16 =
+                group.iter().map(chip_width).sum::<u16>() + 2 * (group.len() as u16 - 1);
+            let group_x = palette_x.saturating_sub(GROUP_GAP + group_w);
+            paint_chip_row(
+                buf,
+                mid_y,
+                group_x,
+                group_x + group_w,
+                &group,
+                theme,
+                hits,
+                hovered,
+            );
 
-        // Per-pane chips stop one column shy of the save group so the two
-        // never collide.
-        group_x.saturating_sub(1)
+            // Per-pane chips stop one column shy of the save group so the
+            // two never collide.
+            group_x.saturating_sub(1)
+        } else {
+            // No save group on this screen (its keys are swallowed there —
+            // see `save_group_live`): the context chips run up to the
+            // palette instead.
+            palette_x.saturating_sub(1)
+        }
     } else {
         quit_x.saturating_sub(1)
     };
@@ -398,6 +412,7 @@ mod tests {
                     false,
                     None,
                     None,
+                    true,
                     true,
                     true,
                     &mut hits,
@@ -648,6 +663,7 @@ mod tests {
                     None,
                     true,
                     true,
+                    true,
                     &mut hits,
                     None,
                 )
@@ -690,6 +706,7 @@ mod tests {
                     false,
                     None,
                     None,
+                    true,
                     true,
                     true,
                     &mut hits,
@@ -739,6 +756,7 @@ mod tests {
                     None,
                     true,
                     true,
+                    true,
                     &mut hits,
                     None,
                 )
@@ -773,6 +791,7 @@ mod tests {
                     false,
                     None,
                     None,
+                    true,
                     true,
                     true,
                     &mut hits,
@@ -845,6 +864,7 @@ mod tests {
                     None,
                     true,
                     true,
+                    true,
                     &mut hits,
                     None,
                 )
@@ -899,6 +919,7 @@ mod tests {
                     false,
                     None,
                     None,
+                    true,
                     true,
                     true,
                     &mut hits,
@@ -994,6 +1015,7 @@ mod tests {
                     false,
                     None,
                     None,
+                    true,
                     true,
                     true,
                     &mut hits,

@@ -210,6 +210,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         table_row_selected,
         vm_chips,
         globals_live,
+        // ctrl+s only reaches `SaveRequest` on the Main screen (it's not on
+        // `screen_escape_whitelist`), so other screens hide the save group.
+        globals_live && app.screen == crate::app::Screen::Main,
         plain_q_quits,
         &mut hits,
         app.hovered.as_ref(),

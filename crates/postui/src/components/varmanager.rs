@@ -67,6 +67,15 @@ pub enum VarEditOp {
         field: String,
         value: String,
     },
+    /// One option's `description` in `env`'s file — `Some` writes it,
+    /// `None` removes the stored key (the description column's emptied-cell
+    /// commit; `upsert_option`'s own `None` deliberately preserves one).
+    SetOptionDescription {
+        env: String,
+        selector: String,
+        option: String,
+        description: Option<String>,
+    },
     /// A request-scoped `[variables]` option's value on the open request —
     /// mutates `Editor::variables` directly and rides the editor's existing
     /// dirty/save path (no immediate write of its own).
@@ -489,10 +498,11 @@ fn grid_columns(x0: u16, width: u16, ncols: usize) -> GridCols {
     cols
 }
 
-/// One selector's options in `ctx`'s active environment, as `(name, values)`
-/// pairs in file order. Empty when the selector has no options here (or there
-/// is no active environment).
-fn entry_rows(ctx: &ProjectContext, selector: &str) -> Vec<(String, IndexMap<String, String>)> {
+/// One selector's options in `ctx`'s active environment, as
+/// `(name, description, values)` rows in file order. Empty when the selector
+/// has no options here (or there is no active environment).
+type EntryRow = (String, Option<String>, IndexMap<String, String>);
+fn entry_rows(ctx: &ProjectContext, selector: &str) -> Vec<EntryRow> {
     if ctx.active_env.is_none() {
         return Vec::new();
     }
@@ -500,7 +510,7 @@ fn entry_rows(ctx: &ProjectContext, selector: &str) -> Vec<(String, IndexMap<Str
         .map(|options| {
             options
                 .iter()
-                .map(|(name, e)| (name.clone(), e.values.clone()))
+                .map(|(name, e)| (name.clone(), e.description.clone(), e.values.clone()))
                 .collect()
         })
         .unwrap_or_default()
@@ -511,13 +521,17 @@ fn entry_rows(ctx: &ProjectContext, selector: &str) -> Vec<(String, IndexMap<Str
 /// doesn't set.
 fn grid_cell_text(ctx: &ProjectContext, selector: &str, row: usize, col: usize) -> String {
     let rows = entry_rows(ctx, selector);
-    let Some((name, values)) = rows.get(row) else {
+    let Some((name, description, values)) = rows.get(row) else {
         return String::new();
     };
     if col == 0 {
         return name.clone();
     }
     let fields = group_fields(ctx, selector);
+    // The trailing column past the fields is the option's description.
+    if col == fields.len() + 1 {
+        return description.clone().unwrap_or_default();
+    }
     fields
         .get(col - 1)
         .and_then(|f| values.get(f))
@@ -665,7 +679,9 @@ impl VarManager {
         let VmDetail::Group(selector) = &self.detail else {
             return None;
         };
-        entry_rows(ctx, selector).get(row).map(|(n, _)| n.clone())
+        entry_rows(ctx, selector)
+            .get(row)
+            .map(|(n, _, _)| n.clone())
     }
 
     /// The footer's context chips while the Variable Manager is on screen
@@ -736,9 +752,44 @@ impl VarManager {
                             })
                         }),
                     ),
+                    // Terse labels on purpose: five chips share the footer
+                    // with the right-aligned save/palette/quit group, and
+                    // the grid context already names the target (an option).
+                    (
+                        "e",
+                        "edit",
+                        target.clone().and_then(|(_, option)| {
+                            postui_core::varmodel::selector_options(&ctx.env_data, selector)
+                                .and_then(|options| options.get(&option))
+                                .map(|decl| Action::OpenEditOptionPrompt {
+                                    owner: selector.clone(),
+                                    key: option,
+                                    description: decl.description.clone(),
+                                    values: decl.values.clone(),
+                                })
+                        }),
+                    ),
+                    (
+                        "c",
+                        "copy",
+                        target.clone().map(|(env, name)| {
+                            Action::VarStruct(VarStructOp::DuplicateOption {
+                                env,
+                                selector: selector.clone(),
+                                name,
+                            })
+                        }),
+                    ),
+                    (
+                        "r",
+                        "rename",
+                        target.clone().map(|_| Action::StartOptionNameEdit {
+                            row: self.grid.cursor.0,
+                        }),
+                    ),
                     (
                         "d",
-                        "delete option",
+                        "delete",
                         target.map(|(env, name)| Action::ConfirmDeleteEntry {
                             env,
                             selector: selector.clone(),
@@ -1043,7 +1094,9 @@ impl VarManager {
             return None;
         }
         let last_row = entry_rows(ctx, selector).len(); // == the ghost row
-        let last_col = group_fields(ctx, selector).len(); // == 1 + fields - 1
+        // Cols: 0 = name, 1..=fields = the field values, fields+1 = the
+        // option's description.
+        let last_col = group_fields(ctx, selector).len() + 1;
         let (row, col) = &mut self.grid.cursor;
         *row = (*row).min(last_row);
         *col = (*col).min(last_col);
@@ -1085,11 +1138,38 @@ impl VarManager {
                 selector: selector.to_string(),
             }),
             KeyCode::Char(' ') => self.select_entry_action(ctx, selector),
-            // `e`/`d` here act on the option under the cursor — the left
-            // list's own `e`/`d`, which target the declaration, are one
-            // focus stop away. Rename is the inline name-cell edit
-            // (committing a changed name IS the rename), not a modal.
-            KeyCode::Char('e') | KeyCode::F(2) => {
+            // `e`/`c`/`d` here act on the option under the cursor — the
+            // left list's own `e`/`d`, which target the declaration, are
+            // one focus stop away. `e` opens the full Edit prompt (values +
+            // description, the context menu's Edit…); rename stays the
+            // inline name-cell edit, on `F2` and `Enter` on the name cell.
+            KeyCode::Char('e') => {
+                let name = self.entry_at(ctx, self.grid.cursor.0)?;
+                let decl = postui_core::varmodel::selector_options(&ctx.env_data, selector)
+                    .and_then(|options| options.get(&name))?
+                    .clone();
+                Some(Action::OpenEditOptionPrompt {
+                    owner: selector.to_string(),
+                    key: name,
+                    description: decl.description,
+                    values: decl.values,
+                })
+            }
+            KeyCode::Char('c') => Some(Action::VarStruct(VarStructOp::DuplicateOption {
+                env: ctx.active_env.clone()?,
+                selector: selector.to_string(),
+                name: self.entry_at(ctx, self.grid.cursor.0)?,
+            })),
+            // `r`/`F2`: the inline name-cell rename (committing a changed
+            // name IS the rename). `r` is inert on the ghost row — there is
+            // no name yet, and starting the ghost edit under a "rename"
+            // label would lie about what commits.
+            KeyCode::Char('r') => {
+                self.entry_at(ctx, self.grid.cursor.0)?;
+                self.start_cell_edit(ctx, self.grid.cursor.0, 0);
+                None
+            }
+            KeyCode::F(2) => {
                 self.start_cell_edit(ctx, self.grid.cursor.0, 0);
                 None
             }
@@ -1413,13 +1493,15 @@ impl VarManager {
 
         // --- column headers ---------------------------------------------
         let fields = group_fields(ctx, selector);
-        let cols = grid_columns(x0, inner_w, 1 + fields.len());
+        // One column per field plus the name and the trailing description.
+        let cols = grid_columns(x0, inner_w, 2 + fields.len());
         if y >= bottom || cols.x.is_empty() {
             return;
         }
         fill(buf, Rect::new(right.x, y, right.width, 1), theme.panel);
         for (i, label) in std::iter::once("ENTRY".to_string())
             .chain(fields.iter().map(|f| f.to_uppercase()))
+            .chain(std::iter::once("DESCRIPTION".to_string()))
             .enumerate()
         {
             let (Some(cx), Some(cw)) = (cols.x.get(i), cols.w.get(i)) else {
@@ -1447,7 +1529,7 @@ impl VarManager {
         // A cursor that outlived the rows it pointed at (an option deleted,
         // a field removed) clamps back into the grid.
         self.grid.cursor.0 = self.grid.cursor.0.min(total - 1);
-        self.grid.cursor.1 = self.grid.cursor.1.min(fields.len());
+        self.grid.cursor.1 = self.grid.cursor.1.min(fields.len() + 1);
         let cursor = (self.focus == VmFocus::Grid).then_some(self.grid.cursor);
         self.grid_visible = visible;
         self.grid_area = Rect::new(right.x, y, right.width, (rows_bottom - y).max(1));
@@ -1492,7 +1574,7 @@ impl VarManager {
             fill(buf, Rect::new(x0, ry, inner_w, 1), bg);
 
             if !ghost {
-                let name = &rows[i].0;
+                let (name, _, _) = &rows[i];
                 let on = selected.as_deref() == Some(name.as_str());
                 let glyph = if on { GLYPH_RADIO_ON } else { GLYPH_RADIO_OFF };
                 let fg = if on { theme.accent } else { theme.text_muted };
@@ -1540,13 +1622,21 @@ impl VarManager {
                         );
                     }
                 } else {
-                    let (name, values) = &rows[i];
+                    let (name, description, values) = &rows[i];
+                    let desc_col = col == fields.len() + 1;
                     let value = match col {
                         0 => Some(name),
+                        _ if desc_col => description.as_ref(),
                         n => fields.get(n - 1).and_then(|f| values.get(f)),
                     };
+                    // A missing description is fine (the column is
+                    // optional), so its cell stays blank rather than
+                    // carrying the fields' "(empty)" nudge; a present one
+                    // reads muted, like secondary text elsewhere.
                     let (shown, fg) = match value {
+                        Some(v) if !v.is_empty() && desc_col => (v.as_str(), theme.text_muted),
                         Some(v) if !v.is_empty() => (v.as_str(), theme.text),
+                        _ if desc_col => ("", theme.text_muted),
                         _ => ("(empty)", theme.text_muted),
                     };
                     // The last column's text stops short of the row's trash
@@ -3002,6 +3092,160 @@ fields = ["user_id", "customer_id"]
         let edit = vm.grid.editing.as_ref().unwrap();
         assert_eq!((edit.row, edit.col), (2, 0));
         assert_eq!(edit.input.text(), "");
+    }
+
+    /// The base fixture with a description on alice's option — the
+    /// description-column tests' data.
+    fn fixture_with_description() -> (tempfile::TempDir, ProjectContext) {
+        let (dir, _) = fixture();
+        std::fs::write(
+            dir.path().join("environments/qa.toml"),
+            "[options.creds.alice]\ndescription = \"the admin\"\nuser_id = \"1001\"\ncustomer_id = \"c-77\"\n\n[options.creds.bob]\nuser_id = \"2002\"\ncustomer_id = \"c-91\"\n",
+        )
+        .unwrap();
+        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf());
+        assert!(warns.is_empty(), "{warns:?}");
+        (dir, ctx)
+    }
+
+    #[test]
+    fn grid_renders_a_description_column() {
+        let (_dir, ctx) = fixture_with_description();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        let (content, _) = render(&mut vm, &ctx);
+        assert!(content.contains("DESCRIPTION"), "{content}");
+        assert!(content.contains("the admin"), "{content}");
+    }
+
+    #[test]
+    fn description_cell_edit_seeds_the_stored_text() {
+        let (_dir, ctx) = fixture_with_description();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        // Cols: 0 entry, 1 user_id, 2 customer_id, 3 description.
+        vm.start_cell_edit(&ctx, 0, 3);
+        let edit = vm.grid.editing.as_ref().unwrap();
+        assert_eq!(edit.input.text(), "the admin");
+        // A row without a stored description starts empty.
+        vm.start_cell_edit(&ctx, 1, 3);
+        let edit = vm.grid.editing.as_ref().unwrap();
+        assert_eq!(edit.input.text(), "");
+    }
+
+    #[test]
+    fn grid_focus_chips_offer_edit_and_duplicate_on_the_cursors_option() {
+        let (_dir, ctx) = fixture_with_description();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        vm.focus = VmFocus::Grid;
+        let chips = vm.footer_chips(&ctx, None);
+        let edit = chips
+            .iter()
+            .find(|(k, _, _)| *k == "e")
+            .expect("e chip present");
+        assert_eq!(edit.1, "edit");
+        assert!(matches!(
+            &edit.2,
+            Some(Action::OpenEditOptionPrompt { owner, key, description, .. })
+                if owner == "creds" && key == "alice" && description.as_deref() == Some("the admin")
+        ));
+        let dup = chips
+            .iter()
+            .find(|(k, _, _)| *k == "c")
+            .expect("c chip present");
+        assert_eq!(dup.1, "copy");
+        assert!(matches!(
+            &dup.2,
+            Some(Action::VarStruct(VarStructOp::DuplicateOption { env, selector, name }))
+                if env == "qa" && selector == "creds" && name == "alice"
+        ));
+
+        // On the ghost row there is no option to edit or duplicate — both
+        // chips drop (a dead chip advertises a key that would do nothing).
+        vm.grid.cursor.0 = 2;
+        let chips = vm.footer_chips(&ctx, None);
+        assert!(!chips.iter().any(|(k, _, _)| *k == "e"), "{chips:?}");
+        assert!(!chips.iter().any(|(k, _, _)| *k == "c"), "{chips:?}");
+    }
+
+    #[test]
+    fn e_in_the_grid_opens_the_edit_option_prompt() {
+        let (_dir, ctx) = fixture_with_description();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        vm.focus = VmFocus::Grid;
+        let action = vm.handle_key(key(KeyCode::Char('e')), &ctx, None);
+        assert!(
+            matches!(
+                &action,
+                Some(Action::OpenEditOptionPrompt { owner, key, description, .. })
+                    if owner == "creds" && key == "alice" && description.as_deref() == Some("the admin")
+            ),
+            "{action:?}"
+        );
+        assert!(vm.grid.editing.is_none(), "e no longer starts a cell edit");
+    }
+
+    #[test]
+    fn c_in_the_grid_duplicates_the_cursors_option() {
+        let (_dir, ctx) = fixture_with_description();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        vm.focus = VmFocus::Grid;
+        vm.grid.cursor.0 = 1;
+        let action = vm.handle_key(key(KeyCode::Char('c')), &ctx, None);
+        assert!(
+            matches!(
+                &action,
+                Some(Action::VarStruct(VarStructOp::DuplicateOption { env, selector, name }))
+                    if env == "qa" && selector == "creds" && name == "bob"
+            ),
+            "{action:?}"
+        );
+    }
+
+    #[test]
+    fn r_in_the_grid_starts_the_inline_rename_and_the_chip_targets_the_row() {
+        let (_dir, ctx) = fixture_with_description();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        vm.focus = VmFocus::Grid;
+        let chips = vm.footer_chips(&ctx, None);
+        let rename = chips
+            .iter()
+            .find(|(k, _, _)| *k == "r")
+            .expect("r chip present");
+        assert_eq!(rename.1, "rename");
+        assert!(matches!(
+            &rename.2,
+            Some(Action::StartOptionNameEdit { row: 0 })
+        ));
+
+        assert!(vm.handle_key(key(KeyCode::Char('r')), &ctx, None).is_none());
+        let edit = vm.grid.editing.as_ref().unwrap();
+        assert_eq!((edit.row, edit.col), (0, 0));
+        assert_eq!(edit.input.text(), "alice");
+
+        // The ghost row has no name to rename: no chip, and `r` is inert.
+        vm.grid.editing = None;
+        vm.grid.cursor.0 = 2;
+        let chips = vm.footer_chips(&ctx, None);
+        assert!(!chips.iter().any(|(k, _, _)| *k == "r"), "{chips:?}");
+        assert!(vm.handle_key(key(KeyCode::Char('r')), &ctx, None).is_none());
+        assert!(vm.grid.editing.is_none(), "no ghost edit from r");
+    }
+
+    #[test]
+    fn f2_still_starts_the_inline_name_rename() {
+        let (_dir, ctx) = fixture_with_description();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        vm.focus = VmFocus::Grid;
+        assert!(vm.handle_key(key(KeyCode::F(2)), &ctx, None).is_none());
+        let edit = vm.grid.editing.as_ref().unwrap();
+        assert_eq!((edit.row, edit.col), (0, 0));
+        assert_eq!(edit.input.text(), "alice");
     }
 
     #[test]

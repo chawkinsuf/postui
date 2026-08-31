@@ -3919,6 +3919,21 @@ impl App {
                     postui_core::varedit::upsert_option(doc, selector, option, None, &values)
                 })
             }
+            VarEditOp::SetOptionDescription {
+                env,
+                selector,
+                option,
+                description,
+            } => self.project.edit_env(env, |doc| match description {
+                Some(d) => postui_core::varedit::upsert_option(
+                    doc,
+                    selector,
+                    option,
+                    Some(d),
+                    &indexmap::IndexMap::new(),
+                ),
+                None => postui_core::varedit::remove_option_description(doc, selector, option),
+            }),
             VarEditOp::SetRequestVar { name, value } => {
                 match self.editor.variables.get_mut(name) {
                     Some(option) => option.value = value.clone(),
@@ -4484,6 +4499,15 @@ impl App {
                 selector,
                 from: options[edit.row].clone(),
                 to: value,
+            })
+        } else if edit.col == fields.len() + 1 {
+            // The trailing description column: an emptied cell removes the
+            // stored key (clearing a text value, not an entity remove).
+            self.apply_var_edit(&VarEditOp::SetOptionDescription {
+                env,
+                selector,
+                option: options[edit.row].clone(),
+                description: (!value.is_empty()).then(|| value.clone()),
             })
         } else {
             let Some(field) = fields.get(edit.col - 1).cloned() else {
