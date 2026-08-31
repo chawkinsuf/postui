@@ -697,6 +697,14 @@ impl VarManager {
         ctx: &ProjectContext,
         open_request: Option<&HttpRequest>,
     ) -> Vec<(&'static str, &'static str, Option<Action>)> {
+        // A live cell/field edit owns the keyboard: every letter types
+        // into the input, so the single-key chips below would all be dead.
+        // Advertise the edit's own keys instead — plain hints, since
+        // commit/revert have no single dispatchable `Action` (they run
+        // through `commit_grid_edit`/`commit_var_form`).
+        if self.grid.editing.is_some() || self.form.editing.is_some() {
+            return vec![("enter", "save", None), ("esc", "cancel", None)];
+        }
         // Form focus advertises the form's own quick actions — the
         // keyboard twins of its inline controls (secret toggle, the
         // env row's "✕ remove", the Promote button).
@@ -3131,6 +3139,51 @@ fields = ["user_id", "customer_id"]
         vm.start_cell_edit(&ctx, 1, 3);
         let edit = vm.grid.editing.as_ref().unwrap();
         assert_eq!(edit.input.text(), "");
+    }
+
+    /// While a cell or form-field edit is live, every letter key types
+    /// into the input — the single-key chips would all be dead, so the
+    /// footer shows the edit's own keys instead (plain hints: enter/esc
+    /// have no single dispatchable Action here).
+    #[test]
+    fn a_live_cell_edit_replaces_the_grid_chips_with_commit_hints() {
+        let (_dir, ctx) = fixture_with_description();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        vm.start_cell_edit(&ctx, 0, 1);
+        let chips = vm.footer_chips(&ctx, None);
+        assert_eq!(chips.len(), 2, "{chips:?}");
+        assert!(
+            chips
+                .iter()
+                .any(|(k, l, a)| *k == "enter" && *l == "save" && a.is_none()),
+            "{chips:?}"
+        );
+        assert!(
+            chips
+                .iter()
+                .any(|(k, l, a)| *k == "esc" && *l == "cancel" && a.is_none()),
+            "{chips:?}"
+        );
+    }
+
+    #[test]
+    fn a_live_form_field_edit_replaces_the_form_chips_with_commit_hints() {
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        render(&mut vm, &ctx);
+        let i = vm
+            .left_rows
+            .iter()
+            .position(|r| r == &VmRow::Var("base_url".into()))
+            .unwrap();
+        vm.select_row(i);
+        vm.focus = VmFocus::Form;
+        vm.start_field_edit(&ctx, VmField::Description);
+        let chips = vm.footer_chips(&ctx, None);
+        assert_eq!(chips.len(), 2, "{chips:?}");
+        assert!(chips.iter().any(|(k, _, _)| *k == "enter"), "{chips:?}");
+        assert!(chips.iter().any(|(k, _, _)| *k == "esc"), "{chips:?}");
     }
 
     #[test]
