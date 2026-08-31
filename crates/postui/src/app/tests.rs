@@ -9001,6 +9001,36 @@ fn confirm_edit_option_writes_every_field_into_the_active_envs_entry() {
     );
 }
 
+#[test]
+fn confirm_edit_option_with_an_emptied_description_removes_it_from_the_env_file() {
+    let dir = tempfile::tempdir().unwrap();
+    group_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    let mut values = indexmap::IndexMap::new();
+    values.insert("user_id".to_string(), "1001".to_string());
+    values.insert("customer_id".to_string(), "c-77".to_string());
+    // The Edit prompt maps a cleared Description field to `None`: that
+    // means "remove the stored description", not "leave it alone".
+    app.update(Action::ConfirmEditOption {
+        owner: "identity".into(),
+        key: "alice".into(),
+        values,
+        description: None,
+    });
+
+    let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(
+        !env_doc.contains("admin"),
+        "alice's cleared description must leave the file: {env_doc}"
+    );
+    assert!(
+        env_doc.contains("reader"),
+        "bob's description is untouched: {env_doc}"
+    );
+}
+
 // -- Stage 7: the variable-format migration prompt (spec §3.3) ----------
 
 /// A project written with stage-6 syntax: an enumerated variable, a group

@@ -556,6 +556,31 @@ pub fn rename_option(doc: &str, selector: &str, from: &str, to: &str) -> Result<
     Ok(doc.to_string())
 }
 
+/// Removes one option's `description` key, leaving its values untouched —
+/// the write half of clearing a description in the option Edit prompt
+/// ([`upsert_option`]'s `None` deliberately preserves an existing
+/// description, so a clear needs its own verb). A no-op when the option
+/// has no description; `NotFound` if the selector or option isn't in this
+/// environment.
+pub fn remove_option_description(
+    doc: &str,
+    selector: &str,
+    option: &str,
+) -> Result<String, EditError> {
+    let mut doc = parse(doc)?;
+    let root = doc.as_table_mut();
+    let t = options_selector_mut(root, selector)
+        .and_then(|g| g.get_mut(option))
+        .and_then(Item::as_table_mut)
+        .ok_or_else(|| {
+            not_found(format!(
+                "option \"{option}\" not found in selector \"{selector}\""
+            ))
+        })?;
+    t.remove("description");
+    Ok(doc.to_string())
+}
+
 /// Removes one option of `selector`. `NotFound` if it isn't there.
 pub fn delete_option(doc: &str, selector: &str, option: &str) -> Result<String, EditError> {
     let mut doc = parse(doc)?;
@@ -1300,6 +1325,31 @@ tier = "g-1"
             e.options["user"]["the \"big\" one, v2"].values["user_id"],
             "1"
         );
+    }
+
+    #[test]
+    fn remove_option_description_removes_only_that_key() {
+        let out = remove_option_description(ENV, "tier", "gold").unwrap();
+        let e = reparses_env(&out);
+        assert_eq!(e.options["tier"]["gold"].description, None);
+        assert_eq!(e.options["tier"]["gold"].values["tier"], "g-1");
+        assert_eq!(e.options["test-user"].len(), 2, "siblings untouched");
+        assert_eq!(e.values["base_url"], "https://qa.example.com");
+    }
+
+    #[test]
+    fn remove_option_description_is_a_noop_without_one_and_errors_on_missing_option() {
+        let out = remove_option_description(ENV, "test-user", "user 1").unwrap();
+        reparses_env(&out);
+        assert!(out.contains("[options.test-user.\"user 1\"]"));
+        assert!(matches!(
+            remove_option_description(ENV, "tier", "nope"),
+            Err(EditError::NotFound(_))
+        ));
+        assert!(matches!(
+            remove_option_description(ENV, "ghost", "gold"),
+            Err(EditError::NotFound(_))
+        ));
     }
 
     #[test]

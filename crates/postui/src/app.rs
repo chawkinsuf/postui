@@ -3369,13 +3369,21 @@ impl App {
                 };
                 let before = self.read_file_states(&self.project.var_file_paths());
                 let result = self.project.edit_env(&env, |doc| {
-                    postui_core::varedit::upsert_option(
+                    // The prompt maps a cleared Description field to `None`,
+                    // which means "remove the stored description" here —
+                    // `upsert_option`'s own `None` deliberately preserves
+                    // one (the inline cell edits rely on that).
+                    let doc = postui_core::varedit::upsert_option(
                         doc,
                         &owner,
                         &key,
                         description.as_deref(),
                         &values,
-                    )
+                    )?;
+                    if description.is_some() {
+                        return Ok(doc);
+                    }
+                    postui_core::varedit::remove_option_description(&doc, &owner, &key)
                 });
                 match result {
                     Ok(()) => {
