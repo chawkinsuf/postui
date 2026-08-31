@@ -6341,6 +6341,30 @@ fn alt_b_opens_the_theme_chooser_on_main_and_the_manager_screen() {
     assert_eq!(app.screen, crate::app::Screen::VarManager);
 }
 
+/// alt+b is a toggle: pressed again over the open theme picker it closes
+/// it (reverting any preview, same as esc), rather than being swallowed.
+/// Over any other chooser (e.g. projects) it keeps its hands off.
+#[test]
+fn alt_b_closes_the_open_theme_chooser() {
+    let mut app = App::new_for_test();
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, alt('b'));
+    assert!(matches!(app.modals.top(), Some(Modal::Chooser(_))));
+    app.handle_key(&keymap, alt('b'));
+    assert!(
+        app.modals.is_empty(),
+        "a second alt+b closes the theme chooser"
+    );
+
+    app.update(Action::OpenProjectChooser);
+    assert!(matches!(app.modals.top(), Some(Modal::Chooser(_))));
+    app.handle_key(&keymap, alt('b'));
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Chooser(_))),
+        "alt+b must not close a non-theme chooser"
+    );
+}
+
 /// ToggleInsecure moved off alt+t to make room for the theme chooser.
 #[test]
 fn alt_i_toggles_insecure() {

@@ -118,10 +118,10 @@ pub fn draw_header(
         },
         Hit::HeaderEnvCycle,
     );
-    // A wide group gap: the Variable Manager chip follows in the left
-    // cluster, and the env-cycle pill must keep reading as the env chip's
-    // — not the manager's — shortcut.
-    x += cycle_w + 4;
+    // A wide group gap (the footer's own save-group width): the Variable
+    // Manager chip follows in the left cluster, and the env-cycle pill
+    // must keep reading as the env chip's — not the manager's — shortcut.
+    x += cycle_w + 8;
 
     // The Variable Manager toggle, in the footer's clickable idiom with
     // the keycap trailing the name: prominent full name + `alt+v` pill.
@@ -398,7 +398,7 @@ mod tests {
         let cycle_rect = hits.rect_of(&Hit::HeaderEnvCycle).unwrap();
         assert_eq!(
             rect.x,
-            cycle_rect.x + cycle_rect.width + 4,
+            cycle_rect.x + cycle_rect.width + 8,
             "a group gap after the env-cycle pill"
         );
         assert_eq!(row_text(&term, &rect), " Variable Manager  alt+v ");
@@ -438,9 +438,9 @@ mod tests {
     #[test]
     fn theme_chip_shows_its_name_and_trailing_keycap() {
         let theme = Theme::dark();
-        let (term, hits) = render_wide(&theme, "alpha", "qa", false, None, 100);
+        let (term, hits) = render_wide(&theme, "alpha", "qa", false, None, 110);
         let rect = hits.rect_of(&Hit::HeaderTheme).unwrap();
-        assert_eq!(rect.x + rect.width, 100 - 3, "right-aligned");
+        assert_eq!(rect.x + rect.width, 110 - 3, "right-aligned");
         assert_eq!(row_text(&term, &rect), " Theme  alt+b ");
         let label_cell = cell(&term, rect.x + 1, rect.y);
         assert_eq!(label_cell.symbol(), "T");
@@ -452,7 +452,7 @@ mod tests {
             "trailing keycap pill tint matches the footer chips'"
         );
 
-        let (term, hits) = render_wide(&theme, "alpha", "qa", false, Some(&Hit::HeaderTheme), 100);
+        let (term, hits) = render_wide(&theme, "alpha", "qa", false, Some(&Hit::HeaderTheme), 110);
         let rect = hits.rect_of(&Hit::HeaderTheme).unwrap();
         assert_eq!(
             cell(&term, rect.x + 8, rect.y).bg,

@@ -5714,6 +5714,18 @@ impl App {
 
         // 2. Modals capture all remaining input.
         if !self.modals.is_empty() {
+            // alt+b is a toggle: over the open theme picker it closes it
+            // (reverting any preview — `Action::Close`'s Chooser branch),
+            // instead of being swallowed. `theme_preview` is `Some`
+            // exactly while the theme picker is the open chooser, so a
+            // project chooser is never mistaken for it.
+            if modified
+                && global == Some(Action::OpenThemeChooser)
+                && self.theme_preview.is_some()
+                && matches!(self.modals.top(), Some(crate::components::modal::Modal::Chooser(_)))
+            {
+                return self.update(Action::Close);
+            }
             // The value popup's remove chord needs App (it removes, then
             // rebuilds the popup), so it can't live in the modal's own
             // key handler like the fields editor's chords do. Inert when
