@@ -312,9 +312,8 @@ mod tests {
         let even = compute_layout(area, 0.0, 0.0, 0.5);
         let big = compute_layout(area, 0.0, 0.0, 0.75);
         let column = even.editor.height + even.response.height;
-        let content = column
-            - editor::CHROME_HEIGHT
-            - crate::components::response::HEADER_STRIP_HEIGHT;
+        let content =
+            column - editor::CHROME_HEIGHT - crate::components::response::HEADER_STRIP_HEIGHT;
         for (l, share) in [(&small, 0.25), (&even, 0.5), (&big, 0.75)] {
             assert_eq!(l.editor.height + l.response.height, column);
             assert_eq!(l.editor.y + l.editor.height, l.response.y);

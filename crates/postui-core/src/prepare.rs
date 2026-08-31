@@ -224,7 +224,8 @@ pub fn prepare(
         // A mask that landed in the query string got percent-encoded by
         // the serializer; put the readable glyphs back — this is a display
         // string, not what goes on the wire.
-        let encoded_mask: String = form_urlencoded::byte_serialize(SECRET_MASK.as_bytes()).collect();
+        let encoded_mask: String =
+            form_urlencoded::byte_serialize(SECRET_MASK.as_bytes()).collect();
         masked.replace(&encoded_mask, SECRET_MASK)
     };
 

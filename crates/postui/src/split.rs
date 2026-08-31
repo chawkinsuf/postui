@@ -194,11 +194,7 @@ mod tests {
                 (ResponseFull, 0),
             ] {
                 let next = at(from).apply(stop);
-                assert_eq!(
-                    next.stop(),
-                    stop,
-                    "from editor {from}% via {stop:?}"
-                );
+                assert_eq!(next.stop(), stop, "from editor {from}% via {stop:?}");
                 // Ratio stops land exactly; endpoints are checked below
                 // (their ratio is sticky, so `at(want)` only matches when
                 // coming from the default ratio).

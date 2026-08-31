@@ -426,11 +426,12 @@ fn a_request_is_opened_edited_and_saved_with_nothing_but_clicks() {
     assert_eq!(app.editor.method, postui_core::model::Method::Post);
     assert!(app.editor.is_dirty(), "the change is unsaved");
 
-    // The app bar's Save/Discard chips appear now that there is
-    // something to save...
+    // The app bar's save group appears now that there is something to
+    // save... (Discard can drop on a narrow bar — this 120-col frame with
+    // a long temp project name is one — but Save survives longest.)
     let frame = render(&mut app);
     assert!(
-        frame.contains(" Save ") && frame.contains(" Discard "),
+        frame.contains(" Save "),
         "a dirty request surfaces the app bar's save group"
     );
 

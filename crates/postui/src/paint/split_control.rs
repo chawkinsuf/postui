@@ -49,13 +49,7 @@ pub struct SplitControl {
 impl SplitControl {
     /// Paints the control with its left edge at `(x, y)` and returns each
     /// chip's rect with the stop it jumps to, for hit registration.
-    pub fn paint(
-        &self,
-        buf: &mut Buffer,
-        x: u16,
-        y: u16,
-        theme: &Theme,
-    ) -> [(Rect, SplitStop); 5] {
+    pub fn paint(&self, buf: &mut Buffer, x: u16, y: u16, theme: &Theme) -> [(Rect, SplitStop); 5] {
         let active = self.state.stop();
         // The end caps: control fill, so the staircase sits on a visible
         // button face and the whole strip reads as one control.
@@ -99,8 +93,7 @@ impl SplitControl {
             // text — `text_disabled` alone vanishes against the control
             // fill, full `text_muted` reads too hot as a solid 2-cell
             // block (it's a mass, not a glyph stroke).
-            let resting_mass =
-                crate::theme::mix(theme.text_disabled, theme.text_muted, 0.5);
+            let resting_mass = crate::theme::mix(theme.text_disabled, theme.text_muted, 0.5);
             let (editor_tone, response_tone) = if active == stop {
                 (theme.selection, theme.accent)
             } else if hovered {
@@ -156,7 +149,10 @@ mod tests {
             hovered: None,
         });
         assert_eq!(cell(&term, 2, 0).bg, theme.control);
-        assert_eq!(cell(&term, 2 + SPLIT_CONTROL_WIDTH - 1, 0).bg, theme.control);
+        assert_eq!(
+            cell(&term, 2 + SPLIT_CONTROL_WIDTH - 1, 0).bg,
+            theme.control
+        );
     }
 
     #[test]

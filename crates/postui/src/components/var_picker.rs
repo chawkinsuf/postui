@@ -779,12 +779,8 @@ impl VarPickerState {
                     Some(values) => {
                         // Values align in a column two cells past the
                         // longest member name.
-                        let name_w = values
-                            .keys()
-                            .map(|k| k.chars().count())
-                            .max()
-                            .unwrap_or(0) as u16
-                            + 2;
+                        let name_w =
+                            values.keys().map(|k| k.chars().count()).max().unwrap_or(0) as u16 + 2;
                         for (member, value) in values.iter().take(pane_h as usize) {
                             line(y, member, name_w, value);
                             y += 1;
@@ -1356,7 +1352,11 @@ mod tests {
             assert!(p.handle_key(key(KeyCode::Char(c))).is_none());
         }
         p.handle_key(key(KeyCode::Backspace));
-        assert_eq!(p.selected(), 1, "typing neither filters nor moves the cursor");
+        assert_eq!(
+            p.selected(),
+            1,
+            "typing neither filters nor moves the cursor"
+        );
         let res = p.handle_key(key(KeyCode::Enter)).unwrap();
         assert!(
             res.actions.iter().any(|a| matches!(
@@ -1383,7 +1383,10 @@ mod tests {
         assert!(content.contains("1002"), "{content}");
         assert!(!content.contains("admin"), "{content}");
         assert!(!content.contains("1001"), "{content}");
-        assert!(content.contains("\u{2500}"), "a rule separates list and pane");
+        assert!(
+            content.contains("\u{2500}"),
+            "a rule separates list and pane"
+        );
     }
 
     #[test]
@@ -1452,4 +1455,3 @@ mod tests {
         assert_eq!(res.actions, vec![Action::InsertVarText("{{env}}".into())]);
     }
 }
-

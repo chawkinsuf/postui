@@ -238,9 +238,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     );
     // Toasts paint over the modal stack: a validation error raised by a
     // modal's own confirm must arrive at full strength, not dimmed under
-    // the backdrop it is commenting on.
+    // the backdrop it is commenting on. They stack bottom-right, and the
+    // footer is carved out of their rect so its chips stay readable.
+    let toast_area = ratatui::layout::Rect {
+        height: frame
+            .area()
+            .height
+            .saturating_sub(crate::components::footer::FOOTER_HEIGHT),
+        ..frame.area()
+    };
     app.toasts
-        .draw(frame, frame.area(), &app.theme, &app.anims, now);
+        .draw(frame, toast_area, &app.theme, &app.anims, now);
     app.hits = hits;
 
     // The variable tooltip is painted last of all, over every pane — after

@@ -205,8 +205,16 @@ impl Toasts {
         anims: &Anims,
         now: Instant,
     ) {
-        let mut y = screen.y + 1;
-        for toast in &self.entries {
+        // Bottom-right of `screen` (the caller keeps the footer out of that
+        // rect), one breathing row off its bottom edge; oldest on top,
+        // newest at the bottom. When more toasts are alive than fit, the
+        // oldest are the ones held off screen — they expire first anyway.
+        let bottom = screen.bottom().saturating_sub(1);
+        let visible = (bottom.saturating_sub(screen.y) / TOAST_HEIGHT) as usize;
+        let skip = self.entries.len().saturating_sub(visible);
+        let shown = self.entries.len() - skip;
+        let mut y = bottom.saturating_sub(shown as u16 * TOAST_HEIGHT);
+        for toast in self.entries.iter().skip(skip) {
             // Use display-width instead of char count to handle double-width chars (emoji, CJK)
             let display_width = Span::raw(toast.message.as_str()).width();
             // Clamp to usize before arithmetic to prevent overflow on very long messages
@@ -442,7 +450,7 @@ mod tests {
     }
 
     #[test]
-    fn draw_renders_message_top_right() {
+    fn draw_renders_message_bottom_right() {
         let mut t = Toasts::default();
         t.push("Copied \u{2713}", ToastKind::Success);
         let theme = Theme::dark();
@@ -454,6 +462,39 @@ mod tests {
             .unwrap();
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(content.contains("Copied"));
+    }
+
+    /// Toasts stack bottom-right of the given rect: the newest rests one
+    /// breathing row off its bottom edge, older ones above it.
+    #[test]
+    fn draw_stacks_bottom_right_newest_at_the_bottom() {
+        let mut t = Toasts::default();
+        t.push("older", ToastKind::Info);
+        t.push("newest", ToastKind::Info);
+        let theme = Theme::dark();
+        let backend = TestBackend::new(60, 20);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let anims = Anims::new(true);
+        terminal
+            .draw(|f| t.draw(f, f.area(), &theme, &anims, Instant::now()))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let row_of = |needle: &str| {
+            (0..buf.area.height)
+                .find(|y| {
+                    let row: String = (0..buf.area.width)
+                        .map(|x| buf[(x, *y)].symbol().to_string())
+                        .collect();
+                    row.contains(needle)
+                })
+                .unwrap_or_else(|| panic!("{needle:?} not on screen"))
+        };
+        let newest = row_of("newest");
+        let older = row_of("older");
+        // Text sits on the middle row of a 3-row toast whose bottom edge
+        // is 1 row off the rect's bottom (height 20 → rows 16..19, text 17).
+        assert_eq!(newest, 20 - 1 - TOAST_HEIGHT + TOAST_HEIGHT / 2);
+        assert_eq!(older, newest - TOAST_HEIGHT, "older stacks above");
     }
 
     #[test]

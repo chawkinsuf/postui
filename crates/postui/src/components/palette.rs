@@ -78,6 +78,12 @@ pub fn all_commands() -> Vec<Command> {
             action: Action::SaveRequest,
         },
         Command {
+            id: "request-discard",
+            name: "Request: discard changes",
+            description: "Revert unsaved edits to the saved request (asks first)",
+            action: Action::ConfirmDiscardChanges,
+        },
+        Command {
             id: "request-rename",
             name: "Request: rename",
             description: "Rename the open request",
@@ -299,6 +305,7 @@ fn keymap_action_name(command_id: &str) -> Option<&'static str> {
         "quit" => Some("quit"),
         "send" => Some("send"),
         "request-save" => Some("save"),
+        "request-discard" => Some("discard"),
         "request-duplicate" => Some("request_duplicate"),
         "method-cycle" => Some("cycle_method"),
         "method-choose" => Some("method_choose"),

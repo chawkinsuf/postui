@@ -182,7 +182,7 @@ pub fn draw_header(
     let save_label = " Save ";
     let discard_label = " Discard ";
     let save_w = save_label.chars().count() as u16 + " ^S ".chars().count() as u16;
-    let discard_w = discard_label.chars().count() as u16 + " \u{21a9} ".chars().count() as u16;
+    let discard_w = discard_label.chars().count() as u16 + " alt+d ".chars().count() as u16;
     let group_w = discard_w + 2 + save_w;
     let beside_theme = theme_x > x + group_w + GROUP_GAP;
     let theme_visible = if dirty {
@@ -208,7 +208,15 @@ pub fn draw_header(
             } else {
                 theme.control
             };
-            text(buf, save_x, mid_y, save_label, theme.text, theme.panel, false);
+            text(
+                buf,
+                save_x,
+                mid_y,
+                save_label,
+                theme.text,
+                theme.panel,
+                false,
+            );
             crate::paint::Chip {
                 label: "^S",
                 color: theme.text_muted,
@@ -245,7 +253,7 @@ pub fn draw_header(
                     false,
                 );
                 crate::paint::Chip {
-                    label: "\u{21a9}",
+                    label: "alt+d",
                     color: theme.text_muted,
                 }
                 .paint(
@@ -358,7 +366,17 @@ mod tests {
         let mut hits = HitMap::default();
         terminal
             .draw(|f: &mut Frame| {
-                draw_header(f, f.area(), theme, "alpha", "qa", false, true, &mut hits, None)
+                draw_header(
+                    f,
+                    f.area(),
+                    theme,
+                    "alpha",
+                    "qa",
+                    false,
+                    true,
+                    &mut hits,
+                    None,
+                )
             })
             .unwrap();
         (terminal, hits)
@@ -602,7 +620,8 @@ mod tests {
         let theme = Theme::dark();
         let (_term, hits) = render_wide(&theme, "alpha", "qa", false, None, 160);
         assert!(
-            hits.rect_of(&Hit::FooterChip(Action::SaveRequest)).is_none(),
+            hits.rect_of(&Hit::FooterChip(Action::SaveRequest))
+                .is_none(),
             "clean: no save chip"
         );
         assert!(
@@ -632,7 +651,10 @@ mod tests {
             " Save  ^S ",
             "name + trailing keycap idiom"
         );
-        assert_eq!(row_text(&term, &discard), " Discard  \u{21a9} ");
+        assert_eq!(
+            row_text(&term, &discard),
+            format!(" Discard  {}+d ", crate::keys::alt_label())
+        );
     }
 
     /// On a bar too narrow to hold both, the save group outranks the
@@ -644,7 +666,8 @@ mod tests {
         let theme = Theme::dark();
         let (_term, hits) = render_dirty(&theme, 120);
         assert!(
-            hits.rect_of(&Hit::FooterChip(Action::SaveRequest)).is_some(),
+            hits.rect_of(&Hit::FooterChip(Action::SaveRequest))
+                .is_some(),
             "save survives the squeeze"
         );
         assert!(
@@ -679,7 +702,17 @@ mod tests {
         let mut hits = HitMap::default();
         terminal
             .draw(|f: &mut Frame| {
-                draw_header(f, f.area(), &theme, "alpha", "qa", false, false, &mut hits, None)
+                draw_header(
+                    f,
+                    f.area(),
+                    &theme,
+                    "alpha",
+                    "qa",
+                    false,
+                    false,
+                    &mut hits,
+                    None,
+                )
             })
             .unwrap();
         let buf = terminal.backend().buffer();

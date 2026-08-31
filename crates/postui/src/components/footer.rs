@@ -418,7 +418,8 @@ mod tests {
         for focus in [PaneId::Sidebar, PaneId::Editor, PaneId::Response] {
             let (_, hits) = render_hits(focus);
             assert!(
-                hits.rect_of(&Hit::FooterChip(Action::SaveRequest)).is_none(),
+                hits.rect_of(&Hit::FooterChip(Action::SaveRequest))
+                    .is_none(),
                 "{focus:?}: save moved to the app bar"
             );
             assert!(
