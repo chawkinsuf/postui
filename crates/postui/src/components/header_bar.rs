@@ -22,6 +22,10 @@ pub fn draw_header(
     project: &str,
     env: &str,
     vars_active: bool,
+    // Shows the save/discard group beside the Theme chip. Only ever true
+    // while the open request has unsaved edits (a clean request needs
+    // neither button) on the Main screen with no modal capturing keys.
+    dirty: bool,
     hits: &mut HitMap,
     hovered: Option<&Hit>,
 ) {
@@ -160,8 +164,113 @@ pub fn draw_header(
     let theme_key_w = " alt+b ".chars().count() as u16;
     let theme_w = theme_label.chars().count() as u16 + theme_key_w;
     let theme_x = (area.x + area.width).saturating_sub(theme_w + 3);
-    // Never collide with the left-side chips on a very narrow bar.
-    if theme_x > x {
+
+    // The save/discard group, in the bar's same name-plus-trailing-keycap
+    // idiom, right-aligned a group gap left of the Theme chip — up here
+    // near the data being saved rather than down in the footer. Present
+    // only while there is actually something to save: both chips appear
+    // together when the request goes dirty and leave when it's clean
+    // again, so an idle bar carries no dead buttons. Registered as
+    // `Hit::FooterChip` so clicks dispatch through the existing routing.
+    //
+    // On a bar too narrow to hold both, the group outranks the Theme
+    // chip (saving beats restyling): it takes the right margin and the
+    // Theme chip sits out until the request is clean again. Tighter
+    // still, discard drops before save — the group's essential half
+    // survives longest.
+    const GROUP_GAP: u16 = 8;
+    let save_label = " Save ";
+    let discard_label = " Discard ";
+    let save_w = save_label.chars().count() as u16 + " ^S ".chars().count() as u16;
+    let discard_w = discard_label.chars().count() as u16 + " \u{21a9} ".chars().count() as u16;
+    let group_w = discard_w + 2 + save_w;
+    let beside_theme = theme_x > x + group_w + GROUP_GAP;
+    let theme_visible = if dirty {
+        theme_x > x && beside_theme
+    } else {
+        theme_x > x
+    };
+    if dirty {
+        use crate::action::Action;
+        let save_hit = Hit::FooterChip(Action::SaveRequest);
+        let discard_hit = Hit::FooterChip(Action::ConfirmDiscardChanges);
+        let group_right = if beside_theme {
+            theme_x.saturating_sub(GROUP_GAP)
+        } else {
+            (area.x + area.width).saturating_sub(3)
+        };
+        let save_x = group_right.saturating_sub(save_w);
+        // Discard sits left of save so save keeps its anchored spot.
+        let discard_x = save_x.saturating_sub(discard_w + 2);
+        if save_x > x {
+            let pill_on = if hovered == Some(&save_hit) {
+                theme.control_hover
+            } else {
+                theme.control
+            };
+            text(buf, save_x, mid_y, save_label, theme.text, theme.panel, false);
+            crate::paint::Chip {
+                label: "^S",
+                color: theme.text_muted,
+            }
+            .paint(
+                buf,
+                save_x + save_label.chars().count() as u16,
+                mid_y,
+                pill_on,
+                theme,
+            );
+            hits.register(
+                Rect {
+                    x: save_x,
+                    y: mid_y,
+                    width: save_w,
+                    height: 1,
+                },
+                save_hit,
+            );
+            if discard_x > x {
+                let pill_on = if hovered == Some(&discard_hit) {
+                    theme.control_hover
+                } else {
+                    theme.control
+                };
+                text(
+                    buf,
+                    discard_x,
+                    mid_y,
+                    discard_label,
+                    theme.text,
+                    theme.panel,
+                    false,
+                );
+                crate::paint::Chip {
+                    label: "\u{21a9}",
+                    color: theme.text_muted,
+                }
+                .paint(
+                    buf,
+                    discard_x + discard_label.chars().count() as u16,
+                    mid_y,
+                    pill_on,
+                    theme,
+                );
+                hits.register(
+                    Rect {
+                        x: discard_x,
+                        y: mid_y,
+                        width: discard_w,
+                        height: 1,
+                    },
+                    discard_hit,
+                );
+            }
+        }
+    }
+
+    // Never collide with the left-side chips on a very narrow bar (and
+    // yield to the save group while it needs the right margin).
+    if theme_visible {
         let theme_rect = Rect {
             x: theme_x,
             y: mid_y,
@@ -234,9 +343,22 @@ mod tests {
                     project,
                     env,
                     vars_active,
+                    false,
                     &mut hits,
                     hovered,
                 )
+            })
+            .unwrap();
+        (terminal, hits)
+    }
+
+    fn render_dirty(theme: &Theme, width: u16) -> (Terminal<TestBackend>, HitMap) {
+        let backend = TestBackend::new(width, HEADER_HEIGHT);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = HitMap::default();
+        terminal
+            .draw(|f: &mut Frame| {
+                draw_header(f, f.area(), theme, "alpha", "qa", false, true, &mut hits, None)
             })
             .unwrap();
         (terminal, hits)
@@ -268,6 +390,7 @@ mod tests {
                     &theme,
                     "a-rather-long-project",
                     "qa",
+                    false,
                     false,
                     &mut hits,
                     None,
@@ -470,6 +593,66 @@ mod tests {
         );
     }
 
+    /// The save/discard group appears beside the Theme chip only while
+    /// the request is dirty — a clean request needs neither button, so
+    /// the bar carries none.
+    #[test]
+    fn save_group_appears_beside_the_theme_chip_only_while_dirty() {
+        use crate::action::Action;
+        let theme = Theme::dark();
+        let (_term, hits) = render_wide(&theme, "alpha", "qa", false, None, 160);
+        assert!(
+            hits.rect_of(&Hit::FooterChip(Action::SaveRequest)).is_none(),
+            "clean: no save chip"
+        );
+        assert!(
+            hits.rect_of(&Hit::FooterChip(Action::ConfirmDiscardChanges))
+                .is_none(),
+            "clean: no discard chip"
+        );
+
+        let (term, hits) = render_dirty(&theme, 160);
+        let save = hits
+            .rect_of(&Hit::FooterChip(Action::SaveRequest))
+            .expect("dirty: save chip registered");
+        let discard = hits
+            .rect_of(&Hit::FooterChip(Action::ConfirmDiscardChanges))
+            .expect("dirty: discard chip registered");
+        let theme_rect = hits.rect_of(&Hit::HeaderTheme).unwrap();
+        assert!(
+            discard.x + discard.width < save.x,
+            "discard sits left of save"
+        );
+        assert!(
+            save.x + save.width + 8 <= theme_rect.x,
+            "the group sits a clear gap left of the Theme chip: save {save:?} theme {theme_rect:?}"
+        );
+        assert_eq!(
+            row_text(&term, &save),
+            " Save  ^S ",
+            "name + trailing keycap idiom"
+        );
+        assert_eq!(row_text(&term, &discard), " Discard  \u{21a9} ");
+    }
+
+    /// On a bar too narrow to hold both, the save group outranks the
+    /// Theme chip: it takes the right margin and Theme sits out until the
+    /// request is clean again.
+    #[test]
+    fn save_group_takes_the_theme_chips_place_on_a_narrow_bar() {
+        use crate::action::Action;
+        let theme = Theme::dark();
+        let (_term, hits) = render_dirty(&theme, 120);
+        assert!(
+            hits.rect_of(&Hit::FooterChip(Action::SaveRequest)).is_some(),
+            "save survives the squeeze"
+        );
+        assert!(
+            hits.rect_of(&Hit::HeaderTheme).is_none(),
+            "theme yields to the save group"
+        );
+    }
+
     /// The Variable Manager chip is part of the left cluster now: it
     /// paints (clipped, like the project/env chips) on a bar too narrow
     /// for the right-aligned theme chip, which still drops.
@@ -496,7 +679,7 @@ mod tests {
         let mut hits = HitMap::default();
         terminal
             .draw(|f: &mut Frame| {
-                draw_header(f, f.area(), &theme, "alpha", "qa", false, &mut hits, None)
+                draw_header(f, f.area(), &theme, "alpha", "qa", false, false, &mut hits, None)
             })
             .unwrap();
         let buf = terminal.backend().buffer();

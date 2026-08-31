@@ -151,7 +151,6 @@ pub fn draw_footer(
     focus: PaneId,
     shift_enter_send: bool,
     sending: bool,
-    dirty: bool,
     add_row_label: Option<&'static str>,
     // See `footer_chips`: the editor pane's focus sits on the address bar.
     url_focused: bool,
@@ -164,15 +163,10 @@ pub fn draw_footer(
     // right-aligned save/palette/quit chips stay put.
     chips_override: Option<Vec<FooterChip>>,
     // `false` while an open modal supplies the chips: it captures the
-    // keyboard, so the save group and palette chip — whose shortcuts go
-    // dead under it — hide rather than advertise keys that won't work.
-    // Quit stays (the modified quit combo pre-empts everything).
+    // keyboard, so the palette chip — whose shortcut goes dead under it —
+    // hides rather than advertise a key that won't work. Quit stays (the
+    // modified quit combo pre-empts everything).
     globals_live: bool,
-    // `false` on non-Main screens: `ctrl+s` isn't on their global
-    // whitelist (`screen_escape_whitelist`), so the save/discard group's
-    // keys are swallowed there — same no-dead-keys rule as `globals_live`,
-    // but the palette (whitelisted) stays.
-    save_group_live: bool,
     // Whether a plain `q` actually reaches `Action::Quit` right now. Where
     // it doesn't — a modal open, a non-Main screen, the editor's text
     // areas — the quit chip's keycap shows the pre-empting `^C` combo
@@ -222,44 +216,10 @@ pub fn draw_footer(
             hovered,
         );
 
-        if save_group_live {
-            // The global save/discard group: request-level actions available
-            // from every pane (ctrl+s is a global binding), right-aligned
-            // left of the palette/quit pair with a wider gap so it reads as
-            // its own group. Discard only exists while there are unsaved
-            // edits to walk back; it slots in left of save so save keeps its
-            // right-anchored spot and doesn't jump when discard comes and
-            // goes.
-            const GROUP_GAP: u16 = 8;
-            let save_label = if dirty { "save •" } else { "save" };
-            let mut group: Vec<(&'static str, &'static str, Option<Action>)> = Vec::new();
-            if dirty {
-                group.push(("↩", "discard", Some(Action::ConfirmDiscardChanges)));
-            }
-            group.push(("^S", save_label, Some(Action::SaveRequest)));
-            let group_w: u16 =
-                group.iter().map(chip_width).sum::<u16>() + 2 * (group.len() as u16 - 1);
-            let group_x = palette_x.saturating_sub(GROUP_GAP + group_w);
-            paint_chip_row(
-                buf,
-                mid_y,
-                group_x,
-                group_x + group_w,
-                &group,
-                theme,
-                hits,
-                hovered,
-            );
-
-            // Per-pane chips stop one column shy of the save group so the
-            // two never collide.
-            group_x.saturating_sub(1)
-        } else {
-            // No save group on this screen (its keys are swallowed there —
-            // see `save_group_live`): the context chips run up to the
-            // palette instead.
-            palette_x.saturating_sub(1)
-        }
+        // Per-pane chips stop one column shy of the palette so the two
+        // never collide. (The save/discard group lives in the app bar now,
+        // beside the Theme chip.)
+        palette_x.saturating_sub(1)
     } else {
         quit_x.saturating_sub(1)
     };
@@ -387,11 +347,11 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     fn render(focus: PaneId) -> String {
-        let (content, _) = render_dirty(focus, false);
+        let (content, _) = render_hits(focus);
         content
     }
 
-    fn render_dirty(focus: PaneId, dirty: bool) -> (String, crate::hit::HitMap) {
+    fn render_hits(focus: PaneId) -> (String, crate::hit::HitMap) {
         let theme = Theme::for_terminal();
         let backend = TestBackend::new(120, FOOTER_HEIGHT);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -405,12 +365,10 @@ mod tests {
                     focus,
                     false,
                     false,
-                    dirty,
                     Some("add header"),
                     false,
                     None,
                     None,
-                    true,
                     true,
                     true,
                     &mut hits,
@@ -453,47 +411,22 @@ mod tests {
         );
     }
 
-    /// Save (and, while dirty, discard) are global actions now: they sit
-    /// right-aligned on the footer regardless of pane focus, in their own
-    /// group left of the palette/quit pair with a wider gap separating the
-    /// two groups.
+    /// The save/discard group lives in the app bar now (beside the Theme
+    /// chip): the footer must not carry it on any pane.
     #[test]
-    fn save_group_is_right_aligned_on_every_pane_with_a_gap_before_palette() {
+    fn footer_carries_no_save_or_discard_chips() {
         for focus in [PaneId::Sidebar, PaneId::Editor, PaneId::Response] {
-            let (content, hits) = render_dirty(focus, false);
-            assert!(content.contains("save"), "{focus:?}: {content}");
-            let save = hits
-                .rect_of(&Hit::FooterChip(Action::SaveRequest))
-                .unwrap_or_else(|| panic!("{focus:?}: save chip registered"));
-            let palette = hits.rect_of(&Hit::FooterChip(Action::OpenPalette)).unwrap();
+            let (_, hits) = render_hits(focus);
             assert!(
-                save.x + save.width + 8 <= palette.x,
-                "{focus:?}: save group clearly separated from palette/quit: save {save:?} palette {palette:?}"
+                hits.rect_of(&Hit::FooterChip(Action::SaveRequest)).is_none(),
+                "{focus:?}: save moved to the app bar"
             );
-            assert!(save.x > 60, "{focus:?}: right-aligned in a 120-wide footer");
             assert!(
                 hits.rect_of(&Hit::FooterChip(Action::ConfirmDiscardChanges))
                     .is_none(),
-                "{focus:?}: a clean editor has nothing to discard"
+                "{focus:?}: discard moved to the app bar"
             );
         }
-    }
-
-    #[test]
-    fn dirty_editor_shows_the_save_dot_and_a_discard_chip() {
-        let (content, hits) = render_dirty(PaneId::Sidebar, true);
-        assert!(content.contains("save •"), "{content}");
-        assert!(content.contains("discard"), "{content}");
-        let save = hits.rect_of(&Hit::FooterChip(Action::SaveRequest)).unwrap();
-        let discard = hits
-            .rect_of(&Hit::FooterChip(Action::ConfirmDiscardChanges))
-            .expect("dirty editor offers discard");
-        assert!(
-            discard.x + discard.width < save.x,
-            "discard sits left of save so save stays put when discard appears"
-        );
-        let palette = hits.rect_of(&Hit::FooterChip(Action::OpenPalette)).unwrap();
-        assert!(save.x + save.width < palette.x, "left of palette");
     }
 
     /// The editor's context chips advertise vars (alt+shift+v — ctrl+v is
@@ -670,12 +603,10 @@ mod tests {
                     PaneId::Response,
                     false,
                     false,
-                    false,
                     Some("add header"),
                     false,
                     None,
                     None,
-                    true,
                     true,
                     true,
                     &mut hits,
@@ -715,12 +646,10 @@ mod tests {
                     PaneId::Sidebar,
                     false,
                     false,
-                    false,
                     Some("add header"),
                     false,
                     None,
                     None,
-                    true,
                     true,
                     true,
                     &mut hits,
@@ -763,12 +692,10 @@ mod tests {
                     PaneId::Sidebar,
                     false,
                     false,
-                    false,
                     Some("add header"),
                     false,
                     None,
                     None,
-                    true,
                     true,
                     true,
                     &mut hits,
@@ -800,12 +727,10 @@ mod tests {
                     PaneId::Sidebar,
                     false,
                     false,
-                    false,
                     Some("add header"),
                     false,
                     None,
                     None,
-                    true,
                     true,
                     true,
                     &mut hits,
@@ -871,12 +796,10 @@ mod tests {
                     PaneId::Sidebar,
                     false,
                     false,
-                    false,
                     Some("add header"),
                     false,
                     None,
                     None,
-                    true,
                     true,
                     true,
                     &mut hits,
@@ -928,12 +851,10 @@ mod tests {
                     PaneId::Sidebar,
                     false,
                     false,
-                    false,
                     Some("add header"),
                     false,
                     None,
                     None,
-                    true,
                     true,
                     true,
                     &mut hits,
@@ -1024,12 +945,10 @@ mod tests {
                     PaneId::Sidebar,
                     false,
                     false,
-                    false,
                     Some("add header"),
                     false,
                     None,
                     None,
-                    true,
                     true,
                     true,
                     &mut hits,

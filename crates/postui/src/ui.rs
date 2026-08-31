@@ -67,6 +67,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         &project_name,
         &env_label,
         screen == Screen::VarManager,
+        // The save/discard group shows only where its keys actually work:
+        // the Main screen (`ctrl+s` is not on other screens' whitelist)
+        // with no modal capturing the keyboard — and only while there is
+        // something to save. An in-progress cell edit counts: it isn't in
+        // `is_dirty`'s diff until it commits, but a mouse-only save must
+        // be clickable while it's being typed (save commits it first).
+        (app.editor.is_dirty() || app.editor.table.editing.is_some())
+            && screen == Screen::Main
+            && app.modals.top().is_none(),
         &mut hits,
         app.hovered.as_ref(),
     );
@@ -201,7 +210,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         focus,
         app.shift_enter_send,
         app.editor.sending,
-        app.editor.is_dirty(),
         // No add chip while a new row is already mid-add (the ghost-row
         // edit); editing an existing row keeps it.
         (!app.editor.adding_row())
@@ -214,9 +222,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         table_row_selected,
         vm_chips,
         globals_live,
-        // ctrl+s only reaches `SaveRequest` on the Main screen (it's not on
-        // `screen_escape_whitelist`), so other screens hide the save group.
-        globals_live && app.screen == crate::app::Screen::Main,
         plain_q_quits,
         &mut hits,
         app.hovered.as_ref(),

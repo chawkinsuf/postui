@@ -426,11 +426,12 @@ fn a_request_is_opened_edited_and_saved_with_nothing_but_clicks() {
     assert_eq!(app.editor.method, postui_core::model::Method::Post);
     assert!(app.editor.is_dirty(), "the change is unsaved");
 
-    // The toolbar's Save chip is on screen...
+    // The app bar's Save/Discard chips appear now that there is
+    // something to save...
     let frame = render(&mut app);
     assert!(
-        frame.contains("save \u{2022}"),
-        "the toolbar's save chip carries the dirty dot"
+        frame.contains(" Save ") && frame.contains(" Discard "),
+        "a dirty request surfaces the app bar's save group"
     );
 
     // ...and clicking it writes the file.
