@@ -1589,6 +1589,7 @@ impl App {
             }
             Action::SplitStop(stop) => self.apply_split_stop(stop),
             Action::CycleSplit => self.apply_split_stop(self.split_state().stop().next()),
+            Action::CycleSplitBack => self.apply_split_stop(self.split_state().stop().prev()),
             Action::FormatBody => {
                 self.no_coalesce = true;
                 self.transform_body(postui_core::json::format)

@@ -66,6 +66,9 @@ pub enum Action {
     /// the keyboard route to the split control: one key (see the footer's
     /// `split` chip) walks the boundary down the column and back around.
     CycleSplit,
+    /// Steps the split to the previous stop, wrapping — [`Self::CycleSplit`]
+    /// run the other way (shift+alt+w).
+    CycleSplitBack,
     /// Start a new row on the active table tab (Params/Headers/Vars):
     /// focuses the editor's table and begins editing the ghost row's key
     /// cell, exactly like clicking "+ Add …". Inert on the Body tab.

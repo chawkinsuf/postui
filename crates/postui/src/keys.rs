@@ -197,6 +197,7 @@ pub(crate) fn named_actions() -> Vec<(&'static str, Action)> {
         ("toggle_table_collapse", Action::ToggleTableCollapse),
         ("toggle_response_collapse", Action::ToggleResponseCollapse),
         ("cycle_split", Action::CycleSplit),
+        ("cycle_split_back", Action::CycleSplitBack),
         ("var_manager_open", Action::OpenVarManager),
         ("extract_to_variable", Action::ExtractToVariable),
         ("request_duplicate", Action::DuplicateRequest),
@@ -270,6 +271,7 @@ impl Keymap {
             ("alt+a", Action::TableAddRow),
             ("alt+p", Action::ToggleTableCollapse),
             ("alt+w", Action::CycleSplit),
+            ("shift+alt+w", Action::CycleSplitBack),
             ("alt+v", Action::OpenVarManager),
             ("ctrl+shift+e", Action::ExtractToVariable),
             ("ctrl+shift+d", Action::DuplicateRequest),
@@ -506,6 +508,7 @@ mod tests {
         assert_eq!(get("alt+i"), Some(Action::ToggleInsecure));
         assert_eq!(get("alt+b"), Some(Action::OpenThemeChooser));
         assert_eq!(get("alt+w"), Some(Action::CycleSplit));
+        assert_eq!(get("shift+alt+w"), Some(Action::CycleSplitBack));
         assert_eq!(get("alt+t"), None, "alt+t is free again");
         assert_eq!(
             get("alt+y"),

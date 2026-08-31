@@ -45,6 +45,13 @@ impl SplitStop {
         let i = SplitStop::ALL.iter().position(|s| *s == self).unwrap();
         SplitStop::ALL[(i + 1) % SplitStop::ALL.len()]
     }
+
+    /// The previous stop in on-screen order, wrapping — `next`'s mirror,
+    /// behind `Action::CycleSplitBack` (shift+alt+w).
+    pub fn prev(self) -> SplitStop {
+        let i = SplitStop::ALL.iter().position(|s| *s == self).unwrap();
+        SplitStop::ALL[(i + SplitStop::ALL.len() - 1) % SplitStop::ALL.len()]
+    }
 }
 
 /// The editor's share of the column while both panes are visible.
@@ -243,6 +250,15 @@ mod tests {
         }
         assert_eq!(seen, SplitStop::ALL.to_vec());
         assert_eq!(s.next(), EditorFull, "wraps back to the top");
+    }
+
+    #[test]
+    fn prev_mirrors_next_on_every_stop() {
+        for s in SplitStop::ALL {
+            assert_eq!(s.next().prev(), s);
+            assert_eq!(s.prev().next(), s);
+        }
+        assert_eq!(EditorFull.prev(), ResponseFull, "wraps back to the bottom");
     }
 
     #[test]
