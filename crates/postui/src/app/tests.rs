@@ -8172,7 +8172,7 @@ fn clicking_an_undefined_token_still_opens_the_insert_picker_seeded() {
 }
 
 #[test]
-fn ctrl_v_on_group_member_token_shows_the_group_s_options_with_full_preview() {
+fn ctrl_v_on_group_member_token_shows_the_group_s_options_with_a_detail_pane() {
     let dir = tempfile::tempdir().unwrap();
     group_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -8193,11 +8193,18 @@ fn ctrl_v_on_group_member_token_shows_the_group_s_options_with_full_preview() {
         }
     );
 
+    // alice (row 0) is highlighted: her description sits on the row and
+    // her member values fill the detail pane below the list.
     let content = rendered_text(&mut app);
     assert!(content.contains("alice"), "{content}");
     assert!(content.contains("admin"), "{content}");
-    assert!(content.contains("user_id 1001"), "{content}");
-    assert!(content.contains("customer_id c-77"), "{content}");
+    assert!(content.contains("user_id"), "{content}");
+    assert!(content.contains("1001"), "{content}");
+    assert!(content.contains("c-77"), "{content}");
+    assert!(
+        !content.contains("1002"),
+        "bob's values stay out of sight until he's highlighted: {content}"
+    );
 }
 
 #[test]
@@ -8227,7 +8234,7 @@ fn select_option_enter_writes_selection_to_state_toml_and_leaves_url_unchanged()
 }
 
 #[test]
-fn select_option_typing_filters_rows() {
+fn select_option_arrows_move_the_selection_and_typing_is_inert() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -8236,9 +8243,11 @@ fn select_option_typing_filters_rows() {
 
     focus_url_with_cursor_on(&mut app, "https://x/{{user}}", "{{user}}");
     app.update(Action::OpenVarPicker { completing: false });
-    for c in "bob".chars() {
+    // The picker has no filter: typed letters do nothing, arrows select.
+    for c in "alice".chars() {
         app.handle_key(&keymap, plain(c));
     }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert_eq!(app.project.selections_for("qa")["user"], "bob");
@@ -8578,10 +8587,10 @@ fn inline_create_on_a_multi_field_group_hints_at_the_empty_fields() {
 }
 
 #[test]
-fn typing_e_in_the_select_picker_filters_instead_of_editing() {
-    // Regression (user feedback): the select popup's input presents as a
-    // filter, so `e` must filter like any other letter, not hijack into
-    // the option edit prompt.
+fn typing_e_in_the_select_picker_is_inert() {
+    // The select picker has no filter, and `e` must not hijack into the
+    // option edit prompt either (regression guard for the old filter-era
+    // behavior): it stays open, unchanged.
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -8596,9 +8605,10 @@ fn typing_e_in_the_select_picker_filters_instead_of_editing() {
     );
 
     let Some(Modal::VarPicker(p)) = app.modals.top() else {
-        panic!("the picker stays open, filtering");
+        panic!("the picker stays open");
     };
-    assert_eq!(p.input(), "e");
+    assert_eq!(p.input(), "", "no filter to type into");
+    assert_eq!(p.selected(), 0, "the highlight is untouched");
 }
 
 #[test]

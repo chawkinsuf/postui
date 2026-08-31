@@ -668,9 +668,20 @@ impl ModalStack {
                 ("enter", "select", None),
                 ("esc", "close", None),
             ],
+            // Only the Insert-mode picker has a typed filter to advertise;
+            // SelectOption mode is arrow-and-click only.
+            Modal::VarPicker(state)
+                if state.mode == crate::components::var_picker::PickerMode::Insert =>
+            {
+                vec![
+                    ("↑↓", "navigate", None),
+                    ("a–z", "filter", None),
+                    ("enter", "select", None),
+                    ("esc", "close", None),
+                ]
+            }
             Modal::VarPicker(_) => vec![
                 ("↑↓", "navigate", None),
-                ("a–z", "filter", None),
                 ("enter", "select", None),
                 ("esc", "close", None),
             ],
@@ -2311,6 +2322,40 @@ mod tests {
         );
         assert!(chips.iter().any(|(k, l, _)| k == "k" && l == "keep"));
         assert!(chips.iter().any(|(k, l, _)| k == "esc" && l == "cancel"));
+    }
+
+    /// The SelectOption picker has no filter, so its footer must not
+    /// advertise one; the Insert-mode picker keeps the a–z filter chip.
+    #[test]
+    fn select_option_picker_footer_chips_drop_the_filter_chip() {
+        use crate::components::var_picker::{SelectOption, VarPickerState};
+        let mut m = ModalStack::default();
+        m.push(Modal::VarPicker(VarPickerState::new_select(
+            vec![SelectOption {
+                key: "alice".into(),
+                description: None,
+                value: Some("x".into()),
+                selected: false,
+                values: None,
+            }],
+            "user".into(),
+            "user".into(),
+            "qa".into(),
+        )));
+        let chips = m.footer_chips().expect("the picker supplies chips");
+        assert!(
+            !chips.iter().any(|(_, l, _)| l == "filter"),
+            "no filter chip in select mode: {chips:?}"
+        );
+        assert!(chips.iter().any(|(k, _, _)| k == "enter"));
+
+        let mut m = ModalStack::default();
+        m.push(Modal::VarPicker(VarPickerState::new(vec![], false)));
+        let chips = m.footer_chips().expect("the picker supplies chips");
+        assert!(
+            chips.iter().any(|(k, l, _)| k == "a–z" && l == "filter"),
+            "insert mode keeps its filter chip: {chips:?}"
+        );
     }
 
     #[test]

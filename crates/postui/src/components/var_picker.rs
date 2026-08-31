@@ -133,30 +133,29 @@ pub enum PickerMode {
 }
 
 /// One entry row, as offered by the `SelectOption` picker: its name,
-/// optional description, and a pre-formatted `preview` line (the entry's
-/// per-field values, e.g. "admin · user_id 1001 · customer_id c-77").
-/// `value` is the single-value form kept for a one-field preview — never
-/// set alongside `preview`. `selected` marks the env's current selection
-/// for this selector with a ✓.
+/// optional description, and the values the detail pane renders for it
+/// (`values` for a selector option, `value` for a plain single-value one —
+/// never both). `selected` marks the env's current selection for this
+/// selector with a ✓.
 #[derive(Clone)]
 pub struct SelectOption {
     pub key: String,
     pub description: Option<String>,
     pub value: Option<String>,
-    pub preview: Option<String>,
     pub selected: bool,
     /// The raw per-field values this option carries — `None` for a plain
     /// variable option (whose single value lives in `value` instead);
-    /// `Some(member -> new value)` for a selector option, in member order.
-    /// `e` (Task 17, spec §6) prefills its edit-in-place fields from this
-    /// rather than re-parsing `preview`'s formatted text.
+    /// `Some(member -> new value)` for a selector option, in member order —
+    /// what the detail pane renders for the highlighted row.
     pub values: Option<IndexMap<String, String>>,
 }
 
-/// A fuzzy-filterable list of declared variables (`Insert` mode) or of one
-/// variable's/selector's options (`SelectOption` mode). Structure mirrors
-/// `ChooserState`: typed input filters the active list by fuzzy-matching;
-/// arrows move the selection; `Enter` confirms (inserts a token in
+/// A list of declared variables (`Insert` mode) or of one variable's/
+/// selector's options (`SelectOption` mode). Insert mode mirrors
+/// `ChooserState`: typed input fuzzy-filters the list. SelectOption mode
+/// has no filter — its lists are a handful of rows, so typed text is inert
+/// and a detail pane below the list shows the highlighted option's values.
+/// In both, arrows move the selection; `Enter` confirms (inserts a token in
 /// `Insert` mode, records a selection in `SelectOption` mode) and closes.
 /// `completing` (only meaningful in `Insert` mode) distinguishes whether
 /// the picker was triggered mid-`{{` (Enter inserts just the closing
@@ -356,24 +355,10 @@ impl VarPickerState {
                 })
                 .map(|(i, _)| i)
                 .collect(),
-            PickerMode::SelectOption { .. } => self
-                .select_entries
-                .iter()
-                .enumerate()
-                .filter(|(_, entry)| {
-                    let mut haystack = entry.key.clone();
-                    if let Some(desc) = &entry.description {
-                        haystack.push(' ');
-                        haystack.push_str(desc);
-                    }
-                    if let Some(preview) = &entry.preview {
-                        haystack.push(' ');
-                        haystack.push_str(preview);
-                    }
-                    fuzzy_match(&self.input, &haystack)
-                })
-                .map(|(i, _)| i)
-                .collect(),
+            // SelectOption mode has no filter — the list is always the
+            // full option set (nothing routes typed text here; see
+            // `handle_key`'s Insert-only filter arms).
+            PickerMode::SelectOption { .. } => (0..self.select_entries.len()).collect(),
         };
         self.selected = 0;
         self.scroll = 0;
@@ -400,11 +385,17 @@ impl VarPickerState {
                 }
                 self.ensure_visible = true;
             }
-            KeyCode::Backspace => {
+            // SelectOption mode has no filter (its option lists are a
+            // handful of rows; the detail pane owns the freed space), so
+            // typed text is inert there — only Insert mode edits `input`.
+            KeyCode::Backspace if self.mode == PickerMode::Insert => {
                 self.input.pop();
                 self.refilter();
             }
-            KeyCode::Char(c) if key.modifiers.difference(KeyModifiers::SHIFT).is_empty() => {
+            KeyCode::Char(c)
+                if self.mode == PickerMode::Insert
+                    && key.modifiers.difference(KeyModifiers::SHIFT).is_empty() =>
+            {
                 self.input.push(c);
                 self.refilter();
             }
@@ -423,9 +414,32 @@ impl VarPickerState {
         t: f32,
     ) {
         let width = 60.min(screen.width);
+        // Insert-mode chrome: 1 pad + 1 title + 1 ring-margin gap + 3-row
+        // filter field + 1 gap + 3 bottom pad. SelectOption mode has no
+        // filter field; its chrome is 1 pad + 1 title + 1 gap + 1 gap +
+        // 1 rule + the detail pane + 2 bottom pad, the pane sized to the
+        // tallest option so the modal doesn't resize as the highlight moves.
         const CHROME: u16 = 10;
+        let pane_h = match &self.mode {
+            PickerMode::Insert => 0,
+            PickerMode::SelectOption { .. } => self
+                .select_entries
+                .iter()
+                .map(pane_line_count)
+                .max()
+                .unwrap_or(1)
+                .clamp(1, 8) as u16,
+        };
+        let chrome = match &self.mode {
+            PickerMode::Insert => CHROME,
+            PickerMode::SelectOption { .. } => 7 + pane_h,
+        };
         let content_rows = (self.row_count() as u16).clamp(1, 10);
-        let height = (CHROME + content_rows).clamp(13, 26).min(screen.height);
+        let height = match &self.mode {
+            PickerMode::Insert => (chrome + content_rows).clamp(13, 26),
+            PickerMode::SelectOption { .. } => (chrome + content_rows).min(26),
+        }
+        .min(screen.height);
         let area = super::modal::centered_rect(screen, width, height);
         hits.register(area, crate::hit::Hit::ModalBody);
         paint::floating_panel_settling(frame.buffer_mut(), area, screen, theme, t);
@@ -450,47 +464,35 @@ impl VarPickerState {
             true,
         );
 
-        let field_area = Rect {
-            x: area.x + 1,
-            y: title_y + 2,
-            width: area.width.saturating_sub(2),
-            height: FIELD_HEIGHT,
+        // Only Insert mode has a typed filter field: what's typed there can
+        // become a new variable's name. SelectOption mode's list starts
+        // right under the title — the editing is the selection.
+        let list_y = match &self.mode {
+            PickerMode::Insert => {
+                let field_area = Rect {
+                    x: area.x + 1,
+                    y: title_y + 2,
+                    width: area.width.saturating_sub(2),
+                    height: FIELD_HEIGHT,
+                };
+                let content = Line::from(vec![
+                    Span::raw(self.input.clone()),
+                    Span::styled("▏", Style::default().fg(theme.accent)),
+                ]);
+                TextField {
+                    content,
+                    state: ControlState::Focused,
+                }
+                .paint(frame.buffer_mut(), field_area, theme);
+                field_area.y + FIELD_HEIGHT + 2
+            }
+            PickerMode::SelectOption { .. } => title_y + 2,
         };
-        // In SelectOption mode the input is only ever a filter over the
-        // option list ("the editing is the selection"), so it dresses as a
-        // search row — 🔍 prefix, ghost text, no focus ring — rather than
-        // an edit box. Insert mode keeps the edit-box look: what's typed
-        // there can become a new variable's name.
-        let content = match &self.mode {
-            PickerMode::SelectOption { .. } if self.input.is_empty() => Line::from(vec![
-                Span::styled("\u{1f50d} ", Style::default().fg(theme.text_muted)),
-                Span::styled("filter\u{2026}", Style::default().fg(theme.text_muted)),
-            ]),
-            PickerMode::SelectOption { .. } => Line::from(vec![
-                Span::styled("\u{1f50d} ", Style::default().fg(theme.text_muted)),
-                Span::raw(self.input.clone()),
-                Span::styled("▏", Style::default().fg(theme.accent)),
-            ]),
-            PickerMode::Insert => Line::from(vec![
-                Span::raw(self.input.clone()),
-                Span::styled("▏", Style::default().fg(theme.accent)),
-            ]),
-        };
-        let field_state = match &self.mode {
-            PickerMode::SelectOption { .. } => ControlState::Normal,
-            PickerMode::Insert => ControlState::Focused,
-        };
-        TextField {
-            content,
-            state: field_state,
-        }
-        .paint(frame.buffer_mut(), field_area, theme);
-
         let list_area = Rect {
             x: area.x + 1,
-            y: field_area.y + FIELD_HEIGHT + 2,
+            y: list_y,
             width: area.width.saturating_sub(2),
-            height: area.height.saturating_sub(CHROME),
+            height: area.height.saturating_sub(chrome),
         };
         let list_h = list_area.height as usize;
         if self.ensure_visible {
@@ -700,49 +702,21 @@ impl VarPickerState {
                         selected,
                     );
                     x += key_w;
-                    if let Some(preview) = &entry.preview {
-                        // Group option: one pre-formatted preview line
-                        // covering every member's new value.
-                        let s = format!(" \u{2014} {preview}");
+                    // Rows stay lean — key plus muted description. The
+                    // option's values live in the detail pane below, which
+                    // follows the highlight.
+                    if let Some(desc) = &entry.description {
+                        let desc = format!(" {desc}");
                         let w = right.saturating_sub(x);
                         paint::text(
                             frame.buffer_mut(),
                             x,
                             text_row,
-                            clip(&s, w),
+                            clip(&desc, w),
                             theme.text_muted,
                             row_fill,
                             false,
                         );
-                    } else {
-                        if let Some(desc) = &entry.description {
-                            let desc = format!(" {desc}");
-                            let w = right.saturating_sub(x);
-                            let clipped = clip(&desc, w);
-                            paint::text(
-                                frame.buffer_mut(),
-                                x,
-                                text_row,
-                                clipped,
-                                theme.text_muted,
-                                row_fill,
-                                false,
-                            );
-                            x += clipped.chars().count() as u16;
-                        }
-                        if let Some(v) = &entry.value {
-                            let s = format!(" = {v}");
-                            let w = right.saturating_sub(x);
-                            paint::text(
-                                frame.buffer_mut(),
-                                x,
-                                text_row,
-                                clip(&s, w),
-                                theme.text_muted,
-                                row_fill,
-                                false,
-                            );
-                        }
                     }
                 }
             }
@@ -755,6 +729,92 @@ impl VarPickerState {
             };
             hits.register(row_rect, crate::hit::Hit::VarPickerRow(i));
         }
+
+        // SelectOption mode's detail pane: a muted rule, then the
+        // highlighted option's values unclipped — "what changes if I pick
+        // this?". The rule stays put on the ghost row (the pane just goes
+        // blank) so the modal doesn't jump as the highlight moves.
+        if matches!(self.mode, PickerMode::SelectOption { .. }) {
+            let rule_y = list_area.y + list_area.height + 1;
+            let rule = "\u{2500}".repeat(list_area.width as usize);
+            paint::text(
+                frame.buffer_mut(),
+                list_area.x,
+                rule_y,
+                &rule,
+                theme.text_muted,
+                theme.panel,
+                false,
+            );
+            let entry = self
+                .filtered
+                .get(self.selected)
+                .map(|&idx| &self.select_entries[idx]);
+            if let Some(entry) = entry {
+                let x = list_area.x + 1;
+                let mut y = rule_y + 1;
+                let mut line = |y: u16, name: &str, name_w: u16, value: &str| {
+                    paint::text(
+                        frame.buffer_mut(),
+                        x,
+                        y,
+                        clip(name, name_w),
+                        theme.text_muted,
+                        theme.panel,
+                        false,
+                    );
+                    let value_x = x + name_w;
+                    let w = (list_area.x + list_area.width).saturating_sub(value_x);
+                    paint::text(
+                        frame.buffer_mut(),
+                        value_x,
+                        y,
+                        clip(value, w),
+                        theme.text,
+                        theme.panel,
+                        false,
+                    );
+                };
+                match &entry.values {
+                    Some(values) => {
+                        // Values align in a column two cells past the
+                        // longest member name.
+                        let name_w = values
+                            .keys()
+                            .map(|k| k.chars().count())
+                            .max()
+                            .unwrap_or(0) as u16
+                            + 2;
+                        for (member, value) in values.iter().take(pane_h as usize) {
+                            line(y, member, name_w, value);
+                            y += 1;
+                        }
+                    }
+                    None => {
+                        // A plain single-value option: its description (if
+                        // any) then its value.
+                        if let Some(desc) = &entry.description {
+                            line(y, desc, list_area.width.saturating_sub(2), "");
+                            y += 1;
+                        }
+                        if let Some(value) = &entry.value {
+                            line(y, "", 0, value);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// How many lines [`VarPickerState::draw`]'s detail pane needs for one
+/// option: a member→value line each for a selector option, description +
+/// value for a plain one. The pane is sized to the tallest option so the
+/// modal doesn't resize as the highlight moves.
+fn pane_line_count(o: &SelectOption) -> usize {
+    match &o.values {
+        Some(values) => values.len().max(1),
+        None => (o.description.is_some() as usize + o.value.is_some() as usize).max(1),
     }
 }
 
@@ -874,34 +934,6 @@ mod tests {
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(!content.contains("enter insert"), "{content}");
         assert!(!content.contains("esc cancel"), "{content}");
-    }
-
-    #[test]
-    fn select_mode_input_reads_as_a_filter_not_an_edit_box() {
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
-
-        let entries = vec![SelectOption {
-            key: "alice".into(),
-            description: None,
-            value: Some("1001".into()),
-            preview: None,
-            selected: false,
-            values: None,
-        }];
-        let mut p = VarPickerState::new_select(entries, "user".into(), "user".into(), "qa".into());
-        let theme = Theme::dark();
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0))
-            .unwrap();
-        let content = format!("{:?}", terminal.backend().buffer());
-        assert!(
-            content.contains("\u{1f50d}") && content.contains("filter"),
-            "the empty select-mode input shows a search glyph and ghost text: {content}"
-        );
     }
 
     #[test]
@@ -1033,7 +1065,6 @@ mod tests {
                 key: "alice".into(),
                 description: Some("admin".into()),
                 value: Some("qa-token".into()),
-                preview: None,
                 selected: false,
                 values: None,
             },
@@ -1041,7 +1072,6 @@ mod tests {
                 key: "bob".into(),
                 description: None,
                 value: Some("qa-bob".into()),
-                preview: None,
                 selected: true,
                 values: None,
             },
@@ -1071,7 +1101,6 @@ mod tests {
             key: "alice".into(),
             description: None,
             value: None,
-            preview: Some("admin \u{b7} user_id 1001 \u{b7} customer_id c-77".into()),
             selected: false,
             values: None,
         }];
@@ -1097,7 +1126,6 @@ mod tests {
             key: "alice".into(),
             description: None,
             value: Some("x".into()),
-            preview: None,
             selected: false,
             values: None,
         }];
@@ -1107,78 +1135,17 @@ mod tests {
     }
 
     #[test]
-    fn select_mode_typing_filters_options() {
-        let entries = vec![
-            SelectOption {
-                key: "alice".into(),
-                description: Some("admin".into()),
-                value: Some("qa-token".into()),
-                preview: None,
-                selected: false,
-                values: None,
-            },
-            SelectOption {
-                key: "bob".into(),
-                description: Some("reader".into()),
-                value: Some("qa-bob".into()),
-                preview: None,
-                selected: false,
-                values: None,
-            },
-        ];
-        let mut p = VarPickerState::new_select(entries, "user".into(), "user".into(), "qa".into());
-        for c in "bob".chars() {
-            p.handle_key(key(KeyCode::Char(c)));
-        }
-        let res = p.handle_key(key(KeyCode::Enter)).unwrap();
-        assert_eq!(
-            res.actions[0],
-            Action::VarEdit(VarEditOp::SelectOption {
-                env: "qa".into(),
-                selector: "user".into(),
-                option: "bob".into(),
-            })
+    fn select_mode_draw_marks_current_selection_and_titles_the_selector() {
+        let mut p = VarPickerState::new_select(
+            identity_options(),
+            "user_id".into(),
+            "identity".into(),
+            "qa".into(),
         );
-    }
-
-    #[test]
-    fn select_mode_draw_marks_current_selection_and_renders_group_preview() {
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
-
-        let entries = vec![
-            SelectOption {
-                key: "alice".into(),
-                description: None,
-                value: None,
-                preview: Some("admin \u{b7} user_id 1001 \u{b7} customer_id c-77".into()),
-                selected: true,
-                values: None,
-            },
-            SelectOption {
-                key: "bob".into(),
-                description: None,
-                value: None,
-                preview: Some("reader \u{b7} user_id 1002 \u{b7} customer_id c-78".into()),
-                selected: false,
-                values: None,
-            },
-        ];
-        let mut p =
-            VarPickerState::new_select(entries, "user_id".into(), "identity".into(), "qa".into());
-        let theme = Theme::dark();
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut hits = crate::hit::HitMap::default();
-        terminal
-            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0))
-            .unwrap();
-        let content = format!("{:?}", terminal.backend().buffer());
+        let (content, _) = draw_select(&mut p);
         assert!(content.contains("\u{2713}"), "checked row shows a ✓");
         assert!(content.contains("alice"));
-        assert!(content.contains("admin"));
-        assert!(content.contains("user_id 1001"));
-        assert!(content.contains("customer_id c-77"));
+        assert!(content.contains("bob"));
         assert!(content.contains("Select"));
         assert!(content.contains("identity"));
     }
@@ -1257,7 +1224,6 @@ mod tests {
             key: "alice".into(),
             description: Some("admin".into()),
             value: Some("qa-token".into()),
-            preview: None,
             selected: false,
             values: None,
         }];
@@ -1280,7 +1246,6 @@ mod tests {
             key: "alice".into(),
             description: None,
             value: None,
-            preview: Some("admin".into()),
             selected: false,
             values: Some(IndexMap::new()),
         }];
@@ -1305,7 +1270,6 @@ mod tests {
             key: "alice".into(),
             description: None,
             value: Some("x".into()),
-            preview: None,
             selected: false,
             values: None,
         }];
@@ -1321,43 +1285,162 @@ mod tests {
         assert!(content.contains("add new option"), "{content}");
     }
 
+    /// Two selector options carrying member values, bob pre-selected —
+    /// the fixture for the filterless select mode's detail pane.
+    fn identity_options() -> Vec<SelectOption> {
+        let mut alice_values = IndexMap::new();
+        alice_values.insert("role".to_string(), "admin".to_string());
+        alice_values.insert("user_id".to_string(), "1001".to_string());
+        let mut bob_values = IndexMap::new();
+        bob_values.insert("role".to_string(), "reader".to_string());
+        bob_values.insert("user_id".to_string(), "1002".to_string());
+        vec![
+            SelectOption {
+                key: "alice".into(),
+                description: None,
+                value: None,
+                selected: false,
+                values: Some(alice_values),
+            },
+            SelectOption {
+                key: "bob".into(),
+                description: None,
+                value: None,
+                selected: true,
+                values: Some(bob_values),
+            },
+        ]
+    }
+
+    fn draw_select(p: &mut VarPickerState) -> (String, crate::hit::HitMap) {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let theme = Theme::dark();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| p.draw(f, f.area(), &theme, &mut hits, None, 1.0))
+            .unwrap();
+        (format!("{:?}", terminal.backend().buffer()), hits)
+    }
+
     #[test]
-    fn e_in_select_mode_types_into_the_filter_instead_of_editing() {
-        // Regression (user feedback): the input presents as a filter, so
-        // every printable key must filter — `e` used to hijack into the
-        // option edit prompt.
-        let entries = vec![
-            SelectOption {
-                key: "east".into(),
-                description: None,
-                value: Some("e-1".into()),
-                preview: None,
-                selected: false,
-                values: None,
-            },
-            SelectOption {
-                key: "west".into(),
-                description: None,
-                value: Some("w-1".into()),
-                preview: None,
-                selected: false,
-                values: None,
-            },
-        ];
-        let mut p = VarPickerState::new_select(entries, "zone".into(), "zone".into(), "qa".into());
-        assert!(
-            p.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE))
-                .is_none()
+    fn select_mode_renders_no_filter_field() {
+        let mut p = VarPickerState::new_select(
+            identity_options(),
+            "user_id".into(),
+            "identity".into(),
+            "qa".into(),
         );
-        assert_eq!(p.input(), "e");
+        let (content, hits) = draw_select(&mut p);
+        assert!(
+            !content.contains("\u{1f50d}") && !content.contains("filter\u{2026}"),
+            "select mode paints no filter field: {content}"
+        );
+        // With the field gone the list starts right under the title row.
+        let modal = hits.rect_of(&crate::hit::Hit::ModalBody).unwrap();
+        let row0 = hits.rect_of(&crate::hit::Hit::VarPickerRow(0)).unwrap();
+        assert_eq!(row0.y, modal.y + 3, "list sits one gap row under the title");
+    }
+
+    #[test]
+    fn select_mode_typing_is_inert() {
+        let mut p = VarPickerState::new_select(
+            identity_options(),
+            "user_id".into(),
+            "identity".into(),
+            "qa".into(),
+        );
+        assert_eq!(p.selected(), 1, "opens on bob, the env's current option");
+        for c in "alice".chars() {
+            assert!(p.handle_key(key(KeyCode::Char(c))).is_none());
+        }
+        p.handle_key(key(KeyCode::Backspace));
+        assert_eq!(p.selected(), 1, "typing neither filters nor moves the cursor");
         let res = p.handle_key(key(KeyCode::Enter)).unwrap();
         assert!(
             res.actions.iter().any(|a| matches!(
                 a,
-                Action::VarEdit(VarEditOp::SelectOption { option, .. }) if option == "east"
+                Action::VarEdit(VarEditOp::SelectOption { option, .. }) if option == "bob"
             )),
-            "the filter narrowed to east and Enter selects it: {:?}",
+            "Enter still confirms the highlighted row: {:?}",
             res.actions
+        );
+    }
+
+    #[test]
+    fn select_mode_detail_pane_shows_only_the_highlighted_options_values() {
+        let mut p = VarPickerState::new_select(
+            identity_options(),
+            "user_id".into(),
+            "identity".into(),
+            "qa".into(),
+        );
+        // bob is highlighted: his member values render (in the pane), and
+        // alice's don't render anywhere — rows no longer carry a preview tail.
+        let (content, _) = draw_select(&mut p);
+        assert!(content.contains("reader"), "{content}");
+        assert!(content.contains("1002"), "{content}");
+        assert!(!content.contains("admin"), "{content}");
+        assert!(!content.contains("1001"), "{content}");
+        assert!(content.contains("\u{2500}"), "a rule separates list and pane");
+    }
+
+    #[test]
+    fn select_mode_detail_pane_follows_the_selection() {
+        let mut p = VarPickerState::new_select(
+            identity_options(),
+            "user_id".into(),
+            "identity".into(),
+            "qa".into(),
+        );
+        p.handle_key(key(KeyCode::Up));
+        let (content, _) = draw_select(&mut p);
+        assert!(content.contains("admin"), "{content}");
+        assert!(!content.contains("reader"), "{content}");
+    }
+
+    #[test]
+    fn select_mode_plain_option_pane_shows_description_and_value() {
+        let entries = vec![SelectOption {
+            key: "staging".into(),
+            description: Some("the shared box".into()),
+            value: Some("https://stg.example.com".into()),
+            selected: true,
+            values: None,
+        }];
+        let mut p = VarPickerState::new_select(entries, "host".into(), "host".into(), "qa".into());
+        let (content, _) = draw_select(&mut p);
+        assert!(
+            content.contains("https://stg.example.com"),
+            "the value renders in the pane now that rows drop it: {content}"
+        );
+        assert!(content.contains("the shared box"), "{content}");
+        assert!(
+            !content.contains("= https"),
+            "the row's old `= value` tail is gone: {content}"
+        );
+        assert!(content.contains("\u{2500}"), "the pane's rule renders");
+    }
+
+    #[test]
+    fn select_mode_ghost_row_pane_is_blank() {
+        let mut p = VarPickerState::new_select(
+            identity_options(),
+            "user_id".into(),
+            "identity".into(),
+            "qa".into(),
+        );
+        // Down from bob (row 1) lands on the ghost row.
+        p.handle_key(key(KeyCode::Down));
+        let (content, _) = draw_select(&mut p);
+        assert!(
+            !content.contains("reader") && !content.contains("admin"),
+            "no option's values render while the ghost row is highlighted: {content}"
+        );
+        assert!(
+            content.contains("\u{2500}"),
+            "the rule stays put so the modal doesn't jump: {content}"
         );
     }
 
@@ -1369,3 +1452,4 @@ mod tests {
         assert_eq!(res.actions, vec![Action::InsertVarText("{{env}}".into())]);
     }
 }
+

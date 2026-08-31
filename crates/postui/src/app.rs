@@ -3791,8 +3791,8 @@ impl App {
 
     /// Builds and opens the `SelectOption` picker (spec §6's first
     /// context) for `name`, a field of `selector`: rows are `selector`'s options
-    /// in the active environment, each previewed as its per-field values,
-    /// with the current selection marked with a ✓.
+    /// in the active environment, the highlighted one's per-field values
+    /// shown in the detail pane, with the current selection marked with a ✓.
     fn open_select_picker(&mut self, name: String, selector: String) -> bool {
         use crate::components::modal::Modal;
         use crate::components::var_picker::{SelectOption, VarPickerState};
@@ -3809,22 +3809,12 @@ impl App {
                 .map(|options| {
                     options
                         .iter()
-                        .map(|(key, decl)| {
-                            let mut parts: Vec<String> = Vec::new();
-                            if let Some(desc) = &decl.description {
-                                parts.push(desc.clone());
-                            }
-                            for (field, value) in &decl.values {
-                                parts.push(format!("{field} {value}"));
-                            }
-                            SelectOption {
-                                key: key.clone(),
-                                description: decl.description.clone(),
-                                value: None,
-                                preview: Some(parts.join(" \u{b7} ")),
-                                selected: selected_key.as_deref() == Some(key.as_str()),
-                                values: Some(decl.values.clone()),
-                            }
+                        .map(|(key, decl)| SelectOption {
+                            key: key.clone(),
+                            description: decl.description.clone(),
+                            value: None,
+                            selected: selected_key.as_deref() == Some(key.as_str()),
+                            values: Some(decl.values.clone()),
                         })
                         .collect()
                 })
