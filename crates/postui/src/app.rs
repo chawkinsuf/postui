@@ -2565,6 +2565,12 @@ impl App {
                     return true;
                 }
                 self.apply(Action::PersistLocalState);
+                // The Manager caches per-env rows; an env switched under it
+                // (alt+c is whitelisted through its input capture) must show
+                // the new env's values.
+                if self.screen == Screen::VarManager {
+                    self.varmanager.sync(&self.project);
+                }
                 let label = self.project.env_label();
                 self.toasts
                     .push(format!("env: {label}"), ToastKind::Success);
@@ -5659,9 +5665,10 @@ impl App {
     ///    Variable Manager), that screen captures all remaining input like
     ///    a modal does: only the small [`screen_escape_whitelist`] of
     ///    global actions (opening the palette on top of the screen,
-    ///    quitting, and the screen open/close actions themselves) can
+    ///    quitting, cycling the active env, and the screen open/close
+    ///    actions themselves) can
     ///    still fire on a CTRL/ALT combo; every other global shortcut
-    ///    (send, save, cycle project/env, focus URL, …) is *not* reachable
+    ///    (send, save, cycle project, focus URL, …) is *not* reachable
     ///    from here, since none of it is meaningful with the panes it
     ///    targets not even drawn. Anything the screen's own component
     ///    doesn't claim is swallowed rather than falling through to the
@@ -6413,8 +6420,11 @@ impl App {
 /// while a non-`Main` screen (e.g. the Variable Manager) has captured
 /// input: opening a modal on top of the screen (today, just the command
 /// palette — the spec's "the modal stack works on top unchanged"), the
-/// screen open/close actions themselves, and quit. Everything else in the
-/// global keymap (send, save, cycle project/env, focus URL, …) targets
+/// screen open/close actions themselves, quit, and cycling the active
+/// environment (alt+c) — the one Main shortcut whose target state, the
+/// active env, is also meaningful inside the Variable Manager (it shows
+/// per-env values; `SwitchEnv` re-syncs the Manager). Everything else in
+/// the global keymap (send, save, cycle project, focus URL, …) targets
 /// panes that aren't even drawn while a non-`Main` screen is open, so it
 /// must not be reachable from here — see the Task 9 review finding this
 /// whitelist fixes: an unbounded carve-out let ctrl+enter send the loaded
@@ -6428,6 +6438,7 @@ fn screen_escape_whitelist(action: &Action) -> bool {
             | Action::Quit
             | Action::Undo
             | Action::Redo
+            | Action::CycleEnv
     )
 }
 

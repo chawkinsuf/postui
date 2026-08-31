@@ -6238,9 +6238,11 @@ fn alt_u_does_not_move_focus_from_the_manager_screen() {
     );
 }
 
-/// Same finding: alt+o (`Action::CycleProject`) and alt+c
-/// (`Action::CycleEnv`) — arbitrary other global shortcuts — must not
-/// reach their actions from the Manager screen either.
+/// Same finding: alt+o (`Action::CycleProject`) — an arbitrary other
+/// global shortcut — must not reach its action from the Manager screen
+/// either. (alt+c/`Action::CycleEnv` is deliberately whitelisted: the
+/// active environment is meaningful inside the Manager — see
+/// `alt_c_cycles_env_from_the_manager_screen`.)
 #[test]
 fn other_unwhitelisted_global_shortcuts_are_swallowed_by_the_manager_screen() {
     let mut app = App::new_for_test();
@@ -6254,13 +6256,32 @@ fn other_unwhitelisted_global_shortcuts_are_swallowed_by_the_manager_screen() {
         app.toasts.is_empty(),
         "alt+o must not reach Action::CycleProject"
     );
-
-    app.handle_key(&keymap, alt('c')); // CycleEnv: would toast "no environments — ..."
-    assert!(
-        app.toasts.is_empty(),
-        "alt+c must not reach Action::CycleEnv"
-    );
     assert_eq!(app.screen, crate::app::Screen::VarManager);
+}
+
+/// Unlike send/focus/cycle-project, the active environment IS meaningful
+/// inside the Variable Manager (it shows per-env values), so alt+c
+/// escapes the screen's input capture, switches the env, and re-syncs
+/// the Manager without leaving it.
+#[test]
+fn alt_c_cycles_env_from_the_manager_screen() {
+    let (mut app, _dir) = app_with_envs();
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, alt('v'));
+    assert_eq!(app.screen, crate::app::Screen::VarManager);
+    assert_eq!(app.project.env_label(), "no env");
+
+    app.handle_key(&keymap, alt('c'));
+    assert_eq!(
+        app.project.env_label(),
+        "prod",
+        "alt+c must reach Action::CycleEnv from the Manager screen"
+    );
+    assert_eq!(
+        app.screen,
+        crate::app::Screen::VarManager,
+        "cycling the env must not leave the screen"
+    );
 }
 
 /// The whitelist's whole point: opening the palette on top of the Manager
