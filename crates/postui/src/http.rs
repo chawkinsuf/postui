@@ -11,6 +11,11 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResponseData {
     pub status: u16,
+    /// The URL the request was actually sent to, with secret values masked
+    /// (`PreparedRequest::display_url`) — shown on the response header
+    /// strip so the rendered result of `{{vars}}` and merged params is
+    /// visible after a send.
+    pub url: String,
     pub headers: Vec<(String, String)>,
     pub body: String,
     /// Time to first byte: send → response headers received.
@@ -130,6 +135,7 @@ pub async fn send(client: &reqwest::Client, req: &PreparedRequest) -> Result<Res
 
     Ok(ResponseData {
         status,
+        url: req.display_url.clone(),
         headers,
         body,
         ttfb,
@@ -170,6 +176,7 @@ mod tests {
         let mut req = PreparedRequest {
             method: postui_core::model::Method::Get,
             url: "https://x.test".into(),
+            display_url: "https://x.test".into(),
             headers: vec![],
             body: None,
             insecure: false,
@@ -210,6 +217,7 @@ mod tests {
         let req = PreparedRequest {
             method: postui_core::model::Method::Get,
             url: format!("http://{addr}/"),
+            display_url: format!("http://{addr}/"),
             headers: vec![],
             body: None,
             insecure: false,

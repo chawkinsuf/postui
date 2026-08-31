@@ -1271,6 +1271,28 @@ fn draw_header_strip(
     if let Some(ct) = &data.content_type {
         let s = format!(" {ct}");
         crate::paint::text(buf, x, area.y, &s, t.text_muted, t.panel, false);
+        x += s.chars().count() as u16 + 1;
+    }
+
+    // The rendered URL this response actually came from — `{{vars}}`
+    // substituted, params merged, secrets masked — so the send's real
+    // target is visible without decoding the address bar's tokens by
+    // hand. Muted like the other row-0 facts, truncated to what's left
+    // of the row, and dropped entirely on a row too tight to say
+    // anything useful.
+    if !data.url.is_empty() {
+        let right = area.right().saturating_sub(1);
+        if right > x + 2 {
+            let avail = (right - x - 1) as usize;
+            let s = if data.url.chars().count() > avail {
+                let mut cut: String = data.url.chars().take(avail.saturating_sub(1)).collect();
+                cut.push('\u{2026}');
+                cut
+            } else {
+                data.url.clone()
+            };
+            crate::paint::text(buf, x + 1, area.y, &s, t.text_muted, t.panel, false);
+        }
     }
 
     // Hidden (or mid-slide with only the one row left): row 0 is the whole
@@ -1927,6 +1949,7 @@ mod tests {
     fn data(body: &str) -> crate::http::ResponseData {
         crate::http::ResponseData {
             status: 200,
+            url: "https://api.example.com/things?page=2".into(),
             headers: vec![("content-type".into(), "application/json".into())],
             body: body.to_string(),
             ttfb: Duration::from_millis(38),
@@ -2220,6 +2243,28 @@ mod tests {
         let mut r = ready(r#"{"a": 1}"#);
         let out = render(&mut r);
         assert!(out.contains("38 ms → 342 ms"), "combined timing: {out}");
+    }
+
+    /// Row 0 carries the rendered URL the response actually came from
+    /// (`{{vars}}` substituted, params merged, secrets masked upstream),
+    /// after the timing/size/content-type facts — truncated with an
+    /// ellipsis when the row can't hold it whole.
+    #[test]
+    fn header_strip_shows_the_sent_url_truncated_to_the_row() {
+        let mut r = ready(r#"{"a": 1}"#);
+        let out = render_sized(&mut r, 110, 20);
+        assert!(
+            out.contains("https://api.example.com/things?page=2"),
+            "the full URL fits a wide pane: {out}"
+        );
+
+        // Too narrow for the whole URL after the chips: it truncates with
+        // an ellipsis rather than vanishing or wrapping.
+        let out = render_sized(&mut r, 80, 20);
+        assert!(
+            out.contains("https://") && out.contains('\u{2026}'),
+            "a clipped URL ends in an ellipsis: {out}"
+        );
     }
 
     #[test]

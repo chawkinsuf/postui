@@ -1752,6 +1752,7 @@ fn scrollbar_track_click_below_the_thumb_pages_the_response() {
     app.session.response.set_state(
         ResponseState::Ready(Box::new(crate::http::ResponseData {
             status: 200,
+            url: "https://x.test/a".into(),
             headers: vec![],
             size: body.len(),
             body,
@@ -2095,6 +2096,7 @@ fn horizontal_wheel_over_the_response_pane_scrolls_it_sideways() {
     app.session.response.set_state(
         crate::components::response::ResponseState::Ready(Box::new(crate::http::ResponseData {
             status: 200,
+            url: "https://x.test/a".into(),
             headers: vec![],
             body: body.clone(),
             ttfb: std::time::Duration::from_millis(1),
@@ -2326,6 +2328,7 @@ fn app_with_wide_response() -> App {
     app.session.response.set_state(
         crate::components::response::ResponseState::Ready(Box::new(crate::http::ResponseData {
             status: 200,
+            url: "https://x.test/a".into(),
             headers: vec![],
             body: body.clone(),
             ttfb: std::time::Duration::from_millis(1),
@@ -3820,6 +3823,7 @@ async fn cancelled_send_ignores_a_result_that_was_already_queued() {
     // still tagged with the generation it was spawned under.
     let data = crate::http::ResponseData {
         status: 200,
+        url: "https://x.test/a".into(),
         headers: vec![],
         body: "late".into(),
         ttfb: std::time::Duration::from_millis(1),
@@ -3852,6 +3856,7 @@ async fn response_arrived_with_current_generation_clears_in_flight() {
     });
     let data = crate::http::ResponseData {
         status: 200,
+        url: "https://x.test/a".into(),
         headers: vec![],
         body: "ok".into(),
         ttfb: std::time::Duration::from_millis(1),
@@ -3889,6 +3894,7 @@ fn plain_keys_reach_the_focused_response_pane() {
     app.session.response.set_state(
         ResponseState::Ready(Box::new(crate::http::ResponseData {
             status: 200,
+            url: "https://x.test/a".into(),
             headers: vec![],
             body: r#"{"a": 1}"#.into(),
             ttfb: std::time::Duration::from_millis(5),
@@ -4819,6 +4825,7 @@ fn ready_response(app: &mut App, body: &str) {
     app.session.response.set_state(
         ResponseState::Ready(Box::new(crate::http::ResponseData {
             status: 200,
+            url: "https://x.test/a".into(),
             headers: vec![("content-type".into(), "application/json".into())],
             body: body.to_string(),
             ttfb: std::time::Duration::from_millis(1),

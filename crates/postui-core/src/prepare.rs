@@ -8,6 +8,10 @@ use std::fmt;
 pub struct PreparedRequest {
     pub method: Method,
     pub url: String,
+    /// `url` with secret variable values rendered as [`SECRET_MASK`] — the
+    /// version screens show for the sent request; never what goes on the
+    /// wire.
+    pub display_url: String,
     pub headers: Vec<(String, String)>,
     pub body: Option<String>,
     /// Skip TLS certificate verification for this send (the request's
@@ -142,6 +146,51 @@ fn substitute_masked(
     out
 }
 
+/// One substitution pass of the final URL: substitutes the URL and the
+/// enabled `[params]`, then merges the params into the query string
+/// (`[params]` overriding URL pairs, one warning per override). Shared by
+/// `prepare`'s real pass and its masked `display_url` pass so the two can
+/// never assemble differently.
+fn assemble_url(
+    req: &HttpRequest,
+    sub: &mut dyn FnMut(&str) -> String,
+    warnings: &mut Vec<PrepareWarning>,
+) -> String {
+    let subbed_url = sub(&req.url);
+    let enabled: Vec<(String, String)> = req
+        .params
+        .iter()
+        .filter(|(_, e)| e.enabled)
+        .map(|(k, e)| (sub(k), sub(&e.value)))
+        .collect();
+    if enabled.is_empty() {
+        return subbed_url;
+    }
+    let (base, query) = match subbed_url.split_once('?') {
+        Some((b, q)) => (b.to_string(), q.to_string()),
+        None => (subbed_url.clone(), String::new()),
+    };
+    // (key, value) pairs; URL pairs first, in order, before the
+    // `[params]` table's entries are merged in below.
+    let mut pairs: Vec<(String, String)> = form_urlencoded::parse(query.as_bytes())
+        .into_owned()
+        .collect();
+    for (k, v) in &enabled {
+        let existing = pairs.iter().position(|(pk, _)| pk == k);
+        if let Some(i) = existing {
+            warnings.push(PrepareWarning::ParamOverridesUrl { key: k.clone() });
+            pairs.retain(|(pk, _)| pk != k);
+            pairs.insert(i.min(pairs.len()), (k.clone(), v.clone()));
+        } else {
+            pairs.push((k.clone(), v.clone()));
+        }
+    }
+    let qs = form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(pairs)
+        .finish();
+    format!("{base}?{qs}")
+}
+
 pub fn prepare(
     req: &HttpRequest,
     ctx: &PrepareContext,
@@ -153,39 +202,30 @@ pub fn prepare(
     let mut sub = |s: &str| substitute_masked(s, &vars, &no_mask, &mut missing);
 
     let mut warnings = Vec::new();
-    let subbed_url = sub(&req.url);
-    let enabled: Vec<(String, String)> = req
-        .params
+    let url = assemble_url(req, &mut sub, &mut warnings);
+    // The same assembly again with secret values masked — what screens
+    // show for the sent request (`PreparedRequest::display_url`). Its
+    // warnings are duplicates of the real pass's, so they're dropped.
+    let secret_names: BTreeSet<String> = ctx
+        .meta
         .iter()
-        .filter(|(_, e)| e.enabled)
-        .map(|(k, e)| (sub(k), sub(&e.value)))
+        .filter(|(_, m)| **m == varmodel::VarMeta::Secret)
+        .map(|(name, _)| name.clone())
         .collect();
-    let url = if enabled.is_empty() {
-        subbed_url
+    let display_url = if secret_names.is_empty() {
+        url.clone()
     } else {
-        let (base, query) = match subbed_url.split_once('?') {
-            Some((b, q)) => (b.to_string(), q.to_string()),
-            None => (subbed_url.clone(), String::new()),
-        };
-        // (key, value) pairs; URL pairs first, in order, before the
-        // `[params]` table's entries are merged in below.
-        let mut pairs: Vec<(String, String)> = form_urlencoded::parse(query.as_bytes())
-            .into_owned()
-            .collect();
-        for (k, v) in &enabled {
-            let existing = pairs.iter().position(|(pk, _)| pk == k);
-            if let Some(i) = existing {
-                warnings.push(PrepareWarning::ParamOverridesUrl { key: k.clone() });
-                pairs.retain(|(pk, _)| pk != k);
-                pairs.insert(i.min(pairs.len()), (k.clone(), v.clone()));
-            } else {
-                pairs.push((k.clone(), v.clone()));
-            }
-        }
-        let qs = form_urlencoded::Serializer::new(String::new())
-            .extend_pairs(pairs)
-            .finish();
-        format!("{base}?{qs}")
+        let mut ignored = BTreeSet::new();
+        let masked = assemble_url(
+            req,
+            &mut |s| substitute_masked(s, &vars, &secret_names, &mut ignored),
+            &mut Vec::new(),
+        );
+        // A mask that landed in the query string got percent-encoded by
+        // the serializer; put the readable glyphs back — this is a display
+        // string, not what goes on the wire.
+        let encoded_mask: String = form_urlencoded::byte_serialize(SECRET_MASK.as_bytes()).collect();
+        masked.replace(&encoded_mask, SECRET_MASK)
     };
 
     // Default headers merge UNDER the request's headers: an inherited
@@ -255,6 +295,7 @@ pub fn prepare(
         PreparedRequest {
             method: req.method,
             url,
+            display_url,
             headers,
             body,
             insecure: req.insecure,
@@ -779,6 +820,32 @@ mod tests {
         let (p, _) = prepare(&r, &PrepareContext::default()).unwrap();
         assert_eq!(p.headers.len(), 1);
         assert_eq!(p.headers[0].1, "application/vnd.x+json");
+    }
+
+    /// `display_url` masks secret values everywhere they land in the final
+    /// URL — path and merged query params alike — while `url` (what's
+    /// actually sent) keeps the real values.
+    #[test]
+    fn display_url_masks_secrets_that_url_keeps() {
+        let mut req = base("https://api.example.com/{{tenant}}/things");
+        req.params.insert("key".into(), on("{{api_key}}"));
+        let mut c = ctx(&[("tenant", "acme"), ("api_key", "s3cret")], &[]);
+        c.meta.insert("api_key".into(), varmodel::VarMeta::Secret);
+        let (p, _) = prepare(&req, &c).unwrap();
+        assert_eq!(p.url, "https://api.example.com/acme/things?key=s3cret");
+        assert_eq!(
+            p.display_url,
+            format!("https://api.example.com/acme/things?key={SECRET_MASK}")
+        );
+    }
+
+    /// With no secrets in play the two URLs are identical.
+    #[test]
+    fn display_url_equals_url_without_secrets() {
+        let req = base("https://api.example.com/{{tenant}}");
+        let c = ctx(&[("tenant", "acme")], &[]);
+        let (p, _) = prepare(&req, &c).unwrap();
+        assert_eq!(p.display_url, p.url);
     }
 
     // -----------------------------------------------------------------

@@ -210,6 +210,7 @@ mod tests {
     fn data(body: &str) -> Box<crate::http::ResponseData> {
         Box::new(crate::http::ResponseData {
             status: 200,
+            url: "https://x.test/a".into(),
             headers: vec![],
             body: body.to_string(),
             ttfb: Duration::from_millis(1),
