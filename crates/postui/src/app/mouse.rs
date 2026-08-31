@@ -977,7 +977,30 @@ impl App {
                 self.anims.snap(AnimKey::ModalOpen, 1.0);
                 self.update(action)
             }
-            Hit::ModalOutside => self.update(Action::Close),
+            Hit::ModalOutside => {
+                // The option Edit prompt is an editing surface, not a
+                // question: clicking off it SAVES, like the grid's
+                // commit-on-click-away. Routed through the same path Enter
+                // takes so a refused commit keeps the prompt (and the typed
+                // text) exactly as the keyboard flow would.
+                if matches!(
+                    self.modals.top(),
+                    Some(crate::components::modal::Modal::MultiPrompt {
+                        kind: crate::components::modal::PromptKind::EditOption { .. },
+                        ..
+                    })
+                ) {
+                    let enter = ratatui::crossterm::event::KeyEvent::new(
+                        ratatui::crossterm::event::KeyCode::Enter,
+                        ratatui::crossterm::event::KeyModifiers::NONE,
+                    );
+                    if let Some(res) = self.modals.handle_key(enter) {
+                        return self.apply_modal_result(res);
+                    }
+                    return true;
+                }
+                self.update(Action::Close)
+            }
             // A click on the modal's own chrome (body/borders/query line)
             // — not one of its interactive hits, which register on top and
             // so win first. Inert: neither closes the modal nor dispatches

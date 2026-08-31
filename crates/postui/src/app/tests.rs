@@ -9002,6 +9002,54 @@ fn confirm_edit_option_writes_every_field_into_the_active_envs_entry() {
 }
 
 #[test]
+fn clicking_off_the_option_edit_prompt_saves_it() {
+    let dir = tempfile::tempdir().unwrap();
+    group_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    let mut values = indexmap::IndexMap::new();
+    values.insert("user_id".to_string(), "1001".to_string());
+    values.insert("customer_id".to_string(), "c-77".to_string());
+    app.update(Action::OpenEditOptionPrompt {
+        owner: "identity".into(),
+        key: "alice".into(),
+        description: Some("admin".into()),
+        values,
+    });
+    // The focused first field is user_id, seeded "1001"; type a digit.
+    type_chars(&mut app, "9");
+    // A click outside the prompt is a save, like the grid's
+    // commit-on-click-away — the prompt is an editing surface.
+    click_hit(&mut app, Hit::ModalOutside);
+
+    assert!(app.modals.is_empty(), "click-away confirms and closes");
+    let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(env_doc.contains("10019"), "the typed edit saved: {env_doc}");
+}
+
+#[test]
+fn clicking_off_the_quick_add_option_prompt_still_cancels() {
+    let dir = tempfile::tempdir().unwrap();
+    group_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    app.update(Action::OpenNewOptionInlinePrompt {
+        owner: "identity".into(),
+    });
+    type_chars(&mut app, "carol");
+    click_hit(&mut app, Hit::ModalOutside);
+
+    assert!(app.modals.is_empty());
+    let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(
+        !env_doc.contains("carol"),
+        "creation prompts keep cancel-on-click-away: {env_doc}"
+    );
+}
+
+#[test]
 fn variables_screen_footer_hides_the_dead_save_group_but_keeps_palette_and_quit() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
