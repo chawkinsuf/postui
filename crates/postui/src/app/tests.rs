@@ -11536,6 +11536,39 @@ fn the_new_entry_button_starts_the_ghost_row_and_edit_fields_opens_the_editor() 
     assert_eq!(fe.rows[0].input.text(), "user");
 }
 
+/// Every button inside the request panel focuses it on click — send,
+/// copy-URL, the TLS lock, the split control and its alt+w pill, and the
+/// Body toolbar chips — not just its text surfaces (URL bar, tabs, tables).
+#[tokio::test]
+async fn request_panel_buttons_focus_the_editor_pane() {
+    let mut app = App::new_for_test();
+    app.editor.method = postui_core::model::Method::Post;
+    app.editor.url = crate::components::line_input::LineInput::new("http://127.0.0.1:9");
+    app.update(Action::EditorTabSelect(EditorTab::Body.index()));
+    let buttons = [
+        Hit::SendButton,
+        Hit::CopyUrl,
+        Hit::SplitStop(crate::split::SplitStop::Even),
+        Hit::FooterChip(Action::ToggleInsecure),
+        Hit::FooterChip(Action::FormatBody),
+        Hit::FooterChip(Action::CycleSplit),
+    ];
+    for hit in buttons {
+        app.update(Action::FocusPane(PaneId::Response));
+        render_once(&mut app);
+        let r = app
+            .hits
+            .rect_of(&hit)
+            .unwrap_or_else(|| panic!("{hit:?} not on screen"));
+        app.handle_mouse(left_down(r.x, r.y));
+        assert_eq!(
+            app.focus,
+            PaneId::Editor,
+            "clicking {hit:?} must focus the request panel"
+        );
+    }
+}
+
 // -- Task 17: the mouse-parity sweep (spec §5) --------------------------
 
 /// THE PARITY CHECK. Every action `keys::named_actions()` can bind a key to

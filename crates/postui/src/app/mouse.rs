@@ -778,7 +778,27 @@ impl App {
                     self.update(Action::OpenVarManager)
                 }
             }
-            Hit::FooterChip(action) => self.update(action),
+            Hit::FooterChip(action) => {
+                // Chips that live inside the request panel (the Body
+                // toolbar row, the address bar's TLS lock, the split
+                // control's alt+w pill) focus the panel like any of its
+                // buttons. The footer's own chips are contextual — they
+                // describe the pane already focused — so they never move
+                // focus themselves.
+                if matches!(
+                    action,
+                    Action::FormatBody
+                        | Action::MinifyBody
+                        | Action::ToggleBodyVars
+                        | Action::OpenBodyInEditor
+                        | Action::BodyClear
+                        | Action::ToggleInsecure
+                        | Action::CycleSplit
+                ) {
+                    self.update(Action::FocusPane(PaneId::Editor));
+                }
+                self.update(action)
+            }
             Hit::SidebarNewRequest => self.update(Action::PromptNewRequest),
             Hit::SidebarFolderArrow(i) => {
                 self.update(Action::FocusPane(PaneId::Sidebar));
@@ -818,6 +838,7 @@ impl App {
                 ))
             }
             Hit::SendButton => {
+                self.update(Action::FocusPane(PaneId::Editor));
                 if self.session.is_in_flight(&self.editor.slug) {
                     self.update(Action::CancelSend)
                 } else {
@@ -930,7 +951,10 @@ impl App {
                 };
                 self.update(Action::ConfirmDeleteTableRow(i))
             }
-            Hit::SplitStop(stop) => self.update(Action::SplitStop(stop)),
+            Hit::SplitStop(stop) => {
+                self.update(Action::FocusPane(PaneId::Editor));
+                self.update(Action::SplitStop(stop))
+            }
             Hit::UrlBar => {
                 let was_focused = self.editor.sub_focus == SubFocus::Url;
                 // `Action::FocusUrl` is exactly "focus Editor, sub-focus
@@ -1218,7 +1242,10 @@ impl App {
             }
             Hit::ResponseSearchNext => self.step_response_search(1),
             Hit::ResponseSearchPrev => self.step_response_search(-1),
-            Hit::CopyUrl => self.update(Action::CopyToClipboard(CopyTarget::Url)),
+            Hit::CopyUrl => {
+                self.update(Action::FocusPane(PaneId::Editor));
+                self.update(Action::CopyToClipboard(CopyTarget::Url))
+            }
             Hit::CopyBodyButton => self.update(Action::CopyToClipboard(CopyTarget::ResponseView)),
             Hit::SaveBodyButton => self.update(Action::PromptSaveView),
             Hit::ResponseEditorButton => self.update(Action::OpenResponseInEditor),
