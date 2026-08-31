@@ -11564,6 +11564,10 @@ fn every_named_action_is_mouse_reachable() {
         // in `App::mouse_dispatch_mirror`).
         Action::EditorTabCycle(1),
         Action::EditorTabCycle(-1),
+        // shift+alt+w walks the split stops backward; every stop is also a
+        // directly clickable chip on the split control (`Hit::SplitStop`),
+        // and the forward cycle's alt+w pill is the strip's mouse path.
+        Action::CycleSplitBack,
     ];
 
     // Group A: footer/toolbar chips — the same function `draw_footer`
@@ -13002,6 +13006,63 @@ mod undo_tests {
                 .target(AnimKey::TabUnderlineWidth(StripId::EditorTabs)),
             Some((x + w) as f32),
             "underline right edge follows the shifted span"
+        );
+    }
+
+    /// A request switch swaps in that request's response, whose active tab
+    /// is whatever it was left on — no `ResponseViewMode` runs, so the
+    /// outgoing response's underline glide must be forgotten (a stale
+    /// tracked value would pin the underline under the wrong tab).
+    #[test]
+    fn request_switch_forgets_the_response_underline_anim() {
+        use crate::anim::{AnimKey, StripId};
+        use crate::components::response::ViewMode;
+        let mut app = App::new_for_test();
+        app.update(Action::CreateRequest("a".into()));
+        ready_response(&mut app, "{}");
+        app.update(Action::ResponseViewMode(ViewMode::Headers));
+        let left_key = AnimKey::TabUnderline(StripId::ResponseTabs);
+        assert!(
+            app.anims.value(left_key, Instant::now()).is_some(),
+            "the switch tracked the underline"
+        );
+
+        app.update(Action::CreateRequest("b".into()));
+        assert!(
+            app.anims.value(left_key, Instant::now()).is_none(),
+            "the swapped-in response starts from its own static span"
+        );
+    }
+
+    /// A background parse concluding "not JSON" removes the Tree tab and
+    /// forces the mode to Raw — the tab set changed under the underline, so
+    /// its animation must be forgotten too.
+    #[test]
+    fn parse_concluding_not_json_forgets_the_response_underline_anim() {
+        use crate::anim::{AnimKey, StripId};
+        use crate::components::response::{SYNC_PRETTY_BYTES, ViewMode};
+        let mut app = App::new_for_test();
+        app.session.send_generation = 7;
+        let big = "x".repeat(SYNC_PRETTY_BYTES + 1);
+        ready_response(&mut app, &big);
+        // While the parse runs the Tree tab exists (spinner) and may be
+        // switched to; that tracks the underline keys.
+        app.update(Action::ResponseViewMode(ViewMode::Pretty));
+        let left_key = AnimKey::TabUnderline(StripId::ResponseTabs);
+        assert!(app.anims.value(left_key, Instant::now()).is_some());
+
+        app.update(Action::PrettyParsed {
+            generation: 7,
+            tree: None,
+        });
+        assert_eq!(
+            app.session.response.view().unwrap().mode,
+            ViewMode::Raw,
+            "not-JSON forces Raw"
+        );
+        assert!(
+            app.anims.value(left_key, Instant::now()).is_none(),
+            "the forced Raw tab snaps to its own span"
         );
     }
 

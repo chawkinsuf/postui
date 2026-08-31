@@ -874,6 +874,12 @@ impl App {
         // collapse flag rides along (a layout preference, not response
         // state), so a swap can't break the no-blank-screen rule.
         let swapped = self.session.sync_open(&self.editor.slug);
+        // The swapped-in response's active tab is whatever it was when the
+        // request was left (or a fresh default) — no `ResponseViewMode`
+        // ran, so the underline glide from the outgoing response is stale.
+        if swapped {
+            self.reset_response_tab_underline();
+        }
         // The send button shows "sending" only when the in-flight send
         // belongs to the request being looked at.
         let editor_in_flight = self.session.in_flight_for(&self.editor.slug);
@@ -2142,7 +2148,20 @@ impl App {
                 // `PrettyParsed`. The clone happens before delivery so the
                 // response itself still moves into the session.
                 let big = (data.body.len() > SYNC_PRETTY_BYTES).then(|| data.body.clone());
+                // Whether this result lands on screen (its request is the
+                // open one) — checked before delivery consumes the entry.
+                let on_screen = self
+                    .session
+                    .in_flight
+                    .iter()
+                    .any(|f| f.generation == generation && f.slug == self.editor.slug);
                 let delivered = self.session.arrived(generation, data);
+                // The fresh view picked its own mode (Pretty for JSON, Raw
+                // otherwise) with no `ResponseViewMode` action, so the
+                // previous response's underline glide is stale.
+                if delivered && on_screen {
+                    self.reset_response_tab_underline();
+                }
                 if delivered && let Some(body) = big {
                     let tx = self.tx.clone();
                     tokio::spawn(async move {
@@ -2161,7 +2180,16 @@ impl App {
                 delivered
             }
             Action::PrettyParsed { generation, tree } => {
-                self.session.tree_arrived(generation, tree.map(|t| *t))
+                let on_screen = self.session.response.awaits_tree(generation);
+                // "Not JSON after all" removes the Tree tab and forces the
+                // mode to Raw — a tab-set change with no `ResponseViewMode`
+                // action behind it.
+                let removed_tree_tab = tree.is_none();
+                let delivered = self.session.tree_arrived(generation, tree.map(|t| *t));
+                if delivered && on_screen && removed_tree_tab {
+                    self.reset_response_tab_underline();
+                }
+                delivered
             }
             Action::RequestFailed { generation, error } => self.session.failed(generation, error),
             Action::InitProjectHere => {
@@ -6118,6 +6146,20 @@ impl App {
     /// way the untracked-pair seed below falls back to the newly active
     /// tab's own span, so the strip simply snaps rather than sliding from
     /// nowhere.
+    /// Forgets the response tab strip's underline animation, so the next
+    /// draw snaps the underline to the active tab's own static span — for
+    /// the places the active tab changes *programmatically* (a response
+    /// arriving, a background parse concluding not-JSON, a request switch
+    /// swapping the pane) where no `Action::ResponseViewMode` runs to
+    /// retarget the glide; a stale tracked value would otherwise leave the
+    /// underline under the previous response's tab.
+    fn reset_response_tab_underline(&mut self) {
+        self.anims
+            .clear(AnimKey::TabUnderline(StripId::ResponseTabs));
+        self.anims
+            .clear(AnimKey::TabUnderlineWidth(StripId::ResponseTabs));
+    }
+
     fn retarget_response_tab_underline(&mut self, prev_mode: Option<ViewMode>) {
         let Some(view) = self.session.response.view() else {
             return;
