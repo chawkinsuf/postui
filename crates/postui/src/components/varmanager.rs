@@ -196,6 +196,10 @@ pub enum VmRow {
     SectionVars,
     Var(String),
     SectionGroups,
+    /// Header for the shared selectors, which live in variables.toml rather
+    /// than in an environment. Only present when there is at least one —
+    /// a project that uses none never sees the distinction.
+    SectionShared,
     Group(String),
 }
 
@@ -204,6 +208,16 @@ impl VmRow {
     /// not selections.
     fn is_stop(&self) -> bool {
         matches!(self, VmRow::Var(_) | VmRow::Group(_))
+    }
+
+    /// The header text for a section row.
+    fn section_label(&self) -> Option<&'static str> {
+        match self {
+            VmRow::SectionVars => Some("VARIABLES"),
+            VmRow::SectionGroups => Some("SELECTORS"),
+            VmRow::SectionShared => Some("SHARED SELECTORS"),
+            _ => None,
+        }
     }
 
     /// The declared name this row addresses, if any.
@@ -465,9 +479,9 @@ pub const NO_ENV_HINT: &str = "options live in environments \u{2014} pick or cre
 /// options live. A shared selector's `shared` flag is a creation-time
 /// property with no control of its own, so this is the only place it is
 /// visible — and the per-environment line is its counterpart, so the grid
-/// is never ambiguous about what it is showing. The shared wording mirrors
-/// the new-selector prompt's.
-pub const SHARED_BADGE: &str = "same options in every environment";
+/// is never ambiguous about what it is showing. The two read as a pair —
+/// same shape, one word apart — since their whole job is the contrast.
+pub const SHARED_BADGE: &str = "options for all environments";
 pub const PER_ENV_BADGE: &str = "options for the current environment";
 
 /// The ghost row's resting label.
@@ -583,7 +597,10 @@ fn group_fields(ctx: &ProjectContext, selector: &str) -> Vec<String> {
 
 /// The left list's rows: the VARIABLES section (every declared variable
 /// that isn't a selector field — fields live inside their selector's options),
-/// then the SELECTORS section.
+/// then the SELECTORS section, then SHARED SELECTORS if the project has any.
+/// The split is the same one the detail pane's scope line states: a shared
+/// selector's options don't belong to the active environment, so grouping it
+/// with the ones that do would misfile it.
 pub fn build_left_rows(ctx: &ProjectContext) -> Vec<VmRow> {
     let mut rows = vec![VmRow::SectionVars];
 
@@ -600,8 +617,19 @@ pub fn build_left_rows(ctx: &ProjectContext) -> Vec<VmRow> {
     }
 
     rows.push(VmRow::SectionGroups);
-    for name in ctx.model.selectors.keys() {
-        rows.push(VmRow::Group(name.clone()));
+    for (name, decl) in &ctx.model.selectors {
+        if !decl.shared {
+            rows.push(VmRow::Group(name.clone()));
+        }
+    }
+
+    if ctx.model.selectors.values().any(|d| d.shared) {
+        rows.push(VmRow::SectionShared);
+        for (name, decl) in &ctx.model.selectors {
+            if decl.shared {
+                rows.push(VmRow::Group(name.clone()));
+            }
+        }
     }
     rows
 }
@@ -659,7 +687,7 @@ impl VarManager {
                 }
                 self.detail = target;
             }
-            VmRow::SectionVars | VmRow::SectionGroups => {}
+            VmRow::SectionVars | VmRow::SectionGroups | VmRow::SectionShared => {}
         }
     }
 
@@ -2305,12 +2333,8 @@ fn paint_left_row(
     // the label may run to the list's right edge.
     let width = list.width.saturating_sub(1);
     match row {
-        VmRow::SectionVars | VmRow::SectionGroups => {
-            let label = if matches!(row, VmRow::SectionVars) {
-                "VARIABLES"
-            } else {
-                "SELECTORS"
-            };
+        VmRow::SectionVars | VmRow::SectionGroups | VmRow::SectionShared => {
+            let label = row.section_label().unwrap_or_default();
             text(buf, list.x, y, label, theme.text_muted, bg, true);
         }
         VmRow::Var(name) => {
@@ -3088,6 +3112,38 @@ fields = ["user_id", "customer_id"]
             hits.rect_of(&Hit::VmEntryCell { row: 0, col: 0 }).is_some(),
             "grid is interactive without an environment"
         );
+    }
+
+    #[test]
+    fn shared_selectors_get_their_own_left_list_section() {
+        let (_dir, ctx) = shared_fixture();
+        let mut vm = VarManager::default();
+        let (content, _) = render(&mut vm, &ctx);
+
+        assert!(content.contains("SHARED SELECTORS"), "{content}");
+        let shared_at = vm
+            .left_rows
+            .iter()
+            .position(|r| matches!(r, VmRow::SectionShared))
+            .expect("shared section");
+        let groups_at = vm
+            .left_rows
+            .iter()
+            .position(|r| matches!(r, VmRow::SectionGroups))
+            .expect("selectors section");
+        assert!(groups_at < shared_at, "{:?}", vm.left_rows);
+        assert_eq!(
+            vm.left_rows.iter().position(|r| r.name() == Some("locale")),
+            Some(shared_at + 1),
+            "a shared selector files under its own header: {:?}",
+            vm.left_rows
+        );
+
+        // No shared selector, no extra header.
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        let (content, _) = render(&mut vm, &ctx);
+        assert!(!content.contains("SHARED SELECTORS"), "{content}");
     }
 
     #[test]
