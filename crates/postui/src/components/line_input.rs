@@ -173,24 +173,12 @@ impl LineInput {
     }
 
     /// Pastes `text` at the caret: a live selection is replaced (GUI
-    /// paste semantics), and the text is flattened to a single line —
-    /// runs of line breaks and tabs collapse to one space, so a
-    /// multi-line paste can't smuggle an Enter into a one-line field.
+    /// paste semantics), and the text is flattened to a single line via
+    /// [`flatten_paste`], so a multi-line paste can't smuggle an Enter
+    /// into a one-line field.
     pub fn paste(&mut self, text: &str) {
         self.delete_selection();
-        let mut flat = String::with_capacity(text.len());
-        let mut pending_gap = false;
-        for c in text.chars() {
-            if matches!(c, '\n' | '\r' | '\t') {
-                pending_gap = !flat.is_empty();
-            } else {
-                if pending_gap {
-                    flat.push(' ');
-                    pending_gap = false;
-                }
-                flat.push(c);
-            }
-        }
+        let flat = flatten_paste(text);
         self.insert_str(&flat);
     }
 
@@ -216,6 +204,11 @@ impl LineInput {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
+        // The emacs caret bytes (ctrl+e, ESC b/f — also what mac
+        // terminals send for cmd/option+arrows) fold into the
+        // End/word-hop keys matched below on every platform; only ^A is
+        // platform-split (mac: Home, Linux: falls through to select-all).
+        let key = crate::keys::fold_text_nav_bytes(key, cfg!(target_os = "macos"));
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         // ctrl+arrow skips words; alt+arrow is the same gesture as macOS
         // terminals deliver it (option+arrow), so both spellings work on
@@ -227,6 +220,20 @@ impl LineInput {
         // pre-move cursor; unshifted motion collapses any selection first
         // (Left/Right land on the selection's own edge, GUI-style).
         match key.code {
+            // Select-all is ctrl+shift+a — arriving as 'a' with
+            // SHIFT|CONTROL, or (kitty alternate-keys reporting, and the
+            // SUPER fold's cmd+a) as the pre-shifted 'A' with CONTROL.
+            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) && shift => {
+                self.select_all();
+                true
+            }
+            KeyCode::Char('A') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.select_all();
+                true
+            }
+            // Plain ctrl+a is select-all on Linux; on macOS builds it
+            // never reaches this arm — `fold_text_nav_bytes` turned it
+            // into Home (it's the byte cmd+left sends).
             KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.select_all();
                 true
@@ -491,6 +498,27 @@ impl LineInput {
     }
 }
 
+/// Flattens pasted text to one line: runs of line breaks and tabs collapse
+/// to a single space (none at the edges). Shared by [`LineInput::paste`]
+/// and the plain-`String` filter queries (palette, chooser, var picker)
+/// so every single-line surface flattens a paste identically.
+pub fn flatten_paste(text: &str) -> String {
+    let mut flat = String::with_capacity(text.len());
+    let mut pending_gap = false;
+    for c in text.chars() {
+        if matches!(c, '\n' | '\r' | '\t') {
+            pending_gap = !flat.is_empty();
+        } else {
+            if pending_gap {
+                flat.push(' ');
+                pending_gap = false;
+            }
+            flat.push(c);
+        }
+    }
+    flat
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -734,12 +762,75 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_a_selects_all() {
+    fn ctrl_shift_a_selects_all_in_both_reported_spellings() {
+        // Kitty-protocol spelling: base char with SHIFT|CONTROL.
         let mut input = LineInput::new("hello");
         input.set_cursor(2);
-        assert!(input.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)));
+        assert!(input.handle_key(KeyEvent::new(
+            KeyCode::Char('a'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT
+        )));
         assert_eq!(input.selection(), Some((0, 5)));
         assert_eq!(input.selected_text().as_deref(), Some("hello"));
+        // Alternate-keys / SUPER-fold spelling: pre-shifted 'A' + CONTROL.
+        let mut input = LineInput::new("hello");
+        input.set_cursor(2);
+        assert!(input.handle_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::CONTROL)));
+        assert_eq!(input.selection(), Some((0, 5)));
+    }
+
+    #[test]
+    fn plain_ctrl_a_selects_all_on_linux_builds() {
+        // On Linux there is no cmd key sending ^A bytes, so ctrl+a keeps
+        // its GUI select-all meaning (this test exercises the identity
+        // fold explicitly, so it documents both platforms from either).
+        let mut input = LineInput::new("hello");
+        input.set_cursor(2);
+        let ev = crate::keys::fold_text_nav_bytes(
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+            false,
+        );
+        assert!(input.handle_key(ev));
+        assert_eq!(input.selection(), Some((0, 5)));
+    }
+
+    #[test]
+    fn ctrl_e_jumps_to_line_end_and_mac_ctrl_a_to_line_start() {
+        // On macOS builds ^A/^E are the bytes cmd+left/right send; the
+        // fold turns them into Home/End before the match sees them.
+        let fold = |c| {
+            crate::keys::fold_text_nav_bytes(
+                KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL),
+                true,
+            )
+        };
+        let mut input = LineInput::new("hello");
+        input.set_cursor(2);
+        assert!(input.handle_key(fold('a')));
+        assert_eq!(input.cursor(), 0);
+        assert_eq!(input.selection(), None);
+        assert!(input.handle_key(fold('e')));
+        assert_eq!(input.cursor(), 5);
+    }
+
+    #[test]
+    fn alt_b_and_alt_f_are_word_motions_on_every_platform() {
+        // ESC b / ESC f: option+arrows as mac terminals deliver them,
+        // folded to ctrl+arrow word hops on macOS builds.
+        let fold = |c, mods: KeyModifiers| {
+            crate::keys::fold_text_nav_bytes(KeyEvent::new(KeyCode::Char(c), mods), true)
+        };
+        let mut input = LineInput::new("one two three");
+        input.set_cursor(13);
+        assert!(input.handle_key(fold('b', KeyModifiers::ALT)));
+        assert_eq!(input.cursor(), 8, "alt+b hops a word left");
+        assert!(input.handle_key(fold('f', KeyModifiers::ALT)));
+        assert_eq!(input.cursor(), 13, "alt+f hops a word right");
+        // The shifted spellings select the same hop.
+        assert!(input.handle_key(fold('B', KeyModifiers::ALT)));
+        assert_eq!(input.selected_text().as_deref(), Some("three"));
+        assert!(input.handle_key(fold('f', KeyModifiers::ALT | KeyModifiers::SHIFT)));
+        assert_eq!(input.selection(), None, "selection collapsed to anchor");
     }
 
     #[test]
@@ -796,7 +887,7 @@ mod tests {
     #[test]
     fn select_all_renders_no_trailing_caret_cell() {
         let mut input = LineInput::new("ab");
-        input.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+        input.handle_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::CONTROL));
         let theme = Theme::dark();
         let line = input.draw_line(true, &theme);
         let rendered = line_text(&line);

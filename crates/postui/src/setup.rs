@@ -2,12 +2,16 @@
 //!
 //! macOS terminals ship "natural text editing" style keymaps that rewrite
 //! option+arrow into `ESC b`/`ESC f` and cmd+arrow into `^A`/`^E` *before*
-//! any keyboard protocol gets a say — bytes postui cannot tell apart from
-//! real alt+b / ctrl+a chords. No escape sequence can override those
-//! terminal-side maps (Ghostty's maintainers explicitly declined to let the
-//! kitty protocol do so), so the fix is one-time terminal config. This
-//! module detects the terminal from its env fingerprint and prints the
-//! matching snippet or instructions.
+//! any keyboard protocol gets a say, and no escape sequence can override
+//! those terminal-side maps (Ghostty's maintainers explicitly declined to
+//! let the kitty protocol do so). postui therefore speaks those bytes
+//! natively: alt+b/f are word motions, ^A/^E are line start/end, and
+//! select-all lives on ctrl+shift+a — so arrows and carets work with NO
+//! terminal config. What's left for this command is the optional extras:
+//! cmd+a needs the terminal's own select-all unbound before it can reach
+//! postui, and option+<letter> chords (opt+m, opt+1..) need the terminal's
+//! option-as-alt switch. This module detects the terminal from its env
+//! fingerprint and prints the matching snippet or instructions.
 
 /// Terminals `--setup` has tailored guidance for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,48 +78,51 @@ pub fn detect_from_env() -> Option<TerminalKind> {
 }
 
 fn ghostty_section() -> &'static str {
-    "Ghostty (macOS) remaps these keys to legacy Terminal.app bytes before\n\
-     apps can see them. Add to ~/.config/ghostty/config and reload the\n\
-     config (cmd+shift+,):\n\
+    "Ghostty (macOS): option+arrows, cmd+left/right, cmd+z/shift+z (undo/\n\
+     redo) and cmd+c (copy a selection) already work in postui with no\n\
+     config. Optional extras for ~/.config/ghostty/config (reload with\n\
+     cmd+shift+,):\n\
      \n\
-     \x20   # let postui see real option+arrow / cmd+arrow keys\n\
-     \x20   keybind = alt+arrow_left=unbind\n\
-     \x20   keybind = alt+arrow_right=unbind\n\
-     \x20   keybind = super+arrow_left=unbind\n\
-     \x20   keybind = super+arrow_right=unbind\n\
+     \x20   # cmd+a = select all in postui (Ghostty's own select-all\n\
+     \x20   # otherwise consumes the key; ctrl+shift+a works regardless)\n\
+     \x20   keybind = super+a=unbind\n\
+     \x20   # option+<letter> chords (opt+m, opt+1..) as alt, not composed chars\n\
      \x20   macos-option-as-alt = true\n"
 }
 
 fn kitty_section() -> &'static str {
-    "kitty (macOS): add to ~/.config/kitty/kitty.conf and restart kitty:\n\
+    "kitty (macOS): option+arrows and cmd+left/right already work in\n\
+     postui with no config. Optional extras for ~/.config/kitty/kitty.conf\n\
+     (restart kitty after):\n\
      \n\
+     \x20   # option+<letter> chords (opt+m, opt+1..) as alt, not composed chars\n\
      \x20   macos_option_as_alt yes\n\
      \n\
-     kitty reports unmapped cmd+arrow keys to apps on its own; if you have\n\
-     bound cmd+arrows to kitty actions in kitty.conf, remove those lines.\n"
+     If cmd+a is bound to a kitty action in your kitty.conf, remove that\n\
+     line to let it reach postui as select-all (ctrl+shift+a works\n\
+     regardless).\n"
 }
 
 fn iterm2_section() -> &'static str {
-    "iTerm2: profile key mappings intercept these keys (the \"Natural Text\n\
-     Editing\" preset maps option+arrows to ESC b/f and cmd+arrows to ^A/^E).\n\
-     In Settings > Profiles > Keys:\n\
+    "iTerm2: the \"Natural Text Editing\" key preset already works —\n\
+     postui understands the bytes it sends for option+arrows (word jumps)\n\
+     and cmd+left/right (line start/end). One optional setting, in\n\
+     Settings > Profiles > Keys > General:\n\
      \n\
-     \x20   1. Under Key Mappings, delete the entries for opt+left, opt+right,\n\
-     \x20      cmd+left and cmd+right (or switch away from the Natural Text\n\
-     \x20      Editing preset).\n\
-     \x20   2. Under General, set \"Left Option key\" to Esc+.\n\
+     \x20   set \"Left Option key\" to Esc+\n\
      \n\
-     Option+arrows then reach postui as real alt+arrows. Cmd+arrow reporting\n\
-     depends on your iTerm2 version's kitty-keyboard-protocol support; if\n\
-     cmd+arrows do nothing afterwards, Home/End (fn+left/right) do the same.\n"
+     so option+<letter> chords (opt+m, opt+1..) arrive as alt instead of\n\
+     composed characters.\n"
 }
 
 fn apple_terminal_section() -> &'static str {
-    "Terminal.app cannot report the cmd key to terminal apps and does not\n\
-     support the keyboard protocol that carries modified arrows reliably.\n\
-     Inside it, use postui's built-in equivalents instead: ctrl+arrows\n\
-     word-jump, Home/End (fn+left/right) jump to line start/end, and\n\
-     ctrl+a selects all.\n"
+    "Terminal.app cannot report the cmd key to terminal apps. postui's\n\
+     built-in spellings cover the same ground: ctrl/option+arrows\n\
+     word-jump, ctrl+a / ctrl+e jump to line start/end (Home/End —\n\
+     fn+left/right — too), and selections come from shift+arrows or the\n\
+     mouse (Terminal.app cannot carry ctrl+shift+a distinctly). In\n\
+     Settings > Profiles > Keyboard, enable \"Use Option as Meta key\" so\n\
+     option+<letter> chords (opt+m, opt+1..) arrive as alt.\n"
 }
 
 fn wezterm_section() -> &'static str {
@@ -124,8 +131,8 @@ fn wezterm_section() -> &'static str {
      \x20   config.send_composed_key_when_left_alt_is_pressed = false\n\
      \x20   config.enable_kitty_keyboard = true\n\
      \n\
-     Option+arrows then arrive as alt+arrows and cmd+arrows are reported\n\
-     with the cmd modifier.\n"
+     Option+<letter> chords then arrive as alt, and cmd keys WezTerm\n\
+     itself leaves unbound are reported with the cmd modifier.\n"
 }
 
 fn section(kind: TerminalKind) -> &'static str {
@@ -189,9 +196,11 @@ pub fn setup_text(macos: bool, kind: Option<TerminalKind>) -> String {
         }
     }
     out.push_str(
-        "\nAfter this, in postui text fields option+arrows jump by word,\n\
-         cmd+arrows jump to line start/end (cmd+shift+arrows select there),\n\
-         and cmd+up/down jump to the start/end of the body.\n",
+        "\nEverywhere: option+arrows jump by word, cmd+left/right (and\n\
+         ctrl+a / ctrl+e) jump to line start/end, ctrl+shift+a selects\n\
+         all, cmd+z / cmd+shift+z undo/redo, and cmd+c copies a live\n\
+         selection — no terminal config required for any of those where\n\
+         the terminal itself leaves the keys alone.\n",
     );
     out
 }
@@ -240,12 +249,15 @@ mod tests {
     }
 
     #[test]
-    fn ghostty_text_has_the_unbind_snippet() {
+    fn ghostty_text_recommends_only_the_select_all_unbind_and_option_as_alt() {
         let t = setup_text(true, Some(TerminalKind::Ghostty));
         assert!(t.contains("Detected terminal: Ghostty"));
-        assert!(t.contains("keybind = alt+arrow_left=unbind"));
-        assert!(t.contains("keybind = super+arrow_right=unbind"));
+        assert!(t.contains("keybind = super+a=unbind"));
         assert!(t.contains("macos-option-as-alt = true"));
+        assert!(
+            !t.contains("arrow_left"),
+            "arrow unbinds are gone: postui speaks the remapped bytes: {t}"
+        );
     }
 
     #[test]
@@ -271,6 +283,6 @@ mod tests {
         let t = setup_text(false, Some(TerminalKind::ITerm2));
         assert!(t.contains("Nothing to configure on Linux"));
         assert!(t.contains("SSH session from a Mac running iTerm2"));
-        assert!(t.contains("Natural Text\nEditing"));
+        assert!(t.contains("Natural Text Editing"));
     }
 }

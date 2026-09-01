@@ -475,8 +475,10 @@ impl App {
             app.apply_ui_settings(ui_settings, theme_name, theme);
             app.usage = usage;
             app.usage_path = usage_path;
-            app.keymap = crate::keys::Keymap::load();
-            for w in ui_warnings {
+            let (keymap, key_warnings) =
+                crate::keys::Keymap::load_with_warnings(cfg!(target_os = "macos"));
+            app.keymap = keymap;
+            for w in ui_warnings.into_iter().chain(key_warnings) {
                 app.toasts.push(w, ToastKind::Warning);
             }
             app.toasts.push(
@@ -498,8 +500,10 @@ impl App {
         app.apply_ui_settings(ui_settings, theme_name, theme);
         app.usage = usage;
         app.usage_path = usage_path;
-        app.keymap = crate::keys::Keymap::load();
-        for w in ui_warnings {
+        let (keymap, key_warnings) =
+            crate::keys::Keymap::load_with_warnings(cfg!(target_os = "macos"));
+        app.keymap = keymap;
+        for w in ui_warnings.into_iter().chain(key_warnings) {
             app.toasts.push(w, ToastKind::Warning);
         }
 
@@ -5312,8 +5316,10 @@ impl App {
     /// (ctrl+v), or delivered whole by a terminal bracketed paste
     /// (`Event::Paste`: cmd+V on macOS, ctrl+shift+V on Linux) — to
     /// whatever text surface owns the caret, mirroring `handle_key`'s
-    /// capture order: the top modal's focused input first, then a live
-    /// Variable-Manager field or grid edit, then the editor's cell edit /
+    /// capture order: the top modal's text surface first (a filter-query
+    /// modal's query — palette/chooser/var picker — or the focused
+    /// `LineInput`), then a live Variable-Manager field or grid edit, then
+    /// the response pane's live search input, then the editor's cell edit /
     /// URL bar / body. A live selection is replaced (GUI semantics);
     /// single-line surfaces flatten line breaks (`LineInput::paste`),
     /// the body takes them verbatim. Returns `false` when nothing
@@ -5323,6 +5329,23 @@ impl App {
             return false;
         }
         if !self.modals.is_empty() {
+            // The filter-query modals hold their query as a plain String
+            // (no LineInput), so they sit outside `focused_input_index` —
+            // but their queries took typed text, so they take pastes too.
+            match self.modals.top_mut() {
+                Some(crate::components::modal::Modal::Palette(p)) => {
+                    p.paste(text);
+                    return self.update(Action::Render);
+                }
+                Some(crate::components::modal::Modal::Chooser(c)) => {
+                    c.paste(text);
+                    return self.update(Action::Render);
+                }
+                Some(crate::components::modal::Modal::VarPicker(v)) => {
+                    return v.paste(text) && self.update(Action::Render);
+                }
+                _ => {}
+            }
             if let Some(i) = self.modals.focused_input_index()
                 && let Some(input) = self.modals.focus_input(i)
             {
@@ -5342,7 +5365,14 @@ impl App {
             }
             return false;
         }
-        if self.screen != Screen::Main || self.focus != PaneId::Editor {
+        if self.screen != Screen::Main {
+            return false;
+        }
+        // The response pane's one text surface: its search input while live.
+        if self.focus == PaneId::Response {
+            return self.session.response.paste_into_search(text) && self.update(Action::Render);
+        }
+        if self.focus != PaneId::Editor {
             return false;
         }
         if let Some(edit) = self.editor.table.editing.as_mut() {
@@ -5847,7 +5877,18 @@ impl App {
     /// `self.update(..)` call's result along the branch taken, plus any
     /// modal state change (close/typing) that bypasses `update`.
     pub fn handle_key(&mut self, keymap: &Keymap, ev: KeyEvent) -> bool {
-        let ev = crate::keys::normalize_super_arrows(ev);
+        let ev = crate::keys::normalize_super_keys(ev);
+        // cmd+c — SUPER+c, from terminals that report it — is copy-only:
+        // copy the live selection, otherwise nothing. It is deliberately
+        // not folded onto ctrl+c (whose selectionless meaning is quit): a
+        // reflexive mac cmd+c must never quit the app.
+        if ev.modifiers.contains(KeyModifiers::SUPER) && matches!(ev.code, KeyCode::Char('c' | 'C'))
+        {
+            if let Some(text) = self.active_selection_text() {
+                self.copy_text_with_toast(&text, "Copied selection".to_string());
+            }
+            return true;
+        }
         let combo = KeyCombo::from_event(&ev);
         let global = keymap.lookup(&combo);
         let modified = ev

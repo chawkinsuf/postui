@@ -207,6 +207,20 @@ impl VarPickerState {
         &self.input
     }
 
+    /// Pastes into the fuzzy filter (the bracketed-paste/ctrl+v path),
+    /// flattened to one line. Only Insert mode has a filter — mirroring
+    /// the typed-char path, a paste in `SelectOption` mode is inert and
+    /// reports unhandled.
+    pub fn paste(&mut self, text: &str) -> bool {
+        if self.mode != PickerMode::Insert {
+            return false;
+        }
+        self.input
+            .push_str(&crate::components::line_input::flatten_paste(text));
+        self.refilter();
+        true
+    }
+
     /// Pre-seeds the fuzzy filter (and re-filters), so the picker opens
     /// already narrowed — clicking an inline `{{token}}` seeds it with that
     /// token's name (spec §7).

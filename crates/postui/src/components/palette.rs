@@ -377,6 +377,14 @@ impl PaletteState {
         &self.input
     }
 
+    /// Pastes into the fuzzy query (the bracketed-paste/ctrl+v path),
+    /// flattened to one line like every single-line surface.
+    pub fn paste(&mut self, text: &str) {
+        self.input
+            .push_str(&crate::components::line_input::flatten_paste(text));
+        self.refilter();
+    }
+
     pub fn filtered(&self) -> &[Command] {
         &self.filtered
     }

@@ -113,6 +113,14 @@ impl ChooserState {
         }
     }
 
+    /// Pastes into the filter query (the bracketed-paste/ctrl+v path),
+    /// flattened to one line like every single-line surface.
+    pub fn paste(&mut self, text: &str) {
+        self.input
+            .push_str(&crate::components::line_input::flatten_paste(text));
+        self.refilter();
+    }
+
     pub fn input(&self) -> &str {
         &self.input
     }

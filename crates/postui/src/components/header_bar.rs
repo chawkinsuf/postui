@@ -161,7 +161,7 @@ pub fn draw_header(
     // the wordmark's 3-column margin — same name-plus-trailing-keycap
     // idiom as the Variable Manager chip.
     let theme_label = " Theme ";
-    let theme_key_w = " alt+b ".chars().count() as u16;
+    let theme_key_w = " alt+t ".chars().count() as u16;
     let theme_w = theme_label.chars().count() as u16 + theme_key_w;
     let theme_x = (area.x + area.width).saturating_sub(theme_w + 3);
 
@@ -300,7 +300,7 @@ pub fn draw_header(
             false,
         );
         crate::paint::Chip {
-            label: "alt+b",
+            label: "alt+t",
             color: theme.text_muted,
         }
         .paint(
@@ -580,7 +580,7 @@ mod tests {
     }
 
     /// The Theme chip gets the same treatment: prominent name + trailing
-    /// `alt+b` keycap pill, right-aligned at the wordmark's 3-column
+    /// `alt+t` keycap pill, right-aligned at the wordmark's 3-column
     /// margin, the pill lifting on hover.
     #[test]
     fn theme_chip_shows_its_name_and_trailing_keycap() {
@@ -590,7 +590,7 @@ mod tests {
         assert_eq!(rect.x + rect.width, 110 - 3, "right-aligned");
         assert_eq!(
             row_text(&term, &rect),
-            format!(" Theme  {}+b ", crate::keys::alt_label())
+            format!(" Theme  {}+t ", crate::keys::alt_label())
         );
         let label_cell = cell(&term, rect.x + 1, rect.y);
         assert_eq!(label_cell.symbol(), "T");

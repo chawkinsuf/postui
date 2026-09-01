@@ -32,7 +32,7 @@ pub fn describe(ev: &Event) -> String {
                 "  combo(code={:?} mods={:?})",
                 combo.code, combo.modifiers
             ));
-            let norm = crate::keys::normalize_super_arrows(*k);
+            let norm = crate::keys::normalize_super_keys(*k);
             if norm.code != k.code || norm.modifiers != k.modifiers {
                 line.push_str(&format!(
                     "  super-fold->(code={:?} mods={:?})",

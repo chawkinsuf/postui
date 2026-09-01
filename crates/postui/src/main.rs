@@ -21,7 +21,9 @@ async fn main() -> anyhow::Result<()> {
         postui::config::CliParse::Usage => {
             println!("usage: postui [directory]");
             println!("       postui --setup    terminal keyboard setup (macOS opt/cmd keys)");
-            println!("       postui --keydump[=BITS]  echo raw key events (kitty flag bits; 0=none)");
+            println!(
+                "       postui --keydump[=BITS]  echo raw key events (kitty flag bits; 0=none)"
+            );
             return Ok(());
         }
         postui::config::CliParse::Keydump { flags } => {

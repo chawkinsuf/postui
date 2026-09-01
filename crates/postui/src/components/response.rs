@@ -601,6 +601,23 @@ impl Response {
         self.view.as_ref()
     }
 
+    /// Pastes into the in-pane search's live input (the bracketed-paste/
+    /// ctrl+v path). `false` when no search input is active — a committed
+    /// query or no search at all — mirroring `ready_key`'s "an active
+    /// search input swallows everything" gate.
+    pub fn paste_into_search(&mut self, text: &str) -> bool {
+        let Some(view) = self.view.as_mut() else {
+            return false;
+        };
+        match view.search.as_mut() {
+            Some(search) if search.active => {
+                search.input.paste(text);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// The body view's scroll state, as of the last draw (the viewport height
     /// is a render-time fact, so this is `None` before the first frame).
     pub fn scrollbar_spec(&self) -> Option<ScrollbarSpec> {

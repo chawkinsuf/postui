@@ -141,24 +141,75 @@ impl KeyCombo {
     }
 }
 
-/// Folds cmd+arrow — SUPER, which only kitty-protocol terminals report
-/// (see `postui --setup`) — into the key it means on macOS: cmd+left/right
-/// are Home/End, cmd+up/down are ctrl+Home/ctrl+End (buffer start/end).
-/// SHIFT rides along so cmd+shift+arrow selects to the same target. Done
-/// once at the top of `App::handle_key` so every component sees the GUI
-/// spelling it already implements.
-pub fn normalize_super_arrows(ev: KeyEvent) -> KeyEvent {
+/// Folds SUPER combos — which only kitty-protocol terminals report, and
+/// only for keys the terminal itself leaves unbound — into the key each
+/// means on macOS. Arrows: cmd+left/right are Home/End, cmd+up/down are
+/// ctrl+Home/ctrl+End (buffer start/end), SHIFT riding along so
+/// cmd+shift+arrow selects to the same target. Letters: the OS-expected
+/// cmd shortcuts become their ctrl spellings (cmd+a select-all as
+/// ctrl+shift+a, cmd+z/cmd+shift+z undo/redo, cmd+s save, cmd+v paste) so
+/// cmd and ctrl are aliases wherever the terminal delivers cmd at all.
+/// cmd+c is deliberately NOT folded — selectionless ctrl+c means quit,
+/// and a reflexive mac cmd+c must never quit; `App::handle_key` gives
+/// SUPER+c its own copy-only intercept instead. Done once at the top of
+/// `App::handle_key` so every component sees the spelling it already
+/// implements.
+pub fn normalize_super_keys(ev: KeyEvent) -> KeyEvent {
     if !ev.modifiers.contains(KeyModifiers::SUPER) {
         return ev;
     }
+    let rest = ev.modifiers - KeyModifiers::SUPER;
     let (code, extra) = match ev.code {
         KeyCode::Left => (KeyCode::Home, KeyModifiers::NONE),
         KeyCode::Right => (KeyCode::End, KeyModifiers::NONE),
         KeyCode::Up => (KeyCode::Home, KeyModifiers::CONTROL),
         KeyCode::Down => (KeyCode::End, KeyModifiers::CONTROL),
+        // cmd+a means select-all, whose ctrl spelling is ctrl+shift+a
+        // (ctrl+a is line start) — the uppercase char is the shape
+        // `KeyCombo::from_event` normalizes shifted letters to.
+        KeyCode::Char('a') => (KeyCode::Char('A'), KeyModifiers::CONTROL),
+        KeyCode::Char('z' | 'Z' | 's' | 'v') => (ev.code, KeyModifiers::CONTROL),
         _ => return ev,
     };
-    KeyEvent::new(code, (ev.modifiers - KeyModifiers::SUPER) | extra)
+    KeyEvent::new(code, rest | extra)
+}
+
+/// Folds the emacs/readline caret bytes into the GUI keys they mean —
+/// ctrl+e becomes End, and ESC b/f (alt+b/f — what macOS terminals send
+/// for option+left/right) become ctrl+←/→ word hops, with shift (as a
+/// flag or the pre-shifted letter) riding along on the word hops to
+/// select. Those apply on every platform: the body editor has always had
+/// them via edtui's built-in emacs keymap, so the single-line inputs
+/// match it rather than diverge. Only ^A is platform-split (`macos` is
+/// `cfg!(target_os = "macos")`, parameterized for tests): on macOS it is
+/// the byte cmd+left sends, so it becomes Home; on Linux it passes
+/// through and keeps its select-all meaning. ctrl+shift+a (select-all's
+/// chord, in either reported spelling) passes through unfolded
+/// everywhere. Applied by each text surface (`LineInput::handle_key`,
+/// the body editor) ahead of its own key match, so the match only ever
+/// sees the GUI spellings.
+pub fn fold_text_nav_bytes(ev: KeyEvent, macos: bool) -> KeyEvent {
+    match ev.code {
+        KeyCode::Char('a') if macos && ev.modifiers == KeyModifiers::CONTROL => {
+            KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)
+        }
+        KeyCode::Char('e') if ev.modifiers == KeyModifiers::CONTROL => {
+            KeyEvent::new(KeyCode::End, KeyModifiers::NONE)
+        }
+        KeyCode::Char(c @ ('b' | 'B' | 'f' | 'F')) if ev.modifiers.contains(KeyModifiers::ALT) => {
+            let arrow = if c.eq_ignore_ascii_case(&'b') {
+                KeyCode::Left
+            } else {
+                KeyCode::Right
+            };
+            let mut mods = KeyModifiers::CONTROL;
+            if c.is_ascii_uppercase() || ev.modifiers.contains(KeyModifiers::SHIFT) {
+                mods |= KeyModifiers::SHIFT;
+            }
+            KeyEvent::new(arrow, mods)
+        }
+        _ => ev,
+    }
 }
 
 pub struct Keymap {
@@ -261,12 +312,18 @@ impl Keymap {
             ("alt+m", Action::CycleMethod),
             ("alt+shift+m", Action::OpenMethodDropdown),
             ("alt+u", Action::FocusUrl),
-            ("alt+f", Action::FormatBody),
+            // alt+f and alt+b ship unbound: they're the ESC f/b bytes mac
+            // terminals send for option+arrow word motion (see
+            // `fold_text_nav_bytes`), so format-body and the theme
+            // chooser live on alt+j and alt+t. Same for ctrl+a/ctrl+e
+            // (^A/^E — and ctrl+a is select-all on Linux). A user's
+            // keys.toml may still bind any of them deliberately.
+            ("alt+j", Action::FormatBody),
             ("alt+g", Action::MinifyBody),
             ("alt+x", Action::BodyClear),
             ("alt+s", Action::ToggleBodyVars),
             ("alt+i", Action::ToggleInsecure),
-            ("alt+b", Action::OpenThemeChooser),
+            ("alt+t", Action::OpenThemeChooser),
             (
                 "alt+y",
                 Action::CopyToClipboard(crate::action::CopyTarget::Url),
@@ -356,6 +413,46 @@ impl Keymap {
             }
         }
         map
+    }
+
+    /// [`load`] plus caret-conflict warnings for the startup toasts:
+    /// on a macOS build (`macos` — parameterized for tests), a keys.toml
+    /// override on one of the caret-motion bytes (^A/^E = cmd+left/right,
+    /// ESC b/f = option+arrows) wins per the user's explicit config, but
+    /// silently costs the cmd/option+arrow gesture that sends the same
+    /// byte — worth a warning, not a rejection (an error would atomically
+    /// discard the whole override file, and the same dotfile is legal on
+    /// Linux). On Linux the list is always empty: ctrl+a select-all and
+    /// friends are component behavior there, and an override shadowing
+    /// them is an ordinary, deliberate rebind.
+    pub fn load_with_warnings(macos: bool) -> (Self, Vec<String>) {
+        let map = Self::load();
+        let warnings = if macos {
+            map.caret_conflicts()
+        } else {
+            Vec::new()
+        };
+        (map, warnings)
+    }
+
+    /// The macOS caret-conflict report for [`load_with_warnings`]: one
+    /// line per caret-motion combo something is bound to, naming the
+    /// gesture the binding shadows.
+    fn caret_conflicts(&self) -> Vec<String> {
+        [
+            ("ctrl+a", "cmd+left / line start"),
+            ("ctrl+e", "cmd+right / line end"),
+            ("alt+b", "option+left word motion"),
+            ("alt+f", "option+right word motion"),
+        ]
+        .iter()
+        .filter_map(|(combo, gesture)| {
+            // Combos here are compile-time constants; parse cannot fail.
+            let parsed = KeyCombo::parse(combo)?;
+            self.lookup(&parsed)
+                .map(|_| format!("keys.toml binds {combo}, which shadows {gesture} on macOS"))
+        })
+        .collect()
     }
 
     /// Reverse lookup for the palette's keybinding column: the first combo
@@ -473,7 +570,7 @@ mod tests {
 
     #[test]
     fn super_arrows_normalize_to_home_end() {
-        let n = |code, mods| normalize_super_arrows(KeyEvent::new(code, mods));
+        let n = |code, mods| normalize_super_keys(KeyEvent::new(code, mods));
         let ev = n(KeyCode::Left, KeyModifiers::SUPER);
         assert_eq!((ev.code, ev.modifiers), (KeyCode::Home, KeyModifiers::NONE));
         let ev = n(KeyCode::Right, KeyModifiers::SUPER | KeyModifiers::SHIFT);
@@ -488,13 +585,102 @@ mod tests {
             (ev.code, ev.modifiers),
             (KeyCode::End, KeyModifiers::CONTROL)
         );
-        // Untouched: plain arrows and super over non-arrows.
+        // Untouched: plain arrows.
         let ev = n(KeyCode::Left, KeyModifiers::NONE);
         assert_eq!((ev.code, ev.modifiers), (KeyCode::Left, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn fold_text_nav_bytes_splits_only_ctrl_a_by_platform() {
+        let f = |code, mods, macos| fold_text_nav_bytes(KeyEvent::new(code, mods), macos);
+        // Both platforms: ctrl+e becomes End, ESC b/f become ctrl+arrow
+        // hops — matching edtui's built-in emacs keys in the body.
+        for macos in [true, false] {
+            let ev = f(KeyCode::Char('e'), KeyModifiers::CONTROL, macos);
+            assert_eq!((ev.code, ev.modifiers), (KeyCode::End, KeyModifiers::NONE));
+            let ev = f(KeyCode::Char('b'), KeyModifiers::ALT, macos);
+            assert_eq!(
+                (ev.code, ev.modifiers),
+                (KeyCode::Left, KeyModifiers::CONTROL)
+            );
+            let ev = f(KeyCode::Char('F'), KeyModifiers::ALT, macos);
+            assert_eq!(
+                (ev.code, ev.modifiers),
+                (KeyCode::Right, KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+                "the pre-shifted letter selects the hop"
+            );
+            // Select-all's chord passes through unfolded everywhere.
+            let ev = f(
+                KeyCode::Char('a'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+                macos,
+            );
+            assert_eq!(
+                (ev.code, ev.modifiers),
+                (
+                    KeyCode::Char('a'),
+                    KeyModifiers::CONTROL | KeyModifiers::SHIFT
+                )
+            );
+        }
+        // Only ^A splits: it's cmd+left's byte on macOS, select-all's key
+        // on Linux.
+        let ev = f(KeyCode::Char('a'), KeyModifiers::CONTROL, true);
+        assert_eq!((ev.code, ev.modifiers), (KeyCode::Home, KeyModifiers::NONE));
+        let ev = f(KeyCode::Char('a'), KeyModifiers::CONTROL, false);
+        assert_eq!(
+            (ev.code, ev.modifiers),
+            (KeyCode::Char('a'), KeyModifiers::CONTROL)
+        );
+    }
+
+    #[test]
+    fn super_letters_fold_to_their_ctrl_spellings() {
+        let n = |code, mods| normalize_super_keys(KeyEvent::new(code, mods));
+        // cmd+a means select-all: the ctrl+shift+a spelling, pre-shifted.
         let ev = n(KeyCode::Char('a'), KeyModifiers::SUPER);
         assert_eq!(
             (ev.code, ev.modifiers),
-            (KeyCode::Char('a'), KeyModifiers::SUPER)
+            (KeyCode::Char('A'), KeyModifiers::CONTROL)
+        );
+        let ev = n(KeyCode::Char('z'), KeyModifiers::SUPER);
+        assert_eq!(
+            (ev.code, ev.modifiers),
+            (KeyCode::Char('z'), KeyModifiers::CONTROL)
+        );
+        // cmd+shift+z redo, in both reported spellings.
+        let ev = n(
+            KeyCode::Char('z'),
+            KeyModifiers::SUPER | KeyModifiers::SHIFT,
+        );
+        assert_eq!(
+            (ev.code, ev.modifiers),
+            (
+                KeyCode::Char('z'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT
+            )
+        );
+        let ev = n(KeyCode::Char('Z'), KeyModifiers::SUPER);
+        assert_eq!(
+            (ev.code, ev.modifiers),
+            (KeyCode::Char('Z'), KeyModifiers::CONTROL)
+        );
+        let ev = n(KeyCode::Char('s'), KeyModifiers::SUPER);
+        assert_eq!(
+            (ev.code, ev.modifiers),
+            (KeyCode::Char('s'), KeyModifiers::CONTROL)
+        );
+        let ev = n(KeyCode::Char('v'), KeyModifiers::SUPER);
+        assert_eq!(
+            (ev.code, ev.modifiers),
+            (KeyCode::Char('v'), KeyModifiers::CONTROL)
+        );
+        // cmd+c is NOT folded — App::handle_key intercepts it copy-only,
+        // and folding to ctrl+c would make a reflexive cmd+c quit.
+        let ev = n(KeyCode::Char('c'), KeyModifiers::SUPER);
+        assert_eq!(
+            (ev.code, ev.modifiers),
+            (KeyCode::Char('c'), KeyModifiers::SUPER)
         );
     }
 
@@ -517,16 +703,25 @@ mod tests {
         assert_eq!(get("alt+m"), Some(Action::CycleMethod));
         assert_eq!(get("alt+shift+m"), Some(Action::OpenMethodDropdown));
         assert_eq!(get("alt+u"), Some(Action::FocusUrl));
-        assert_eq!(get("alt+f"), Some(Action::FormatBody));
+        assert_eq!(get("alt+j"), Some(Action::FormatBody));
         assert_eq!(get("alt+g"), Some(Action::MinifyBody));
         assert_eq!(get("alt+x"), Some(Action::BodyClear));
         assert_eq!(get("alt+s"), Some(Action::ToggleBodyVars));
         assert_eq!(get("alt+i"), Some(Action::ToggleInsecure));
-        assert_eq!(get("alt+b"), Some(Action::OpenThemeChooser));
+        assert_eq!(get("alt+t"), Some(Action::OpenThemeChooser));
         assert_eq!(get("alt+w"), Some(Action::CycleSplit));
         assert_eq!(get("shift+alt+w"), Some(Action::CycleSplitBack));
         assert_eq!(get("alt+d"), Some(Action::DiscardChanges));
-        assert_eq!(get("alt+t"), None, "alt+t is free again");
+        assert_eq!(
+            get("alt+b"),
+            None,
+            "alt+b is reserved for word-left (ESC b)"
+        );
+        assert_eq!(
+            get("alt+f"),
+            None,
+            "alt+f is reserved for word-right (ESC f)"
+        );
         assert_eq!(
             get("alt+y"),
             Some(Action::CopyToClipboard(crate::action::CopyTarget::Url))
@@ -579,7 +774,60 @@ mod tests {
         assert_eq!(get("ctrl+j"), Some(Action::FormatBody));
         assert_eq!(get("ctrl+k"), Some(Action::MinifyBody));
         assert_eq!(get("f4"), Some(Action::OpenBodyInEditor));
-        assert_eq!(get("alt+f"), None, "rebind clears the default combo");
+        assert_eq!(get("alt+j"), None, "rebind clears the default combo");
+    }
+
+    #[test]
+    fn caret_motion_keys_ship_unbound_but_stay_user_overridable() {
+        // alt+b/f and ctrl+a/e are the caret-motion bytes (ESC b/f,
+        // ^A/^E; ctrl+a is select-all on Linux), so no DEFAULT may claim
+        // them — but a user's keys.toml may knowingly bind them.
+        let m = Keymap::default_bindings();
+        for combo in ["alt+b", "alt+f", "ctrl+a", "ctrl+e"] {
+            assert_eq!(
+                m.lookup(&KeyCombo::parse(combo).unwrap()),
+                None,
+                "{combo} must ship unbound"
+            );
+        }
+        let mut m = Keymap::default_bindings();
+        m.apply_overrides(r#"format_body = "alt+f""#).unwrap();
+        assert_eq!(
+            m.lookup(&KeyCombo::parse("alt+f").unwrap()),
+            Some(Action::FormatBody),
+            "an explicit override may still claim a caret-motion key"
+        );
+    }
+
+    #[test]
+    fn caret_conflicts_report_shadowed_mac_gestures() {
+        let m = Keymap::default_bindings();
+        assert!(
+            m.caret_conflicts().is_empty(),
+            "defaults never claim a caret-motion key"
+        );
+        let mut m = Keymap::default_bindings();
+        m.apply_overrides(
+            r#"
+            format_body = "alt+f"
+            save = "ctrl+a"
+            "#,
+        )
+        .unwrap();
+        let warnings = m.caret_conflicts();
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("ctrl+a") && w.contains("cmd+left")),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("alt+f") && w.contains("option+right")),
+            "{warnings:?}"
+        );
     }
 
     #[test]

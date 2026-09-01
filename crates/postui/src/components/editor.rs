@@ -1427,15 +1427,32 @@ impl Component for Editor {
                     }
                     return None;
                 }
-                // GUI-style selection first (plan 2026-08-23-text-selection):
-                // ctrl+a selects the whole body (Home/ctrl+Home cover the
-                // start-of-line jump edtui's emacs ctrl+a used to give),
-                // shifted motions extend a selection through the same
-                // wrap-aware nav path the unshifted keys use, and while a
-                // selection is live the editing keys take their desktop
-                // meanings (type to replace, Backspace/Delete to remove,
-                // Esc to deselect).
-                if ev.code == KeyCode::Char('a') && ev.modifiers == KeyModifiers::CONTROL {
+                // The emacs caret bytes (ctrl+e → End, ESC b/f → word
+                // hops with shift riding along — also what mac terminals
+                // send for cmd/option+arrows) fold into the GUI keys the
+                // paths below already implement, on every platform; only
+                // ^A splits (mac: smart Home; Linux: falls through to
+                // select-all).
+                let ev = crate::keys::fold_text_nav_bytes(ev, cfg!(target_os = "macos"));
+                // GUI-style selection (plan 2026-08-23-text-selection):
+                // select-all (ctrl+a on Linux; ctrl+shift+a — either
+                // reported spelling — everywhere, cmd+a via the SUPER
+                // fold on macOS), shifted motions extend a selection
+                // through the same wrap-aware nav path the unshifted keys
+                // use, and while a selection is live the editing keys
+                // take their desktop meanings (type to replace,
+                // Backspace/Delete to remove, Esc to deselect). Plain
+                // ctrl+a never survives the fold on macOS — it became
+                // Home above (it's the byte cmd+left sends).
+                let select_all = match ev.code {
+                    KeyCode::Char('a') => {
+                        ev.modifiers == KeyModifiers::CONTROL
+                            || ev.modifiers == KeyModifiers::CONTROL | KeyModifiers::SHIFT
+                    }
+                    KeyCode::Char('A') => ev.modifiers == KeyModifiers::CONTROL,
+                    _ => false,
+                };
+                if select_all {
                     self.body_select_all();
                     return Some(Action::Render);
                 }
@@ -2438,7 +2455,7 @@ impl Editor {
 
     /// Paints the Body tab's toolbar chip row: `format`/`minify`/
     /// `substitute`/`$EDITOR` chips for the body-only actions that
-    /// alt+f/alt+g/alt+b/ctrl+e already bind, but had no mouse-reachable
+    /// alt+j/alt+g/alt+s/alt+e already bind, but had no mouse-reachable
     /// equivalent before. Body-scoped only — the request-level save/vars
     /// chips live on the tab-label row (`draw_tab_bar`), so this row only
     /// exists while the Body tab is active. Chips reuse
@@ -2465,7 +2482,7 @@ impl Editor {
             "substitute {{off}}"
         };
         let chips: Vec<(&str, &str, Option<Action>)> = vec![
-            ("alt+f", "format", Some(Action::FormatBody)),
+            ("alt+j", "format", Some(Action::FormatBody)),
             ("alt+g", "minify", Some(Action::MinifyBody)),
             ("alt+s", sub_label, Some(Action::ToggleBodyVars)),
             ("alt+e", "$EDITOR", Some(Action::OpenBodyInEditor)),
@@ -3509,7 +3526,7 @@ mod tests {
             reversed_cells(&mut e) > 0,
             "no selection: the caret cell renders reversed"
         );
-        e.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+        e.handle_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::CONTROL));
         // The selection itself renders via the theme's selection *color*,
         // not REVERSED — so with the caret hidden no reversed cell remains.
         assert_eq!(
@@ -5938,15 +5955,65 @@ mod body_click_tests {
     }
 
     #[test]
-    fn ctrl_a_selects_the_whole_body() {
+    fn ctrl_shift_a_selects_the_whole_body_and_ctrl_a_is_line_start() {
         use ratatui::crossterm::event::KeyCode;
         let mut e = editor_with_body("hello\nworld");
         e.body.cursor = Index2::new(1, 2);
+        // Both reported spellings of ctrl+shift+a select all.
         e.handle_key(ratatui::crossterm::event::KeyEvent::new(
             KeyCode::Char('a'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ));
+        assert_eq!(e.body_selected_text().as_deref(), Some("hello\nworld"));
+        let mut e = editor_with_body("hello\nworld");
+        e.body.cursor = Index2::new(1, 2);
+        e.handle_key(ratatui::crossterm::event::KeyEvent::new(
+            KeyCode::Char('A'),
             KeyModifiers::CONTROL,
         ));
         assert_eq!(e.body_selected_text().as_deref(), Some("hello\nworld"));
+        // Plain ctrl+a: select-all on Linux builds (the fold is the
+        // identity there — exercised explicitly so this asserts the
+        // Linux meaning regardless of the build host).
+        let mut e = editor_with_body("hello\nworld");
+        e.body.cursor = Index2::new(1, 2);
+        e.handle_key(crate::keys::fold_text_nav_bytes(
+            ratatui::crossterm::event::KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+            false,
+        ));
+        assert_eq!(e.body_selected_text().as_deref(), Some("hello\nworld"));
+        // On macOS the fold turns the same byte into the smart-Home jump.
+        let mut e = editor_with_body("  hello");
+        e.body.cursor = Index2::new(0, 6);
+        e.handle_key(crate::keys::fold_text_nav_bytes(
+            ratatui::crossterm::event::KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+            true,
+        ));
+        assert_eq!(e.body.cursor, Index2::new(0, 2), "first non-whitespace");
+        assert_eq!(e.body_selected_text(), None);
+    }
+
+    #[test]
+    fn alt_b_and_alt_f_word_hop_in_the_body() {
+        use ratatui::crossterm::event::KeyCode;
+        // ESC b / ESC f: option+arrows as mac terminals deliver them —
+        // folded (macOS builds) to the same hops as the ctrl+arrow
+        // spelling.
+        let fold = |c, mods: KeyModifiers| {
+            crate::keys::fold_text_nav_bytes(
+                ratatui::crossterm::event::KeyEvent::new(KeyCode::Char(c), mods),
+                true,
+            )
+        };
+        let mut e = editor_with_body("one two three");
+        e.body.cursor = Index2::new(0, 13);
+        e.handle_key(fold('b', KeyModifiers::ALT));
+        assert_eq!(e.body.cursor, Index2::new(0, 8), "alt+b hops a word left");
+        e.handle_key(fold('f', KeyModifiers::ALT));
+        assert_eq!(e.body.cursor, Index2::new(0, 13), "alt+f hops a word right");
+        // The shifted spelling selects the hop.
+        e.handle_key(fold('B', KeyModifiers::ALT));
+        assert_eq!(e.body_selected_text().as_deref(), Some("three"));
     }
 
     #[test]

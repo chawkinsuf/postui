@@ -900,6 +900,137 @@ fn bracketed_paste_routes_to_the_focused_input() {
     assert!(!app.paste_text("ignored"));
 }
 
+/// cmd+c (SUPER+c, from terminals that report it) copies a live selection
+/// and otherwise does nothing — it must never quit, unlike selectionless
+/// ctrl+c.
+#[test]
+fn super_c_copies_the_selection_and_never_quits() {
+    let mut app = App::new_for_test();
+    let keymap = Keymap::default_bindings();
+    let super_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::SUPER);
+    app.handle_key(&keymap, super_c);
+    assert!(!app.should_quit, "selectionless cmd+c is a no-op, not quit");
+
+    app.update(Action::FocusUrl);
+    app.paste_text("http://host/x");
+    app.handle_key(
+        &keymap,
+        KeyEvent::new(KeyCode::Char('A'), KeyModifiers::CONTROL),
+    );
+    app.handle_key(&keymap, super_c);
+    assert!(!app.should_quit);
+    assert_eq!(
+        app.editor.url.selected_text().as_deref(),
+        Some("http://host/x"),
+        "selection survives the copy"
+    );
+}
+
+/// The SUPER fold end-to-end: cmd+a selects all in the focused input and
+/// cmd+z undoes, both spelled exactly as a kitty-protocol terminal
+/// reports the unbound cmd chords.
+#[test]
+fn super_a_selects_all_and_super_z_undoes() {
+    let mut app = App::new_for_test();
+    let keymap = Keymap::default_bindings();
+    app.update(Action::FocusUrl);
+    app.paste_text("http://host/x");
+    app.handle_key(
+        &keymap,
+        KeyEvent::new(KeyCode::Char('a'), KeyModifiers::SUPER),
+    );
+    assert_eq!(
+        app.editor.url.selected_text().as_deref(),
+        Some("http://host/x"),
+        "cmd+a folds to select-all"
+    );
+    // cmd+z folds onto the same global undo binding ctrl+z uses.
+    use crate::keys::KeyCombo;
+    let folded =
+        crate::keys::normalize_super_keys(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::SUPER));
+    assert_eq!(
+        keymap.lookup(&KeyCombo::from_event(&folded)),
+        Some(Action::Undo)
+    );
+}
+
+/// The filter-query modals hold their query as a plain String rather than
+/// a LineInput, so they sit outside `focused_input_index` — before the
+/// bracketed-paste rework they received a paste as typed keystrokes, and
+/// `paste_text` must keep them reachable.
+#[test]
+fn paste_reaches_the_palette_and_chooser_filter_queries() {
+    let mut app = App::new_for_test();
+    app.update(Action::OpenPalette);
+    assert!(app.paste_text("send re\nquest"));
+    let Some(Modal::Palette(p)) = app.modals.top() else {
+        panic!("palette open");
+    };
+    assert_eq!(p.input(), "send re quest", "flattened like a LineInput");
+
+    let mut app = App::new_for_test();
+    app.update(Action::OpenThemeChooser);
+    assert!(app.paste_text("gruv"));
+    let Some(Modal::Chooser(c)) = app.modals.top() else {
+        panic!("chooser open");
+    };
+    assert_eq!(c.input(), "gruv");
+}
+
+#[test]
+fn paste_reaches_the_var_picker_filter_in_insert_mode() {
+    let mut app = App::new_for_test();
+    app.update(Action::FocusUrl);
+    app.update(Action::OpenVarPicker { completing: false });
+    assert!(app.paste_text("base"));
+    let Some(Modal::VarPicker(v)) = app.modals.top() else {
+        panic!("picker open");
+    };
+    assert_eq!(v.input(), "base");
+}
+
+/// The response pane's live search input takes a paste; once the query is
+/// committed (search inactive) the pane has no caret and the paste
+/// reports unhandled.
+#[test]
+fn paste_reaches_the_response_search_only_while_its_input_is_live() {
+    let mut app = App::new_for_test();
+    app.session.response.set_state(
+        ResponseState::Ready(Box::new(crate::http::ResponseData {
+            status: 200,
+            url: "https://x.test/a".into(),
+            headers: vec![],
+            body: r#"{"a": 1}"#.into(),
+            ttfb: std::time::Duration::from_millis(5),
+            elapsed: std::time::Duration::from_millis(5),
+            size: 8,
+            content_type: None,
+        })),
+        0,
+    );
+    app.focus = PaneId::Response;
+    assert!(!app.paste_text("early"), "no search open yet");
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, plain('/'));
+    assert!(app.paste_text("a"));
+    let text = |app: &App| {
+        app.session
+            .response
+            .view()
+            .unwrap()
+            .search
+            .as_ref()
+            .unwrap()
+            .input
+            .text()
+            .to_string()
+    };
+    assert_eq!(text(&app), "a");
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(!app.paste_text("late"), "committed query: no live caret");
+    assert_eq!(text(&app), "a");
+}
+
 /// Seeds the Params tab with `page = 1` and puts the editor in front.
 fn app_with_one_param() -> App {
     let mut app = App::new_for_test();
@@ -6336,50 +6467,51 @@ fn ctrl_p_still_opens_the_palette_on_top_of_the_manager_screen() {
     );
 }
 
-/// alt+b opens the theme chooser — from Main, and (whitelisted under the
+/// alt+t opens the theme chooser — from Main, and (whitelisted under the
 /// same modal-on-top rule as the palette) from the Manager screen too.
+/// (It moved off alt+b, which is reserved for word-left — ESC b.)
 #[test]
-fn alt_b_opens_the_theme_chooser_on_main_and_the_manager_screen() {
+fn alt_t_opens_the_theme_chooser_on_main_and_the_manager_screen() {
     let mut app = App::new_for_test();
     let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, alt('b'));
+    app.handle_key(&keymap, alt('t'));
     assert!(
         matches!(app.modals.top(), Some(Modal::Chooser(_))),
-        "alt+b opens the theme chooser"
+        "alt+t opens the theme chooser"
     );
     app.update(Action::Close);
 
     app.handle_key(&keymap, alt('v'));
     assert_eq!(app.screen, crate::app::Screen::VarManager);
-    app.handle_key(&keymap, alt('b'));
+    app.handle_key(&keymap, alt('t'));
     assert!(
         matches!(app.modals.top(), Some(Modal::Chooser(_))),
-        "alt+b escapes the manager screen's input capture"
+        "alt+t escapes the manager screen's input capture"
     );
     assert_eq!(app.screen, crate::app::Screen::VarManager);
 }
 
-/// alt+b is a toggle: pressed again over the open theme picker it closes
+/// alt+t is a toggle: pressed again over the open theme picker it closes
 /// it (reverting any preview, same as esc), rather than being swallowed.
 /// Over any other chooser (e.g. projects) it keeps its hands off.
 #[test]
-fn alt_b_closes_the_open_theme_chooser() {
+fn alt_t_closes_the_open_theme_chooser() {
     let mut app = App::new_for_test();
     let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, alt('b'));
+    app.handle_key(&keymap, alt('t'));
     assert!(matches!(app.modals.top(), Some(Modal::Chooser(_))));
-    app.handle_key(&keymap, alt('b'));
+    app.handle_key(&keymap, alt('t'));
     assert!(
         app.modals.is_empty(),
-        "a second alt+b closes the theme chooser"
+        "a second alt+t closes the theme chooser"
     );
 
     app.update(Action::OpenProjectChooser);
     assert!(matches!(app.modals.top(), Some(Modal::Chooser(_))));
-    app.handle_key(&keymap, alt('b'));
+    app.handle_key(&keymap, alt('t'));
     assert!(
         matches!(app.modals.top(), Some(Modal::Chooser(_))),
-        "alt+b must not close a non-theme chooser"
+        "alt+t must not close a non-theme chooser"
     );
 }
 
