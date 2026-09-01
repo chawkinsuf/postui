@@ -11144,6 +11144,36 @@ fn clicking_an_entrys_radio_records_the_selection_and_re_resolves_every_field() 
     assert_eq!(app.project.resolved.values["user"], "1001");
 }
 
+/// Clicking bare background — the pane under the last option row registers
+/// no hit of its own — is a click away like any other: it saves the cell,
+/// rather than leaving typed text live with nothing to say it isn't stored.
+#[test]
+fn clicking_bare_background_commits_the_cell_under_edit() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    goto_group(&mut app, "user");
+
+    let r = cell_rect(&mut app, 0, 1);
+    app.handle_mouse(left_down(r.x + 10, r.y)); // caret past the text, at its end
+    assert!(app.varmanager.grid.editing.is_some(), "the cell is live");
+    app.handle_key(&Keymap::default_bindings(), plain('9'));
+
+    // The lowest row of the detail pane that no control claims.
+    let (x, y) = (0..46)
+        .rev()
+        .flat_map(|y| (0..100).map(move |x| (x, y)))
+        .find(|&(x, y)| app.hits.hit_at(x, y).is_none())
+        .expect("some bare background");
+    assert!(app.handle_mouse(left_down(x, y)), "the click redraws");
+
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    assert!(app.varmanager.grid.editing.is_none(), "the edit is done");
+    let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(on_disk.contains("10019"), "{on_disk}");
+}
+
 #[test]
 fn editing_a_field_cell_and_clicking_away_rewrites_the_env_file() {
     let dir = tempfile::tempdir().unwrap();

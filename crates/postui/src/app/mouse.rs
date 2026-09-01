@@ -86,7 +86,21 @@ impl App {
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 let Some(hit) = self.hits.hit_at(m.column, m.row).cloned() else {
-                    return false;
+                    // Bare background is still a click *away* from an
+                    // in-place edit. The Variable Manager has plenty of it
+                    // — under the last grid row, beside the title buttons —
+                    // and landing there must save what was typed, the same
+                    // as landing on a control (`on_hit`'s commit-first
+                    // rule). Without this the typed text just hangs there
+                    // with no way to tell it isn't saved.
+                    let live = self.varmanager.form.editing.is_some()
+                        || self.varmanager.grid.editing.is_some();
+                    if !live {
+                        return false;
+                    }
+                    self.commit_var_form();
+                    self.commit_grid_edit();
+                    return self.update(Action::Render);
                 };
                 // The testbed is a dead end for the mouse exactly like it is
                 // for the keyboard (see `App::handle_key`'s `Screen::Testbed`
