@@ -12,6 +12,10 @@ pub enum Hit {
     /// Pane background: click focuses, wheel scrolls.
     Pane(PaneId),
     HeaderProject,
+    /// The header's `Space: <name> ▾` chip: opens the space dropdown.
+    HeaderSpace,
+    /// The `alt+]` keycap pill beside the space chip: next space on click.
+    HeaderSpaceCycle,
     HeaderEnv,
     /// The `alt+c` keycap pill beside the env chip: cycles the active
     /// environment on click, same as the key itself.

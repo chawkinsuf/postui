@@ -2542,6 +2542,12 @@ impl App {
                     .collect();
                 items.push(MenuItem::new("no environment", Action::SwitchEnv(None)));
                 items.push(MenuItem::new("new environment…", Action::OpenNewEnvPrompt));
+                items.push(MenuItem::new(
+                    "manage environments…",
+                    Action::OpenManage {
+                        tab: Some(crate::components::manage::ManageTab::Environments),
+                    },
+                ));
                 // The ✓ (and the opening cursor) sits on the active
                 // environment; with none active, on the "no environment"
                 // row just after the env rows.
@@ -3768,10 +3774,49 @@ impl App {
                 let name = spaces[next].clone();
                 self.apply(Action::SwitchSpace(name))
             }
-            // TODO(tasks 10/11): temporary placeholder so the match stays
-            // exhaustive while the space chooser/creation have no behavior
-            // yet.
-            Action::OpenSpaceChooser | Action::OpenNewSpacePrompt | Action::CreateSpace(_) => true,
+            Action::OpenSpaceChooser => {
+                self.apply(Action::ReloadProjectFiles);
+                use crate::components::modal::{DropdownState, MenuItem};
+                let mut items: Vec<MenuItem> = self
+                    .project
+                    .spaces
+                    .iter()
+                    .enumerate()
+                    .map(|(i, name)| {
+                        MenuItem::new(
+                            format!("{}  {name}", i + 1),
+                            Action::SwitchSpace(name.clone()),
+                        )
+                    })
+                    .collect();
+                items.push(MenuItem::new("new space…", Action::OpenNewSpacePrompt));
+                items.push(MenuItem::new(
+                    "manage spaces…",
+                    Action::OpenManage {
+                        tab: Some(crate::components::manage::ManageTab::Spaces),
+                    },
+                ));
+                let current = self
+                    .project
+                    .spaces
+                    .iter()
+                    .position(|s| *s == self.project.active_space);
+                let anchor = self
+                    .hits
+                    .rect_of(&Hit::HeaderSpace)
+                    .unwrap_or_else(|| ratatui::layout::Rect::new(0, 0, 0, 0));
+                self.push_modal(Modal::Dropdown(DropdownState {
+                    anchor,
+                    items,
+                    selected: current.unwrap_or(0),
+                    current,
+                }));
+                self.begin_dropdown_open();
+                true
+            }
+            // TODO(task 11): temporary placeholder so the match stays
+            // exhaustive while space creation has no behavior yet.
+            Action::OpenNewSpacePrompt | Action::CreateSpace(_) => true,
         }
     }
 

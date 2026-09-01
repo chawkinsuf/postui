@@ -659,6 +659,8 @@ impl App {
         vec![
             Action::Close,              // Hit::ModalOutside
             Action::OpenProjectChooser, // Hit::HeaderProject
+            Action::OpenSpaceChooser,   // Hit::HeaderSpace
+            Action::CycleSpace(1),      // Hit::HeaderSpaceCycle
             Action::OpenEnvChooser,     // Hit::HeaderEnv
             Action::CycleEnv,           // Hit::HeaderEnvCycle
             // The split control's own keycap pill (editor tab-bar row)
@@ -783,6 +785,8 @@ impl App {
                 self.update(Action::Render)
             }
             Hit::HeaderProject => self.update(Action::OpenProjectChooser),
+            Hit::HeaderSpace => self.update(Action::OpenSpaceChooser),
+            Hit::HeaderSpaceCycle => self.update(Action::CycleSpace(1)),
             Hit::HeaderEnv => self.update(Action::OpenEnvChooser),
             Hit::HeaderEnvCycle => self.update(Action::CycleEnv),
             Hit::HeaderTheme => self.update(Action::OpenThemeChooser),

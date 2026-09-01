@@ -66,6 +66,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         layout.header,
         &app.theme,
         &project_name,
+        &app.project.active_space,
         &env_label,
         screen == Screen::Manage,
         // The save/discard group shows only where its keys actually work:

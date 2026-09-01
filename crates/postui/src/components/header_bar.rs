@@ -10,16 +10,19 @@ use ratatui::layout::Rect;
 pub const HEADER_HEIGHT: u16 = 3;
 
 /// Paints the app bar: a flat `theme.panel` fill across all 3 rows, the bold
-/// `postui` wordmark, and the project/env selectors as single-row
+/// `postui` wordmark, and the project/space/env selectors as single-row
 /// `theme.control`-filled chips (lifting to `theme.control_hover` while
 /// hovered) with a trailing `▾` marker. Registers the same
-/// [`Hit::HeaderProject`]/[`Hit::HeaderEnv`] hits on the chip rects.
+/// [`Hit::HeaderProject`]/[`Hit::HeaderSpace`]/[`Hit::HeaderEnv`] hits on
+/// the chip rects, plus the `alt+]`/`alt+c` cycle pills beside the space
+/// and env chips ([`Hit::HeaderSpaceCycle`]/[`Hit::HeaderEnvCycle`]).
 #[allow(clippy::too_many_arguments)]
 pub fn draw_header(
     frame: &mut Frame,
     area: Rect,
     theme: &Theme,
     project: &str,
+    space: &str,
     env: &str,
     manage_active: bool,
     // Shows the save/discard group beside the Theme chip. Only ever true
@@ -76,6 +79,56 @@ pub fn draw_header(
     );
     hits.register(project_rect, Hit::HeaderProject);
     x += project_w + 1;
+
+    // The space chip sits between the project and env chips — a space is
+    // a partition of the project, so it reads in the same idiom as the
+    // env chip (labelled, bold) with its own `alt+]` cycle pill beside it.
+    let space_label = format!(" Space: {space} \u{25be} ");
+    let space_w = space_label.chars().count() as u16;
+    let space_rect = Rect {
+        x,
+        y: mid_y,
+        width: space_w,
+        height: 1,
+    };
+    let space_bg = if hovered == Some(&Hit::HeaderSpace) {
+        theme.control_hover
+    } else {
+        theme.control
+    };
+    fill(buf, space_rect, space_bg);
+    text(
+        buf,
+        space_rect.x,
+        mid_y,
+        &space_label,
+        theme.text,
+        space_bg,
+        true,
+    );
+    hits.register(space_rect, Hit::HeaderSpace);
+    x += space_w + 1;
+
+    let space_cycle_on = if hovered == Some(&Hit::HeaderSpaceCycle) {
+        theme.control_hover
+    } else {
+        theme.control
+    };
+    let space_cycle_w = crate::paint::Chip {
+        label: "alt+]",
+        color: theme.text_muted,
+    }
+    .paint(buf, x, mid_y, space_cycle_on, theme);
+    hits.register(
+        Rect {
+            x,
+            y: mid_y,
+            width: space_cycle_w,
+            height: 1,
+        },
+        Hit::HeaderSpaceCycle,
+    );
+    x += space_cycle_w + 1;
 
     // This chip is the app's one environment control, and the environment
     // shapes what every screen shows (resolved {{vars}}, "Value in <env>",
@@ -328,7 +381,11 @@ mod tests {
         env: &str,
         hovered: Option<&Hit>,
     ) -> (Terminal<TestBackend>, HitMap) {
-        render_wide(theme, project, env, false, hovered, 60)
+        // Wide enough for the whole left cluster (project + space chip +
+        // its cycle pill + env chip + its cycle pill); the right-aligned
+        // Theme chip needs more room still, so its tests pass their own
+        // width to `render_wide`.
+        render_wide(theme, project, env, false, hovered, 100)
     }
 
     fn render_wide(
@@ -349,6 +406,7 @@ mod tests {
                     f.area(),
                     theme,
                     project,
+                    "main",
                     env,
                     manage_active,
                     false,
@@ -371,6 +429,7 @@ mod tests {
                     f.area(),
                     theme,
                     "alpha",
+                    "main",
                     "qa",
                     false,
                     true,
@@ -407,6 +466,7 @@ mod tests {
                     f.area(),
                     &theme,
                     "a-rather-long-project",
+                    "main",
                     "qa",
                     false,
                     false,
@@ -468,6 +528,30 @@ mod tests {
         assert_eq!(c.bg, theme.control);
         assert_eq!(c.fg, theme.text, "bright, not muted");
         assert!(c.modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn space_chip_and_its_cycle_pill_sit_between_project_and_env() {
+        let theme = Theme::dark();
+        let (term, hits) = render(&theme, "alpha", "qa", None);
+        let project = hits.rect_of(&Hit::HeaderProject).unwrap();
+        let space = hits.rect_of(&Hit::HeaderSpace).expect("space hit");
+        let cycle = hits.rect_of(&Hit::HeaderSpaceCycle).expect("cycle hit");
+        let env = hits.rect_of(&Hit::HeaderEnv).unwrap();
+        assert!(
+            project.x < space.x,
+            "space chip is right of the project chip"
+        );
+        assert!(space.x < cycle.x, "cycle pill trails the space chip");
+        assert!(cycle.x < env.x, "the env chip follows both");
+        let label: String = (space.x..space.x + space.width)
+            .map(|x| cell(&term, x, space.y).symbol().to_string())
+            .collect();
+        assert_eq!(label, " Space: main \u{25be} ");
+        let pill: String = (cycle.x..cycle.x + cycle.width)
+            .map(|x| cell(&term, x, cycle.y).symbol().to_string())
+            .collect();
+        assert!(pill.contains("alt+]"), "{pill:?}");
     }
 
     #[test]
@@ -585,9 +669,9 @@ mod tests {
     #[test]
     fn theme_chip_shows_its_name_and_trailing_keycap() {
         let theme = Theme::dark();
-        let (term, hits) = render_wide(&theme, "alpha", "qa", false, None, 110);
+        let (term, hits) = render_wide(&theme, "alpha", "qa", false, None, 120);
         let rect = hits.rect_of(&Hit::HeaderTheme).unwrap();
-        assert_eq!(rect.x + rect.width, 110 - 3, "right-aligned");
+        assert_eq!(rect.x + rect.width, 120 - 3, "right-aligned");
         assert_eq!(
             row_text(&term, &rect),
             format!(" Theme  {}+t ", crate::keys::alt_label())
@@ -602,7 +686,7 @@ mod tests {
             "trailing keycap pill tint matches the footer chips'"
         );
 
-        let (term, hits) = render_wide(&theme, "alpha", "qa", false, Some(&Hit::HeaderTheme), 110);
+        let (term, hits) = render_wide(&theme, "alpha", "qa", false, Some(&Hit::HeaderTheme), 120);
         let rect = hits.rect_of(&Hit::HeaderTheme).unwrap();
         assert_eq!(
             cell(&term, rect.x + 8, rect.y).bg,
@@ -707,6 +791,7 @@ mod tests {
                     f.area(),
                     &theme,
                     "alpha",
+                    "main",
                     "qa",
                     false,
                     false,

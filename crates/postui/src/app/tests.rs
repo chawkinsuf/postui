@@ -4758,12 +4758,14 @@ fn env_chooser_new_environment_row_opens_prompt() {
         Some(Modal::Dropdown(state)) => state.items.len(),
         _ => panic!("expected dropdown"),
     };
-    // "new environment…" is always the last row; Down past the end stays
-    // put, so over-stepping then Enter lands on it regardless of where
-    // the cursor opened.
+    // "new environment…" is the second-to-last row (Task 10 appended
+    // "manage environments…" after it); Down past the end stays put, so
+    // over-stepping then stepping back once lands on it regardless of
+    // where the cursor opened.
     for _ in 0..rows {
         app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(
         matches!(
@@ -4831,9 +4833,10 @@ fn env_chooser_with_no_environments_still_opens_with_create_row() {
     let Some(Modal::Dropdown(state)) = app.modals.top() else {
         panic!("empty project opens the dropdown (no-env + create rows), not a toast")
     };
-    assert_eq!(
-        state.items.last().map(|it| it.label.as_str()),
-        Some("new environment…")
+    let labels: Vec<&str> = state.items.iter().map(|it| it.label.as_str()).collect();
+    assert!(
+        labels.contains(&"new environment…"),
+        "the create row is there even with no environments: {labels:?}"
     );
 }
 
@@ -12543,9 +12546,10 @@ fn every_named_action_is_mouse_reachable() {
     // as those tasks land their footer chip / chooser rows / on_hit
     // dispatch.
     let space_actions_pending_mouse_path: Vec<Action> = vec![
-        Action::OpenSpaceChooser,
-        // `CycleSpace(1)` is off this list as of Task 8: the sidebar
-        // footer's `alt+]` chip dispatches it by click.
+        // `OpenSpaceChooser` is off this list as of Task 10: the header's
+        // space chip opens the chooser by click. `CycleSpace(1)` came off
+        // in Task 8 (the sidebar footer's `alt+]` chip), and Task 10's
+        // header cycle pill dispatches it too.
         Action::CycleSpace(-1),
         Action::JumpSpace(1),
         Action::JumpSpace(2),
@@ -13119,13 +13123,72 @@ fn manage_bar_paints_three_tabs_and_clicking_one_selects_it() {
 #[test]
 fn header_chip_reads_manage_and_toggles_the_screen() {
     let (mut app, _dir) = spaced_app();
-    let text = rendered_text(&mut app);
+    // Wide render: the space chip (Task 10) pushed the left cluster past
+    // the 80-column default, where the Manage chip now clips.
+    let text = rendered_text_wide(&mut app);
     assert!(text.contains(" Manage "), "{text}");
     assert!(!text.contains("Variable Manager"));
     click_hit(&mut app, Hit::HeaderManage);
     assert_eq!(app.screen, Screen::Manage);
     click_hit(&mut app, Hit::HeaderManage);
     assert_eq!(app.screen, Screen::Main);
+}
+
+// --- Task 10: header space chip, cycle pill, space/env dropdown rows ----
+
+#[test]
+fn header_shows_the_space_chip_between_project_and_env() {
+    let (mut app, _dir) = spaced_app();
+    render_once(&mut app);
+    let space = app.hits.rect_of(&Hit::HeaderSpace).expect("space chip");
+    let env = app.hits.rect_of(&Hit::HeaderEnv).expect("env chip");
+    let project = app.hits.rect_of(&Hit::HeaderProject).expect("project chip");
+    assert!(project.x < space.x && space.x < env.x);
+    let text = rendered_text(&mut app);
+    assert!(text.contains("Space: main"), "{text}");
+    click_hit(&mut app, Hit::HeaderSpaceCycle);
+    assert_eq!(app.project.active_space, "auth");
+}
+
+#[test]
+fn space_dropdown_lists_numbered_spaces_with_new_and_manage_rows() {
+    let (mut app, _dir) = spaced_app();
+    render_once(&mut app);
+    app.update(Action::OpenSpaceChooser);
+    let Some(Modal::Dropdown(d)) = app.modals.top() else {
+        panic!("dropdown")
+    };
+    let labels: Vec<&str> = d.items.iter().map(|i| i.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        ["1  main", "2  auth", "new space…", "manage spaces…"]
+    );
+    assert_eq!(d.current, Some(0));
+    assert_eq!(d.items[1].action, Some(Action::SwitchSpace("auth".into())));
+    assert_eq!(
+        d.items[3].action,
+        Some(Action::OpenManage {
+            tab: Some(crate::components::manage::ManageTab::Spaces)
+        })
+    );
+}
+
+#[test]
+fn env_dropdown_gains_a_manage_row() {
+    let (mut app, _dir) = app_with_envs();
+    render_once(&mut app);
+    app.update(Action::OpenEnvChooser);
+    let Some(Modal::Dropdown(d)) = app.modals.top() else {
+        panic!("dropdown")
+    };
+    let last = d.items.last().unwrap();
+    assert_eq!(last.label, "manage environments…");
+    assert_eq!(
+        last.action,
+        Some(Action::OpenManage {
+            tab: Some(crate::components::manage::ManageTab::Environments)
+        })
+    );
 }
 
 mod undo_tests {
