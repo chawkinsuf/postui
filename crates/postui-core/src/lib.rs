@@ -30,6 +30,7 @@ pub mod model;
 pub mod prepare;
 pub mod project;
 pub mod storage;
+pub mod trash;
 pub mod varedit;
 pub mod varmodel;
 pub mod vars;
