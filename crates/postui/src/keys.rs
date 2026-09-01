@@ -1,7 +1,21 @@
 use crate::action::Action;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, KeyboardEnhancementFlags};
 use std::borrow::Cow;
 use std::collections::HashMap;
+
+/// The kitty-keyboard-protocol enhancement tier the app pushes (`CSI > 5 u`):
+/// DISAMBIGUATE distinguishes chords like ctrl+shift+z from ctrl+z;
+/// REPORT_ALTERNATE_KEYS was added to match what Claude Code's TUI pushes,
+/// measured empirically — on macOS Ghostty it receives opt/cmd keys with no
+/// terminal config while a DISAMBIGUATE-only push did not, and this flag is
+/// the only protocol-level difference between the two apps. Behavior-neutral
+/// for existing bindings: crossterm folds the alternate (shifted) codepoint
+/// back into the pre-shifted char and clears SHIFT, the same shape
+/// [`KeyCombo::from_event`] already normalizes.
+pub fn app_enhancement_flags() -> KeyboardEnhancementFlags {
+    KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+        | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+}
 
 /// The modifier name keycaps and hints show for ALT: macs label the key
 /// "option", so a macOS build advertises `opt+b` while the combo strings

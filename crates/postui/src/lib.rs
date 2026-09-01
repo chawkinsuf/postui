@@ -6,6 +6,7 @@ pub mod components;
 pub mod config;
 pub mod hit;
 pub mod http;
+pub mod keydump;
 pub mod keys;
 pub mod layout;
 pub mod paint;

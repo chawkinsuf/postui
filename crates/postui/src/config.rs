@@ -352,6 +352,12 @@ pub enum CliParse {
     Usage,
     /// `--setup`: print terminal keyboard-config guidance and exit.
     Setup,
+    /// `--keydump[=FLAGS]`: run the raw key-event echo loop and exit.
+    /// `flags` is an explicit kitty-keyboard-protocol enhancement bitmask
+    /// to push (`0` pushes nothing); `None` means "push what the app
+    /// itself pushes", so a plain `--keydump` reproduces the app's exact
+    /// input conditions.
+    Keydump { flags: Option<u8> },
 }
 
 /// Parses `postui`'s single optional argument. Any value starting with `-`
@@ -360,6 +366,11 @@ pub enum CliParse {
 pub fn parse_cli(arg: Option<String>) -> CliParse {
     match arg {
         Some(s) if s == "--setup" => CliParse::Setup,
+        Some(s) if s == "--keydump" => CliParse::Keydump { flags: None },
+        Some(s) if s.starts_with("--keydump=") => match s["--keydump=".len()..].parse::<u8>() {
+            Ok(bits) => CliParse::Keydump { flags: Some(bits) },
+            Err(_) => CliParse::Usage,
+        },
         Some(s) if s.starts_with('-') => CliParse::Usage,
         Some(s) => CliParse::Root(Some(expand_tilde(&s))),
         None => CliParse::Root(None),
@@ -677,6 +688,26 @@ mod tests {
         assert_eq!(parse_cli(Some("--setup".into())), CliParse::Setup);
         // Not a prefix match: anything else dashed is still usage.
         assert_eq!(parse_cli(Some("--setup-x".into())), CliParse::Usage);
+    }
+
+    #[test]
+    fn parse_cli_keydump_flag_with_optional_bitmask() {
+        assert_eq!(
+            parse_cli(Some("--keydump".into())),
+            CliParse::Keydump { flags: None }
+        );
+        assert_eq!(
+            parse_cli(Some("--keydump=0".into())),
+            CliParse::Keydump { flags: Some(0) }
+        );
+        assert_eq!(
+            parse_cli(Some("--keydump=5".into())),
+            CliParse::Keydump { flags: Some(5) }
+        );
+        // A malformed bitmask is usage, not a silent default.
+        assert_eq!(parse_cli(Some("--keydump=x".into())), CliParse::Usage);
+        assert_eq!(parse_cli(Some("--keydump=".into())), CliParse::Usage);
+        assert_eq!(parse_cli(Some("--keydump-x".into())), CliParse::Usage);
     }
 
     #[test]

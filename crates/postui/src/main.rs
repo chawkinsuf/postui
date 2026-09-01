@@ -8,7 +8,7 @@ use ratatui::crossterm::SynchronizedUpdate;
 use ratatui::crossterm::event::{
     DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
     EnableFocusChange, EnableMouseCapture, Event, EventStream, KeyEventKind,
-    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::EndSynchronizedUpdate;
@@ -21,7 +21,11 @@ async fn main() -> anyhow::Result<()> {
         postui::config::CliParse::Usage => {
             println!("usage: postui [directory]");
             println!("       postui --setup    terminal keyboard setup (macOS opt/cmd keys)");
+            println!("       postui --keydump[=BITS]  echo raw key events (kitty flag bits; 0=none)");
             return Ok(());
+        }
+        postui::config::CliParse::Keydump { flags } => {
+            return postui::keydump::run(flags);
         }
         postui::config::CliParse::Setup => {
             print!(
@@ -120,13 +124,15 @@ fn enable_mouse_and_wrap_panic_hook() {
     );
     // Ctrl+Shift+Z is only distinguishable from Ctrl+Z with the kitty
     // keyboard protocol; without it Ctrl+Y is the redo binding that works.
+    // The tier pushed lives in `keys::app_enhancement_flags` (shared with
+    // `--keydump` so the diagnostic reproduces the app's input conditions).
     if matches!(
         ratatui::crossterm::terminal::supports_keyboard_enhancement(),
         Ok(true)
     ) {
         let _ = execute!(
             std::io::stdout(),
-            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+            PushKeyboardEnhancementFlags(postui::keys::app_enhancement_flags())
         );
     }
     let prev_hook = std::panic::take_hook();
