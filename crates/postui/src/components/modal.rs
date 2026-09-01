@@ -1069,7 +1069,6 @@ impl ModalStack {
                     actions: vec![Action::ApplyGroupFields {
                         selector: state.selector.clone(),
                         slots: state.slots(),
-                        confirmed: false,
                     }],
                     close: true,
                     ..Default::default()

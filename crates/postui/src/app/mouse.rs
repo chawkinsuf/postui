@@ -669,7 +669,7 @@ impl App {
     /// tasks extend this match as more hit kinds gain behavior.
     fn on_hit(&mut self, hit: Hit, clicks: u8, m: ratatui::crossterm::event::MouseEvent) -> bool {
         // A click anywhere that isn't the params/headers table itself (and
-        // isn't inside a modal — e.g. this row's own delete confirm) is a
+        // isn't inside a modal) is a
         // click away: it commits whatever cell was being edited (typing is
         // never silently thrown away) and clears the table selection.
         let keeps_table_selection = matches!(
@@ -949,7 +949,7 @@ impl App {
                 let Some(i) = self.resolve_table_row_across_commit(i) else {
                     return self.update(Action::Render);
                 };
-                self.update(Action::ConfirmDeleteTableRow(i))
+                self.update(Action::DeleteTableRow(i))
             }
             Hit::SplitStop(stop) => {
                 self.update(Action::FocusPane(PaneId::Editor));
@@ -1444,7 +1444,7 @@ impl App {
                 };
                 self.varmanager.grid.cursor = (row, 0);
                 self.varmanager.focus = VmFocus::Grid;
-                self.update(Action::ConfirmDeleteEntry {
+                self.update(Action::DeleteEntry {
                     env,
                     selector,
                     name,
@@ -1498,7 +1498,7 @@ impl App {
                 let Some(name) = self.varmanager.detail.name().map(str::to_string) else {
                     return false;
                 };
-                self.update(Action::ConfirmDeleteVar { name })
+                self.update(Action::DeleteVar { name })
             }
             Hit::VmPromoteBtn => {
                 let crate::components::varmanager::VmDetail::Var(name) =

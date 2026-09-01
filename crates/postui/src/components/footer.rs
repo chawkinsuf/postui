@@ -94,10 +94,7 @@ pub(crate) fn footer_chips(
                 let toggle_label = if enabled { "disable" } else { "enable" };
                 let pos = chips.len() - 2; // before vars + navigate
                 chips.insert(pos, ("␣", toggle_label, Some(Action::ToggleTableRow(i))));
-                chips.insert(
-                    pos + 1,
-                    ("d", "delete", Some(Action::ConfirmDeleteTableRow(i))),
-                );
+                chips.insert(pos + 1, ("d", "delete", Some(Action::DeleteTableRow(i))));
             }
             chips
         }
@@ -531,9 +528,11 @@ mod tests {
         assert!(chips.iter().any(|(k, l, a)| *k == "␣"
             && *l == "disable"
             && *a == Some(Action::ToggleTableRow(2))));
-        assert!(chips.iter().any(|(k, l, a)| *k == "d"
-            && *l == "delete"
-            && *a == Some(Action::ConfirmDeleteTableRow(2))));
+        assert!(
+            chips.iter().any(|(k, l, a)| *k == "d"
+                && *l == "delete"
+                && *a == Some(Action::DeleteTableRow(2)))
+        );
 
         let chips = footer_chips(
             PaneId::Editor,

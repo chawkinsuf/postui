@@ -362,9 +362,9 @@ impl TableEditorState {
         self.start_edit(map.len(), Col::Key, map);
     }
 
-    /// Deletes row `i` outright. Only ever called after the user confirmed
-    /// the delete (both the `d` key and the `✕` click route through a
-    /// confirmation modal first).
+    /// Deletes row `i` outright — no confirm gate (both the `d` key and
+    /// the `✕` click land here directly): the deletion is an ordinary
+    /// editor undo step.
     pub fn delete_row(&mut self, map: &mut IndexMap<String, Entry>, i: usize) {
         if i >= map.len() {
             return;

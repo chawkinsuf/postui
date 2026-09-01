@@ -798,7 +798,7 @@ impl VarManager {
                     (
                         "d",
                         "delete",
-                        target.map(|(env, name)| Action::ConfirmDeleteEntry {
+                        target.map(|(env, name)| Action::DeleteEntry {
                             env,
                             selector: selector.clone(),
                             name,
@@ -827,11 +827,7 @@ impl VarManager {
                         "rename",
                         name.clone().map(|from| Action::PromptRenameVar { from }),
                     ),
-                    (
-                        "d",
-                        "delete",
-                        name.map(|name| Action::ConfirmDeleteVar { name }),
-                    ),
+                    ("d", "delete", name.map(|name| Action::DeleteVar { name })),
                 ];
                 // With a selector open, its fields editor is one key away —
                 // the `m` binding predates this chip, but a key the footer
@@ -1075,7 +1071,7 @@ impl VarManager {
             KeyCode::Char('n') => Some(Action::PromptNewVar),
             KeyCode::Char('g') => Some(Action::PromptNewSelector),
             KeyCode::Char('e') | KeyCode::F(2) => self.rename_action(),
-            KeyCode::Char('d') | KeyCode::Delete => Some(Action::ConfirmDeleteVar {
+            KeyCode::Char('d') | KeyCode::Delete => Some(Action::DeleteVar {
                 name: self.selected_row()?.name()?.to_string(),
             }),
             KeyCode::Char('s') => match self.selected_row()? {
@@ -1186,7 +1182,7 @@ impl VarManager {
                 self.start_cell_edit(ctx, self.grid.cursor.0, 0);
                 None
             }
-            KeyCode::Char('d') | KeyCode::Delete => Some(Action::ConfirmDeleteEntry {
+            KeyCode::Char('d') | KeyCode::Delete => Some(Action::DeleteEntry {
                 env: ctx.active_env.clone()?,
                 selector: selector.to_string(),
                 name: self.entry_at(ctx, self.grid.cursor.0)?,
@@ -1249,7 +1245,7 @@ impl VarManager {
         Some(vec![
             rename,
             duplicate,
-            MenuItem::new("Delete\u{2026}", Action::ConfirmDeleteVar { name }),
+            MenuItem::new("Delete", Action::DeleteVar { name }),
         ])
     }
 
@@ -1292,8 +1288,8 @@ impl VarManager {
             // dialog.
             MenuItem::new("Rename", Action::StartOptionNameEdit { row: i }),
             MenuItem::new(
-                "Delete\u{2026}",
-                Action::ConfirmDeleteEntry {
+                "Delete",
+                Action::DeleteEntry {
                     env,
                     selector,
                     name,
@@ -2531,7 +2527,7 @@ fields = ["user_id", "customer_id"]
         );
         assert_eq!(
             vm.handle_key(key(KeyCode::Char('d')), &ctx, None),
-            Some(Action::ConfirmDeleteVar {
+            Some(Action::DeleteVar {
                 name: "base_url".into()
             })
         );
@@ -2546,7 +2542,7 @@ fields = ["user_id", "customer_id"]
         vm.select_row(group_row);
         assert_eq!(
             vm.handle_key(key(KeyCode::Char('d')), &ctx, None),
-            Some(Action::ConfirmDeleteVar {
+            Some(Action::DeleteVar {
                 name: "creds".into()
             }),
             "delete works on a selector row"
@@ -2596,10 +2592,7 @@ fields = ["user_id", "customer_id"]
 
         let items = vm.context_menu(1).expect("variable menu");
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert_eq!(
-            labels,
-            vec!["Rename\u{2026}", "Duplicate", "Delete\u{2026}"]
-        );
+        assert_eq!(labels, vec!["Rename\u{2026}", "Duplicate", "Delete"]);
         assert_eq!(
             items[0].action,
             Some(Action::PromptRenameVar {
@@ -2614,7 +2607,7 @@ fields = ["user_id", "customer_id"]
         );
         assert_eq!(
             items[2].action,
-            Some(Action::ConfirmDeleteVar {
+            Some(Action::DeleteVar {
                 name: "base_url".into()
             })
         );
@@ -2635,7 +2628,7 @@ fields = ["user_id", "customer_id"]
         );
         assert_eq!(
             selector[2].action,
-            Some(Action::ConfirmDeleteVar {
+            Some(Action::DeleteVar {
                 name: "creds".into()
             })
         );
@@ -3356,12 +3349,7 @@ fields = ["user_id", "customer_id"]
         // edit rather than opening a dialog.
         assert_eq!(
             labels,
-            vec![
-                "Edit\u{2026}",
-                "Duplicate option",
-                "Rename",
-                "Delete\u{2026}"
-            ]
+            vec!["Edit\u{2026}", "Duplicate option", "Rename", "Delete"]
         );
         let Some(Action::OpenEditOptionPrompt {
             owner, key, values, ..
@@ -3385,7 +3373,7 @@ fields = ["user_id", "customer_id"]
         );
         assert_eq!(
             items[3].action,
-            Some(Action::ConfirmDeleteEntry {
+            Some(Action::DeleteEntry {
                 env: "qa".into(),
                 selector: "creds".into(),
                 name: "bob".into(),

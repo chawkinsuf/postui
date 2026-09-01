@@ -1142,15 +1142,6 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// The undo combo alone (`^Z`), for confirm bodies that spell out a
-    /// full sentence; falls back to the word "Undo" if the action is
-    /// unbound.
-    fn undo_combo(&self) -> String {
-        self.keymap
-            .combo_for("undo")
-            .unwrap_or_else(|| "Undo".into())
-    }
-
     pub fn capture_undo(&mut self) -> bool {
         let current_slug = self.editor.slug.clone();
         let cursor = self.editor.cursor_pos();
@@ -1818,25 +1809,6 @@ impl App {
                 self.commit_table_edit();
                 self.focus = PaneId::Editor;
                 self.editor.begin_add_row();
-                true
-            }
-            Action::ConfirmDeleteTableRow(i) => {
-                let (map, noun) = match self.editor.active_tab {
-                    EditorTab::Params => (&self.editor.params, "param"),
-                    EditorTab::Headers => (&self.editor.headers, "header"),
-                    EditorTab::Vars => (&self.editor.variables, "variable"),
-                    EditorTab::Body => return true,
-                };
-                if let Some((key, _)) = map.get_index(i) {
-                    self.push_modal(Modal::Confirm {
-                        title: format!("Delete {noun}"),
-                        body: format!("Delete {noun} \"{key}\"?"),
-                        choices: vec![
-                            ('y', "Delete".into(), vec![Action::DeleteTableRow(i)]),
-                            ('n', "Keep".into(), vec![]),
-                        ],
-                    });
-                }
                 true
             }
             Action::ToggleTableRow(i) => {
@@ -2985,23 +2957,6 @@ impl App {
                 }));
                 true
             }
-            Action::ConfirmRemoveSelectorField { selector, field } => {
-                self.push_modal(Modal::Confirm {
-                    title: format!("Remove {field}"),
-                    body: format!(
-                        "Remove \"{field}\" from selector \"{selector}\"? Its values in the selector's options are removed too."
-                    ),
-                    choices: vec![
-                        ('n', "Cancel".into(), vec![]),
-                        (
-                            'y',
-                            "Remove".into(),
-                            vec![Action::RemoveSelectorField { selector, field }],
-                        ),
-                    ],
-                });
-                true
-            }
             Action::RemoveSelectorField { selector, field } => {
                 // Env files first: variables.toml's validation runs against
                 // the active env, whose options must no longer carry the
@@ -3036,7 +2991,7 @@ impl App {
                     Ok(()) => {
                         self.record_var_file_step(before);
                         self.toasts.push(
-                            format!("removed \"{field}\" from {selector}"),
+                            format!("removed \"{field}\" from {selector}{}", self.undo_hint()),
                             ToastKind::Info,
                         );
                     }
@@ -3049,7 +3004,7 @@ impl App {
             }
             Action::PromptRenameVar { from } => {
                 // Finding 7: surface `scan_usage`'s count the same way
-                // `ConfirmDeleteVar` already does — renaming doesn't break
+                // `DeleteVar` already does — renaming doesn't break
                 // those requests (references keep the old name until
                 // someone edits them), but the user should still know the
                 // name isn't as free-standing as it looks.
@@ -3082,30 +3037,24 @@ impl App {
                 }
                 true
             }
-            Action::ConfirmDeleteVar { name } => {
+            Action::DeleteVar { name } => {
                 let usage = postui_core::varedit::scan_usage(&self.project.root, &name);
-                let undo = self.undo_combo();
-                let body = if usage.is_empty() {
-                    format!("Delete \"{name}\"? {undo} undoes.")
-                } else {
-                    format!(
-                        "Delete \"{name}\"? Referenced by {} request(s): {}.",
-                        usage.len(),
-                        usage.join(", ")
-                    )
-                };
-                self.push_modal(Modal::Confirm {
-                    title: format!("Delete {name}"),
-                    body,
-                    choices: vec![
-                        ('n', "Cancel".into(), vec![]),
-                        (
-                            'y',
-                            "Delete".into(),
-                            vec![Action::VarStruct(VarStructOp::Delete { name })],
+                self.apply(Action::VarStruct(VarStructOp::Delete {
+                    name: name.clone(),
+                }));
+                // The struct arm toasts the delete itself; the deleted
+                // declaration leaving dangling references is worth its own
+                // warning on top.
+                if !self.project.model.vars.contains_key(&name) && !usage.is_empty() {
+                    self.toasts.push(
+                        format!(
+                            "\"{name}\" was referenced by {} request(s): {}",
+                            usage.len(),
+                            usage.join(", ")
                         ),
-                    ],
-                });
+                        ToastKind::Warning,
+                    );
+                }
                 true
             }
             Action::ToggleSecretVar { name } => {
@@ -3156,6 +3105,19 @@ impl App {
                 true
             }
             Action::VarStruct(op) => {
+                // Sampled before the mutation so the delete toasts below
+                // stay quiet when the target was already gone (deleting a
+                // missing entry is a no-op, not news).
+                let existed = match &op {
+                    VarStructOp::Delete { name } => self.project.model.vars.contains_key(name),
+                    VarStructOp::DeleteOption {
+                        env,
+                        selector,
+                        name,
+                    } => postui_core::varmodel::selector_options(&self.env_data_for(env), selector)
+                        .is_some_and(|o| o.contains_key(name)),
+                    _ => false,
+                };
                 let before = self.read_file_states(&self.project.var_file_paths());
                 match self.apply_var_struct(&op) {
                     Ok(()) => {
@@ -3173,6 +3135,20 @@ impl App {
                         }
                         self.varmanager.sync(&self.project);
                         self.record_var_file_step(before);
+                        // Deletes act without a confirm gate, so their
+                        // toasts advertise the way back.
+                        match &op {
+                            _ if !existed => {}
+                            VarStructOp::Delete { name } => self.toasts.push(
+                                format!("Deleted \"{name}\"{}", self.undo_hint()),
+                                ToastKind::Info,
+                            ),
+                            VarStructOp::DeleteOption { name, env, .. } => self.toasts.push(
+                                format!("Deleted option \"{name}\" from {env}{}", self.undo_hint()),
+                                ToastKind::Info,
+                            ),
+                            _ => {}
+                        }
                         // A selector with no options can't resolve, so a
                         // fresh declaration walks straight into creating
                         // its first option.
@@ -3205,13 +3181,9 @@ impl App {
                 )));
                 true
             }
-            Action::ApplyGroupFields {
-                selector,
-                slots,
-                confirmed,
-            } => {
+            Action::ApplyGroupFields { selector, slots } => {
                 let before = self.read_file_states(&self.project.var_file_paths());
-                self.apply_group_fields(selector, slots, confirmed);
+                self.apply_group_fields(selector, slots);
                 self.record_var_file_step(before);
                 true
             }
@@ -3224,29 +3196,16 @@ impl App {
                 self.varmanager.start_cell_edit(&self.project, row, 0);
                 true
             }
-            Action::ConfirmDeleteEntry {
+            Action::DeleteEntry {
                 env,
                 selector,
                 name,
             } => {
-                self.push_modal(Modal::Confirm {
-                    title: format!("Delete {name}"),
-                    body: format!(
-                        "Delete option \"{name}\" of \"{selector}\" from {env}? Its values are removed with it."
-                    ),
-                    choices: vec![
-                        ('n', "Cancel".into(), vec![]),
-                        (
-                            'y',
-                            "Delete".into(),
-                            vec![Action::VarStruct(VarStructOp::DeleteOption {
-                                env,
-                                selector,
-                                name,
-                            })],
-                        ),
-                    ],
-                });
+                self.apply(Action::VarStruct(VarStructOp::DeleteOption {
+                    env,
+                    selector,
+                    name,
+                }));
                 true
             }
             Action::StartNewOptionEdit => {
@@ -4317,7 +4276,7 @@ impl App {
     /// supply exactly its selector's declared fields (`validate_env`), so a
     /// declaration whose new field list has landed alone is invalid until
     /// the options carry the same change.
-    fn apply_group_fields(&mut self, selector: String, slots: Vec<String>, confirmed: bool) {
+    fn apply_group_fields(&mut self, selector: String, slots: Vec<String>) {
         use postui_core::varedit;
         use postui_core::vars::is_valid_var_name;
 
@@ -4401,46 +4360,6 @@ impl App {
             return;
         }
 
-        // Removing a field deletes that column's values everywhere — spec
-        // §5's "destructive edits confirm first".
-        if !removals.is_empty() && !confirmed {
-            let envs: Vec<String> = self
-                .project
-                .environments
-                .clone()
-                .into_iter()
-                .filter(|env| {
-                    postui_core::varmodel::selector_options(&self.env_data_for(env), &selector)
-                        .is_some_and(|e| !e.is_empty())
-                })
-                .collect();
-            let where_ = if envs.is_empty() {
-                "no environment has options for it yet".to_string()
-            } else {
-                format!("every option in {}", envs.join(", "))
-            };
-            self.push_modal(Modal::Confirm {
-                title: format!("Remove {} from {selector}", removals.join(", ")),
-                body: format!(
-                    "Values in this column will be deleted from {where_}. {} undoes.",
-                    self.undo_combo()
-                ),
-                choices: vec![
-                    ('n', "Cancel".into(), vec![]),
-                    (
-                        'y',
-                        "Remove".into(),
-                        vec![Action::ApplyGroupFields {
-                            selector: selector.clone(),
-                            slots,
-                            confirmed: true,
-                        }],
-                    ),
-                ],
-            });
-            return;
-        }
-
         // A renamed field that has its own `[name]` declaration renames
         // through `rename_var` (which also rewrites the selector's `fields`
         // array); one that doesn't exist as a declaration only lives in
@@ -4475,7 +4394,22 @@ impl App {
             },
         );
         match result {
-            Ok(()) => self.varmanager.sync(&self.project),
+            Ok(()) => {
+                self.varmanager.sync(&self.project);
+                // Removals delete that column's values from every option —
+                // no confirm gate (the write is one undo step), so the
+                // toast says what happened and the way back.
+                if !removals.is_empty() {
+                    self.toasts.push(
+                        format!(
+                            "Removed {} from {selector}{}",
+                            removals.join(", "),
+                            self.undo_hint()
+                        ),
+                        ToastKind::Info,
+                    );
+                }
+            }
             Err(msg) => self.toasts.push(msg, ToastKind::Error),
         }
     }
@@ -5047,7 +4981,7 @@ impl App {
         }
         Some(vec![
             MenuItem::new("Duplicate row", Action::DuplicateTableRow(i)),
-            MenuItem::new(format!("Delete {noun}…"), Action::ConfirmDeleteTableRow(i)),
+            MenuItem::new(format!("Delete {noun}"), Action::DeleteTableRow(i)),
             MenuItem::new("Extract value to variable…", Action::ExtractToVariable),
         ])
     }

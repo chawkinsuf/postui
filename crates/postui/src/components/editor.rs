@@ -1391,7 +1391,7 @@ impl Component for Editor {
                     let outcome = self.table.handle_key(ev, map);
                     if outcome.consumed {
                         if let Some(i) = outcome.request_delete {
-                            return Some(Action::ConfirmDeleteTableRow(i));
+                            return Some(Action::DeleteTableRow(i));
                         }
                         if ev.code == KeyCode::Char('{')
                             && self
@@ -5357,7 +5357,7 @@ url = "https://api.example.com/users""#,
 
         // `d` requests a delete-confirm, same as Params/Headers.
         let action = e.handle_key(key(KeyCode::Char('d')));
-        assert_eq!(action, Some(Action::ConfirmDeleteTableRow(0)));
+        assert_eq!(action, Some(Action::DeleteTableRow(0)));
     }
 
     #[test]

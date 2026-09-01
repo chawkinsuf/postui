@@ -73,14 +73,12 @@ pub enum Action {
     /// focuses the editor's table and begins editing the ghost row's key
     /// cell, exactly like clicking "+ Add …". Inert on the Body tab.
     TableAddRow,
-    /// Open the delete confirmation for row `i` of the active params/headers
-    /// table (from the `d`/`Delete` key or the row's `✕` affordance).
-    ConfirmDeleteTableRow(usize),
     /// Flip row `i`'s enabled flag on the active params/headers/vars table —
     /// the footer chip twin of the space key and the row's ● toggle button.
     ToggleTableRow(usize),
-    /// Actually delete row `i` from the active params/headers table (the
-    /// confirm modal's "Delete" choice).
+    /// Delete row `i` from the active params/headers table (the
+    /// `d`/`Delete` key or the row's `✕` affordance). No confirm — the
+    /// deletion is an ordinary editor undo step.
     DeleteTableRow(usize),
     /// The row context menu's "Duplicate row" (Task 17, spec §5): copies row
     /// `i` of the active params/headers/vars table to `<key>-copy` (then
@@ -411,12 +409,7 @@ pub enum Action {
         selector: String,
         field: String,
     },
-    /// `d`/`Delete` on a `SelectorField` row: open the remove confirm.
-    ConfirmRemoveSelectorField {
-        selector: String,
-        field: String,
-    },
-    /// Confirmed field removal: strip `field`'s per-option values from
+    /// `d`/`Delete` on a `SelectorField` row: strip `field`'s per-option values from
     /// every environment file first, then drop it from the selector's list
     /// and shared options in variables.toml (that order keeps each write
     /// valid against the model it's checked with).
@@ -424,9 +417,10 @@ pub enum Action {
         selector: String,
         field: String,
     },
-    /// `d`/`Delete` on a left-list row: open the delete confirm, its body
-    /// listing `varedit::scan_usage`'s referencing requests.
-    ConfirmDeleteVar {
+    /// `d`/`Delete` on a left-list row: delete the declaration at once
+    /// (undoable); a warning toast lists `varedit::scan_usage`'s
+    /// referencing requests.
+    DeleteVar {
         name: String,
     },
     /// `s` on a variable row: open the secret-flag transition
@@ -440,7 +434,7 @@ pub enum Action {
     PromptPromoteVar {
         name: String,
     },
-    /// A confirmed structural mutation; `App::apply_var_struct` applies it.
+    /// A structural mutation; `App::apply_var_struct` applies it.
     VarStruct(VarStructOp),
 
     // -- Task 16: the selector options grid (spec §3.4) --
@@ -453,13 +447,12 @@ pub enum Action {
     /// The field-list editor's confirmed slots, positionally: slot `i` is
     /// `selector`'s current `i`th field (renamed when its text changed,
     /// removed when it was cleared), and any slot past the current list is
-    /// a new field. `confirmed` is false on the way in; a removal bounces
-    /// through a confirm modal that re-dispatches this with it set, since
-    /// dropping a field deletes that column's values from every option.
+    /// a new field. Removals apply at once (undoable) — dropping a field
+    /// deletes that column's values from every option, and the toast says
+    /// so.
     ApplyGroupFields {
         selector: String,
         slots: Vec<String>,
-        confirmed: bool,
     },
     /// The option-row context menu's "Rename": starts the inline edit of
     /// row `row`'s name cell — committing a changed name IS the rename
@@ -468,8 +461,9 @@ pub enum Action {
     StartOptionNameEdit {
         row: usize,
     },
-    /// The option-row context menu's "Delete…": opens the delete confirm.
-    ConfirmDeleteEntry {
+    /// The option-row context menu's "Delete" / `d` on a grid row: delete
+    /// the option at once (undoable).
+    DeleteEntry {
         env: String,
         selector: String,
         name: String,

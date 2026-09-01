@@ -487,7 +487,7 @@ fn render_once(app: &mut App) {
 }
 
 #[test]
-fn deleting_a_table_row_by_key_requires_confirmation() {
+fn deleting_a_table_row_by_key_is_immediate() {
     let mut app = App::new_for_test();
     app.editor.active_tab = EditorTab::Params;
     app.editor.params.insert(
@@ -503,22 +503,13 @@ fn deleting_a_table_row_by_key_requires_confirmation() {
     let keymap = Keymap::default_bindings();
 
     app.handle_key(&keymap, plain('d'));
-    match app.modals.top() {
-        Some(Modal::Confirm { body, .. }) => {
-            assert!(body.contains("page"), "confirm names the key: {body}")
-        }
-        _ => panic!("expected a Confirm modal"),
-    }
-    assert_eq!(app.editor.params.len(), 1, "row survives until confirmed");
-
-    app.handle_key(&keymap, plain('y'));
-    assert!(app.editor.params.is_empty(), "confirming deletes the row");
-    assert!(app.modals.top().is_none(), "modal closed after the choice");
+    assert!(app.modals.top().is_none(), "delete is undoable, no confirm");
+    assert!(app.editor.params.is_empty(), "the row is gone at once");
 }
 
 #[test]
-fn deleting_a_vars_row_by_key_requires_confirmation() {
-    // Same delete-confirm plumbing as Params, pointed at the Vars tab's
+fn deleting_a_vars_row_by_key_is_immediate() {
+    // Same delete plumbing as Params, pointed at the Vars tab's
     // request-scoped `[variables]` table.
     let mut app = App::new_for_test();
     app.editor.active_tab = EditorTab::Vars;
@@ -535,24 +526,8 @@ fn deleting_a_vars_row_by_key_requires_confirmation() {
     let keymap = Keymap::default_bindings();
 
     app.handle_key(&keymap, plain('d'));
-    match app.modals.top() {
-        Some(Modal::Confirm { body, .. }) => {
-            assert!(body.contains("token"), "confirm names the key: {body}")
-        }
-        _ => panic!("expected a Confirm modal"),
-    }
-    assert_eq!(
-        app.editor.variables.len(),
-        1,
-        "row survives until confirmed"
-    );
-
-    app.handle_key(&keymap, plain('y'));
-    assert!(
-        app.editor.variables.is_empty(),
-        "confirming deletes the row"
-    );
-    assert!(app.modals.top().is_none(), "modal closed after the choice");
+    assert!(app.modals.top().is_none(), "delete is undoable, no confirm");
+    assert!(app.editor.variables.is_empty(), "the row is gone at once");
 }
 
 /// Task 17, spec §5: right-clicking a params row opens Duplicate/Delete/
@@ -586,7 +561,7 @@ fn table_row_context_menu_duplicate_delete_extract_end_to_end() {
         labels,
         vec![
             "Duplicate row",
-            "Delete param\u{2026}",
+            "Delete param",
             "Extract value to variable\u{2026}"
         ]
     );
@@ -624,14 +599,10 @@ fn table_row_context_menu_duplicate_delete_extract_end_to_end() {
     assert!(app.modals.is_empty());
     assert_eq!(app.editor.params["page"].value, "{{page_num}}");
 
-    // "Delete param…": same confirm the `d` key opens.
+    // "Delete param": the same immediate delete the `d` key runs.
     app.editor.table.selected = Some(0);
     app.update(delete);
-    match app.modals.top() {
-        Some(Modal::Confirm { body, .. }) => assert!(body.contains("page"), "{body}"),
-        _ => panic!("expected a delete confirm"),
-    }
-    app.handle_key(&keymap, plain('y'));
+    assert!(app.modals.is_empty(), "delete is undoable, no confirm");
     assert!(!app.editor.params.contains_key("page"));
     assert!(app.editor.params.contains_key("page-copy"));
 }
@@ -799,8 +770,9 @@ fn shadowed_var_shows_masked_hint_when_project_var_is_secret() {
 }
 
 #[test]
-fn declining_the_table_row_delete_keeps_the_row() {
+fn undo_restores_a_deleted_table_row() {
     let mut app = App::new_for_test();
+    app.editor.active_tab = EditorTab::Params;
     app.editor.params.insert(
         "page".into(),
         postui_core::model::Entry {
@@ -811,15 +783,17 @@ fn declining_the_table_row_delete_keeps_the_row() {
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Content;
     app.editor.table.selected = Some(0);
+    app.capture_undo(); // seed the shadow before the delete
     let keymap = Keymap::default_bindings();
     app.handle_key(&keymap, plain('d'));
-    app.handle_key(&keymap, plain('n'));
-    assert_eq!(app.editor.params.len(), 1, "declining keeps the row");
-    assert!(app.modals.top().is_none());
+    assert!(app.editor.params.is_empty());
+    app.capture_undo();
+    app.update(Action::Undo);
+    assert_eq!(app.editor.params.len(), 1, "undo brings the row back");
 }
 
 #[test]
-fn clicking_the_row_delete_affordance_opens_the_confirm_modal() {
+fn clicking_the_row_delete_affordance_deletes_the_row() {
     let mut app = App::new_for_test();
     app.editor.active_tab = EditorTab::Params;
     app.editor.params.insert(
@@ -836,11 +810,8 @@ fn clicking_the_row_delete_affordance_opens_the_confirm_modal() {
         .rect_of(&Hit::TableDelete(0))
         .expect("delete affordance on the selected row");
     assert!(app.handle_mouse(left_down(del.x, del.y)));
-    assert!(
-        matches!(app.modals.top(), Some(Modal::Confirm { .. })),
-        "clicking ✕ must confirm, not delete outright"
-    );
-    assert_eq!(app.editor.params.len(), 1);
+    assert!(app.modals.top().is_none(), "delete is undoable, no confirm");
+    assert!(app.editor.params.is_empty(), "clicking ✕ deletes the row");
 }
 
 /// A test app whose clipboard read returns `text` (no OS clipboard).
@@ -1051,7 +1022,7 @@ fn selected_row_footer_chips_come_and_go_with_the_selection() {
     );
     assert!(
         app.hits
-            .rect_of(&Hit::FooterChip(Action::ConfirmDeleteTableRow(0)))
+            .rect_of(&Hit::FooterChip(Action::DeleteTableRow(0)))
             .is_some()
     );
 
@@ -1331,9 +1302,12 @@ fn checkbox_and_delete_clicks_during_an_edit_commit_it_first() {
     assert_eq!(
         app.editor.params.get_index(0).unwrap().0,
         "ax",
-        "the rename committed before the delete confirm opened"
+        "the rename committed before the delete applied"
     );
-    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+    assert!(
+        app.editor.params.get_index(1).is_none(),
+        "the clicked row is gone"
+    );
 }
 
 /// Params `a=1, b=2, c=3`, editor focused.
@@ -1383,21 +1357,18 @@ fn a_collapsing_commit_reresolves_the_row_a_delete_click_named() {
     let mut app = app_with_three_params();
     stage_a_collapsing_rename(&mut app);
     // The trash clicked belongs to "b" (row 1 in the frame the user saw);
-    // after the commit collapses "a" into "c", "b" is row 0 — the confirm
-    // must name "b", not whatever now occupies index 1 ("c"). (The edited
-    // row itself shows no buttons while its cell edit is live, so a stale
-    // click on it can no longer happen at all.)
+    // after the commit collapses "a" into "c", "b" is row 0 — the delete
+    // must remove "b", not whatever now occupies index 1 ("c"). (The
+    // edited row itself shows no buttons while its cell edit is live, so a
+    // stale click on it can no longer happen at all.)
     hover_row_then_click(&mut app, Hit::TableRow(1), Hit::TableDelete(1));
-    let Some(Modal::Confirm { body, .. }) = app.modals.top() else {
-        panic!("expected the delete confirm");
-    };
     assert!(
-        body.contains('b'),
-        "the confirm names the clicked row: {body}"
+        !app.editor.params.contains_key("b"),
+        "the clicked row is the one deleted"
     );
     assert!(
-        !body.contains('c'),
-        "and never the row that shifted into its index: {body}"
+        app.editor.params.contains_key("c"),
+        "and never the row that shifted into its index"
     );
 }
 
@@ -1895,13 +1866,10 @@ fn right_clicking_a_left_row_opens_its_rename_duplicate_delete_menu() {
         panic!("expected a context menu");
     };
     let labels: Vec<String> = menu.items.iter().map(|i| i.label.clone()).collect();
-    assert_eq!(
-        labels,
-        vec!["Rename\u{2026}", "Duplicate", "Delete\u{2026}"]
-    );
+    assert_eq!(labels, vec!["Rename\u{2026}", "Duplicate", "Delete"]);
     assert_eq!(
         menu.items[2].action,
-        Some(Action::ConfirmDeleteVar {
+        Some(Action::DeleteVar {
             name: "base_url".into()
         })
     );
@@ -6872,7 +6840,11 @@ fn var_struct_delete_var_removes_the_declaration_and_clamps_the_cursor() {
         name: "base_url".into(),
     }));
 
-    assert!(app.toasts.is_empty());
+    assert!(
+        app.toasts.messages().join("\n").contains("^Z undoes"),
+        "{:?}",
+        app.toasts.messages()
+    );
     assert!(!app.project.model.vars.contains_key("base_url"));
     assert!(
         app.varmanager.left_cursor < app.varmanager.left_rows.len(),
@@ -7134,7 +7106,11 @@ fn delete_entry_removes_it_from_the_active_env() {
         name: "bob".into(),
     }));
 
-    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    assert!(
+        app.toasts.messages().join("\n").contains("^Z undoes"),
+        "{:?}",
+        app.toasts.messages()
+    );
     let entries = postui_core::varmodel::selector_options(&app.project.env_data, "user")
         .expect("the group still has entries here");
     assert!(!entries.contains_key("bob"));
@@ -7174,7 +7150,6 @@ fn delete_entry_clears_the_selection_when_the_deleted_entry_was_selected() {
         name: "alice".into(),
     }));
 
-    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
     assert!(!app.project.selections_for("qa").contains_key("user"));
     assert!(!app.project.resolved.values.contains_key("user"));
 }
@@ -7254,7 +7229,7 @@ fn prompt_promote_var_onto_an_existing_secret_name_refuses_with_a_message_modal(
 }
 
 #[test]
-fn confirm_delete_var_lists_referencing_requests_from_scan_usage() {
+fn delete_var_warns_about_referencing_requests() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let mut r = req("https://x/uses-it/{{base_url}}");
@@ -7263,36 +7238,64 @@ fn confirm_delete_var_lists_referencing_requests_from_scan_usage() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
-    app.update(Action::ConfirmDeleteVar {
+    app.update(Action::DeleteVar {
         name: "base_url".into(),
     });
 
-    let Some(Modal::Confirm { body, .. }) = app.modals.top() else {
-        panic!("expected a Confirm modal");
-    };
+    assert!(app.modals.is_empty(), "delete is undoable, no confirm");
+    assert!(!app.project.model.vars.contains_key("base_url"));
+    let msgs = app.toasts.messages().join("\n");
     assert!(
-        body.contains("uses-it") && body.contains('1'),
-        "body must name the referencing request: {body}"
+        msgs.contains("uses-it") && msgs.contains('1'),
+        "a toast must name the referencing request: {msgs}"
     );
 }
 
 #[test]
-fn delete_var_confirm_advertises_undo_instead_of_claiming_permanence() {
+fn delete_var_is_immediate_with_an_undo_hint_toast() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
-    app.update(Action::ConfirmDeleteVar {
+    app.update(Action::DeleteVar {
         name: "base_url".into(),
     });
 
-    let Some(Modal::Confirm { body, .. }) = app.modals.top() else {
-        panic!("expected a Confirm modal");
-    };
+    assert!(app.modals.is_empty(), "delete is undoable, no confirm");
+    assert!(!app.project.model.vars.contains_key("base_url"));
+    let msgs = app.toasts.messages().join("\n");
     assert!(
-        body.contains("^Z undoes"),
-        "the delete records an undo step, so the body must say so: {body}"
+        msgs.contains("^Z undoes"),
+        "the toast advertises the escape hatch: {msgs}"
+    );
+    app.update(Action::Undo);
+    assert!(
+        app.project.model.vars.contains_key("base_url"),
+        "undo restores the declaration"
+    );
+}
+
+#[test]
+fn delete_entry_is_immediate_with_an_undo_hint_toast() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    app.update(Action::DeleteEntry {
+        env: "qa".into(),
+        selector: "user".into(),
+        name: "alice".into(),
+    });
+
+    assert!(app.modals.is_empty(), "delete is undoable, no confirm");
+    let env = postui_core::project::load_environment(dir.path(), "qa").unwrap();
+    assert!(!env.options["user"].contains_key("alice"));
+    assert!(
+        app.toasts.messages().join("\n").contains("^Z undoes"),
+        "the toast advertises the escape hatch: {:?}",
+        app.toasts.messages()
     );
 }
 
@@ -7434,9 +7437,19 @@ fn keyboard_f2_d_s_open_the_matching_var_row_actions() {
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
 
     app.handle_key(&keymap, plain('d'));
-    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-    assert!(app.project.model.vars.contains_key("base_url"), "cancelled");
+    assert!(app.modals.is_empty(), "delete is undoable, no confirm");
+    assert!(
+        !app.project.model.vars.contains_key("base_url"),
+        "the row is deleted at once"
+    );
+    app.update(Action::Undo);
+    assert!(
+        app.project.model.vars.contains_key("base_url"),
+        "undo restores it"
+    );
+    goto_row(&mut app, |r| {
+        r == &crate::components::varmanager::VmRow::Var("base_url".into())
+    });
 
     app.handle_key(&keymap, plain('s'));
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
@@ -7444,10 +7457,10 @@ fn keyboard_f2_d_s_open_the_matching_var_row_actions() {
 }
 
 /// Mouse/keyboard parity (spec §5: "every mutation ... has a keyboard
-/// action and a painted button"): the left list's context-menu "Delete…"
-/// opens the exact same confirm the `d` key does.
+/// action and a painted button"): the left list's context-menu "Delete"
+/// dispatches the exact same action the `d` key does.
 #[test]
-fn the_context_menu_delete_opens_the_same_confirm_as_the_d_key() {
+fn the_context_menu_delete_matches_the_d_key() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -7460,13 +7473,15 @@ fn the_context_menu_delete_opens_the_same_confirm_as_the_d_key() {
         .varmanager
         .context_menu(app.varmanager.left_cursor)
         .expect("menu for a variable row");
+    assert_eq!(
+        via_menu[2].action,
+        Some(Action::DeleteVar {
+            name: "base_url".into()
+        })
+    );
     app.update(via_menu[2].action.clone().unwrap());
-    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
-    app.update(Action::Close);
-
-    let keymap = Keymap::default_bindings();
-    app.handle_key(&keymap, plain('d'));
-    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+    assert!(app.modals.is_empty(), "delete is undoable, no confirm");
+    assert!(!app.project.model.vars.contains_key("base_url"));
 }
 
 #[test]
@@ -7596,16 +7611,15 @@ fn add_and_remove_group_members_one_at_a_time() {
         2
     );
 
-    // `d` flow: confirm-remove one member
-    app.update(Action::ConfirmRemoveSelectorField {
+    // the failed duplicate keeps its prompt open for a retry; drop it
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+
+    // `d` flow: removal is immediate (undoable)
+    app.update(Action::RemoveSelectorField {
         selector: "creds".into(),
         field: "user_id".into(),
     });
-    assert!(
-        matches!(app.modals.top(), Some(Modal::Confirm { .. })),
-        "removal asks first"
-    );
-    app.handle_key(&keymap, plain('y'));
+    assert!(app.modals.is_empty(), "removal is undoable, no confirm");
     assert_eq!(
         app.project.model.selectors.get("creds").unwrap().fields,
         vec!["customer_id".to_string()]
@@ -10253,10 +10267,13 @@ fn the_delete_button_opens_the_confirm_with_the_usage_list() {
     rendered_text_tall(&mut app);
     let r = app.hits.rect_of(&crate::hit::Hit::VmDelete).unwrap();
     app.handle_mouse(left_down(r.x + 1, r.y + 1));
-    let Some(Modal::Confirm { body, .. }) = app.modals.top() else {
-        panic!("expected a delete confirm");
-    };
-    assert!(body.contains("uses-base"), "{body}");
+    assert!(app.modals.is_empty(), "delete is undoable, no confirm");
+    assert!(!app.project.model.vars.contains_key("base_url"));
+    assert!(
+        app.toasts.messages().join("\n").contains("uses-base"),
+        "the usage warning names the referencing request: {:?}",
+        app.toasts.messages()
+    );
 }
 
 #[test]
@@ -10413,7 +10430,7 @@ fn fields_editor_remove_button_marks_the_row_and_confirm_deletes_the_field() {
     };
     assert!(!fe.rows[1].removed);
 
-    // ...remove it again and apply: the existing removal confirm guards.
+    // ...remove it again and apply: the removal lands at once (undoable).
     rendered_text(&mut app);
     let r = app
         .hits
@@ -10422,11 +10439,7 @@ fn fields_editor_remove_button_marks_the_row_and_confirm_deletes_the_field() {
     app.handle_mouse(left_down(r.x, r.y));
     let keymap = Keymap::default_bindings();
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    let Some(Modal::Confirm { title, .. }) = app.modals.top() else {
-        panic!("a removal must confirm first")
-    };
-    assert!(title.contains("customer_id"), "{title}");
-    app.handle_key(&keymap, plain('y'));
+    assert!(app.modals.is_empty(), "removal is undoable, no confirm");
     assert_eq!(app.project.model.selectors["creds"].fields, vec!["user_id"]);
 }
 
@@ -10530,15 +10543,12 @@ fn fields_editor_alt_d_toggles_removal_of_the_focused_row() {
     };
     assert!(!fe.rows[0].removed, "alt+d on a removed row restores it");
 
-    // Remove the second field and apply: the removal confirm guards.
+    // Remove the second field and apply: the removal lands at once
+    // (undoable).
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     app.handle_key(&keymap, alt('d'));
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    let Some(Modal::Confirm { title, .. }) = app.modals.top() else {
-        panic!("a removal must confirm first")
-    };
-    assert!(title.contains("customer_id"), "{title}");
-    app.handle_key(&keymap, plain('y'));
+    assert!(app.modals.is_empty(), "removal is undoable, no confirm");
     assert_eq!(app.project.model.selectors["creds"].fields, vec!["user_id"]);
 }
 
@@ -10723,9 +10733,9 @@ fn editing_a_field_cell_and_clicking_away_rewrites_the_env_file() {
 
 /// User finding: there was no button for deleting an option — only the `d`
 /// key and the right-click menu. Each option row gets an explicit `🗑`
-/// (the table editor's row-trash twin) opening the same delete confirm.
+/// (the table editor's row-trash twin) running the same immediate delete.
 #[test]
-fn clicking_an_option_rows_trash_opens_the_delete_confirm() {
+fn clicking_an_option_rows_trash_deletes_the_option() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -10738,10 +10748,9 @@ fn clicking_an_option_rows_trash_opens_the_delete_confirm() {
         .rect_of(&crate::hit::Hit::VmEntryDelete(0))
         .expect("each option row registers a trash zone");
     app.handle_mouse(left_down(r.x + 1, r.y));
-    let Some(Modal::Confirm { title, .. }) = app.modals.top() else {
-        panic!("the trash opens the delete-option confirm");
-    };
-    assert_eq!(title, "Delete alice");
+    assert!(app.modals.is_empty(), "delete is undoable, no confirm");
+    let env = postui_core::project::load_environment(dir.path(), "qa").unwrap();
+    assert!(!env.options["user"].contains_key("alice"));
 }
 
 #[test]
@@ -10823,7 +10832,7 @@ fn vm_footer_advertises_the_option_verbs_while_the_grid_has_focus() {
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
     assert_eq!(app.varmanager.focus, VmFocus::Grid);
 
-    let delete = Action::ConfirmDeleteEntry {
+    let delete = Action::DeleteEntry {
         env: "qa".into(),
         selector: "user".into(),
         name: "alice".into(),
@@ -11071,7 +11080,7 @@ fn vm_footer_rename_delete_act_on_the_open_form_from_a_header_row() {
     assert!(
         chips.iter().any(|(k, _, a)| *k == "d"
             && *a
-                == Some(Action::ConfirmDeleteVar {
+                == Some(Action::DeleteVar {
                     name: "base_url".into()
                 })),
         "{chips:?}"
@@ -11246,7 +11255,6 @@ fn the_field_editor_renames_adds_and_removes_across_variables_and_every_env() {
     app.update(Action::ApplyGroupFields {
         selector: "user".into(),
         slots: vec!["user_id".into()],
-        confirmed: false,
     });
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
     assert_eq!(app.project.model.selectors["user"].fields, vec!["user_id"]);
@@ -11262,7 +11270,6 @@ fn the_field_editor_renames_adds_and_removes_across_variables_and_every_env() {
     app.update(Action::ApplyGroupFields {
         selector: "user".into(),
         slots: vec!["user_id".into(), "customer_id".into()],
-        confirmed: false,
     });
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
     assert_eq!(
@@ -11275,25 +11282,12 @@ fn the_field_editor_renames_adds_and_removes_across_variables_and_every_env() {
         "every existing entry gains the column, empty"
     );
 
-    // --- remove: a cleared slot warns before deleting the column ---------
+    // --- remove: a cleared slot deletes the column at once (undoable) ----
     app.update(Action::ApplyGroupFields {
         selector: "user".into(),
         slots: vec!["user_id".into(), String::new()],
-        confirmed: false,
     });
-    let Some(Modal::Confirm { body, .. }) = app.modals.top() else {
-        panic!("a removal must confirm first");
-    };
-    assert!(body.contains("deleted from"), "{body}");
-    assert!(body.contains("qa") && body.contains("dev"), "{body}");
-    assert_eq!(
-        app.project.model.selectors["user"].fields,
-        vec!["user_id", "customer_id"],
-        "nothing has changed yet"
-    );
-
-    app.handle_key(&Keymap::default_bindings(), plain('y'));
-    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    assert!(app.modals.is_empty(), "removal is undoable, no confirm");
     assert_eq!(app.project.model.selectors["user"].fields, vec!["user_id"]);
     let qa = postui_core::project::load_environment(dir.path(), "qa").unwrap();
     assert!(
@@ -11405,12 +11399,7 @@ fn right_clicking_an_entry_row_opens_its_own_menu() {
     // "Rename" has no ellipsis: it starts the inline name-cell edit.
     assert_eq!(
         labels,
-        vec![
-            "Edit\u{2026}",
-            "Duplicate option",
-            "Rename",
-            "Delete\u{2026}"
-        ]
+        vec!["Edit\u{2026}", "Duplicate option", "Rename", "Delete"]
     );
 }
 
@@ -11457,7 +11446,7 @@ fn right_clicking_another_row_commits_the_live_cell_to_the_entry_it_belongs_to()
     };
     assert_eq!(
         state.items[3].action,
-        Some(Action::ConfirmDeleteEntry {
+        Some(Action::DeleteEntry {
             env: "qa".into(),
             selector: "user".into(),
             name: "alice".into(),
