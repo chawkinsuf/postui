@@ -3982,9 +3982,33 @@ impl App {
                 true
             }
             Action::MoveAllRequests { from, to } => {
-                if from == to || !self.project.spaces.contains(&to) {
+                if from == to {
                     return true;
                 }
+                if !self.project.spaces.contains(&to) {
+                    self.toasts
+                        .push(format!("no space named {to:?}"), ToastKind::Warning);
+                    self.last_action_failed = true;
+                    return true;
+                }
+                // The open request follows the move, and following it
+                // reloads the editor from disk — so unsaved edits to a
+                // request living in `from` are gated exactly like a space
+                // switch.
+                let open_here = self
+                    .editor
+                    .slug
+                    .as_deref()
+                    .and_then(postui_core::storage::space_of)
+                    == Some(from.as_str());
+                if open_here && self.editor_holds_unsaved() {
+                    self.dirty_gate("move", Action::ForceMoveAllRequests { from, to });
+                } else {
+                    self.apply(Action::ForceMoveAllRequests { from, to });
+                }
+                true
+            }
+            Action::ForceMoveAllRequests { from, to } => {
                 let open = self.editor.slug.clone();
                 let (moved, err) =
                     postui_core::storage::move_all_requests(&self.project.root, &from, &to);
@@ -3993,6 +4017,7 @@ impl App {
                         format!("moved {} request(s), then failed: {e}", moved.len()),
                         ToastKind::Error,
                     );
+                    self.last_action_failed = true;
                 } else {
                     self.toasts.push(
                         format!("Moved {} request(s) to {to}", moved.len()),
@@ -4004,15 +4029,13 @@ impl App {
                 if let Some(open) = open
                     && let Some((_, new_slug)) = moved.iter().find(|(old, _)| *old == open)
                 {
-                    // Follow the open request into its new space; the
-                    // file moved unchanged, so no dirty gate applies.
-                    let new_slug = new_slug.clone();
-                    self.editor.slug = Some(new_slug.clone());
-                    self.sidebar.open_slug = Some(new_slug.clone());
-                    if let Some((slug, _)) = self.shadow.as_mut() {
-                        *slug = Some(new_slug.clone());
-                    }
-                    self.apply(Action::ForceOpenRequest(new_slug));
+                    // Follow the open request into its new space.
+                    // `ForceOpenRequest` owns the editor, the sidebar's
+                    // open row and the re-seeded shadow — pre-setting any
+                    // of them here would defeat `capture_undo`'s
+                    // "which request is open changed → re-seed, never
+                    // record" branch and forge a phantom edit step.
+                    self.apply(Action::ForceOpenRequest(new_slug.clone()));
                 } else {
                     self.apply(Action::PersistLocalState);
                 }

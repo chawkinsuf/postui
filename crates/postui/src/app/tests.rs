@@ -3293,6 +3293,7 @@ fn move_space_reorders_and_persists() {
 fn move_all_requests_empties_the_source_and_follows_the_open_request() {
     let (mut app, dir) = spaced_app();
     app.update(Action::ForceOpenRequest("main/alpha".into()));
+    let steps_before = app.history.undo_len();
     app.update(Action::MoveAllRequests {
         from: "main".into(),
         to: "auth".into(),
@@ -3302,6 +3303,50 @@ fn move_all_requests_empties_the_source_and_follows_the_open_request() {
     assert_eq!(app.project.active_space, "auth");
     assert_eq!(app.editor.slug.as_deref(), Some("auth/alpha"));
     assert_eq!(app.sidebar.space_counts().get("main"), None);
+
+    // The follow re-seeds the shadow through `ForceOpenRequest`, so the
+    // next input event finds nothing to diff: a move is not an edit, and
+    // must never leave a phantom `EditorDelta` behind.
+    assert!(!app.capture_undo(), "the move itself is not an edit");
+    assert_eq!(app.history.undo_len(), steps_before);
+    dirty_the_editor(&mut app);
+    assert!(app.capture_undo());
+    assert_eq!(
+        app.history.undo_len(),
+        steps_before + 1,
+        "only the typed character, no phantom step for the move"
+    );
+}
+
+#[test]
+fn move_all_requests_holding_a_dirty_open_request_gates_first() {
+    let (mut app, dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    dirty_the_editor(&mut app);
+    app.update(Action::MoveAllRequests {
+        from: "main".into(),
+        to: "auth".into(),
+    });
+    let Some(Modal::Confirm { title, .. }) = app.modals.top() else {
+        panic!("gate")
+    };
+    assert_eq!(title, "Unsaved changes");
+    assert!(
+        dir.path().join("requests/main/alpha.toml").is_file(),
+        "nothing moved yet"
+    );
+    assert_eq!(app.project.active_space, "main");
+
+    // Discarding runs the move: the editor is re-opened from disk by
+    // `ForceOpenRequest`, which re-seeds the shadow — the discarded edit
+    // must not come back as a phantom undo step.
+    let steps_before = app.history.undo_len();
+    app.handle_key(&Keymap::default_bindings(), plain('d'));
+    assert!(dir.path().join("requests/auth/alpha.toml").is_file());
+    assert_eq!(app.editor.slug.as_deref(), Some("auth/alpha"));
+    assert!(!app.editor.is_dirty(), "reloaded clean from disk");
+    assert!(!app.capture_undo(), "the move is not an edit");
+    assert_eq!(app.history.undo_len(), steps_before);
 }
 
 #[test]

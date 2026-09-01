@@ -287,9 +287,16 @@ pub enum Action {
         name: String,
         delta: i32,
     },
-    /// Move every request in `from` into `to`, following the open request
-    /// into its new space. Not an undo step.
+    /// Move every request in `from` into `to`. Gated on unsaved edits when
+    /// the open request lives in `from` (following it reloads the editor
+    /// from disk). Not an undo step.
     MoveAllRequests {
+        from: String,
+        to: String,
+    },
+    /// Confirmed/clean: moves every request of `from` into `to` and
+    /// follows the open request into its new space.
+    ForceMoveAllRequests {
         from: String,
         to: String,
     },
