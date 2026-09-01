@@ -16,8 +16,11 @@ pub enum Hit {
     /// The `alt+c` keycap pill beside the env chip: cycles the active
     /// environment on click, same as the key itself.
     HeaderEnvCycle,
-    /// The header's "vars" chip: toggles the Variable Manager screen.
-    HeaderVars,
+    /// The header's "Manage" chip: toggles the Manage screen.
+    HeaderManage,
+    /// One tab of the Manage screen's top bar, by index into
+    /// [`crate::components::manage::ManageTab::ALL`].
+    ManageTab(usize),
     /// The right-aligned "theme" chip on the app bar: opens the theme
     /// picker.
     HeaderTheme,

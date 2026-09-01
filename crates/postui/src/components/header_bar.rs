@@ -21,7 +21,7 @@ pub fn draw_header(
     theme: &Theme,
     project: &str,
     env: &str,
-    vars_active: bool,
+    manage_active: bool,
     // Shows the save/discard group beside the Theme chip. Only ever true
     // while the open request has unsaved edits (a clean request needs
     // neither button) on the Main screen with no modal capturing keys.
@@ -122,22 +122,22 @@ pub fn draw_header(
         },
         Hit::HeaderEnvCycle,
     );
-    // A wide group gap (the footer's own save-group width): the Variable
-    // Manager chip follows in the left cluster, and the env-cycle pill
-    // must keep reading as the env chip's — not the manager's — shortcut.
+    // A wide group gap (the footer's own save-group width): the Manage
+    // chip follows in the left cluster, and the env-cycle pill must keep
+    // reading as the env chip's — not the Manage screen's — shortcut.
     x += cycle_w + 8;
 
-    // The Variable Manager toggle, in the footer's clickable idiom with
+    // The Manage-screen toggle, in the footer's clickable idiom with
     // the keycap trailing the name: prominent full name + `alt+v` pill.
-    // While the manager screen is open the whole chip holds the pressed
+    // While the Manage screen is open the whole chip holds the pressed
     // fill, keeping the old `vars` toggle's stateful read. Paints
     // unconditionally like the rest of the left cluster (a too-narrow bar
     // clips it rather than dropping it).
-    let vm_label = " Variable Manager ";
+    let vm_label = " Manage ";
     let vm_label_w = vm_label.chars().count() as u16;
-    let (vm_pill_on, vm_label_bg) = if vars_active {
+    let (vm_pill_on, vm_label_bg) = if manage_active {
         (theme.control_pressed, theme.control_pressed)
-    } else if hovered == Some(&Hit::HeaderVars) {
+    } else if hovered == Some(&Hit::HeaderManage) {
         (theme.control_hover, theme.panel)
     } else {
         (theme.control, theme.panel)
@@ -154,12 +154,12 @@ pub fn draw_header(
         width: vm_label_w + vm_pill_w,
         height: 1,
     };
-    hits.register(vm_rect, Hit::HeaderVars);
+    hits.register(vm_rect, Hit::HeaderManage);
     x += vm_rect.width + 1;
 
     // The theme-picker chip sits alone at the bar's right edge, mirroring
     // the wordmark's 3-column margin — same name-plus-trailing-keycap
-    // idiom as the Variable Manager chip.
+    // idiom as the Manage chip.
     let theme_label = " Theme ";
     let theme_key_w = " alt+t ".chars().count() as u16;
     let theme_w = theme_label.chars().count() as u16 + theme_key_w;
@@ -335,7 +335,7 @@ mod tests {
         theme: &Theme,
         project: &str,
         env: &str,
-        vars_active: bool,
+        manage_active: bool,
         hovered: Option<&Hit>,
         width: u16,
     ) -> (Terminal<TestBackend>, HitMap) {
@@ -350,7 +350,7 @@ mod tests {
                     theme,
                     project,
                     env,
-                    vars_active,
+                    manage_active,
                     false,
                     &mut hits,
                     hovered,
@@ -528,17 +528,17 @@ mod tests {
         );
     }
 
-    /// The Variable Manager chip sits in the left cluster — a wide group
-    /// gap after the env-cycle pill, so that pill still clearly belongs
-    /// to the env chip — in the footer's clickable idiom with the keycap
-    /// trailing the name: prominent full name + `alt+v` pill.
+    /// The Manage chip sits in the left cluster — a wide group gap after
+    /// the env-cycle pill, so that pill still clearly belongs to the env
+    /// chip — in the footer's clickable idiom with the keycap trailing
+    /// the name: prominent full name + `alt+v` pill.
     #[test]
-    fn variable_manager_chip_follows_the_env_cluster_with_a_trailing_keycap() {
+    fn manage_chip_follows_the_env_cluster_with_a_trailing_keycap() {
         let theme = Theme::dark();
         let (term, hits) = render_wide(&theme, "alpha", "qa", false, None, 100);
         let rect = hits
-            .rect_of(&Hit::HeaderVars)
-            .expect("variable manager chip registered");
+            .rect_of(&Hit::HeaderManage)
+            .expect("manage chip registered");
         let cycle_rect = hits.rect_of(&Hit::HeaderEnvCycle).unwrap();
         assert_eq!(
             rect.x,
@@ -547,33 +547,33 @@ mod tests {
         );
         assert_eq!(
             row_text(&term, &rect),
-            format!(" Variable Manager  {}+v ", crate::keys::alt_label())
+            format!(" Manage  {}+v ", crate::keys::alt_label())
         );
         let label_cell = cell(&term, rect.x + 1, rect.y);
-        assert_eq!(label_cell.symbol(), "V");
+        assert_eq!(label_cell.symbol(), "M");
         assert_eq!(label_cell.fg, theme.text, "prominent label, not muted");
         assert_eq!(label_cell.bg, theme.panel);
         assert_eq!(
-            cell(&term, rect.x + 19, rect.y).bg,
+            cell(&term, rect.x + 9, rect.y).bg,
             theme.tint(theme.text_muted, theme.control),
             "trailing keycap pill tint matches the footer chips'"
         );
     }
 
-    /// While the manager screen is open the whole chip holds the pressed
+    /// While the Manage screen is open the whole chip holds the pressed
     /// fill, same as the old `vars` toggle did.
     #[test]
-    fn variable_manager_chip_holds_the_pressed_fill_while_active() {
+    fn manage_chip_holds_the_pressed_fill_while_active() {
         let theme = Theme::dark();
         let (term, hits) = render_wide(&theme, "alpha", "qa", true, None, 100);
-        let rect = hits.rect_of(&Hit::HeaderVars).unwrap();
+        let rect = hits.rect_of(&Hit::HeaderManage).unwrap();
         assert_eq!(
             cell(&term, rect.x + 1, rect.y).bg,
             theme.control_pressed,
             "label ground shows the pressed state"
         );
         assert_eq!(
-            cell(&term, rect.x + 19, rect.y).bg,
+            cell(&term, rect.x + 9, rect.y).bg,
             theme.tint(theme.text_muted, theme.control_pressed),
             "keycap tint derives from the pressed fill"
         );
@@ -676,15 +676,15 @@ mod tests {
         );
     }
 
-    /// The Variable Manager chip is part of the left cluster now: it
-    /// paints (clipped, like the project/env chips) on a bar too narrow
-    /// for the right-aligned theme chip, which still drops.
+    /// The Manage chip is part of the left cluster now: it paints
+    /// (clipped, like the project/env chips) on a bar too narrow for the
+    /// right-aligned theme chip, which still drops.
     #[test]
-    fn variable_manager_chip_stays_when_the_theme_chip_drops() {
+    fn manage_chip_stays_when_the_theme_chip_drops() {
         let theme = Theme::dark();
         let (_term, hits) =
             render_wide(&theme, "a-rather-long-project", "staging", false, None, 60);
-        assert!(hits.rect_of(&Hit::HeaderVars).is_some());
+        assert!(hits.rect_of(&Hit::HeaderManage).is_some());
         assert!(hits.rect_of(&Hit::HeaderTheme).is_none());
     }
 

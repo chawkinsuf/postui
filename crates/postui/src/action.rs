@@ -383,11 +383,17 @@ pub enum Action {
     PromptSaveView,
     /// Write the active tab's text (`ReadyView::view_text`) to `path`.
     SaveViewToFile(String),
-    /// Open the Variable Manager screen (spec §5): stores the current
-    /// focus so `Action::CloseScreen` can restore it, then switches
-    /// `App::screen` to `Screen::VarManager`. A no-op when the Manager is
-    /// already open.
-    OpenVarManager,
+    /// Open the Manage screen (spec §5): stores the current focus so
+    /// `Action::CloseScreen` can restore it, then switches `App::screen`
+    /// to `Screen::Manage` on `tab` — `None` meaning the last-used tab.
+    /// Toggles the screen closed when it is already open on that tab, so
+    /// `alt+v` and the header chip both work as an on/off switch.
+    OpenManage {
+        tab: Option<crate::components::manage::ManageTab>,
+    },
+    /// Switch the open Manage screen to another tab (the tab strip's
+    /// click target and `alt+←/→`).
+    SelectManageTab(crate::components::manage::ManageTab),
     /// Leave the current non-`Main` screen and return to `Screen::Main`,
     /// restoring the focus that was active when the screen was opened.
     CloseScreen,

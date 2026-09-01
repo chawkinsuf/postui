@@ -81,7 +81,9 @@ pub enum TextDrag {
 pub enum Screen {
     #[default]
     Main,
-    VarManager,
+    /// The Manage screen (spec §5): a tabbed shell over Variables,
+    /// Environments and Spaces. Which tab is up lives in `App::manage`.
+    Manage,
     /// The hidden primitive showcase, entered at startup when the
     /// `POSTUI_TESTBED` env var is set (see [`App::new`]). A static grid of
     /// every painted primitive in every state, for judging the visual
@@ -102,8 +104,10 @@ pub struct App {
     pub theme: Theme,
     pub sidebar: Sidebar,
     pub editor: Editor,
-    /// The Variable Manager screen's own state, shown full-frame while
-    /// `screen == Screen::VarManager`.
+    /// The Manage screen's shell state (which tab is up), shown
+    /// full-frame while `screen == Screen::Manage`.
+    pub manage: crate::components::manage::Manage,
+    /// The Variables tab's own state — the list, detail pane and edits.
     pub varmanager: VarManager,
     /// The request session: the open request's on-screen response, the
     /// per-request response cache, and the in-flight send.
@@ -760,6 +764,7 @@ impl App {
             theme: Theme::for_terminal(),
             sidebar: Sidebar::default(),
             editor: Editor::default(),
+            manage: crate::components::manage::Manage::default(),
             varmanager: VarManager::default(),
             session: crate::session::Session::default(),
             toasts,
@@ -1306,7 +1311,7 @@ impl App {
                 // While the Manager screen is up its left list owns the
                 // sidebar's pane slot (see `App::scrollbar_spec`), so a
                 // click on the drawn scrollbar's track pages that list.
-                if self.screen == Screen::VarManager {
+                if self.screen == Screen::Manage {
                     self.varmanager.handle_scroll(delta);
                     return true;
                 }
@@ -2644,7 +2649,7 @@ impl App {
                 // The Manager caches per-env rows; an env switched under it
                 // (alt+c is whitelisted through its input capture) must show
                 // the new env's values.
-                if self.screen == Screen::VarManager {
+                if self.screen == Screen::Manage {
                     self.varmanager.sync(&self.project);
                 }
                 let label = self.project.env_label();
@@ -2945,14 +2950,23 @@ impl App {
                 }
                 true
             }
-            Action::OpenVarManager => {
-                // A toggle: alt+v (and the header vars chip) close the
-                // manager they opened.
-                if self.screen == Screen::VarManager {
+            Action::OpenManage { tab } => {
+                // A toggle: alt+v (and the header Manage chip) close the
+                // screen they opened. A request for the tab that's already
+                // up toggles too; a request for a different tab switches.
+                let target = tab.unwrap_or(self.manage.tab);
+                if self.screen == Screen::Manage && (tab.is_none() || self.manage.tab == target) {
                     return self.update(Action::CloseScreen);
                 }
-                self.prior_focus = self.focus;
-                self.screen = Screen::VarManager;
+                self.manage.tab = target;
+                if self.screen != Screen::Manage {
+                    self.prior_focus = self.focus;
+                    self.screen = Screen::Manage;
+                }
+                true
+            }
+            Action::SelectManageTab(tab) => {
+                self.manage.tab = tab;
                 true
             }
             Action::CloseScreen => {
@@ -5193,7 +5207,7 @@ impl App {
             self.enter_space(&space);
         }
         self.refresh_sidebar();
-        if self.screen == Screen::VarManager {
+        if self.screen == Screen::Manage {
             self.varmanager.sync(&self.project);
         }
         if let Some(open) = self.editor.slug.clone()
@@ -5586,7 +5600,7 @@ impl App {
             }
             return false;
         }
-        if self.screen == Screen::VarManager {
+        if self.screen == Screen::Manage {
             if let Some((_, input)) = self.varmanager.form.editing.as_mut() {
                 input.paste(text);
                 return self.update(Action::Render);
@@ -5657,7 +5671,7 @@ impl App {
         if let Some(input) = self.modals.focused_input() {
             return input.selected_text();
         }
-        if self.screen == Screen::VarManager {
+        if self.screen == Screen::Manage {
             if let Some((_, input)) = self.varmanager.form.editing.as_ref() {
                 return input.selected_text();
             }
@@ -6211,15 +6225,37 @@ impl App {
                     _ => true,
                 };
             }
+            // alt+←/→ walk the Manage screen's tab strip, wrapping —
+            // above every tab body's own keys, since the strip belongs to
+            // the shell rather than to whichever tab is up.
+            if self.screen == Screen::Manage
+                && ev.modifiers.contains(KeyModifiers::ALT)
+                && matches!(ev.code, KeyCode::Left | KeyCode::Right)
+            {
+                let delta = if ev.code == KeyCode::Right { 1 } else { -1 };
+                return self.update(Action::SelectManageTab(self.manage.tab.cycle(delta)));
+            }
+            // The Environments and Spaces tabs have no body yet (Task 14):
+            // Esc closes the screen, `q` quits, everything else is
+            // swallowed like any other non-`Main` screen.
+            if self.screen == Screen::Manage
+                && self.manage.tab != crate::components::manage::ManageTab::Variables
+            {
+                return match ev.code {
+                    KeyCode::Esc => self.update(Action::CloseScreen),
+                    KeyCode::Char('q') => self.update(Action::Quit),
+                    _ => true,
+                };
+            }
             // A variable-form field under edit owns the keyboard: `Esc`
             // reverts, `Enter` commits (through `commit_var_form`, which
             // needs the mutable project access `VarManager::handle_key`'s
             // shared `&ProjectContext` can't give it), everything else is
             // forwarded straight to its `LineInput`.
-            if self.screen == Screen::VarManager && self.varmanager.form.editing.is_some() {
+            if self.screen == Screen::Manage && self.varmanager.form.editing.is_some() {
                 return self.handle_var_form_key(ev);
             }
-            if self.screen == Screen::VarManager && self.varmanager.grid.editing.is_some() {
+            if self.screen == Screen::Manage && self.varmanager.grid.editing.is_some() {
                 return self.handle_grid_key(ev);
             }
             let open_request = self
@@ -6807,7 +6843,7 @@ impl App {
                     // no longer matches disk.
                     self.apply(Action::ReloadProjectFiles);
                     self.refresh_sidebar();
-                    if self.screen == Screen::VarManager {
+                    if self.screen == Screen::Manage {
                         self.varmanager.sync(&self.project);
                     }
                     return false; // step dropped; earlier writes in this step stand
@@ -6824,7 +6860,7 @@ impl App {
                 // Manager grid/form cache the current declarations and
                 // won't otherwise notice a var/env/secrets file an undo or
                 // redo just rewrote out from under them.
-                if self.screen == Screen::VarManager {
+                if self.screen == Screen::Manage {
                     self.varmanager.sync(&self.project);
                 }
                 // If the open request's file went absent in this step, it
@@ -6959,7 +6995,7 @@ fn screen_escape_whitelist(action: &Action) -> bool {
         action,
         Action::OpenPalette
             | Action::OpenThemeChooser
-            | Action::OpenVarManager
+            | Action::OpenManage { .. }
             | Action::CloseScreen
             | Action::Quit
             | Action::Undo

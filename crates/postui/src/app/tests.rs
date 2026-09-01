@@ -1924,7 +1924,7 @@ fn the_header_env_chip_still_switches_environments_on_the_manager_screen() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.update(Action::OpenVarManager);
+    app.update(Action::OpenManage { tab: None });
     render_once(&mut app);
     assert!(rendered_text(&mut app).contains("qa \u{25be}"));
 
@@ -1960,7 +1960,7 @@ fn the_manager_left_list_lists_variables_then_selectors() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.update(Action::OpenVarManager);
+    app.update(Action::OpenManage { tab: None });
     let content = rendered_text(&mut app);
     assert!(
         content.contains("VARIABLES") && content.contains("SELECTORS"),
@@ -1991,7 +1991,7 @@ fn right_clicking_a_left_row_opens_its_rename_duplicate_delete_menu() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.update(Action::OpenVarManager);
+    app.update(Action::OpenManage { tab: None });
     rendered_text(&mut app);
 
     use crate::components::varmanager::VmRow;
@@ -2073,14 +2073,14 @@ fn header_vars_button_toggles_the_variable_manager() {
     render_once(&mut app);
     let r = app
         .hits
-        .rect_of(&crate::hit::Hit::HeaderVars)
+        .rect_of(&crate::hit::Hit::HeaderManage)
         .expect("vars button registered in the header");
     app.handle_mouse(left_down(r.x, r.y));
-    assert_eq!(app.screen, crate::app::Screen::VarManager);
+    assert_eq!(app.screen, crate::app::Screen::Manage);
     render_once(&mut app);
     let r = app
         .hits
-        .rect_of(&crate::hit::Hit::HeaderVars)
+        .rect_of(&crate::hit::Hit::HeaderManage)
         .expect("vars button still present on the manager screen");
     app.handle_mouse(left_down(r.x, r.y));
     assert_eq!(
@@ -5265,7 +5265,7 @@ fn ctrl_c_copies_a_var_form_selection_on_the_varmanager_screen() {
         65536,
         false,
     ));
-    app.screen = Screen::VarManager;
+    app.screen = Screen::Manage;
     let mut input = crate::components::line_input::LineInput::new("token value");
     input.select_all();
     app.varmanager.form.editing = Some((VmField::Default, input));
@@ -6480,7 +6480,7 @@ fn alt_v_opens_the_manager_and_renders_its_title() {
     let mut app = App::new_for_test();
     let keymap = Keymap::default_bindings();
     app.handle_key(&keymap, alt('v'));
-    assert_eq!(app.screen, crate::app::Screen::VarManager);
+    assert_eq!(app.screen, crate::app::Screen::Manage);
     let content = rendered_text(&mut app);
     assert!(content.contains("VARIABLES"), "the left list's own heading");
     assert!(
@@ -6490,15 +6490,19 @@ fn alt_v_opens_the_manager_and_renders_its_title() {
 }
 
 #[test]
-fn palette_variable_manager_command_opens_the_manager() {
+fn palette_manage_command_opens_the_manage_screen() {
     let mut app = App::new_for_test();
     let keymap = Keymap::default_bindings();
     app.update(Action::OpenPalette);
-    for c in "Variable Manager".chars() {
+    for c in "Manage: variables".chars() {
         app.handle_key(&keymap, plain(c));
     }
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert_eq!(app.screen, crate::app::Screen::VarManager);
+    assert_eq!(app.screen, crate::app::Screen::Manage);
+    assert_eq!(
+        app.manage.tab,
+        crate::components::manage::ManageTab::Variables
+    );
     assert!(
         app.modals.is_empty(),
         "palette closes after running the command"
@@ -6511,7 +6515,7 @@ fn esc_returns_to_main_with_prior_focus_restored() {
     app.focus = PaneId::Response;
     let keymap = Keymap::default_bindings();
     app.handle_key(&keymap, alt('v'));
-    assert_eq!(app.screen, crate::app::Screen::VarManager);
+    assert_eq!(app.screen, crate::app::Screen::Manage);
 
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(app.screen, crate::app::Screen::Main);
@@ -6523,14 +6527,14 @@ fn modals_still_open_and_close_on_top_of_the_manager_screen() {
     let mut app = App::new_for_test();
     let keymap = Keymap::default_bindings();
     app.handle_key(&keymap, alt('v'));
-    assert_eq!(app.screen, crate::app::Screen::VarManager);
+    assert_eq!(app.screen, crate::app::Screen::Manage);
 
     // ctrl+p still opens the palette on top of the Manager screen.
     app.handle_key(&keymap, ctrl('p'));
     assert!(!app.modals.is_empty());
     assert_eq!(
         app.screen,
-        crate::app::Screen::VarManager,
+        crate::app::Screen::Manage,
         "opening a modal must not leave the screen"
     );
 
@@ -6539,7 +6543,7 @@ fn modals_still_open_and_close_on_top_of_the_manager_screen() {
     assert!(app.modals.is_empty());
     assert_eq!(
         app.screen,
-        crate::app::Screen::VarManager,
+        crate::app::Screen::Manage,
         "closing the modal must not also leave the screen"
     );
 }
@@ -6567,7 +6571,7 @@ fn plain_q_types_into_a_live_grid_edit_instead_of_quitting() {
 #[test]
 fn manager_screen_replaces_the_three_panes_but_keeps_header_and_footer() {
     let mut app = App::new_for_test();
-    app.update(Action::OpenVarManager);
+    app.update(Action::OpenManage { tab: None });
     let content = rendered_text(&mut app);
     assert!(content.contains("postui"), "header wordmark stays");
     assert!(
@@ -6591,7 +6595,7 @@ fn ctrl_r_and_ctrl_enter_do_not_send_from_the_manager_screen() {
     let mut app = App::new_for_test();
     let keymap = Keymap::default_bindings();
     app.handle_key(&keymap, alt('v'));
-    assert_eq!(app.screen, crate::app::Screen::VarManager);
+    assert_eq!(app.screen, crate::app::Screen::Manage);
     assert!(app.toasts.is_empty());
 
     app.handle_key(&keymap, ctrl('r'));
@@ -6600,7 +6604,7 @@ fn ctrl_r_and_ctrl_enter_do_not_send_from_the_manager_screen() {
         "ctrl+r must not reach Action::Send (an empty-URL send would toast)"
     );
     assert!(app.session.in_flight.is_empty());
-    assert_eq!(app.screen, crate::app::Screen::VarManager);
+    assert_eq!(app.screen, crate::app::Screen::Manage);
 
     app.handle_key(
         &keymap,
@@ -6611,7 +6615,7 @@ fn ctrl_r_and_ctrl_enter_do_not_send_from_the_manager_screen() {
         "ctrl+enter must not reach Action::Send either"
     );
     assert!(app.session.in_flight.is_empty());
-    assert_eq!(app.screen, crate::app::Screen::VarManager);
+    assert_eq!(app.screen, crate::app::Screen::Manage);
 }
 
 /// Same finding: alt+u (`Action::FocusUrl`) must not silently reassign
@@ -6623,7 +6627,7 @@ fn alt_u_does_not_move_focus_from_the_manager_screen() {
     app.focus = PaneId::Response;
     let keymap = Keymap::default_bindings();
     app.handle_key(&keymap, alt('v'));
-    assert_eq!(app.screen, crate::app::Screen::VarManager);
+    assert_eq!(app.screen, crate::app::Screen::Manage);
 
     app.handle_key(&keymap, alt('u'));
     assert_eq!(
@@ -6651,7 +6655,7 @@ fn other_unwhitelisted_global_shortcuts_are_swallowed_by_the_manager_screen() {
     let mut app = App::new_for_test();
     let keymap = Keymap::default_bindings();
     app.handle_key(&keymap, alt('v'));
-    assert_eq!(app.screen, crate::app::Screen::VarManager);
+    assert_eq!(app.screen, crate::app::Screen::Manage);
     assert!(app.toasts.is_empty());
 
     app.handle_key(&keymap, alt('o')); // CycleProject: would toast "only one project registered"
@@ -6659,7 +6663,7 @@ fn other_unwhitelisted_global_shortcuts_are_swallowed_by_the_manager_screen() {
         app.toasts.is_empty(),
         "alt+o must not reach Action::CycleProject"
     );
-    assert_eq!(app.screen, crate::app::Screen::VarManager);
+    assert_eq!(app.screen, crate::app::Screen::Manage);
 }
 
 /// Unlike send/focus/cycle-project, the active environment IS meaningful
@@ -6671,7 +6675,7 @@ fn alt_c_cycles_env_from_the_manager_screen() {
     let (mut app, _dir) = app_with_envs();
     let keymap = Keymap::default_bindings();
     app.handle_key(&keymap, alt('v'));
-    assert_eq!(app.screen, crate::app::Screen::VarManager);
+    assert_eq!(app.screen, crate::app::Screen::Manage);
     assert_eq!(app.project.env_label(), "no env");
 
     app.handle_key(&keymap, alt('c'));
@@ -6682,7 +6686,7 @@ fn alt_c_cycles_env_from_the_manager_screen() {
     );
     assert_eq!(
         app.screen,
-        crate::app::Screen::VarManager,
+        crate::app::Screen::Manage,
         "cycling the env must not leave the screen"
     );
 }
@@ -6694,13 +6698,13 @@ fn ctrl_p_still_opens_the_palette_on_top_of_the_manager_screen() {
     let mut app = App::new_for_test();
     let keymap = Keymap::default_bindings();
     app.handle_key(&keymap, alt('v'));
-    assert_eq!(app.screen, crate::app::Screen::VarManager);
+    assert_eq!(app.screen, crate::app::Screen::Manage);
 
     app.handle_key(&keymap, ctrl('p'));
     assert!(matches!(app.modals.top(), Some(Modal::Palette(_))));
     assert_eq!(
         app.screen,
-        crate::app::Screen::VarManager,
+        crate::app::Screen::Manage,
         "opening the palette must not leave the screen"
     );
 }
@@ -6720,13 +6724,13 @@ fn alt_t_opens_the_theme_chooser_on_main_and_the_manager_screen() {
     app.update(Action::Close);
 
     app.handle_key(&keymap, alt('v'));
-    assert_eq!(app.screen, crate::app::Screen::VarManager);
+    assert_eq!(app.screen, crate::app::Screen::Manage);
     app.handle_key(&keymap, alt('t'));
     assert!(
         matches!(app.modals.top(), Some(Modal::Chooser(_))),
         "alt+t escapes the manager screen's input capture"
     );
-    assert_eq!(app.screen, crate::app::Screen::VarManager);
+    assert_eq!(app.screen, crate::app::Screen::Manage);
 }
 
 /// alt+t is a toggle: pressed again over the open theme picker it closes
@@ -7011,9 +7015,9 @@ fn var_edit_a_failed_write_toasts_and_writes_nothing() {
 /// panicking if none does — `rendered_text` first so `left_rows` is
 /// populated (the list only rebuilds inside `draw`).
 fn goto_row(app: &mut App, pred: impl Fn(&crate::components::varmanager::VmRow) -> bool) {
-    // OpenVarManager is a toggle now — only open when not already there.
-    if app.screen != crate::app::Screen::VarManager {
-        app.update(Action::OpenVarManager);
+    // OpenManage is a toggle now — only open when not already there.
+    if app.screen != crate::app::Screen::Manage {
+        app.update(Action::OpenManage { tab: None });
     }
     rendered_text(app);
     let i = app
@@ -7643,7 +7647,7 @@ fn var_struct_delete_var_removes_the_declaration_and_clamps_the_cursor() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.update(Action::OpenVarManager);
+    app.update(Action::OpenManage { tab: None });
     rendered_text(&mut app);
     app.varmanager.left_cursor = app.varmanager.left_rows.len() + 5;
 
@@ -8307,7 +8311,7 @@ fn clicking_the_new_variable_button_opens_the_new_variable_prompt() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.update(Action::OpenVarManager);
+    app.update(Action::OpenManage { tab: None });
     rendered_text(&mut app);
 
     let rect = app
@@ -10070,7 +10074,7 @@ fn alt_v_toggles_the_variable_manager_closed_and_restores_focus() {
     let alt_v = KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT);
 
     app.handle_key(&keymap, alt_v);
-    assert_eq!(app.screen, Screen::VarManager);
+    assert_eq!(app.screen, Screen::Manage);
     app.handle_key(&keymap, alt_v);
     assert_eq!(app.screen, Screen::Main, "alt+v closes the open manager");
     assert_eq!(app.focus, PaneId::Response, "prior focus restored");
@@ -10079,7 +10083,7 @@ fn alt_v_toggles_the_variable_manager_closed_and_restores_focus() {
 #[test]
 fn plain_q_quits_from_the_variable_manager() {
     let mut app = App::new_for_test();
-    app.update(Action::OpenVarManager);
+    app.update(Action::OpenManage { tab: None });
     app.handle_key(&Keymap::default_bindings(), plain('q'));
     assert!(app.should_quit);
 }
@@ -11426,7 +11430,7 @@ fn the_quit_chip_shows_ctrl_c_wherever_plain_q_would_type() {
 
     // The manager binds plain q to quit in every focus stop, so the chip
     // advertises it there.
-    app.update(Action::OpenVarManager);
+    app.update(Action::OpenManage { tab: None });
     let content = rendered_text(&mut app);
     assert!(content.contains("q  quit"), "{content}");
 }
@@ -11748,7 +11752,7 @@ fn keyboard_enters_the_variable_form_and_edits_its_fields() {
     // screen, same leave-the-inner-thing-first rhythm as the grid.
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert_eq!(app.varmanager.focus, VmFocus::List);
-    assert_eq!(app.screen, Screen::VarManager, "the screen stays open");
+    assert_eq!(app.screen, Screen::Manage, "the screen stays open");
 }
 
 /// With the form focused, the footer advertises the form's own quick
@@ -11950,7 +11954,7 @@ fn vm_footer_drops_chips_with_no_target() {
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
     // Fresh open: nothing selected, no detail — no rename/delete chips.
-    app.update(Action::OpenVarManager);
+    app.update(Action::OpenManage { tab: None });
     let keys: Vec<&str> = app
         .varmanager
         .footer_chips(&app.project, None)
@@ -12383,7 +12387,7 @@ fn the_keyboard_reaches_the_grid_selects_a_row_and_edits_the_focused_cell() {
     assert_eq!(app.varmanager.focus, VmFocus::Grid);
     app.handle_key(&keymap, arrow(KeyCode::Esc));
     assert_eq!(app.varmanager.focus, VmFocus::List);
-    assert_eq!(app.screen, Screen::VarManager);
+    assert_eq!(app.screen, Screen::Manage);
     app.handle_key(&keymap, arrow(KeyCode::Esc));
     assert_eq!(app.screen, Screen::Main);
 }
@@ -12689,7 +12693,7 @@ fn esc_quits_the_app_from_the_testbed_screen() {
 /// path, mouse dispatch (`App::on_hit`, via `handle_mouse`) had no
 /// `Screen::Testbed` guard, so a click on e.g. the project/env/vars chips or
 /// a footer action chip could open a chooser, a modal, or navigate into
-/// `Screen::VarManager` right out from under the showcase, with no way back
+/// `Screen::Manage` right out from under the showcase, with no way back
 /// short of quitting. Every click but the footer's own quit chip must be a
 /// pure no-op here.
 #[test]
@@ -12703,11 +12707,11 @@ fn testbed_screen_ignores_every_mouse_click_except_the_quit_chip() {
         "a header-chip click must not open the project chooser from the testbed"
     );
 
-    click_hit(&mut app, Hit::HeaderVars);
+    click_hit(&mut app, Hit::HeaderManage);
     assert_eq!(
         app.screen,
         crate::app::Screen::Testbed,
-        "a header-chip click must not navigate into the Variable Manager"
+        "a header-chip click must not navigate into the Manage screen"
     );
 
     click_hit(&mut app, Hit::FooterChip(Action::OpenPalette));
@@ -13049,6 +13053,62 @@ fn caret_resting_in_a_token_shows_its_tooltip_only_after_the_wall_clock_dwell() 
         Some("base".to_string()),
         "must show once the caret has rested past the dwell"
     );
+}
+
+// --- Task 9: the Manage screen's tabbed shell --------------------------
+
+#[test]
+fn manage_opens_on_the_requested_tab_and_alt_arrows_cycle_tabs() {
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::OpenManage {
+        tab: Some(crate::components::manage::ManageTab::Spaces),
+    });
+    assert_eq!(app.screen, Screen::Manage);
+    assert_eq!(app.manage.tab, crate::components::manage::ManageTab::Spaces);
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::ALT));
+    assert_eq!(
+        app.manage.tab,
+        crate::components::manage::ManageTab::Variables,
+        "wraps"
+    );
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Left, KeyModifiers::ALT));
+    assert_eq!(app.manage.tab, crate::components::manage::ManageTab::Spaces);
+    app.update(Action::OpenManage { tab: None });
+    assert_eq!(app.screen, Screen::Main, "alt+v toggles closed");
+    app.update(Action::OpenManage { tab: None });
+    assert_eq!(
+        app.manage.tab,
+        crate::components::manage::ManageTab::Spaces,
+        "reopens on the last tab"
+    );
+}
+
+#[test]
+fn manage_bar_paints_three_tabs_and_clicking_one_selects_it() {
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::OpenManage { tab: None });
+    let text = rendered_text(&mut app);
+    for label in ["Variables", "Environments", "Spaces"] {
+        assert!(text.contains(label), "{label} missing: {text}");
+    }
+    click_hit(&mut app, Hit::ManageTab(1));
+    assert_eq!(
+        app.manage.tab,
+        crate::components::manage::ManageTab::Environments
+    );
+}
+
+#[test]
+fn header_chip_reads_manage_and_toggles_the_screen() {
+    let (mut app, _dir) = spaced_app();
+    let text = rendered_text(&mut app);
+    assert!(text.contains(" Manage "), "{text}");
+    assert!(!text.contains("Variable Manager"));
+    click_hit(&mut app, Hit::HeaderManage);
+    assert_eq!(app.screen, Screen::Manage);
+    click_hit(&mut app, Hit::HeaderManage);
+    assert_eq!(app.screen, Screen::Main);
 }
 
 mod undo_tests {

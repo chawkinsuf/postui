@@ -291,7 +291,7 @@ impl App {
                 {
                     return self.update(Action::Render);
                 }
-                if self.screen == Screen::VarManager {
+                if self.screen == Screen::Manage {
                     let d = if m.kind == MouseEventKind::ScrollUp {
                         -3
                     } else {
@@ -315,7 +315,7 @@ impl App {
                 // moves the response viewport over its clipped columns.
                 // Modals and the Variable Manager have nothing to scroll
                 // sideways, and neither does any other pane.
-                if !self.modals.is_empty() || self.screen == Screen::VarManager {
+                if !self.modals.is_empty() || self.screen == Screen::Manage {
                     return false;
                 }
                 if self.hits.pane_at(m.column, m.row) == Some(PaneId::Response) {
@@ -388,7 +388,7 @@ impl App {
         // The Variable Manager screen replaces the whole body, sidebar
         // included: while it is up, the sidebar's pane slot belongs to its
         // left list (see `VarManager::scrollbar_spec`).
-        if self.screen == Screen::VarManager {
+        if self.screen == Screen::Manage {
             return self.varmanager.scrollbar_spec().filter(|s| s.pane == pane);
         }
         match pane {
@@ -420,7 +420,7 @@ impl App {
         if offset == spec.offset {
             return false;
         }
-        if self.screen == Screen::VarManager {
+        if self.screen == Screen::Manage {
             self.varmanager.set_scroll(offset);
             return true;
         }
@@ -665,14 +665,14 @@ impl App {
             // registers Hit::FooterChip(CycleSplit) outside `footer_chips`,
             // so the parity sweep's Group A never sees it.
             Action::CycleSplit,
-            Action::OpenVarManager,     // Hit::HeaderVars
-            Action::OpenThemeChooser,   // Hit::HeaderTheme
-            Action::OpenMethodDropdown, // Hit::MethodSelector
-            Action::FocusUrl,           // Hit::UrlBar
-            Action::Send,               // Hit::SendButton (not in flight)
-            Action::EditorTabSelect(0), // Hit::EditorTab, any draw position
-            Action::EditorTabSelect(1), // (converted through
-            Action::EditorTabSelect(2), //  EditorTab::from_draw_position(..).index())
+            Action::OpenManage { tab: None }, // Hit::HeaderManage
+            Action::OpenThemeChooser,         // Hit::HeaderTheme
+            Action::OpenMethodDropdown,       // Hit::MethodSelector
+            Action::FocusUrl,                 // Hit::UrlBar
+            Action::Send,                     // Hit::SendButton (not in flight)
+            Action::EditorTabSelect(0),       // Hit::EditorTab, any draw position
+            Action::EditorTabSelect(1),       // (converted through
+            Action::EditorTabSelect(2),       //  EditorTab::from_draw_position(..).index())
             Action::EditorTabSelect(3),
         ]
     }
@@ -786,13 +786,10 @@ impl App {
             Hit::HeaderEnv => self.update(Action::OpenEnvChooser),
             Hit::HeaderEnvCycle => self.update(Action::CycleEnv),
             Hit::HeaderTheme => self.update(Action::OpenThemeChooser),
-            Hit::HeaderVars => {
-                if self.screen == crate::app::Screen::VarManager {
-                    self.update(Action::CloseScreen)
-                } else {
-                    self.update(Action::OpenVarManager)
-                }
-            }
+            Hit::HeaderManage => self.update(Action::OpenManage { tab: None }),
+            Hit::ManageTab(i) => self.update(Action::SelectManageTab(
+                crate::components::manage::ManageTab::from_index(i),
+            )),
             Hit::FooterChip(action) => {
                 // Chips that live inside the request panel (the Body
                 // toolbar row, the address bar's TLS lock, the split

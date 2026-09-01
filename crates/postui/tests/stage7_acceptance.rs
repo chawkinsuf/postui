@@ -627,8 +627,8 @@ fn a_legacy_project_migrates_then_grows_a_group_whose_selection_drives_resolutio
     );
 
     // --- into the Manager, from the header chip ---
-    click(&mut app, Hit::HeaderVars);
-    assert_eq!(app.screen, postui::app::Screen::VarManager);
+    click(&mut app, Hit::HeaderManage);
+    assert_eq!(app.screen, postui::app::Screen::Manage);
     // Entries belong to an environment, so pick one — from the header's
     // env chip, still on screen above the Manager. `qa` is the only one.
     assert_eq!(app.project.active_env, None);

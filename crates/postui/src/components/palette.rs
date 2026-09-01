@@ -246,10 +246,28 @@ pub fn all_commands() -> Vec<Command> {
             action: Action::OpenResponseSearch,
         },
         Command {
-            id: "var-manager",
-            name: "Variable Manager",
-            description: "Open the full variable/environment manager",
-            action: Action::OpenVarManager,
+            id: "manage-variables",
+            name: "Manage: variables",
+            description: "Open the Manage screen's Variables tab",
+            action: Action::OpenManage {
+                tab: Some(crate::components::manage::ManageTab::Variables),
+            },
+        },
+        Command {
+            id: "manage-environments",
+            name: "Manage: environments",
+            description: "Open the Manage screen's Environments tab",
+            action: Action::OpenManage {
+                tab: Some(crate::components::manage::ManageTab::Environments),
+            },
+        },
+        Command {
+            id: "manage-spaces",
+            name: "Manage: spaces",
+            description: "Open the Manage screen's Spaces tab",
+            action: Action::OpenManage {
+                tab: Some(crate::components::manage::ManageTab::Spaces),
+            },
         },
         Command {
             id: "vars-new-variable",
@@ -320,7 +338,7 @@ fn keymap_action_name(command_id: &str) -> Option<&'static str> {
         "env-next" => Some("env_cycle"),
         "table-add-row" => Some("table_add_row"),
         "vars-insert" => Some("pick_variable"),
-        "var-manager" => Some("var_manager_open"),
+        "manage-variables" => Some("manage_open"),
         "vars-extract" => Some("extract_to_variable"),
         "undo" => Some("undo"),
         "redo" => Some("redo"),

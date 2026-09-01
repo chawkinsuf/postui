@@ -459,9 +459,6 @@ pub struct VarManager {
     visible_rows: usize,
 }
 
-/// The top bar's height, matching the header/footer's 3-row painted rhythm
-/// (and exactly one painted button tall).
-pub const TITLE_HEIGHT: u16 = BUTTON_HEIGHT;
 /// The left list's fixed width (spec §3.4's mock).
 pub const LEFT_W: u16 = 28;
 
@@ -1428,10 +1425,11 @@ impl VarManager {
         height as usize
     }
 
-    /// Paints the screen: the top bar (environment switcher + `+ Variable` /
-    /// `+ Group`), the fixed-width left list, and the detail pane —
-    /// [`draw_var_form`] for a selected variable, a placeholder otherwise
-    /// (a selected selector is Task 16's job).
+    /// Paints the Variables tab's body into `area`: the fixed-width left
+    /// list and the detail pane — [`draw_var_form`] for a selected
+    /// variable, a placeholder otherwise (a selected selector is Task
+    /// 16's job). The top bar above it belongs to the Manage screen's
+    /// shell ([`crate::components::manage::draw_manage_bar`]).
     ///
     /// `open_request` is the request-scope half of the variable form: the
     /// Promote button's precondition (whether the open request
@@ -1456,25 +1454,14 @@ impl VarManager {
             return;
         }
 
-        let bar = Rect {
-            height: TITLE_HEIGHT.min(area.height),
-            ..area
-        };
-        let body = Rect {
-            y: area.y + bar.height,
-            height: area.height - bar.height,
-            ..area
-        };
-        self.draw_top_bar(frame, bar, theme, hits, hovered);
-
         let left = Rect {
-            width: LEFT_W.min(body.width),
-            ..body
+            width: LEFT_W.min(area.width),
+            ..area
         };
         let right = Rect {
-            x: body.x + left.width,
-            width: body.width - left.width,
-            ..body
+            x: area.x + left.width,
+            width: area.width - left.width,
+            ..area
         };
         self.draw_left(frame, left, theme, ctx, hits, hovered);
         self.grid_area = Rect::default();
@@ -2137,82 +2124,6 @@ impl VarManager {
         hits.register(area, hit);
     }
 
-    fn draw_top_bar(
-        &self,
-        frame: &mut Frame,
-        bar: Rect,
-        theme: &Theme,
-        hits: &mut HitMap,
-        hovered: Option<&Hit>,
-    ) {
-        let buf = frame.buffer_mut();
-        fill(buf, bar, theme.panel);
-        if bar.height < BUTTON_HEIGHT {
-            return;
-        }
-
-        let state_of = |hit: &Hit| {
-            if hovered == Some(hit) {
-                ControlState::Hover
-            } else {
-                ControlState::Normal
-            }
-        };
-
-        // Right-aligned buttons, laid out from the bar's right edge inward.
-        // Environment switching lives in the header's env chip (still
-        // visible on this screen and opening the same anchored dropdown),
-        // so the bar carries no switcher of its own. The close button
-        // rides along as the mouse's way back to the main screen (the
-        // header's vars chip toggles it too), labelled with the key that
-        // does the same thing.
-        let left_edge = bar.x + 1;
-        let mut x = bar.x + bar.width;
-        for (label, kind, hit) in [
-            (
-                "Close (esc)",
-                ButtonKind::Secondary,
-                Hit::FooterChip(Action::CloseScreen),
-            ),
-            ("+ Selector", ButtonKind::Secondary, Hit::VmNewSelector),
-            ("+ Variable", ButtonKind::Primary, Hit::VmNewVar),
-        ] {
-            let w = button_min_width(label);
-            if x < left_edge + w + 2 {
-                break;
-            }
-            x -= w + 1;
-            let rect = Rect {
-                x,
-                y: bar.y,
-                width: w,
-                height: BUTTON_HEIGHT,
-            };
-            let state = state_of(&hit);
-            Button { label, kind, state }.paint(buf, rect, theme);
-            hits.register(rect, hit);
-        }
-
-        // Where the bar's own env switcher used to sit: a standing pointer
-        // at the header chip, since the environment picks what this whole
-        // screen edits. Drawn after the buttons so it clips to whatever
-        // room they left rather than colliding on a narrow bar.
-        let hint = "select an environment to edit its variables";
-        let room = x.saturating_sub(left_edge + 1) as usize;
-        let hint: String = hint.chars().take(room).collect();
-        if !hint.is_empty() {
-            text(
-                buf,
-                left_edge + 1,
-                bar.y + BUTTON_HEIGHT / 2,
-                &hint,
-                theme.text_muted,
-                theme.panel,
-                false,
-            );
-        }
-    }
-
     fn draw_left(
         &mut self,
         frame: &mut Frame,
@@ -2577,27 +2488,6 @@ fields = ["user_id", "customer_id"]
 
         vm.handle_key(key(KeyCode::Up), &ctx, None);
         assert_eq!(vm.detail, VmDetail::Var("api_key".into()));
-    }
-
-    #[test]
-    fn top_bar_registers_both_new_buttons() {
-        let (_dir, ctx) = fixture();
-        let mut vm = VarManager::default();
-        let (content, hits) = render(&mut vm, &ctx);
-        assert!(
-            content.contains("select an environment to edit its variables"),
-            "the standing pointer at the header env chip: {content}"
-        );
-        assert!(hits.rect_of(&Hit::VmNewVar).is_some());
-        assert!(hits.rect_of(&Hit::VmNewSelector).is_some());
-        assert!(content.contains("+ Variable"), "{content}");
-        assert!(content.contains("+ Selector"), "{content}");
-        assert!(content.contains("Close (esc)"), "{content}");
-        assert!(
-            hits.rect_of(&Hit::FooterChip(Action::CloseScreen))
-                .is_some(),
-            "the close button is the mouse's way back"
-        );
     }
 
     #[test]

@@ -3,6 +3,7 @@ use crate::components::{Component, DrawCtx};
 use crate::hit::Hit;
 use crate::layout::{PaneId, compute_layout};
 use ratatui::Frame;
+use ratatui::layout::Rect;
 
 /// Takes `&mut App` because components draw through `Component::draw(&mut
 /// self, ..)`: the body editor's widget needs `&mut EditorState` to record the
@@ -66,7 +67,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         &app.theme,
         &project_name,
         &env_label,
-        screen == Screen::VarManager,
+        screen == Screen::Manage,
         // The save/discard group shows only where its keys actually work:
         // the Main screen (`ctrl+s` is not on other screens' whitelist)
         // with no modal capturing the keyboard — and only while there is
@@ -130,21 +131,44 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             };
             focus_bar(frame.buffer_mut(), focused_rect, theme);
         }
-        Screen::VarManager => {
-            let open_request = app
-                .editor
-                .slug
-                .is_some()
-                .then(|| app.editor.current_request());
-            app.varmanager.draw(
+        Screen::Manage => {
+            let bar = Rect {
+                height: crate::components::manage::BAR_HEIGHT.min(layout.body.height),
+                ..layout.body
+            };
+            let body = Rect {
+                y: layout.body.y + bar.height,
+                height: layout.body.height - bar.height,
+                ..layout.body
+            };
+            crate::components::manage::draw_manage_bar(
                 frame,
-                layout.body,
+                bar,
                 &app.theme,
-                &app.project,
-                open_request.as_ref(),
+                app.manage.tab,
                 &mut hits,
                 app.hovered.as_ref(),
             );
+            match app.manage.tab {
+                crate::components::manage::ManageTab::Variables => {
+                    let open_request = app
+                        .editor
+                        .slug
+                        .is_some()
+                        .then(|| app.editor.current_request());
+                    app.varmanager.draw(
+                        frame,
+                        body,
+                        &app.theme,
+                        &app.project,
+                        open_request.as_ref(),
+                        &mut hits,
+                        app.hovered.as_ref(),
+                    );
+                }
+                // Task 14 fills these in; a flat panel until then.
+                _ => crate::paint::fill(frame.buffer_mut(), body, app.theme.page),
+            }
         }
         Screen::Testbed => {
             let ctx = DrawCtx {
@@ -159,7 +183,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         }
     }
 
-    // The Variable Manager screen swaps in its own chip set — the per-pane
+    // The Manage screen swaps in its own chip set — the per-pane
     // chips' actions target requests, which aren't on screen there. An
     // open modal with chips of its own wins over both: while it captures
     // the keyboard, its quick actions are the only ones that work.
@@ -173,11 +197,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         && (app.screen == Screen::Main && matches!(focus, PaneId::Sidebar | PaneId::Response)
             // The manager binds plain q to quit in every focus stop; only
             // a live edit types it.
-            || app.screen == Screen::VarManager
-                && app.varmanager.form.editing.is_none()
-                && app.varmanager.grid.editing.is_none());
+            || app.screen == Screen::Manage
+                && (app.manage.tab != crate::components::manage::ManageTab::Variables
+                    || app.varmanager.form.editing.is_none()
+                        && app.varmanager.grid.editing.is_none()));
     let vm_chips = modal_chips.or_else(|| {
-        (app.screen == Screen::VarManager).then(|| {
+        (app.screen == Screen::Manage).then(|| {
+            if app.manage.tab != crate::components::manage::ManageTab::Variables {
+                // Task 14 supplies the other tabs' chips.
+                return Vec::new();
+            }
             let open_request = app
                 .editor
                 .slug

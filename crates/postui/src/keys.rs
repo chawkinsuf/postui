@@ -276,7 +276,7 @@ pub(crate) fn named_actions() -> Vec<(&'static str, Action)> {
         ("toggle_response_collapse", Action::ToggleResponseCollapse),
         ("cycle_split", Action::CycleSplit),
         ("cycle_split_back", Action::CycleSplitBack),
-        ("var_manager_open", Action::OpenVarManager),
+        ("manage_open", Action::OpenManage { tab: None }),
         ("extract_to_variable", Action::ExtractToVariable),
         ("request_duplicate", Action::DuplicateRequest),
         ("undo", Action::Undo),
@@ -368,7 +368,7 @@ impl Keymap {
             ("alt+p", Action::ToggleTableCollapse),
             ("alt+w", Action::CycleSplit),
             ("shift+alt+w", Action::CycleSplitBack),
-            ("alt+v", Action::OpenVarManager),
+            ("alt+v", Action::OpenManage { tab: None }),
             ("ctrl+shift+e", Action::ExtractToVariable),
             ("ctrl+shift+d", Action::DuplicateRequest),
             ("ctrl+z", Action::Undo),
@@ -771,7 +771,7 @@ mod tests {
             Some(Action::OpenVarPicker { completing: false }),
             "the variable picker moved off the OS paste chord"
         );
-        assert_eq!(get("alt+v"), Some(Action::OpenVarManager));
+        assert_eq!(get("alt+v"), Some(Action::OpenManage { tab: None }));
         assert_eq!(get("ctrl+z"), Some(Action::Undo));
         assert_eq!(get("ctrl+shift+z"), Some(Action::Redo));
         assert_eq!(get("ctrl+y"), None, "ctrl+y is deliberately unbound");
@@ -998,9 +998,12 @@ mod tests {
     #[test]
     fn combo_for_finds_a_freshly_bound_combo() {
         let mut m = Keymap::default_bindings();
-        m.bind(KeyCombo::parse("f9").unwrap(), Action::OpenVarManager);
+        m.bind(
+            KeyCombo::parse("f9").unwrap(),
+            Action::OpenManage { tab: None },
+        );
         // f9 is a second combo alongside the default alt+v; both resolve.
-        let combo = m.combo_for("var_manager_open").unwrap();
+        let combo = m.combo_for("manage_open").unwrap();
         assert!(combo == "f9" || combo == "alt+v", "got {combo:?}");
     }
 
