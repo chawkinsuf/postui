@@ -102,6 +102,12 @@ pub fn requests_dir(root: &Path) -> PathBuf {
     root.join("requests")
 }
 
+/// The space a slug lives in: its first segment. `None` for a bare
+/// single-segment slug (a loose top-level file).
+pub fn space_of(slug: &str) -> Option<&str> {
+    slug.split_once('/').map(|(space, _)| space)
+}
+
 pub fn validate_slug(slug: &str) -> Result<(), StorageError> {
     let ok = !slug.is_empty()
         && !slug.starts_with('/')
@@ -401,14 +407,57 @@ pub fn rename_request(root: &Path, from: &str, to: &str) -> Result<(), StorageEr
     Ok(())
 }
 
-pub fn delete_request(root: &Path, slug: &str) -> Result<(), StorageError> {
+/// Moves a request into `space`, keeping its sub-path (`main/x/y` →
+/// `auth/x/y`), suffixing `-2`, `-3`, … while the target slug exists.
+/// Returns the new slug.
+pub fn move_request_to_space(root: &Path, slug: &str, space: &str) -> Result<String, StorageError> {
+    validate_slug(slug)?;
+    validate_slug(space)?;
+    let Some((_, rest)) = slug.split_once('/') else {
+        return Err(StorageError::InvalidSlug(slug.to_string()));
+    };
+    if !request_path(root, slug).is_file() {
+        return Err(StorageError::NotFound(slug.to_string()));
+    }
+    let base = format!("{space}/{rest}");
+    let mut candidate = base.clone();
+    let mut n = 2;
+    while request_exists(root, &candidate) {
+        candidate = format!("{base}-{n}");
+        n += 1;
+    }
+    rename_request(root, slug, &candidate)?;
+    Ok(candidate)
+}
+
+/// `move_request_to_space` over every request in `from`. Stops at the
+/// first failure; the pairs already moved stay moved and are returned
+/// alongside the error.
+pub fn move_all_requests(
+    root: &Path,
+    from: &str,
+    to: &str,
+) -> (Vec<(String, String)>, Option<StorageError>) {
+    let (listing, _) = list_requests(root);
+    let mut moved = Vec::new();
+    for l in listing.iter().filter(|l| space_of(&l.slug) == Some(from)) {
+        match move_request_to_space(root, &l.slug, to) {
+            Ok(new) => moved.push((l.slug.clone(), new)),
+            Err(e) => return (moved, Some(e)),
+        }
+    }
+    (moved, None)
+}
+
+/// Moves `root/requests/<slug>.toml` into the trash (see `crate::trash`)
+/// and returns the record undo needs to bring it back.
+pub fn delete_request(root: &Path, slug: &str) -> Result<crate::trash::Trashed, StorageError> {
     validate_slug(slug)?;
     let path = request_path(root, slug);
     if !path.is_file() {
         return Err(StorageError::NotFound(slug.to_string()));
     }
-    std::fs::remove_file(&path).map_err(io_err(&path))?;
-    Ok(())
+    crate::trash::trash(root, &path).map_err(io_err(&path))
 }
 
 /// Copies `root/requests/<slug>.toml` to `<slug>-copy.toml` (then `-copy-2`, `-copy-3`, …
@@ -955,6 +1004,77 @@ mod tests {
             crate::project::load_meta(dir.path()).unwrap().spaces,
             ["auth"]
         );
+    }
+
+    #[test]
+    fn space_of_is_the_first_segment_of_a_nested_slug() {
+        assert_eq!(space_of("auth/login"), Some("auth"));
+        assert_eq!(space_of("auth/tokens/refresh"), Some("auth"));
+        assert_eq!(space_of("loose"), None);
+    }
+
+    #[test]
+    fn move_request_to_space_keeps_the_sub_path_and_dedupes() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_project(dir.path()).unwrap();
+        crate::project::create_space(dir.path(), "auth").unwrap();
+        save_request(dir.path(), "main/tokens/refresh", &req()).unwrap();
+        let new = move_request_to_space(dir.path(), "main/tokens/refresh", "auth").unwrap();
+        assert_eq!(new, "auth/tokens/refresh");
+        assert!(request_exists(dir.path(), "auth/tokens/refresh"));
+        assert!(!request_exists(dir.path(), "main/tokens/refresh"));
+
+        save_request(dir.path(), "main/tokens/refresh", &req()).unwrap();
+        let new = move_request_to_space(dir.path(), "main/tokens/refresh", "auth").unwrap();
+        assert_eq!(new, "auth/tokens/refresh-2");
+
+        assert!(matches!(
+            move_request_to_space(dir.path(), "loose", "auth"),
+            Err(StorageError::InvalidSlug(_))
+        ));
+        assert!(matches!(
+            move_request_to_space(dir.path(), "main/nope", "auth"),
+            Err(StorageError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn move_all_requests_moves_every_request_of_a_space() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_project(dir.path()).unwrap();
+        crate::project::create_space(dir.path(), "auth").unwrap();
+        save_request(dir.path(), "main/a", &req()).unwrap();
+        save_request(dir.path(), "main/deep/b", &req()).unwrap();
+        save_request(dir.path(), "auth/keep", &req()).unwrap();
+        let (moved, err) = move_all_requests(dir.path(), "main", "auth");
+        assert!(err.is_none());
+        let mut moved = moved;
+        moved.sort();
+        assert_eq!(
+            moved,
+            vec![
+                ("main/a".to_string(), "auth/a".to_string()),
+                ("main/deep/b".to_string(), "auth/deep/b".to_string()),
+            ]
+        );
+        let (listing, _) = list_requests(dir.path());
+        let slugs: Vec<&str> = listing.iter().map(|l| l.slug.as_str()).collect();
+        assert_eq!(slugs, ["auth/a", "auth/deep/b", "auth/keep"]);
+    }
+
+    #[test]
+    fn delete_request_moves_the_file_to_the_trash() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_project(dir.path()).unwrap();
+        save_request(dir.path(), "main/a", &req()).unwrap();
+        let t = delete_request(dir.path(), "main/a").unwrap();
+        assert!(!request_exists(dir.path(), "main/a"));
+        assert_eq!(t.original, request_path(dir.path(), "main/a"));
+        assert!(t.trashed.is_file());
+        assert!(matches!(
+            delete_request(dir.path(), "main/a"),
+            Err(StorageError::NotFound(_))
+        ));
     }
 
     #[test]

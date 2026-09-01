@@ -1944,7 +1944,7 @@ impl App {
                 let path = postui_core::storage::request_path(&self.project.root, &slug);
                 let before = self.read_file_states(std::slice::from_ref(&path));
                 match postui_core::storage::delete_request(&self.project.root, &slug) {
-                    Ok(()) => {
+                    Ok(_trashed) => {
                         self.toasts.push(
                             format!("Deleted {display}{}", self.undo_hint()),
                             ToastKind::Info,
