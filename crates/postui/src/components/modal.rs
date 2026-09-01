@@ -40,6 +40,11 @@ pub enum PromptKind {
     RenameSpace {
         from: String,
     },
+    /// Renaming an environment: the text is the new name, `from` the old
+    /// one.
+    RenameEnvironment {
+        from: String,
+    },
     /// `n` / the `+ Variable` button: a bare variable name — the detail
     /// pane's form sets its default/description afterward.
     NewVariable,
@@ -864,6 +869,10 @@ impl ModalStack {
                         }
                         PromptKind::NewSpace => Some(vec![Action::CreateSpace(text.to_string())]),
                         PromptKind::RenameSpace { from } => Some(vec![Action::RenameSpace {
+                            from: from.clone(),
+                            to: text.to_string(),
+                        }]),
+                        PromptKind::RenameEnvironment { from } => Some(vec![Action::RenameEnv {
                             from: from.clone(),
                             to: text.to_string(),
                         }]),

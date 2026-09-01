@@ -3891,6 +3891,110 @@ impl App {
                     }
                 }
             }
+            Action::PromptRenameEnv(name) => {
+                self.push_modal(Modal::Prompt {
+                    title: "Rename environment (a-z 0-9 - _)".into(),
+                    input: crate::components::line_input::LineInput::new(&name),
+                    kind: PromptKind::RenameEnvironment { from: name },
+                    revealed: false,
+                });
+                true
+            }
+            Action::RenameEnv { from, to } => {
+                if from == to {
+                    return true;
+                }
+                let root = self.project.root.clone();
+                let from_path = postui_core::project::environment_path(&root, &from);
+                let to_path = postui_core::project::environment_path(&root, &to);
+                let secrets_path = root.join(".local").join("secrets.toml");
+                let paths = vec![from_path, to_path, secrets_path];
+                let before = self.read_file_states(&paths);
+                let was_active = self.project.active_env.as_deref() == Some(from.as_str());
+                match postui_core::project::rename_environment(&root, &from, &to) {
+                    Ok(()) => {
+                        self.project.rename_env_state(&from, &to);
+                        let _ = postui_core::project::save_secrets(&root, &self.project.secrets);
+                        self.project.environments = postui_core::project::list_environments(&root);
+                        if was_active {
+                            // Reload data under the new name (set_env re-stamps too).
+                            for w in self.project.set_env(Some(to.clone())) {
+                                self.toasts.push(w, ToastKind::Warning);
+                            }
+                        }
+                        self.record_file_step(
+                            before,
+                            &paths,
+                            was_active.then(|| (Some(from.clone()), Some(to.clone()))),
+                        );
+                        self.apply(Action::PersistLocalState);
+                        if self.screen == Screen::Manage {
+                            self.varmanager.sync(&self.project);
+                        }
+                        self.toasts
+                            .push(format!("Renamed environment to {to}"), ToastKind::Success);
+                    }
+                    Err(e) => {
+                        self.toasts.push(
+                            format!("cannot rename environment: {e}"),
+                            ToastKind::Warning,
+                        );
+                        self.last_action_failed = true;
+                    }
+                }
+                true
+            }
+            Action::DeleteEnv(name) => {
+                self.push_modal(Modal::Confirm {
+                    title: format!("Delete environment \"{name}\"?"),
+                    body: "Its values and secrets are removed.".into(),
+                    choices: vec![(
+                        'd',
+                        "Delete environment".into(),
+                        vec![Action::ForceDeleteEnv(name)],
+                    )],
+                });
+                true
+            }
+            Action::ForceDeleteEnv(name) => {
+                let root = self.project.root.clone();
+                let secrets_path = root.join(".local").join("secrets.toml");
+                let before = self.read_file_states(std::slice::from_ref(&secrets_path));
+                let prev_active = self.project.active_env.clone();
+                let was_active = prev_active.as_deref() == Some(name.as_str());
+                match postui_core::project::delete_environment(&root, &name) {
+                    Ok(trashed) => {
+                        self.project.remove_env_state(&name);
+                        let _ = postui_core::project::save_secrets(&root, &self.project.secrets);
+                        self.project.environments = postui_core::project::list_environments(&root);
+                        if was_active {
+                            for w in self.project.set_env(None) {
+                                self.toasts.push(w, ToastKind::Warning);
+                            }
+                        }
+                        self.toasts.push(
+                            format!("Deleted environment {name}{}", self.undo_hint()),
+                            ToastKind::Info,
+                        );
+                        self.record_trashed_step(
+                            vec![trashed],
+                            before,
+                            &[secrets_path],
+                            was_active.then(|| (prev_active.clone(), None)),
+                        );
+                        self.apply(Action::PersistLocalState);
+                        if self.screen == Screen::Manage {
+                            self.varmanager.sync(&self.project);
+                        }
+                    }
+                    Err(e) => {
+                        self.toasts
+                            .push(format!("cannot delete environment: {e}"), ToastKind::Error);
+                        self.last_action_failed = true;
+                    }
+                }
+                true
+            }
             Action::PromptRenameSpace(name) => {
                 self.push_modal(Modal::Prompt {
                     title: "Rename space (a-z 0-9 - _)".into(),
@@ -5512,6 +5616,7 @@ impl App {
     /// When the editor followed a rename into another space, the sidebar
     /// follows it there too (it is rooted at the active space).
     fn after_file_level_undo(&mut self) {
+        self.project.invalidate_stamps();
         self.apply(Action::ReloadProjectFiles);
         if let Some(w) = self.project.reload_spaces() {
             self.toasts.push(w, ToastKind::Warning);
@@ -7204,6 +7309,7 @@ impl App {
                 }
                 // Files changed under the app: reuse the wholesale reload +
                 // refresh paths rather than guessing what the step touched.
+                self.project.invalidate_stamps();
                 self.apply(Action::ReloadProjectFiles);
                 self.refresh_sidebar();
                 // Mirrors `Action::VarStruct`'s success path: the Variable

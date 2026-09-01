@@ -271,6 +271,21 @@ pub enum Action {
     /// Switch the active environment to `env` (`None` clears it), reload
     /// its values, persist the choice, and toast the result.
     SwitchEnv(Option<String>),
+    /// Open the `PromptKind::RenameEnvironment` prompt, prefilled with the
+    /// name.
+    PromptRenameEnv(String),
+    /// Rename the environment file, re-key its secrets/selections, and —
+    /// when it was the active environment — follow it to the new name.
+    /// Recorded as a `FileStates` step (env file + secrets file).
+    RenameEnv {
+        from: String,
+        to: String,
+    },
+    /// User asked to delete an environment: opens the confirm.
+    DeleteEnv(String),
+    /// Confirmed; trashes the environment file (undoable), drops its
+    /// secrets/selections and clears the active env when it was this one.
+    ForceDeleteEnv(String),
     /// Open the space dropdown: every space (numbered, ✓ on the active
     /// one), then "new space…" and "manage spaces…".
     OpenSpaceChooser,

@@ -4971,6 +4971,74 @@ fn cycle_env_wraps_and_skips_no_env() {
 }
 
 #[test]
+fn rename_env_moves_the_file_rekeys_secrets_and_follows_the_active_env() {
+    let (mut app, dir) = app_with_envs();
+    app.update(Action::SwitchEnv(Some("qa".into())));
+    app.project.set_secret("tok", "s3cret".into()).unwrap();
+    app.update(Action::RenameEnv {
+        from: "qa".into(),
+        to: "staging".into(),
+    });
+    assert!(dir.path().join("environments/staging.toml").is_file());
+    assert!(!dir.path().join("environments/qa.toml").exists());
+    assert_eq!(app.project.env_label(), "staging");
+    let secrets = postui_core::project::load_secrets(dir.path()).unwrap();
+    assert_eq!(secrets["staging"]["tok"], "s3cret");
+    assert!(!secrets.contains_key("qa"));
+    let st = postui_core::project::load_local_state(dir.path()).unwrap();
+    assert_eq!(st.environment.as_deref(), Some("staging"));
+    app.update(Action::Undo);
+    assert!(dir.path().join("environments/qa.toml").is_file());
+    assert_eq!(app.project.env_label(), "qa");
+    assert_eq!(
+        app.project.secrets["qa"]["tok"], "s3cret",
+        "secrets re-keyed back"
+    );
+}
+
+#[test]
+fn delete_env_confirms_trashes_clears_the_active_env_and_undoes() {
+    let (mut app, dir) = app_with_envs();
+    app.update(Action::SwitchEnv(Some("qa".into())));
+    app.project.set_secret("tok", "s3cret".into()).unwrap();
+    app.update(Action::DeleteEnv("qa".into()));
+    let Some(Modal::Confirm {
+        title,
+        body,
+        choices,
+    }) = app.modals.top()
+    else {
+        panic!("confirm")
+    };
+    assert_eq!(title, "Delete environment \"qa\"?");
+    assert_eq!(body, "Its values and secrets are removed.");
+    assert_eq!(choices[0].1, "Delete environment");
+    let confirm = choices[0].0;
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, plain(confirm));
+    assert!(!dir.path().join("environments/qa.toml").exists());
+    assert_eq!(app.project.env_label(), "no env");
+    assert!(
+        !postui_core::project::load_secrets(dir.path())
+            .unwrap()
+            .contains_key("qa")
+    );
+    assert!(!app.project.environments.contains(&"qa".to_string()));
+
+    app.update(Action::Undo);
+    assert!(dir.path().join("environments/qa.toml").is_file());
+    assert_eq!(app.project.env_label(), "qa", "active env restored");
+    assert_eq!(
+        postui_core::project::load_secrets(dir.path()).unwrap()["qa"]["tok"],
+        "s3cret"
+    );
+    assert_eq!(
+        app.project.secrets["qa"]["tok"], "s3cret",
+        "the restored secrets file is re-read into memory, not just to disk"
+    );
+}
+
+#[test]
 fn env_chooser_includes_no_environment_entry() {
     let (mut app, _dir) = app_with_envs();
     app.update(Action::SwitchEnv(Some("qa".into())));

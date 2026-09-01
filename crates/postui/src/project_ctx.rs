@@ -709,6 +709,16 @@ impl ProjectContext {
         warnings
     }
 
+    /// Forces the next [`Self::reload_if_changed`] to do a full reload,
+    /// whatever the mtime stamps say. The file-level undo/redo arms need
+    /// it: they rewrite files and then re-stamp through `set_env`, so the
+    /// stamps can already match by the time the reload runs — and pieces
+    /// that only the reload path re-reads (secrets, above all) would stay
+    /// stale in memory.
+    pub fn invalidate_stamps(&mut self) {
+        self.stamps.clear();
+    }
+
     /// Compares fresh mtime stamps against those recorded at the last
     /// `open`/`set_env`/`reload_if_changed`; if anything differs, re-runs
     /// the load path for the pieces that changed (including secrets),
