@@ -1581,19 +1581,15 @@ impl VarManager {
                 && y > right.y
                 && y - 1 < bottom
             {
-                // Shared is the notable case, so it gets the accent; the
-                // per-environment line is the norm and stays quiet.
-                let fg = if shared {
-                    theme.accent
-                } else {
-                    theme.text_muted
-                };
+                // Both lines are the same kind of statement, so they get
+                // the same weight — the SHARED SELECTORS section is what
+                // flags the unusual case now.
                 text(
                     buf,
                     x0,
                     y - 1,
                     super::chooser::clip(badge, inner_w),
-                    fg,
+                    theme.text_muted,
                     theme.page,
                     false,
                 );
