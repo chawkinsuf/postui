@@ -1921,6 +1921,57 @@ impl App {
                 }
                 true
             }
+            Action::MoveRequestToSpace { slug, space } => {
+                if space == self.project.active_space || !self.project.spaces.contains(&space) {
+                    self.toasts
+                        .push(format!("no space named {space:?}"), ToastKind::Warning);
+                    self.last_action_failed = true;
+                    return true;
+                }
+                let moving_open = self.editor.slug.as_deref() == Some(slug.as_str());
+                if moving_open && self.editor_holds_unsaved() {
+                    self.dirty_gate("move", Action::ForceMoveRequestToSpace { slug, space });
+                } else {
+                    self.apply(Action::ForceMoveRequestToSpace { slug, space });
+                }
+                true
+            }
+            Action::ForceMoveRequestToSpace { slug, space } => {
+                use postui_core::storage;
+                let from_path = storage::request_path(&self.project.root, &slug);
+                let old_content = std::fs::read_to_string(&from_path).ok();
+                match storage::move_request_to_space(&self.project.root, &slug, &space) {
+                    Ok(new_slug) => {
+                        let to_path = storage::request_path(&self.project.root, &new_slug);
+                        self.record_file_step(
+                            vec![(from_path.clone(), old_content), (to_path.clone(), None)],
+                            &[from_path, to_path],
+                            None,
+                        );
+                        let was_open = self.editor.slug.as_deref() == Some(slug.as_str());
+                        self.refresh_sidebar();
+                        self.toasts.push(
+                            format!("Moved {} to {space}", self.request_display(&new_slug)),
+                            ToastKind::Success,
+                        );
+                        if was_open {
+                            // `ForceOpenRequest` owns the editor, the
+                            // sidebar's open row and the re-seeded shadow —
+                            // pre-setting any of them here would defeat
+                            // `capture_undo`'s "which request is open
+                            // changed → re-seed, never record" branch and
+                            // forge a phantom edit step.
+                            self.apply(Action::ForceOpenRequest(new_slug));
+                        }
+                    }
+                    Err(e) => {
+                        self.toasts
+                            .push(format!("could not move {slug}: {e}"), ToastKind::Error);
+                        self.last_action_failed = true;
+                    }
+                }
+                true
+            }
             Action::CreateRequest(name) => {
                 self.create_or_save_as(&name, |_| postui_core::model::HttpRequest {
                     name: None,
@@ -5622,15 +5673,40 @@ impl App {
             Hit::TableRow(i) => return self.table_row_context_menu(*i),
             _ => return None,
         };
+        // A flat "Move to <space>" row per other space, ordered like
+        // `project.spaces`. Computed into a local first so the closure's
+        // borrow of `self` doesn't overlap the `vec![]` below (which also
+        // borrows `self` via `Action::OpenRequest`/etc.).
+        let move_rows = |slug: &str| -> Vec<MenuItem> {
+            self.project
+                .spaces
+                .iter()
+                .filter(|s| **s != self.project.active_space)
+                .map(|s| {
+                    MenuItem::new(
+                        format!("Move to {s}"),
+                        Action::MoveRequestToSpace {
+                            slug: slug.to_string(),
+                            space: s.clone(),
+                        },
+                    )
+                })
+                .collect()
+        };
         Some(match row {
             Row::Request {
                 slug, broken: None, ..
-            } => vec![
-                MenuItem::new("Open", Action::OpenRequest(slug.clone())),
-                MenuItem::new("Duplicate", Action::DuplicateRequest),
-                MenuItem::new("Rename…", Action::PromptRenameRequest),
-                MenuItem::new("Delete", Action::DeleteSelectedRequest),
-            ],
+            } => {
+                let moves = move_rows(slug);
+                let mut items = vec![
+                    MenuItem::new("Open", Action::OpenRequest(slug.clone())),
+                    MenuItem::new("Duplicate", Action::DuplicateRequest),
+                    MenuItem::new("Rename…", Action::PromptRenameRequest),
+                ];
+                items.extend(moves);
+                items.push(MenuItem::new("Delete", Action::DeleteSelectedRequest));
+                items
+            }
             // A request whose file doesn't parse can't be loaded into the
             // editor, so "Open" is shown disabled rather than hidden — the
             // menu keeps its shape and the reason is one row away.
@@ -5638,13 +5714,18 @@ impl App {
                 slug,
                 broken: Some(_),
                 ..
-            } => vec![
-                MenuItem::disabled("Open"),
-                MenuItem::new("Show error…", Action::ShowRequestError(slug.clone())),
-                MenuItem::new("Duplicate", Action::DuplicateRequest),
-                MenuItem::new("Rename…", Action::PromptRenameRequest),
-                MenuItem::new("Delete", Action::DeleteSelectedRequest),
-            ],
+            } => {
+                let moves = move_rows(slug);
+                let mut items = vec![
+                    MenuItem::disabled("Open"),
+                    MenuItem::new("Show error…", Action::ShowRequestError(slug.clone())),
+                    MenuItem::new("Duplicate", Action::DuplicateRequest),
+                    MenuItem::new("Rename…", Action::PromptRenameRequest),
+                ];
+                items.extend(moves);
+                items.push(MenuItem::new("Delete", Action::DeleteSelectedRequest));
+                items
+            }
             Row::Folder { path, expanded, .. } => vec![
                 MenuItem::new(
                     "New request here…",
@@ -7161,7 +7242,18 @@ impl App {
                                         saved.name = reloaded.name;
                                     }
                                 }
-                                self.sidebar.open_slug = Some(new_slug);
+                                self.sidebar.open_slug = Some(new_slug.clone());
+                                // A move-to-space undo/redo can land the
+                                // open request back in a space that isn't
+                                // the active one (e.g. undoing a
+                                // `MoveRequestToSpace`) — the sidebar is
+                                // rooted at the active space, so follow it
+                                // there, same as `after_file_level_undo`.
+                                if let Some(space) = postui_core::storage::space_of(&new_slug)
+                                    .filter(|s| *s != self.project.active_space)
+                                {
+                                    self.enter_space(space);
+                                }
                             }
                             None => {
                                 self.editor = Editor::default();

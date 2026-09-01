@@ -3350,6 +3350,72 @@ fn move_all_requests_holding_a_dirty_open_request_gates_first() {
 }
 
 #[test]
+fn request_context_menu_offers_a_flat_move_row_per_other_space() {
+    let (mut app, _dir) = spaced_app();
+    render_once(&mut app);
+    let r = app.hits.rect_of(&Hit::SidebarRow(0)).unwrap();
+    app.handle_mouse(right_down(r.x + 1, r.y));
+    let Some(Modal::Dropdown(d)) = app.modals.top() else {
+        panic!("menu")
+    };
+    let labels: Vec<&str> = d.items.iter().map(|i| i.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        [
+            "Open",
+            "Duplicate",
+            "Rename\u{2026}",
+            "Move to auth",
+            "Delete"
+        ]
+    );
+}
+
+#[test]
+fn move_request_to_space_moves_the_file_follows_it_and_undoes() {
+    let (mut app, dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    let steps_before = app.history.undo_len();
+    app.update(Action::MoveRequestToSpace {
+        slug: "main/alpha".into(),
+        space: "auth".into(),
+    });
+    assert!(dir.path().join("requests/auth/alpha.toml").is_file());
+    assert_eq!(app.project.active_space, "auth");
+    assert_eq!(app.editor.slug.as_deref(), Some("auth/alpha"));
+
+    // The follow re-seeds the shadow through `ForceOpenRequest`, so the
+    // move itself must never leave a phantom `EditorDelta` behind.
+    assert!(!app.capture_undo(), "the move itself is not an edit");
+    assert_eq!(app.history.undo_len(), steps_before + 1);
+
+    app.update(Action::Undo);
+    assert!(dir.path().join("requests/main/alpha.toml").is_file());
+    assert!(!dir.path().join("requests/auth/alpha.toml").exists());
+    assert_eq!(app.project.active_space, "main");
+}
+
+#[test]
+fn move_request_to_space_holding_a_dirty_open_request_gates_first() {
+    let (mut app, dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    dirty_the_editor(&mut app);
+    app.update(Action::MoveRequestToSpace {
+        slug: "main/alpha".into(),
+        space: "auth".into(),
+    });
+    let Some(Modal::Confirm { title, .. }) = app.modals.top() else {
+        panic!("gate")
+    };
+    assert_eq!(title, "Unsaved changes");
+    assert!(
+        dir.path().join("requests/main/alpha.toml").is_file(),
+        "nothing moved yet"
+    );
+    assert_eq!(app.project.active_space, "main");
+}
+
+#[test]
 fn click_sidebar_row_opens_that_request() {
     let (mut app, _dir) = sidebar_test_app();
     render_once(&mut app);

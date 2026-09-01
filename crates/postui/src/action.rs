@@ -146,6 +146,19 @@ pub enum Action {
     /// Delete the selected sidebar slug. No confirm — the delete records
     /// an undo step, and the toast advertises it.
     DeleteSelectedRequest,
+    /// Row menu "Move to <space>": rename into that space keeping the
+    /// sub-path. Gated on unsaved edits when `slug` is the open request
+    /// (following it reloads the editor from disk); an undo step.
+    MoveRequestToSpace {
+        slug: String,
+        space: String,
+    },
+    /// Confirmed/clean: rename the file into `space` keeping its
+    /// sub-path; a `FileStates` step; follows the open request.
+    ForceMoveRequestToSpace {
+        slug: String,
+        space: String,
+    },
     /// Delete the request at `slug` from disk.
     DeleteRequest(String),
     /// Save the request currently open in the editor as `name` (a slug).
