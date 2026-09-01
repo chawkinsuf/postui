@@ -33,6 +33,18 @@ pub enum StepKind {
         after: Vec<(PathBuf, Option<String>)>,
         active_env: Option<(Option<String>, Option<String>)>,
     },
+    /// A delete that went to `.local/trash` (request, environment, or a
+    /// whole space). Undo renames the items back (reverse order) and
+    /// rewrites `files_before`; redo re-trashes them and rewrites
+    /// `files_after`. The companion files are the small ones a delete also
+    /// touched (`project.toml`'s `spaces`, `.local/secrets.toml`) — the
+    /// trashed payload itself is never held in memory.
+    Trashed {
+        items: Vec<postui_core::trash::Trashed>,
+        files_before: Vec<(PathBuf, Option<String>)>,
+        files_after: Vec<(PathBuf, Option<String>)>,
+        active_env: Option<(Option<String>, Option<String>)>,
+    },
 }
 
 /// Where the cursor sat before/after a step, so undo/redo can restore it.
@@ -162,6 +174,13 @@ impl History {
         *top_after = new_after.clone();
         top.context.cursor_after = new.context.cursor_after.clone();
         true
+    }
+
+    /// The top undo step without popping it. Test-only: production code
+    /// drives undo/redo through `pop_undo`/`pop_redo`.
+    #[cfg(test)]
+    pub fn peek_undo(&self) -> Option<&Step> {
+        self.undo.last()
     }
 
     /// Pops the most recent undo step, if any, breaking coalescing.

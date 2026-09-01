@@ -1987,10 +1987,8 @@ impl App {
             }
             Action::DeleteRequest(slug) => {
                 let display = self.request_display(&slug);
-                let path = postui_core::storage::request_path(&self.project.root, &slug);
-                let before = self.read_file_states(std::slice::from_ref(&path));
                 match postui_core::storage::delete_request(&self.project.root, &slug) {
-                    Ok(_trashed) => {
+                    Ok(trashed) => {
                         self.toasts.push(
                             format!("Deleted {display}{}", self.undo_hint()),
                             ToastKind::Info,
@@ -1998,10 +1996,11 @@ impl App {
                         // Recorded before refresh_sidebar/editor-clearing
                         // reorder state: context.slug must still name the
                         // deleted request while self.editor.slug matches it.
-                        self.record_file_step(before, &[path], None);
+                        self.record_trashed_step(vec![trashed], Vec::new(), &[], None);
                         self.refresh_sidebar();
                         if self.editor.slug.as_deref() == Some(slug.as_str()) {
                             self.editor = Editor::default();
+                            self.shadow = None;
                         }
                     }
                     Err(e) => {
@@ -5127,6 +5126,85 @@ impl App {
         });
     }
 
+    /// Writes each `(path, content)`: `Some` writes atomically, `None`
+    /// removes (a missing file counts as removed). Stops at the first
+    /// failure with a toast-ready message; earlier writes stand.
+    fn write_file_states(&mut self, target: &[(PathBuf, Option<String>)]) -> Result<(), String> {
+        for (path, content) in target {
+            let result: std::io::Result<()> = match content {
+                Some(text) => crate::project_ctx::atomic_write(path, text),
+                None => std::fs::remove_file(path).or_else(|e| {
+                    if e.kind() == std::io::ErrorKind::NotFound {
+                        Ok(())
+                    } else {
+                        Err(e)
+                    }
+                }),
+            };
+            if let Err(e) = result {
+                return Err(format!("undo failed at {}: {e}", path.display()));
+            }
+        }
+        Ok(())
+    }
+
+    /// Records a `Trashed` step: reads `after_paths`' current contents as
+    /// the companion files' "after" side. Never coalesces; clears redo.
+    fn record_trashed_step(
+        &mut self,
+        items: Vec<postui_core::trash::Trashed>,
+        files_before: Vec<(PathBuf, Option<String>)>,
+        after_paths: &[PathBuf],
+        active_env: Option<(Option<String>, Option<String>)>,
+    ) {
+        let files_after = self.read_file_states(after_paths);
+        self.history.record_no_coalesce(crate::undo::Step {
+            kind: crate::undo::StepKind::Trashed {
+                items,
+                files_before,
+                files_after,
+                active_env,
+            },
+            context: crate::undo::Context {
+                slug: self.editor.slug.clone(),
+                cursor_before: crate::undo::CursorPos::None,
+                cursor_after: crate::undo::CursorPos::None,
+            },
+        });
+    }
+
+    /// Shared tail of the file-level undo arms: files changed under the
+    /// app, so reload wholesale, and drop the editor if its file is gone.
+    /// When the editor followed a rename into another space, the sidebar
+    /// follows it there too (it is rooted at the active space).
+    fn after_file_level_undo(&mut self) {
+        self.apply(Action::ReloadProjectFiles);
+        if let Some(w) = self.project.reload_spaces() {
+            self.toasts.push(w, ToastKind::Warning);
+        }
+        if let Some(space) = self
+            .editor
+            .slug
+            .as_deref()
+            .and_then(postui_core::storage::space_of)
+            .filter(|s| *s != self.project.active_space)
+            .map(str::to_string)
+        {
+            self.enter_space(&space);
+        }
+        self.refresh_sidebar();
+        if self.screen == Screen::VarManager {
+            self.varmanager.sync(&self.project);
+        }
+        if let Some(open) = self.editor.slug.clone()
+            && !postui_core::storage::request_exists(&self.project.root, &open)
+        {
+            self.editor = Editor::default();
+            self.shadow = None;
+            self.sidebar.open_slug = None;
+        }
+    }
+
     /// The var-manager arms' capture helper: `before` is a
     /// `read_file_states(&self.project.var_file_paths())` snapshot taken
     /// before the op ran. `var_file_paths` is re-listed from disk, so an op
@@ -6662,6 +6740,12 @@ impl App {
         true
     }
 
+    /// The kind of the step Undo would apply next. Test-only.
+    #[cfg(test)]
+    pub(crate) fn history_top_kind_for_test(&self) -> Option<&crate::undo::StepKind> {
+        self.history.peek_undo().map(|s| &s.kind)
+    }
+
     /// Applies one popped step in the given direction and pushes it onto
     /// the opposite stack. Returns false when the step could not be
     /// applied (it is then dropped — spec: failure handling).
@@ -6714,34 +6798,19 @@ impl App {
                 active_env,
             } => {
                 let target = if redo { after } else { before };
-                for (path, content) in target {
-                    let result: std::io::Result<()> = match content {
-                        Some(text) => crate::project_ctx::atomic_write(path, text),
-                        None => std::fs::remove_file(path).or_else(|e| {
-                            if e.kind() == std::io::ErrorKind::NotFound {
-                                Ok(())
-                            } else {
-                                Err(e)
-                            }
-                        }),
-                    };
-                    if let Err(e) = result {
-                        self.toasts.push(
-                            format!("undo failed at {}: {e}", path.display()),
-                            ToastKind::Error,
-                        );
-                        // Earlier writes in this step stand — the sidebar
-                        // and Variable Manager must reflect them (and drop
-                        // any stale pre-undo cache) even though the step
-                        // itself is dropped, or the UI shows a state that
-                        // no longer matches disk.
-                        self.apply(Action::ReloadProjectFiles);
-                        self.refresh_sidebar();
-                        if self.screen == Screen::VarManager {
-                            self.varmanager.sync(&self.project);
-                        }
-                        return false; // step dropped; earlier writes in this step stand
+                if let Err(msg) = self.write_file_states(target) {
+                    self.toasts.push(msg, ToastKind::Error);
+                    // Earlier writes in this step stand — the sidebar
+                    // and Variable Manager must reflect them (and drop
+                    // any stale pre-undo cache) even though the step
+                    // itself is dropped, or the UI shows a state that
+                    // no longer matches disk.
+                    self.apply(Action::ReloadProjectFiles);
+                    self.refresh_sidebar();
+                    if self.screen == Screen::VarManager {
+                        self.varmanager.sync(&self.project);
                     }
+                    return false; // step dropped; earlier writes in this step stand
                 }
                 if let Some((before_env, after_env)) = active_env {
                     let env = if redo { after_env } else { before_env };
@@ -6802,6 +6871,62 @@ impl App {
                     None => format!("{verb} file change"),
                 };
                 self.toasts.push(msg, ToastKind::Info);
+                if redo {
+                    self.history.push_undo_no_coalesce(step.clone());
+                } else {
+                    self.history.push_redo(step.clone());
+                }
+                true
+            }
+            StepKind::Trashed {
+                items,
+                files_before,
+                files_after,
+                active_env,
+            } => {
+                let result: Result<(), String> = if redo {
+                    items
+                        .iter()
+                        .try_for_each(|t| {
+                            postui_core::trash::retrash(t).map_err(|e| {
+                                format!("redo failed at {}: {e}", t.original.display())
+                            })
+                        })
+                        .and_then(|()| self.write_file_states(files_after))
+                } else {
+                    items
+                        .iter()
+                        .rev()
+                        .try_for_each(|t| {
+                            postui_core::trash::restore(t).map_err(|e| {
+                                format!("undo failed at {}: {e}", t.original.display())
+                            })
+                        })
+                        .and_then(|()| self.write_file_states(files_before))
+                };
+                if let Err(msg) = result {
+                    self.toasts.push(msg, ToastKind::Error);
+                    self.after_file_level_undo();
+                    return false; // step dropped; earlier renames stand
+                }
+                if let Some((before_env, after_env)) = active_env {
+                    let env = if redo { after_env } else { before_env };
+                    self.apply(Action::SwitchEnv(env.clone()));
+                }
+                self.after_file_level_undo();
+                let what = items
+                    .first()
+                    .and_then(|t| t.original.file_name())
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "delete".into());
+                self.toasts.push(
+                    if redo {
+                        format!("Deleted {what} again")
+                    } else {
+                        format!("Restored {what}")
+                    },
+                    ToastKind::Info,
+                );
                 if redo {
                     self.history.push_undo_no_coalesce(step.clone());
                 } else {

@@ -13335,6 +13335,53 @@ mod undo_tests {
     }
 
     #[test]
+    fn delete_request_trashes_the_file_and_undo_restores_it() {
+        let (mut app, dir) = spaced_app();
+        app.update(Action::ForceOpenRequest("main/alpha".into()));
+        app.update(Action::DeleteRequest("main/alpha".into()));
+        let path = dir.path().join("requests/main/alpha.toml");
+        assert!(!path.exists());
+        assert!(postui_core::trash::trash_dir(dir.path()).is_dir());
+        assert!(
+            app.editor.slug.is_none(),
+            "deleting the open request clears the editor"
+        );
+        assert!(matches!(
+            app.history_top_kind_for_test(),
+            Some(crate::undo::StepKind::Trashed { .. })
+        ));
+
+        app.update(Action::Undo);
+        assert!(path.is_file());
+        assert!(
+            app.sidebar
+                .rows
+                .iter()
+                .any(|r| matches!(r, Row::Request { slug, .. } if slug == "main/alpha"))
+        );
+
+        app.update(Action::Redo);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn undo_of_a_trashed_delete_fails_cleanly_when_the_path_is_occupied() {
+        let (mut app, dir) = spaced_app();
+        app.update(Action::DeleteRequest("main/alpha".into()));
+        // Someone re-created the file meanwhile.
+        postui_core::storage::save_request(dir.path(), "main/alpha", &req("https://x/2")).unwrap();
+        let toasts_before = app.toasts.messages().len();
+        app.update(Action::Undo);
+        assert!(
+            app.toasts.messages().len() > toasts_before,
+            "failure toasts"
+        );
+        let on_disk = std::fs::read_to_string(dir.path().join("requests/main/alpha.toml")).unwrap();
+        assert!(on_disk.contains("x/2"), "the newer file is never clobbered");
+        assert_eq!(app.history.undo_len(), 0, "the failed step is dropped");
+    }
+
+    #[test]
     fn undo_reverts_a_rename_on_disk() {
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("old-name".into()));
