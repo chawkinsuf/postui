@@ -13168,15 +13168,16 @@ fn header_cycle_pills_yield_at_eighty_columns_so_the_manage_chip_fits() {
         .hits
         .rect_of(&Hit::HeaderManage)
         .expect("the Manage chip must be on the bar at 80 columns");
-    // Its clickable name is fully painted (only a long project name can
-    // push the chip's trailing `alt+v` keycap past the edge).
+    // Whatever of the chip survives the yield order (here the fixture's
+    // 10-character tempdir project name also costs it the `alt+v` keycap),
+    // the whole painted chip lies within the bar.
     assert!(
-        manage.x + " Manage ".chars().count() as u16 <= 80,
-        "the Manage chip's name must be visible on an 80-column bar: {manage:?}"
+        manage.x + manage.width <= 80,
+        "the Manage chip must not run off an 80-column bar: {manage:?}"
     );
     assert!(
         rendered_text(&mut app).contains(" Manage "),
-        "and it must actually be painted there"
+        "and its name must actually be painted there"
     );
     assert!(
         app.hits.rect_of(&Hit::HeaderSpaceCycle).is_none(),

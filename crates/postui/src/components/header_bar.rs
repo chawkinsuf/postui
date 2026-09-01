@@ -23,15 +23,17 @@ const MANAGE_GROUP_GAP: u16 = 8;
 /// the chip rects, plus the `alt+]`/`alt+c` cycle pills beside the space
 /// and env chips ([`Hit::HeaderSpaceCycle`]/[`Hit::HeaderEnvCycle`]).
 ///
-/// Narrow-bar rule: the chips always keep their full labels — the two
-/// cycle pills yield first. When the left cluster measured through the
-/// Manage chip (wordmark, project chip, space chip + its pill, env chip +
-/// its pill, Manage chip, with the gaps between them) doesn't fit in
-/// `area`, both cycle pills are dropped and the chips lay out without
-/// them: the keys themselves still work, and their hints stay in the
-/// footer/palette. If the cluster still doesn't fit pill-less, it clips
-/// as before. The right-aligned Theme chip keeps its own separate rule
-/// (it drops when there's no room left of it).
+/// Narrow-bar rule: the chip *labels* never yield — their keycaps do, in
+/// order. The left cluster is measured through the Manage chip (wordmark,
+/// project chip, space chip + its pill, env chip + its pill, Manage chip,
+/// with the gaps between them). If it overruns `area`, the two cycle pills
+/// are dropped and the group gap before the Manage chip collapses to the
+/// ordinary one-column gap. If it still overruns, the Manage chip's own
+/// `alt+v` keycap goes too and the chip becomes a bare ` Manage `. The
+/// keys themselves keep working in every case, and their hints stay in the
+/// footer/palette. If even that doesn't fit, the cluster clips as before.
+/// The right-aligned Theme chip keeps its own separate rule (it drops when
+/// there's no room left of it).
 #[allow(clippy::too_many_arguments)]
 pub fn draw_header(
     frame: &mut Frame,
@@ -85,31 +87,30 @@ pub fn draw_header(
         color: theme.text_muted,
     };
     let manage_label = " Manage ";
-    let manage_w = manage_label.chars().count() as u16
-        + crate::paint::Chip {
-            label: "alt+v",
-            color: theme.text_muted,
-        }
-        .width();
+    let manage_label_w = manage_label.chars().count() as u16;
+    let manage_pill = crate::paint::Chip {
+        label: "alt+v",
+        color: theme.text_muted,
+    };
 
-    // Measure the whole left cluster with both cycle pills in place; if it
-    // overruns the bar, the pills yield (see the narrow-bar rule above) and
-    // the group gap before the Manage chip collapses to the ordinary
-    // one-column chip gap — with no env pill left to disambiguate, the wide
-    // gap has nothing to separate.
-    let cluster_with_pills = (x - area.x)
-        + project_w
-        + 1
-        + space_w
+    // Measure the left cluster three ways and take the widest that fits
+    // (see the narrow-bar rule above): everything; then without the two
+    // cycle pills — which also collapses the wide group gap, since with no
+    // env pill left to disambiguate it has nothing to separate; then
+    // without the Manage chip's own keycap as well. The labels are in
+    // every measurement: they never yield.
+    let chips_w = (x - area.x) + project_w + 1 + space_w + 1 + env_w;
+    let cluster_full = chips_w
         + 1
         + space_pill.width()
         + 1
-        + env_w
-        + 1
         + env_pill.width()
         + MANAGE_GROUP_GAP
-        + manage_w;
-    let show_cycle_pills = cluster_with_pills <= area.width;
+        + manage_label_w
+        + manage_pill.width();
+    let cluster_no_cycle_pills = chips_w + 1 + manage_label_w + manage_pill.width();
+    let show_cycle_pills = cluster_full <= area.width;
+    let show_manage_pill = show_cycle_pills || cluster_no_cycle_pills <= area.width;
     let project_rect = Rect {
         x,
         y: mid_y,
@@ -229,11 +230,11 @@ pub fn draw_header(
     // The Manage-screen toggle, in the footer's clickable idiom with
     // the keycap trailing the name: prominent full name + `alt+v` pill.
     // While the Manage screen is open the whole chip holds the pressed
-    // fill, keeping the old `vars` toggle's stateful read. Paints
-    // unconditionally like the rest of the left cluster (a too-narrow bar
-    // clips it rather than dropping it).
+    // fill, keeping the old `vars` toggle's stateful read. The name paints
+    // unconditionally like the rest of the left cluster (a bar too narrow
+    // even for it clips rather than dropping it); only its keycap yields.
     let vm_label = manage_label;
-    let vm_label_w = vm_label.chars().count() as u16;
+    let vm_label_w = manage_label_w;
     let (vm_pill_on, vm_label_bg) = if manage_active {
         (theme.control_pressed, theme.control_pressed)
     } else if hovered == Some(&Hit::HeaderManage) {
@@ -242,11 +243,13 @@ pub fn draw_header(
         (theme.control, theme.panel)
     };
     text(buf, x, mid_y, vm_label, theme.text, vm_label_bg, false);
-    let vm_pill_w = crate::paint::Chip {
-        label: "alt+v",
-        color: theme.text_muted,
-    }
-    .paint(buf, x + vm_label_w, mid_y, vm_pill_on, theme);
+    // The last keycap to yield on a narrow bar: the name stays clickable
+    // (and `alt+v` keeps working) with the pill gone.
+    let vm_pill_w = if show_manage_pill {
+        manage_pill.paint(buf, x + vm_label_w, mid_y, vm_pill_on, theme)
+    } else {
+        0
+    };
     let vm_rect = Rect {
         x,
         y: mid_y,
@@ -633,6 +636,39 @@ mod tests {
         let (_term, hits) = render_wide(&theme, "alpha", "qa", false, None, 100);
         assert!(hits.rect_of(&Hit::HeaderSpaceCycle).is_some());
         assert!(hits.rect_of(&Hit::HeaderEnvCycle).is_some());
+    }
+
+    /// Third and last to yield: with a long project name at 80 columns the
+    /// Manage chip's own `alt+v` keycap goes after the cycle pills, and the
+    /// chip — now a bare ` Manage ` — still fits inside the bar.
+    #[test]
+    fn manage_keycap_yields_after_the_cycle_pills_on_a_long_project_name() {
+        let theme = Theme::dark();
+        let project = "a-long-project"; // 14 chars
+        let (term, hits) = render_wide(&theme, project, "qa", false, None, 80);
+        assert!(hits.rect_of(&Hit::HeaderSpaceCycle).is_none());
+        assert!(hits.rect_of(&Hit::HeaderEnvCycle).is_none());
+        let manage = hits.rect_of(&Hit::HeaderManage).expect("Manage chip stays");
+        assert_eq!(
+            manage.width,
+            " Manage ".chars().count() as u16,
+            "the keycap yielded; the label never does"
+        );
+        assert!(
+            manage.x + manage.width <= 80,
+            "the whole chip is inside the bar: {manage:?}"
+        );
+        assert_eq!(row_text(&term, &manage), " Manage ");
+
+        // Wide enough for the keycap but not the cycle pills: only the
+        // pills yield.
+        let (_term, hits) = render_wide(&theme, project, "qa", false, None, 90);
+        assert!(hits.rect_of(&Hit::HeaderSpaceCycle).is_none());
+        let manage = hits.rect_of(&Hit::HeaderManage).unwrap();
+        assert!(
+            manage.width > " Manage ".chars().count() as u16,
+            "the keycap is back once there is room for it"
+        );
     }
 
     #[test]
