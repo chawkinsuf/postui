@@ -29,9 +29,10 @@ pub enum EditorTab {
 }
 
 /// Left-to-right tab-strip order, and the order `EditorTabCycle` walks:
-/// Headers → Params → Vars → Body. The `alt+1/2/3/4` shortcuts
-/// ([`EditorTab::index`]) follow this same order, so the number you press
-/// always matches the tab's on-screen position.
+/// Headers → Params → Vars → Body. The tab slot numbers
+/// ([`EditorTab::index`], bindable as `editor_tab_N`) follow this same
+/// order, so the number you bind always matches the tab's on-screen
+/// position.
 const DRAW_ORDER: [EditorTab; 4] = [
     EditorTab::Headers,
     EditorTab::Params,
@@ -40,9 +41,9 @@ const DRAW_ORDER: [EditorTab; 4] = [
 ];
 
 impl EditorTab {
-    /// Slot number for the `alt+1/2/3/4` shortcuts
+    /// Slot number for the `editor_tab_N` shortcuts
     /// (`Action::EditorTabSelect`) — identical to [`EditorTab::draw_position`]
-    /// so alt-numbers match the tab strip left to right.
+    /// so the bound numbers match the tab strip left to right.
     pub fn index(self) -> usize {
         self.draw_position()
     }

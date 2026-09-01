@@ -1519,7 +1519,8 @@ impl App {
             }
             Action::EditorTabCycle(delta) => {
                 // Cycles the on-screen order (Params → Headers → Vars →
-                // Body), not `EditorTab::index()`'s alt+1/2/3 slot numbers.
+                // Body), not `EditorTab::index()`'s tab slot numbers
+                // (bindable as `editor_tab_N`).
                 self.commit_table_edit();
                 let prev = self.editor.active_tab;
                 let mut next = (prev.draw_position() as i8 + delta).rem_euclid(4);
@@ -3651,6 +3652,15 @@ impl App {
                 }
                 true
             }
+            // TODO(task 8): temporary placeholder so the match stays
+            // exhaustive while the space actions have no behavior yet.
+            Action::SwitchSpace(_)
+            | Action::ForceSwitchSpace(_)
+            | Action::JumpSpace(_)
+            | Action::CycleSpace(_)
+            | Action::OpenSpaceChooser
+            | Action::OpenNewSpacePrompt
+            | Action::CreateSpace(_) => true,
         }
     }
 
@@ -6010,11 +6020,12 @@ impl App {
 
         // 4-exception: with the caret live in the body editor, alt+←/→
         // are the macOS word-jump spelling (option+arrow) and go to the
-        // editor instead of the global tab-cycle binding — alt+1..4 still
-        // switch tabs from the body, and everywhere else alt+arrows cycle
-        // as before. The shifted variants and alt+backspace need no
-        // carve-out: those combos are unbound, so step 4 already falls
-        // through to the component.
+        // editor instead of the global tab-cycle binding; tab switching
+        // from inside the body is mouse-only (alt-digits now switch
+        // spaces), and everywhere else alt+arrows cycle as before. The
+        // shifted variants and alt+backspace need no carve-out: those
+        // combos are unbound, so step 4 already falls through to the
+        // component.
         if ev.modifiers.contains(KeyModifiers::ALT)
             && matches!(ev.code, KeyCode::Left | KeyCode::Right)
             && self.focus == PaneId::Editor
@@ -6667,10 +6678,12 @@ impl App {
 /// input: opening a modal on top of the screen (today, just the command
 /// palette and the theme chooser — the spec's "the modal stack works on
 /// top unchanged"), the
-/// screen open/close actions themselves, quit, and cycling the active
+/// screen open/close actions themselves, quit, cycling the active
 /// environment (alt+c) — the one Main shortcut whose target state, the
 /// active env, is also meaningful inside the Variable Manager (it shows
-/// per-env values; `SwitchEnv` re-syncs the Manager). Everything else in
+/// per-env values; `SwitchEnv` re-syncs the Manager) — and the space
+/// switchers (alt-digits, alt+]/[, alt+shift+s), since spaces are global
+/// context that the Manage screen itself is scoped to. Everything else in
 /// the global keymap (send, save, cycle project, focus URL, …) targets
 /// panes that aren't even drawn while a non-`Main` screen is open, so it
 /// must not be reachable from here — see the Task 9 review finding this
@@ -6687,6 +6700,9 @@ fn screen_escape_whitelist(action: &Action) -> bool {
             | Action::Undo
             | Action::Redo
             | Action::CycleEnv
+            | Action::CycleSpace(_)
+            | Action::JumpSpace(_)
+            | Action::OpenSpaceChooser
     )
 }
 

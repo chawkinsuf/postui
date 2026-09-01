@@ -66,7 +66,7 @@ pub(crate) fn footer_chips(
                 // The split cycle's alt+w is advertised beside the split
                 // control itself (the tab-bar row's keycap pill), not here.
                 // Arrows are the primary route (method ← URL ↓ tabs ↓ content);
-                // alt+1/2/3 still work where the terminal passes them through.
+                // alt+left/right cycle tabs; alt-digits now switch spaces.
                 ("↑↓←→", "navigate", None),
             ];
             if url_focused {

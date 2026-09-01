@@ -258,6 +258,23 @@ pub enum Action {
     /// Switch the active environment to `env` (`None` clears it), reload
     /// its values, persist the choice, and toast the result.
     SwitchEnv(Option<String>),
+    /// Open the space dropdown: every space (numbered, ✓ on the active
+    /// one), then "new space…" and "manage spaces…".
+    OpenSpaceChooser,
+    /// Open the `PromptKind::NewSpace` name prompt.
+    OpenNewSpacePrompt,
+    /// Create `requests/<name>/` (+ list entry) and switch to it.
+    CreateSpace(String),
+    /// User asked to switch spaces. Gated on unsaved edits like
+    /// `OpenRequest`; see `App::update`.
+    SwitchSpace(String),
+    /// Actually switch: remember the outgoing space's open request, root
+    /// the sidebar at the new space, restore its last-open request.
+    ForceSwitchSpace(String),
+    /// `alt+N`: switch to the Nth space (1-based). Out of range: no-op.
+    JumpSpace(usize),
+    /// `alt+]` / `alt+[`: next/previous space, wrapping.
+    CycleSpace(i32),
     /// Re-check the open project's files (project.toml, variables.toml,
     /// environments/, the active env file) against their recorded mtimes
     /// and reload anything that changed. Dispatched on terminal focus

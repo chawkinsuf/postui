@@ -257,6 +257,18 @@ pub(crate) fn named_actions() -> Vec<(&'static str, Action)> {
         ("project_new", Action::PromptNewProject),
         ("env_choose", Action::OpenEnvChooser),
         ("env_cycle", Action::CycleEnv),
+        ("space_choose", Action::OpenSpaceChooser),
+        ("space_next", Action::CycleSpace(1)),
+        ("space_prev", Action::CycleSpace(-1)),
+        ("space_1", Action::JumpSpace(1)),
+        ("space_2", Action::JumpSpace(2)),
+        ("space_3", Action::JumpSpace(3)),
+        ("space_4", Action::JumpSpace(4)),
+        ("space_5", Action::JumpSpace(5)),
+        ("space_6", Action::JumpSpace(6)),
+        ("space_7", Action::JumpSpace(7)),
+        ("space_8", Action::JumpSpace(8)),
+        ("space_9", Action::JumpSpace(9)),
         ("pick_variable", Action::OpenVarPicker { completing: false }),
         ("paste", Action::Paste),
         ("table_add_row", Action::TableAddRow),
@@ -303,10 +315,21 @@ impl Keymap {
             ("shift+tab", Action::FocusPrev),
             ("ctrl+p", Action::OpenPalette),
             ("esc", Action::Close),
-            ("alt+1", Action::EditorTabSelect(0)),
-            ("alt+2", Action::EditorTabSelect(1)),
-            ("alt+3", Action::EditorTabSelect(2)),
-            ("alt+4", Action::EditorTabSelect(3)),
+            // Spaces own the alt-digits (i3 style: the number swaps the
+            // whole working set). Editor tabs keep alt+left/right and
+            // clicks; `editor_tab_N` stays bindable from keys.toml.
+            ("alt+1", Action::JumpSpace(1)),
+            ("alt+2", Action::JumpSpace(2)),
+            ("alt+3", Action::JumpSpace(3)),
+            ("alt+4", Action::JumpSpace(4)),
+            ("alt+5", Action::JumpSpace(5)),
+            ("alt+6", Action::JumpSpace(6)),
+            ("alt+7", Action::JumpSpace(7)),
+            ("alt+8", Action::JumpSpace(8)),
+            ("alt+9", Action::JumpSpace(9)),
+            ("alt+]", Action::CycleSpace(1)),
+            ("alt+[", Action::CycleSpace(-1)),
+            ("alt+shift+s", Action::OpenSpaceChooser),
             ("alt+right", Action::EditorTabCycle(1)),
             ("alt+left", Action::EditorTabCycle(-1)),
             ("alt+m", Action::CycleMethod),
@@ -694,10 +717,12 @@ mod tests {
         assert_eq!(get("shift+tab"), Some(Action::FocusPrev));
         assert_eq!(get("ctrl+p"), Some(Action::OpenPalette));
         assert_eq!(get("esc"), Some(Action::Close));
-        assert_eq!(get("alt+1"), Some(Action::EditorTabSelect(0)));
-        assert_eq!(get("alt+2"), Some(Action::EditorTabSelect(1)));
-        assert_eq!(get("alt+3"), Some(Action::EditorTabSelect(2)));
-        assert_eq!(get("alt+4"), Some(Action::EditorTabSelect(3)));
+        assert_eq!(get("alt+1"), Some(Action::JumpSpace(1)));
+        assert_eq!(get("alt+4"), Some(Action::JumpSpace(4)));
+        assert_eq!(get("alt+9"), Some(Action::JumpSpace(9)));
+        assert_eq!(get("alt+]"), Some(Action::CycleSpace(1)));
+        assert_eq!(get("alt+["), Some(Action::CycleSpace(-1)));
+        assert_eq!(get("alt+shift+s"), Some(Action::OpenSpaceChooser));
         assert_eq!(get("alt+right"), Some(Action::EditorTabCycle(1)));
         assert_eq!(get("alt+left"), Some(Action::EditorTabCycle(-1)));
         assert_eq!(get("alt+m"), Some(Action::CycleMethod));
@@ -750,6 +775,25 @@ mod tests {
         assert_eq!(get("ctrl+z"), Some(Action::Undo));
         assert_eq!(get("ctrl+shift+z"), Some(Action::Redo));
         assert_eq!(get("ctrl+y"), None, "ctrl+y is deliberately unbound");
+    }
+
+    #[test]
+    fn editor_tab_numbers_stay_bindable_but_unbound_by_default() {
+        let m = Keymap::default_bindings();
+        assert!(
+            named_actions()
+                .iter()
+                .any(|(n, a)| *n == "editor_tab_1" && *a == Action::EditorTabSelect(0))
+        );
+        assert_eq!(m.combo_for("editor_tab_1"), None);
+        assert_eq!(m.combo_for("space_1"), Some("alt+1".to_string()));
+        assert_eq!(m.combo_for("space_next"), Some("alt+]".to_string()));
+    }
+
+    #[test]
+    fn bracket_combos_parse() {
+        assert_eq!(KeyCombo::parse("alt+]").unwrap().code, KeyCode::Char(']'));
+        assert_eq!(KeyCombo::parse("alt+[").unwrap().code, KeyCode::Char('['));
     }
 
     #[test]

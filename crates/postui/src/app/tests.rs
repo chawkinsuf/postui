@@ -659,20 +659,22 @@ fn editor_tab_cycle_order_is_headers_params_vars_body() {
 }
 
 #[test]
-fn alt_number_shortcuts_follow_the_screen_order() {
-    // alt+1..4 select the tabs in the order they appear on screen:
-    // Headers, Params, Vars, Body.
+fn editor_tab_select_slot_numbers_follow_the_screen_order() {
+    // `EditorTabSelect`'s slot numbers ([`EditorTab::index`], bindable as
+    // `editor_tab_N`) select the tabs in the order they appear on screen:
+    // Headers, Params, Vars, Body. alt+1..4 no longer drive this — they
+    // jump spaces now (`Action::JumpSpace`) — so this drives the action
+    // directly rather than through the old default alt bindings.
     let mut app = App::new_for_test();
     app.update(Action::SetMethod(postui_core::model::Method::Post));
-    let keymap = Keymap::default_bindings();
     app.editor.active_tab = EditorTab::Body;
-    app.handle_key(&keymap, alt('1'));
+    app.update(Action::EditorTabSelect(EditorTab::Headers.index()));
     assert_eq!(app.editor.active_tab, EditorTab::Headers);
-    app.handle_key(&keymap, alt('2'));
+    app.update(Action::EditorTabSelect(EditorTab::Params.index()));
     assert_eq!(app.editor.active_tab, EditorTab::Params);
-    app.handle_key(&keymap, alt('3'));
+    app.update(Action::EditorTabSelect(EditorTab::Vars.index()));
     assert_eq!(app.editor.active_tab, EditorTab::Vars);
-    app.handle_key(&keymap, alt('4'));
+    app.update(Action::EditorTabSelect(EditorTab::Body.index()));
     assert_eq!(app.editor.active_tab, EditorTab::Body);
 }
 
@@ -1587,10 +1589,12 @@ async fn sending_commits_the_cell_under_edit_into_the_request() {
 
 #[test]
 fn switching_editor_tabs_commits_the_cell_under_edit() {
+    // alt+1 no longer selects an editor tab (it jumps spaces now), so this
+    // drives the tab switch directly via `EditorTabSelect`.
     let mut app = app_with_one_param();
     click_hit(&mut app, Hit::TableCell { row: 0, col: 1 });
     type_chars(&mut app, "2");
-    app.handle_key(&Keymap::default_bindings(), alt('1'));
+    app.update(Action::EditorTabSelect(EditorTab::Headers.index()));
     assert_eq!(app.editor.active_tab, EditorTab::Headers);
     assert_eq!(
         app.editor.params["page"].value, "12",
@@ -12255,7 +12259,10 @@ async fn request_panel_buttons_focus_the_editor_pane() {
 /// navigation actions whose every target is *also* reachable by clicking it
 /// directly, so no button for "next"/"previous" itself is missing any real
 /// capability. That list must stay empty of anything else: if this test
-/// fails, the fix is a mouse path, not a new entry there.
+/// fails, the fix is a mouse path, not a new entry there. The one other
+/// carve-out is `space_actions_pending_mouse_path`, a deliberately
+/// temporary list (see its own comment) for actions declared ahead of the
+/// UI that will dispatch them by mouse.
 #[test]
 fn every_named_action_is_mouse_reachable() {
     // Kept deliberately short, and each entry justified: these are the only
@@ -12275,6 +12282,28 @@ fn every_named_action_is_mouse_reachable() {
         // directly clickable chip on the split control (`Hit::SplitStop`),
         // and the forward cycle's alt+w pill is the strip's mouse path.
         Action::CycleSplitBack,
+    ];
+
+    // Task 7 (stage: spaces + Manage screen) declares the space actions
+    // and their key bindings ahead of the UI that dispatches them by
+    // mouse (the space chooser and switcher land in Task 8/10/11). Unlike
+    // `keyboard_only_navigation` above, these have no click path at all
+    // yet — this list exists only to bridge that gap and should empty out
+    // as those tasks land their footer chip / chooser rows / on_hit
+    // dispatch.
+    let space_actions_pending_mouse_path: Vec<Action> = vec![
+        Action::OpenSpaceChooser,
+        Action::CycleSpace(1),
+        Action::CycleSpace(-1),
+        Action::JumpSpace(1),
+        Action::JumpSpace(2),
+        Action::JumpSpace(3),
+        Action::JumpSpace(4),
+        Action::JumpSpace(5),
+        Action::JumpSpace(6),
+        Action::JumpSpace(7),
+        Action::JumpSpace(8),
+        Action::JumpSpace(9),
     ];
 
     // Group A: footer/toolbar chips — the same function `draw_footer`
@@ -12356,7 +12385,9 @@ fn every_named_action_is_mouse_reachable() {
 
     for (name, action) in crate::keys::named_actions() {
         assert!(
-            keyboard_only_navigation.contains(&action) || mouse_reachable.contains(&action),
+            keyboard_only_navigation.contains(&action)
+                || space_actions_pending_mouse_path.contains(&action)
+                || mouse_reachable.contains(&action),
             "named action {name:?} ({action:?}) has a keybinding but no mouse path \
              (chip/menu/palette/on_hit) — add one, or justify a keyboard-only \
              exception in `keyboard_only_navigation`"

@@ -845,8 +845,9 @@ impl App {
             Hit::EditorTab(i) => {
                 // `i` is the tab's on-screen (draw-order) position — Params,
                 // Headers, Vars, Body — which is not the same numbering as
-                // `EditorTabSelect`'s stable index (kept unchanged so
-                // alt+1/2/3 still land on Params/Headers/Body); convert.
+                // `EditorTabSelect`'s stable index (kept unchanged so the
+                // bound `editor_tab_N` numbers still land on
+                // Params/Headers/Body); convert.
                 self.update(Action::FocusPane(PaneId::Editor));
                 self.update(Action::EditorTabSelect(
                     EditorTab::from_draw_position(i).index(),
