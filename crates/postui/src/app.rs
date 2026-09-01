@@ -3908,7 +3908,13 @@ impl App {
                 let from_path = postui_core::project::environment_path(&root, &from);
                 let to_path = postui_core::project::environment_path(&root, &to);
                 let secrets_path = root.join(".local").join("secrets.toml");
-                let paths = vec![from_path, to_path, secrets_path];
+                // `.local/state.toml` rides along: the per-env `selections`
+                // table is re-keyed in memory by `rename_env_state` and only
+                // ever reaches disk through `PersistLocalState`, so without
+                // it in the step an undo would strand this env's selections
+                // under the new name.
+                let state_path = root.join(".local").join("state.toml");
+                let paths = vec![from_path, to_path, secrets_path, state_path];
                 let before = self.read_file_states(&paths);
                 let was_active = self.project.active_env.as_deref() == Some(from.as_str());
                 match postui_core::project::rename_environment(&root, &from, &to) {
@@ -3922,12 +3928,14 @@ impl App {
                                 self.toasts.push(w, ToastKind::Warning);
                             }
                         }
+                        // Persist first: the step's "after" side has to see
+                        // the re-keyed selections already on disk.
+                        self.apply(Action::PersistLocalState);
                         self.record_file_step(
                             before,
                             &paths,
                             was_active.then(|| (Some(from.clone()), Some(to.clone()))),
                         );
-                        self.apply(Action::PersistLocalState);
                         if self.screen == Screen::Manage {
                             self.varmanager.sync(&self.project);
                         }
@@ -3959,7 +3967,11 @@ impl App {
             Action::ForceDeleteEnv(name) => {
                 let root = self.project.root.clone();
                 let secrets_path = root.join(".local").join("secrets.toml");
-                let before = self.read_file_states(std::slice::from_ref(&secrets_path));
+                // See `Action::RenameEnv`: the dropped env's `selections`
+                // live in `.local/state.toml`, so it is a companion file.
+                let state_path = root.join(".local").join("state.toml");
+                let companions = [secrets_path, state_path];
+                let before = self.read_file_states(&companions);
                 let prev_active = self.project.active_env.clone();
                 let was_active = prev_active.as_deref() == Some(name.as_str());
                 match postui_core::project::delete_environment(&root, &name) {
@@ -3976,13 +3988,15 @@ impl App {
                             format!("Deleted environment {name}{}", self.undo_hint()),
                             ToastKind::Info,
                         );
+                        // Persist first, so the step's "after" side records
+                        // the state file without this environment.
+                        self.apply(Action::PersistLocalState);
                         self.record_trashed_step(
                             vec![trashed],
                             before,
-                            &[secrets_path],
+                            &companions,
                             was_active.then(|| (prev_active.clone(), None)),
                         );
-                        self.apply(Action::PersistLocalState);
                         if self.screen == Screen::Manage {
                             self.varmanager.sync(&self.project);
                         }
@@ -5616,6 +5630,7 @@ impl App {
     /// When the editor followed a rename into another space, the sidebar
     /// follows it there too (it is rooted at the active space).
     fn after_file_level_undo(&mut self) {
+        self.project.reload_selections_from_disk();
         self.project.invalidate_stamps();
         self.apply(Action::ReloadProjectFiles);
         if let Some(w) = self.project.reload_spaces() {
@@ -7296,6 +7311,7 @@ impl App {
                     // any stale pre-undo cache) even though the step
                     // itself is dropped, or the UI shows a state that
                     // no longer matches disk.
+                    self.project.invalidate_stamps();
                     self.apply(Action::ReloadProjectFiles);
                     self.refresh_sidebar();
                     if self.screen == Screen::Manage {
@@ -7303,6 +7319,10 @@ impl App {
                     }
                     return false; // step dropped; earlier writes in this step stand
                 }
+                // Before the `SwitchEnv` below, whose persist would write
+                // the stale in-memory table straight back over the
+                // `state.toml` these writes just restored.
+                self.project.reload_selections_from_disk();
                 if let Some((before_env, after_env)) = active_env {
                     let env = if redo { after_env } else { before_env };
                     self.apply(Action::SwitchEnv(env.clone()));
@@ -7311,6 +7331,7 @@ impl App {
                 // refresh paths rather than guessing what the step touched.
                 self.project.invalidate_stamps();
                 self.apply(Action::ReloadProjectFiles);
+                self.apply(Action::PersistLocalState);
                 self.refresh_sidebar();
                 // Mirrors `Action::VarStruct`'s success path: the Variable
                 // Manager grid/form cache the current declarations and
@@ -7412,11 +7433,15 @@ impl App {
                     self.after_file_level_undo();
                     return false; // step dropped; earlier renames stand
                 }
+                // See the `FileStates` arm: `SwitchEnv` persists, so the
+                // restored table has to be in memory before it runs.
+                self.project.reload_selections_from_disk();
                 if let Some((before_env, after_env)) = active_env {
                     let env = if redo { after_env } else { before_env };
                     self.apply(Action::SwitchEnv(env.clone()));
                 }
                 self.after_file_level_undo();
+                self.apply(Action::PersistLocalState);
                 let what = items
                     .first()
                     .and_then(|t| t.original.file_name())

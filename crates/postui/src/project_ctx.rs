@@ -709,6 +709,24 @@ impl ProjectContext {
         warnings
     }
 
+    /// Re-reads the per-environment `selections` table from
+    /// `.local/state.toml`, leaving every other in-memory field alone.
+    /// `reload_if_changed` deliberately never touches `selections` (memory
+    /// is the authority there — see `persist_local_state`), so a file-level
+    /// undo that rewrote `state.toml` back to its pre-op contents needs
+    /// this to pull the restored table into memory. An unreadable state
+    /// file leaves the selections empty rather than keeping a table the
+    /// undo just invalidated.
+    pub fn reload_selections_from_disk(&mut self) {
+        if !self.can_persist() {
+            return;
+        }
+        self.selections = postui_core::project::load_local_state(&self.root)
+            .map(|st| st.selections)
+            .unwrap_or_default();
+        self.refresh_resolved();
+    }
+
     /// Forces the next [`Self::reload_if_changed`] to do a full reload,
     /// whatever the mtime stamps say. The file-level undo/redo arms need
     /// it: they rewrite files and then re-stamp through `set_env`, so the

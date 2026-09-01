@@ -4973,8 +4973,25 @@ fn cycle_env_wraps_and_skips_no_env() {
 #[test]
 fn rename_env_moves_the_file_rekeys_secrets_and_follows_the_active_env() {
     let (mut app, dir) = app_with_envs();
+    // A real selector (declared in variables.toml, options in the env
+    // file) rather than a bare made-up key: `reload_if_changed` prunes
+    // selections the model can't account for, so only a genuine one
+    // survives the reload an undo triggers.
+    std::fs::write(
+        dir.path().join("variables.toml"),
+        "[selectors.user]\nfields = [\"user\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("environments/qa.toml"),
+        "tok = \"q\"\n\n[options.user.alice]\nuser = \"1001\"\n",
+    )
+    .unwrap();
+    app.update(Action::ReloadProjectFiles);
     app.update(Action::SwitchEnv(Some("qa".into())));
     app.project.set_secret("tok", "s3cret".into()).unwrap();
+    app.project.set_selection_for("qa", "user", "alice");
+    app.update(Action::PersistLocalState);
     app.update(Action::RenameEnv {
         from: "qa".into(),
         to: "staging".into(),
@@ -4987,6 +5004,10 @@ fn rename_env_moves_the_file_rekeys_secrets_and_follows_the_active_env() {
     assert!(!secrets.contains_key("qa"));
     let st = postui_core::project::load_local_state(dir.path()).unwrap();
     assert_eq!(st.environment.as_deref(), Some("staging"));
+    assert_eq!(app.project.selections_for("staging")["user"], "alice");
+    assert!(app.project.selections_for("qa").is_empty());
+    assert_eq!(st.selections["staging"]["user"], "alice");
+    assert!(!st.selections.contains_key("qa"));
     app.update(Action::Undo);
     assert!(dir.path().join("environments/qa.toml").is_file());
     assert_eq!(app.project.env_label(), "qa");
@@ -4994,13 +5015,42 @@ fn rename_env_moves_the_file_rekeys_secrets_and_follows_the_active_env() {
         app.project.secrets["qa"]["tok"], "s3cret",
         "secrets re-keyed back"
     );
+    assert_eq!(
+        app.project.selections_for("qa")["user"],
+        "alice",
+        "selections re-keyed back"
+    );
+    assert!(app.project.selections_for("staging").is_empty());
+    let st = postui_core::project::load_local_state(dir.path()).unwrap();
+    assert_eq!(st.selections["qa"]["user"], "alice");
+    assert!(
+        !st.selections.contains_key("staging"),
+        "no phantom key left on disk"
+    );
 }
 
 #[test]
 fn delete_env_confirms_trashes_clears_the_active_env_and_undoes() {
     let (mut app, dir) = app_with_envs();
+    // A real selector (declared in variables.toml, options in the env
+    // file) rather than a bare made-up key: `reload_if_changed` prunes
+    // selections the model can't account for, so only a genuine one
+    // survives the reload an undo triggers.
+    std::fs::write(
+        dir.path().join("variables.toml"),
+        "[selectors.user]\nfields = [\"user\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("environments/qa.toml"),
+        "tok = \"q\"\n\n[options.user.alice]\nuser = \"1001\"\n",
+    )
+    .unwrap();
+    app.update(Action::ReloadProjectFiles);
     app.update(Action::SwitchEnv(Some("qa".into())));
     app.project.set_secret("tok", "s3cret".into()).unwrap();
+    app.project.set_selection_for("qa", "user", "alice");
+    app.update(Action::PersistLocalState);
     app.update(Action::DeleteEnv("qa".into()));
     let Some(Modal::Confirm {
         title,
@@ -5024,6 +5074,13 @@ fn delete_env_confirms_trashes_clears_the_active_env_and_undoes() {
             .contains_key("qa")
     );
     assert!(!app.project.environments.contains(&"qa".to_string()));
+    assert!(app.project.selections_for("qa").is_empty());
+    assert!(
+        !postui_core::project::load_local_state(dir.path())
+            .unwrap()
+            .selections
+            .contains_key("qa")
+    );
 
     app.update(Action::Undo);
     assert!(dir.path().join("environments/qa.toml").is_file());
@@ -5035,6 +5092,17 @@ fn delete_env_confirms_trashes_clears_the_active_env_and_undoes() {
     assert_eq!(
         app.project.secrets["qa"]["tok"], "s3cret",
         "the restored secrets file is re-read into memory, not just to disk"
+    );
+    assert_eq!(
+        app.project.selections_for("qa")["user"],
+        "alice",
+        "the restored selections come back into memory too"
+    );
+    assert_eq!(
+        postui_core::project::load_local_state(dir.path())
+            .unwrap()
+            .selections["qa"]["user"],
+        "alice"
     );
 }
 
