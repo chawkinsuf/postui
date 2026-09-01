@@ -214,15 +214,22 @@ Delete semantics:
   and secrets are removed."). Removes the file, drops its
   `selections[name]` from local state and its section from
   `.local/secrets.toml`; if it was active, the project switches to no
-  environment.
-- Space: confirm modal with the count ("Delete space `auth` and its 7
-  requests? This cannot be undone."). The requests are deleted with the
-  directory; **this is final** — like a single request delete today, it is
-  not on the undo stack. The intended path for keeping them is **Move all
-  requests to ▸** first, then delete the empty space. Refused with a toast
-  when it is the last space. If it was the active space, switch to the
-  first remaining space before deleting. If the open request lived in it,
-  the editor is cleared (through the dirty gate first).
+  environment. Environment delete and rename are recorded as `FileStates`
+  undo steps (the env file, and the secrets file when it changed) — a
+  single small file is a bounded case, unlike a space.
+- Space: confirm modal, and the finality must be unmissable. Title:
+  "Delete space `auth`?". Body, two lines: "Its 7 requests will be deleted
+  from disk." and, in the warning color, "This cannot be undone." The
+  confirm button reads "Delete 7 requests" (not "OK"/"Yes"); an empty space
+  gets "Delete space" and drops the disk line. The requests are deleted
+  with the directory and **the step is final** — it is not on the undo
+  stack, because a step holding every deleted file is unbounded (a trash
+  directory is the right design if deletion undo is ever wanted; see Out of
+  scope). The intended path for keeping requests is **Move all requests
+  to ▸** first, then delete the empty space. Refused with a toast when it
+  is the last space. If it was the active space, switch to the first
+  remaining space before deleting. If the open request lived in it, the
+  editor is cleared (through the dirty gate first).
 
 Rename semantics: environment rename re-keys `selections`, the secrets
 section, and `environment` in local state. Space rename re-keys
@@ -261,6 +268,9 @@ Core (`postui-core`):
 - `space_of` and `move_request_to_space` (keeps sub-path, applies the
   collision rule).
 - `rename_environment` / `delete_environment` happy paths and refusals.
+- App: environment delete/rename push a `FileStates` step and undo
+  restores the file; space delete pushes nothing and the modal's confirm
+  label carries the count.
 - `LocalState` round-trips `space` and `space_open`.
 
 App (`crates/postui/src/app/tests.rs`):
@@ -287,4 +297,6 @@ App (`crates/postui/src/app/tests.rs`):
 - Migration of pre-space projects.
 - Per-space environment or selector state (both stay project-global).
 - Drag-and-drop between spaces in the sidebar.
-- Undo for space deletion (or any filesystem delete).
+- Undo for space or request deletion. If ever wanted, the design is a
+  `.local/trash/` directory that deletes move into (undo = rename back,
+  zero memory cost), not an in-memory `FileStates` step.
