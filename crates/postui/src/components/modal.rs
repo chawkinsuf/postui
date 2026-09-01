@@ -33,6 +33,13 @@ pub enum PromptKind {
     /// The env chooser's "new environment…" row: the text is the new
     /// environment's name (slug rules).
     NewEnvironment,
+    /// The space chooser's "new space…" row (and the Manage screen's
+    /// `+ Space`): the text is the new space's name (one slug segment).
+    NewSpace,
+    /// Renaming a space: the text is the new name, `from` the old one.
+    RenameSpace {
+        from: String,
+    },
     /// `n` / the `+ Variable` button: a bare variable name — the detail
     /// pane's form sets its default/description afterward.
     NewVariable,
@@ -855,6 +862,11 @@ impl ModalStack {
                         PromptKind::NewEnvironment => {
                             Some(vec![Action::CreateEnv(text.to_string())])
                         }
+                        PromptKind::NewSpace => Some(vec![Action::CreateSpace(text.to_string())]),
+                        PromptKind::RenameSpace { from } => Some(vec![Action::RenameSpace {
+                            from: from.clone(),
+                            to: text.to_string(),
+                        }]),
                         PromptKind::NewVariable => {
                             Some(vec![Action::VarStruct(VarStructOp::NewVar {
                                 name: text.to_string(),

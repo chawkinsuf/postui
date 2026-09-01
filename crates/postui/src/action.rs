@@ -265,6 +265,34 @@ pub enum Action {
     OpenNewSpacePrompt,
     /// Create `requests/<name>/` (+ list entry) and switch to it.
     CreateSpace(String),
+    /// Open the `PromptKind::RenameSpace` prompt, prefilled with the name.
+    PromptRenameSpace(String),
+    /// Rename the space on disk and cascade the new name through the
+    /// editor's slug, the sidebar and local state.
+    RenameSpace {
+        from: String,
+        to: String,
+    },
+    /// User asked to delete a space. Gated on unsaved edits when the open
+    /// request lives there; otherwise goes straight to the confirm.
+    DeleteSpace(String),
+    /// The delete confirm, whose body/label carry the request count.
+    PromptDeleteSpace(String),
+    /// Confirmed; trashes the space's directory (undoable) and drops the
+    /// list entry.
+    ForceDeleteSpace(String),
+    /// Move `name` `delta` positions in the space list (clamped). Not an
+    /// undo step.
+    MoveSpace {
+        name: String,
+        delta: i32,
+    },
+    /// Move every request in `from` into `to`, following the open request
+    /// into its new space. Not an undo step.
+    MoveAllRequests {
+        from: String,
+        to: String,
+    },
     /// User asked to switch spaces. Gated on unsaved edits like
     /// `OpenRequest`; see `App::update`.
     SwitchSpace(String),

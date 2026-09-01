@@ -3814,9 +3814,210 @@ impl App {
                 self.begin_dropdown_open();
                 true
             }
-            // TODO(task 11): temporary placeholder so the match stays
-            // exhaustive while space creation has no behavior yet.
-            Action::OpenNewSpacePrompt | Action::CreateSpace(_) => true,
+            Action::OpenNewSpacePrompt => {
+                self.push_modal(Modal::Prompt {
+                    title: "New space (a-z 0-9 - _)".into(),
+                    input: crate::components::line_input::LineInput::new(""),
+                    kind: PromptKind::NewSpace,
+                    revealed: false,
+                });
+                true
+            }
+            Action::CreateSpace(name) => {
+                match postui_core::project::create_space(&self.project.root, &name) {
+                    Ok(()) => {
+                        self.apply(Action::ReloadProjectFiles);
+                        self.project.reload_spaces();
+                        self.toasts
+                            .push(format!("Created space {name}"), ToastKind::Success);
+                        self.apply(Action::SwitchSpace(name))
+                    }
+                    Err(e) => {
+                        self.toasts
+                            .push(format!("cannot create space: {e}"), ToastKind::Warning);
+                        self.last_action_failed = true;
+                        true
+                    }
+                }
+            }
+            Action::PromptRenameSpace(name) => {
+                self.push_modal(Modal::Prompt {
+                    title: "Rename space (a-z 0-9 - _)".into(),
+                    input: crate::components::line_input::LineInput::new(&name),
+                    kind: PromptKind::RenameSpace { from: name },
+                    revealed: false,
+                });
+                true
+            }
+            Action::RenameSpace { from, to } => {
+                if from == to {
+                    return true;
+                }
+                match postui_core::project::rename_space(&self.project.root, &from, &to) {
+                    Ok(()) => {
+                        // Re-key local state (the active space included)
+                        // before anything re-lists: both
+                        // `ReloadProjectFiles` and `reload_spaces` drop an
+                        // active space they no longer find on disk, and
+                        // the old name is gone by now.
+                        self.project.rename_space_state(&from, &to);
+                        self.apply(Action::ReloadProjectFiles);
+                        self.project.reload_spaces();
+                        let from_prefix = format!("{from}/");
+                        if let Some(rest) = self
+                            .editor
+                            .slug
+                            .as_deref()
+                            .and_then(|s| s.strip_prefix(&from_prefix))
+                        {
+                            let new_slug = format!("{to}/{rest}");
+                            self.editor.slug = Some(new_slug.clone());
+                            self.sidebar.open_slug = Some(new_slug);
+                            if let Some((slug, _)) = self.shadow.as_mut() {
+                                *slug = self.editor.slug.clone();
+                            }
+                        }
+                        self.refresh_sidebar();
+                        self.apply(Action::PersistLocalState);
+                        self.toasts
+                            .push(format!("Renamed space to {to}"), ToastKind::Success);
+                        if self.screen == Screen::Manage {
+                            self.varmanager.sync(&self.project);
+                        }
+                    }
+                    Err(e) => {
+                        self.toasts
+                            .push(format!("cannot rename space: {e}"), ToastKind::Warning);
+                        self.last_action_failed = true;
+                    }
+                }
+                true
+            }
+            Action::DeleteSpace(name) => {
+                let open_here = self
+                    .editor
+                    .slug
+                    .as_deref()
+                    .and_then(postui_core::storage::space_of)
+                    == Some(name.as_str());
+                if open_here && self.editor_holds_unsaved() {
+                    self.dirty_gate("delete space", Action::PromptDeleteSpace(name));
+                } else {
+                    self.apply(Action::PromptDeleteSpace(name));
+                }
+                true
+            }
+            Action::PromptDeleteSpace(name) => {
+                if self.project.spaces.len() <= 1 {
+                    self.toasts
+                        .push("cannot delete the last space", ToastKind::Warning);
+                    return true;
+                }
+                let count = self.sidebar.space_counts().get(&name).copied().unwrap_or(0);
+                let (body, label) = if count == 0 {
+                    (String::new(), "Delete space".to_string())
+                } else {
+                    (
+                        format!("Its {count} requests will be deleted."),
+                        format!("Delete {count} requests"),
+                    )
+                };
+                self.push_modal(Modal::Confirm {
+                    title: format!("Delete space \"{name}\"?"),
+                    body,
+                    choices: vec![('d', label, vec![Action::ForceDeleteSpace(name)])],
+                });
+                true
+            }
+            Action::ForceDeleteSpace(name) => {
+                if self.project.spaces.len() <= 1 {
+                    self.toasts
+                        .push("cannot delete the last space", ToastKind::Warning);
+                    return true;
+                }
+                // Leave the space before it goes: the switch restores the
+                // other space's own open request and clears this one's.
+                if self.project.active_space == name
+                    && let Some(other) = self.project.spaces.iter().find(|s| **s != name).cloned()
+                {
+                    self.apply(Action::ForceSwitchSpace(other));
+                }
+                let project_toml = self.project.root.join("project.toml");
+                let before = self.read_file_states(std::slice::from_ref(&project_toml));
+                match postui_core::project::delete_space(&self.project.root, &name) {
+                    Ok(trashed) => {
+                        self.toasts.push(
+                            format!("Deleted space {name}{}", self.undo_hint()),
+                            ToastKind::Info,
+                        );
+                        self.record_trashed_step(
+                            trashed.into_iter().collect(),
+                            before,
+                            &[project_toml],
+                            None,
+                        );
+                        self.project.forget_space(&name);
+                        self.after_file_level_undo();
+                        self.apply(Action::PersistLocalState);
+                    }
+                    Err(e) => {
+                        self.toasts
+                            .push(format!("cannot delete space: {e}"), ToastKind::Error);
+                        self.last_action_failed = true;
+                    }
+                }
+                true
+            }
+            Action::MoveSpace { name, delta } => {
+                match postui_core::project::move_space(&self.project.root, &name, delta) {
+                    Ok(()) => {
+                        self.apply(Action::ReloadProjectFiles);
+                        self.project.reload_spaces();
+                    }
+                    Err(e) => {
+                        self.toasts
+                            .push(format!("cannot move space: {e}"), ToastKind::Warning);
+                    }
+                }
+                true
+            }
+            Action::MoveAllRequests { from, to } => {
+                if from == to || !self.project.spaces.contains(&to) {
+                    return true;
+                }
+                let open = self.editor.slug.clone();
+                let (moved, err) =
+                    postui_core::storage::move_all_requests(&self.project.root, &from, &to);
+                if let Some(e) = err {
+                    self.toasts.push(
+                        format!("moved {} request(s), then failed: {e}", moved.len()),
+                        ToastKind::Error,
+                    );
+                } else {
+                    self.toasts.push(
+                        format!("Moved {} request(s) to {to}", moved.len()),
+                        ToastKind::Success,
+                    );
+                }
+                self.project.forget_space(&from);
+                self.refresh_sidebar();
+                if let Some(open) = open
+                    && let Some((_, new_slug)) = moved.iter().find(|(old, _)| *old == open)
+                {
+                    // Follow the open request into its new space; the
+                    // file moved unchanged, so no dirty gate applies.
+                    let new_slug = new_slug.clone();
+                    self.editor.slug = Some(new_slug.clone());
+                    self.sidebar.open_slug = Some(new_slug.clone());
+                    if let Some((slug, _)) = self.shadow.as_mut() {
+                        *slug = Some(new_slug.clone());
+                    }
+                    self.apply(Action::ForceOpenRequest(new_slug));
+                } else {
+                    self.apply(Action::PersistLocalState);
+                }
+                true
+            }
         }
     }
 

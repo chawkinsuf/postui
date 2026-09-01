@@ -629,7 +629,10 @@ impl ProjectContext {
     }
 
     /// Re-keys local state after a space rename (the caller has already
-    /// renamed on disk and called `reload_spaces`).
+    /// renamed on disk). Run this *before* any re-list (`reload_spaces`,
+    /// or `reload_if_changed`, which calls it): a re-list drops an active
+    /// space it no longer finds, and the old name is gone from disk by
+    /// then.
     pub fn rename_space_state(&mut self, from: &str, to: &str) {
         let from_prefix = format!("{from}/");
         let to_prefix = format!("{to}/");

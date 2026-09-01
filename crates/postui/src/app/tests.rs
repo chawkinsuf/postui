@@ -3016,16 +3016,20 @@ fn switching_to_an_empty_space_clears_the_editor() {
     assert!(app.sidebar.rows.is_empty());
 }
 
-#[test]
-fn switching_spaces_goes_through_the_dirty_gate() {
-    let (mut app, _dir) = spaced_app();
-    app.update(Action::ForceOpenRequest("main/alpha".into()));
-    // Dirty the editor the way the other dirty-gate tests do: a keystroke
-    // into the URL field.
+/// Dirties the open request the way the dirty-gate tests do: a keystroke
+/// into the URL field.
+fn dirty_the_editor(app: &mut App) {
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Url;
     app.handle_key(&Keymap::default_bindings(), plain('/'));
     assert!(app.editor.is_dirty());
+}
+
+#[test]
+fn switching_spaces_goes_through_the_dirty_gate() {
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    dirty_the_editor(&mut app);
     app.update(Action::SwitchSpace("auth".into()));
     assert!(
         matches!(app.modals.top(), Some(Modal::Confirm { .. })),
@@ -3146,6 +3150,158 @@ fn sidebar_footer_advertises_the_space_cycle_key() {
     // sidebar chip.
     let text = rendered_text_tall(&mut app);
     assert!(text.contains("space"), "{text}");
+}
+
+// -- Task 11: space CRUD --------------------------------------------------
+
+#[test]
+fn new_space_prompt_creates_and_switches() {
+    let (mut app, dir) = spaced_app();
+    let keymap = Keymap::default_bindings();
+    app.update(Action::OpenNewSpacePrompt);
+    for c in "billing".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.modals.is_empty());
+    assert!(dir.path().join("requests/billing").is_dir());
+    assert_eq!(app.project.spaces, ["main", "auth", "billing"]);
+    assert_eq!(app.project.active_space, "billing");
+    assert!(app.editor.slug.is_none());
+    let toasts = app.toasts.messages().len();
+    app.update(Action::CreateSpace("auth".into()));
+    assert!(app.toasts.messages().len() > toasts, "duplicate toasts");
+    app.update(Action::CreateSpace("Bad Name".into()));
+    assert_eq!(app.project.spaces.len(), 3);
+}
+
+#[test]
+fn rename_space_cascades_editor_sidebar_and_state() {
+    let (mut app, dir) = spaced_app();
+    app.update(Action::SwitchSpace("auth".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("auth/login"));
+    app.update(Action::RenameSpace {
+        from: "auth".into(),
+        to: "identity".into(),
+    });
+    assert_eq!(app.project.spaces, ["main", "identity"]);
+    assert_eq!(app.project.active_space, "identity");
+    assert_eq!(app.editor.slug.as_deref(), Some("identity/login"));
+    assert!(!app.editor.is_dirty());
+    assert!(dir.path().join("requests/identity/login.toml").is_file());
+    let st = postui_core::project::load_local_state(dir.path()).unwrap();
+    assert_eq!(st.space.as_deref(), Some("identity"));
+    assert_eq!(st.space_open["identity"], "identity/login");
+}
+
+#[test]
+fn delete_space_confirms_with_the_count_then_trashes_and_undoes() {
+    let (mut app, dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.update(Action::DeleteSpace("main".into()));
+    let Some(Modal::Confirm {
+        title,
+        body,
+        choices,
+    }) = app.modals.top()
+    else {
+        panic!("confirm")
+    };
+    assert_eq!(title, "Delete space \"main\"?");
+    assert_eq!(body, "Its 2 requests will be deleted.");
+    assert_eq!(choices[0].1, "Delete 2 requests");
+    let confirm = choices[0].0;
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, plain(confirm));
+    assert!(app.modals.is_empty());
+    assert!(!dir.path().join("requests/main").exists());
+    assert_eq!(app.project.spaces, ["auth"]);
+    assert_eq!(
+        app.project.active_space, "auth",
+        "switched away before deleting"
+    );
+    assert_eq!(app.editor.slug.as_deref(), Some("auth/login"));
+    assert_eq!(
+        postui_core::project::load_meta(dir.path()).unwrap().spaces,
+        ["auth"]
+    );
+
+    app.update(Action::Undo);
+    assert!(dir.path().join("requests/main/alpha.toml").is_file());
+    assert_eq!(
+        app.project.spaces,
+        ["main", "auth"],
+        "list entry restored at its old position"
+    );
+}
+
+#[test]
+fn delete_space_refuses_the_last_space_and_shows_a_plain_label_for_an_empty_one() {
+    let (mut app, dir) = spaced_app();
+    postui_core::project::create_space(dir.path(), "empty").unwrap();
+    app.update(Action::ReloadProjectFiles);
+    app.project.reload_spaces();
+    app.update(Action::DeleteSpace("empty".into()));
+    let Some(Modal::Confirm { body, choices, .. }) = app.modals.top() else {
+        panic!("confirm")
+    };
+    assert_eq!(body, "");
+    assert_eq!(choices[0].1, "Delete space");
+    app.update(Action::Close);
+
+    app.update(Action::ForceDeleteSpace("auth".into()));
+    app.update(Action::ForceDeleteSpace("empty".into()));
+    assert_eq!(app.project.spaces, ["main"]);
+    let toasts = app.toasts.messages().len();
+    app.update(Action::ForceDeleteSpace("main".into()));
+    assert_eq!(app.project.spaces, ["main"]);
+    assert!(app.toasts.messages().len() > toasts);
+}
+
+#[test]
+fn delete_space_holding_a_dirty_open_request_gates_first() {
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    dirty_the_editor(&mut app);
+    app.update(Action::DeleteSpace("main".into()));
+    let Some(Modal::Confirm { title, .. }) = app.modals.top() else {
+        panic!("gate")
+    };
+    assert_eq!(title, "Unsaved changes");
+}
+
+#[test]
+fn move_space_reorders_and_persists() {
+    let (mut app, dir) = spaced_app();
+    app.update(Action::MoveSpace {
+        name: "auth".into(),
+        delta: -1,
+    });
+    assert_eq!(app.project.spaces, ["auth", "main"]);
+    assert_eq!(
+        postui_core::project::load_meta(dir.path()).unwrap().spaces,
+        ["auth", "main"]
+    );
+    app.update(Action::JumpSpace(1));
+    assert_eq!(
+        app.project.active_space, "auth",
+        "alt+1 follows the new order"
+    );
+}
+
+#[test]
+fn move_all_requests_empties_the_source_and_follows_the_open_request() {
+    let (mut app, dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.update(Action::MoveAllRequests {
+        from: "main".into(),
+        to: "auth".into(),
+    });
+    assert!(dir.path().join("requests/auth/alpha.toml").is_file());
+    assert!(dir.path().join("requests/auth/beta.toml").is_file());
+    assert_eq!(app.project.active_space, "auth");
+    assert_eq!(app.editor.slug.as_deref(), Some("auth/alpha"));
+    assert_eq!(app.sidebar.space_counts().get("main"), None);
 }
 
 #[test]
