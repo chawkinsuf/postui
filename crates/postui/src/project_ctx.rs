@@ -30,6 +30,10 @@ pub struct ProjectContext {
     /// and kept in sync in-memory (no more disk round-trip needed to avoid
     /// clobbering it on persist — see `persist_local_state`).
     selections: IndexMap<String, IndexMap<String, String>>,
+    /// Shared selectors' `name → selected option key` — one global pick,
+    /// independent of the active environment, same load/persist story as
+    /// `selections`.
+    shared_selections: IndexMap<String, String>,
     /// mtimes of the files this context was built from, used by
     /// `reload_if_changed` to detect on-disk edits between UI polls.
     stamps: Vec<(PathBuf, Option<SystemTime>)>,
@@ -121,6 +125,37 @@ fn prune_stale_selections(
         .map(|name| {
             selections.shift_remove(&name);
             format!("selection for `{name}` no longer exists in env `{env_label}` \u{2014} cleared")
+        })
+        .collect()
+}
+
+/// [`prune_stale_selections`]'s twin for the global shared table: drops any
+/// pick naming a shared selector (or option) the model no longer has.
+fn prune_stale_shared_selections(
+    model: &VarModel,
+    shared_selections: &mut IndexMap<String, String>,
+) -> Vec<String> {
+    let stale: Vec<String> = shared_selections
+        .iter()
+        .filter(|(selector, option)| {
+            let entry_exists = model
+                .selectors
+                .get(selector.as_str())
+                .is_some_and(|d| d.shared)
+                && model
+                    .options
+                    .get(selector.as_str())
+                    .is_some_and(|options| options.contains_key(option.as_str()));
+            !entry_exists
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+
+    stale
+        .into_iter()
+        .map(|name| {
+            shared_selections.shift_remove(&name);
+            format!("selection for `{name}` no longer exists \u{2014} cleared")
         })
         .collect()
 }
@@ -271,6 +306,7 @@ impl ProjectContext {
             resolved: varmodel::Resolved::default(),
             expanded,
             selections: local_state.selections,
+            shared_selections: local_state.shared_selections,
             stamps,
             local_open_request: local_state.open_request,
             main_split: local_state.main_split,
@@ -288,6 +324,15 @@ impl ProjectContext {
                 &env,
                 ctx.selections.entry(env.clone()).or_default(),
             );
+            if !stale.is_empty() {
+                let open_request = ctx.local_open_request.clone();
+                ctx.persist_local_state(open_request.as_deref());
+            }
+            warnings.extend(stale);
+        }
+        if !legacy {
+            let stale =
+                prune_stale_shared_selections(&ctx.model, &mut ctx.shared_selections);
             if !stale.is_empty() {
                 let open_request = ctx.local_open_request.clone();
                 ctx.persist_local_state(open_request.as_deref());
@@ -321,11 +366,16 @@ impl ProjectContext {
     /// selections/secrets. Call after anything that changes any of those.
     pub fn refresh_resolved(&mut self) {
         let key = self.env_key();
-        let empty_sel = IndexMap::new();
         let empty_secrets = IndexMap::new();
-        let selections = self.selections.get(&key).unwrap_or(&empty_sel);
+        // The env's own selections plus the global picks for shared
+        // selectors — shared wins, since a shared selector's pick never
+        // belongs to one environment.
+        let mut selections = self.selections.get(&key).cloned().unwrap_or_default();
+        for (name, option) in &self.shared_selections {
+            selections.insert(name.clone(), option.clone());
+        }
         let secrets = self.secrets.get(&key).unwrap_or(&empty_secrets);
-        self.resolved = varmodel::resolve_env(&self.model, &self.env_data, selections, secrets);
+        self.resolved = varmodel::resolve_env(&self.model, &self.env_data, &selections, secrets);
     }
 
     /// `env`'s `name → selected option key` map (read-only, for any
@@ -337,6 +387,12 @@ impl ProjectContext {
         self.selections
             .get(env)
             .unwrap_or_else(|| EMPTY.get_or_init(IndexMap::new))
+    }
+
+    /// The global `selector → selected option key` map for shared
+    /// selectors (read-only; write through [`Self::set_selection_for`]).
+    pub fn shared_selections(&self) -> &IndexMap<String, String> {
+        &self.shared_selections
     }
 
     /// Records `name`'s selection as `key` for the active env, persists
@@ -353,6 +409,16 @@ impl ProjectContext {
     /// only environment `resolved` reflects); a non-active env's column
     /// recomputes fresh from `self.selections` on its next draw either way.
     pub fn set_selection_for(&mut self, env: &str, name: &str, key: &str) {
+        // A shared selector has one global pick: whichever env column the
+        // gesture came from, the selection lands in the shared table and
+        // applies everywhere.
+        if self.model.selectors.get(name).is_some_and(|d| d.shared) {
+            self.shared_selections
+                .insert(name.to_string(), key.to_string());
+            self.persist_local_state_keep_open_request();
+            self.refresh_resolved();
+            return;
+        }
         self.selections
             .entry(env.to_string())
             .or_default()
@@ -376,6 +442,14 @@ impl ProjectContext {
     /// tidy rather than accumulating dead options). A no-op if `name` has
     /// no selection recorded for `env`.
     pub fn clear_selection_for(&mut self, env: &str, name: &str) {
+        if self.model.selectors.get(name).is_some_and(|d| d.shared) {
+            if self.shared_selections.shift_remove(name).is_none() {
+                return;
+            }
+            self.persist_local_state_keep_open_request();
+            self.refresh_resolved();
+            return;
+        }
         let Some(sel) = self.selections.get_mut(env) else {
             return;
         };
@@ -555,6 +629,14 @@ impl ProjectContext {
             }
             warnings.extend(stale);
         }
+        if !legacy {
+            let stale =
+                prune_stale_shared_selections(&self.model, &mut self.shared_selections);
+            if !stale.is_empty() {
+                self.persist_local_state_keep_open_request();
+            }
+            warnings.extend(stale);
+        }
 
         self.stamps = stamp(&self.root, &self.active_env);
         self.refresh_resolved();
@@ -642,6 +724,7 @@ impl ProjectContext {
             main_split: self.main_split.clone(),
             expanded: self.expanded.iter().cloned().collect(),
             selections: self.selections.clone(),
+            shared_selections: self.shared_selections.clone(),
         };
         let _ = postui_core::project::save_local_state(&self.root, &state);
     }
@@ -1122,6 +1205,100 @@ mod tests {
 
         let state = postui_core::project::load_local_state(dir.path()).unwrap();
         assert_eq!(state.selections["qa"]["user"], "alice");
+    }
+
+    fn write_shared_locale_project(dir: &std::path::Path) {
+        postui_core::project::init_project(dir, None).unwrap();
+        std::fs::write(
+            dir.join("variables.toml"),
+            "[selectors.locale]\nshared = true\nfields = [\"lang\"]\n\n[options.locale.en]\nlang = \"en\"\n\n[options.locale.fr]\nlang = \"fr\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("environments/qa.toml"), "").unwrap();
+        std::fs::write(dir.join("environments/dev.toml"), "").unwrap();
+    }
+
+    #[test]
+    fn shared_selection_persists_globally_and_survives_env_switch() {
+        let dir = tempfile::tempdir().unwrap();
+        write_shared_locale_project(dir.path());
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        ctx.set_env(Some("qa".into()));
+
+        ctx.set_selection("locale", "fr");
+        assert_eq!(ctx.resolved.values["lang"], "fr");
+
+        // The pick is global: switching environments keeps it.
+        ctx.set_env(Some("dev".into()));
+        assert_eq!(ctx.resolved.values["lang"], "fr");
+
+        // ...and it lands in state.toml's global table, not under an env.
+        let state = postui_core::project::load_local_state(dir.path()).unwrap();
+        assert_eq!(state.shared_selections["locale"], "fr");
+        assert!(!state.selections.get("qa").is_some_and(|s| s.contains_key("locale")));
+    }
+
+    #[test]
+    fn shared_selection_restores_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        write_shared_locale_project(dir.path());
+        let mut shared_selections = IndexMap::new();
+        shared_selections.insert("locale".to_string(), "en".to_string());
+        postui_core::project::save_local_state(
+            dir.path(),
+            &postui_core::project::LocalState {
+                environment: Some("qa".into()),
+                shared_selections,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf());
+        assert!(warns.is_empty(), "{warns:?}");
+        assert_eq!(ctx.resolved.values["lang"], "en");
+    }
+
+    #[test]
+    fn stale_shared_selection_warns_and_clears_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        write_shared_locale_project(dir.path());
+        let mut shared_selections = IndexMap::new();
+        shared_selections.insert("locale".to_string(), "ghost".to_string());
+        postui_core::project::save_local_state(
+            dir.path(),
+            &postui_core::project::LocalState {
+                environment: Some("qa".into()),
+                shared_selections,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf());
+        assert!(
+            warns
+                .iter()
+                .any(|w| w.contains("locale") && w.contains("no longer exists")),
+            "{warns:?}"
+        );
+        assert!(!ctx.shared_selections().contains_key("locale"));
+        let state = postui_core::project::load_local_state(dir.path()).unwrap();
+        assert!(!state.shared_selections.contains_key("locale"));
+    }
+
+    #[test]
+    fn clear_selection_for_a_shared_selector_clears_the_global_pick() {
+        let dir = tempfile::tempdir().unwrap();
+        write_shared_locale_project(dir.path());
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        ctx.set_env(Some("qa".into()));
+        ctx.set_selection("locale", "fr");
+        assert_eq!(ctx.resolved.values["lang"], "fr");
+
+        ctx.clear_selection_for("qa", "locale");
+        assert!(!ctx.shared_selections().contains_key("locale"));
+        assert!(!ctx.resolved.values.contains_key("lang"));
     }
 
     #[test]

@@ -30,6 +30,10 @@ pub struct LocalState {
     /// Per-environment `name → selected option key`, shared by variables
     /// and groups (spec §1.3).
     pub selections: IndexMap<String, IndexMap<String, String>>,
+    /// `selector name → selected option key` for shared selectors — one
+    /// global pick, not per-environment (a shared selector's options are
+    /// identical everywhere, and so is its selection).
+    pub shared_selections: IndexMap<String, String>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -434,6 +438,7 @@ mod tests {
             main_split: Some("editor-big".into()),
             expanded: vec!["users".into()],
             selections,
+            ..Default::default()
         };
         save_local_state(dir.path(), &state).unwrap();
         assert_eq!(load_local_state(dir.path()).unwrap(), state);
@@ -442,6 +447,28 @@ mod tests {
         assert!(
             load_local_state(dir.path()).is_err(),
             "corrupt state is an Err the app degrades from"
+        );
+    }
+
+    #[test]
+    fn local_state_round_trips_shared_selections() {
+        let dir = tempdir().unwrap();
+        let mut shared_selections = IndexMap::new();
+        shared_selections.insert("locale".to_string(), "fr".to_string());
+        let state = LocalState {
+            environment: Some("qa".into()),
+            shared_selections,
+            ..Default::default()
+        };
+        save_local_state(dir.path(), &state).unwrap();
+        assert_eq!(load_local_state(dir.path()).unwrap(), state);
+        // An old state.toml without the table loads with an empty map.
+        std::fs::write(dir.path().join(".local/state.toml"), "environment = \"qa\"\n").unwrap();
+        assert!(
+            load_local_state(dir.path())
+                .unwrap()
+                .shared_selections
+                .is_empty()
         );
     }
 

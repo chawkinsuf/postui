@@ -22,6 +22,10 @@ pub struct SelectorDecl {
     /// Ordered field names; every option of the selector supplies all of
     /// them. Never empty: a selector with no fields is a parse error.
     pub fields: Vec<String>,
+    /// A shared selector's options live in `variables.toml` (the model's
+    /// own `options`), identical in every environment, instead of in each
+    /// `environments/<env>.toml`.
+    pub shared: bool,
 }
 
 /// One named record of a selector, in one environment.
@@ -36,6 +40,9 @@ pub struct OptionDecl {
 pub struct VarModel {
     pub vars: IndexMap<String, VarDecl>,
     pub selectors: IndexMap<String, SelectorDecl>,
+    /// Shared selectors' options (`selector name → option name → option`),
+    /// parsed from `[options.*]` tables in `variables.toml` itself.
+    pub options: IndexMap<String, IndexMap<String, OptionDecl>>,
 }
 
 /// Flat values for simple variables plus this environment's selector
@@ -167,6 +174,14 @@ pub enum ModelError {
     )]
     OptionNameReserved { selector: String },
     #[error(
+        "selector \"{0}\" is not shared, so its options live in environments/<env>.toml; move [options.{0}] there or declare shared = true on [selectors.{0}]"
+    )]
+    OptionsForUnsharedSelector(String),
+    #[error(
+        "selector \"{0}\" is shared, so its options live in variables.toml; move [options.{0}] there or remove shared = true from [selectors.{0}]"
+    )]
+    EnvOptionsForSharedSelector(String),
+    #[error(
         "environment sets a flat value for secret variable \"{0}\"; secrets can't be committed to environments/<env>.toml"
     )]
     EnvValueForSecret(String),
@@ -286,8 +301,9 @@ fn parse_selector_decl(
 ) -> Result<SelectorDecl, ModelError> {
     let table_path = format!("selectors.{selector_name}");
     let table = as_table(value, &table_path)?;
-    check_unknown_fields(table, &["description", "fields"], &table_path)?;
+    check_unknown_fields(table, &["description", "fields", "shared"], &table_path)?;
     let description = get_string(table, "description", &table_path)?;
+    let shared = get_bool(table, "shared", &table_path)?;
     let fields_value = table
         .get("fields")
         .ok_or_else(|| ModelError::MissingFields {
@@ -314,6 +330,7 @@ fn parse_selector_decl(
     Ok(SelectorDecl {
         description,
         fields,
+        shared,
     })
 }
 
@@ -323,7 +340,7 @@ pub fn parse_variables(s: &str) -> Result<VarModel, ModelError> {
 
     let mut vars = IndexMap::new();
     for (name, value) in &top {
-        if name == "selectors" {
+        if name == "selectors" || name == "options" {
             continue;
         }
         check_name(name)?;
@@ -378,7 +395,33 @@ pub fn parse_variables(s: &str) -> Result<VarModel, ModelError> {
         }
     }
 
-    Ok(VarModel { vars, selectors })
+    let mut options: IndexMap<String, IndexMap<String, OptionDecl>> = IndexMap::new();
+    if let Some(options_value) = top.get("options") {
+        let options_table = as_table(options_value, "options")?;
+        for (selector, selector_value) in options_table {
+            // A flat (non-table) entry under `[options]` means someone
+            // tried to use the reserved name "options" as a plain variable
+            // table — same shape as the `[selectors]` case above.
+            let Some(selector_table) = selector_value.as_table() else {
+                return Err(ModelError::ReservedName("options".to_string()));
+            };
+            let decl = selectors
+                .get(selector)
+                .ok_or_else(|| ModelError::OptionForUndeclaredSelector(selector.clone()))?;
+            if !decl.shared {
+                return Err(ModelError::OptionsForUnsharedSelector(selector.clone()));
+            }
+            let per_selector = parse_selector_options(selector, selector_table)?;
+            check_options_supply_fields(decl, selector, &per_selector)?;
+            options.insert(selector.clone(), per_selector);
+        }
+    }
+
+    Ok(VarModel {
+        vars,
+        selectors,
+        options,
+    })
 }
 
 // ---------------------------------------------------------------------
@@ -416,6 +459,34 @@ fn parse_option(
     })
 }
 
+/// One selector's `[options.<selector>.*]` tables — the same shape in
+/// `variables.toml` (a shared selector's options) and an environment file.
+fn parse_selector_options(
+    selector: &str,
+    selector_table: &toml::map::Map<String, toml::Value>,
+) -> Result<IndexMap<String, OptionDecl>, ModelError> {
+    let mut per_selector = IndexMap::new();
+    for (option_name, option_value) in selector_table {
+        if option_name.is_empty() {
+            return Err(ModelError::OptionEmptyName {
+                selector: selector.to_string(),
+            });
+        }
+        // `description` inside a selector's options table is an
+        // option's own description, never an option name.
+        if option_name == OPTION_DESCRIPTION {
+            return Err(ModelError::OptionNameReserved {
+                selector: selector.to_string(),
+            });
+        }
+        per_selector.insert(
+            option_name.clone(),
+            parse_option(option_value, selector, option_name)?,
+        );
+    }
+    Ok(per_selector)
+}
+
 pub fn parse_environment(s: &str) -> Result<EnvData, ModelError> {
     let top: IndexMap<String, toml::Value> =
         toml::from_str(s).map_err(|e| ModelError::Toml(e.to_string()))?;
@@ -433,26 +504,10 @@ pub fn parse_environment(s: &str) -> Result<EnvData, ModelError> {
                 let selector_table = selector_value
                     .as_table()
                     .ok_or_else(|| ModelError::OptionsNotTable(selector.clone()))?;
-                let mut per_selector = IndexMap::new();
-                for (option_name, option_value) in selector_table {
-                    if option_name.is_empty() {
-                        return Err(ModelError::OptionEmptyName {
-                            selector: selector.clone(),
-                        });
-                    }
-                    // `description` inside a selector's options table is an
-                    // option's own description, never an option name.
-                    if option_name == OPTION_DESCRIPTION {
-                        return Err(ModelError::OptionNameReserved {
-                            selector: selector.clone(),
-                        });
-                    }
-                    per_selector.insert(
-                        option_name.clone(),
-                        parse_option(option_value, selector, option_name)?,
-                    );
-                }
-                options.insert(selector.clone(), per_selector);
+                options.insert(
+                    selector.clone(),
+                    parse_selector_options(selector, selector_table)?,
+                );
             }
             continue;
         }
@@ -464,6 +519,21 @@ pub fn parse_environment(s: &str) -> Result<EnvData, ModelError> {
     }
 
     Ok(EnvData { values, options })
+}
+
+/// `selector`'s options from wherever they live — the model for a shared
+/// selector, `env` for everyone else. `None` when there are no options (or
+/// no such selector).
+pub fn options_of<'a>(
+    model: &'a VarModel,
+    env: &'a EnvData,
+    selector: &str,
+) -> Option<&'a IndexMap<String, OptionDecl>> {
+    if model.selectors.get(selector).is_some_and(|d| d.shared) {
+        model.options.get(selector)
+    } else {
+        env.options.get(selector)
+    }
 }
 
 /// This environment's options for `selector`, or `None` when the selector
@@ -512,28 +582,43 @@ pub fn validate_env(model: &VarModel, env: &EnvData) -> Result<(), ModelError> {
             .selectors
             .get(selector)
             .ok_or_else(|| ModelError::OptionForUndeclaredSelector(selector.clone()))?;
-        for (option_name, option) in selector_opts {
-            for field in &decl.fields {
-                if !option.values.contains_key(field) {
-                    return Err(ModelError::OptionMissingField {
-                        selector: selector.clone(),
-                        option: option_name.clone(),
-                        field: field.clone(),
-                    });
-                }
+        if decl.shared {
+            return Err(ModelError::EnvOptionsForSharedSelector(selector.clone()));
+        }
+        check_options_supply_fields(decl, selector, selector_opts)?;
+    }
+
+    Ok(())
+}
+
+/// Every option must supply exactly its selector's declared fields — the
+/// same rule for an environment's options and a shared selector's options
+/// in `variables.toml`.
+fn check_options_supply_fields(
+    decl: &SelectorDecl,
+    selector: &str,
+    options: &IndexMap<String, OptionDecl>,
+) -> Result<(), ModelError> {
+    for (option_name, option) in options {
+        for field in &decl.fields {
+            if !option.values.contains_key(field) {
+                return Err(ModelError::OptionMissingField {
+                    selector: selector.to_string(),
+                    option: option_name.clone(),
+                    field: field.clone(),
+                });
             }
-            for field in option.values.keys() {
-                if !decl.fields.contains(field) {
-                    return Err(ModelError::OptionUnknownField {
-                        selector: selector.clone(),
-                        option: option_name.clone(),
-                        field: field.clone(),
-                    });
-                }
+        }
+        for field in option.values.keys() {
+            if !decl.fields.contains(field) {
+                return Err(ModelError::OptionUnknownField {
+                    selector: selector.to_string(),
+                    option: option_name.clone(),
+                    field: field.clone(),
+                });
             }
         }
     }
-
     Ok(())
 }
 
@@ -583,8 +668,15 @@ pub fn resolve_env(
     }
 
     for (selector_name, selector_decl) in &model.selectors {
+        // A shared selector's options live in the model itself; everyone
+        // else's in the environment.
+        let options_home = if selector_decl.shared {
+            &model.options
+        } else {
+            &env.options
+        };
         let selected = selections.get(selector_name).and_then(|name| {
-            env.options
+            options_home
                 .get(selector_name)
                 .and_then(|options| options.get(name))
                 .map(|option| (name, option))
@@ -666,6 +758,104 @@ fields = ["user_id", "customer_id"]
         );
         assert_eq!(m.vars["base_url"].description.as_deref(), Some("API root"));
         assert!(!m.vars["base_url"].secret);
+    }
+
+    #[test]
+    fn parses_shared_selector_with_options_in_variables_toml() {
+        let m = parse_variables(
+            r#"
+[selectors.locale]
+shared = true
+fields = ["lang", "date_format"]
+
+[options.locale.english]
+lang = "en"
+date_format = "MM/DD"
+
+[options.locale.french]
+description = "the fancy one"
+lang = "fr"
+date_format = "DD/MM"
+"#,
+        )
+        .unwrap();
+        assert!(m.selectors["locale"].shared);
+        assert_eq!(m.options["locale"]["english"].values["lang"], "en");
+        assert_eq!(
+            m.options["locale"]["french"].description.as_deref(),
+            Some("the fancy one")
+        );
+    }
+
+    #[test]
+    fn selector_without_shared_flag_is_not_shared() {
+        let m = parse_variables("[selectors.user]\nfields = [\"user_id\"]\n").unwrap();
+        assert!(!m.selectors["user"].shared);
+        assert!(m.options.is_empty());
+    }
+
+    #[test]
+    fn variables_options_for_a_non_shared_selector_are_rejected() {
+        let err = parse_variables(
+            "[selectors.user]\nfields = [\"user_id\"]\n\n[options.user.alice]\nuser_id = \"1\"\n",
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("is not shared")
+                && err.to_string().contains("shared = true"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn variables_options_for_an_undeclared_selector_are_rejected() {
+        let err = parse_variables("[options.ghost.a]\nx = \"1\"\n").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("[options.ghost] does not match a declared selector"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn shared_option_missing_a_field_is_rejected_at_parse() {
+        let err = parse_variables(
+            "[selectors.locale]\nshared = true\nfields = [\"lang\", \"fmt\"]\n\n[options.locale.en]\nlang = \"en\"\n",
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("[options.locale.\"en\"] is missing field \"fmt\""),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn shared_option_with_an_extra_field_is_rejected_at_parse() {
+        let err = parse_variables(
+            "[selectors.locale]\nshared = true\nfields = [\"lang\"]\n\n[options.locale.en]\nlang = \"en\"\nnope = \"x\"\n",
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("sets \"nope\", which is not a field of selector \"locale\""),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn env_options_for_a_shared_selector_are_rejected() {
+        let m = parse_variables(
+            "[selectors.locale]\nshared = true\nfields = [\"lang\"]\n\n[options.locale.en]\nlang = \"en\"\n",
+        )
+        .unwrap();
+        let e = parse_environment("[options.locale.fr]\nlang = \"fr\"\n").unwrap();
+        let err = validate_env(&m, &e).unwrap_err();
+        assert!(
+            err.to_string().contains("\"locale\" is shared")
+                && err.to_string().contains("variables.toml"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -928,6 +1118,18 @@ customer_id = "cust-91"
     }
 
     #[test]
+    fn options_of_looks_in_the_selectors_home() {
+        let m = parse_variables(
+            "[selectors.locale]\nshared = true\nfields = [\"lang\"]\n\n[options.locale.en]\nlang = \"en\"\n\n[selectors.user]\nfields = [\"user_id\"]\n",
+        )
+        .unwrap();
+        let e = parse_environment("[options.user.alice]\nuser_id = \"1\"\n").unwrap();
+        assert!(options_of(&m, &e, "locale").unwrap().contains_key("en"));
+        assert!(options_of(&m, &e, "user").unwrap().contains_key("alice"));
+        assert!(options_of(&m, &e, "nope").is_none());
+    }
+
+    #[test]
     fn selector_options_looks_up_one_selectors_options() {
         let e = parse_environment("[options.user.\"user 1\"]\nuser_id = \"1\"\n").unwrap();
         assert_eq!(selector_options(&e, "user").unwrap().len(), 1);
@@ -1147,6 +1349,42 @@ customer_id = "cust-91"
         );
         assert_eq!(r.values["stray"], "v");
         assert!(r.meta.get("stray").is_none());
+    }
+
+    #[test]
+    fn shared_selector_resolves_from_model_options_in_any_env() {
+        let m = parse_variables(
+            "[selectors.locale]\nshared = true\nfields = [\"lang\"]\n\n[options.locale.en]\nlang = \"en\"\n\n[options.locale.fr]\nlang = \"fr\"\n",
+        )
+        .unwrap();
+        let mut sel = Selections::new();
+        sel.insert("locale".into(), "fr".into());
+        // An empty env: the options come from the model, not the env.
+        let r = resolve_env(&m, &EnvData::default(), &sel, &SecretValues::new());
+        assert_eq!(r.values["lang"], "fr");
+        assert_eq!(
+            r.meta["lang"],
+            VarMeta::SelectorMember {
+                selector: "locale".into(),
+                selected: "fr".into()
+            }
+        );
+    }
+
+    #[test]
+    fn shared_selector_without_selection_needs_one() {
+        let m = parse_variables(
+            "[selectors.locale]\nshared = true\nfields = [\"lang\"]\n\n[options.locale.en]\nlang = \"en\"\n",
+        )
+        .unwrap();
+        let r = resolve_env(
+            &m,
+            &EnvData::default(),
+            &Selections::new(),
+            &SecretValues::new(),
+        );
+        assert_eq!(r.meta["lang"], VarMeta::NeedsSelection);
+        assert!(r.values.get("lang").is_none());
     }
 
     #[test]
