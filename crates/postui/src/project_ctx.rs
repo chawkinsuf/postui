@@ -26,6 +26,13 @@ pub struct ProjectContext {
     /// whenever any of those inputs changes.
     pub resolved: varmodel::Resolved,
     pub expanded: std::collections::BTreeSet<String>,
+    /// Every space in display order (see `postui_core::project::list_spaces`).
+    pub spaces: Vec<String>,
+    /// The space the sidebar shows. Always one of `spaces` (repaired on
+    /// open/reload when the stored one vanished).
+    pub active_space: String,
+    /// space → the request last open in it, from `.local/state.toml`.
+    space_open: IndexMap<String, String>,
     /// env → name → selected option key, loaded from `.local/state.toml`
     /// and kept in sync in-memory (no more disk round-trip needed to avoid
     /// clobbering it on persist — see `persist_local_state`).
@@ -209,8 +216,9 @@ fn mtime(path: &PathBuf) -> Option<SystemTime> {
 }
 
 /// Builds the stamp vector `reload_if_changed` compares against: mtimes of
-/// `project.toml`, `variables.toml`, the `environments/` dir, and the active
-/// env file (a sentinel path with `None` when there is no active env).
+/// `project.toml`, `variables.toml`, the `environments/` dir, the active
+/// env file (a sentinel path with `None` when there is no active env), and
+/// the `requests/` dir (so an external `mkdir` of a space is noticed).
 fn stamp(root: &Path, active_env: &Option<String>) -> Vec<(PathBuf, Option<SystemTime>)> {
     vec![
         (root.join("project.toml"), mtime(&root.join("project.toml"))),
@@ -227,6 +235,7 @@ fn stamp(root: &Path, active_env: &Option<String>) -> Vec<(PathBuf, Option<Syste
                 (p, m)
             })
             .unwrap_or_else(|| (root.join("environments").join("__none__.toml"), None)),
+        (root.join("requests"), mtime(&root.join("requests"))),
     ]
 }
 
@@ -242,6 +251,13 @@ impl ProjectContext {
             warnings.push(format!("could not read project.toml: {e}"));
             ProjectMeta::default()
         });
+        // The trash only backs this session's undo; a fresh open starts clean.
+        if !root.as_os_str().is_empty()
+            && let Err(e) = postui_core::trash::empty(&root)
+        {
+            warnings.push(format!("could not empty .local/trash: {e}"));
+        }
+        let spaces = postui_core::project::list_spaces(&root, &meta);
         let (legacy, pending_migration, migration_warnings) = probe_migration(&root);
         warnings.extend(migration_warnings);
         let model = if legacy {
@@ -261,6 +277,35 @@ impl ProjectContext {
             warnings.push(format!("could not read local state: {e}"));
             postui_core::project::LocalState::default()
         });
+
+        let first_space = spaces
+            .first()
+            .cloned()
+            .unwrap_or_else(|| postui_core::project::DEFAULT_SPACE.to_string());
+        let open_request_space = local_state
+            .open_request
+            .as_deref()
+            .and_then(postui_core::storage::space_of)
+            .map(str::to_string)
+            .filter(|s| spaces.contains(s));
+        let active_space = match local_state.space.clone() {
+            Some(s) if spaces.contains(&s) => s,
+            Some(s) => {
+                warnings.push(format!("saved space {s:?} no longer exists"));
+                open_request_space
+                    .clone()
+                    .unwrap_or_else(|| first_space.clone())
+            }
+            None => open_request_space
+                .clone()
+                .unwrap_or_else(|| first_space.clone()),
+        };
+        // The request to restore must live in the active space; a stale
+        // `open_request` from another space yields to that space's own entry.
+        let local_open_request = match local_state.open_request.clone() {
+            Some(r) if postui_core::storage::space_of(&r) == Some(active_space.as_str()) => Some(r),
+            _ => local_state.space_open.get(&active_space).cloned(),
+        };
 
         let secrets = postui_core::project::load_secrets(&root).unwrap_or_else(|e| {
             warnings.push(format!("could not read secrets: {e}"));
@@ -305,10 +350,13 @@ impl ProjectContext {
             secrets,
             resolved: varmodel::Resolved::default(),
             expanded,
+            spaces,
+            active_space,
+            space_open: local_state.space_open,
             selections: local_state.selections,
             shared_selections: local_state.shared_selections,
             stamps,
-            local_open_request: local_state.open_request,
+            local_open_request,
             main_split: local_state.main_split,
             pending_migration,
             migration_declined: false,
@@ -530,6 +578,106 @@ impl ProjectContext {
         }
     }
 
+    /// Re-lists spaces from `meta` + disk. A vanished active space falls
+    /// back to the first one; returns a warning when that happened.
+    pub fn reload_spaces(&mut self) -> Option<String> {
+        self.spaces = postui_core::project::list_spaces(&self.root, &self.meta);
+        if self.spaces.contains(&self.active_space) {
+            return None;
+        }
+        let gone = std::mem::take(&mut self.active_space);
+        self.active_space = self
+            .spaces
+            .first()
+            .cloned()
+            .unwrap_or_else(|| postui_core::project::DEFAULT_SPACE.to_string());
+        Some(format!("space {gone:?} no longer exists"))
+    }
+
+    pub fn set_active_space(&mut self, name: &str) -> bool {
+        if !self.spaces.iter().any(|s| s == name) {
+            return false;
+        }
+        self.active_space = name.to_string();
+        true
+    }
+
+    /// Remembers `slug` as the active space's open request (`None` clears
+    /// the entry). Only slugs actually inside the active space are kept.
+    pub fn record_space_open(&mut self, slug: Option<&str>) {
+        match slug {
+            Some(s) if postui_core::storage::space_of(s) == Some(self.active_space.as_str()) => {
+                self.space_open
+                    .insert(self.active_space.clone(), s.to_string());
+            }
+            _ => {
+                self.space_open.shift_remove(&self.active_space);
+            }
+        }
+    }
+
+    pub fn space_open_for(&self, space: &str) -> Option<String> {
+        self.space_open.get(space).cloned()
+    }
+
+    /// Drops everything local state remembers about `name`.
+    pub fn forget_space(&mut self, name: &str) {
+        self.space_open.shift_remove(name);
+        let prefix = format!("{name}/");
+        self.expanded
+            .retain(|p| !p.starts_with(&prefix) && p != name);
+    }
+
+    /// Re-keys local state after a space rename (the caller has already
+    /// renamed on disk and called `reload_spaces`).
+    pub fn rename_space_state(&mut self, from: &str, to: &str) {
+        let from_prefix = format!("{from}/");
+        let to_prefix = format!("{to}/");
+        if let Some(open) = self.space_open.shift_remove(from)
+            && let Some(rest) = open.strip_prefix(&from_prefix)
+        {
+            self.space_open
+                .insert(to.to_string(), format!("{to_prefix}{rest}"));
+        }
+        if self.active_space == from {
+            self.active_space = to.to_string();
+        }
+        self.expanded = self
+            .expanded
+            .iter()
+            .map(|p| match p.strip_prefix(&from_prefix) {
+                Some(rest) => format!("{to_prefix}{rest}"),
+                None if p == from => to.to_string(),
+                None => p.clone(),
+            })
+            .collect();
+    }
+
+    /// In-memory cascade of an environment delete: its selections and
+    /// secrets go; the active env is cleared if it was the one deleted.
+    /// Persisting (state, secrets file) is the caller's job.
+    pub fn remove_env_state(&mut self, name: &str) {
+        self.selections.shift_remove(name);
+        self.secrets.shift_remove(name);
+        if self.active_env.as_deref() == Some(name) {
+            self.active_env = None;
+            self.env_data = varmodel::EnvData::default();
+        }
+    }
+
+    /// In-memory cascade of an environment rename.
+    pub fn rename_env_state(&mut self, from: &str, to: &str) {
+        if let Some(sel) = self.selections.shift_remove(from) {
+            self.selections.insert(to.to_string(), sel);
+        }
+        if let Some(sec) = self.secrets.shift_remove(from) {
+            self.secrets.insert(to.to_string(), sec);
+        }
+        if self.active_env.as_deref() == Some(from) {
+            self.active_env = Some(to.to_string());
+        }
+    }
+
     /// Switches the active environment, re-reading its data (or clearing
     /// it for `None`). A missing or corrupt env file keeps the previous
     /// environment active and returns a warning instead of dropping to "no
@@ -594,6 +742,9 @@ impl ProjectContext {
             }
         }
         self.environments = postui_core::project::list_environments(&self.root);
+        if let Some(w) = self.reload_spaces() {
+            warnings.push(w);
+        }
 
         match postui_core::project::load_secrets(&self.root) {
             Ok(secrets) => self.secrets = secrets,
@@ -711,14 +862,12 @@ impl ProjectContext {
     /// the currently-open request. A failed save never breaks interaction,
     /// so errors are dropped.
     ///
-    /// `space`/`space_open` aren't owned by this context yet (spaces UI
-    /// lands in a later task), so they're read back from disk first and
-    /// carried through unchanged rather than clobbered with `None`/empty.
+    /// The active space and the per-space open requests come straight from
+    /// this context — it owns them from `open()` onward.
     pub fn persist_local_state(&self, open_request: Option<&str>) {
         if !self.can_persist() {
             return;
         }
-        let current = postui_core::project::load_local_state(&self.root).unwrap_or_default();
         let state = postui_core::project::LocalState {
             environment: self.active_env.clone(),
             open_request: open_request.map(|s| s.to_string()),
@@ -726,8 +875,8 @@ impl ProjectContext {
             expanded: self.expanded.iter().cloned().collect(),
             selections: self.selections.clone(),
             shared_selections: self.shared_selections.clone(),
-            space: current.space,
-            space_open: current.space_open,
+            space: Some(self.active_space.clone()),
+            space_open: self.space_open.clone(),
         };
         let _ = postui_core::project::save_local_state(&self.root, &state);
     }
@@ -893,12 +1042,13 @@ mod tests {
         assert!(ctx.environments.is_empty());
 
         postui_core::project::init_project(dir.path(), Some("svc")).unwrap();
+        postui_core::storage::ensure_project(dir.path()).unwrap();
         std::fs::write(dir.path().join("environments/qa.toml"), "tok = \"t\"\n").unwrap();
         postui_core::project::save_local_state(
             dir.path(),
             &postui_core::project::LocalState {
                 environment: Some("qa".into()),
-                open_request: Some("ping".into()),
+                open_request: Some("main/ping".into()),
                 expanded: vec!["users".into()],
                 ..Default::default()
             },
@@ -910,7 +1060,7 @@ mod tests {
         assert_eq!(ctx.env_label(), "qa");
         assert_eq!(ctx.env_data.values["tok"], "t");
         assert!(ctx.expanded.contains("users"));
-        assert_eq!(ctx.local_open_request().as_deref(), Some("ping"));
+        assert_eq!(ctx.local_open_request().as_deref(), Some("main/ping"));
     }
 
     #[test]
@@ -941,7 +1091,13 @@ mod tests {
 
     fn bump_mtime(p: &std::path::Path) {
         let t = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
-        let f = std::fs::File::options().append(true).open(p).unwrap();
+        // A directory can't be opened for append; read-only is enough for
+        // `set_modified` (futimens) on the owner's own directory.
+        let f = if p.is_dir() {
+            std::fs::File::open(p).unwrap()
+        } else {
+            std::fs::File::options().append(true).open(p).unwrap()
+        };
         f.set_modified(t).unwrap();
     }
 
@@ -949,6 +1105,7 @@ mod tests {
     fn reload_picks_up_changed_variables_and_keeps_active_env() {
         let dir = tempfile::tempdir().unwrap();
         postui_core::project::init_project(dir.path(), None).unwrap();
+        postui_core::storage::ensure_project(dir.path()).unwrap();
         std::fs::write(dir.path().join("environments/qa.toml"), "tok = \"1\"\n").unwrap();
         let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
         ctx.set_env(Some("qa".into()));
@@ -1452,5 +1609,155 @@ mod tests {
             ctx.env_data.options["user"]["alice"].values["user"], "9001",
             "previous good env data kept"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // spaces
+    // -----------------------------------------------------------------
+
+    fn spaced_project(dir: &Path) {
+        postui_core::project::init_project(dir, None).unwrap();
+        postui_core::storage::ensure_project(dir).unwrap(); // seeds main
+        postui_core::project::create_space(dir, "auth").unwrap();
+        for slug in ["main/health", "auth/login"] {
+            postui_core::storage::save_request(
+                dir,
+                slug,
+                &postui_core::model::HttpRequest {
+                    name: None,
+                    method: postui_core::model::Method::Get,
+                    url: "https://x".into(),
+                    substitute_body: false,
+                    insecure: false,
+                    params: Default::default(),
+                    headers: Default::default(),
+                    variables: Default::default(),
+                    body: None,
+                },
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn open_lists_spaces_and_defaults_to_the_first() {
+        let dir = tempfile::tempdir().unwrap();
+        spaced_project(dir.path());
+        let (ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        assert_eq!(ctx.spaces, ["main", "auth"]);
+        assert_eq!(ctx.active_space, "main");
+    }
+
+    #[test]
+    fn open_restores_the_stored_space_and_its_open_request() {
+        let dir = tempfile::tempdir().unwrap();
+        spaced_project(dir.path());
+        let mut st = postui_core::project::LocalState {
+            space: Some("auth".into()),
+            // stale: not in the stored space
+            open_request: Some("main/health".into()),
+            ..Default::default()
+        };
+        st.space_open.insert("auth".into(), "auth/login".into());
+        postui_core::project::save_local_state(dir.path(), &st).unwrap();
+        let (ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        assert_eq!(ctx.active_space, "auth");
+        assert_eq!(ctx.local_open_request().as_deref(), Some("auth/login"));
+    }
+
+    #[test]
+    fn open_falls_back_to_the_open_requests_space_then_the_first() {
+        let dir = tempfile::tempdir().unwrap();
+        spaced_project(dir.path());
+        let st = postui_core::project::LocalState {
+            space: Some("gone".into()),
+            open_request: Some("auth/login".into()),
+            ..Default::default()
+        };
+        postui_core::project::save_local_state(dir.path(), &st).unwrap();
+        let (ctx, warnings) = ProjectContext::open(dir.path().to_path_buf());
+        assert_eq!(ctx.active_space, "auth");
+        assert_eq!(ctx.local_open_request().as_deref(), Some("auth/login"));
+        assert!(warnings.iter().any(|w| w.contains("gone")), "{warnings:?}");
+
+        let st = postui_core::project::LocalState {
+            space: Some("gone".into()),
+            open_request: None,
+            ..Default::default()
+        };
+        postui_core::project::save_local_state(dir.path(), &st).unwrap();
+        let (ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        assert_eq!(ctx.active_space, "main");
+    }
+
+    #[test]
+    fn open_empties_the_trash() {
+        let dir = tempfile::tempdir().unwrap();
+        spaced_project(dir.path());
+        let t = postui_core::storage::delete_request(dir.path(), "auth/login").unwrap();
+        assert!(t.trashed.is_file());
+        let _ = ProjectContext::open(dir.path().to_path_buf());
+        assert!(!postui_core::trash::trash_dir(dir.path()).exists());
+    }
+
+    #[test]
+    fn persist_writes_space_and_space_open() {
+        let dir = tempfile::tempdir().unwrap();
+        spaced_project(dir.path());
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        ctx.record_space_open(Some("main/health"));
+        assert!(ctx.set_active_space("auth"));
+        ctx.record_space_open(Some("auth/login"));
+        ctx.persist_local_state(Some("auth/login"));
+        let st = postui_core::project::load_local_state(dir.path()).unwrap();
+        assert_eq!(st.space.as_deref(), Some("auth"));
+        assert_eq!(st.space_open["main"], "main/health");
+        assert_eq!(st.space_open["auth"], "auth/login");
+        assert!(!ctx.set_active_space("nope"));
+        assert_eq!(ctx.active_space, "auth");
+    }
+
+    #[test]
+    fn reload_picks_up_a_new_space_dir_and_repairs_a_vanished_active_space() {
+        let dir = tempfile::tempdir().unwrap();
+        spaced_project(dir.path());
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        ctx.set_active_space("auth");
+        std::fs::create_dir_all(dir.path().join("requests/billing")).unwrap();
+        bump_mtime(&dir.path().join("requests"));
+        let (changed, _) = ctx.reload_if_changed();
+        assert!(changed);
+        assert_eq!(ctx.spaces, ["main", "auth", "billing"]);
+        std::fs::remove_dir_all(dir.path().join("requests/auth")).unwrap();
+        postui_core::project::write_spaces(dir.path(), &["main".into(), "billing".into()]).unwrap();
+        bump_mtime(&dir.path().join("project.toml"));
+        let (_, warnings) = ctx.reload_if_changed();
+        assert_eq!(ctx.active_space, "main");
+        assert!(warnings.iter().any(|w| w.contains("auth")), "{warnings:?}");
+    }
+
+    #[test]
+    fn rename_and_forget_cascade_local_state() {
+        let dir = tempfile::tempdir().unwrap();
+        spaced_project(dir.path());
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        ctx.set_active_space("auth");
+        ctx.record_space_open(Some("auth/login"));
+        ctx.expanded.insert("auth/tokens".into());
+        ctx.expanded.insert("main/x".into());
+        ctx.spaces = vec!["main".into(), "identity".into()]; // as reload_spaces would after a disk rename
+        ctx.rename_space_state("auth", "identity");
+        assert_eq!(ctx.active_space, "identity");
+        assert_eq!(
+            ctx.space_open_for("identity").as_deref(),
+            Some("identity/login")
+        );
+        assert_eq!(ctx.space_open_for("auth"), None);
+        assert!(ctx.expanded.contains("identity/tokens"));
+        assert!(!ctx.expanded.contains("auth/tokens"));
+        assert!(ctx.expanded.contains("main/x"));
+        ctx.forget_space("identity");
+        assert_eq!(ctx.space_open_for("identity"), None);
+        assert!(!ctx.expanded.contains("identity/tokens"));
     }
 }
