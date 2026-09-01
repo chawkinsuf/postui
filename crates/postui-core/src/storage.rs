@@ -51,19 +51,32 @@ pub fn default_project_dir() -> Option<PathBuf> {
 }
 
 /// Ensures `root/requests/` exists and that the project has at least one
-/// space. When `root` is already a project (`project.toml` present), a
-/// fresh one gets `main` seeded both on disk and in `project.toml`'s
-/// `spaces` list — including the case where `main` already exists on disk
-/// (e.g. seeded earlier while this was still a bare directory) but was
-/// never recorded, which is simply written into the list rather than
-/// re-created. When `root` is a bare directory (not yet a project), only
-/// the `requests/main/` directory is materialised — `project.toml` must
-/// never appear behind the user's back, ahead of the "create a project
-/// here?" consent modal; `list_spaces` still reports `main` as an
-/// unlisted directory either way.
+/// space. When `root` is already a project (`project.toml` present) and
+/// parses cleanly, a fresh one gets `main` seeded both on disk and in
+/// `project.toml`'s `spaces` list — including the case where `main`
+/// already exists on disk (e.g. seeded earlier while this was still a bare
+/// directory) but was never recorded, which is simply written into the
+/// list rather than re-created. When `root` is a bare directory (not yet a
+/// project) — or an existing `project.toml` fails to parse — only the
+/// `requests/main/` directory is materialised, never touching
+/// `project.toml`: a bare directory must never gain one behind the user's
+/// back, ahead of the "create a project here?" consent modal, and an
+/// unreadable one must never be overwritten by seeding, matching
+/// `ProjectContext::open`'s "never fail to open outright" policy of
+/// degrading a broken `project.toml` to a warning rather than a hard
+/// error. `list_spaces` still reports `main` as an unlisted directory
+/// either way.
 pub fn ensure_project(root: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(requests_dir(root))?;
-    let meta = crate::project::load_meta(root).unwrap_or_default();
+    let Ok(meta) = crate::project::load_meta(root) else {
+        if crate::project::list_spaces(root, &crate::project::ProjectMeta::default()).is_empty() {
+            std::fs::create_dir_all(crate::project::space_dir(
+                root,
+                crate::project::DEFAULT_SPACE,
+            ))?;
+        }
+        return Ok(());
+    };
     if crate::project::is_project(root) {
         if meta.spaces.is_empty() {
             let spaces = crate::project::list_spaces(root, &meta);
@@ -930,5 +943,31 @@ mod tests {
             crate::project::list_spaces(dir.path(), &crate::project::ProjectMeta::default()),
             ["main"]
         );
+    }
+
+    #[test]
+    fn ensure_project_materialises_an_existing_unlisted_space_into_the_list() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::project::init_project(dir.path(), None).unwrap();
+        std::fs::create_dir_all(dir.path().join("requests/auth")).unwrap();
+        ensure_project(dir.path()).unwrap();
+        assert_eq!(
+            crate::project::load_meta(dir.path()).unwrap().spaces,
+            ["auth"]
+        );
+    }
+
+    #[test]
+    fn ensure_project_leaves_an_unparseable_project_toml_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let bad = "this = = not toml
+";
+        std::fs::write(dir.path().join("project.toml"), bad).unwrap();
+        ensure_project(dir.path()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("project.toml")).unwrap(),
+            bad
+        );
+        assert!(dir.path().join("requests/main").is_dir());
     }
 }
