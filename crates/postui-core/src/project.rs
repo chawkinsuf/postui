@@ -266,20 +266,51 @@ pub fn create_environment(root: &Path, name: &str) -> Result<(), ProjectError> {
     if name.contains('/') || crate::storage::validate_slug(name).is_err() {
         return Err(ProjectError::BadName(name.to_string()));
     }
-    let dir = root.join("environments");
-    std::fs::create_dir_all(&dir)?;
+    std::fs::create_dir_all(root.join("environments"))?;
     std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(dir.join(format!("{name}.toml")))?;
+        .open(environment_path(root, name))?;
     Ok(())
+}
+
+/// `root/environments/<name>.toml`.
+pub fn environment_path(root: &Path, name: &str) -> PathBuf {
+    root.join("environments").join(format!("{name}.toml"))
+}
+
+/// Renames the environment file. Secrets and local selections keyed by
+/// the old name are the caller's cascade.
+pub fn rename_environment(root: &Path, from: &str, to: &str) -> Result<(), ProjectError> {
+    if !valid_space_name(to) {
+        return Err(ProjectError::BadName(to.to_string()));
+    }
+    let from_path = environment_path(root, from);
+    let to_path = environment_path(root, to);
+    if !from_path.is_file() {
+        return Err(ProjectError::NotFound(from.to_string()));
+    }
+    if to_path.exists() {
+        return Err(ProjectError::AlreadyExists(to.to_string()));
+    }
+    std::fs::rename(&from_path, &to_path)?;
+    Ok(())
+}
+
+/// Moves the environment file into the trash.
+pub fn delete_environment(root: &Path, name: &str) -> Result<Trashed, ProjectError> {
+    let path = environment_path(root, name);
+    if !path.is_file() {
+        return Err(ProjectError::NotFound(name.to_string()));
+    }
+    Ok(crate::trash::trash(root, &path)?)
 }
 
 pub fn load_environment(root: &Path, name: &str) -> Result<varmodel::EnvData, ProjectError> {
     if name.contains('/') || crate::storage::validate_slug(name).is_err() {
         return Err(ProjectError::BadName(name.to_string()));
     }
-    let path = root.join("environments").join(format!("{name}.toml"));
+    let path = environment_path(root, name);
     let contents = std::fs::read_to_string(&path)?;
     varmodel::parse_environment(&contents).map_err(|e| ProjectError::Parse(e.to_string()))
 }
@@ -888,5 +919,46 @@ mod tests {
         save_local_state(dir.path(), &st).unwrap();
         let back = load_local_state(dir.path()).unwrap();
         assert_eq!(back, st);
+    }
+
+    #[test]
+    fn rename_environment_moves_the_file_and_refuses_collisions() {
+        let dir = tempdir().unwrap();
+        init_project(dir.path(), None).unwrap();
+        create_environment(dir.path(), "qa").unwrap();
+        create_environment(dir.path(), "prod").unwrap();
+        std::fs::write(environment_path(dir.path(), "qa"), "tok = \"q\"\n").unwrap();
+        rename_environment(dir.path(), "qa", "staging").unwrap();
+        assert!(!environment_path(dir.path(), "qa").exists());
+        assert_eq!(
+            std::fs::read_to_string(environment_path(dir.path(), "staging")).unwrap(),
+            "tok = \"q\"\n"
+        );
+        assert!(matches!(
+            rename_environment(dir.path(), "staging", "prod"),
+            Err(ProjectError::AlreadyExists(_))
+        ));
+        assert!(matches!(
+            rename_environment(dir.path(), "nope", "x"),
+            Err(ProjectError::NotFound(_))
+        ));
+        assert!(matches!(
+            rename_environment(dir.path(), "staging", "Bad Name"),
+            Err(ProjectError::BadName(_))
+        ));
+    }
+
+    #[test]
+    fn delete_environment_trashes_the_file() {
+        let dir = tempdir().unwrap();
+        init_project(dir.path(), None).unwrap();
+        create_environment(dir.path(), "qa").unwrap();
+        let t = delete_environment(dir.path(), "qa").unwrap();
+        assert!(!environment_path(dir.path(), "qa").exists());
+        assert!(t.trashed.is_file());
+        assert!(matches!(
+            delete_environment(dir.path(), "qa"),
+            Err(ProjectError::NotFound(_))
+        ));
     }
 }
