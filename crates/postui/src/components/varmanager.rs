@@ -451,9 +451,6 @@ pub const TITLE_HEIGHT: u16 = BUTTON_HEIGHT;
 /// The left list's fixed width (spec §3.4's mock).
 pub const LEFT_W: u16 = 28;
 
-// Not a chevron: a ▶ next to a selector row reads as "click to expand a
-// tree", which these rows don't do — they open in the detail pane.
-const GLYPH_GROUP: &str = "\u{25c8}"; // ◈
 const GLYPH_LOCK: &str = "\u{1f512}"; // 🔒
 const GLYPH_UNRESOLVED: &str = "\u{25cf}"; // ●
 const GLYPH_RADIO_ON: &str = "\u{25c9}"; // ◉
@@ -2293,7 +2290,7 @@ impl VarManager {
 }
 
 /// One left-list row's content: the section labels, a variable (name, lock
-/// badge, unresolved dot) or a selector (`◈ name (option)`).
+/// badge, unresolved dot) or a selector (`name (option)`).
 fn paint_left_row(
     buf: &mut ratatui::buffer::Buffer,
     ctx: &ProjectContext,
@@ -2351,7 +2348,10 @@ fn paint_left_row(
                 Some(option) => format!("({option})"),
                 None => "(needs selection)".to_string(),
             };
-            let label = format!("{GLYPH_GROUP} {name} {selection}");
+            // No glyph: the SELECTORS section header already says what
+            // these rows are, and a leading mark here read as a tree
+            // handle to click rather than a label.
+            let label = format!("{name} {selection}");
             text(
                 buf,
                 x,
