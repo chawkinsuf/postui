@@ -342,7 +342,7 @@ impl Component for Sidebar {
             KeyCode::Char('r') => matches!(self.selected_row()?, Row::Request { .. })
                 .then_some(Action::PromptRenameRequest),
             KeyCode::Char('d') => matches!(self.selected_row()?, Row::Request { .. })
-                .then_some(Action::ConfirmDeleteRequest),
+                .then_some(Action::DeleteSelectedRequest),
             _ => None,
         }
     }

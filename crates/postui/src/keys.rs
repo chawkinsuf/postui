@@ -185,7 +185,7 @@ pub(crate) fn named_actions() -> Vec<(&'static str, Action)> {
         ),
         ("open_body_editor", Action::OpenBodyInEditor),
         ("save", Action::SaveRequest),
-        ("discard", Action::ConfirmDiscardChanges),
+        ("discard", Action::DiscardChanges),
         ("send", Action::Send),
         ("project_choose", Action::OpenProjectChooser),
         ("project_cycle", Action::CycleProject),
@@ -258,7 +258,7 @@ impl Keymap {
                 Action::CopyToClipboard(crate::action::CopyTarget::Url),
             ),
             ("ctrl+s", Action::SaveRequest),
-            ("alt+d", Action::ConfirmDiscardChanges),
+            ("alt+d", Action::DiscardChanges),
             ("ctrl+r", Action::Send),
             ("ctrl+enter", Action::Send),
             ("shift+enter", Action::Send),
@@ -511,7 +511,7 @@ mod tests {
         assert_eq!(get("alt+b"), Some(Action::OpenThemeChooser));
         assert_eq!(get("alt+w"), Some(Action::CycleSplit));
         assert_eq!(get("shift+alt+w"), Some(Action::CycleSplitBack));
-        assert_eq!(get("alt+d"), Some(Action::ConfirmDiscardChanges));
+        assert_eq!(get("alt+d"), Some(Action::DiscardChanges));
         assert_eq!(get("alt+t"), None, "alt+t is free again");
         assert_eq!(
             get("alt+y"),

@@ -136,18 +136,18 @@ pub enum Action {
     /// Copy the selected sidebar request to the next free `<slug>-copy…`
     /// name and open the copy.
     DuplicateRequest,
-    /// The `discard` chip / palette: asks before reverting unsaved edits.
-    ConfirmDiscardChanges,
     /// The scratch gate's save path: opens the Save-as name prompt with the
     /// deferred action to run once the save succeeds.
     PromptSaveScratch(Box<Action>),
     /// That prompt confirmed: save under the name, then run the deferred
     /// action — only if the save actually succeeded.
     SaveRequestAsThen(String, Box<Action>),
-    /// The confirmed revert: reload the editor from its saved snapshot.
+    /// The `discard` chip / palette / Alt+D: reload the editor from its
+    /// saved snapshot. No confirm — the revert is itself an undo step.
     DiscardChanges,
-    /// Open the delete confirmation for the selected sidebar slug.
-    ConfirmDeleteRequest,
+    /// Delete the selected sidebar slug. No confirm — the delete records
+    /// an undo step, and the toast advertises it.
+    DeleteSelectedRequest,
     /// Delete the request at `slug` from disk.
     DeleteRequest(String),
     /// Save the request currently open in the editor as `name` (a slug).

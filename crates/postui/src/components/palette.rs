@@ -80,8 +80,8 @@ pub fn all_commands() -> Vec<Command> {
         Command {
             id: "request-discard",
             name: "Request: discard changes",
-            description: "Revert unsaved edits to the saved request (asks first)",
-            action: Action::ConfirmDiscardChanges,
+            description: "Revert unsaved edits to the saved request (undoable)",
+            action: Action::DiscardChanges,
         },
         Command {
             id: "request-rename",
@@ -98,8 +98,8 @@ pub fn all_commands() -> Vec<Command> {
         Command {
             id: "request-delete",
             name: "Request: delete",
-            description: "Delete the open request, with confirmation",
-            action: Action::ConfirmDeleteRequest,
+            description: "Delete the open request (undo restores it)",
+            action: Action::DeleteSelectedRequest,
         },
         Command {
             id: "method-cycle",

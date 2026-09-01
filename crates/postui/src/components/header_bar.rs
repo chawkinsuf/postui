@@ -193,7 +193,7 @@ pub fn draw_header(
     if dirty {
         use crate::action::Action;
         let save_hit = Hit::FooterChip(Action::SaveRequest);
-        let discard_hit = Hit::FooterChip(Action::ConfirmDiscardChanges);
+        let discard_hit = Hit::FooterChip(Action::DiscardChanges);
         let group_right = if beside_theme {
             theme_x.saturating_sub(GROUP_GAP)
         } else {
@@ -625,7 +625,7 @@ mod tests {
             "clean: no save chip"
         );
         assert!(
-            hits.rect_of(&Hit::FooterChip(Action::ConfirmDiscardChanges))
+            hits.rect_of(&Hit::FooterChip(Action::DiscardChanges))
                 .is_none(),
             "clean: no discard chip"
         );
@@ -635,7 +635,7 @@ mod tests {
             .rect_of(&Hit::FooterChip(Action::SaveRequest))
             .expect("dirty: save chip registered");
         let discard = hits
-            .rect_of(&Hit::FooterChip(Action::ConfirmDiscardChanges))
+            .rect_of(&Hit::FooterChip(Action::DiscardChanges))
             .expect("dirty: discard chip registered");
         let theme_rect = hits.rect_of(&Hit::HeaderTheme).unwrap();
         assert!(

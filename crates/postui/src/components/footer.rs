@@ -40,7 +40,7 @@ pub(crate) fn footer_chips(
             ("enter", "open", None),
             ("n", "new", Some(Action::PromptNewRequest)),
             ("r", "rename", Some(Action::PromptRenameRequest)),
-            ("d", "delete", Some(Action::ConfirmDeleteRequest)),
+            ("d", "delete", Some(Action::DeleteSelectedRequest)),
         ],
         PaneId::Editor => {
             let mut chips = vec![
@@ -423,7 +423,7 @@ mod tests {
                 "{focus:?}: save moved to the app bar"
             );
             assert!(
-                hits.rect_of(&Hit::FooterChip(Action::ConfirmDiscardChanges))
+                hits.rect_of(&Hit::FooterChip(Action::DiscardChanges))
                     .is_none(),
                 "{focus:?}: discard moved to the app bar"
             );
@@ -669,7 +669,7 @@ mod tests {
             .expect("palette chip registered");
         let quit = hits.rect_of(&Hit::FooterChip(Action::Quit)).unwrap();
         let delete = hits
-            .rect_of(&Hit::FooterChip(Action::ConfirmDeleteRequest))
+            .rect_of(&Hit::FooterChip(Action::DeleteSelectedRequest))
             .unwrap();
         assert_eq!(palette.x + palette.width + 1, quit.x);
         assert!(

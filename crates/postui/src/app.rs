@@ -1132,6 +1132,25 @@ impl App {
     /// step for any change. Runs once per input event from the main loop —
     /// the one place keystroke- and mouse-path edits (which never become
     /// Actions) get captured. Returns whether a step was recorded.
+    /// ` — ^Z undoes` (under whatever combo `undo` is currently bound
+    /// to), appended to the toasts of destructive-but-undoable actions
+    /// that act without a confirm modal.
+    fn undo_hint(&self) -> String {
+        self.keymap
+            .combo_for("undo")
+            .map(|c| format!(" — {c} undoes"))
+            .unwrap_or_default()
+    }
+
+    /// The undo combo alone (`^Z`), for confirm bodies that spell out a
+    /// full sentence; falls back to the word "Undo" if the action is
+    /// unbound.
+    fn undo_combo(&self) -> String {
+        self.keymap
+            .combo_for("undo")
+            .unwrap_or_else(|| "Undo".into())
+    }
+
     pub fn capture_undo(&mut self) -> bool {
         let current_slug = self.editor.slug.clone();
         let cursor = self.editor.cursor_pos();
@@ -1187,23 +1206,11 @@ impl App {
                 self.dirty_gate("quit", Action::ForceQuit);
                 true
             }
-            Action::ConfirmDiscardChanges => {
-                if self.editor.is_dirty() {
-                    let current = self.editor.slug.clone().unwrap_or_default();
-                    self.push_modal(Modal::Confirm {
-                        title: "Discard changes".into(),
-                        body: format!("Revert \"{current}\" to its last saved state?"),
-                        choices: vec![(
-                            'd',
-                            "Discard changes".into(),
-                            vec![Action::DiscardChanges],
-                        )],
-                    });
-                }
-                true
-            }
             Action::DiscardChanges => {
                 self.no_coalesce = true;
+                if !self.editor.is_dirty() {
+                    return true;
+                }
                 if let (slug, Some(saved)) = (self.editor.slug.clone(), self.editor.saved.clone()) {
                     // A cell still under the caret is part of what's being
                     // thrown away — drop it without committing, and clear
@@ -1213,7 +1220,10 @@ impl App {
                     self.editor.table.selected = None;
                     self.editor.load(slug, saved);
                     self.sync_active_tab();
-                    self.toasts.push("Changes discarded", ToastKind::Info);
+                    self.toasts.push(
+                        format!("Changes discarded{}", self.undo_hint()),
+                        ToastKind::Info,
+                    );
                 }
                 true
             }
@@ -1876,17 +1886,9 @@ impl App {
                 self.editor.table.selected = Some(insert_at);
                 true
             }
-            Action::ConfirmDeleteRequest => {
+            Action::DeleteSelectedRequest => {
                 if let Some(slug) = self.sidebar.selected_slug() {
-                    let display = self.request_display(&slug);
-                    self.push_modal(Modal::Confirm {
-                        title: "Delete request".into(),
-                        body: format!("Delete \"{display}\"? This cannot be undone."),
-                        choices: vec![
-                            ('y', "Delete".into(), vec![Action::DeleteRequest(slug)]),
-                            ('n', "Keep".into(), vec![]),
-                        ],
-                    });
+                    self.apply(Action::DeleteRequest(slug));
                 }
                 true
             }
@@ -1953,10 +1955,15 @@ impl App {
                 true
             }
             Action::DeleteRequest(slug) => {
+                let display = self.request_display(&slug);
                 let path = postui_core::storage::request_path(&self.project.root, &slug);
                 let before = self.read_file_states(std::slice::from_ref(&path));
                 match postui_core::storage::delete_request(&self.project.root, &slug) {
                     Ok(()) => {
+                        self.toasts.push(
+                            format!("Deleted {display}{}", self.undo_hint()),
+                            ToastKind::Info,
+                        );
                         // Recorded before refresh_sidebar/editor-clearing
                         // reorder state: context.slug must still name the
                         // deleted request while self.editor.slug matches it.
@@ -3077,8 +3084,9 @@ impl App {
             }
             Action::ConfirmDeleteVar { name } => {
                 let usage = postui_core::varedit::scan_usage(&self.project.root, &name);
+                let undo = self.undo_combo();
                 let body = if usage.is_empty() {
-                    format!("Delete \"{name}\"? This cannot be undone.")
+                    format!("Delete \"{name}\"? {undo} undoes.")
                 } else {
                     format!(
                         "Delete \"{name}\"? Referenced by {} request(s): {}.",
@@ -4414,7 +4422,8 @@ impl App {
             self.push_modal(Modal::Confirm {
                 title: format!("Remove {} from {selector}", removals.join(", ")),
                 body: format!(
-                    "Values in this column will be deleted from {where_}. This cannot be undone."
+                    "Values in this column will be deleted from {where_}. {} undoes.",
+                    self.undo_combo()
                 ),
                 choices: vec![
                     ('n', "Cancel".into(), vec![]),
@@ -4963,7 +4972,7 @@ impl App {
     /// The context menu for a right-clicked `hit`, or `None` where a right
     /// click has nothing to offer (pane backgrounds, chrome, an already-open
     /// modal). The row-targeting flows the items dispatch
-    /// (`PromptRenameRequest`, `ConfirmDeleteRequest`, `DuplicateRequest`,
+    /// (`PromptRenameRequest`, `DeleteSelectedRequest`, `DuplicateRequest`,
     /// `ToggleSelectedFolder`) read `sidebar.selected`, which the right-click
     /// handler has already moved onto the clicked row.
     fn context_menu_for(&mut self, hit: &Hit) -> Option<Vec<crate::components::modal::MenuItem>> {
@@ -4991,7 +5000,7 @@ impl App {
                 MenuItem::new("Open", Action::OpenRequest(slug.clone())),
                 MenuItem::new("Duplicate", Action::DuplicateRequest),
                 MenuItem::new("Rename…", Action::PromptRenameRequest),
-                MenuItem::new("Delete…", Action::ConfirmDeleteRequest),
+                MenuItem::new("Delete", Action::DeleteSelectedRequest),
             ],
             // A request whose file doesn't parse can't be loaded into the
             // editor, so "Open" is shown disabled rather than hidden — the
@@ -5005,7 +5014,7 @@ impl App {
                 MenuItem::new("Show error…", Action::ShowRequestError(slug.clone())),
                 MenuItem::new("Duplicate", Action::DuplicateRequest),
                 MenuItem::new("Rename…", Action::PromptRenameRequest),
-                MenuItem::new("Delete…", Action::ConfirmDeleteRequest),
+                MenuItem::new("Delete", Action::DeleteSelectedRequest),
             ],
             Row::Folder { path, expanded, .. } => vec![
                 MenuItem::new(

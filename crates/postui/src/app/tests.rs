@@ -2152,17 +2152,47 @@ fn quitting_with_unsaved_changes_can_save_first() {
 }
 
 #[test]
-fn discard_changes_confirms_then_reverts_to_the_saved_request() {
+fn discard_changes_reverts_immediately_with_an_undo_hint() {
     let mut app = dirty_app(); // url edited from "https://x/r"
-    app.update(Action::ConfirmDiscardChanges);
+    app.update(Action::DiscardChanges);
     assert!(
-        matches!(app.modals.top(), Some(Modal::Confirm { .. })),
-        "discard asks first"
+        app.modals.is_empty(),
+        "discard is undoable, so no confirm gate"
     );
-    app.handle_key(&Keymap::default_bindings(), plain('d'));
     assert!(!app.editor.is_dirty(), "reverted to the saved snapshot");
     assert_eq!(app.editor.url.text(), "https://x/r");
-    assert!(app.modals.is_empty());
+    assert!(
+        rendered_text(&mut app).contains("^Z undoes"),
+        "the toast advertises the escape hatch"
+    );
+}
+
+#[test]
+fn discard_on_a_clean_editor_is_a_no_op() {
+    let mut app = dirty_app();
+    app.update(Action::DiscardChanges);
+    app.toasts = Default::default();
+    app.update(Action::DiscardChanges);
+    assert!(
+        app.toasts.is_empty(),
+        "a clean editor has nothing to discard, so no toast"
+    );
+}
+
+#[test]
+fn discard_is_itself_undoable() {
+    let mut app = dirty_app();
+    app.capture_undo(); // the dirtying edit becomes its own step
+    let dirty_url = app.editor.url.text().to_string();
+    app.update(Action::DiscardChanges);
+    app.capture_undo(); // …and so does the discard
+    assert_eq!(app.editor.url.text(), "https://x/r");
+    app.update(Action::Undo);
+    assert_eq!(
+        app.editor.url.text(),
+        dirty_url,
+        "undo brings the discarded edit back"
+    );
 }
 
 #[test]
@@ -3437,23 +3467,40 @@ fn rename_flow_speaks_display_names_and_regenerates_the_slug() {
 }
 
 #[test]
-fn delete_confirm_and_duplicate_toast_show_display_names() {
+fn delete_and_duplicate_toasts_show_display_names() {
     let mut app = App::new_for_test();
     app.update(Action::CreateRequest("Fancy Name!".into()));
     app.sidebar.select_slug("fancy-name");
     app.refresh_sidebar();
     app.sidebar.select_slug("fancy-name");
 
-    app.update(Action::ConfirmDeleteRequest);
-    let Some(Modal::Confirm { body, .. }) = app.modals.top() else {
-        panic!("expected the delete confirm");
-    };
+    app.update(Action::DeleteSelectedRequest);
     assert!(
-        body.contains("Fancy Name!"),
-        "display name in confirm: {body}"
+        app.modals.is_empty(),
+        "delete is undoable, so no confirm gate"
     );
-    app.modals.pop();
+    assert!(!postui_core::storage::request_exists(
+        &app.project.root,
+        "fancy-name"
+    ));
+    let text = rendered_text(&mut app);
+    assert!(
+        text.contains("Deleted Fancy Name!"),
+        "display name in the delete toast"
+    );
+    assert!(
+        text.contains("^Z undoes"),
+        "the toast advertises the escape hatch"
+    );
+    app.update(Action::Undo);
+    assert!(
+        postui_core::storage::request_exists(&app.project.root, "fancy-name"),
+        "undo restores the deleted request"
+    );
 
+    app.refresh_sidebar();
+    app.sidebar.select_slug("fancy-name");
+    app.update(Action::ForceOpenRequest("fancy-name".into()));
     app.update(Action::DuplicateRequest);
     assert!(
         rendered_text(&mut app).contains("Duplicated to Fancy Name! copy"),
@@ -3547,9 +3594,7 @@ fn delete_open_request_clears_editor_and_removes_file() {
     let keymap = Keymap::default_bindings();
     app.focus = PaneId::Sidebar;
     app.handle_key(&keymap, plain('d'));
-    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
-    app.handle_key(&keymap, plain('y'));
-    assert!(app.modals.is_empty());
+    assert!(app.modals.is_empty(), "delete needs no confirm");
     assert!(
         app.editor.slug.is_none(),
         "editor must reset once its open request is deleted"
@@ -5627,24 +5672,19 @@ fn click_outside_the_palette_closes_it_with_no_action() {
 }
 
 #[test]
-fn click_confirm_choice_chip_deletes_the_request() {
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let dir = tempfile::tempdir().unwrap();
-    postui_core::storage::ensure_project(dir.path()).unwrap();
-    postui_core::storage::save_request(dir.path(), "ping", &req("https://x/ping")).unwrap();
-    let mut app = App::with_root(tx, dir.path().to_path_buf());
+fn click_confirm_choice_chip_fires_its_action() {
+    let mut app = dirty_app();
     app.anims.enabled = false;
-    app.sidebar.selected = Some(0);
-    app.update(Action::ConfirmDeleteRequest);
+    app.update(Action::Quit);
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
 
     render_once(&mut app);
-    let chip = app.hits.rect_of(&Hit::ConfirmChoice('y')).unwrap();
+    let chip = app.hits.rect_of(&Hit::ConfirmChoice('d')).unwrap();
     assert!(app.handle_mouse(left_down(chip.x, chip.y)));
     assert!(app.modals.is_empty());
     assert!(
-        !postui_core::storage::request_exists(dir.path(), "ping"),
-        "clicking the [y] chip must delete the request"
+        app.should_quit,
+        "clicking the [d] chip must discard changes and quit"
     );
 }
 
@@ -7233,6 +7273,26 @@ fn confirm_delete_var_lists_referencing_requests_from_scan_usage() {
     assert!(
         body.contains("uses-it") && body.contains('1'),
         "body must name the referencing request: {body}"
+    );
+}
+
+#[test]
+fn delete_var_confirm_advertises_undo_instead_of_claiming_permanence() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    app.update(Action::ConfirmDeleteVar {
+        name: "base_url".into(),
+    });
+
+    let Some(Modal::Confirm { body, .. }) = app.modals.top() else {
+        panic!("expected a Confirm modal");
+    };
+    assert!(
+        body.contains("^Z undoes"),
+        "the delete records an undo step, so the body must say so: {body}"
     );
 }
 

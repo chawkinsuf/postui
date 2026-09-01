@@ -3995,7 +3995,7 @@ mod tests {
                 .is_none()
         );
         assert!(
-            hits.rect_of(&Hit::FooterChip(Action::ConfirmDiscardChanges))
+            hits.rect_of(&Hit::FooterChip(Action::DiscardChanges))
                 .is_none()
         );
         assert!(
