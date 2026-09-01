@@ -124,6 +124,12 @@ fn init_project_here_creates_project_toml_at_current_root() {
     assert!(!postui_core::project::is_project(&app.project.root));
     app.update(Action::InitProjectHere);
     assert!(postui_core::project::is_project(&app.project.root));
+    assert_eq!(
+        postui_core::project::load_meta(&app.project.root)
+            .unwrap()
+            .spaces,
+        ["main"]
+    );
 }
 
 #[test]

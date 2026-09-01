@@ -2191,6 +2191,10 @@ impl App {
                         if let Some(path) = &self.registry_path {
                             let _ = self.registry.save_to(path);
                         }
+                        if let Err(e) = postui_core::storage::ensure_project(&self.project.root) {
+                            self.toasts
+                                .push(format!("could not open project: {e}"), ToastKind::Error);
+                        }
                         self.refresh_sidebar();
                     }
                     Err(e) => {

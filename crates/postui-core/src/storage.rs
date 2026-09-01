@@ -50,12 +50,42 @@ pub fn default_project_dir() -> Option<PathBuf> {
     crate::config_dir().map(|dir| dir.join("default"))
 }
 
-/// Ensures `root/requests/` exists.
+/// Ensures `root/requests/` exists and that the project has at least one
+/// space. When `root` is already a project (`project.toml` present), a
+/// fresh one gets `main` seeded both on disk and in `project.toml`'s
+/// `spaces` list — including the case where `main` already exists on disk
+/// (e.g. seeded earlier while this was still a bare directory) but was
+/// never recorded, which is simply written into the list rather than
+/// re-created. When `root` is a bare directory (not yet a project), only
+/// the `requests/main/` directory is materialised — `project.toml` must
+/// never appear behind the user's back, ahead of the "create a project
+/// here?" consent modal; `list_spaces` still reports `main` as an
+/// unlisted directory either way.
 pub fn ensure_project(root: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(requests_dir(root))
+    std::fs::create_dir_all(requests_dir(root))?;
+    let meta = crate::project::load_meta(root).unwrap_or_default();
+    if crate::project::is_project(root) {
+        if meta.spaces.is_empty() {
+            let spaces = crate::project::list_spaces(root, &meta);
+            if spaces.is_empty() {
+                crate::project::create_space(root, crate::project::DEFAULT_SPACE)
+                    .map_err(|e| std::io::Error::other(e.to_string()))?;
+            } else {
+                crate::project::write_spaces(root, &spaces)
+                    .map_err(|e| std::io::Error::other(e.to_string()))?;
+            }
+        }
+    } else if crate::project::list_spaces(root, &meta).is_empty() {
+        std::fs::create_dir_all(crate::project::space_dir(
+            root,
+            crate::project::DEFAULT_SPACE,
+        ))?;
+    }
+    Ok(())
 }
 
-fn requests_dir(root: &Path) -> PathBuf {
+/// `root/requests/`.
+pub fn requests_dir(root: &Path) -> PathBuf {
     root.join("requests")
 }
 
@@ -719,7 +749,7 @@ mod tests {
         let leftovers: Vec<_> = std::fs::read_dir(dir.path().join("requests"))
             .unwrap()
             .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().is_none_or(|x| x != "toml"))
+            .filter(|e| !e.path().is_dir() && e.path().extension().is_none_or(|x| x != "toml"))
             .collect();
         assert!(leftovers.is_empty(), "no temp files left behind");
         rename_request(dir.path(), "a", "sub/b").unwrap();
@@ -867,6 +897,38 @@ mod tests {
         assert!(
             validate_slug(&new_slug).is_ok(),
             "generated slug should be valid"
+        );
+    }
+
+    #[test]
+    fn ensure_project_seeds_the_main_space_once() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::project::init_project(dir.path(), None).unwrap();
+        ensure_project(dir.path()).unwrap();
+        assert!(dir.path().join("requests/main").is_dir());
+        let meta = crate::project::load_meta(dir.path()).unwrap();
+        assert_eq!(meta.spaces, ["main"]);
+        // A project that already has a space is left alone.
+        crate::project::create_space(dir.path(), "auth").unwrap();
+        std::fs::remove_dir(dir.path().join("requests/main")).unwrap();
+        crate::project::write_spaces(dir.path(), &["auth".into()]).unwrap();
+        ensure_project(dir.path()).unwrap();
+        assert_eq!(
+            crate::project::load_meta(dir.path()).unwrap().spaces,
+            ["auth"]
+        );
+        assert!(!dir.path().join("requests/main").exists());
+    }
+
+    #[test]
+    fn ensure_project_on_a_bare_dir_makes_main_but_no_project_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_project(dir.path()).unwrap();
+        assert!(dir.path().join("requests/main").is_dir());
+        assert!(!dir.path().join("project.toml").exists());
+        assert_eq!(
+            crate::project::list_spaces(dir.path(), &crate::project::ProjectMeta::default()),
+            ["main"]
         );
     }
 }

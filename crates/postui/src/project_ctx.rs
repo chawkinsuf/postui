@@ -710,10 +710,15 @@ impl ProjectContext {
     /// expanded sidebar dirs, per-env option selections, and (when given)
     /// the currently-open request. A failed save never breaks interaction,
     /// so errors are dropped.
+    ///
+    /// `space`/`space_open` aren't owned by this context yet (spaces UI
+    /// lands in a later task), so they're read back from disk first and
+    /// carried through unchanged rather than clobbered with `None`/empty.
     pub fn persist_local_state(&self, open_request: Option<&str>) {
         if !self.can_persist() {
             return;
         }
+        let current = postui_core::project::load_local_state(&self.root).unwrap_or_default();
         let state = postui_core::project::LocalState {
             environment: self.active_env.clone(),
             open_request: open_request.map(|s| s.to_string()),
@@ -721,6 +726,8 @@ impl ProjectContext {
             expanded: self.expanded.iter().cloned().collect(),
             selections: self.selections.clone(),
             shared_selections: self.shared_selections.clone(),
+            space: current.space,
+            space_open: current.space_open,
         };
         let _ = postui_core::project::save_local_state(&self.root, &state);
     }

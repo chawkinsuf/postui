@@ -3,10 +3,14 @@
 //! overlays), and `.local/state.toml` (machine-owned UI state).
 
 use crate::model::Entry;
+use crate::trash::Trashed;
 use crate::varmodel;
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// The space a fresh project starts with.
+pub const DEFAULT_SPACE: &str = "main";
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -15,6 +19,10 @@ pub struct ProjectMeta {
     pub name: Option<String>,
     #[serde(default)]
     pub default_headers: IndexMap<String, Entry>,
+    /// Space order (spec: "Order lives in project.toml"). Directories not
+    /// listed still count — see `list_spaces`.
+    #[serde(default)]
+    pub spaces: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,6 +42,10 @@ pub struct LocalState {
     /// global pick, not per-environment (a shared selector's options are
     /// identical everywhere, and so is its selection).
     pub shared_selections: IndexMap<String, String>,
+    /// The active space.
+    pub space: Option<String>,
+    /// space → the request last open in it.
+    pub space_open: IndexMap<String, String>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -44,6 +56,12 @@ pub enum ProjectError {
     Parse(String),
     #[error("invalid name: {0}")]
     BadName(String),
+    #[error("cannot delete the last space")]
+    LastSpace,
+    #[error("already exists: {0}")]
+    AlreadyExists(String),
+    #[error("not found: {0}")]
+    NotFound(String),
 }
 
 /// Reads `path`; missing file yields `Ok(None)`, any other IO error is
@@ -104,6 +122,140 @@ pub fn list_environments(root: &Path) -> Vec<String> {
     }
     out.sort();
     out
+}
+
+fn valid_space_name(name: &str) -> bool {
+    !name.contains('/') && crate::storage::validate_slug(name).is_ok()
+}
+
+/// `root/requests/<name>`.
+pub fn space_dir(root: &Path, name: &str) -> PathBuf {
+    crate::storage::requests_dir(root).join(name)
+}
+
+/// Every space, in display order: `meta.spaces` first (invalid names
+/// skipped, duplicates dropped), then any directory under `requests/`
+/// that isn't listed, alphabetically. A listed name with no directory
+/// still counts (an empty space survives git that way).
+pub fn list_spaces(root: &Path, meta: &ProjectMeta) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for name in &meta.spaces {
+        if valid_space_name(name) && !out.contains(name) {
+            out.push(name.clone());
+        }
+    }
+    let mut unlisted = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(crate::storage::requests_dir(root)) {
+        for e in entries.filter_map(|e| e.ok()) {
+            if !e.path().is_dir() {
+                continue;
+            }
+            let name = e.file_name().to_string_lossy().to_string();
+            if valid_space_name(&name) && !out.contains(&name) {
+                unlisted.push(name);
+            }
+        }
+    }
+    unlisted.sort();
+    out.extend(unlisted);
+    out
+}
+
+/// Rewrites only the `spaces` key of `project.toml` (created if missing),
+/// preserving everything else in the file, comments included.
+pub fn write_spaces(root: &Path, spaces: &[String]) -> Result<(), ProjectError> {
+    let path = root.join("project.toml");
+    let text = read_optional(&path)?.unwrap_or_default();
+    let mut doc: toml_edit::DocumentMut = text
+        .parse()
+        .map_err(|e: toml_edit::TomlError| ProjectError::Parse(e.to_string()))?;
+    let mut arr = toml_edit::Array::new();
+    for s in spaces {
+        arr.push(s.as_str());
+    }
+    doc["spaces"] = toml_edit::value(arr);
+    std::fs::write(&path, doc.to_string())?;
+    Ok(())
+}
+
+fn current_spaces(root: &Path) -> Vec<String> {
+    let meta = load_meta(root).unwrap_or_default();
+    list_spaces(root, &meta)
+}
+
+pub fn create_space(root: &Path, name: &str) -> Result<(), ProjectError> {
+    if !valid_space_name(name) {
+        return Err(ProjectError::BadName(name.to_string()));
+    }
+    let mut spaces = current_spaces(root);
+    if spaces.iter().any(|s| s == name) || space_dir(root, name).exists() {
+        return Err(ProjectError::AlreadyExists(name.to_string()));
+    }
+    std::fs::create_dir_all(space_dir(root, name))?;
+    spaces.push(name.to_string());
+    write_spaces(root, &spaces)
+}
+
+/// Renames the directory (creating the target when `from` was list-only)
+/// and rewrites the list entry in place. Local-state cascades (open
+/// request, expanded folders) are the caller's job.
+pub fn rename_space(root: &Path, from: &str, to: &str) -> Result<(), ProjectError> {
+    if !valid_space_name(to) {
+        return Err(ProjectError::BadName(to.to_string()));
+    }
+    let mut spaces = current_spaces(root);
+    let Some(idx) = spaces.iter().position(|s| s == from) else {
+        return Err(ProjectError::NotFound(from.to_string()));
+    };
+    if spaces.iter().any(|s| s == to) || space_dir(root, to).exists() {
+        return Err(ProjectError::AlreadyExists(to.to_string()));
+    }
+    let from_dir = space_dir(root, from);
+    let to_dir = space_dir(root, to);
+    if from_dir.is_dir() {
+        std::fs::rename(&from_dir, &to_dir)?;
+    } else {
+        std::fs::create_dir_all(&to_dir)?;
+    }
+    spaces[idx] = to.to_string();
+    write_spaces(root, &spaces)
+}
+
+/// Trashes the space's directory (if it exists on disk) and drops the
+/// list entry. Refuses the only remaining space. Confirmation is the
+/// caller's job.
+pub fn delete_space(root: &Path, name: &str) -> Result<Option<Trashed>, ProjectError> {
+    let mut spaces = current_spaces(root);
+    let Some(idx) = spaces.iter().position(|s| s == name) else {
+        return Err(ProjectError::NotFound(name.to_string()));
+    };
+    if spaces.len() == 1 {
+        return Err(ProjectError::LastSpace);
+    }
+    let dir = space_dir(root, name);
+    let trashed = if dir.is_dir() {
+        Some(crate::trash::trash(root, &dir)?)
+    } else {
+        None
+    };
+    spaces.remove(idx);
+    write_spaces(root, &spaces)?;
+    Ok(trashed)
+}
+
+/// Moves `name` by `delta` positions (clamped to the ends). Unlisted
+/// directories are materialised into the written list so the order on
+/// disk is exactly the order displayed.
+pub fn move_space(root: &Path, name: &str, delta: i32) -> Result<(), ProjectError> {
+    let mut spaces = current_spaces(root);
+    let Some(idx) = spaces.iter().position(|s| s == name) else {
+        return Err(ProjectError::NotFound(name.to_string()));
+    };
+    let target = (idx as i32 + delta).clamp(0, spaces.len() as i32 - 1) as usize;
+    if target != idx {
+        spaces.swap(idx, target);
+    }
+    write_spaces(root, &spaces)
 }
 
 /// Creates an empty `root/environments/<name>.toml`, making the directory
@@ -546,5 +698,195 @@ mod tests {
             .filter(|n| n != "secrets.toml")
             .collect();
         assert!(leftovers.is_empty(), "leftover files: {leftovers:?}");
+    }
+
+    fn meta_with(spaces: &[&str]) -> ProjectMeta {
+        ProjectMeta {
+            spaces: spaces.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn list_spaces_listed_order_first_then_unlisted_dirs_alphabetically() {
+        let dir = tempdir().unwrap();
+        for d in ["zeta", "auth", "main", "Bad Name", "billing"] {
+            std::fs::create_dir_all(dir.path().join("requests").join(d)).unwrap();
+        }
+        let meta = meta_with(&["main", "auth", "ghost"]);
+        assert_eq!(
+            list_spaces(dir.path(), &meta),
+            ["main", "auth", "ghost", "billing", "zeta"]
+        );
+    }
+
+    #[test]
+    fn list_spaces_skips_invalid_listed_names_and_dedupes() {
+        let dir = tempdir().unwrap();
+        let meta = meta_with(&["main", "Not Valid", "main"]);
+        assert_eq!(list_spaces(dir.path(), &meta), ["main"]);
+    }
+
+    #[test]
+    fn write_spaces_touches_only_the_spaces_key() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("project.toml"),
+            "# keep me\nname = \"svc\"\n\n[default_headers]\nx = \"1\"\n",
+        )
+        .unwrap();
+        write_spaces(dir.path(), &["main".into(), "auth".into()]).unwrap();
+        let text = std::fs::read_to_string(dir.path().join("project.toml")).unwrap();
+        assert!(text.contains("# keep me"));
+        assert!(text.contains("name = \"svc\""));
+        assert!(text.contains("spaces = [\"main\", \"auth\"]"));
+        let meta = load_meta(dir.path()).unwrap();
+        assert_eq!(meta.spaces, ["main", "auth"]);
+        assert_eq!(meta.default_headers.len(), 1);
+    }
+
+    #[test]
+    fn write_spaces_creates_a_missing_project_toml() {
+        let dir = tempdir().unwrap();
+        write_spaces(dir.path(), &["main".into()]).unwrap();
+        assert_eq!(load_meta(dir.path()).unwrap().spaces, ["main"]);
+    }
+
+    #[test]
+    fn create_space_makes_the_dir_and_appends_to_the_list() {
+        let dir = tempdir().unwrap();
+        create_space(dir.path(), "main").unwrap();
+        create_space(dir.path(), "auth").unwrap();
+        assert!(space_dir(dir.path(), "auth").is_dir());
+        assert_eq!(load_meta(dir.path()).unwrap().spaces, ["main", "auth"]);
+        assert!(matches!(
+            create_space(dir.path(), "auth"),
+            Err(ProjectError::AlreadyExists(_))
+        ));
+        assert!(matches!(
+            create_space(dir.path(), "Bad/Name"),
+            Err(ProjectError::BadName(_))
+        ));
+    }
+
+    #[test]
+    fn create_space_rejects_an_unlisted_dir_that_already_exists() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(space_dir(dir.path(), "auth")).unwrap();
+        assert!(matches!(
+            create_space(dir.path(), "auth"),
+            Err(ProjectError::AlreadyExists(_))
+        ));
+    }
+
+    #[test]
+    fn rename_space_moves_the_dir_and_rewrites_the_list_entry_in_place() {
+        let dir = tempdir().unwrap();
+        create_space(dir.path(), "main").unwrap();
+        create_space(dir.path(), "auth").unwrap();
+        std::fs::write(
+            space_dir(dir.path(), "auth").join("login.toml"),
+            "url = \"x\"\n",
+        )
+        .unwrap();
+        rename_space(dir.path(), "auth", "identity").unwrap();
+        assert!(!space_dir(dir.path(), "auth").exists());
+        assert!(
+            space_dir(dir.path(), "identity")
+                .join("login.toml")
+                .is_file()
+        );
+        assert_eq!(load_meta(dir.path()).unwrap().spaces, ["main", "identity"]);
+        assert!(matches!(
+            rename_space(dir.path(), "identity", "main"),
+            Err(ProjectError::AlreadyExists(_))
+        ));
+        assert!(matches!(
+            rename_space(dir.path(), "nope", "x"),
+            Err(ProjectError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn rename_space_of_a_list_only_space_creates_the_new_dir() {
+        let dir = tempdir().unwrap();
+        write_spaces(dir.path(), &["main".into(), "empty".into()]).unwrap();
+        rename_space(dir.path(), "empty", "later").unwrap();
+        assert!(space_dir(dir.path(), "later").is_dir());
+        assert_eq!(load_meta(dir.path()).unwrap().spaces, ["main", "later"]);
+    }
+
+    #[test]
+    fn delete_space_trashes_the_dir_and_refuses_the_last_space() {
+        let dir = tempdir().unwrap();
+        create_space(dir.path(), "main").unwrap();
+        create_space(dir.path(), "auth").unwrap();
+        std::fs::write(
+            space_dir(dir.path(), "auth").join("login.toml"),
+            "url = \"x\"\n",
+        )
+        .unwrap();
+        let t = delete_space(dir.path(), "auth")
+            .unwrap()
+            .expect("dir existed");
+        assert!(!space_dir(dir.path(), "auth").exists());
+        assert!(t.trashed.join("login.toml").is_file());
+        assert_eq!(load_meta(dir.path()).unwrap().spaces, ["main"]);
+        assert!(matches!(
+            delete_space(dir.path(), "main"),
+            Err(ProjectError::LastSpace)
+        ));
+        assert!(matches!(
+            delete_space(dir.path(), "auth"),
+            Err(ProjectError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn delete_space_of_a_list_only_space_returns_none() {
+        let dir = tempdir().unwrap();
+        write_spaces(dir.path(), &["main".into(), "empty".into()]).unwrap();
+        assert_eq!(delete_space(dir.path(), "empty").unwrap(), None);
+        assert_eq!(load_meta(dir.path()).unwrap().spaces, ["main"]);
+    }
+
+    #[test]
+    fn move_space_swaps_positions_clamps_at_the_ends_and_materialises_unlisted_dirs() {
+        let dir = tempdir().unwrap();
+        write_spaces(dir.path(), &["main".into(), "auth".into()]).unwrap();
+        std::fs::create_dir_all(space_dir(dir.path(), "billing")).unwrap();
+        move_space(dir.path(), "billing", -1).unwrap();
+        assert_eq!(
+            load_meta(dir.path()).unwrap().spaces,
+            ["main", "billing", "auth"]
+        );
+        move_space(dir.path(), "main", -1).unwrap(); // already first: no-op
+        assert_eq!(
+            load_meta(dir.path()).unwrap().spaces,
+            ["main", "billing", "auth"]
+        );
+        move_space(dir.path(), "main", 1).unwrap();
+        assert_eq!(
+            load_meta(dir.path()).unwrap().spaces,
+            ["billing", "main", "auth"]
+        );
+        assert!(matches!(
+            move_space(dir.path(), "nope", 1),
+            Err(ProjectError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn local_state_round_trips_space_and_space_open() {
+        let dir = tempdir().unwrap();
+        let mut st = LocalState {
+            space: Some("auth".into()),
+            ..Default::default()
+        };
+        st.space_open.insert("auth".into(), "auth/login".into());
+        st.space_open.insert("main".into(), "main/health".into());
+        save_local_state(dir.path(), &st).unwrap();
+        let back = load_local_state(dir.path()).unwrap();
+        assert_eq!(back, st);
     }
 }
