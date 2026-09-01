@@ -5460,14 +5460,15 @@ url = "https://api.example.com/users""#,
     }
 
     #[test]
-    fn tab_order_headers_first_and_alt_matches_screen() {
+    fn tab_order_headers_first_and_slot_numbers_match_screen() {
         // Draw order / EditorTabCycle: Headers -> Params -> Vars -> Body.
         assert_eq!(EditorTab::from_draw_position(0), EditorTab::Headers);
         assert_eq!(EditorTab::from_draw_position(1), EditorTab::Params);
         assert_eq!(EditorTab::from_draw_position(2), EditorTab::Vars);
         assert_eq!(EditorTab::from_draw_position(3), EditorTab::Body);
-        // alt+1/2/3/4 (`EditorTabSelect(0..3)`) follow the screen order:
-        // what you see is what the number selects.
+        // The tab slot numbers (`EditorTabSelect(0..3)`, bindable as
+        // `editor_tab_N`) follow the screen order: what you see is what
+        // the number selects.
         for i in 0..4 {
             assert_eq!(EditorTab::from_index(i), EditorTab::from_draw_position(i));
             assert_eq!(
