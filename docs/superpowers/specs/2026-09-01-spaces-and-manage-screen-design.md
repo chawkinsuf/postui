@@ -44,7 +44,13 @@ implementation is a find-and-replace.
 - **Switching spaces goes through the existing dirty gate**, same as
   opening another request.
 - **Keys:** `alt+1`..`alt+9` jump by position; `alt+]` / `alt+[` next and
-  previous, wrapping. All rebindable.
+  previous, wrapping; `alt+shift+s` opens the space dropdown (mirroring
+  `alt+shift+e` for environments). All rebindable. **The editor tabs give
+  up `alt+1`..`alt+4`** (decided 2026-09-01): tabs keep `alt+left` /
+  `alt+right` and clicks, and the `editor_tab_N` names stay bindable in
+  `keys.toml`. Consequence: with the caret in the body editor, where
+  alt+arrows are word motion, switching tabs is by mouse or by leaving
+  the body first.
 - **Header, not sidebar,** hosts the space dropdown, beside the env
   dropdown. The sidebar keeps only the New request button.
 - **Variable Manager → Manage screen** with Variables, Environments and
@@ -199,9 +205,10 @@ hint are unchanged. `FileStates` stays for edits.
 `Action::CycleSpace(i32)` (wrapping) both resolve to `SwitchSpace`.
 
 `OpenRequest(slug)` for a slug outside the active space first switches to
-that space (still one dirty gate, not two) and then opens it. The palette's
-request search covers every space and displays the space as its detail
-column, so a cross-space pick reads as such before Enter.
+that space (still one dirty gate, not two) and then opens it — this is the
+rule every open route (undo's jump-to-request, startup restore, a future
+request search) inherits. The command palette has no request search today
+and this spec does not add one.
 
 ### Sidebar (`components/sidebar.rs`)
 
@@ -215,10 +222,11 @@ New request, rename and duplicate all resolve inside the active space:
 A typed leading `/` is not special-cased; a user cannot address another
 space from the name prompt.
 
-The request row's right-click menu gains **Move to space ▸** with one
-entry per other space; selecting one calls `move_request_to_space`, and if
-the moved request was open, follows it (switches space and opens the new
-slug).
+The request row's right-click menu gains one flat **Move to <space>** row
+per other space (the dropdown has no submenus); selecting one calls
+`move_request_to_space`, records a `FileStates` step exactly like a rename
+(one file), and if the moved request was open, follows it (switches space
+and opens the new slug).
 
 Footer chips when the sidebar is focused: existing new/rename/delete plus
 `alt+] space`.
@@ -257,10 +265,14 @@ Environments and Spaces tabs share one **ListEditState** face:
   rename), then a button row: **Rename** (focuses the field), **Delete**,
   and on the Spaces tab **Move up** / **Move down** and **Move all
   requests to ▸** (a dropdown of the other spaces). A muted line beneath
-  shows the space's request count, or the environment's variable-value
-  count.
-- Keys within the list: `enter` edit name, `d` delete, and on Spaces
-  `alt+up` / `alt+down` move. Footer chips advertise them.
+  shows the space's request count, or the environment's file path.
+- Keys within the list: `enter` edit name, `n` new, `d` delete, and on
+  Spaces `alt+up` / `alt+down` move. Footer chips advertise them. Tabs
+  switch by click or `alt+left` / `alt+right`.
+- Undo coverage on these tabs: deletes are `Trashed` steps; an
+  environment rename is a `FileStates` step; **a space rename, a reorder,
+  and Move all requests are not undo steps** (a directory rename or a bulk
+  move has no bounded content capture; rename or move back by hand).
 
 Delete semantics:
 
