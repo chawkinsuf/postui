@@ -101,20 +101,57 @@ impl Sidebar {
     /// identity (folder path or request slug) across the rebuild; a
     /// selection whose row vanished clears rather than sliding onto an
     /// arbitrary neighbor.
-    pub fn refresh(&mut self, listing: Vec<RequestListing>, expanded: &BTreeSet<String>) {
+    ///
+    /// Only `space`'s entries become rows: everything outside it is dropped
+    /// (but kept in `listing` for `space_counts`), and the tree is rooted at
+    /// `space/` so the space itself is never a row and its own top level is
+    /// depth 0.
+    pub fn refresh(
+        &mut self,
+        listing: Vec<RequestListing>,
+        space: &str,
+        expanded: &BTreeSet<String>,
+    ) {
         let prev = self.selected_identity();
 
         self.listing = listing;
-        let mut sorted = self.listing.clone();
+        let prefix = format!("{space}/");
+        let mut sorted: Vec<RequestListing> = self
+            .listing
+            .iter()
+            .filter(|l| l.slug.starts_with(&prefix))
+            .cloned()
+            .collect();
         sorted.sort_by(|a, b| a.slug.cmp(&b.slug));
 
         let mut rows = Vec::new();
-        Self::build_rows(&sorted, "", 0, expanded, &mut rows);
+        Self::build_rows(&sorted, &prefix, 0, expanded, &mut rows);
         self.rows = rows;
 
         self.selected =
             prev.and_then(|id| self.rows.iter().position(|r| Self::row_matches(r, &id)));
         self.ensure_visible = true;
+    }
+
+    /// Requests per space over the full listing (every space, not just the
+    /// visible one) — the Manage screen's count line and the delete
+    /// confirm read this.
+    pub fn space_counts(&self) -> std::collections::BTreeMap<String, usize> {
+        let mut out = std::collections::BTreeMap::new();
+        for l in &self.listing {
+            if let Some(space) = postui_core::storage::space_of(&l.slug) {
+                *out.entry(space.to_string()).or_insert(0) += 1;
+            }
+        }
+        out
+    }
+
+    /// The first request row in display order (the switch-in fallback).
+    pub fn first_request_slug(&self) -> Option<String> {
+        self.rows.iter().find_map(|r| match r {
+            Row::Request { slug, .. } => Some(slug.clone()),
+            _ => None,
+        })
     }
 
     /// Builds the rows for one folder level (`prefix`, possibly empty for
@@ -842,7 +879,7 @@ mod tests {
             .iter()
             .map(|s| RequestListing {
                 name: None,
-                slug: s.to_string(),
+                slug: format!("main/{s}"),
                 broken: None,
                 method: Some(Method::Get),
             })
@@ -850,7 +887,7 @@ mod tests {
     }
 
     fn expanded(paths: &[&str]) -> BTreeSet<String> {
-        paths.iter().map(|s| s.to_string()).collect()
+        paths.iter().map(|s| format!("main/{s}")).collect()
     }
 
     #[test]
@@ -861,7 +898,7 @@ mod tests {
         l[0].name = Some("Aardvark".into()); // zeta-slug
         l[1].name = Some("Zebra".into()); // alpha-slug
         // l[2] "legacy" stays nameless -> displays its slug leaf.
-        s.refresh(l, &expanded(&[]));
+        s.refresh(l, "main", &expanded(&[]));
         let names: Vec<&str> = s
             .rows
             .iter()
@@ -882,6 +919,7 @@ mod tests {
         let mut s = Sidebar::default();
         s.refresh(
             listing(&["api/users/list", "api/users/create", "api/ping", "top"]),
+            "main",
             &expanded(&[]),
         );
         // collapsed: only top-level rows visible
@@ -889,14 +927,14 @@ mod tests {
             s.rows,
             vec![
                 Row::Request {
-                    slug: "top".into(),
+                    slug: "main/top".into(),
                     name: "top".into(),
                     depth: 0,
                     broken: None,
                     method: Some(Method::Get),
                 },
                 Row::Folder {
-                    path: "api".into(),
+                    path: "main/api".into(),
                     name: "api".into(),
                     depth: 0,
                     expanded: false
@@ -905,33 +943,34 @@ mod tests {
         );
         s.refresh(
             listing(&["api/users/list", "api/users/create", "api/ping", "top"]),
+            "main",
             &expanded(&["api"]),
         );
         assert_eq!(
             s.rows,
             vec![
                 Row::Request {
-                    slug: "top".into(),
+                    slug: "main/top".into(),
                     name: "top".into(),
                     depth: 0,
                     broken: None,
                     method: Some(Method::Get),
                 },
                 Row::Folder {
-                    path: "api".into(),
+                    path: "main/api".into(),
                     name: "api".into(),
                     depth: 0,
                     expanded: true
                 },
                 Row::Request {
-                    slug: "api/ping".into(),
+                    slug: "main/api/ping".into(),
                     name: "ping".into(),
                     depth: 1,
                     broken: None,
                     method: Some(Method::Get),
                 },
                 Row::Folder {
-                    path: "api/users".into(),
+                    path: "main/api/users".into(),
                     name: "users".into(),
                     depth: 1,
                     expanded: false
@@ -943,7 +982,7 @@ mod tests {
     #[test]
     fn enter_and_arrows_toggle_folders_and_navigate_all_rows() {
         let mut s = Sidebar::default();
-        s.refresh(listing(&["api/ping", "top"]), &expanded(&[]));
+        s.refresh(listing(&["api/ping", "top"]), "main", &expanded(&[]));
         s.handle_key(key(KeyCode::Char('j'))); // first press lands on row 0 ("top")
         s.handle_key(key(KeyCode::Char('j'))); // now on the "api" folder row
         assert!(matches!(
@@ -963,7 +1002,7 @@ mod tests {
         let mut s = Sidebar::default();
         let slugs: Vec<String> = (0..30).map(|i| format!("r{i:02}")).collect();
         let refs: Vec<&str> = slugs.iter().map(|s| s.as_str()).collect();
-        s.refresh(listing(&refs), &expanded(&[]));
+        s.refresh(listing(&refs), "main", &expanded(&[]));
         s.handle_scroll(10);
         assert_eq!(s.scroll, 10);
         // drawing must NOT snap back to the selection
@@ -992,9 +1031,9 @@ mod tests {
     #[test]
     fn select_slug_expands_ancestor_folders() {
         let mut s = Sidebar::default();
-        s.refresh(listing(&["a/b/c"]), &expanded(&[]));
-        s.select_slug("a/b/c");
-        assert!(s.pending_expand.contains("a") && s.pending_expand.contains("a/b"));
+        s.refresh(listing(&["a/b/c"]), "main", &expanded(&[]));
+        s.select_slug("main/a/b/c");
+        assert!(s.pending_expand.contains("main/a") && s.pending_expand.contains("main/a/b"));
     }
 
     /// A disabled (instantly-jumping) `Anims` shared by every test's
@@ -1035,7 +1074,7 @@ mod tests {
         let slugs: Vec<String> = (0..30).map(|i| format!("r{i:02}")).collect();
         let refs: Vec<&str> = slugs.iter().map(String::as_str).collect();
         let mut s = Sidebar::default();
-        s.refresh(listing(&refs), &expanded(&[]));
+        s.refresh(listing(&refs), "main", &expanded(&[]));
 
         let (content, hits) = render_hits(&mut s);
         assert!(content.contains('\u{2588}'), "thumb glyph is drawn");
@@ -1087,7 +1126,7 @@ mod tests {
     #[test]
     fn short_list_registers_no_scrollbar() {
         let mut s = Sidebar::default();
-        s.refresh(listing(&["a", "b", "c"]), &expanded(&[]));
+        s.refresh(listing(&["a", "b", "c"]), "main", &expanded(&[]));
         let (_content, hits) = render_hits(&mut s);
         assert_eq!(hits.rect_of(&Hit::ScrollbarThumb(PaneId::Sidebar)), None);
         assert_eq!(hits.track_of(PaneId::Sidebar), None);
@@ -1100,7 +1139,7 @@ mod tests {
     #[test]
     fn draw_registers_new_request_button_row_hits_and_folder_arrow() {
         let mut s = Sidebar::default();
-        s.refresh(listing(&["api/ping", "top"]), &expanded(&["api"]));
+        s.refresh(listing(&["api/ping", "top"]), "main", &expanded(&["api"]));
         let theme = Theme::dark();
         let ctx = draw_ctx(&theme, None);
         let backend = ratatui::backend::TestBackend::new(30, 12);
@@ -1169,7 +1208,7 @@ mod tests {
         let mut s = Sidebar::default();
         // Two rows so the hovered one (row 1) differs from the
         // default-selected one (row 0) — selection otherwise wins the fill.
-        s.refresh(listing(&["top", "next"]), &expanded(&[]));
+        s.refresh(listing(&["top", "next"]), "main", &expanded(&[]));
         let theme = Theme::dark();
         let ctx = draw_ctx(&theme, Some(&Hit::SidebarRow(1)));
         let backend = ratatui::backend::TestBackend::new(30, 12);
@@ -1204,8 +1243,8 @@ mod tests {
     fn open_row_and_cursor_row_stay_visually_distinct() {
         let mut s = Sidebar::default();
         // Rows sort by slug: row 0 is "next", row 1 is "top".
-        s.refresh(listing(&["top", "next"]), &expanded(&[]));
-        s.open_slug = Some("next".into());
+        s.refresh(listing(&["top", "next"]), "main", &expanded(&[]));
+        s.open_slug = Some("main/next".into());
         s.selected = Some(1); // cursor browsed onto "top"
         let theme = Theme::dark();
         let ctx = draw_ctx(&theme, None);
@@ -1268,8 +1307,8 @@ mod tests {
     #[test]
     fn open_row_keeps_its_band_when_the_pane_is_unfocused() {
         let mut s = Sidebar::default();
-        s.refresh(listing(&["top", "next"]), &expanded(&[]));
-        s.open_slug = Some("next".into());
+        s.refresh(listing(&["top", "next"]), "main", &expanded(&[]));
+        s.open_slug = Some("main/next".into());
         s.selected = Some(1); // cursor elsewhere
         let theme = Theme::dark();
         let mut ctx = draw_ctx(&theme, None);
@@ -1305,8 +1344,8 @@ mod tests {
     #[test]
     fn cursor_on_the_open_row_shows_plain_selection_not_accent_name() {
         let mut s = Sidebar::default();
-        s.refresh(listing(&["only"]), &expanded(&[]));
-        s.open_slug = Some("only".into());
+        s.refresh(listing(&["only"]), "main", &expanded(&[]));
+        s.open_slug = Some("main/only".into());
         s.selected = Some(0);
         let theme = Theme::dark();
         let ctx = draw_ctx(&theme, None);
@@ -1339,17 +1378,18 @@ mod tests {
             vec![
                 RequestListing {
                     name: None,
-                    slug: "ping".into(),
+                    slug: "main/ping".into(),
                     broken: None,
                     method: Some(Method::Get),
                 },
                 RequestListing {
                     name: None,
-                    slug: "pong".into(),
+                    slug: "main/pong".into(),
                     broken: None,
                     method: Some(Method::Get),
                 },
             ],
+            "main",
             &expanded(&[]),
         );
         let (_, hits) = render_hits(&mut s);
@@ -1385,13 +1425,14 @@ mod tests {
         s.refresh(
             vec![RequestListing {
                 name: None,
-                slug: "ping".into(),
+                slug: "main/ping".into(),
                 broken: None,
                 method: Some(Method::Get),
             }],
+            "main",
             &expanded(&[]),
         );
-        s.in_flight.insert("ping".into());
+        s.in_flight.insert("main/ping".into());
         let (_, hits) = render_hits(&mut s);
         let row0 = hits.rect_of(&Hit::SidebarRow(0)).unwrap();
         let theme = Theme::dark();
@@ -1425,10 +1466,11 @@ mod tests {
         s.refresh(
             vec![RequestListing {
                 name: None,
-                slug: "bad".into(),
+                slug: "main/bad".into(),
                 broken: Some("parse error".into()),
                 method: None,
             }],
+            "main",
             &expanded(&[]),
         );
         let (content, _) = render_hits(&mut s);
@@ -1448,7 +1490,7 @@ mod tests {
     #[test]
     fn consecutive_rows_get_adjacent_1_line_hit_rects() {
         let mut s = Sidebar::default();
-        s.refresh(listing(&["a", "b", "c"]), &expanded(&[]));
+        s.refresh(listing(&["a", "b", "c"]), "main", &expanded(&[]));
         let (_, hits) = render_hits(&mut s);
         let r0 = hits.rect_of(&Hit::SidebarRow(0)).unwrap();
         let r1 = hits.rect_of(&Hit::SidebarRow(1)).unwrap();
@@ -1466,10 +1508,10 @@ mod tests {
     #[test]
     fn mid_flight_band_crossfades_between_the_old_and_new_open_rows() {
         let mut s = Sidebar::default();
-        s.refresh(listing(&["a", "b", "c"]), &expanded(&[]));
+        s.refresh(listing(&["a", "b", "c"]), "main", &expanded(&[]));
         // The band is moving from row 0 ("a", previously open) toward the
         // newly open row 1 ("b").
-        s.open_slug = Some("b".into());
+        s.open_slug = Some("main/b".into());
         s.band_fade_from = Some(0);
         s.selected = Some(1);
 

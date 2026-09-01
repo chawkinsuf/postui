@@ -574,6 +574,9 @@ impl App {
         let mut app = Self::bare(tx, root);
         match postui_core::storage::ensure_project(&app.project.root) {
             Ok(()) => {
+                // The context was opened before `ensure_project` seeded
+                // `main`, so the space list it read can be stale.
+                app.project.reload_spaces();
                 app.refresh_sidebar();
                 // Restore this project's saved layout split alongside its
                 // open request.
@@ -1677,6 +1680,15 @@ impl App {
                 }
             }
             Action::ForceOpenRequest(slug) => {
+                // A slug from another space (palette, cross-space click)
+                // switches spaces first, so the sidebar it lands in is the
+                // one that actually contains it.
+                if let Some(space) = postui_core::storage::space_of(&slug).map(str::to_string)
+                    && space != self.project.active_space
+                    && !self.enter_space(&space)
+                {
+                    return true;
+                }
                 match postui_core::storage::load_request(&self.project.root, &slug) {
                     Ok(req) => {
                         self.editor.load(Some(slug.clone()), req);
@@ -1765,9 +1777,19 @@ impl App {
                 true
             }
             Action::PromptNewRequestIn(folder) => {
+                // The prompt speaks folders *inside* the space, so the
+                // space segment never shows up in the prefill.
+                let folder = folder
+                    .strip_prefix(&format!("{}/", self.project.active_space))
+                    .unwrap_or("");
+                let prefill = if folder.is_empty() {
+                    String::new()
+                } else {
+                    format!("{folder}/")
+                };
                 self.push_modal(Modal::Prompt {
                     title: "New request".into(),
-                    input: crate::components::line_input::LineInput::new(&format!("{folder}/")),
+                    input: crate::components::line_input::LineInput::new(&prefill),
                     kind: PromptKind::NewRequest,
                     revealed: false,
                 });
@@ -1800,12 +1822,20 @@ impl App {
             Action::PromptRenameRequest => {
                 if let Some(slug) = self.sidebar.selected_slug() {
                     // Prefill what the user reads: the display name, under
-                    // its folder's slug path (never the leaf slug).
-                    let prefill = match slug.rsplit_once('/') {
-                        Some((folder, _)) => {
-                            format!("{folder}/{}", self.request_display(&slug))
-                        }
-                        None => self.request_display(&slug),
+                    // its folder's slug path (never the leaf slug), with
+                    // the space segment stripped — the name the user edits
+                    // is relative to the space they're in.
+                    let folder = match slug.rsplit_once('/') {
+                        Some((folder, _)) => folder
+                            .strip_prefix(&format!("{}/", self.project.active_space))
+                            .unwrap_or(""),
+                        None => "",
+                    };
+                    let display = self.request_display(&slug);
+                    let prefill = if folder.is_empty() {
+                        display
+                    } else {
+                        format!("{folder}/{display}")
                     };
                     self.push_modal(Modal::Prompt {
                         title: "Rename request".into(),
@@ -1894,6 +1924,13 @@ impl App {
             }
             Action::RenameRequest { from, to } => {
                 use postui_core::storage::{self, StorageError};
+                // The typed name is relative to the active space, same as
+                // a create.
+                let to = format!(
+                    "{}/{}",
+                    self.project.active_space,
+                    to.trim_start_matches('/')
+                );
                 let from_path = storage::request_path(&self.project.root, &from);
                 let old_content = std::fs::read_to_string(&from_path).ok();
                 match storage::rename_request_named(&self.project.root, &from, &to) {
@@ -2220,6 +2257,7 @@ impl App {
                 true
             }
             Action::PersistLocalState => {
+                self.project.record_space_open(self.editor.slug.as_deref());
                 self.project
                     .persist_local_state(self.editor.slug.as_deref());
                 true
@@ -3652,15 +3690,65 @@ impl App {
                 }
                 true
             }
-            // TODO(task 8): temporary placeholder so the match stays
-            // exhaustive while the space actions have no behavior yet.
-            Action::SwitchSpace(_)
-            | Action::ForceSwitchSpace(_)
-            | Action::JumpSpace(_)
-            | Action::CycleSpace(_)
-            | Action::OpenSpaceChooser
-            | Action::OpenNewSpacePrompt
-            | Action::CreateSpace(_) => true,
+            Action::SwitchSpace(name) => {
+                if name == self.project.active_space {
+                    return true;
+                }
+                if self.editor_holds_unsaved() {
+                    self.dirty_gate("switch", Action::ForceSwitchSpace(name));
+                    true
+                } else {
+                    self.apply(Action::ForceSwitchSpace(name))
+                }
+            }
+            Action::ForceSwitchSpace(name) => {
+                if !self.enter_space(&name) {
+                    return true;
+                }
+                // What the space was last left on, when that request still
+                // exists; otherwise its first row; otherwise nothing.
+                let target = self
+                    .project
+                    .space_open_for(&name)
+                    .filter(|s| postui_core::storage::request_exists(&self.project.root, s))
+                    .or_else(|| self.sidebar.first_request_slug());
+                match target {
+                    Some(slug) => self.apply(Action::ForceOpenRequest(slug)),
+                    None => {
+                        self.editor = Editor::default();
+                        self.shadow = None;
+                        self.sidebar.open_slug = None;
+                        self.apply(Action::PersistLocalState)
+                    }
+                }
+            }
+            Action::JumpSpace(n) => {
+                match n
+                    .checked_sub(1)
+                    .and_then(|i| self.project.spaces.get(i))
+                    .cloned()
+                {
+                    Some(name) => self.apply(Action::SwitchSpace(name)),
+                    None => true,
+                }
+            }
+            Action::CycleSpace(delta) => {
+                let spaces = &self.project.spaces;
+                if spaces.is_empty() {
+                    return true;
+                }
+                let idx = spaces
+                    .iter()
+                    .position(|s| *s == self.project.active_space)
+                    .unwrap_or(0) as i32;
+                let next = (idx + delta).rem_euclid(spaces.len() as i32) as usize;
+                let name = spaces[next].clone();
+                self.apply(Action::SwitchSpace(name))
+            }
+            // TODO(tasks 10/11): temporary placeholder so the match stays
+            // exhaustive while the space chooser/creation have no behavior
+            // yet.
+            Action::OpenSpaceChooser | Action::OpenNewSpacePrompt | Action::CreateSpace(_) => true,
         }
     }
 
@@ -5048,6 +5136,23 @@ impl App {
         self.record_file_step(before, &all_paths, None);
     }
 
+    /// Makes `space` the active one without opening anything: records the
+    /// outgoing space's open request, roots the sidebar, toasts. `false`
+    /// (with a toast) for an unknown space.
+    fn enter_space(&mut self, space: &str) -> bool {
+        self.project.record_space_open(self.editor.slug.as_deref());
+        if !self.project.set_active_space(space) {
+            self.toasts
+                .push(format!("no space named {space:?}"), ToastKind::Warning);
+            return false;
+        }
+        self.sidebar.selected = None;
+        self.refresh_sidebar();
+        self.toasts
+            .push(format!("space: {space}"), ToastKind::Success);
+        true
+    }
+
     /// Re-reads the project directory and rebuilds the sidebar tree,
     /// merging any ancestor folders `select_slug` needs opened into
     /// `project.expanded` first. Replaces every previous
@@ -5065,7 +5170,8 @@ impl App {
             .expanded
             .append(&mut self.sidebar.pending_expand);
         let expanded = self.project.expanded.clone();
-        self.sidebar.refresh(listing, &expanded);
+        let space = self.project.active_space.clone();
+        self.sidebar.refresh(listing, &space, &expanded);
         // `refresh` can re-map the open request's row to a different index
         // (rows added/removed/reordered above it) without the open request
         // itself changing -- snap `ListTravel`'s value to match, or it
@@ -5253,6 +5359,14 @@ impl App {
         build: impl FnOnce(&str) -> postui_core::model::HttpRequest,
     ) -> bool {
         use postui_core::storage::{self, StorageError};
+        // Every new request lands inside the active space — the name the
+        // user typed is relative to it.
+        let name = format!(
+            "{}/{}",
+            self.project.active_space,
+            name.trim_start_matches('/')
+        );
+        let name = name.as_str();
         let req = build(name);
         match storage::create_request_named(&self.project.root, name, req) {
             Ok((slug, leaf)) => {

@@ -1514,9 +1514,10 @@ fn a_collapsing_commit_reresolves_the_row_a_delete_click_named() {
 #[test]
 fn ctrl_s_commits_the_cell_under_edit_into_the_saved_file() {
     let mut app = App::new_for_test();
-    postui_core::storage::save_request(&app.project.root, "ping", &req("https://x/ping")).unwrap();
+    postui_core::storage::save_request(&app.project.root, "main/ping", &req("https://x/ping"))
+        .unwrap();
     app.update(Action::RefreshSidebar);
-    app.update(Action::OpenRequest("ping".into()));
+    app.update(Action::OpenRequest("main/ping".into()));
     app.focus = PaneId::Editor;
     app.editor.active_tab = EditorTab::Params;
 
@@ -1524,7 +1525,7 @@ fn ctrl_s_commits_the_cell_under_edit_into_the_saved_file() {
     type_chars(&mut app, "page");
     app.handle_key(&Keymap::default_bindings(), ctrl('s'));
 
-    let saved = postui_core::storage::load_request(&app.project.root, "ping").unwrap();
+    let saved = postui_core::storage::load_request(&app.project.root, "main/ping").unwrap();
     assert!(
         saved.params.contains_key("page"),
         "the cell under the caret is part of what ctrl+s saves: {:?}",
@@ -1536,9 +1537,10 @@ fn ctrl_s_commits_the_cell_under_edit_into_the_saved_file() {
 #[test]
 fn clicking_the_toolbar_save_chip_commits_the_cell_under_edit_and_saves() {
     let mut app = App::new_for_test();
-    postui_core::storage::save_request(&app.project.root, "ping", &req("https://x/ping")).unwrap();
+    postui_core::storage::save_request(&app.project.root, "main/ping", &req("https://x/ping"))
+        .unwrap();
     app.update(Action::RefreshSidebar);
-    app.update(Action::OpenRequest("ping".into()));
+    app.update(Action::OpenRequest("main/ping".into()));
     app.focus = PaneId::Editor;
     app.editor.active_tab = EditorTab::Params;
 
@@ -1546,7 +1548,7 @@ fn clicking_the_toolbar_save_chip_commits_the_cell_under_edit_and_saves() {
     type_chars(&mut app, "page");
     click_hit(&mut app, Hit::FooterChip(Action::SaveRequest));
 
-    let saved = postui_core::storage::load_request(&app.project.root, "ping").unwrap();
+    let saved = postui_core::storage::load_request(&app.project.root, "main/ping").unwrap();
     assert!(
         saved.params.contains_key("page"),
         "the in-progress cell rides along with a mouse-only save: {:?}",
@@ -1757,12 +1759,12 @@ fn dragging_the_sidebar_thumb_scrolls_and_release_ends_the_drag() {
     let slugs: Vec<postui_core::storage::RequestListing> = (0..60)
         .map(|i| postui_core::storage::RequestListing {
             name: None,
-            slug: format!("r{i:02}"),
+            slug: format!("main/r{i:02}"),
             broken: None,
             method: Some(postui_core::model::Method::Get),
         })
         .collect();
-    app.sidebar.refresh(slugs, &Default::default());
+    app.sidebar.refresh(slugs, "main", &Default::default());
     render_once(&mut app);
 
     let thumb = app
@@ -1810,12 +1812,12 @@ fn dragging_the_sidebar_thumb_with_drag_events_scrolls_the_same_as_moved() {
     let slugs: Vec<postui_core::storage::RequestListing> = (0..60)
         .map(|i| postui_core::storage::RequestListing {
             name: None,
-            slug: format!("r{i:02}"),
+            slug: format!("main/r{i:02}"),
             broken: None,
             method: Some(postui_core::model::Method::Get),
         })
         .collect();
-    app.sidebar.refresh(slugs, &Default::default());
+    app.sidebar.refresh(slugs, "main", &Default::default());
     render_once(&mut app);
 
     let thumb = app
@@ -2231,9 +2233,9 @@ fn horizontal_wheel_over_the_response_pane_scrolls_it_sideways() {
 /// URL, so quit paths can exercise the unsaved-changes gate.
 fn dirty_app() -> App {
     let mut app = App::new_for_test();
-    postui_core::storage::save_request(&app.project.root, "r", &req("https://x/r")).unwrap();
+    postui_core::storage::save_request(&app.project.root, "main/r", &req("https://x/r")).unwrap();
     app.update(Action::RefreshSidebar);
-    app.update(Action::ForceOpenRequest("r".into()));
+    app.update(Action::ForceOpenRequest("main/r".into()));
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Url;
     app.handle_key(&Keymap::default_bindings(), plain('/'));
@@ -2366,7 +2368,7 @@ fn saving_a_scratch_through_the_gate_chains_the_quit() {
         app.handle_key(&keymap, plain(c));
     }
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    let saved = postui_core::storage::load_request(&app.project.root, "fresh").unwrap();
+    let saved = postui_core::storage::load_request(&app.project.root, "main/fresh").unwrap();
     assert_eq!(saved.url, "https://x/scratch");
     assert!(app.should_quit, "the deferred quit ran after the save");
 }
@@ -2401,16 +2403,16 @@ fn escaping_the_gates_save_prompt_cancels_everything() {
 #[test]
 fn opening_a_request_over_a_scratch_gates_first() {
     let mut app = scratch_app();
-    postui_core::storage::save_request(&app.project.root, "other", &req("https://x/other"))
+    postui_core::storage::save_request(&app.project.root, "main/other", &req("https://x/other"))
         .unwrap();
     app.update(Action::RefreshSidebar);
-    app.update(Action::OpenRequest("other".into()));
+    app.update(Action::OpenRequest("main/other".into()));
     assert!(
         matches!(app.modals.top(), Some(Modal::Confirm { .. })),
         "the scratch content gates the open"
     );
     app.handle_key(&Keymap::default_bindings(), plain('d'));
-    assert_eq!(app.editor.slug.as_deref(), Some("other"));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/other"));
 }
 
 #[test]
@@ -2718,39 +2720,45 @@ fn sidebar_lists_requests_grouped_and_enter_opens() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();
     postui_core::storage::ensure_project(dir.path()).unwrap();
-    postui_core::storage::save_request(dir.path(), "auth/login", &req("https://x/login")).unwrap();
-    postui_core::storage::save_request(dir.path(), "ping", &req("https://x/ping")).unwrap();
+    // Both live in the active space `main`; `auth` is a folder *inside*
+    // it, so the tree still groups (a second space would simply be
+    // invisible here).
+    postui_core::storage::save_request(dir.path(), "main/auth/login", &req("https://x/login"))
+        .unwrap();
+    postui_core::storage::save_request(dir.path(), "main/ping", &req("https://x/ping")).unwrap();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
     assert_eq!(
         app.sidebar.rows,
         vec![
             Row::Request {
-                slug: "ping".into(),
+                slug: "main/ping".into(),
                 name: "ping".into(),
                 depth: 0,
                 broken: None,
                 method: Some(postui_core::model::Method::Get),
             },
             Row::Folder {
-                path: "auth".into(),
+                path: "main/auth".into(),
                 name: "auth".into(),
                 depth: 0,
                 expanded: false,
             },
-        ]
+        ],
+        "the space itself is never a row; its own top level is depth 0"
     );
 
     // Nothing selected at startup: the first j lands on "ping" (index
     // 0), the second reaches the "auth" folder (index 1); Enter expands
-    // it, then "auth/login" (index 2) becomes visible and Enter opens it.
+    // it, then "main/auth/login" (index 2) becomes visible and Enter
+    // opens it.
     let keymap = Keymap::default_bindings();
     app.handle_key(&keymap, plain('j'));
     app.handle_key(&keymap, plain('j'));
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     app.handle_key(&keymap, plain('j'));
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert_eq!(app.editor.slug.as_deref(), Some("auth/login"));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/auth/login"));
 }
 
 #[test]
@@ -2758,12 +2766,12 @@ fn startup_restores_persisted_open_request() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();
     postui_core::storage::ensure_project(dir.path()).unwrap();
-    postui_core::storage::save_request(dir.path(), "ping", &req("https://x/ping")).unwrap();
+    postui_core::storage::save_request(dir.path(), "main/ping", &req("https://x/ping")).unwrap();
     postui_core::project::save_local_state(
         dir.path(),
         &postui_core::project::LocalState {
             environment: None,
-            open_request: Some("ping".into()),
+            open_request: Some("main/ping".into()),
             expanded: vec![],
             ..Default::default()
         },
@@ -2773,11 +2781,11 @@ fn startup_restores_persisted_open_request() {
     let app = App::with_root(tx, dir.path().to_path_buf());
     assert_eq!(
         app.editor.slug.as_deref(),
-        Some("ping"),
+        Some("main/ping"),
         "the persisted open request loads into the editor at startup, \
          same as it does on a project switch"
     );
-    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("ping"));
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/ping"));
 }
 
 #[test]
@@ -2812,7 +2820,7 @@ fn startup_without_persisted_open_request_selects_nothing() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();
     postui_core::storage::ensure_project(dir.path()).unwrap();
-    postui_core::storage::save_request(dir.path(), "ping", &req("https://x/ping")).unwrap();
+    postui_core::storage::save_request(dir.path(), "main/ping", &req("https://x/ping")).unwrap();
 
     let app = App::with_root(tx, dir.path().to_path_buf());
     assert_eq!(app.editor.slug, None);
@@ -2829,7 +2837,7 @@ fn force_open_request_selects_its_sidebar_row() {
     let dir = tempfile::tempdir().unwrap();
     postui_core::storage::ensure_project(dir.path()).unwrap();
     postui_core::storage::save_request(dir.path(), "auth/login", &req("https://x/l")).unwrap();
-    postui_core::storage::save_request(dir.path(), "ping", &req("https://x/ping")).unwrap();
+    postui_core::storage::save_request(dir.path(), "main/ping", &req("https://x/ping")).unwrap();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
     // Opened by an out-of-band route (palette, dirty-gate confirm, …)
@@ -2845,22 +2853,22 @@ fn opening_another_request_swaps_the_response_panel() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();
     postui_core::storage::ensure_project(dir.path()).unwrap();
-    postui_core::storage::save_request(dir.path(), "a", &req("https://x/a")).unwrap();
-    postui_core::storage::save_request(dir.path(), "b", &req("https://x/b")).unwrap();
+    postui_core::storage::save_request(dir.path(), "main/a", &req("https://x/a")).unwrap();
+    postui_core::storage::save_request(dir.path(), "main/b", &req("https://x/b")).unwrap();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
-    app.update(Action::ForceOpenRequest("a".into()));
+    app.update(Action::ForceOpenRequest("main/a".into()));
     app.session
         .response
         .set_state(ResponseState::Failed("a's result".into()), 0);
 
-    app.update(Action::ForceOpenRequest("b".into()));
+    app.update(Action::ForceOpenRequest("main/b".into()));
     assert!(
         matches!(app.session.response.state(), ResponseState::Empty),
         "b never sent anything; showing a's response would mislabel it"
     );
 
-    app.update(Action::ForceOpenRequest("a".into()));
+    app.update(Action::ForceOpenRequest("main/a".into()));
     assert!(
         matches!(app.session.response.state(), ResponseState::Failed(e) if e == "a's result"),
         "a's response comes back from the cache"
@@ -2872,44 +2880,44 @@ fn opening_over_dirty_editor_prompts_save_discard_cancel() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();
     postui_core::storage::ensure_project(dir.path()).unwrap();
-    postui_core::storage::save_request(dir.path(), "a", &req("https://x/a")).unwrap();
-    postui_core::storage::save_request(dir.path(), "b", &req("https://x/b")).unwrap();
+    postui_core::storage::save_request(dir.path(), "main/a", &req("https://x/a")).unwrap();
+    postui_core::storage::save_request(dir.path(), "main/b", &req("https://x/b")).unwrap();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     let keymap = Keymap::default_bindings();
 
     // Open "a", then edit its URL so the editor becomes dirty.
-    app.update(Action::ForceOpenRequest("a".into()));
+    app.update(Action::ForceOpenRequest("main/a".into()));
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Url;
     app.handle_key(&keymap, plain('/'));
     assert!(app.editor.is_dirty());
 
     // Requesting to open "b" while dirty must prompt instead of opening.
-    app.update(Action::OpenRequest("b".into()));
+    app.update(Action::OpenRequest("main/b".into()));
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
     assert_eq!(
         app.editor.slug.as_deref(),
-        Some("a"),
+        Some("main/a"),
         "still on the original request"
     );
 
     // 'd' discards the edit and opens "b".
     app.handle_key(&keymap, plain('d'));
-    assert_eq!(app.editor.slug.as_deref(), Some("b"));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/b"));
     assert!(!app.editor.is_dirty());
 
     // Back to "a", dirty it again, this time choose 's' to save & open.
     let mut app = App::with_root(app.tx.clone(), dir.path().to_path_buf());
-    app.update(Action::ForceOpenRequest("a".into()));
+    app.update(Action::ForceOpenRequest("main/a".into()));
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Url;
     app.handle_key(&keymap, plain('/'));
     assert!(app.editor.is_dirty());
-    app.update(Action::OpenRequest("b".into()));
+    app.update(Action::OpenRequest("main/b".into()));
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
     app.handle_key(&keymap, plain('s'));
-    assert_eq!(app.editor.slug.as_deref(), Some("b"));
-    let saved = postui_core::storage::load_request(dir.path(), "a").unwrap();
+    assert_eq!(app.editor.slug.as_deref(), Some("main/b"));
+    let saved = postui_core::storage::load_request(dir.path(), "main/a").unwrap();
     assert_eq!(
         saved.url, "https://x/a/",
         "the edit was persisted before opening b"
@@ -2920,10 +2928,176 @@ fn sidebar_test_app() -> (App, tempfile::TempDir) {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();
     postui_core::storage::ensure_project(dir.path()).unwrap();
-    postui_core::storage::save_request(dir.path(), "api/ping", &req("https://x/ping")).unwrap();
-    postui_core::storage::save_request(dir.path(), "top", &req("https://x/top")).unwrap();
+    postui_core::storage::save_request(dir.path(), "main/api/ping", &req("https://x/ping"))
+        .unwrap();
+    postui_core::storage::save_request(dir.path(), "main/top", &req("https://x/top")).unwrap();
     let app = App::with_root(tx, dir.path().to_path_buf());
     (app, dir)
+}
+
+/// A two-space project: `main` holds `alpha` + `beta`, `auth` holds
+/// `login`. The space list is materialised by `create_space`, so
+/// `App::with_root` opens with `spaces == ["main", "auth"]`.
+fn spaced_app() -> (App, tempfile::TempDir) {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::storage::ensure_project(dir.path()).unwrap();
+    postui_core::project::create_space(dir.path(), "auth").unwrap();
+    for slug in ["main/alpha", "main/beta", "auth/login"] {
+        postui_core::storage::save_request(dir.path(), slug, &req("https://x/1")).unwrap();
+    }
+    let app = App::with_root(tx, dir.path().to_path_buf());
+    (app, dir)
+}
+
+#[test]
+fn sidebar_shows_only_the_active_space_rooted_at_depth_zero() {
+    let (mut app, _dir) = spaced_app();
+    render_once(&mut app);
+    let slugs: Vec<String> = app
+        .sidebar
+        .rows
+        .iter()
+        .filter_map(|r| match r {
+            Row::Request { slug, depth, .. } => {
+                assert_eq!(*depth, 0);
+                Some(slug.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(slugs, ["main/alpha", "main/beta"]);
+    assert!(
+        !app.sidebar
+            .rows
+            .iter()
+            .any(|r| matches!(r, Row::Folder { .. })),
+        "the space is never a row"
+    );
+}
+
+#[test]
+fn switching_spaces_restores_each_spaces_open_request_and_persists() {
+    let (mut app, dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/beta".into()));
+    app.update(Action::SwitchSpace("auth".into()));
+    assert_eq!(app.project.active_space, "auth");
+    assert_eq!(
+        app.editor.slug.as_deref(),
+        Some("auth/login"),
+        "first request when nothing remembered"
+    );
+    app.update(Action::SwitchSpace("main".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/beta"), "remembered");
+    let st = postui_core::project::load_local_state(dir.path()).unwrap();
+    assert_eq!(st.space.as_deref(), Some("main"));
+    assert_eq!(st.space_open["auth"], "auth/login");
+    assert_eq!(st.space_open["main"], "main/beta");
+}
+
+#[test]
+fn switching_to_an_empty_space_clears_the_editor() {
+    let (mut app, dir) = spaced_app();
+    postui_core::project::create_space(dir.path(), "empty").unwrap();
+    app.update(Action::ReloadProjectFiles);
+    app.project.reload_spaces();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.update(Action::SwitchSpace("empty".into()));
+    assert_eq!(app.project.active_space, "empty");
+    assert!(app.editor.slug.is_none());
+    assert!(app.sidebar.rows.is_empty());
+}
+
+#[test]
+fn switching_spaces_goes_through_the_dirty_gate() {
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    // Dirty the editor the way the other dirty-gate tests do: a keystroke
+    // into the URL field.
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Url;
+    app.handle_key(&Keymap::default_bindings(), plain('/'));
+    assert!(app.editor.is_dirty());
+    app.update(Action::SwitchSpace("auth".into()));
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Confirm { .. })),
+        "gate opened"
+    );
+    assert_eq!(app.project.active_space, "main", "not switched yet");
+    app.update(Action::Close);
+    assert_eq!(app.project.active_space, "main", "cancel keeps the space");
+}
+
+#[test]
+fn jump_and_cycle_resolve_by_position_and_wrap() {
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::JumpSpace(2));
+    assert_eq!(app.project.active_space, "auth");
+    app.update(Action::JumpSpace(9));
+    assert_eq!(app.project.active_space, "auth", "out of range is a no-op");
+    app.update(Action::CycleSpace(1));
+    assert_eq!(app.project.active_space, "main", "wraps");
+    app.update(Action::CycleSpace(-1));
+    assert_eq!(app.project.active_space, "auth");
+}
+
+#[test]
+fn opening_a_request_from_another_space_switches_first() {
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::OpenRequest("auth/login".into()));
+    assert_eq!(app.project.active_space, "auth");
+    assert_eq!(app.editor.slug.as_deref(), Some("auth/login"));
+    assert!(
+        app.sidebar
+            .rows
+            .iter()
+            .all(|r| matches!(r, Row::Request { slug, .. } if slug.starts_with("auth/")))
+    );
+}
+
+#[test]
+fn startup_restores_the_stored_space_and_its_request() {
+    let (mut app, dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("auth/login".into()));
+    drop(app);
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let app = App::with_root(tx, dir.path().to_path_buf());
+    assert_eq!(app.project.active_space, "auth");
+    assert_eq!(app.editor.slug.as_deref(), Some("auth/login"));
+}
+
+#[test]
+fn new_and_renamed_requests_land_inside_the_active_space() {
+    let (mut app, dir) = spaced_app();
+    app.update(Action::SwitchSpace("auth".into()));
+    app.update(Action::CreateRequest("Tokens/Refresh".into()));
+    assert!(
+        dir.path()
+            .join("requests/auth/tokens/refresh.toml")
+            .is_file()
+    );
+    assert_eq!(app.editor.slug.as_deref(), Some("auth/tokens/refresh"));
+    app.update(Action::PromptRenameRequest);
+    let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
+        panic!("prompt")
+    };
+    assert_eq!(input.text(), "tokens/Refresh", "prefill hides the space");
+    app.update(Action::Close);
+    app.update(Action::RenameRequest {
+        from: "auth/tokens/refresh".into(),
+        to: "Renewed".into(),
+    });
+    assert!(dir.path().join("requests/auth/renewed.toml").is_file());
+}
+
+#[test]
+fn sidebar_footer_advertises_the_space_cycle_key() {
+    let (mut app, _dir) = spaced_app();
+    app.focus = PaneId::Sidebar;
+    // Wide enough that the chip strip isn't truncated before the last
+    // sidebar chip.
+    let text = rendered_text_tall(&mut app);
+    assert!(text.contains("space"), "{text}");
 }
 
 #[test]
@@ -2933,7 +3107,7 @@ fn click_sidebar_row_opens_that_request() {
     assert_eq!(
         app.sidebar.rows[0],
         Row::Request {
-            slug: "top".into(),
+            slug: "main/top".into(),
             name: "top".into(),
             depth: 0,
             broken: None,
@@ -2942,7 +3116,7 @@ fn click_sidebar_row_opens_that_request() {
     );
     let r = app.hits.rect_of(&crate::hit::Hit::SidebarRow(0)).unwrap();
     app.handle_mouse(left_down(r.x, r.y));
-    assert_eq!(app.editor.slug.as_deref(), Some("top"));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/top"));
 }
 
 #[test]
@@ -2969,7 +3143,7 @@ fn sidebar_test_app_three_flat_rows() -> (App, tempfile::TempDir) {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();
     postui_core::storage::ensure_project(dir.path()).unwrap();
-    for slug in ["alpha", "beta", "gamma"] {
+    for slug in ["main/alpha", "main/beta", "main/gamma"] {
         postui_core::storage::save_request(dir.path(), slug, &req("https://x/1")).unwrap();
     }
     let app = App::with_root(tx, dir.path().to_path_buf());
@@ -3108,7 +3282,7 @@ fn dismissed_sidebar_context_menu_restores_the_previous_selection() {
     let (mut app, _dir) = sidebar_test_app_three_flat_rows();
     render_once(&mut app);
     // Open "alpha" (row 0): cursor and band both land on it.
-    app.update(Action::ForceOpenRequest("alpha".into()));
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
     assert_eq!(app.sidebar.selected, Some(0));
     render_once(&mut app);
 
@@ -3145,7 +3319,7 @@ fn dismissed_sidebar_context_menu_restores_the_previous_selection() {
 fn right_click_while_context_menu_open_retargets_to_the_new_row() {
     let (mut app, _dir) = sidebar_test_app_three_flat_rows();
     render_once(&mut app);
-    app.update(Action::ForceOpenRequest("alpha".into()));
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
     assert_eq!(app.sidebar.selected, Some(0));
     render_once(&mut app);
 
@@ -3179,7 +3353,7 @@ fn right_click_while_context_menu_open_retargets_to_the_new_row() {
 fn right_click_on_dead_space_while_context_menu_open_closes_it() {
     let (mut app, _dir) = sidebar_test_app_three_flat_rows();
     render_once(&mut app);
-    app.update(Action::ForceOpenRequest("alpha".into()));
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
     render_once(&mut app);
 
     let r2 = app.hits.rect_of(&crate::hit::Hit::SidebarRow(2)).unwrap();
@@ -3212,13 +3386,13 @@ fn deleting_a_row_above_the_selection_snaps_the_travel_band_not_a_ghost() {
     render_once(&mut app);
 
     // Open "gamma" (row 2) — the selection band anchors to it.
-    app.update(Action::ForceOpenRequest("gamma".into()));
+    app.update(Action::ForceOpenRequest("main/gamma".into()));
     assert_eq!(app.sidebar.selected, Some(2));
     render_once(&mut app); // let the travel anim settle at row 2
 
     // Delete "alpha" (row 0, above it) -- "gamma" is still the open
     // request, but its row index shifts from 2 to 1.
-    app.update(Action::DeleteRequest("alpha".into()));
+    app.update(Action::DeleteRequest("main/alpha".into()));
     assert_eq!(
         app.sidebar.selected,
         Some(1),
@@ -3368,10 +3542,10 @@ fn clicking_a_prompts_own_body_does_not_close_it_or_touch_the_input() {
 #[test]
 fn clicking_another_row_over_dirty_editor_is_gated_by_confirm() {
     let (mut app, _dir) = sidebar_test_app();
-    app.project.expanded.insert("api".into());
+    app.project.expanded.insert("main/api".into());
     app.refresh_sidebar();
     let keymap = Keymap::default_bindings();
-    app.update(Action::ForceOpenRequest("top".into()));
+    app.update(Action::ForceOpenRequest("main/top".into()));
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Url;
     app.handle_key(&keymap, plain('/'));
@@ -3381,7 +3555,7 @@ fn clicking_another_row_over_dirty_editor_is_gated_by_confirm() {
     assert_eq!(
         app.sidebar.rows[2],
         Row::Request {
-            slug: "api/ping".into(),
+            slug: "main/api/ping".into(),
             name: "ping".into(),
             depth: 1,
             broken: None,
@@ -3397,7 +3571,7 @@ fn clicking_another_row_over_dirty_editor_is_gated_by_confirm() {
     );
     assert_eq!(
         app.editor.slug.as_deref(),
-        Some("top"),
+        Some("main/top"),
         "editor content unchanged until the modal is resolved"
     );
 }
@@ -3408,7 +3582,7 @@ fn broken_file_shows_marker_and_error_modal() {
     let dir = tempfile::tempdir().unwrap();
     postui_core::storage::ensure_project(dir.path()).unwrap();
     std::fs::write(
-        dir.path().join("requests/bad.toml"),
+        dir.path().join("requests/main/bad.toml"),
         "url = \"x\"\nurl = \"dup\"\n",
     )
     .unwrap();
@@ -3441,9 +3615,9 @@ fn dirty_dot_renders_in_sidebar() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();
     postui_core::storage::ensure_project(dir.path()).unwrap();
-    postui_core::storage::save_request(dir.path(), "a", &req("https://x/a")).unwrap();
+    postui_core::storage::save_request(dir.path(), "main/a", &req("https://x/a")).unwrap();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.update(Action::ForceOpenRequest("a".into()));
+    app.update(Action::ForceOpenRequest("main/a".into()));
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Url;
     app.handle_key(&Keymap::default_bindings(), plain('/'));
@@ -3477,13 +3651,13 @@ fn new_request_prompt_flow_creates_file_and_opens_it() {
     }
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
-    assert_eq!(app.editor.slug.as_deref(), Some("api/ping"));
-    assert!(postui_core::storage::load_request(&app.project.root, "api/ping").is_ok());
+    assert_eq!(app.editor.slug.as_deref(), Some("main/api/ping"));
+    assert!(postui_core::storage::load_request(&app.project.root, "main/api/ping").is_ok());
     assert!(
         app.sidebar
             .rows
             .iter()
-            .any(|r| matches!(r, Row::Request { slug, .. } if slug == "api/ping")),
+            .any(|r| matches!(r, Row::Request { slug, .. } if slug == "main/api/ping")),
         "sidebar should list the new request: {:?}",
         app.sidebar.rows
     );
@@ -3498,9 +3672,9 @@ fn new_request_accepts_free_form_names_and_derives_the_slug() {
         app.handle_key(&keymap, plain(c));
     }
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert_eq!(app.editor.slug.as_deref(), Some("my-request"));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/my-request"));
     assert_eq!(app.editor.name.as_deref(), Some("My Request!"));
-    let loaded = postui_core::storage::load_request(&app.project.root, "my-request").unwrap();
+    let loaded = postui_core::storage::load_request(&app.project.root, "main/my-request").unwrap();
     assert_eq!(loaded.name.as_deref(), Some("My Request!"));
     assert!(
         rendered_text(&mut app).contains("Saved My Request!"),
@@ -3545,19 +3719,19 @@ fn new_request_same_display_name_toasts_and_creates_nothing() {
     );
     // A different name that merely collides on slug is fine and dedupes.
     app.update(Action::CreateRequest("My Request?".into()));
-    assert_eq!(app.editor.slug.as_deref(), Some("my-request-2"));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/my-request-2"));
 }
 
 #[test]
 fn rename_flow_speaks_display_names_and_regenerates_the_slug() {
     let mut app = App::new_for_test();
     app.update(Action::CreateRequest("Get User".into()));
-    assert_eq!(app.editor.slug.as_deref(), Some("get-user"));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/get-user"));
 
     // The prompt prefills the display name, not the slug.
-    app.sidebar.select_slug("get-user");
+    app.sidebar.select_slug("main/get-user");
     app.refresh_sidebar();
-    app.sidebar.select_slug("get-user");
+    app.sidebar.select_slug("main/get-user");
     app.update(Action::PromptRenameRequest);
     let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
         panic!("expected the rename prompt");
@@ -3568,13 +3742,13 @@ fn rename_flow_speaks_display_names_and_regenerates_the_slug() {
     // Renaming (with a sloppy trailing space) regenerates the slug and
     // rewrites the name.
     app.update(Action::RenameRequest {
-        from: "get-user".into(),
+        from: "main/get-user".into(),
         to: "Get User v2 ".into(),
     });
-    assert_eq!(app.editor.slug.as_deref(), Some("get-user-v2"));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/get-user-v2"));
     assert_eq!(app.editor.name.as_deref(), Some("Get User v2"));
-    assert_eq!(app.sidebar.open_slug.as_deref(), Some("get-user-v2"));
-    let loaded = postui_core::storage::load_request(&app.project.root, "get-user-v2").unwrap();
+    assert_eq!(app.sidebar.open_slug.as_deref(), Some("main/get-user-v2"));
+    let loaded = postui_core::storage::load_request(&app.project.root, "main/get-user-v2").unwrap();
     assert_eq!(loaded.name.as_deref(), Some("Get User v2"));
 }
 
@@ -3582,9 +3756,9 @@ fn rename_flow_speaks_display_names_and_regenerates_the_slug() {
 fn delete_and_duplicate_toasts_show_display_names() {
     let mut app = App::new_for_test();
     app.update(Action::CreateRequest("Fancy Name!".into()));
-    app.sidebar.select_slug("fancy-name");
+    app.sidebar.select_slug("main/fancy-name");
     app.refresh_sidebar();
-    app.sidebar.select_slug("fancy-name");
+    app.sidebar.select_slug("main/fancy-name");
 
     app.update(Action::DeleteSelectedRequest);
     assert!(
@@ -3593,7 +3767,7 @@ fn delete_and_duplicate_toasts_show_display_names() {
     );
     assert!(!postui_core::storage::request_exists(
         &app.project.root,
-        "fancy-name"
+        "main/fancy-name"
     ));
     let text = rendered_text(&mut app);
     assert!(
@@ -3606,13 +3780,13 @@ fn delete_and_duplicate_toasts_show_display_names() {
     );
     app.update(Action::Undo);
     assert!(
-        postui_core::storage::request_exists(&app.project.root, "fancy-name"),
+        postui_core::storage::request_exists(&app.project.root, "main/fancy-name"),
         "undo restores the deleted request"
     );
 
     app.refresh_sidebar();
-    app.sidebar.select_slug("fancy-name");
-    app.update(Action::ForceOpenRequest("fancy-name".into()));
+    app.sidebar.select_slug("main/fancy-name");
+    app.update(Action::ForceOpenRequest("main/fancy-name".into()));
     app.update(Action::DuplicateRequest);
     assert!(
         rendered_text(&mut app).contains("Duplicated to Fancy Name! copy"),
@@ -3625,22 +3799,26 @@ fn saving_a_legacy_request_does_not_invent_a_name() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();
     postui_core::storage::ensure_project(dir.path()).unwrap();
-    postui_core::storage::save_request(dir.path(), "legacy", &req("https://x/a")).unwrap();
+    postui_core::storage::save_request(dir.path(), "main/legacy", &req("https://x/a")).unwrap();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.update(Action::ForceOpenRequest("legacy".into()));
+    app.update(Action::ForceOpenRequest("main/legacy".into()));
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Url;
     app.handle_key(&Keymap::default_bindings(), plain('/'));
     app.update(Action::SaveRequest);
-    let loaded = postui_core::storage::load_request(dir.path(), "legacy").unwrap();
+    let loaded = postui_core::storage::load_request(dir.path(), "main/legacy").unwrap();
     assert_eq!(loaded.name, None, "no name field appears uninvited");
 }
 
 #[test]
 fn new_request_duplicate_name_toasts_and_leaves_existing_file_alone() {
     let mut app = App::new_for_test();
-    postui_core::storage::save_request(&app.project.root, "api/ping", &req("https://x/existing"))
-        .unwrap();
+    postui_core::storage::save_request(
+        &app.project.root,
+        "main/api/ping",
+        &req("https://x/existing"),
+    )
+    .unwrap();
     app.update(Action::RefreshSidebar);
     let keymap = Keymap::default_bindings();
     app.update(Action::PromptNewRequest);
@@ -3655,7 +3833,7 @@ fn new_request_duplicate_name_toasts_and_leaves_existing_file_alone() {
     };
     assert_eq!(input.text(), "api/ping");
     assert!(!app.toasts.is_empty(), "a duplicate name must toast");
-    let existing = postui_core::storage::load_request(&app.project.root, "api/ping").unwrap();
+    let existing = postui_core::storage::load_request(&app.project.root, "main/api/ping").unwrap();
     assert_eq!(
         existing.url, "https://x/existing",
         "existing file must not be overwritten"
@@ -3665,9 +3843,10 @@ fn new_request_duplicate_name_toasts_and_leaves_existing_file_alone() {
 #[test]
 fn rename_request_updates_disk_and_open_slug() {
     let mut app = App::new_for_test();
-    postui_core::storage::save_request(&app.project.root, "old", &req("https://x/old")).unwrap();
+    postui_core::storage::save_request(&app.project.root, "main/old", &req("https://x/old"))
+        .unwrap();
     app.update(Action::RefreshSidebar);
-    app.update(Action::ForceOpenRequest("old".into()));
+    app.update(Action::ForceOpenRequest("main/old".into()));
     let keymap = Keymap::default_bindings();
     app.focus = PaneId::Sidebar;
     app.handle_key(&keymap, plain('r'));
@@ -3676,7 +3855,7 @@ fn rename_request_updates_disk_and_open_slug() {
             kind: PromptKind::RenameRequest { from },
             ..
         }) => {
-            assert_eq!(from, "old");
+            assert_eq!(from, "main/old");
         }
         _ => panic!("expected a RenameRequest prompt"),
     }
@@ -3691,18 +3870,19 @@ fn rename_request_updates_disk_and_open_slug() {
     }
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
-    assert!(postui_core::storage::load_request(&app.project.root, "old").is_err());
-    assert!(postui_core::storage::load_request(&app.project.root, "new").is_ok());
-    assert_eq!(app.editor.slug.as_deref(), Some("new"));
-    assert_eq!(app.sidebar.open_slug.as_deref(), Some("new"));
+    assert!(postui_core::storage::load_request(&app.project.root, "main/old").is_err());
+    assert!(postui_core::storage::load_request(&app.project.root, "main/new").is_ok());
+    assert_eq!(app.editor.slug.as_deref(), Some("main/new"));
+    assert_eq!(app.sidebar.open_slug.as_deref(), Some("main/new"));
 }
 
 #[test]
 fn delete_open_request_clears_editor_and_removes_file() {
     let mut app = App::new_for_test();
-    postui_core::storage::save_request(&app.project.root, "gone", &req("https://x/gone")).unwrap();
+    postui_core::storage::save_request(&app.project.root, "main/gone", &req("https://x/gone"))
+        .unwrap();
     app.update(Action::RefreshSidebar);
-    app.update(Action::ForceOpenRequest("gone".into()));
+    app.update(Action::ForceOpenRequest("main/gone".into()));
     let keymap = Keymap::default_bindings();
     app.focus = PaneId::Sidebar;
     app.handle_key(&keymap, plain('d'));
@@ -3711,7 +3891,7 @@ fn delete_open_request_clears_editor_and_removes_file() {
         app.editor.slug.is_none(),
         "editor must reset once its open request is deleted"
     );
-    assert!(postui_core::storage::load_request(&app.project.root, "gone").is_err());
+    assert!(postui_core::storage::load_request(&app.project.root, "main/gone").is_err());
 }
 
 #[test]
@@ -3732,8 +3912,8 @@ fn save_with_no_slug_opens_save_as_prompt() {
     }
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
-    assert_eq!(app.editor.slug.as_deref(), Some("fresh"));
-    let saved = postui_core::storage::load_request(&app.project.root, "fresh").unwrap();
+    assert_eq!(app.editor.slug.as_deref(), Some("main/fresh"));
+    let saved = postui_core::storage::load_request(&app.project.root, "main/fresh").unwrap();
     assert_eq!(saved.url, "https://x/new");
 }
 
@@ -4107,7 +4287,7 @@ fn two_projects() -> (App, tempfile::TempDir, tempfile::TempDir) {
     postui_core::project::init_project(a.path(), Some("alpha")).unwrap();
     postui_core::project::init_project(b.path(), Some("beta")).unwrap();
     postui_core::storage::ensure_project(b.path()).unwrap();
-    postui_core::storage::save_request(b.path(), "pong", &req("https://x/pong")).unwrap();
+    postui_core::storage::save_request(b.path(), "main/pong", &req("https://x/pong")).unwrap();
     let mut app = App::with_root(tx, a.path().to_path_buf());
     app.registry.register(a.path().to_path_buf());
     app.registry.register(b.path().to_path_buf());
@@ -4140,7 +4320,7 @@ fn cycle_switches_to_next_project_and_lists_its_requests() {
         app.sidebar
             .rows
             .iter()
-            .any(|r| matches!(r, Row::Request { slug, .. } if slug == "pong"))
+            .any(|r| matches!(r, Row::Request { slug, .. } if slug == "main/pong"))
     );
     assert_eq!(app.project.display_name(), "beta");
     assert!(
@@ -4152,9 +4332,9 @@ fn cycle_switches_to_next_project_and_lists_its_requests() {
 #[test]
 fn cycle_with_dirty_editor_shows_no_switch_toast_until_discard() {
     let (mut app, _a, b) = two_projects();
-    postui_core::storage::save_request(&app.project.root, "r", &req("https://x/r")).unwrap();
+    postui_core::storage::save_request(&app.project.root, "main/r", &req("https://x/r")).unwrap();
     app.update(Action::RefreshSidebar);
-    app.update(Action::ForceOpenRequest("r".into()));
+    app.update(Action::ForceOpenRequest("main/r".into()));
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Url;
     app.handle_key(&Keymap::default_bindings(), plain('/'));
@@ -4179,9 +4359,9 @@ fn cycle_with_dirty_editor_shows_no_switch_toast_until_discard() {
 #[test]
 fn switch_with_dirty_editor_prompts_and_discard_proceeds() {
     let (mut app, _a, b) = two_projects();
-    postui_core::storage::save_request(&app.project.root, "r", &req("https://x/r")).unwrap();
+    postui_core::storage::save_request(&app.project.root, "main/r", &req("https://x/r")).unwrap();
     app.update(Action::RefreshSidebar);
-    app.update(Action::ForceOpenRequest("r".into()));
+    app.update(Action::ForceOpenRequest("main/r".into()));
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Url;
     app.handle_key(&Keymap::default_bindings(), plain('/'));
@@ -4199,13 +4379,13 @@ fn switch_restores_target_projects_open_request_and_saves_state() {
     postui_core::project::save_local_state(
         b.path(),
         &postui_core::project::LocalState {
-            open_request: Some("pong".into()),
+            open_request: Some("main/pong".into()),
             ..Default::default()
         },
     )
     .unwrap();
     app.update(Action::SwitchProject(b.path().to_path_buf()));
-    assert_eq!(app.editor.slug.as_deref(), Some("pong"));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/pong"));
     // and the old project's state got written on the way out
     let old = postui_core::project::load_local_state(a.path()).unwrap();
     assert_eq!(old.open_request, None);
@@ -4268,9 +4448,9 @@ fn new_project_modal_prefills_path_from_name_and_creates() {
 fn create_project_with_dirty_editor_defers_last_until_dirty_gate_resolves() {
     let (mut app, dir, _b) = two_projects();
     // Dirty the editor on the current (old) project.
-    postui_core::storage::save_request(&app.project.root, "r", &req("https://x/r")).unwrap();
+    postui_core::storage::save_request(&app.project.root, "main/r", &req("https://x/r")).unwrap();
     app.update(Action::RefreshSidebar);
-    app.update(Action::ForceOpenRequest("r".into()));
+    app.update(Action::ForceOpenRequest("main/r".into()));
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Url;
     app.handle_key(&Keymap::default_bindings(), plain('/'));
@@ -4327,11 +4507,11 @@ fn cycle_env_reloads_project_files_before_switching() {
 #[test]
 fn force_open_request_persists_open_request_to_local_state() {
     let mut app = App::new_for_test();
-    postui_core::storage::save_request(&app.project.root, "a", &req("https://x/a")).unwrap();
+    postui_core::storage::save_request(&app.project.root, "main/a", &req("https://x/a")).unwrap();
     app.update(Action::RefreshSidebar);
-    app.update(Action::ForceOpenRequest("a".into()));
+    app.update(Action::ForceOpenRequest("main/a".into()));
     let st = postui_core::project::load_local_state(&app.project.root).unwrap();
-    assert_eq!(st.open_request.as_deref(), Some("a"));
+    assert_eq!(st.open_request.as_deref(), Some("main/a"));
 }
 
 #[test]
@@ -4803,12 +4983,12 @@ fields = ["user_id", "customer_id"]
             enabled: true,
         },
     );
-    postui_core::storage::save_request(dir.path(), "r", &req).unwrap();
+    postui_core::storage::save_request(dir.path(), "main/r", &req).unwrap();
 
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.anims.enabled = false;
-    app.update(Action::ForceOpenRequest("r".into()));
+    app.update(Action::ForceOpenRequest("main/r".into()));
     app.update(Action::OpenVarPicker { completing: false });
 
     let Some(Modal::VarPicker(p)) = app.modals.top() else {
@@ -5854,7 +6034,7 @@ fn click_prompt_confirm_button_creates_the_request_like_enter() {
     assert!(app.handle_mouse(left_down(confirm.x, confirm.y)));
     assert!(app.modals.is_empty());
     assert!(
-        postui_core::storage::load_request(&app.project.root, "api/ping").is_ok(),
+        postui_core::storage::load_request(&app.project.root, "main/api/ping").is_ok(),
         "clicking Confirm must create the request, exactly like Enter"
     );
 }
@@ -6696,10 +6876,10 @@ fn var_edit_set_request_var_mutates_the_open_editor_and_marks_it_dirty_without_w
     )
     .unwrap();
     req.url = "https://x/ping".into();
-    postui_core::storage::save_request(dir.path(), "ping", &req).unwrap();
+    postui_core::storage::save_request(dir.path(), "main/ping", &req).unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.update(Action::ForceOpenRequest("ping".into()));
+    app.update(Action::ForceOpenRequest("main/ping".into()));
     assert!(!app.editor.is_dirty());
 
     app.update(Action::VarEdit(VarEditOp::SetRequestVar {
@@ -6712,7 +6892,7 @@ fn var_edit_set_request_var_mutates_the_open_editor_and_marks_it_dirty_without_w
         app.editor.is_dirty(),
         "the existing dirty/save path owns persistence"
     );
-    let on_disk = std::fs::read_to_string(dir.path().join("requests/ping.toml")).unwrap();
+    let on_disk = std::fs::read_to_string(dir.path().join("requests/main/ping.toml")).unwrap();
     assert!(
         on_disk.contains("abc-123"),
         "no immediate write — still the saved value on disk: {on_disk}"
@@ -7557,11 +7737,12 @@ fn var_struct_set_fields_replaces_the_group_list() {
 }
 
 fn request_with_var(dir: &std::path::Path, slug: &str, name: &str, value: &str) {
+    let leaf = slug.rsplit('/').next().unwrap_or(slug);
     let mut r = postui_core::model::HttpRequest::from_toml_str(&format!(
-        "url = \"https://x/{slug}\"\n[variables]\n{name} = \"{value}\"\n"
+        "url = \"https://x/{leaf}\"\n[variables]\n{name} = \"{value}\"\n"
     ))
     .unwrap();
-    r.url = format!("https://x/{slug}");
+    r.url = format!("https://x/{leaf}");
     postui_core::storage::save_request(dir, slug, &r).unwrap();
 }
 
@@ -7569,10 +7750,10 @@ fn request_with_var(dir: &std::path::Path, slug: &str, name: &str, value: &str) 
 fn var_struct_promote_to_default_writes_the_declaration_and_removes_the_request_entry() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
-    request_with_var(dir.path(), "ping", "trace_id", "abc-123");
+    request_with_var(dir.path(), "main/ping", "trace_id", "abc-123");
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.update(Action::ForceOpenRequest("ping".into()));
+    app.update(Action::ForceOpenRequest("main/ping".into()));
 
     app.update(Action::VarStruct(VarStructOp::Promote {
         name: "trace_id".into(),
@@ -7591,11 +7772,11 @@ fn var_struct_promote_to_default_writes_the_declaration_and_removes_the_request_
 fn var_struct_promote_to_env_writes_the_env_value_and_a_bare_declaration() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
-    request_with_var(dir.path(), "ping", "trace_id", "abc-123");
+    request_with_var(dir.path(), "main/ping", "trace_id", "abc-123");
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     assert_eq!(app.project.env_label(), "qa");
-    app.update(Action::ForceOpenRequest("ping".into()));
+    app.update(Action::ForceOpenRequest("main/ping".into()));
 
     app.update(Action::VarStruct(VarStructOp::Promote {
         name: "trace_id".into(),
@@ -7617,10 +7798,10 @@ fn var_struct_promote_to_env_writes_the_env_value_and_a_bare_declaration() {
 fn var_struct_promote_removes_the_entry_from_the_request_file_on_disk() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
-    request_with_var(dir.path(), "ping", "trace_id", "abc-123");
+    request_with_var(dir.path(), "main/ping", "trace_id", "abc-123");
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.update(Action::ForceOpenRequest("ping".into()));
+    app.update(Action::ForceOpenRequest("main/ping".into()));
 
     app.update(Action::VarStruct(VarStructOp::Promote {
         name: "trace_id".into(),
@@ -7629,7 +7810,7 @@ fn var_struct_promote_removes_the_entry_from_the_request_file_on_disk() {
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
     assert!(!app.editor.is_dirty());
-    let on_disk = postui_core::storage::load_request(dir.path(), "ping").unwrap();
+    let on_disk = postui_core::storage::load_request(dir.path(), "main/ping").unwrap();
     assert!(
         !on_disk.variables.contains_key("trace_id"),
         "the on-disk request file must no longer carry the promoted entry"
@@ -7643,10 +7824,11 @@ fn var_struct_promote_removes_the_entry_from_the_request_file_on_disk() {
 fn extract_to_request_saves_the_request_file_to_disk() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
-    postui_core::storage::save_request(dir.path(), "ping", &req("https://x/ping/abc-123")).unwrap();
+    postui_core::storage::save_request(dir.path(), "main/ping", &req("https://x/ping/abc-123"))
+        .unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.update(Action::ForceOpenRequest("ping".into()));
+    app.update(Action::ForceOpenRequest("main/ping".into()));
     app.editor.url = crate::components::line_input::LineInput::new("https://x/ping/abc-123");
     app.focus = crate::layout::PaneId::Editor;
     app.editor.sub_focus = crate::components::editor::SubFocus::Url;
@@ -7665,7 +7847,7 @@ fn extract_to_request_saves_the_request_file_to_disk() {
         app.toasts.messages()
     );
     assert!(!app.editor.is_dirty());
-    let on_disk = postui_core::storage::load_request(dir.path(), "ping").unwrap();
+    let on_disk = postui_core::storage::load_request(dir.path(), "main/ping").unwrap();
     assert_eq!(
         on_disk.variables["trace_id"].value,
         "https://x/ping/abc-123"
@@ -7748,7 +7930,7 @@ fn prompt_rename_var_surfaces_scan_usage_count_like_delete_does() {
     var_project(dir.path());
     let mut r = req("https://x/uses-it/{{base_url}}");
     r.url = "https://x/uses-it/{{base_url}}".into();
-    postui_core::storage::save_request(dir.path(), "uses-it", &r).unwrap();
+    postui_core::storage::save_request(dir.path(), "main/uses-it", &r).unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
@@ -7792,10 +7974,10 @@ fn prompt_promote_var_onto_an_existing_secret_name_refuses_with_a_message_modal(
     var_project(dir.path());
     // `api_key` (var_project) is already `secret = true`; a request-scope
     // entry of the SAME name is exactly the promote-onto-secret case.
-    request_with_var(dir.path(), "ping", "api_key", "sk-oops");
+    request_with_var(dir.path(), "main/ping", "api_key", "sk-oops");
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.update(Action::ForceOpenRequest("ping".into()));
+    app.update(Action::ForceOpenRequest("main/ping".into()));
 
     app.update(Action::PromptPromoteVar {
         name: "api_key".into(),
@@ -7818,7 +8000,7 @@ fn delete_var_warns_about_referencing_requests() {
     var_project(dir.path());
     let mut r = req("https://x/uses-it/{{base_url}}");
     r.url = "https://x/uses-it/{{base_url}}".into();
-    postui_core::storage::save_request(dir.path(), "uses-it", &r).unwrap();
+    postui_core::storage::save_request(dir.path(), "main/uses-it", &r).unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
@@ -9037,10 +9219,10 @@ fn select_option_arrows_move_the_selection_and_typing_is_inert() {
 fn blocked_send_toast_names_first_needs_selection_var_with_a_picker_hint() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
-    postui_core::storage::save_request(dir.path(), "r", &req("https://x/{{user}}")).unwrap();
+    postui_core::storage::save_request(dir.path(), "main/r", &req("https://x/{{user}}")).unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.update(Action::ForceOpenRequest("r".into()));
+    app.update(Action::ForceOpenRequest("main/r".into()));
 
     app.update(Action::ForceSend);
 
@@ -10131,7 +10313,7 @@ fn declining_the_migration_leaves_the_files_alone_and_the_project_open() {
     assert!(app.modals.is_empty(), "declined once, not re-offered");
     assert!(app.project.pending_migration().is_none());
     app.update(Action::CreateRequest("ping".into()));
-    assert_eq!(app.editor.slug.as_deref(), Some("ping"));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/ping"));
 }
 
 #[test]
@@ -10438,10 +10620,10 @@ fn computed_headers_reveal_resets_when_switching_to_a_different_request() {
             enabled: true,
         },
     );
-    postui_core::storage::save_request(&app.project.root, "a", &req("https://x/a")).unwrap();
-    postui_core::storage::save_request(&app.project.root, "b", &req("https://x/b")).unwrap();
+    postui_core::storage::save_request(&app.project.root, "main/a", &req("https://x/a")).unwrap();
+    postui_core::storage::save_request(&app.project.root, "main/b", &req("https://x/b")).unwrap();
     app.update(Action::RefreshSidebar);
-    app.update(Action::OpenRequest("a".into()));
+    app.update(Action::OpenRequest("main/a".into()));
     app.editor.active_tab = EditorTab::Headers;
     app.update(Action::Render);
 
@@ -10464,7 +10646,7 @@ fn computed_headers_reveal_resets_when_switching_to_a_different_request() {
         "sanity: A really is showing the secret in the clear: {a_view}"
     );
 
-    app.update(Action::OpenRequest("b".into()));
+    app.update(Action::OpenRequest("main/b".into()));
     assert!(
         !app.editor.computed.revealed,
         "opening a different request must re-mask"
@@ -10844,10 +11026,10 @@ fn the_rename_button_opens_the_same_prompt_as_the_e_key() {
 fn the_delete_button_opens_the_confirm_with_the_usage_list() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
-    request_with_var(dir.path(), "ping", "trace_id", "abc-123");
+    request_with_var(dir.path(), "main/ping", "trace_id", "abc-123");
     postui_core::storage::save_request(
         dir.path(),
-        "uses-base",
+        "main/uses-base",
         &req("https://x/uses-base/{{base_url}}"),
     )
     .unwrap();
@@ -10887,10 +11069,10 @@ fn the_secret_toggle_button_opens_the_same_confirm_as_the_s_key() {
 fn the_promote_button_promotes_the_requests_override_up_into_the_project() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
-    request_with_var(dir.path(), "ping", "base_url", "http://from-request");
+    request_with_var(dir.path(), "main/ping", "base_url", "http://from-request");
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.update(Action::ForceOpenRequest("ping".into()));
+    app.update(Action::ForceOpenRequest("main/ping".into()));
     goto_row(&mut app, |r| {
         r == &crate::components::varmanager::VmRow::Var("base_url".into())
     });
@@ -11530,10 +11712,10 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     // The open request overrides base_url, so promote applies too.
-    request_with_var(dir.path(), "ping", "base_url", "http://req.local");
+    request_with_var(dir.path(), "main/ping", "base_url", "http://req.local");
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.update(Action::ForceOpenRequest("ping".into()));
+    app.update(Action::ForceOpenRequest("main/ping".into()));
     goto_row(&mut app, |r| {
         r == &crate::components::varmanager::VmRow::Var("base_url".into())
     });
@@ -12293,7 +12475,8 @@ fn every_named_action_is_mouse_reachable() {
     // dispatch.
     let space_actions_pending_mouse_path: Vec<Action> = vec![
         Action::OpenSpaceChooser,
-        Action::CycleSpace(1),
+        // `CycleSpace(1)` is off this list as of Task 8: the sidebar
+        // footer's `alt+]` chip dispatches it by click.
         Action::CycleSpace(-1),
         Action::JumpSpace(1),
         Action::JumpSpace(2),
@@ -12368,13 +12551,14 @@ fn every_named_action_is_mouse_reachable() {
             .flatten()
             .filter_map(|item| item.action),
     );
-    postui_core::storage::save_request(&app.project.root, "req", &req("https://x/req")).unwrap();
+    postui_core::storage::save_request(&app.project.root, "main/req", &req("https://x/req"))
+        .unwrap();
     app.refresh_sidebar();
     let row = app
         .sidebar
         .rows
         .iter()
-        .position(|r| matches!(r, Row::Request { slug, .. } if slug == "req"))
+        .position(|r| matches!(r, Row::Request { slug, .. } if slug == "main/req"))
         .expect("the saved request is in the sidebar tree");
     mouse_reachable.extend(
         app.context_menu_for(&Hit::SidebarRow(row))
@@ -13038,10 +13222,10 @@ mod undo_tests {
         // History top is bbb's create (a FileStates step once Task 6 lands);
         // undo past it back to aaa's edit. Before Task 6, the top IS aaa's
         // save/edit — pop accordingly. Final state to assert:
-        while app.editor.slug.as_deref() != Some("aaa") {
+        while app.editor.slug.as_deref() != Some("main/aaa") {
             app.update(Action::Undo);
         }
-        assert_eq!(app.editor.slug.as_deref(), Some("aaa"));
+        assert_eq!(app.editor.slug.as_deref(), Some("main/aaa"));
     }
 
     #[test]
@@ -13068,7 +13252,7 @@ mod undo_tests {
         app.update(Action::CreateRequest("jb2".into()));
         // create_or_save_as loads the new request unconditionally, so jb1's
         // unsaved "xq" lives only in history now.
-        while app.editor.slug.as_deref() != Some("jb1") {
+        while app.editor.slug.as_deref() != Some("main/jb1") {
             app.update(Action::Undo);
         }
         assert_eq!(
@@ -13091,9 +13275,9 @@ mod undo_tests {
         app.capture_undo();
         app.update(Action::SaveRequest);
         app.capture_undo();
-        let path = postui_core::storage::request_path(&app.project.root, "del-me");
+        let path = postui_core::storage::request_path(&app.project.root, "main/del-me");
         let original = std::fs::read_to_string(&path).unwrap();
-        app.update(Action::DeleteRequest("del-me".into()));
+        app.update(Action::DeleteRequest("main/del-me".into()));
         app.capture_undo();
         assert!(!path.exists());
         app.update(Action::Undo);
@@ -13107,9 +13291,9 @@ mod undo_tests {
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("old-name".into()));
         app.capture_undo();
-        assert_eq!(app.editor.slug.as_deref(), Some("old-name"));
+        assert_eq!(app.editor.slug.as_deref(), Some("main/old-name"));
         app.update(Action::RenameRequest {
-            from: "old-name".into(),
+            from: "main/old-name".into(),
             to: "new-name".into(),
         });
         app.capture_undo();
@@ -13117,34 +13301,34 @@ mod undo_tests {
         // (doesn't close it) — undo/redo of the FileStates step it
         // records must do the same, not treat the moved-away path as a
         // delete and close the editor (reviewer finding).
-        assert_eq!(app.editor.slug.as_deref(), Some("new-name"));
+        assert_eq!(app.editor.slug.as_deref(), Some("main/new-name"));
         app.update(Action::Undo);
         let root = app.project.root.clone();
         assert!(
-            postui_core::storage::request_path(&root, "old-name").exists(),
+            postui_core::storage::request_path(&root, "main/old-name").exists(),
             "old-name restored"
         );
         assert!(
-            !postui_core::storage::request_path(&root, "new-name").exists(),
+            !postui_core::storage::request_path(&root, "main/new-name").exists(),
             "new-name gone"
         );
         assert_eq!(
             app.editor.slug.as_deref(),
-            Some("old-name"),
+            Some("main/old-name"),
             "undo retitles the open editor back, rather than closing it"
         );
         app.update(Action::Redo);
         assert!(
-            postui_core::storage::request_path(&root, "new-name").exists(),
+            postui_core::storage::request_path(&root, "main/new-name").exists(),
             "new-name restored"
         );
         assert!(
-            !postui_core::storage::request_path(&root, "old-name").exists(),
+            !postui_core::storage::request_path(&root, "main/old-name").exists(),
             "old-name gone"
         );
         assert_eq!(
             app.editor.slug.as_deref(),
-            Some("new-name"),
+            Some("main/new-name"),
             "redo retitles the open editor forward again"
         );
     }
@@ -13165,7 +13349,7 @@ mod undo_tests {
         app.capture_undo(); // one coalesced EditorDelta: "" -> "ab"
         app.update(Action::SaveRequest); // disk now holds "ab"
         app.capture_undo();
-        let path = postui_core::storage::request_path(&app.project.root, "sv");
+        let path = postui_core::storage::request_path(&app.project.root, "main/sv");
         let saved_file = std::fs::read_to_string(&path).unwrap();
         assert!(!app.editor.is_dirty());
         app.update(Action::Undo); // reverts the "ab" edit, not the save
@@ -13246,10 +13430,10 @@ mod undo_tests {
         let mut app = App::new_for_test();
         app.update(Action::CreateRequest("ext".into()));
         app.capture_undo();
-        app.update(Action::DeleteRequest("ext".into()));
+        app.update(Action::DeleteRequest("main/ext".into()));
         app.capture_undo();
         app.update(Action::Undo); // restores file
-        let path = postui_core::storage::request_path(&app.project.root, "ext");
+        let path = postui_core::storage::request_path(&app.project.root, "main/ext");
         std::fs::remove_file(&path).unwrap();
         std::fs::create_dir(&path).unwrap(); // remove_file on a dir errors
         app.update(Action::Undo); // tries to delete "created" file -> error
@@ -13349,7 +13533,7 @@ mod undo_tests {
     #[test]
     fn failed_multi_file_step_still_refreshes_the_sidebar() {
         let mut app = App::new_for_test();
-        let new_path = postui_core::storage::request_path(&app.project.root, "brand-new");
+        let new_path = postui_core::storage::request_path(&app.project.root, "main/brand-new");
         let blocked_path = app.project.root.join("blocked.toml");
         std::fs::create_dir_all(&blocked_path).unwrap(); // a dir where a file write is expected
 
@@ -13382,7 +13566,7 @@ mod undo_tests {
             app.sidebar
                 .rows
                 .iter()
-                .any(|r| matches!(r, Row::Request { slug, .. } if slug == "brand-new")),
+                .any(|r| matches!(r, Row::Request { slug, .. } if slug == "main/brand-new")),
             "sidebar must be refreshed to reflect the write that landed before the failure: {:?}",
             app.sidebar.rows
         );
@@ -13730,7 +13914,7 @@ mod undo_tests {
         // Opening the request whose Headers label carries a count shifts
         // every later span right; the underline must follow without a tab
         // switch.
-        app.update(Action::OpenRequest("with-header".into()));
+        app.update(Action::OpenRequest("main/with-header".into()));
         let spans = app.editor.tab_strip_spans();
         let (x, w) = spans[EditorTab::Params.draw_position()];
         assert_ne!(x, plain_x, "the span must actually have moved");
@@ -13810,8 +13994,8 @@ mod undo_tests {
         app.update(Action::CreateRequest("a".into()));
         app.update(Action::CreateRequest("b".into()));
         app.update(Action::EditorTabSelect(EditorTab::Params.index()));
-        app.update(Action::OpenRequest("a".into()));
-        assert_eq!(app.editor.slug.as_deref(), Some("a"));
+        app.update(Action::OpenRequest("main/a".into()));
+        assert_eq!(app.editor.slug.as_deref(), Some("main/a"));
         assert_eq!(app.editor.active_tab, EditorTab::Params);
     }
 
@@ -13825,10 +14009,10 @@ mod undo_tests {
         app.update(Action::EditorTabSelect(EditorTab::Body.index()));
         assert_eq!(app.editor.active_tab, EditorTab::Body);
         // Opening the GET request hops off the disabled Body tab...
-        app.update(Action::OpenRequest("get-req".into()));
+        app.update(Action::OpenRequest("main/get-req".into()));
         assert_ne!(app.editor.active_tab, EditorTab::Body);
         // ...but coming back to the POST restores the chosen tab.
-        app.update(Action::OpenRequest("post-req".into()));
+        app.update(Action::OpenRequest("main/post-req".into()));
         assert_eq!(app.editor.active_tab, EditorTab::Body);
     }
 
@@ -13860,9 +14044,9 @@ mod undo_tests {
         app.update(Action::CycleMethod); // p: POST
         app.update(Action::SaveRequest);
         app.update(Action::EditorTabSelect(EditorTab::Body.index()));
-        app.update(Action::OpenRequest("g".into())); // hop off Body
+        app.update(Action::OpenRequest("main/g".into())); // hop off Body
         app.update(Action::EditorTabSelect(EditorTab::Vars.index()));
-        app.update(Action::OpenRequest("p".into()));
+        app.update(Action::OpenRequest("main/p".into()));
         assert_eq!(
             app.editor.active_tab,
             EditorTab::Vars,

@@ -67,8 +67,11 @@ fn seed(app: &mut App, slugs: &[&str]) {
         variables: Default::default(),
         body: None,
     };
+    // Every request lives in a space; these all go in the default one, so
+    // call sites can keep speaking bare names.
     for slug in slugs {
-        postui_core::storage::save_request(&app.project.root, slug, &req).unwrap();
+        postui_core::storage::save_request(&app.project.root, &format!("main/{slug}"), &req)
+            .unwrap();
     }
     app.update(Action::RefreshSidebar);
 }
@@ -98,6 +101,7 @@ fn seed_broken(app: &mut App, slug: &str) {
         .project
         .root
         .join("requests")
+        .join("main")
         .join(format!("{slug}.toml"));
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, "this is = = not toml\n").unwrap();
@@ -115,7 +119,7 @@ fn row_index_of(app: &App, slug: &str) -> usize {
     app.sidebar
         .rows
         .iter()
-        .position(|r| matches!(r, Row::Request { slug: s, .. } if s == slug))
+        .position(|r| matches!(r, Row::Request { slug: s, .. } if *s == format!("main/{slug}")))
         .unwrap_or_else(|| panic!("no sidebar row for {slug}"))
 }
 
@@ -138,9 +142,9 @@ fn right_click_sidebar_row_opens_menu_and_duplicate_creates_copy() {
     press(&mut app, Hit::DropdownRow(1), left_down);
     assert!(postui_core::storage::request_exists(
         &app.project.root,
-        "users/list-copy"
+        "main/users/list-copy"
     ));
-    assert_eq!(app.editor.slug.as_deref(), Some("users/list-copy"));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/users/list-copy"));
     assert!(app.modals.top().is_none(), "the menu closed on activation");
 }
 
@@ -256,7 +260,7 @@ fn context_menu_is_keyboard_navigable() {
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(postui_core::storage::request_exists(
         &app.project.root,
-        "users/list-copy"
+        "main/users/list-copy"
     ));
 }
 
@@ -334,16 +338,16 @@ fn duplicate_request_action_acts_on_the_selected_row() {
     app.update(Action::DuplicateRequest);
     assert!(postui_core::storage::request_exists(
         &app.project.root,
-        "users/list-copy"
+        "main/users/list-copy"
     ));
-    assert_eq!(app.editor.slug.as_deref(), Some("users/list-copy"));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/users/list-copy"));
 
     // A second duplicate of the original does not collide.
     app.sidebar.selected = Some(row_index_of(&app, "users/list"));
     app.update(Action::DuplicateRequest);
     assert!(postui_core::storage::request_exists(
         &app.project.root,
-        "users/list-copy-2"
+        "main/users/list-copy-2"
     ));
 }
 
@@ -413,7 +417,7 @@ fn a_request_is_opened_edited_and_saved_with_nothing_but_clicks() {
 
     // Open it: one click on its sidebar row.
     press(&mut app, Hit::SidebarRow(row), left_down);
-    assert_eq!(app.editor.slug.as_deref(), Some("ping"));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/ping"));
     assert!(!app.editor.is_dirty());
 
     // Dirty it without touching the keyboard: the method chip's dropdown.
@@ -438,7 +442,7 @@ fn a_request_is_opened_edited_and_saved_with_nothing_but_clicks() {
     // ...and clicking it writes the file.
     click(&mut app, Hit::FooterChip(Action::SaveRequest));
     assert!(!app.editor.is_dirty(), "the click saved");
-    let on_disk = postui_core::storage::load_request(&app.project.root, "ping").unwrap();
+    let on_disk = postui_core::storage::load_request(&app.project.root, "main/ping").unwrap();
     assert_eq!(on_disk.method, postui_core::model::Method::Post);
 }
 

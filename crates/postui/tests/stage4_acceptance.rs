@@ -130,7 +130,7 @@ async fn stage4_mouse_only_acceptance_flow() {
     app.handle_key(&keymap, enter());
     assert_eq!(
         app.editor.slug.as_deref(),
-        Some("items/create"),
+        Some("main/items/create"),
         "naming prompt created and opened the request"
     );
 

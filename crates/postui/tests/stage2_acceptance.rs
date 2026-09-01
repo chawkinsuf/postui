@@ -37,7 +37,7 @@ async fn stage2_acceptance_flow() {
     // Create a request via actions (rather than reaching into storage
     // directly) so this exercises the same path the UI drives.
     app.update(Action::CreateRequest("smoke/ping".into()));
-    assert_eq!(app.editor.slug.as_deref(), Some("smoke/ping"));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/smoke/ping"));
 
     // Point it at the mock server.
     app.editor.url = LineInput::new(&format!("{}/ping", server.uri()));

@@ -224,7 +224,7 @@ async fn stage6_acceptance_flow() {
     // ------------------------------------------------------------------
 
     app.update(Action::CreateRequest("orders".into()));
-    assert_eq!(app.editor.slug.as_deref(), Some("orders"));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/orders"));
 
     let url = "{{base_url}}/orders/{{region}}?user={{user_id}}&cust={{customer_id}}";
     app.editor.url = LineInput::new(url);
@@ -408,7 +408,8 @@ region = \"west-9\"\n",
         "the secret value must never land in a git-tracked file"
     );
 
-    let request_toml = std::fs::read_to_string(dir.path().join("requests/orders.toml")).unwrap();
+    let request_toml =
+        std::fs::read_to_string(dir.path().join("requests/main/orders.toml")).unwrap();
     assert!(
         request_toml.contains("req-trace-override"),
         "the request-scope override is saved on the request: {request_toml}"

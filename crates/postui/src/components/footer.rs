@@ -41,6 +41,7 @@ pub(crate) fn footer_chips(
             ("n", "new", Some(Action::PromptNewRequest)),
             ("r", "rename", Some(Action::PromptRenameRequest)),
             ("d", "delete", Some(Action::DeleteSelectedRequest)),
+            ("alt+]", "space", Some(Action::CycleSpace(1))),
         ],
         PaneId::Editor => {
             let mut chips = vec![

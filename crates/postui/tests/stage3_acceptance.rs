@@ -69,16 +69,26 @@ fn write_alpha(root: &Path, server_uri: &str) {
 /// exercises the "restore from local state" path.
 fn write_beta(root: &Path) {
     std::fs::write(root.join("project.toml"), "name = \"beta\"\n").unwrap();
-    storage::save_request(root, "pong", &dummy_request("https://example.test/pong")).unwrap();
+    storage::save_request(
+        root,
+        "main/pong",
+        &dummy_request("https://example.test/pong"),
+    )
+    .unwrap();
     // A second request, not the one seeded as "open": switching to it while
     // beta is active (see the flow below) is what makes the final
     // persisted-state assertion discriminating rather than trivially true.
-    storage::save_request(root, "ping", &dummy_request("https://example.test/ping")).unwrap();
+    storage::save_request(
+        root,
+        "main/ping",
+        &dummy_request("https://example.test/ping"),
+    )
+    .unwrap();
     project::save_local_state(
         root,
         &LocalState {
             environment: None,
-            open_request: Some("pong".into()),
+            open_request: Some("main/pong".into()),
             expanded: vec![],
             ..Default::default()
         },
@@ -152,7 +162,7 @@ async fn stage3_acceptance_flow() {
         app.handle_key(&keymap, plain(c));
     }
     app.handle_key(&keymap, enter());
-    assert_eq!(app.editor.slug.as_deref(), Some("users/list"));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/users/list"));
 
     app.editor.url = LineInput::new("{{base}}/users?tok={{tok}}");
     app.update(Action::SaveRequest);
@@ -239,7 +249,7 @@ async fn stage3_acceptance_flow() {
     assert_eq!(app.project.root, beta_dir.path().to_path_buf());
     assert_eq!(
         app.editor.slug.as_deref(),
-        Some("pong"),
+        Some("main/pong"),
         "beta's local state restores the previously-open request"
     );
     let frame = render(&mut app);
@@ -249,14 +259,14 @@ async fn stage3_acceptance_flow() {
     // request away from the pre-seeded "pong" — so the on-disk assertion
     // after cycling away actually exercises ForceSwitchProject's persist
     // path, rather than trivially matching the pre-seeded value.
-    app.update(Action::ForceOpenRequest("ping".into()));
-    assert_eq!(app.editor.slug.as_deref(), Some("ping"));
+    app.update(Action::ForceOpenRequest("main/ping".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/ping"));
 
     app.handle_key(&keymap, alt('o'));
     assert_eq!(app.project.root, alpha_dir.path().to_path_buf());
     assert_eq!(
         app.editor.slug.as_deref(),
-        Some("users/list"),
+        Some("main/users/list"),
         "alpha's open request is restored"
     );
     assert_eq!(
@@ -265,7 +275,7 @@ async fn stage3_acceptance_flow() {
         "alpha's active environment is restored"
     );
     assert!(
-        app.project.expanded.contains("users"),
+        app.project.expanded.contains("main/users"),
         "alpha's sidebar expansion is restored"
     );
 
@@ -290,13 +300,13 @@ async fn stage3_acceptance_flow() {
     app.update(Action::PersistLocalState);
     let alpha_state = project::load_local_state(alpha_dir.path()).unwrap();
     assert_eq!(alpha_state.environment.as_deref(), Some("prod"));
-    assert_eq!(alpha_state.open_request.as_deref(), Some("users/list"));
-    assert!(alpha_state.expanded.contains(&"users".to_string()));
+    assert_eq!(alpha_state.open_request.as_deref(), Some("main/users/list"));
+    assert!(alpha_state.expanded.contains(&"main/users".to_string()));
 
     let beta_state = project::load_local_state(beta_dir.path()).unwrap();
     assert_eq!(
         beta_state.open_request.as_deref(),
-        Some("ping"),
+        Some("main/ping"),
         "beta's state reflects the switch to \"ping\" made while beta was \
          active, not the \"pong\" it was pre-seeded with — proving \
          ForceSwitchProject actually persisted on the way out"
