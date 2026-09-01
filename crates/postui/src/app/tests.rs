@@ -8312,7 +8312,10 @@ fn clicking_the_new_variable_button_opens_the_new_variable_prompt() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.update(Action::OpenManage { tab: None });
-    rendered_text(&mut app);
+    // Rendered wide: the Manage bar's tab strip has priority for its own
+    // width, so `+ Selector` is dropped on an 80-column bar (it stays
+    // reachable by key and footer chip). Both buttons paint from 120.
+    rendered_text_wide(&mut app);
 
     let rect = app
         .hits
@@ -8329,7 +8332,7 @@ fn clicking_the_new_variable_button_opens_the_new_variable_prompt() {
 
     // …and the `+ Group` button opens the group prompt.
     app.update(Action::Close);
-    rendered_text(&mut app);
+    rendered_text_wide(&mut app);
     let rect = app
         .hits
         .rect_of(&crate::hit::Hit::VmNewSelector)
@@ -10731,6 +10734,20 @@ use crate::components::varmanager::VmField;
 /// screen (header + footer leave the right pane only a little taller than
 /// its title + description + default fields) — plenty for a real terminal,
 /// but these tests need the rest of the column too.
+/// `rendered_text` on a wide terminal: some bars lay controls out
+/// right-aligned and drop the lowest-priority ones when the width runs
+/// short (see `components::manage::draw_manage_bar`), so a test about a
+/// specific button needs a width that actually paints it.
+fn rendered_text_wide(app: &mut App) -> String {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    app.anims.finish_all();
+    let backend = TestBackend::new(120, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+    format!("{:?}", terminal.backend().buffer())
+}
+
 fn rendered_text_tall(app: &mut App) -> String {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;

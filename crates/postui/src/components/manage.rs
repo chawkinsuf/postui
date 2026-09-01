@@ -71,6 +71,13 @@ pub const BAR_HEIGHT: u16 = BUTTON_HEIGHT;
 /// Paints the top bar: tab strip at the left edge (registering
 /// `Hit::ManageTab(i)`), `Close (esc)` at the right, and on the Variables
 /// tab the `+ Variable` / `+ Selector` buttons before it.
+///
+/// The strip has priority for its natural width: the right-aligned
+/// buttons lay out only into the room left of it, and a button that would
+/// cross into the strip is dropped rather than painted over it — lowest
+/// priority (leftmost) first, so `+ Selector` goes before `+ Variable`
+/// and `Close (esc)` is the last to go. Dropped buttons stay reachable by
+/// key (`n`, `g`, `esc`) and through the footer chips, so nothing is lost.
 pub fn draw_manage_bar(
     frame: &mut Frame,
     bar: Rect,
@@ -92,11 +99,28 @@ pub fn draw_manage_bar(
         }
     };
 
-    // Right-aligned buttons, laid out from the right edge inward. The
-    // close button is the mouse's way back to the main screen (the
-    // header's Manage chip toggles it too), labelled with the key that
-    // does the same thing.
     let left_edge = bar.x + 1;
+
+    // The strip's natural width, measured before anything is laid out:
+    // the buttons are fitted into what is left of the bar beyond it.
+    let tabs: Vec<(String, Option<(char, ratatui::style::Color)>)> = ManageTab::ALL
+        .iter()
+        .map(|t| (t.label().to_string(), None))
+        .collect();
+    let spans = TabStrip::spans(&tabs);
+    let strip_w = spans
+        .last()
+        .map_or(0, |(x, w)| x + w)
+        .min(bar.width.saturating_sub(2));
+    // No button may start left of here — a 2-column breathing gap after
+    // the strip's last tab.
+    let buttons_limit = left_edge + 1 + strip_w + 2;
+
+    // Right-aligned buttons, laid out from the right edge inward in
+    // keep-priority order, so the loop's `break` drops the least
+    // important first. The close button is the mouse's way back to the
+    // main screen (the header's Manage chip toggles it too), labelled
+    // with the key that does the same thing, so it is the last to go.
     let mut x = bar.x + bar.width;
     let mut buttons: Vec<(&str, ButtonKind, Hit)> = vec![(
         "Close (esc)",
@@ -104,12 +128,12 @@ pub fn draw_manage_bar(
         Hit::FooterChip(Action::CloseScreen),
     )];
     if tab == ManageTab::Variables {
-        buttons.push(("+ Selector", ButtonKind::Secondary, Hit::VmNewSelector));
         buttons.push(("+ Variable", ButtonKind::Primary, Hit::VmNewVar));
+        buttons.push(("+ Selector", ButtonKind::Secondary, Hit::VmNewSelector));
     }
     for (label, kind, hit) in buttons {
         let w = button_min_width(label);
-        if x < left_edge + w + 2 {
+        if x < buttons_limit + w + 1 {
             break;
         }
         x -= w + 1;
@@ -125,16 +149,11 @@ pub fn draw_manage_bar(
     }
 
     // Tab strip: label row on the bar's middle row, underline below it.
-    let tabs: Vec<(String, Option<(char, ratatui::style::Color)>)> = ManageTab::ALL
-        .iter()
-        .map(|t| (t.label().to_string(), None))
-        .collect();
     let hovered_tab = ManageTab::ALL
         .iter()
         .enumerate()
         .find(|(i, _)| hovered == Some(&Hit::ManageTab(*i)))
         .map(|(i, _)| i);
-    let spans = TabStrip::spans(&tabs);
     let (ul_x, ul_w) = spans
         .get(tab.index())
         .map(|(x, w)| (*x as f32, *w as f32))
@@ -142,7 +161,7 @@ pub fn draw_manage_bar(
     let strip_area = Rect {
         x: left_edge + 1,
         y: bar.y + BUTTON_HEIGHT / 2,
-        width: x.saturating_sub(left_edge + 2),
+        width: strip_w.min(x.saturating_sub(left_edge + 1)),
         height: 2,
     };
     let rects = TabStrip {
@@ -154,11 +173,11 @@ pub fn draw_manage_bar(
         disabled: None,
     }
     .paint(buf, strip_area, theme.panel, theme);
-    // `TabStrip::paint` returns each tab's full span even where the strip
-    // is narrower than its tabs, so clip every rect to the room the
-    // buttons left: on a bar too narrow for both, the buttons stay
-    // clickable and the last tab is merely clipped rather than stealing
-    // their clicks.
+    // Belt and braces: the buttons now yield to the strip's full width,
+    // but `TabStrip::paint` returns each tab's whole span even where the
+    // strip area is narrower than its tabs (a bar too narrow for even the
+    // strip), so clip every rect to the strip's own room rather than let
+    // one register over a button.
     let strip_end = strip_area.x + strip_area.width;
     for (i, rect) in rects.iter().enumerate() {
         if rect.x >= strip_end {
@@ -179,13 +198,66 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     fn render(tab: ManageTab) -> (String, HitMap) {
+        render_at(tab, 100)
+    }
+
+    fn render_at(tab: ManageTab, width: u16) -> (String, HitMap) {
         let theme = Theme::dark();
-        let mut terminal = Terminal::new(TestBackend::new(100, 3)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(width, 3)).unwrap();
         let mut hits = HitMap::default();
         terminal
             .draw(|f| draw_manage_bar(f, f.area(), &theme, tab, &mut hits, None))
             .unwrap();
         (format!("{:?}", terminal.backend().buffer()), hits)
+    }
+
+    fn intersects(a: Rect, b: Rect) -> bool {
+        a.x < b.x + b.width && b.x < a.x + a.width
+    }
+
+    /// The tab strip has priority for its natural width: at 80 columns —
+    /// the width `app::tests::rendered_text` renders at, and too narrow
+    /// for the strip plus all three buttons — every tab label still
+    /// paints in full and no button overlaps the strip's last tab. At 120
+    /// there is room for everything.
+    #[test]
+    fn buttons_yield_to_the_tab_strip_on_a_narrow_bar() {
+        let (content, hits) = render_at(ManageTab::Variables, 80);
+        for t in ManageTab::ALL {
+            assert!(
+                content.contains(t.label()),
+                "{} missing: {content}",
+                t.label()
+            );
+        }
+        let spaces = hits
+            .rect_of(&Hit::ManageTab(2))
+            .expect("the last tab is registered");
+        if let Some(new_var) = hits.rect_of(&Hit::VmNewVar) {
+            assert!(
+                !intersects(spaces, new_var),
+                "the + Variable button must not sit on the Spaces tab: \
+                 {spaces:?} vs {new_var:?}"
+            );
+        }
+        assert!(
+            hits.rect_of(&Hit::FooterChip(Action::CloseScreen))
+                .is_some(),
+            "close is the last button to be dropped"
+        );
+
+        let (_content, hits) = render_at(ManageTab::Variables, 120);
+        assert!(hits.rect_of(&Hit::VmNewVar).is_some());
+        assert!(hits.rect_of(&Hit::VmNewSelector).is_some());
+        let spaces = hits.rect_of(&Hit::ManageTab(2)).unwrap();
+        for hit in [
+            Hit::VmNewVar,
+            Hit::VmNewSelector,
+            Hit::FooterChip(Action::CloseScreen),
+        ] {
+            let r = hits.rect_of(&hit).unwrap();
+            assert!(!intersects(spaces, r), "{hit:?} overlaps the strip: {r:?}");
+        }
     }
 
     #[test]
