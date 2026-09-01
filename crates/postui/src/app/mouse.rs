@@ -1135,11 +1135,14 @@ impl App {
             }
             Hit::ModalSharedToggle => {
                 if let Some(crate::components::modal::Modal::Prompt {
-                    kind: crate::components::modal::PromptKind::NewSelector { shared },
+                    kind: crate::components::modal::PromptKind::NewSelector { shared, on_toggle },
                     ..
                 }) = self.modals.top_mut()
                 {
                     *shared = !*shared;
+                    // Clicking the row focuses it too, so space keeps
+                    // working from where the mouse left off.
+                    *on_toggle = true;
                     return self.update(Action::Render);
                 }
                 false

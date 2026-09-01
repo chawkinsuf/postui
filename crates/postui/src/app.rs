@@ -214,6 +214,14 @@ pub struct App {
     /// whenever any dropdown closes; a menu item actually chosen keeps the
     /// moved selection, since its flow acts on (and usually re-points) it.
     pub(crate) sidebar_menu_revert: Option<Option<usize>>,
+    /// Set while a confirmed modal's own actions are running, after its
+    /// close emptied the stack: a modal those actions push is a *handoff*
+    /// (the new-selector name prompt chaining into its first-option
+    /// prompt, a save-as gate chaining onward), not a fresh open. Without
+    /// it `push_modal` would see an empty stack and replay the open
+    /// settle — the backdrop un-dimming and re-dimming behind a
+    /// momentarily blank panel, which reads as a flash.
+    modal_handoff: bool,
     /// The terminal pointer shape last emitted (Kitty OSC 22, task 8d).
     /// Starts at `Default` — the terminal's own cursor is already that, so
     /// startup emits nothing until the pointer first moves onto something
@@ -766,6 +774,7 @@ impl App {
             shift_enter_send: false,
             hovered_token: None,
             sidebar_menu_revert: None,
+            modal_handoff: false,
             last_pointer_shape: PointerShape::Default,
             pointer: None,
             caret_token: None,
@@ -2919,7 +2928,10 @@ impl App {
                 self.push_modal(Modal::Prompt {
                     title: "New selector".into(),
                     input: LineInput::new(""),
-                    kind: PromptKind::NewSelector { shared: false },
+                    kind: PromptKind::NewSelector {
+                        shared: false,
+                        on_toggle: false,
+                    },
                     revealed: false,
                 });
                 true
@@ -5552,7 +5564,9 @@ impl App {
     /// (100ms by default, config-tunable) so the panel fades/settles in;
     /// pushing an additional modal onto an already non-empty stack snaps it
     /// straight to 1 instead — no re-animation for a modal opened on top of
-    /// another. A `Modal::Dropdown` push is exempted entirely: dropdowns
+    /// another, and likewise for a handoff push (`modal_handoff`), where
+    /// the stack is only momentarily empty between two modals of one
+    /// flow. A `Modal::Dropdown` push is exempted entirely: dropdowns
     /// settle via their own `AnimKey::DropdownOpen` (started separately by
     /// `begin_dropdown_open` at their two push sites), and often land on
     /// top of an existing modal stack, so touching `ModalOpen` for them
@@ -5561,7 +5575,7 @@ impl App {
     pub(crate) fn push_modal(&mut self, modal: Modal) {
         if !matches!(modal, Modal::Dropdown(_)) {
             let now = Instant::now();
-            if self.modals.is_empty() {
+            if self.modals.is_empty() && !self.modal_handoff {
                 self.anims.snap(AnimKey::ModalOpen, 0.0);
                 self.anims.retarget(
                     AnimKey::ModalOpen,
@@ -6362,6 +6376,11 @@ impl App {
             self.usage.record(id, crate::usage::now());
         }
         let had_actions = !res.actions.is_empty();
+        // A modal these actions push takes over from the one that just
+        // closed, so it must not replay the open settle (see
+        // `modal_handoff`).
+        let outer_handoff = self.modal_handoff;
+        self.modal_handoff = res.close && self.modals.is_empty();
         for a in res.actions {
             self.last_action_failed = false;
             changed |= self.update(a);
@@ -6369,6 +6388,7 @@ impl App {
                 break;
             }
         }
+        self.modal_handoff = outer_handoff;
         // A refused confirm re-opens the editor it came from, typed state
         // intact — a validation error (name taken, field clash, …) must
         // never cost the user their input. Only text-entry modals come

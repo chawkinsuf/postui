@@ -48,12 +48,17 @@ pub enum PromptKind {
     /// `g` / the `+ Selector` button: a single name prompt. Confirming
     /// declares a one-field selector whose field is the name itself (the
     /// common selection-set shape); more fields grow through the fields
-    /// editor afterward. `shared` (toggled in the prompt: ctrl+s or the
-    /// checkbox row) makes it a shared selector — same options in every
-    /// environment, kept in variables.toml. Chosen at creation only;
-    /// there's deliberately no UI to flip it later.
+    /// editor afterward. `shared` makes it a shared selector — same
+    /// options in every environment, kept in variables.toml. Chosen at
+    /// creation only; there's deliberately no UI to flip it later.
     NewSelector {
         shared: bool,
+        /// Whether the toggle row (rather than the name field) holds the
+        /// prompt's focus: ↓ moves down to it, ↑ back to the field, tab
+        /// cycles the two, and space flips `shared` while it's focused.
+        /// Clicking the row does both at once. No chord — the row is
+        /// reachable the same way every other control in the app is.
+        on_toggle: bool,
     },
     /// One field name, appended to `selector`'s list.
     AddSelectorField {
@@ -565,7 +570,13 @@ impl ModalStack {
     /// the top modal has no text box `i`.
     pub fn focus_input(&mut self, i: usize) -> Option<&mut LineInput> {
         match self.stack.last_mut()? {
-            Modal::Prompt { input, .. } if i == 0 => Some(input),
+            // Clicking the name field takes focus off the shared toggle.
+            Modal::Prompt { input, kind, .. } if i == 0 => {
+                if let PromptKind::NewSelector { on_toggle, .. } = kind {
+                    *on_toggle = false;
+                }
+                Some(input)
+            }
             Modal::NewProject { name, on_path, .. } if i == 0 => {
                 *on_path = false;
                 Some(name)
@@ -665,6 +676,20 @@ impl ModalStack {
             Modal::Message { .. } => vec![("enter", "close", None)],
             // Handled above — its chips are the runtime answer keys.
             Modal::Confirm { .. } => unreachable!("Confirm returned early"),
+            // The new-selector prompt's toggle row is a focus stop, so
+            // its keys are advertised the way every other area's are.
+            Modal::Prompt {
+                kind: PromptKind::NewSelector { on_toggle, .. },
+                ..
+            } => {
+                let mut chips = vec![("\u{2191}\u{2193}", "move focus", None)];
+                if *on_toggle {
+                    chips.push(("space", "toggle", None));
+                }
+                chips.push(("enter", "save", None));
+                chips.push(("esc", "cancel", None));
+                chips
+            }
             Modal::Prompt { .. } | Modal::NewProject { .. } => {
                 vec![("enter", "save", None), ("esc", "cancel", None)]
             }
@@ -770,11 +795,32 @@ impl ModalStack {
                     *revealed = !*revealed;
                     None // swallowed: modals capture all input
                 }
-                KeyCode::Char('s' | 'S')
-                    if matches!(kind, PromptKind::NewSelector { .. })
-                        && key.modifiers.contains(KeyModifiers::CONTROL) =>
+                // The new-selector prompt's two stops: the name field and
+                // the shared toggle. ↓/↑ walk between them, tab/shift-tab
+                // cycle (two stops, so either direction just flips), and
+                // space flips the toggle once it's focused.
+                KeyCode::Down | KeyCode::Up | KeyCode::Tab | KeyCode::BackTab
+                    if matches!(kind, PromptKind::NewSelector { .. }) =>
                 {
-                    if let PromptKind::NewSelector { shared } = kind {
+                    if let PromptKind::NewSelector { on_toggle, .. } = kind {
+                        *on_toggle = match key.code {
+                            KeyCode::Down => true,
+                            KeyCode::Up => false,
+                            _ => !*on_toggle,
+                        };
+                    }
+                    None // swallowed: modals capture all input
+                }
+                KeyCode::Char(' ')
+                    if matches!(
+                        kind,
+                        PromptKind::NewSelector {
+                            on_toggle: true,
+                            ..
+                        }
+                    ) =>
+                {
+                    if let PromptKind::NewSelector { shared, .. } = kind {
                         *shared = !*shared;
                     }
                     None // swallowed: modals capture all input
@@ -842,7 +888,7 @@ impl ModalStack {
                                 to: text.to_string(),
                             })])
                         }
-                        PromptKind::NewSelector { shared } => {
+                        PromptKind::NewSelector { shared, .. } => {
                             Some(vec![Action::VarStruct(VarStructOp::NewSelector {
                                 name: text.to_string(),
                                 fields: vec![text.to_string()],
@@ -875,6 +921,11 @@ impl ModalStack {
                     })
                 }
                 _ => {
+                    // Anything the text box owns walks focus back to it —
+                    // typing is never silently swallowed by the toggle row.
+                    if let PromptKind::NewSelector { on_toggle, .. } = kind {
+                        *on_toggle = false;
+                    }
                     input.handle_key(key);
                     None // swallowed: modals capture all input
                 }
@@ -1353,14 +1404,35 @@ impl ModalStack {
                     width: area.width.saturating_sub(4),
                     height: FIELD_HEIGHT,
                 };
+                // The new-selector prompt's shared toggle is the only
+                // thing that can take focus off the name field.
+                let field_focused = !matches!(
+                    kind,
+                    PromptKind::NewSelector {
+                        on_toggle: true,
+                        ..
+                    }
+                );
                 let content = if masked {
-                    input.draw_line_windowed_masked(true, theme, field_area.width.saturating_sub(2))
+                    input.draw_line_windowed_masked(
+                        field_focused,
+                        theme,
+                        field_area.width.saturating_sub(2),
+                    )
                 } else {
-                    input.draw_line_windowed(true, theme, field_area.width.saturating_sub(2))
+                    input.draw_line_windowed(
+                        field_focused,
+                        theme,
+                        field_area.width.saturating_sub(2),
+                    )
                 };
                 TextField {
                     content,
-                    state: ControlState::Focused,
+                    state: if field_focused {
+                        ControlState::Focused
+                    } else {
+                        ControlState::Normal
+                    },
                 }
                 .paint(frame.buffer_mut(), field_area, theme);
                 hits.register(field_area, crate::hit::Hit::ModalInput(0));
@@ -1386,12 +1458,16 @@ impl ModalStack {
                 // The new-selector prompt's one option: shared, i.e. the
                 // same options in every environment. A creation-time
                 // choice, so it lives here rather than in the detail pane.
-                if let PromptKind::NewSelector { shared } = kind {
+                if let PromptKind::NewSelector { shared, on_toggle } = kind {
                     let toggle_y = field_area.y + FIELD_HEIGHT + 1;
                     let glyph = if *shared { "\u{25c9}" } else { "\u{25cb}" };
-                    let label = format!("{glyph} same options in every environment  ctrl+s");
+                    let label = format!("{glyph} same options in every environment");
                     let toggle_hit = crate::hit::Hit::ModalSharedToggle;
-                    let fg = if hovered == Some(&toggle_hit) {
+                    // Focused, the row goes accent + bold; hovered it just
+                    // brightens.
+                    let fg = if *on_toggle {
+                        theme.accent
+                    } else if hovered == Some(&toggle_hit) {
                         theme.text
                     } else {
                         theme.text_muted
@@ -1403,7 +1479,7 @@ impl ModalStack {
                         &label,
                         fg,
                         theme.panel,
-                        false,
+                        *on_toggle,
                     );
                     hits.register(
                         Rect {
@@ -2174,7 +2250,10 @@ mod tests {
                 PromptField::text("dest", "Destination", "here"),
             ],
             focus: 0,
-            kind: PromptKind::NewSelector { shared: false },
+            kind: PromptKind::NewSelector {
+                shared: false,
+                on_toggle: false,
+            },
         });
 
         let theme = Theme::for_terminal();

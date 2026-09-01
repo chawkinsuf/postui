@@ -451,7 +451,9 @@ pub const TITLE_HEIGHT: u16 = BUTTON_HEIGHT;
 /// The left list's fixed width (spec §3.4's mock).
 pub const LEFT_W: u16 = 28;
 
-const GLYPH_GROUP: &str = "\u{25b6}"; // ▶
+// Not a chevron: a ▶ next to a selector row reads as "click to expand a
+// tree", which these rows don't do — they open in the detail pane.
+const GLYPH_GROUP: &str = "\u{25c8}"; // ◈
 const GLYPH_LOCK: &str = "\u{1f512}"; // 🔒
 const GLYPH_UNRESOLVED: &str = "\u{25cf}"; // ●
 const GLYPH_RADIO_ON: &str = "\u{25c9}"; // ◉
@@ -461,6 +463,15 @@ const GLYPH_RADIO_OFF: &str = "\u{25cb}"; // ○
 /// active: options belong to one environment each (spec §3.1), so there is
 /// nowhere for them to live until one is picked.
 pub const NO_ENV_HINT: &str = "options live in environments \u{2014} pick or create one";
+
+/// The scope line under the selector pane's title: where this selector's
+/// options live. A shared selector's `shared` flag is a creation-time
+/// property with no control of its own, so this is the only place it is
+/// visible — and the per-environment line is its counterpart, so the grid
+/// is never ambiguous about what it is showing. The shared wording mirrors
+/// the new-selector prompt's.
+pub const SHARED_BADGE: &str = "same options in every environment";
+pub const PER_ENV_BADGE: &str = "options for the current environment";
 
 /// The ghost row's resting label.
 const GHOST_LABEL: &str = "+ option";
@@ -1492,6 +1503,10 @@ impl VarManager {
         let bottom = right.y + right.height;
         let mut y = right.y + 1;
 
+        // A shared selector's options don't live in an environment, so its
+        // grid works with none active; everyone else gets the hint.
+        let shared = is_shared(ctx, selector);
+
         // --- title row: name + the pane's four buttons ------------------
         if y + BUTTON_HEIGHT <= bottom {
             let label = format!("Selector: {selector}");
@@ -1524,11 +1539,42 @@ impl VarManager {
                 hits.register(rect, hit);
             }
             y += BUTTON_HEIGHT + 1;
+            // The scope line goes in the blank row under the title rather
+            // than beside it: the title row's remaining width belongs to
+            // the buttons, and crowding a badge in there would push
+            // `+ Option` off the pane at ordinary widths. With no
+            // environment active there is nothing to say — the grid is
+            // about to be replaced by `NO_ENV_HINT`, which says it.
+            let scope_badge = if shared {
+                Some(SHARED_BADGE)
+            } else if ctx.active_env.is_some() {
+                Some(PER_ENV_BADGE)
+            } else {
+                None
+            };
+            if let Some(badge) = scope_badge
+                && y > right.y
+                && y - 1 < bottom
+            {
+                // Shared is the notable case, so it gets the accent; the
+                // per-environment line is the norm and stays quiet.
+                let fg = if shared {
+                    theme.accent
+                } else {
+                    theme.text_muted
+                };
+                text(
+                    buf,
+                    x0,
+                    y - 1,
+                    super::chooser::clip(badge, inner_w),
+                    fg,
+                    theme.page,
+                    false,
+                );
+            }
         }
 
-        // A shared selector's options don't live in an environment, so its
-        // grid works with none active; everyone else gets the hint.
-        let shared = is_shared(ctx, selector);
         if ctx.active_env.is_none() && !shared {
             if y < bottom {
                 text(
@@ -2247,7 +2293,7 @@ impl VarManager {
 }
 
 /// One left-list row's content: the section labels, a variable (name, lock
-/// badge, unresolved dot) or a selector (`▶ name (option)`).
+/// badge, unresolved dot) or a selector (`◈ name (option)`).
 fn paint_left_row(
     buf: &mut ratatui::buffer::Buffer,
     ctx: &ProjectContext,
@@ -3041,6 +3087,32 @@ fields = ["user_id", "customer_id"]
         assert!(
             hits.rect_of(&Hit::VmEntryCell { row: 0, col: 0 }).is_some(),
             "grid is interactive without an environment"
+        );
+    }
+
+    #[test]
+    fn a_shared_selectors_pane_says_so_in_its_title_row() {
+        let (_dir, ctx) = shared_fixture();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "locale");
+        let (content, hits) = render(&mut vm, &ctx);
+        assert!(
+            content.contains(SHARED_BADGE),
+            "shared is invisible without a badge: {content}"
+        );
+        // The badge sits in its own row, so the title row's buttons — the
+        // primary one included — are all still there.
+        assert!(hits.rect_of(&Hit::VmNewOption).is_some(), "{content}");
+
+        // A per-environment selector carries no badge.
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "creds");
+        let (content, _) = render(&mut vm, &ctx);
+        assert!(!content.contains(SHARED_BADGE), "{content}");
+        assert!(
+            content.contains(PER_ENV_BADGE),
+            "a per-env selector says whose options these are: {content}"
         );
     }
 

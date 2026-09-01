@@ -2304,7 +2304,10 @@ fn clicking_a_multi_prompt_field_moves_focus_there() {
             crate::components::modal::PromptField::text("fields", "Fields", ""),
         ],
         focus: 0,
-        kind: crate::components::modal::PromptKind::NewSelector { shared: false },
+        kind: crate::components::modal::PromptKind::NewSelector {
+            shared: false,
+            on_toggle: false,
+        },
     });
     render_once(&mut app);
     let second = app
@@ -7015,7 +7018,7 @@ fn new_selector_op_with_shared_writes_the_flag() {
 }
 
 #[test]
-fn new_selector_prompt_ctrl_s_toggles_shared_and_confirm_carries_it() {
+fn new_selector_prompt_arrows_focus_the_toggle_and_space_flips_shared() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -7026,7 +7029,92 @@ fn new_selector_prompt_ctrl_s_toggles_shared_and_confirm_carries_it() {
     for c in "locale".chars() {
         app.handle_key(&keymap, plain(c));
     }
-    app.handle_key(&keymap, ctrl('s'));
+    // Space while the name field still has focus types a space, it does
+    // not reach the toggle.
+    app.handle_key(&keymap, plain(' '));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(&keymap, plain(' '));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(
+        app.project.model.selectors["locale"].shared,
+        "{:?}",
+        app.toasts.messages()
+    );
+}
+
+/// Confirming the name prompt closes it and immediately opens the
+/// first-option prompt. The stack is empty for that instant, but the user
+/// must not see the backdrop un-dim and the panel re-settle behind it —
+/// that reads as a flash mid-flow.
+#[test]
+fn chaining_from_the_name_prompt_into_the_option_prompt_does_not_replay_the_open_settle() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let keymap = Keymap::default_bindings();
+
+    app.update(Action::PromptNewSelector);
+    for c in "locale".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(
+        matches!(app.modals.top(), Some(Modal::MultiPrompt { .. })),
+        "the first-option prompt takes over"
+    );
+    assert_eq!(
+        app.anims
+            .value_or(crate::anim::AnimKey::ModalOpen, Instant::now(), 1.0),
+        1.0,
+        "the handoff keeps the panel settled instead of re-opening it"
+    );
+}
+
+#[test]
+fn new_selector_prompt_tab_cycles_between_the_name_field_and_the_toggle() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let keymap = Keymap::default_bindings();
+    let tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
+
+    app.update(Action::PromptNewSelector);
+    for c in "locale".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, tab); // onto the toggle
+    app.handle_key(&keymap, plain(' ')); // shared on
+    app.handle_key(&keymap, tab); // back to the field
+    app.handle_key(&keymap, plain(' ')); // a typed space, not a second flip
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(
+        app.project.model.selectors["locale"].shared,
+        "{:?}",
+        app.toasts.messages()
+    );
+}
+
+#[test]
+fn new_selector_prompt_up_returns_focus_to_the_name_field() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let keymap = Keymap::default_bindings();
+
+    app.update(Action::PromptNewSelector);
+    for c in "locale".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(&keymap, plain(' ')); // shared on
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    app.handle_key(&keymap, plain(' ')); // back in the field: a typed space
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert!(
@@ -7763,7 +7851,10 @@ fn keyboard_n_and_g_open_the_new_var_and_new_group_prompts() {
     assert!(matches!(
         app.modals.top(),
         Some(Modal::Prompt {
-            kind: PromptKind::NewSelector { shared: false },
+            kind: PromptKind::NewSelector {
+                shared: false,
+                on_toggle: false,
+            },
             ..
         })
     ));
@@ -7871,7 +7962,10 @@ fn clicking_the_new_variable_button_opens_the_new_variable_prompt() {
     assert!(matches!(
         app.modals.top(),
         Some(Modal::Prompt {
-            kind: PromptKind::NewSelector { shared: false },
+            kind: PromptKind::NewSelector {
+                shared: false,
+                on_toggle: false,
+            },
             ..
         })
     ));
