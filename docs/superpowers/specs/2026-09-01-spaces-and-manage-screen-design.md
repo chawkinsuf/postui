@@ -49,6 +49,11 @@ implementation is a find-and-replace.
   dropdown. The sidebar keeps only the New request button.
 - **Variable Manager → Manage screen** with Variables, Environments and
   Spaces tabs. The header chip reads `Manage` (`alt+v` unchanged).
+- **Deletes go to a trash directory, not `remove`.** Request, environment
+  and space deletes rename the path into `.local/trash/`; undo renames it
+  back. One rename regardless of size, so undo cost is independent of how
+  much was deleted. The trash is emptied at project open, matching the
+  per-session undo history.
 - **Request reordering is out of scope** (its own follow-on brainstorm).
 
 ## Architecture
@@ -69,9 +74,10 @@ New in `project.rs`:
   renames the directory (creating it first if `from` was list-only),
   rewrites the list entry. Callers translate `open_request` /
   per-space state / `expanded` prefixes from `from/` to `to/`.
-- `delete_space(root, name)` — removes the directory recursively and the
-  list entry. Refuses when it is the only space (`ProjectError::LastSpace`).
-  The caller owns the confirmation.
+- `delete_space(root, name) -> Result<Option<Trashed>>` — trashes the
+  directory (if it exists on disk) and removes the list entry. Refuses when
+  it is the only space (`ProjectError::LastSpace`). The caller owns the
+  confirmation.
 - `move_space(root, name, delta: i32)` — swaps position in the list,
   clamped at the ends; materialises unlisted directories into the list
   first so the written order is the displayed order.
@@ -96,15 +102,39 @@ New in `storage.rs`:
   got; already-moved files stay moved.
 
 `ensure_project` grows to create `requests/main/` and the `spaces` list
-when the project has no spaces at all.
+when the project has no spaces at all. `list_requests`' walk skips
+`.local/` (it lives outside `requests/` already, so no change is needed
+there; noted so the trash never leaks into the sidebar).
 
 ### Core: environments (`project.rs`)
 
 - `rename_environment(root, from, to)` — validates, refuses if the target
   file exists, renames `environments/<from>.toml`. Does not touch
   `.local/secrets.toml` or local selections; the caller re-keys those.
-- `delete_environment(root, name)` — removes the file; `NotFound` if
-  absent.
+- `delete_environment(root, name) -> Result<Trashed>` — trashes the file;
+  `NotFound` if absent.
+
+### Core: trash (`postui-core/src/trash.rs`)
+
+```rust
+pub struct Trashed { pub original: PathBuf, pub trashed: PathBuf }
+pub fn trash(root: &Path, path: &Path) -> io::Result<Trashed>;
+pub fn restore(t: &Trashed) -> io::Result<()>;
+pub fn retrash(t: &Trashed) -> io::Result<()>;
+pub fn empty(root: &Path) -> io::Result<()>;
+```
+
+`trash` renames `path` (file or directory) to
+`root/.local/trash/<n>/<path relative to root>`, where `<n>` is a
+per-call counter (max existing + 1) so two deletes of the same path never
+collide. Parent directories under the trash slot are created as needed.
+The rename stays within the project directory, so it is a single
+same-filesystem `rename` whatever the size. `restore` renames it back and
+fails with `AlreadyExists` if the original path is now occupied (never
+clobbers). `retrash` renames it back into its recorded trash slot (redo).
+`empty` removes `root/.local/trash/` recursively; `ProjectContext::open`
+calls it, so the trash never outlives a session. `storage::delete_request`
+returns a `Trashed` too.
 
 ### Local state (`project.rs::LocalState`, `project_ctx.rs`)
 
@@ -140,6 +170,30 @@ request restored is that space's `space_open` entry.
 3. Rebuild the sidebar rooted at the space.
 4. Open, in order: the space's `space_open` entry if the file still
    exists; else the first request in sidebar order; else the empty editor.
+
+### Undo: `StepKind::Trashed` (`undo.rs`, `app.rs`)
+
+```rust
+Trashed {
+    items: Vec<postui_core::trash::Trashed>,
+    /// Small companion files the delete also rewrote (`project.toml`'s
+    /// `spaces` list, `.local/secrets.toml`), as FileStates-style
+    /// before/after contents — bounded, unlike the trashed payload.
+    files_before: Vec<(PathBuf, Option<String>)>,
+    files_after: Vec<(PathBuf, Option<String>)>,
+    active_env: Option<(Option<String>, Option<String>)>,
+}
+```
+
+There is no step grouping in `History`, so a delete's side effects ride
+inside the one `Trashed` step. Undo calls `restore` on each item in
+reverse order, then writes `files_before`; redo calls `retrash` in order,
+then writes `files_after`. A failure toasts, leaves earlier renames in the
+step standing, drops the step, and reloads project files + sidebar — the
+same policy as `FileStates`. After either direction the app reloads project files,
+refreshes the sidebar and spaces, and re-syncs the Manage screen.
+`DeleteRequest` moves from `FileStates` to `Trashed`; its toast and undo
+hint are unchanged. `FileStates` stays for edits.
 
 `Action::JumpSpace(usize)` (1-based; out of range is a silent no-op) and
 `Action::CycleSpace(i32)` (wrapping) both resolve to `SwitchSpace`.
@@ -211,25 +265,25 @@ Environments and Spaces tabs share one **ListEditState** face:
 Delete semantics:
 
 - Environment: confirm modal ("Delete environment `staging`? Its values
-  and secrets are removed."). Removes the file, drops its
+  and secrets are removed."). Trashes the file, drops its
   `selections[name]` from local state and its section from
   `.local/secrets.toml`; if it was active, the project switches to no
-  environment. Environment delete and rename are recorded as `FileStates`
-  undo steps (the env file, and the secrets file when it changed) — a
-  single small file is a bounded case, unlike a space.
-- Space: confirm modal, and the finality must be unmissable. Title:
-  "Delete space `auth`?". Body, two lines: "Its 7 requests will be deleted
-  from disk." and, in the warning color, "This cannot be undone." The
-  confirm button reads "Delete 7 requests" (not "OK"/"Yes"); an empty space
-  gets "Delete space" and drops the disk line. The requests are deleted
-  with the directory and **the step is final** — it is not on the undo
-  stack, because a step holding every deleted file is unbounded (a trash
-  directory is the right design if deletion undo is ever wanted; see Out of
-  scope). The intended path for keeping requests is **Move all requests
-  to ▸** first, then delete the empty space. Refused with a toast when it
-  is the last space. If it was the active space, switch to the first
-  remaining space before deleting. If the open request lived in it, the
-  editor is cleared (through the dirty gate first).
+  environment. Recorded as one `Trashed` step: the env file as the item,
+  `.local/secrets.toml` in the companion files, and `active_env` set so
+  undo restores the active environment. Selections are local UI state and
+  are not restored. Rename is a `FileStates` step as env edits are
+  today.
+- Space: confirm modal. Title: "Delete space `auth`?". Body: "Its 7
+  requests will be deleted." The confirm button reads "Delete 7 requests"
+  (not "OK"/"Yes"); an empty space gets "Delete space" and drops the body
+  line. The directory is trashed and recorded as a `Trashed` step; the
+  toast carries the undo hint like a request delete. Undo restores the
+  directory and re-adds the name to `spaces` at its old position
+  (`project.toml` rides in the step's companion files). The intended path for keeping requests is still **Move all
+  requests to ▸** first. Refused with a toast when it is the last space. If
+  it was the active space, switch to the first remaining space before
+  deleting. If the open request lived in it, the editor is cleared
+  (through the dirty gate first).
 
 Rename semantics: environment rename re-keys `selections`, the secrets
 section, and `environment` in local state. Space rename re-keys
@@ -268,9 +322,14 @@ Core (`postui-core`):
 - `space_of` and `move_request_to_space` (keeps sub-path, applies the
   collision rule).
 - `rename_environment` / `delete_environment` happy paths and refusals.
-- App: environment delete/rename push a `FileStates` step and undo
-  restores the file; space delete pushes nothing and the modal's confirm
-  label carries the count.
+- `trash`: file and directory; two deletes of the same path get distinct
+  slots; `restore` refuses an occupied original; `retrash` round-trips;
+  `empty` removes everything and tolerates a missing directory.
+- App: request, environment and space deletes each push a `Trashed` step;
+  undo restores the file/directory (and the space's list entry, and the
+  active env); redo re-trashes; an occupied original path fails the undo
+  with a toast and drops the step; project open empties the trash.
+- The space delete modal's confirm label carries the count.
 - `LocalState` round-trips `space` and `space_open`.
 
 App (`crates/postui/src/app/tests.rs`):
@@ -297,6 +356,5 @@ App (`crates/postui/src/app/tests.rs`):
 - Migration of pre-space projects.
 - Per-space environment or selector state (both stay project-global).
 - Drag-and-drop between spaces in the sidebar.
-- Undo for space or request deletion. If ever wanted, the design is a
-  `.local/trash/` directory that deletes move into (undo = rename back,
-  zero memory cost), not an in-memory `FileStates` step.
+- A trash that survives the session (a "restore deleted" browser). The
+  trash exists only to back this session's undo.
