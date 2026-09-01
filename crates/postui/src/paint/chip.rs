@@ -14,6 +14,12 @@ pub struct Chip<'a> {
 }
 
 impl Chip<'_> {
+    /// The width [`Chip::paint`] will paint, without painting it — for
+    /// layouts that must know whether a chip fits before committing to it.
+    pub fn width(&self) -> u16 {
+        crate::keys::display_keycap(self.label).chars().count() as u16 + 2
+    }
+
     /// Paints `" label "` at `(x, y)` on top of surface `on`. Returns the
     /// width (in columns) painted, so callers can lay out subsequent chips.
     ///

@@ -13123,9 +13123,7 @@ fn manage_bar_paints_three_tabs_and_clicking_one_selects_it() {
 #[test]
 fn header_chip_reads_manage_and_toggles_the_screen() {
     let (mut app, _dir) = spaced_app();
-    // Wide render: the space chip (Task 10) pushed the left cluster past
-    // the 80-column default, where the Manage chip now clips.
-    let text = rendered_text_wide(&mut app);
+    let text = rendered_text(&mut app);
     assert!(text.contains(" Manage "), "{text}");
     assert!(!text.contains("Variable Manager"));
     click_hit(&mut app, Hit::HeaderManage);
@@ -13148,6 +13146,51 @@ fn header_shows_the_space_chip_between_project_and_env() {
     assert!(text.contains("Space: main"), "{text}");
     click_hit(&mut app, Hit::HeaderSpaceCycle);
     assert_eq!(app.project.active_space, "auth");
+}
+
+/// At 80 columns — the common terminal width — the header's cycle pills
+/// yield so the Manage chip (the only mouse path to the Manage screen)
+/// still fits. The chips themselves keep their full labels.
+#[test]
+fn header_cycle_pills_yield_at_eighty_columns_so_the_manage_chip_fits() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    let (mut app, _dir) = spaced_app();
+    let mut terminal = Terminal::new(TestBackend::new(80, 40)).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    for hit in [Hit::HeaderProject, Hit::HeaderSpace, Hit::HeaderEnv] {
+        assert!(
+            app.hits.rect_of(&hit).is_some(),
+            "{hit:?} must still be on the bar at 80 columns"
+        );
+    }
+    let manage = app
+        .hits
+        .rect_of(&Hit::HeaderManage)
+        .expect("the Manage chip must be on the bar at 80 columns");
+    // Its clickable name is fully painted (only a long project name can
+    // push the chip's trailing `alt+v` keycap past the edge).
+    assert!(
+        manage.x + " Manage ".chars().count() as u16 <= 80,
+        "the Manage chip's name must be visible on an 80-column bar: {manage:?}"
+    );
+    assert!(
+        rendered_text(&mut app).contains(" Manage "),
+        "and it must actually be painted there"
+    );
+    assert!(
+        app.hits.rect_of(&Hit::HeaderSpaceCycle).is_none(),
+        "the space cycle pill yields first"
+    );
+    assert!(
+        app.hits.rect_of(&Hit::HeaderEnvCycle).is_none(),
+        "so does the env cycle pill"
+    );
+
+    // The 120-column path keeps both pills.
+    render_once(&mut app);
+    assert!(app.hits.rect_of(&Hit::HeaderSpaceCycle).is_some());
+    assert!(app.hits.rect_of(&Hit::HeaderEnvCycle).is_some());
 }
 
 #[test]
