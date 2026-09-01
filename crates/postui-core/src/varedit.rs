@@ -1819,21 +1819,21 @@ tier = "g-1"
         // url
         crate::storage::save_request(
             dir.path(),
-            "in-url",
+            "main/in-url",
             &req_with("https://x.test/{{base_url}}", &[], &[], &[], None),
         )
         .unwrap();
         // params
         crate::storage::save_request(
             dir.path(),
-            "in-params",
+            "main/in-params",
             &req_with("https://x.test", &[("q", "{{base_url}}")], &[], &[], None),
         )
         .unwrap();
         // headers
         crate::storage::save_request(
             dir.path(),
-            "in-headers",
+            "main/in-headers",
             &req_with(
                 "https://x.test",
                 &[],
@@ -1846,7 +1846,7 @@ tier = "g-1"
         // [variables] value
         crate::storage::save_request(
             dir.path(),
-            "in-variables",
+            "main/in-variables",
             &req_with(
                 "https://x.test",
                 &[],
@@ -1859,7 +1859,7 @@ tier = "g-1"
         // body
         crate::storage::save_request(
             dir.path(),
-            "in-body",
+            "main/in-body",
             &req_with(
                 "https://x.test",
                 &[],
@@ -1872,14 +1872,14 @@ tier = "g-1"
         // a different token only: must be ignored
         crate::storage::save_request(
             dir.path(),
-            "unrelated",
+            "main/unrelated",
             &req_with("https://x.test/{{other}}", &[], &[], &[], None),
         )
         .unwrap();
         // no token at all
         crate::storage::save_request(
             dir.path(),
-            "none",
+            "main/none",
             &req_with("https://x.test", &[], &[], &[], None),
         )
         .unwrap();
@@ -1889,11 +1889,11 @@ tier = "g-1"
         assert_eq!(
             hits,
             [
-                "in-body",
-                "in-headers",
-                "in-params",
-                "in-url",
-                "in-variables",
+                "main/in-body",
+                "main/in-headers",
+                "main/in-params",
+                "main/in-url",
+                "main/in-variables",
             ]
         );
     }
@@ -1904,7 +1904,7 @@ tier = "g-1"
         crate::storage::ensure_project(dir.path()).unwrap();
         crate::storage::save_request(
             dir.path(),
-            "a",
+            "main/a",
             &req_with("https://x.test/{{other}}", &[], &[], &[], None),
         )
         .unwrap();

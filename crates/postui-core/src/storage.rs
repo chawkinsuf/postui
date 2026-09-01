@@ -316,18 +316,31 @@ fn walk_toml_files(dir: &Path, f: &mut dyn FnMut(PathBuf)) -> std::io::Result<()
 /// Lists all requests under `root/requests`, sorted by slug. Files that fail
 /// to parse are included with `broken` set to a description of the error,
 /// rather than causing the whole listing to fail. The second element of the
-/// return is the first directory-walk IO error encountered (e.g. a
-/// permission-denied subdirectory), if any — the listing itself still
-/// contains everything that *was* successfully walked.
+/// return is a `; `-joined warning, if any: the first directory-walk IO
+/// error encountered (e.g. a permission-denied subdirectory) followed by a
+/// line per file found directly under `requests/` — those belong to no
+/// space, so they are left where they are and left out of the listing. The
+/// listing itself still contains everything that *was* successfully walked.
 pub fn list_requests(root: &Path) -> (Vec<RequestListing>, Option<String>) {
     let base = requests_dir(root);
     let mut out = Vec::new();
+    // Files sitting directly under `requests/` belong to no space. They are
+    // never moved for the user (no migration); they're skipped and named in
+    // the warning so the fix is theirs to make.
+    let mut loose: Vec<String> = Vec::new();
     let walk_err = walk_toml_files(&base, &mut |path| {
         let rel = path.strip_prefix(&base).unwrap_or(&path);
         let slug = rel.with_extension("");
         let slug = slug
             .to_string_lossy()
             .replace(std::path::MAIN_SEPARATOR, "/");
+        if space_of(&slug).is_none() {
+            loose.push(format!(
+                "requests/{} is not in a space (move it into a space directory)",
+                rel.display()
+            ));
+            return;
+        }
         let (method, name, broken) = match std::fs::read_to_string(&path) {
             Ok(contents) => match HttpRequest::from_toml_str(&contents) {
                 Ok(req) => (Some(req.method), req.name, None),
@@ -345,7 +358,14 @@ pub fn list_requests(root: &Path) -> (Vec<RequestListing>, Option<String>) {
     .err()
     .map(|e| e.to_string());
     out.sort_by(|a, b| a.slug.cmp(&b.slug));
-    (out, walk_err)
+    let mut warnings: Vec<String> = walk_err.into_iter().collect();
+    warnings.extend(loose);
+    let warning = if warnings.is_empty() {
+        None
+    } else {
+        Some(warnings.join("; "))
+    };
+    (out, warning)
 }
 
 /// Whether `root/requests/<slug>.toml` exists, without attempting to parse
@@ -582,20 +602,20 @@ mod tests {
     fn create_request_named_derives_dedupes_and_stores_the_display_name() {
         let dir = tempfile::tempdir().unwrap();
         ensure_project(dir.path()).unwrap();
-        let (slug, leaf) = create_request_named(dir.path(), "My Request!", req()).unwrap();
+        let (slug, leaf) = create_request_named(dir.path(), "main/My Request!", req()).unwrap();
         assert_eq!(
             (slug.as_str(), leaf.as_str()),
-            ("my-request", "My Request!")
+            ("main/my-request", "My Request!")
         );
-        let loaded = load_request(dir.path(), "my-request").unwrap();
+        let loaded = load_request(dir.path(), "main/my-request").unwrap();
         assert_eq!(loaded.name.as_deref(), Some("My Request!"));
 
         // A *different* display name that slugifies identically dedupes.
-        let (slug2, _) = create_request_named(dir.path(), "My Request?", req()).unwrap();
-        assert_eq!(slug2, "my-request-2");
+        let (slug2, _) = create_request_named(dir.path(), "main/My Request?", req()).unwrap();
+        assert_eq!(slug2, "main/my-request-2");
 
         // The *same* display name (case-insensitive) is rejected.
-        let err = create_request_named(dir.path(), "my request!", req()).unwrap_err();
+        let err = create_request_named(dir.path(), "main/my request!", req()).unwrap_err();
         assert!(matches!(err, StorageError::AlreadyExists(_)), "{err:?}");
 
         // Empty leaf is invalid.
@@ -606,28 +626,31 @@ mod tests {
     fn listing_carries_display_names_and_legacy_leafs_count_as_taken() {
         let dir = tempfile::tempdir().unwrap();
         ensure_project(dir.path()).unwrap();
-        create_request_named(dir.path(), "Fancy Name", req()).unwrap();
-        save_request(dir.path(), "legacy-file", &req()).unwrap(); // no name field
+        create_request_named(dir.path(), "main/Fancy Name", req()).unwrap();
+        save_request(dir.path(), "main/legacy-file", &req()).unwrap(); // no name field
 
         let (listing, err) = list_requests(dir.path());
         assert!(err.is_none());
         let by_slug = |s: &str| listing.iter().find(|l| l.slug == s).unwrap();
-        assert_eq!(by_slug("fancy-name").name.as_deref(), Some("Fancy Name"));
-        assert_eq!(by_slug("legacy-file").name, None);
+        assert_eq!(
+            by_slug("main/fancy-name").name.as_deref(),
+            Some("Fancy Name")
+        );
+        assert_eq!(by_slug("main/legacy-file").name, None);
 
         // A legacy file's slug leaf is its display name for uniqueness
         // (case-insensitive string equality — "Legacy File" is a
         // different name and stays allowed).
-        assert!(sibling_name_taken(dir.path(), "", "LEGACY-FILE", None));
-        assert!(!sibling_name_taken(dir.path(), "", "Legacy File", None));
-        assert!(sibling_name_taken(dir.path(), "", "fancy name", None));
-        assert!(!sibling_name_taken(dir.path(), "", "Unrelated", None));
+        assert!(sibling_name_taken(dir.path(), "main", "LEGACY-FILE", None));
+        assert!(!sibling_name_taken(dir.path(), "main", "Legacy File", None));
+        assert!(sibling_name_taken(dir.path(), "main", "fancy name", None));
+        assert!(!sibling_name_taken(dir.path(), "main", "Unrelated", None));
         // Excluding a slug frees its own name (rename-onto-itself).
         assert!(!sibling_name_taken(
             dir.path(),
-            "",
+            "main",
             "Fancy Name",
-            Some("fancy-name")
+            Some("main/fancy-name")
         ));
     }
 
@@ -635,29 +658,32 @@ mod tests {
     fn rename_request_named_regenerates_slug_and_rewrites_name() {
         let dir = tempfile::tempdir().unwrap();
         ensure_project(dir.path()).unwrap();
-        create_request_named(dir.path(), "Get User", req()).unwrap();
+        create_request_named(dir.path(), "main/Get User", req()).unwrap();
 
-        let (slug, leaf) = rename_request_named(dir.path(), "get-user", "Get User v2").unwrap();
+        let (slug, leaf) =
+            rename_request_named(dir.path(), "main/get-user", "main/Get User v2").unwrap();
         assert_eq!(
             (slug.as_str(), leaf.as_str()),
-            ("get-user-v2", "Get User v2")
+            ("main/get-user-v2", "Get User v2")
         );
-        assert!(!request_exists(dir.path(), "get-user"));
-        let loaded = load_request(dir.path(), "get-user-v2").unwrap();
+        assert!(!request_exists(dir.path(), "main/get-user"));
+        let loaded = load_request(dir.path(), "main/get-user-v2").unwrap();
         assert_eq!(loaded.name.as_deref(), Some("Get User v2"));
 
         // Renaming onto its own current name is a no-op Ok.
-        let (slug, _) = rename_request_named(dir.path(), "get-user-v2", "Get User v2").unwrap();
-        assert_eq!(slug, "get-user-v2");
+        let (slug, _) =
+            rename_request_named(dir.path(), "main/get-user-v2", "main/Get User v2").unwrap();
+        assert_eq!(slug, "main/get-user-v2");
 
         // A slug collision with a *different* request dedupes.
-        create_request_named(dir.path(), "Other", req()).unwrap();
-        let (slug, _) = rename_request_named(dir.path(), "other", "Get User v2!").unwrap();
-        assert_eq!(slug, "get-user-v2-2");
+        create_request_named(dir.path(), "main/Other", req()).unwrap();
+        let (slug, _) =
+            rename_request_named(dir.path(), "main/other", "main/Get User v2!").unwrap();
+        assert_eq!(slug, "main/get-user-v2-2");
 
         // But the same display name as a sibling errors... note the names
         // above differ ("Get User v2" vs "Get User v2!").
-        let err = rename_request_named(dir.path(), "get-user-v2-2", "get user V2");
+        let err = rename_request_named(dir.path(), "main/get-user-v2-2", "main/get user V2");
         assert!(
             matches!(err, Err(StorageError::AlreadyExists(_))),
             "{err:?}"
@@ -679,14 +705,14 @@ mod tests {
     fn duplicate_names_the_copy_and_derives_its_slug() {
         let dir = tempfile::tempdir().unwrap();
         ensure_project(dir.path()).unwrap();
-        create_request_named(dir.path(), "Get User", req()).unwrap();
+        create_request_named(dir.path(), "main/Get User", req()).unwrap();
 
-        let copy = duplicate_request(dir.path(), "get-user").unwrap();
-        assert_eq!(copy, "get-user-copy");
+        let copy = duplicate_request(dir.path(), "main/get-user").unwrap();
+        assert_eq!(copy, "main/get-user-copy");
         let loaded = load_request(dir.path(), &copy).unwrap();
         assert_eq!(loaded.name.as_deref(), Some("Get User copy"));
 
-        let copy2 = duplicate_request(dir.path(), "get-user").unwrap();
+        let copy2 = duplicate_request(dir.path(), "main/get-user").unwrap();
         let loaded2 = load_request(dir.path(), &copy2).unwrap();
         assert_eq!(loaded2.name.as_deref(), Some("Get User copy 2"));
     }
@@ -721,13 +747,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         ensure_project(dir.path()).unwrap();
         save_request(dir.path(), "auth/login", &req()).unwrap();
-        save_request(dir.path(), "get-user", &req()).unwrap();
+        save_request(dir.path(), "main/get-user", &req()).unwrap();
         let (listing, walk_err) = list_requests(dir.path());
         assert!(walk_err.is_none());
         let slugs: Vec<&str> = listing.iter().map(|l| l.slug.as_str()).collect();
         assert_eq!(
             slugs,
-            ["auth/login", "get-user"],
+            ["auth/login", "main/get-user"],
             "sorted, subdir path as slug"
         );
         assert!(listing.iter().all(|l| l.broken.is_none()));
@@ -743,19 +769,21 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         ensure_project(dir.path()).unwrap();
         std::fs::write(
-            dir.path().join("requests/bad.toml"),
+            dir.path().join("requests/main/bad.toml"),
             "url = \"x\"\nurl = \"dup\"\n",
         )
         .unwrap();
         let (listing, walk_err) = list_requests(dir.path());
         assert!(walk_err.is_none());
-        assert_eq!(listing[0].slug, "bad");
+        assert_eq!(listing[0].slug, "main/bad");
         assert!(listing[0].broken.is_some());
         assert_eq!(
             listing[0].method, None,
             "a broken file has no parsed method"
         );
-        let err = load_request(dir.path(), "bad").unwrap_err().to_string();
+        let err = load_request(dir.path(), "main/bad")
+            .unwrap_err()
+            .to_string();
         assert!(
             err.contains('2') || err.to_lowercase().contains("duplicate"),
             "error should locate/describe the duplicate key: {err}"
@@ -849,7 +877,7 @@ mod tests {
         // "aaa" sorts before the "sub" directory, so the walk (which visits
         // entries in sorted order) reaches it before hitting the
         // permission-denied error.
-        save_request(dir.path(), "aaa", &req()).unwrap();
+        save_request(dir.path(), "main/aaa", &req()).unwrap();
         let sub = dir.path().join("requests/sub");
         std::fs::create_dir_all(&sub).unwrap();
         save_request(dir.path(), "sub/inner", &req()).unwrap();
@@ -867,9 +895,25 @@ mod tests {
             "permission-denied subdir should surface an error"
         );
         assert!(
-            listing.iter().any(|l| l.slug == "aaa"),
+            listing.iter().any(|l| l.slug == "main/aaa"),
             "listing should still include everything walked before the error: {listing:?}"
         );
+    }
+
+    #[test]
+    fn list_requests_skips_loose_top_level_files_and_reports_them() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_project(dir.path()).unwrap();
+        save_request(dir.path(), "main/ok", &req()).unwrap();
+        std::fs::write(dir.path().join("requests/loose.toml"), "url = \"x\"\n").unwrap();
+        let (listing, warn) = list_requests(dir.path());
+        assert_eq!(
+            listing.iter().map(|l| l.slug.as_str()).collect::<Vec<_>>(),
+            ["main/ok"]
+        );
+        let warn = warn.expect("loose file reported");
+        assert!(warn.contains("loose.toml"), "{warn}");
+        assert!(warn.contains("not in a space"), "{warn}");
     }
 
     #[test]
