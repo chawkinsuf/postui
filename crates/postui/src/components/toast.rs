@@ -176,6 +176,16 @@ impl Toasts {
         self.entries.iter().map(|t| t.message.as_str()).collect()
     }
 
+    /// Every live toast as `(message, kind)` — the kind-aware companion to
+    /// [`Self::messages`], for callers that care *how* something was
+    /// reported and not just what it said.
+    pub fn entries(&self) -> Vec<(&str, &ToastKind)> {
+        self.entries
+            .iter()
+            .map(|t| (t.message.as_str(), &t.kind))
+            .collect()
+    }
+
     /// Paints every visible toast as a floating filled `theme.panel` rect
     /// with a 1-col `█` left bar in its semantic color (accent/success/
     /// error/warning by kind) and `theme.text` message text, stacked

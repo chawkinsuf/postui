@@ -275,6 +275,13 @@ pub struct App {
     /// running its later actions after an earlier one failed. Nothing else
     /// reads or sets this; every other action leaves it `false`.
     last_action_failed: bool,
+    /// The loose-file half of the last `list_requests` warning that was
+    /// toasted. A file directly under `requests/` is a chronic state (it is
+    /// never migrated for the user), so re-toasting it on every refresh
+    /// would be a red banner on every save/open/delete. Kept here so the
+    /// warning surfaces once per distinct set of loose files, and reset
+    /// whenever the project root changes.
+    last_loose_warning: Option<String>,
     /// Keeps the test-only channel's receiver alive so `tx` doesn't become
     /// a dangling sender in `App::new_for_test()`. Always `None` outside
     /// of tests.
@@ -796,6 +803,7 @@ impl App {
             split_ratio_target: crate::split::SplitRatio::default(),
             last_click: None,
             last_action_failed: false,
+            last_loose_warning: None,
             _test_rx: None,
             _test_dir: None,
             history: crate::undo::History::new(),
@@ -2410,6 +2418,8 @@ impl App {
                     });
                 let (project, warnings) = ProjectContext::open(target.clone());
                 self.project = project;
+                // A different tree has a different set of loose files.
+                self.last_loose_warning = None;
                 for w in warnings {
                     self.toasts.push(w, ToastKind::Warning);
                 }
@@ -5159,12 +5169,28 @@ impl App {
     /// `list_requests` + `sidebar.refresh` pair so the tree/expansion
     /// state stays consistent at every call site.
     fn refresh_sidebar(&mut self) {
-        let (listing, walk_err) = postui_core::storage::list_requests(&self.project.root);
-        if let Some(e) = walk_err {
-            self.toasts.push(
-                format!("could not fully list requests: {e}"),
-                ToastKind::Error,
-            );
+        let (listing, warning) = postui_core::storage::list_requests(&self.project.root);
+        if let Some(warning) = warning {
+            // Two different failures share one warning string: a walk error
+            // (transient, worth an error toast every time) and the
+            // loose-file lines (chronic by design — never migrated — so
+            // they get a warning toast, and only when the set changes).
+            let (loose, walk): (Vec<&str>, Vec<&str>) = warning
+                .split("; ")
+                .partition(|line| line.contains(" is not in a space "));
+            if !walk.is_empty() {
+                self.toasts.push(
+                    format!("could not fully list requests: {}", walk.join("; ")),
+                    ToastKind::Error,
+                );
+            }
+            let loose = (!loose.is_empty()).then(|| loose.join("; "));
+            if loose.is_some() && loose != self.last_loose_warning {
+                self.toasts.push(loose.clone().unwrap(), ToastKind::Warning);
+            }
+            self.last_loose_warning = loose;
+        } else {
+            self.last_loose_warning = None;
         }
         self.project
             .expanded

@@ -2793,12 +2793,15 @@ fn startup_restores_open_request_inside_a_collapsed_folder() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();
     postui_core::storage::ensure_project(dir.path()).unwrap();
-    postui_core::storage::save_request(dir.path(), "auth/login", &req("https://x/l")).unwrap();
+    // `auth` is a folder *inside* the active space, not a space: the point
+    // of this test is the ancestor-folder expansion, which only happens for
+    // a slug nested under the space root.
+    postui_core::storage::save_request(dir.path(), "main/auth/login", &req("https://x/l")).unwrap();
     postui_core::project::save_local_state(
         dir.path(),
         &postui_core::project::LocalState {
             environment: None,
-            open_request: Some("auth/login".into()),
+            open_request: Some("main/auth/login".into()),
             expanded: vec![],
             ..Default::default()
         },
@@ -2806,10 +2809,10 @@ fn startup_restores_open_request_inside_a_collapsed_folder() {
     .unwrap();
 
     let app = App::with_root(tx, dir.path().to_path_buf());
-    assert_eq!(app.editor.slug.as_deref(), Some("auth/login"));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/auth/login"));
     assert_eq!(
         app.sidebar.selected_slug().as_deref(),
-        Some("auth/login"),
+        Some("main/auth/login"),
         "restoring expands the request's ancestor folders so the \
          selected row is actually visible"
     );
@@ -2836,15 +2839,20 @@ fn force_open_request_selects_its_sidebar_row() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();
     postui_core::storage::ensure_project(dir.path()).unwrap();
-    postui_core::storage::save_request(dir.path(), "auth/login", &req("https://x/l")).unwrap();
+    // `auth` is a folder inside the active space, so opening `login`
+    // really does have an ancestor folder to expand.
+    postui_core::storage::save_request(dir.path(), "main/auth/login", &req("https://x/l")).unwrap();
     postui_core::storage::save_request(dir.path(), "main/ping", &req("https://x/ping")).unwrap();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
     // Opened by an out-of-band route (palette, dirty-gate confirm, …)
     // rather than a sidebar click: the sidebar must follow, expanding
     // ancestors as needed, so selection and open request can't diverge.
-    app.update(Action::ForceOpenRequest("auth/login".into()));
-    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("auth/login"));
+    app.update(Action::ForceOpenRequest("main/auth/login".into()));
+    assert_eq!(
+        app.sidebar.selected_slug().as_deref(),
+        Some("main/auth/login")
+    );
 }
 
 #[test]
@@ -3088,6 +3096,46 @@ fn new_and_renamed_requests_land_inside_the_active_space() {
         to: "Renewed".into(),
     });
     assert!(dir.path().join("requests/auth/renewed.toml").is_file());
+}
+
+#[test]
+fn a_loose_top_level_file_warns_once_and_never_enters_the_tree() {
+    let (mut app, dir) = spaced_app();
+    let rows_before = app.sidebar.rows.clone();
+    std::fs::write(dir.path().join("requests/loose.toml"), "url = \"x\"\n").unwrap();
+
+    app.toasts = Default::default();
+    app.update(Action::RefreshSidebar);
+    let warned: Vec<_> = app
+        .toasts
+        .entries()
+        .into_iter()
+        .filter(|(m, _)| m.contains("loose.toml"))
+        .collect();
+    assert_eq!(warned.len(), 1, "{:?}", app.toasts.messages());
+    assert_eq!(
+        warned[0].1,
+        &crate::components::toast::ToastKind::Warning,
+        "a file the app deliberately never migrates is a warning, not an error"
+    );
+
+    // A second refresh must not re-toast: a loose file is a chronic state,
+    // and re-reporting it would paint a banner on every save/open/delete.
+    app.toasts = Default::default();
+    app.update(Action::RefreshSidebar);
+    assert!(
+        !app.toasts
+            .messages()
+            .iter()
+            .any(|m| m.contains("loose.toml")),
+        "{:?}",
+        app.toasts.messages()
+    );
+
+    assert_eq!(
+        app.sidebar.rows, rows_before,
+        "the loose file is skipped, never listed"
+    );
 }
 
 #[test]
