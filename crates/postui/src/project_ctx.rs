@@ -442,22 +442,20 @@ impl ProjectContext {
     /// tidy rather than accumulating dead options). A no-op if `name` has
     /// no selection recorded for `env`.
     pub fn clear_selection_for(&mut self, env: &str, name: &str) {
-        if self.model.selectors.get(name).is_some_and(|d| d.shared) {
-            if self.shared_selections.shift_remove(name).is_none() {
-                return;
-            }
-            self.persist_local_state_keep_open_request();
-            self.refresh_resolved();
-            return;
-        }
-        let Some(sel) = self.selections.get_mut(env) else {
-            return;
-        };
-        if sel.shift_remove(name).is_none() {
+        // Both homes: `name`'s global pick when it is (or was — the caller
+        // may have just deleted the declaration) a shared selector, and
+        // `env`'s own entry otherwise. The two never coexist.
+        let removed_shared = self.shared_selections.shift_remove(name).is_some();
+        let removed_env = self
+            .selections
+            .get_mut(env)
+            .and_then(|sel| sel.shift_remove(name))
+            .is_some();
+        if !removed_shared && !removed_env {
             return;
         }
         self.persist_local_state_keep_open_request();
-        if self.env_key() == env {
+        if removed_shared || self.env_key() == env {
             self.refresh_resolved();
         }
     }

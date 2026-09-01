@@ -6686,6 +6686,244 @@ fn var_struct_new_var_rejects_a_name_already_taken() {
 }
 
 #[test]
+fn a_new_declaration_selects_its_row_in_the_manager() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    app.update(Action::VarStruct(VarStructOp::NewVar {
+        name: "zeta".into(),
+        description: None,
+    }));
+    assert_eq!(app.varmanager.detail, VmDetail::Var("zeta".into()));
+    assert_eq!(
+        app.varmanager.left_rows[app.varmanager.left_cursor],
+        crate::components::varmanager::VmRow::Var("zeta".into())
+    );
+
+    app.update(Action::VarStruct(VarStructOp::NewSelector {
+        name: "creds".into(),
+        fields: vec!["user_id".into()],
+    }));
+    assert_eq!(app.varmanager.detail, VmDetail::Group("creds".into()));
+    assert_eq!(
+        app.varmanager.left_rows[app.varmanager.left_cursor],
+        crate::components::varmanager::VmRow::Group("creds".into())
+    );
+}
+
+/// A project whose `locale` selector is shared: options in variables.toml,
+/// two envs (qa active) with empty files.
+fn shared_locale_project(dir: &std::path::Path) {
+    postui_core::project::init_project(dir, Some("demo")).unwrap();
+    std::fs::write(
+        dir.join("variables.toml"),
+        "[selectors.locale]\nshared = true\nfields = [\"lang\"]\n\n[options.locale.en]\nlang = \"en\"\n\n[options.locale.fr]\nlang = \"fr\"\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("environments/dev.toml"), "").unwrap();
+    std::fs::write(dir.join("environments/qa.toml"), "").unwrap();
+    postui_core::project::save_local_state(
+        dir,
+        &postui_core::project::LocalState {
+            environment: Some("qa".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+}
+
+fn shared_locale_app(dir: &std::path::Path) -> App {
+    shared_locale_project(dir);
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    App::with_root(tx, dir.to_path_buf())
+}
+
+#[test]
+fn shared_selector_new_option_writes_variables_toml_not_the_env() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = shared_locale_app(dir.path());
+
+    let mut values = indexmap::IndexMap::new();
+    values.insert("lang".to_string(), "de".to_string());
+    app.update(Action::VarStruct(VarStructOp::NewOption {
+        env: "qa".into(),
+        selector: "locale".into(),
+        name: "de".into(),
+        description: None,
+        values,
+    }));
+
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    assert_eq!(app.project.model.options["locale"]["de"].values["lang"], "de");
+    let vars = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    assert!(vars.contains("[options.locale.de]"), "{vars}");
+    let qa = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(!qa.contains("locale"), "{qa}");
+}
+
+#[test]
+fn shared_selector_rename_option_carries_the_global_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = shared_locale_app(dir.path());
+    app.project.set_selection_for("qa", "locale", "fr");
+
+    app.update(Action::VarStruct(VarStructOp::RenameOption {
+        env: "qa".into(),
+        selector: "locale".into(),
+        from: "fr".into(),
+        to: "fr-FR".into(),
+    }));
+
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    assert!(app.project.model.options["locale"].contains_key("fr-FR"));
+    assert_eq!(app.project.shared_selections()["locale"], "fr-FR");
+}
+
+#[test]
+fn shared_selector_delete_option_clears_the_global_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = shared_locale_app(dir.path());
+    app.project.set_selection_for("qa", "locale", "fr");
+
+    app.update(Action::VarStruct(VarStructOp::DeleteOption {
+        env: "qa".into(),
+        selector: "locale".into(),
+        name: "fr".into(),
+    }));
+
+    assert!(!app.project.model.options["locale"].contains_key("fr"));
+    assert!(!app.project.shared_selections().contains_key("locale"));
+}
+
+#[test]
+fn shared_selector_duplicate_option_lands_in_variables_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = shared_locale_app(dir.path());
+
+    app.update(Action::VarStruct(VarStructOp::DuplicateOption {
+        env: "qa".into(),
+        selector: "locale".into(),
+        name: "en".into(),
+    }));
+
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    assert_eq!(
+        app.project.model.options["locale"]["en copy"].values["lang"],
+        "en"
+    );
+}
+
+#[test]
+fn shared_selector_option_edits_route_to_variables_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = shared_locale_app(dir.path());
+
+    app.update(Action::VarEdit(VarEditOp::SetOptionValue {
+        env: "qa".into(),
+        selector: "locale".into(),
+        option: "en".into(),
+        field: "lang".into(),
+        value: "en-GB".into(),
+    }));
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    assert_eq!(
+        app.project.model.options["locale"]["en"].values["lang"],
+        "en-GB"
+    );
+
+    app.update(Action::VarEdit(VarEditOp::SetOptionDescription {
+        env: "qa".into(),
+        selector: "locale".into(),
+        option: "en".into(),
+        description: Some("the King's".into()),
+    }));
+    assert_eq!(
+        app.project.model.options["locale"]["en"].description.as_deref(),
+        Some("the King's")
+    );
+}
+
+#[test]
+fn shared_selector_inline_new_option_needs_no_active_env_and_selects_globally() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = shared_locale_app(dir.path());
+    app.update(Action::SwitchEnv(None));
+
+    app.update(Action::ConfirmNewOptionInline {
+        owner: "locale".into(),
+        key: "de".into(),
+        value: "de".into(),
+        description: None,
+    });
+
+    assert!(
+        app.project.model.options["locale"].contains_key("de"),
+        "{:?}",
+        app.toasts.messages()
+    );
+    assert_eq!(app.project.shared_selections()["locale"], "de");
+    assert_eq!(app.project.resolved.values["lang"], "de");
+}
+
+#[test]
+fn deleting_a_shared_selector_removes_its_options_and_global_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = shared_locale_app(dir.path());
+    app.project.set_selection_for("qa", "locale", "fr");
+
+    app.update(Action::VarStruct(VarStructOp::Delete {
+        name: "locale".into(),
+    }));
+
+    assert!(!app.project.model.selectors.contains_key("locale"));
+    let vars = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    assert!(!vars.contains("options.locale"), "{vars}");
+    assert!(!app.project.shared_selections().contains_key("locale"));
+}
+
+#[test]
+fn renaming_a_shared_selector_carries_options_and_the_global_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = shared_locale_app(dir.path());
+    app.project.set_selection_for("qa", "locale", "fr");
+
+    app.update(Action::VarStruct(VarStructOp::Rename {
+        from: "locale".into(),
+        to: "lingo".into(),
+    }));
+
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    assert!(app.project.model.selectors["lingo"].shared);
+    assert_eq!(app.project.model.options["lingo"]["fr"].values["lang"], "fr");
+    assert_eq!(app.project.shared_selections()["lingo"], "fr");
+    assert!(!app.project.shared_selections().contains_key("locale"));
+}
+
+#[test]
+fn apply_group_fields_reshapes_a_shared_selectors_options_in_variables_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = shared_locale_app(dir.path());
+
+    // Rename `lang` to `tongue` and add `fmt`: every option in
+    // variables.toml must carry both changes in the same write.
+    app.update(Action::ApplyGroupFields {
+        selector: "locale".into(),
+        slots: vec!["tongue".into(), "fmt".into()],
+    });
+
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    assert_eq!(
+        app.project.model.selectors["locale"].fields,
+        vec!["tongue".to_string(), "fmt".to_string()]
+    );
+    let en = &app.project.model.options["locale"]["en"];
+    assert_eq!(en.values["tongue"], "en");
+    assert_eq!(en.values["fmt"], "");
+}
+
+#[test]
 fn var_struct_new_group_creates_group_with_members() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());

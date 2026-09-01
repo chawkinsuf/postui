@@ -942,6 +942,19 @@ impl VarManager {
         self.ensure_visible = true;
     }
 
+    /// Points the cursor and detail pane at the row declaring `name`
+    /// (variable or selector) — how a just-created declaration becomes the
+    /// selected one. A quiet no-op if no row names it.
+    pub fn select_name(&mut self, name: &str) {
+        if let Some(i) = self
+            .left_rows
+            .iter()
+            .position(|r| matches!(r, VmRow::Var(n) | VmRow::Group(n) if n == name))
+        {
+            self.select_row(i);
+        }
+    }
+
     /// Moves the cursor one selectable row in `dir` (`-1`/`1`), skipping
     /// section headers, and opens whatever it lands on.
     fn move_cursor(&mut self, dir: i32) {

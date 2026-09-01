@@ -3134,6 +3134,13 @@ impl App {
                             }
                         }
                         self.varmanager.sync(&self.project);
+                        // A fresh declaration becomes the selected row —
+                        // the user's next action is almost always on it.
+                        if let VarStructOp::NewVar { name, .. }
+                        | VarStructOp::NewSelector { name, .. } = &op
+                        {
+                            self.varmanager.select_name(name);
+                        }
                         self.record_var_file_step(before);
                         // Deletes act without a confirm gate, so their
                         // toasts advertise the way back.
@@ -3296,18 +3303,29 @@ impl App {
                     self.last_action_failed = true;
                     return true;
                 }
-                let Some(env) = self.project.active_env.clone() else {
-                    self.toasts.push(
-                        "no active environment \u{2014} switch to one first",
-                        ToastKind::Warning,
-                    );
-                    return true;
+                // A shared selector's options don't live in an environment,
+                // so it doesn't need one to be active.
+                let shared = self.selector_is_shared(&owner);
+                let env = match self.project.active_env.clone() {
+                    Some(env) => env,
+                    None if shared => String::new(),
+                    None => {
+                        self.toasts.push(
+                            "no active environment \u{2014} switch to one first",
+                            ToastKind::Warning,
+                        );
+                        return true;
+                    }
                 };
                 // Create means create: writing over an existing option of
                 // the same name from the add prompt would silently clobber
                 // its values.
-                if postui_core::varmodel::selector_options(&self.project.env_data, &owner)
-                    .is_some_and(|options| options.contains_key(&key))
+                if postui_core::varmodel::options_of(
+                    &self.project.model,
+                    &self.project.env_data,
+                    &owner,
+                )
+                .is_some_and(|options| options.contains_key(&key))
                 {
                     self.toasts.push(
                         format!("option \"{key}\" already exists on {owner}"),
@@ -3333,7 +3351,7 @@ impl App {
                     values.insert(field, if i == 0 { value.clone() } else { String::new() });
                 }
                 let before = self.read_file_states(&self.project.var_file_paths());
-                match self.project.edit_env(&env, |doc| {
+                match self.edit_options_home(&owner, &env, |doc| {
                     postui_core::varedit::upsert_option(
                         doc,
                         &owner,
@@ -3345,8 +3363,9 @@ impl App {
                     Ok(()) => {
                         self.record_var_file_step(before);
                         self.project.set_selection_for(&env, &owner, &key);
+                        let where_label = if shared { "all environments" } else { &env };
                         self.toasts.push(
-                            format!("{owner} \u{2192} {key} ({env})"),
+                            format!("{owner} \u{2192} {key} ({where_label})"),
                             ToastKind::Success,
                         );
                         if field_count > 1 {
@@ -3919,11 +3938,12 @@ impl App {
                 field,
                 value,
             } => {
-                // An option's values live in one environment's file; the
-                // cell being edited is one field of that option.
+                // An option's values live in one file — its selector's env
+                // file, or variables.toml for a shared selector; the cell
+                // being edited is one field of that option.
                 let mut values = indexmap::IndexMap::new();
                 values.insert(field.clone(), value.clone());
-                self.project.edit_env(env, |doc| {
+                self.edit_options_home(selector, env, |doc| {
                     postui_core::varedit::upsert_option(doc, selector, option, None, &values)
                 })
             }
@@ -3932,7 +3952,7 @@ impl App {
                 selector,
                 option,
                 description,
-            } => self.project.edit_env(env, |doc| match description {
+            } => self.edit_options_home(selector, env, |doc| match description {
                 Some(d) => postui_core::varedit::upsert_option(
                     doc,
                     selector,
@@ -4159,6 +4179,19 @@ impl App {
                 // doesn't declare `name`, reproducing the exact "confusing
                 // parse-style toast" this fix removes. `delete_env_var`
                 // no-ops for an environment with nothing to remove.
+                // A shared selector's options live in variables.toml with
+                // the declaration: both halves go in one write (an
+                // `[options.<name>]` table without its declaration fails
+                // validation in either order), and no env file holds
+                // anything to strip.
+                if is_group && self.selector_is_shared(name) {
+                    self.project.edit_variables(|doc| {
+                        let stripped = varedit::delete_selector_options(doc, name)?;
+                        varedit::delete_selector(&stripped, name)
+                    })?;
+                    self.project.clear_selection_for("", name);
+                    return Ok(());
+                }
                 for env in self.project.environments.clone() {
                     if is_group {
                         // The declaration's environment-side half: the whole
@@ -4197,7 +4230,7 @@ impl App {
                 name,
                 description,
                 values,
-            } => self.project.edit_env(env, |doc| {
+            } => self.edit_options_home(selector, env, |doc| {
                 varedit::upsert_option(doc, selector, name, description.as_deref(), values)
             }),
             VarStructOp::RenameOption {
@@ -4206,17 +4239,19 @@ impl App {
                 from,
                 to,
             } => {
-                self.project
-                    .edit_env(env, |doc| varedit::rename_option(doc, selector, from, to))?;
+                self.edit_options_home(selector, env, |doc| {
+                    varedit::rename_option(doc, selector, from, to)
+                })?;
                 // A selection names an option by key: carry it across the
-                // rename rather than leaving a dangling one behind.
-                if self
-                    .project
-                    .selections_for(env)
-                    .get(selector)
-                    .map(String::as_str)
-                    == Some(from)
-                {
+                // rename rather than leaving a dangling one behind. (A
+                // shared selector's selection is the global one;
+                // `set_selection_for` routes there itself.)
+                let selected = if self.selector_is_shared(selector) {
+                    self.project.shared_selections().get(selector)
+                } else {
+                    self.project.selections_for(env).get(selector)
+                };
+                if selected.map(String::as_str) == Some(from) {
                     self.project.set_selection_for(env, selector, to);
                 }
                 Ok(())
@@ -4248,6 +4283,20 @@ impl App {
     /// everywhere.
     fn apply_rename_group(&mut self, from: &str, to: &str) -> Result<(), String> {
         use postui_core::varedit;
+        // A shared selector renames wholly inside variables.toml — the
+        // declaration and its `[options.<from>]` subtree in one write —
+        // and carries its one global selection.
+        if self.selector_is_shared(from) {
+            self.project.edit_variables(|doc| {
+                let renamed = varedit::rename_selector(doc, from, to)?;
+                varedit::rename_selector_options(&renamed, from, to)
+            })?;
+            if let Some(key) = self.project.shared_selections().get(from).cloned() {
+                self.project.clear_selection_for("", from);
+                self.project.set_selection_for("", to, &key);
+            }
+            return Ok(());
+        }
         self.project.edit_variables_and_envs(
             |doc| varedit::rename_selector(doc, from, to),
             |doc| varedit::rename_selector_options(doc, from, to),
@@ -4369,30 +4418,37 @@ impl App {
             .iter()
             .map(|(from, _)| self.project.model.vars.contains_key(from))
             .collect();
-        let result = self.project.edit_variables_and_envs(
-            |doc| {
-                let mut out = doc.to_string();
-                for ((from, to), declared) in renames.iter().zip(&declared) {
-                    if *declared {
-                        out = varedit::rename_var(&out, from, to)?;
-                    }
+        let declaration_half = |doc: &str| {
+            let mut out = doc.to_string();
+            for ((from, to), declared) in renames.iter().zip(&declared) {
+                if *declared {
+                    out = varedit::rename_var(&out, from, to)?;
                 }
-                varedit::upsert_selector(&out, &selector, None, &fields)
-            },
-            |doc| {
-                let mut out = doc.to_string();
-                for (from, to) in &renames {
-                    out = varedit::rename_option_field(&out, &selector, from, to)?;
-                }
-                for field in &removals {
-                    out = varedit::strip_option_field(&out, &selector, field)?;
-                }
-                for field in &additions {
-                    out = varedit::ensure_option_field(&out, &selector, field)?;
-                }
-                Ok(out)
-            },
-        );
+            }
+            varedit::upsert_selector(&out, &selector, None, &fields)
+        };
+        let options_half = |doc: &str| {
+            let mut out = doc.to_string();
+            for (from, to) in &renames {
+                out = varedit::rename_option_field(&out, &selector, from, to)?;
+            }
+            for field in &removals {
+                out = varedit::strip_option_field(&out, &selector, field)?;
+            }
+            for field in &additions {
+                out = varedit::ensure_option_field(&out, &selector, field)?;
+            }
+            Ok(out)
+        };
+        // A shared selector's options sit beside the declaration in
+        // variables.toml, so the reshape is one write to one file.
+        let result = if self.selector_is_shared(&selector) {
+            self.project
+                .edit_variables(|doc| options_half(&declaration_half(doc)?))
+        } else {
+            self.project
+                .edit_variables_and_envs(declaration_half, options_half)
+        };
         match result {
             Ok(()) => {
                 self.varmanager.sync(&self.project);
@@ -4533,8 +4589,8 @@ impl App {
         selector: &str,
         name: &str,
     ) -> Result<(), String> {
-        let env_data = self.env_data_for(env);
-        let options = postui_core::varmodel::selector_options(&env_data, selector)
+        let options = self
+            .options_of_for(env, selector)
             .ok_or_else(|| format!("selector \"{selector}\" has no options in {env}"))?;
         let source = options
             .get(name)
@@ -4546,7 +4602,7 @@ impl App {
             copy = format!("{name} copy-{n}");
             n += 1;
         }
-        self.project.edit_env(env, |doc| {
+        self.edit_options_home(selector, env, |doc| {
             postui_core::varedit::upsert_option(
                 doc,
                 selector,
@@ -4597,6 +4653,47 @@ impl App {
         Ok(())
     }
 
+    /// Whether `selector` is a shared selector — its options (and its one
+    /// global selection) live in `variables.toml`, not per environment.
+    fn selector_is_shared(&self, selector: &str) -> bool {
+        self.project
+            .model
+            .selectors
+            .get(selector)
+            .is_some_and(|d| d.shared)
+    }
+
+    /// Applies an option-table edit to wherever `selector`'s options live:
+    /// `variables.toml` for a shared selector (`env` is ignored — the same
+    /// `[options.*]` verbs apply, just in the model's own file), otherwise
+    /// `environments/<env>.toml`.
+    fn edit_options_home(
+        &mut self,
+        selector: &str,
+        env: &str,
+        f: impl FnOnce(&str) -> Result<String, postui_core::varedit::EditError>,
+    ) -> Result<(), String> {
+        if self.selector_is_shared(selector) {
+            self.project.edit_variables(f)
+        } else {
+            self.project.edit_env(env, f)
+        }
+    }
+
+    /// `selector`'s options as they currently stand, from wherever they
+    /// live: the model's own for a shared selector, `env`'s otherwise.
+    fn options_of_for(
+        &self,
+        env: &str,
+        selector: &str,
+    ) -> Option<indexmap::IndexMap<String, postui_core::varmodel::OptionDecl>> {
+        if self.selector_is_shared(selector) {
+            self.project.model.options.get(selector).cloned()
+        } else {
+            postui_core::varmodel::selector_options(&self.env_data_for(env), selector).cloned()
+        }
+    }
+
     /// `env`'s data: the active environment's is already loaded on `ctx`;
     /// any other is read fresh, degrading to empty rather than erroring.
     fn env_data_for(&self, env: &str) -> postui_core::varmodel::EnvData {
@@ -4615,12 +4712,19 @@ impl App {
     /// selections (`resolve_env` already degrades a stale selection
     /// harmlessly, but there's no reason to leave it).
     fn apply_delete_entry(&mut self, env: &str, selector: &str, name: &str) -> Result<(), String> {
-        let present = postui_core::varmodel::selector_options(&self.env_data_for(env), selector)
+        let present = self
+            .options_of_for(env, selector)
             .is_some_and(|options| options.contains_key(name));
         if present {
-            self.project.edit_env(env, |doc| {
+            self.edit_options_home(selector, env, |doc| {
                 postui_core::varedit::delete_option(doc, selector, name)
             })?;
+        }
+        if self.selector_is_shared(selector) {
+            if self.project.shared_selections().get(selector).map(String::as_str) == Some(name) {
+                self.project.clear_selection_for(env, selector);
+            }
+            return Ok(());
         }
         for other in self.project.environments.clone() {
             if self
