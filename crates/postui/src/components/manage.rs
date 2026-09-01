@@ -1,8 +1,7 @@
 //! The Manage screen's shell: which tab is up, and the top bar shared by
 //! every tab (tab strip left, Close right, the Variables tab's own "new"
 //! buttons between). Tab bodies are drawn by `ui.rs` — `VarManager` for
-//! Variables, the flat-panel placeholder for Environments and Spaces until
-//! Task 14 fills them in.
+//! Variables, `ManageList` for Environments and Spaces.
 
 use crate::action::Action;
 use crate::hit::{Hit, HitMap};
@@ -57,11 +56,14 @@ impl ManageTab {
     }
 }
 
-/// The Manage screen's own state: which tab is up. Each tab's body keeps
-/// its own state elsewhere (`App::varmanager` for Variables).
+/// The Manage screen's own state: which tab is up, plus the list-edit
+/// body the Environments and Spaces tabs share. The Variables tab's body
+/// keeps its state elsewhere (`App::varmanager`).
 #[derive(Default)]
 pub struct Manage {
     pub tab: ManageTab,
+    /// The Environments/Spaces tabs' shared list-edit body.
+    pub list: crate::components::manage_list::ManageList,
 }
 
 /// The bar's height: the Variables tab's buttons are `BUTTON_HEIGHT` tall

@@ -25,6 +25,25 @@ pub enum Hit {
     /// One tab of the Manage screen's top bar, by index into
     /// [`crate::components::manage::ManageTab::ALL`].
     ManageTab(usize),
+    /// A visible row of the Environments/Spaces tabs' left list, by index
+    /// into that tab's item list: click selects it.
+    ManageRow(usize),
+    /// Those tabs' `+ New` button: opens the new space / new environment
+    /// prompt for whichever tab is up.
+    ManageNew,
+    /// The right pane's name field: click starts editing the name in place.
+    ManageName,
+    /// The right pane's `Rename` button: same in-place edit as the field.
+    ManageRename,
+    /// The right pane's `Delete` button: deletes the selected space / env.
+    ManageDelete,
+    /// The Spaces tab's `Move up` button: reorders the selected space.
+    ManageMoveUp,
+    /// The Spaces tab's `Move down` button: reorders the selected space.
+    ManageMoveDown,
+    /// The Spaces tab's `Move all requests to ▾` button: opens a dropdown
+    /// of the other spaces to move this space's requests into.
+    ManageMoveAll,
     /// The right-aligned "theme" chip on the app bar: opens the theme
     /// picker.
     HeaderTheme,

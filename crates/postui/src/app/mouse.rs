@@ -3,6 +3,7 @@
 //! method here is `impl App` and shares its state directly.
 
 use super::*;
+use crate::components::manage::ManageTab;
 
 impl App {
     /// Routes a raw terminal mouse event against `self.hits`, the `HitMap`
@@ -297,7 +298,11 @@ impl App {
                     } else {
                         3
                     };
-                    self.varmanager.handle_scroll_at(m.column, m.row, d);
+                    if self.manage.tab == ManageTab::Variables {
+                        self.varmanager.handle_scroll_at(m.column, m.row, d);
+                    } else {
+                        self.manage.list.handle_scroll(d);
+                    }
                     return self.update(Action::Render);
                 }
                 if let Some(pane) = self.hits.pane_at(m.column, m.row) {
@@ -389,6 +394,11 @@ impl App {
         // included: while it is up, the sidebar's pane slot belongs to its
         // left list (see `VarManager::scrollbar_spec`).
         if self.screen == Screen::Manage {
+            // The other tabs' list draws no scrollbar of its own, so the
+            // sidebar's pane slot has nothing to report there.
+            if self.manage.tab != ManageTab::Variables {
+                return None;
+            }
             return self.varmanager.scrollbar_spec().filter(|s| s.pane == pane);
         }
         match pane {
@@ -421,6 +431,9 @@ impl App {
             return false;
         }
         if self.screen == Screen::Manage {
+            if self.manage.tab != ManageTab::Variables {
+                return false;
+            }
             self.varmanager.set_scroll(offset);
             return true;
         }
@@ -676,6 +689,13 @@ impl App {
             Action::EditorTabSelect(1),       // (converted through
             Action::EditorTabSelect(2),       //  EditorTab::from_draw_position(..).index())
             Action::EditorTabSelect(3),
+            // The Environments/Spaces tabs' `+ New` button (Hit::ManageNew)
+            // and `Delete` button (Hit::ManageDelete); the rest of that
+            // face's hits either dispatch per-item actions built from the
+            // live project (rename/move/move-all) or change list state
+            // only.
+            Action::OpenNewEnvPrompt,
+            Action::OpenNewSpacePrompt,
         ]
     }
 
@@ -739,6 +759,19 @@ impl App {
         if !editing_this_field && !matches!(hit, Hit::VmRevealToggle) {
             self.commit_var_form();
         }
+        // The Environments/Spaces tabs' in-place name field, same rule:
+        // any click that isn't on the field itself (or the Rename button,
+        // which opens that very edit) commits what was typed rather than
+        // throwing it away.
+        if self.screen == Screen::Manage
+            && self.manage.list.editing.is_some()
+            && !matches!(hit, Hit::ManageName | Hit::ManageRename)
+        {
+            let tab = self.manage.tab;
+            if let Some(a) = self.manage.list.commit_edit(tab, &self.project) {
+                self.update(a);
+            }
+        }
         // …and the selector grid's cell, likewise: any click that isn't on the
         // cell already under edit commits it first, so clicking straight
         // from one cell to another never drops what was typed into the
@@ -794,6 +827,96 @@ impl App {
             Hit::ManageTab(i) => self.update(Action::SelectManageTab(
                 crate::components::manage::ManageTab::from_index(i),
             )),
+            Hit::ManageRow(i) => {
+                self.manage.list.editing = None;
+                self.manage.list.cursor = i;
+                self.update(Action::Render)
+            }
+            Hit::ManageNew => self.update(match self.manage.tab {
+                ManageTab::Spaces => Action::OpenNewSpacePrompt,
+                _ => Action::OpenNewEnvPrompt,
+            }),
+            Hit::ManageName | Hit::ManageRename => {
+                let tab = self.manage.tab;
+                if let Some(name) = self
+                    .manage
+                    .list
+                    .selected(tab, &self.project)
+                    .map(str::to_string)
+                {
+                    self.manage.list.start_edit(&name);
+                }
+                self.update(Action::Render)
+            }
+            Hit::ManageDelete => {
+                let tab = self.manage.tab;
+                match self
+                    .manage
+                    .list
+                    .selected(tab, &self.project)
+                    .map(str::to_string)
+                {
+                    Some(name) if tab == ManageTab::Spaces => {
+                        self.update(Action::DeleteSpace(name))
+                    }
+                    Some(name) => self.update(Action::DeleteEnv(name)),
+                    None => false,
+                }
+            }
+            Hit::ManageMoveUp | Hit::ManageMoveDown => {
+                let delta = if matches!(hit, Hit::ManageMoveUp) {
+                    -1
+                } else {
+                    1
+                };
+                match self
+                    .manage
+                    .list
+                    .selected(ManageTab::Spaces, &self.project)
+                    .map(str::to_string)
+                {
+                    Some(name) => self.update(Action::MoveSpace { name, delta }),
+                    None => false,
+                }
+            }
+            Hit::ManageMoveAll => {
+                use crate::components::modal::{DropdownState, MenuItem};
+                let Some(from) = self
+                    .manage
+                    .list
+                    .selected(ManageTab::Spaces, &self.project)
+                    .map(str::to_string)
+                else {
+                    return false;
+                };
+                let items: Vec<MenuItem> = self
+                    .project
+                    .spaces
+                    .iter()
+                    .filter(|s| **s != from)
+                    .map(|s| {
+                        MenuItem::new(
+                            s.clone(),
+                            Action::MoveAllRequests {
+                                from: from.clone(),
+                                to: s.clone(),
+                            },
+                        )
+                    })
+                    .collect();
+                if items.is_empty() {
+                    return false;
+                }
+                let anchor = self.hits.rect_of(&Hit::ManageMoveAll).unwrap_or_default();
+                self.push_modal(Modal::Dropdown(DropdownState {
+                    anchor,
+                    items,
+                    selected: 0,
+                    current: None,
+                }));
+                self.begin_dropdown_open();
+                true
+            }
             Hit::FooterChip(action) => {
                 // Chips that live inside the request panel (the Body
                 // toolbar row, the address bar's TLS lock, the split

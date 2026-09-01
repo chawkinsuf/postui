@@ -5,6 +5,7 @@ pub mod header_bar;
 pub mod json_tree;
 pub mod line_input;
 pub mod manage;
+pub mod manage_list;
 pub mod modal;
 pub mod palette;
 pub mod response;

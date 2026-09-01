@@ -12947,7 +12947,13 @@ fn every_named_action_is_mouse_reachable() {
     // `keyboard_only_navigation` above, these have no click path at all
     // yet — this list exists only to bridge that gap and should empty out
     // as those tasks land their footer chip / chooser rows / on_hit
-    // dispatch.
+    // dispatch. What is left after Task 14 (the Manage screen's
+    // Environments/Spaces face, whose `+ New` / `Delete` / `Move` buttons
+    // and footer chips cover the manage-side space actions) is the
+    // backward cycle and the numbered jumps: every space they reach is
+    // also one click away in the header's numbered space dropdown, but
+    // that dropdown's rows dispatch `SwitchSpace`, so these named actions
+    // themselves still have no click path.
     let space_actions_pending_mouse_path: Vec<Action> = vec![
         // `OpenSpaceChooser` is off this list as of Task 10: the header's
         // space chip opens the chooser by click. `CycleSpace(1)` came off
@@ -13636,6 +13642,144 @@ fn env_dropdown_gains_a_manage_row() {
             tab: Some(crate::components::manage::ManageTab::Environments)
         })
     );
+}
+
+// --- Task 14: the Environments / Spaces tabs — list-edit face -------------
+
+#[test]
+fn spaces_tab_lists_numbered_spaces_with_count_and_buttons() {
+    use crate::components::manage::ManageTab;
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Spaces),
+    });
+    let text = rendered_text_tall(&mut app);
+    assert!(text.contains("1  main"), "{text}");
+    assert!(text.contains("2  auth"), "{text}");
+    assert!(text.contains("Space: main"), "{text}");
+    assert!(text.contains("2 requests"), "{text}");
+    for hit in [
+        Hit::ManageNew,
+        Hit::ManageName,
+        Hit::ManageRename,
+        Hit::ManageDelete,
+        Hit::ManageMoveUp,
+        Hit::ManageMoveDown,
+        Hit::ManageMoveAll,
+    ] {
+        assert!(app.hits.rect_of(&hit).is_some(), "{hit:?} missing");
+    }
+}
+
+#[test]
+fn environments_tab_lists_envs_and_hides_the_space_only_buttons() {
+    use crate::components::manage::ManageTab;
+    let (mut app, _dir) = app_with_envs();
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Environments),
+    });
+    let text = rendered_text_tall(&mut app);
+    assert!(text.contains("prod"), "{text}");
+    assert!(text.contains("Environment: prod"), "{text}");
+    assert!(text.contains("environments/prod.toml"), "{text}");
+    assert!(app.hits.rect_of(&Hit::ManageMoveUp).is_none());
+    assert!(app.hits.rect_of(&Hit::ManageMoveAll).is_none());
+}
+
+#[test]
+fn list_keys_move_delete_and_rename_in_place() {
+    use crate::components::manage::ManageTab;
+    let (mut app, dir) = spaced_app();
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Spaces),
+    });
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(app.manage.list.cursor, 1);
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+    assert_eq!(app.project.spaces, ["auth", "main"]);
+    assert_eq!(app.manage.list.cursor, 0, "cursor follows the moved space");
+
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.manage.list.editing.is_some());
+    for _ in 0..4 {
+        app.handle_key(
+            &keymap,
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+        );
+    }
+    for c in "identity".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.manage.list.editing.is_none());
+    assert_eq!(app.project.spaces, ["identity", "main"]);
+    assert!(dir.path().join("requests/identity").is_dir());
+
+    app.handle_key(&keymap, plain('d'));
+    assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
+}
+
+#[test]
+fn move_all_button_opens_a_dropdown_of_other_spaces() {
+    use crate::components::manage::ManageTab;
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Spaces),
+    });
+    rendered_text_tall(&mut app);
+    click_hit(&mut app, Hit::ManageMoveAll);
+    let Some(Modal::Dropdown(d)) = app.modals.top() else {
+        panic!("dropdown")
+    };
+    assert_eq!(d.items.len(), 1);
+    assert_eq!(d.items[0].label, "auth");
+    assert_eq!(
+        d.items[0].action,
+        Some(Action::MoveAllRequests {
+            from: "main".into(),
+            to: "auth".into()
+        })
+    );
+}
+
+#[test]
+fn clicking_new_delete_and_a_row_dispatch_the_right_actions() {
+    use crate::components::manage::ManageTab;
+    let (mut app, _dir) = app_with_envs();
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Environments),
+    });
+    rendered_text_tall(&mut app);
+    click_hit(&mut app, Hit::ManageRow(1));
+    assert_eq!(app.manage.list.cursor, 1);
+    click_hit(&mut app, Hit::ManageNew);
+    assert!(matches!(
+        app.modals.top(),
+        Some(Modal::Prompt {
+            kind: PromptKind::NewEnvironment,
+            ..
+        })
+    ));
+    app.update(Action::Close);
+    click_hit(&mut app, Hit::ManageDelete);
+    let Some(Modal::Confirm { title, .. }) = app.modals.top() else {
+        panic!("confirm")
+    };
+    assert_eq!(title, "Delete environment \"qa\"?");
+}
+
+#[test]
+fn manage_tabs_footer_chips_advertise_list_keys() {
+    use crate::components::manage::ManageTab;
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Spaces),
+    });
+    let text = rendered_text_tall(&mut app);
+    for label in ["rename", "new", "delete", "move"] {
+        assert!(text.contains(label), "{label}: {text}");
+    }
 }
 
 mod undo_tests {

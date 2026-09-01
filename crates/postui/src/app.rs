@@ -3015,6 +3015,9 @@ impl App {
                 if self.screen == Screen::Manage && (tab.is_none() || self.manage.tab == target) {
                     return self.update(Action::CloseScreen);
                 }
+                if self.manage.tab != target {
+                    self.manage.list.reset();
+                }
                 self.manage.tab = target;
                 if self.screen != Screen::Manage {
                     self.prior_focus = self.focus;
@@ -3023,10 +3026,20 @@ impl App {
                 true
             }
             Action::SelectManageTab(tab) => {
+                // Each tab lists something else: a cursor (and any name
+                // edit) carried across would point at the wrong item.
+                if self.manage.tab != tab {
+                    self.manage.list.reset();
+                }
                 self.manage.tab = tab;
                 true
             }
             Action::CloseScreen => {
+                // Leaving the screen ends any in-place name edit — a
+                // click away already committed it, `esc` already
+                // cancelled it, so nothing is left half-typed for the
+                // next visit to resume.
+                self.manage.list.editing = None;
                 self.screen = Screen::Main;
                 self.focus = self.prior_focus;
                 true
@@ -3938,6 +3951,9 @@ impl App {
                         );
                         if self.screen == Screen::Manage {
                             self.varmanager.sync(&self.project);
+                            self.manage
+                                .list
+                                .select_name(self.manage.tab, &self.project, &to);
                         }
                         self.toasts
                             .push(format!("Renamed environment to {to}"), ToastKind::Success);
@@ -4052,6 +4068,9 @@ impl App {
                             .push(format!("Renamed space to {to}"), ToastKind::Success);
                         if self.screen == Screen::Manage {
                             self.varmanager.sync(&self.project);
+                            self.manage
+                                .list
+                                .select_name(self.manage.tab, &self.project, &to);
                         }
                     }
                     Err(e) => {
@@ -4142,6 +4161,14 @@ impl App {
                     Ok(()) => {
                         self.apply(Action::ReloadProjectFiles);
                         self.project.reload_spaces();
+                        // The Manage screen's list cursor follows the space
+                        // that just moved, rather than staying on the row
+                        // index the reorder swapped something else into.
+                        if self.screen == Screen::Manage {
+                            self.manage
+                                .list
+                                .select_name(self.manage.tab, &self.project, &name);
+                        }
                     }
                     Err(e) => {
                         self.toasts
@@ -6071,6 +6098,10 @@ impl App {
             return false;
         }
         if self.screen == Screen::Manage {
+            if let Some(input) = self.manage.list.editing.as_mut() {
+                input.paste(text);
+                return self.update(Action::Render);
+            }
             if let Some((_, input)) = self.varmanager.form.editing.as_mut() {
                 input.paste(text);
                 return self.update(Action::Render);
@@ -6142,6 +6173,9 @@ impl App {
             return input.selected_text();
         }
         if self.screen == Screen::Manage {
+            if let Some(input) = self.manage.list.editing.as_ref() {
+                return input.selected_text();
+            }
             if let Some((_, input)) = self.varmanager.form.editing.as_ref() {
                 return input.selected_text();
             }
@@ -6705,17 +6739,37 @@ impl App {
                 let delta = if ev.code == KeyCode::Right { 1 } else { -1 };
                 return self.update(Action::SelectManageTab(self.manage.tab.cycle(delta)));
             }
-            // The Environments and Spaces tabs have no body yet (Task 14):
-            // Esc closes the screen, `q` quits, everything else is
-            // swallowed like any other non-`Main` screen.
+            // The Environments and Spaces tabs: a name field under edit
+            // owns the keyboard (`Enter` commits the rename, `Esc`
+            // cancels, everything else types), otherwise the list's own
+            // keys run and anything they don't claim is swallowed like on
+            // any other non-`Main` screen.
             if self.screen == Screen::Manage
                 && self.manage.tab != crate::components::manage::ManageTab::Variables
             {
-                return match ev.code {
-                    KeyCode::Esc => self.update(Action::CloseScreen),
-                    KeyCode::Char('q') => self.update(Action::Quit),
-                    _ => true,
-                };
+                let tab = self.manage.tab;
+                if let Some(input) = self.manage.list.editing.as_mut() {
+                    match ev.code {
+                        KeyCode::Enter => {
+                            if let Some(a) = self.manage.list.commit_edit(tab, &self.project) {
+                                return self.update(a);
+                            }
+                            return true;
+                        }
+                        KeyCode::Esc => {
+                            self.manage.list.editing = None;
+                            return true;
+                        }
+                        _ => {
+                            input.handle_key(ev);
+                            return true;
+                        }
+                    }
+                }
+                if let Some(a) = self.manage.list.handle_key(ev, tab, &self.project) {
+                    return self.update(a);
+                }
+                return true;
             }
             // A variable-form field under edit owns the keyboard: `Esc`
             // reverts, `Enter` commits (through `commit_var_form`, which
