@@ -90,6 +90,10 @@ New in `storage.rs`:
 - `move_request_to_space(root, slug, space) -> Result<String>` — a
   `rename_request` to `<space>/<rest>` keeping the sub-path, with the
   existing unique-slug collision rule. Returns the new slug.
+- `move_all_requests(root, from, to) -> Result<Vec<(String, String)>>` —
+  `move_request_to_space` over every request in `from` (nested folders
+  keep their sub-paths). Stops at the first failure and reports how far it
+  got; already-moved files stay moved.
 
 `ensure_project` grows to create `requests/main/` and the `spaces` list
 when the project has no spaces at all.
@@ -197,7 +201,8 @@ Environments and Spaces tabs share one **ListEditState** face:
   existing name prompt.
 - Right, for the selected item: a name field (edit in place, commit =
   rename), then a button row: **Rename** (focuses the field), **Delete**,
-  and on the Spaces tab **Move up** / **Move down**. A muted line beneath
+  and on the Spaces tab **Move up** / **Move down** and **Move all
+  requests to ▸** (a dropdown of the other spaces). A muted line beneath
   shows the space's request count, or the environment's variable-value
   count.
 - Keys within the list: `enter` edit name, `d` delete, and on Spaces
@@ -211,10 +216,13 @@ Delete semantics:
   `.local/secrets.toml`; if it was active, the project switches to no
   environment.
 - Space: confirm modal with the count ("Delete space `auth` and its 7
-  requests?"). Refused with a toast when it is the last space. If it was
-  the active space, switch to the first remaining space before deleting.
-  If the open request lived in it, the editor is cleared (through the
-  dirty gate first).
+  requests? This cannot be undone."). The requests are deleted with the
+  directory; **this is final** — like a single request delete today, it is
+  not on the undo stack. The intended path for keeping them is **Move all
+  requests to ▸** first, then delete the empty space. Refused with a toast
+  when it is the last space. If it was the active space, switch to the
+  first remaining space before deleting. If the open request lived in it,
+  the editor is cleared (through the dirty gate first).
 
 Rename semantics: environment rename re-keys `selections`, the secrets
 section, and `environment` in local state. Space rename re-keys
@@ -264,7 +272,8 @@ App (`crates/postui/src/app/tests.rs`):
 - Sidebar rows never include another space's slug; new/rename/duplicate
   land inside the active space.
 - Cross-space `OpenRequest` switches then opens with one gate.
-- Move to space follows an open request.
+- Move to space follows an open request; move-all moves nested paths
+  intact and follows the open request.
 - Startup resolution of `active_space` in the three cases above.
 - Header space dropdown items and ✓ position; manage rows route to the
   right tab.
@@ -278,3 +287,4 @@ App (`crates/postui/src/app/tests.rs`):
 - Migration of pre-space projects.
 - Per-space environment or selector state (both stay project-global).
 - Drag-and-drop between spaces in the sidebar.
+- Undo for space deletion (or any filesystem delete).
