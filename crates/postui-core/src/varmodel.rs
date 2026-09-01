@@ -801,8 +801,7 @@ date_format = "DD/MM"
         )
         .unwrap_err();
         assert!(
-            err.to_string().contains("is not shared")
-                && err.to_string().contains("shared = true"),
+            err.to_string().contains("is not shared") && err.to_string().contains("shared = true"),
             "{err}"
         );
     }

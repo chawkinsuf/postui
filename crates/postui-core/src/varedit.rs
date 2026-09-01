@@ -408,6 +408,26 @@ pub fn upsert_selector(
     Ok(doc.to_string())
 }
 
+/// Sets or removes `shared = true` on an existing `[selectors.<name>]`
+/// declaration (false removes the key — absent is the default). `NotFound`
+/// when no such selector is declared.
+pub fn set_selector_shared(doc: &str, name: &str, shared: bool) -> Result<String, EditError> {
+    let mut doc = parse(doc)?;
+    let root = doc.as_table_mut();
+    let g = root
+        .get_mut("selectors")
+        .and_then(Item::as_table_mut)
+        .and_then(|selectors| selectors.get_mut(name))
+        .and_then(Item::as_table_mut)
+        .ok_or_else(|| EditError::NotFound(format!("selector \"{name}\" not found")))?;
+    if shared {
+        g["shared"] = value(true);
+    } else {
+        g.remove("shared");
+    }
+    Ok(doc.to_string())
+}
+
 /// Renames a selector's `[selectors.<from>]` table header, decor and position
 /// preserved. `NotFound` if there is no such selector; `Conflict` if `to`
 /// isn't a valid name, or already occupies either namespace a declaration
@@ -1152,6 +1172,23 @@ secret = true
             m.selectors["user"].description.as_deref(),
             Some("linked pair")
         );
+    }
+
+    #[test]
+    fn set_selector_shared_writes_and_removes_the_flag() {
+        let doc = upsert_selector("", "locale", None, &["lang".to_string()]).unwrap();
+        let out = set_selector_shared(&doc, "locale", true).unwrap();
+        let m = reparses_vars(&out);
+        assert!(m.selectors["locale"].shared);
+        let out = set_selector_shared(&out, "locale", false).unwrap();
+        assert!(
+            !out.contains("shared"),
+            "flag removed, not set false: {out}"
+        );
+        assert!(!reparses_vars(&out).selectors["locale"].shared);
+
+        let err = set_selector_shared("", "nope", true).unwrap_err();
+        assert!(matches!(err, EditError::NotFound(_)), "{err:?}");
     }
 
     #[test]

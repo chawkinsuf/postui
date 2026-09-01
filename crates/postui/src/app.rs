@@ -2919,7 +2919,7 @@ impl App {
                 self.push_modal(Modal::Prompt {
                     title: "New selector".into(),
                     input: LineInput::new(""),
-                    kind: PromptKind::NewSelector,
+                    kind: PromptKind::NewSelector { shared: false },
                     revealed: false,
                 });
                 true
@@ -2974,19 +2974,32 @@ impl App {
                 };
                 let before = self.read_file_states(&self.project.var_file_paths());
                 let remaining: Vec<String> = fields.into_iter().filter(|f| f != &field).collect();
-                let envs = postui_core::project::list_environments(&self.project.root);
-                let result = envs
-                    .iter()
-                    .try_for_each(|env| {
-                        self.project.edit_env(env, |doc| {
-                            postui_core::varedit::strip_option_field(doc, &selector, &field)
-                        })
+                let result = if self.selector_is_shared(&selector) {
+                    // Options live beside the declaration: strip the field
+                    // from them and rewrite the list in one write.
+                    self.project.edit_variables(|doc| {
+                        let stripped =
+                            postui_core::varedit::strip_option_field(doc, &selector, &field)?;
+                        postui_core::varedit::upsert_selector(
+                            &stripped, &selector, None, &remaining,
+                        )
                     })
-                    .and_then(|()| {
-                        self.project.edit_variables(|doc| {
-                            postui_core::varedit::upsert_selector(doc, &selector, None, &remaining)
+                } else {
+                    let envs = postui_core::project::list_environments(&self.project.root);
+                    envs.iter()
+                        .try_for_each(|env| {
+                            self.project.edit_env(env, |doc| {
+                                postui_core::varedit::strip_option_field(doc, &selector, &field)
+                            })
                         })
-                    });
+                        .and_then(|()| {
+                            self.project.edit_variables(|doc| {
+                                postui_core::varedit::upsert_selector(
+                                    doc, &selector, None, &remaining,
+                                )
+                            })
+                        })
+                };
                 match result {
                     Ok(()) => {
                         self.record_var_file_step(before);
@@ -3114,7 +3127,8 @@ impl App {
                         env,
                         selector,
                         name,
-                    } => postui_core::varmodel::selector_options(&self.env_data_for(env), selector)
+                    } => self
+                        .options_of_for(env, selector)
                         .is_some_and(|o| o.contains_key(name)),
                     _ => false,
                 };
@@ -3216,23 +3230,28 @@ impl App {
                 true
             }
             Action::StartNewOptionEdit => {
-                if self.project.active_env.is_none() {
+                let crate::components::varmanager::VmDetail::Group(selector) =
+                    self.varmanager.detail.clone()
+                else {
+                    return false;
+                };
+                // A shared selector's options need no environment; anyone
+                // else's have nowhere to live without one.
+                if self.project.active_env.is_none() && !self.selector_is_shared(&selector) {
                     self.toasts.push(
                         crate::components::varmanager::NO_ENV_HINT,
                         ToastKind::Warning,
                     );
                     return true;
                 }
-                let crate::components::varmanager::VmDetail::Group(selector) =
-                    self.varmanager.detail.clone()
-                else {
-                    return false;
-                };
                 // The ghost row *is* the new-option affordance: put the
                 // cursor in its name cell and start typing.
-                let row =
-                    postui_core::varmodel::selector_options(&self.project.env_data, &selector)
-                        .map_or(0, indexmap::IndexMap::len);
+                let row = postui_core::varmodel::options_of(
+                    &self.project.model,
+                    &self.project.env_data,
+                    &selector,
+                )
+                .map_or(0, indexmap::IndexMap::len);
                 self.varmanager.start_cell_edit(&self.project, row, 0);
                 true
             }
@@ -3834,13 +3853,16 @@ impl App {
         use postui_core::varmodel;
 
         let env_key = self.project.active_env.clone().unwrap_or_default();
-        let selected_key = self
-            .project
-            .selections_for(&env_key)
-            .get(&selector)
-            .cloned();
+        let selected_key = if self.selector_is_shared(&selector) {
+            self.project.shared_selections().get(&selector).cloned()
+        } else {
+            self.project
+                .selections_for(&env_key)
+                .get(&selector)
+                .cloned()
+        };
         let options: Vec<SelectOption> =
-            varmodel::selector_options(&self.project.env_data, &selector)
+            varmodel::options_of(&self.project.model, &self.project.env_data, &selector)
                 .map(|options| {
                     options
                         .iter()
@@ -4103,7 +4125,11 @@ impl App {
                     varedit::upsert_var(doc, name, description.as_deref(), None)
                 })
             }
-            VarStructOp::NewSelector { name, fields } => {
+            VarStructOp::NewSelector {
+                name,
+                fields,
+                shared,
+            } => {
                 if !is_valid_var_name(name) {
                     return Err(format!("\"{name}\" is not a valid selector name"));
                 }
@@ -4115,8 +4141,14 @@ impl App {
                         return Err(format!("\"{f}\" is not a valid field name"));
                     }
                 }
-                self.project
-                    .edit_variables(|doc| varedit::upsert_selector(doc, name, None, fields))
+                self.project.edit_variables(|doc| {
+                    let out = varedit::upsert_selector(doc, name, None, fields)?;
+                    if *shared {
+                        varedit::set_selector_shared(&out, name, true)
+                    } else {
+                        Ok(out)
+                    }
+                })
             }
             VarStructOp::Rename { from, to } => {
                 if !is_valid_var_name(to) {
@@ -4220,8 +4252,31 @@ impl App {
                         return Err(format!("\"{f}\" is not a valid field name"));
                     }
                 }
-                self.project
-                    .edit_variables(|doc| varedit::upsert_selector(doc, selector, None, fields))
+                // A shared selector's options sit in the same file and
+                // must supply exactly the declared fields, so the list
+                // change carries them along in the one write (a non-shared
+                // selector's env-side halves go through the fields editor's
+                // `apply_group_fields` instead).
+                let current: Vec<String> = self
+                    .project
+                    .model
+                    .selectors
+                    .get(selector)
+                    .map(|g| g.fields.clone())
+                    .unwrap_or_default();
+                let shared = self.selector_is_shared(selector);
+                self.project.edit_variables(|doc| {
+                    let mut out = varedit::upsert_selector(doc, selector, None, fields)?;
+                    if shared {
+                        for field in fields.iter().filter(|f| !current.contains(f)) {
+                            out = varedit::ensure_option_field(&out, selector, field)?;
+                        }
+                        for field in current.iter().filter(|f| !fields.contains(f)) {
+                            out = varedit::strip_option_field(&out, selector, field)?;
+                        }
+                    }
+                    Ok(out)
+                })
             }
             VarStructOp::Promote { name, target } => self.apply_promote(name, *target),
             VarStructOp::NewOption {
@@ -4488,17 +4543,24 @@ impl App {
         let VmDetail::Group(selector) = self.varmanager.detail.clone() else {
             return;
         };
-        let Some(env) = self.project.active_env.clone() else {
-            return;
+        // A shared selector's grid works without an environment (its ops
+        // ignore the env they carry); everyone else's needs one.
+        let env = match self.project.active_env.clone() {
+            Some(env) => env,
+            None if self.selector_is_shared(&selector) => String::new(),
+            None => return,
         };
         let value = edit.input.text().to_string();
         if value == edit.original {
             return;
         }
-        let options: Vec<String> =
-            postui_core::varmodel::selector_options(&self.project.env_data, &selector)
-                .map(|e| e.keys().cloned().collect())
-                .unwrap_or_default();
+        let options: Vec<String> = postui_core::varmodel::options_of(
+            &self.project.model,
+            &self.project.env_data,
+            &selector,
+        )
+        .map(|e| e.keys().cloned().collect())
+        .unwrap_or_default();
         let fields = self
             .project
             .model
@@ -4721,7 +4783,13 @@ impl App {
             })?;
         }
         if self.selector_is_shared(selector) {
-            if self.project.shared_selections().get(selector).map(String::as_str) == Some(name) {
+            if self
+                .project
+                .shared_selections()
+                .get(selector)
+                .map(String::as_str)
+                == Some(name)
+            {
                 self.project.clear_selection_for(env, selector);
             }
             return Ok(());
@@ -6006,8 +6074,12 @@ impl App {
             .selectors
             .get(&selector)
             .map_or(0, |g| g.fields.len());
-        let last_row = postui_core::varmodel::selector_options(&self.project.env_data, &selector)
-            .map_or(0, indexmap::IndexMap::len);
+        let last_row = postui_core::varmodel::options_of(
+            &self.project.model,
+            &self.project.env_data,
+            &selector,
+        )
+        .map_or(0, indexmap::IndexMap::len);
         let flat = (row * ncols + col) as i32 + dir;
         let (next_row, next_col) = match flat {
             // Off either end of the grid: the walk stops rather than

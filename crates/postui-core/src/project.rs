@@ -463,7 +463,11 @@ mod tests {
         save_local_state(dir.path(), &state).unwrap();
         assert_eq!(load_local_state(dir.path()).unwrap(), state);
         // An old state.toml without the table loads with an empty map.
-        std::fs::write(dir.path().join(".local/state.toml"), "environment = \"qa\"\n").unwrap();
+        std::fs::write(
+            dir.path().join(".local/state.toml"),
+            "environment = \"qa\"\n",
+        )
+        .unwrap();
         assert!(
             load_local_state(dir.path())
                 .unwrap()

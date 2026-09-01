@@ -48,8 +48,13 @@ pub enum PromptKind {
     /// `g` / the `+ Selector` button: a single name prompt. Confirming
     /// declares a one-field selector whose field is the name itself (the
     /// common selection-set shape); more fields grow through the fields
-    /// editor afterward.
-    NewSelector,
+    /// editor afterward. `shared` (toggled in the prompt: ctrl+s or the
+    /// checkbox row) makes it a shared selector — same options in every
+    /// environment, kept in variables.toml. Chosen at creation only;
+    /// there's deliberately no UI to flip it later.
+    NewSelector {
+        shared: bool,
+    },
     /// One field name, appended to `selector`'s list.
     AddSelectorField {
         selector: String,
@@ -765,6 +770,15 @@ impl ModalStack {
                     *revealed = !*revealed;
                     None // swallowed: modals capture all input
                 }
+                KeyCode::Char('s' | 'S')
+                    if matches!(kind, PromptKind::NewSelector { .. })
+                        && key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    if let PromptKind::NewSelector { shared } = kind {
+                        *shared = !*shared;
+                    }
+                    None // swallowed: modals capture all input
+                }
                 KeyCode::Enter => {
                     let text = input.text().trim();
                     if text.is_empty() {
@@ -828,10 +842,11 @@ impl ModalStack {
                                 to: text.to_string(),
                             })])
                         }
-                        PromptKind::NewSelector => {
+                        PromptKind::NewSelector { shared } => {
                             Some(vec![Action::VarStruct(VarStructOp::NewSelector {
                                 name: text.to_string(),
                                 fields: vec![text.to_string()],
+                                shared: *shared,
                             })])
                         }
                         PromptKind::SecretValue { name, .. } => Some(vec![Action::SetSecret {
@@ -1365,6 +1380,39 @@ impl ModalStack {
                         theme.text_muted,
                         theme.panel,
                         false,
+                    );
+                }
+
+                // The new-selector prompt's one option: shared, i.e. the
+                // same options in every environment. A creation-time
+                // choice, so it lives here rather than in the detail pane.
+                if let PromptKind::NewSelector { shared } = kind {
+                    let toggle_y = field_area.y + FIELD_HEIGHT + 1;
+                    let glyph = if *shared { "\u{25c9}" } else { "\u{25cb}" };
+                    let label = format!("{glyph} same options in every environment  ctrl+s");
+                    let toggle_hit = crate::hit::Hit::ModalSharedToggle;
+                    let fg = if hovered == Some(&toggle_hit) {
+                        theme.text
+                    } else {
+                        theme.text_muted
+                    };
+                    paint::text(
+                        frame.buffer_mut(),
+                        area.x + 2,
+                        toggle_y,
+                        &label,
+                        fg,
+                        theme.panel,
+                        false,
+                    );
+                    hits.register(
+                        Rect {
+                            x: area.x + 2,
+                            y: toggle_y,
+                            width: (label.chars().count() as u16).min(area.width.saturating_sub(4)),
+                            height: 1,
+                        },
+                        toggle_hit,
                     );
                 }
 
@@ -2126,7 +2174,7 @@ mod tests {
                 PromptField::text("dest", "Destination", "here"),
             ],
             focus: 0,
-            kind: PromptKind::NewSelector,
+            kind: PromptKind::NewSelector { shared: false },
         });
 
         let theme = Theme::for_terminal();

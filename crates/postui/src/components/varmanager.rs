@@ -108,8 +108,14 @@ pub enum VarStructOp {
         description: Option<String>,
     },
     /// A new selector and its field list (`+ Group` / `g`). Create-or-update:
-    /// `varedit::upsert_selector` is the same verb either way.
-    NewSelector { name: String, fields: Vec<String> },
+    /// `varedit::upsert_selector` is the same verb either way. `shared`
+    /// makes it a shared selector — options in variables.toml, identical
+    /// in every environment.
+    NewSelector {
+        name: String,
+        fields: Vec<String>,
+        shared: bool,
+    },
     /// Rename a variable or a selector. A selector renames in both halves at
     /// once (`varedit::rename_selector` + `rename_selector_options` per
     /// environment): an environment's `[options.<old>]` table names a
@@ -498,15 +504,34 @@ fn grid_columns(x0: u16, width: u16, ncols: usize) -> GridCols {
     cols
 }
 
-/// One selector's options in `ctx`'s active environment, as
-/// `(name, description, values)` rows in file order. Empty when the selector
-/// has no options here (or there is no active environment).
+/// Whether `selector` is shared — its options (and one global selection)
+/// live in variables.toml, so none of the per-environment gating applies.
+fn is_shared(ctx: &ProjectContext, selector: &str) -> bool {
+    ctx.model.selectors.get(selector).is_some_and(|d| d.shared)
+}
+
+/// The `env` an option op on `selector` should carry: the active
+/// environment — or, for a shared selector (whose ops ignore it), the
+/// active env's name if any, else `""`. `None` only when a non-shared
+/// selector has no active environment: nowhere for its options to live.
+fn op_env(ctx: &ProjectContext, selector: &str) -> Option<String> {
+    if is_shared(ctx, selector) {
+        Some(ctx.active_env.clone().unwrap_or_default())
+    } else {
+        ctx.active_env.clone()
+    }
+}
+
+/// One selector's options wherever they live (the active environment, or
+/// variables.toml for a shared selector), as `(name, description, values)`
+/// rows in file order. Empty when the selector has no options here (or a
+/// non-shared one has no active environment).
 type EntryRow = (String, Option<String>, IndexMap<String, String>);
 fn entry_rows(ctx: &ProjectContext, selector: &str) -> Vec<EntryRow> {
-    if ctx.active_env.is_none() {
+    if ctx.active_env.is_none() && !is_shared(ctx, selector) {
         return Vec::new();
     }
-    postui_core::varmodel::selector_options(&ctx.env_data, selector)
+    postui_core::varmodel::options_of(&ctx.model, &ctx.env_data, selector)
         .map(|options| {
             options
                 .iter()
@@ -577,9 +602,13 @@ pub fn build_left_rows(ctx: &ProjectContext) -> Vec<VmRow> {
 /// shows it inline: the selected option's name, or `None` when the selector has
 /// no (or a stale) selection here.
 fn active_selection(ctx: &ProjectContext, selector: &str) -> Option<String> {
-    let env = ctx.active_env.as_deref()?;
-    let key = ctx.selections_for(env).get(selector)?;
-    let options = postui_core::varmodel::selector_options(&ctx.env_data, selector)?;
+    let key = if is_shared(ctx, selector) {
+        ctx.shared_selections().get(selector)?
+    } else {
+        let env = ctx.active_env.as_deref()?;
+        ctx.selections_for(env).get(selector)?
+    };
+    let options = postui_core::varmodel::options_of(&ctx.model, &ctx.env_data, selector)?;
     options.contains_key(key).then(|| key.clone())
 }
 
@@ -744,10 +773,7 @@ impl VarManager {
         }
         let mut chips: Vec<(&'static str, &'static str, Option<Action>)> =
             if let (VmDetail::Group(selector), VmFocus::Grid) = (&self.detail, self.focus) {
-                let target = ctx
-                    .active_env
-                    .clone()
-                    .zip(self.entry_at(ctx, self.grid.cursor.0));
+                let target = op_env(ctx, selector).zip(self.entry_at(ctx, self.grid.cursor.0));
                 vec![
                     (
                         "space",
@@ -767,7 +793,7 @@ impl VarManager {
                         "e",
                         "edit",
                         target.clone().and_then(|(_, option)| {
-                            postui_core::varmodel::selector_options(&ctx.env_data, selector)
+                            postui_core::varmodel::options_of(&ctx.model, &ctx.env_data, selector)
                                 .and_then(|options| options.get(&option))
                                 .map(|decl| Action::OpenEditOptionPrompt {
                                     owner: selector.clone(),
@@ -1046,7 +1072,8 @@ impl VarManager {
                 if self.form.editing.is_none() && self.grid.editing.is_none() {
                     match &self.detail {
                         VmDetail::Group(g)
-                            if ctx.model.selectors.contains_key(g) && ctx.active_env.is_some() =>
+                            if ctx.model.selectors.contains_key(g)
+                                && (ctx.active_env.is_some() || is_shared(ctx, g)) =>
                         {
                             self.focus = VmFocus::Grid;
                         }
@@ -1167,7 +1194,7 @@ impl VarManager {
             // inline name-cell edit, on `F2` and `Enter` on the name cell.
             KeyCode::Char('e') => {
                 let name = self.entry_at(ctx, self.grid.cursor.0)?;
-                let decl = postui_core::varmodel::selector_options(&ctx.env_data, selector)
+                let decl = postui_core::varmodel::options_of(&ctx.model, &ctx.env_data, selector)
                     .and_then(|options| options.get(&name))?
                     .clone();
                 Some(Action::OpenEditOptionPrompt {
@@ -1178,7 +1205,7 @@ impl VarManager {
                 })
             }
             KeyCode::Char('c') => Some(Action::VarStruct(VarStructOp::DuplicateOption {
-                env: ctx.active_env.clone()?,
+                env: op_env(ctx, selector)?,
                 selector: selector.to_string(),
                 name: self.entry_at(ctx, self.grid.cursor.0)?,
             })),
@@ -1196,7 +1223,7 @@ impl VarManager {
                 None
             }
             KeyCode::Char('d') | KeyCode::Delete => Some(Action::DeleteEntry {
-                env: ctx.active_env.clone()?,
+                env: op_env(ctx, selector)?,
                 selector: selector.to_string(),
                 name: self.entry_at(ctx, self.grid.cursor.0)?,
             }),
@@ -1212,7 +1239,7 @@ impl VarManager {
     /// with no active environment.
     fn select_entry_action(&self, ctx: &ProjectContext, selector: &str) -> Option<Action> {
         Some(Action::VarEdit(VarEditOp::SelectOption {
-            env: ctx.active_env.clone()?,
+            env: op_env(ctx, selector)?,
             selector: selector.to_string(),
             option: self.entry_at(ctx, self.grid.cursor.0)?,
         }))
@@ -1274,10 +1301,10 @@ impl VarManager {
         let VmDetail::Group(selector) = &self.detail else {
             return None;
         };
-        let env = ctx.active_env.clone()?;
+        let env = op_env(ctx, selector)?;
         let name = self.entry_at(ctx, i)?;
         let (selector, n) = (selector.clone(), name.clone());
-        let decl = postui_core::varmodel::selector_options(&ctx.env_data, &selector)
+        let decl = postui_core::varmodel::options_of(&ctx.model, &ctx.env_data, &selector)
             .and_then(|options| options.get(&n))?;
         Some(vec![
             MenuItem::new(
@@ -1499,7 +1526,10 @@ impl VarManager {
             y += BUTTON_HEIGHT + 1;
         }
 
-        let Some(env) = ctx.active_env.clone() else {
+        // A shared selector's options don't live in an environment, so its
+        // grid works with none active; everyone else gets the hint.
+        let shared = is_shared(ctx, selector);
+        if ctx.active_env.is_none() && !shared {
             if y < bottom {
                 text(
                     buf,
@@ -1512,7 +1542,7 @@ impl VarManager {
                 );
             }
             return;
-        };
+        }
 
         // --- column headers ---------------------------------------------
         let fields = group_fields(ctx, selector);
@@ -1544,7 +1574,7 @@ impl VarManager {
 
         // --- option rows (+ the always-present ghost row) ------------------
         let rows = entry_rows(ctx, selector);
-        let selected = ctx.selections_for(&env).get(selector).cloned();
+        let selected = active_selection(ctx, selector);
         // The last line of the pane belongs to the legend.
         let rows_bottom = bottom.saturating_sub(1).max(y);
         let visible = (rows_bottom - y) as usize;
@@ -1697,11 +1727,16 @@ impl VarManager {
 
         // --- legend --------------------------------------------------------
         if rows_bottom < bottom {
+            let scope = if shared {
+                "all environments".to_string()
+            } else {
+                ctx.env_label()
+            };
             text(
                 buf,
                 x0,
                 rows_bottom,
-                super::chooser::clip(&format!("{GLYPH_RADIO_ON} = selected for {env}"), inner_w),
+                super::chooser::clip(&format!("{GLYPH_RADIO_ON} = selected for {scope}"), inner_w),
                 theme.text_muted,
                 theme.page,
                 false,
@@ -2960,6 +2995,122 @@ fields = ["user_id", "customer_id"]
     }
 
     // --- Task 16: the selector options grid ---------------------------------
+
+    /// `fixture()` plus a shared selector `locale` with two options in
+    /// variables.toml and `fr` picked globally.
+    fn shared_fixture() -> (tempfile::TempDir, ProjectContext) {
+        let dir = tempfile::tempdir().unwrap();
+        project::init_project(dir.path(), Some("demo")).unwrap();
+        std::fs::write(
+            dir.path().join("variables.toml"),
+            "[selectors.locale]\nshared = true\nfields = [\"lang\"]\n\n[options.locale.en]\nlang = \"en\"\n\n[options.locale.fr]\nlang = \"fr\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("environments/qa.toml"), "").unwrap();
+        let mut shared_selections = IndexMap::new();
+        shared_selections.insert("locale".to_string(), "fr".to_string());
+        project::save_local_state(
+            dir.path(),
+            &project::LocalState {
+                environment: Some("qa".into()),
+                shared_selections,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf());
+        assert!(warns.is_empty(), "{warns:?}");
+        (dir, ctx)
+    }
+
+    #[test]
+    fn a_shared_selector_renders_its_grid_even_without_an_environment() {
+        let (_dir, mut ctx) = shared_fixture();
+        ctx.active_env = None;
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "locale");
+        let (content, hits) = render(&mut vm, &ctx);
+
+        assert!(
+            !content.contains("options live in environments"),
+            "a shared selector's options don't need an env: {content}"
+        );
+        for cell in ["en", "fr"] {
+            assert!(content.contains(cell), "missing {cell}: {content}");
+        }
+        assert!(
+            hits.rect_of(&Hit::VmEntryCell { row: 0, col: 0 }).is_some(),
+            "grid is interactive without an environment"
+        );
+    }
+
+    #[test]
+    fn a_shared_selectors_radio_reads_the_global_pick_and_the_legend_says_so() {
+        let (_dir, ctx) = shared_fixture();
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "locale");
+        let (content, _) = render(&mut vm, &ctx);
+
+        assert!(
+            content.contains(&format!("{GLYPH_RADIO_ON} = selected for all environments")),
+            "legend: {content}"
+        );
+        // fr is picked globally: exactly one row radio filled + the legend's.
+        assert_eq!(content.matches(GLYPH_RADIO_ON).count(), 2, "{content}");
+        // The left list shows the pick inline too.
+        assert!(content.contains("locale (fr)"), "{content}");
+    }
+
+    #[test]
+    fn grid_commands_work_on_a_shared_selector_without_an_environment() {
+        let (_dir, mut ctx) = shared_fixture();
+        ctx.active_env = None;
+        let mut vm = VarManager::default();
+        select_group(&mut vm, &ctx, "locale");
+        render(&mut vm, &ctx);
+
+        vm.grid.cursor = (0, 0);
+        assert_eq!(
+            vm.handle_key(key(KeyCode::Char(' ')), &ctx, None),
+            Some(Action::VarEdit(VarEditOp::SelectOption {
+                env: "".into(),
+                selector: "locale".into(),
+                option: "en".into(),
+            }))
+        );
+        // Tab still enters the grid without an environment (its usual
+        // gate), and the grid-focus option verbs act from there.
+        vm.handle_key(key(KeyCode::Tab), &ctx, None);
+        assert_eq!(vm.focus, VmFocus::Grid);
+        assert_eq!(
+            vm.handle_key(key(KeyCode::Char('c')), &ctx, None),
+            Some(Action::VarStruct(VarStructOp::DuplicateOption {
+                env: "".into(),
+                selector: "locale".into(),
+                name: "en".into(),
+            }))
+        );
+        assert_eq!(
+            vm.handle_key(key(KeyCode::Char('d')), &ctx, None),
+            Some(Action::DeleteEntry {
+                env: "".into(),
+                selector: "locale".into(),
+                name: "en".into(),
+            })
+        );
+        assert!(
+            vm.entry_context_menu(&ctx, 0).is_some(),
+            "options exist, so the row menu does too"
+        );
+        // The footer's grid chips stay armed too — their actions carry the
+        // same empty env the ops above do.
+        let chips = vm.footer_chips(&ctx, None);
+        let copy = chips
+            .iter()
+            .find(|(k, _, _)| *k == "c")
+            .expect("copy chip is advertised");
+        assert!(copy.2.is_some(), "copy chip armed without an environment");
+    }
 
     fn select_group(vm: &mut VarManager, ctx: &ProjectContext, name: &str) {
         render(vm, ctx); // populates left_rows

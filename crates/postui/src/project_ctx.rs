@@ -331,8 +331,7 @@ impl ProjectContext {
             warnings.extend(stale);
         }
         if !legacy {
-            let stale =
-                prune_stale_shared_selections(&ctx.model, &mut ctx.shared_selections);
+            let stale = prune_stale_shared_selections(&ctx.model, &mut ctx.shared_selections);
             if !stale.is_empty() {
                 let open_request = ctx.local_open_request.clone();
                 ctx.persist_local_state(open_request.as_deref());
@@ -628,8 +627,7 @@ impl ProjectContext {
             warnings.extend(stale);
         }
         if !legacy {
-            let stale =
-                prune_stale_shared_selections(&self.model, &mut self.shared_selections);
+            let stale = prune_stale_shared_selections(&self.model, &mut self.shared_selections);
             if !stale.is_empty() {
                 self.persist_local_state_keep_open_request();
             }
@@ -1233,7 +1231,12 @@ mod tests {
         // ...and it lands in state.toml's global table, not under an env.
         let state = postui_core::project::load_local_state(dir.path()).unwrap();
         assert_eq!(state.shared_selections["locale"], "fr");
-        assert!(!state.selections.get("qa").is_some_and(|s| s.contains_key("locale")));
+        assert!(
+            !state
+                .selections
+                .get("qa")
+                .is_some_and(|s| s.contains_key("locale"))
+        );
     }
 
     #[test]

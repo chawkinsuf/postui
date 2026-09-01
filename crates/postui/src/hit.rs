@@ -204,6 +204,9 @@ pub enum Hit {
     ModalRowToggle(usize),
     /// The fields editor's "+ Add field" button.
     ModalAddRow,
+    /// The new-selector prompt's "same options in every environment"
+    /// toggle row (the mouse twin of its ctrl+s chord).
+    ModalSharedToggle,
     /// The value popup's "Remove" button: deletes the stored value at the
     /// chosen Write-to scope, so the next wider scope shows through.
     ModalRemove,

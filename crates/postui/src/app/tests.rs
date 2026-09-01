@@ -2304,7 +2304,7 @@ fn clicking_a_multi_prompt_field_moves_focus_there() {
             crate::components::modal::PromptField::text("fields", "Fields", ""),
         ],
         focus: 0,
-        kind: crate::components::modal::PromptKind::NewSelector,
+        kind: crate::components::modal::PromptKind::NewSelector { shared: false },
     });
     render_once(&mut app);
     let second = app
@@ -6705,6 +6705,7 @@ fn a_new_declaration_selects_its_row_in_the_manager() {
     app.update(Action::VarStruct(VarStructOp::NewSelector {
         name: "creds".into(),
         fields: vec!["user_id".into()],
+        shared: false,
     }));
     assert_eq!(app.varmanager.detail, VmDetail::Group("creds".into()));
     assert_eq!(
@@ -6756,7 +6757,10 @@ fn shared_selector_new_option_writes_variables_toml_not_the_env() {
     }));
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert_eq!(app.project.model.options["locale"]["de"].values["lang"], "de");
+    assert_eq!(
+        app.project.model.options["locale"]["de"].values["lang"],
+        "de"
+    );
     let vars = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     assert!(vars.contains("[options.locale.de]"), "{vars}");
     let qa = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
@@ -6840,7 +6844,9 @@ fn shared_selector_option_edits_route_to_variables_toml() {
         description: Some("the King's".into()),
     }));
     assert_eq!(
-        app.project.model.options["locale"]["en"].description.as_deref(),
+        app.project.model.options["locale"]["en"]
+            .description
+            .as_deref(),
         Some("the King's")
     );
 }
@@ -6896,7 +6902,10 @@ fn renaming_a_shared_selector_carries_options_and_the_global_selection() {
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
     assert!(app.project.model.selectors["lingo"].shared);
-    assert_eq!(app.project.model.options["lingo"]["fr"].values["lang"], "fr");
+    assert_eq!(
+        app.project.model.options["lingo"]["fr"].values["lang"],
+        "fr"
+    );
     assert_eq!(app.project.shared_selections()["lingo"], "fr");
     assert!(!app.project.shared_selections().contains_key("locale"));
 }
@@ -6924,6 +6933,110 @@ fn apply_group_fields_reshapes_a_shared_selectors_options_in_variables_toml() {
 }
 
 #[test]
+fn add_and_remove_selector_field_reshape_a_shared_selectors_options() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = shared_locale_app(dir.path());
+
+    app.update(Action::AddSelectorField {
+        selector: "locale".into(),
+        field: "fmt".into(),
+    });
+    assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
+    assert_eq!(app.project.model.options["locale"]["en"].values["fmt"], "");
+
+    app.update(Action::RemoveSelectorField {
+        selector: "locale".into(),
+        field: "fmt".into(),
+    });
+    assert_eq!(
+        app.project.model.selectors["locale"].fields,
+        vec!["lang".to_string()]
+    );
+    assert!(
+        !app.project.model.options["locale"]["en"]
+            .values
+            .contains_key("fmt")
+    );
+}
+
+#[test]
+fn shared_selector_grid_edit_and_ghost_row_work_without_an_env() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = shared_locale_app(dir.path());
+    app.update(Action::SwitchEnv(None));
+    app.varmanager.sync(&app.project);
+    app.varmanager.select_name("locale");
+
+    // The ghost row starts a new option with no environment active…
+    app.update(Action::StartNewOptionEdit);
+    let edit = app
+        .varmanager
+        .grid
+        .editing
+        .as_mut()
+        .expect("ghost edit started without an env");
+    assert_eq!((edit.row, edit.col), (2, 0));
+    edit.input.insert_str("de");
+    app.commit_grid_edit();
+    assert!(
+        app.project.model.options["locale"].contains_key("de"),
+        "{:?}",
+        app.toasts.messages()
+    );
+
+    // …and a field-cell edit commits to variables.toml the same way.
+    app.varmanager.start_cell_edit(&app.project, 0, 1);
+    let edit = app.varmanager.grid.editing.as_mut().unwrap();
+    edit.input.select_all();
+    edit.input.paste("en-GB");
+    app.commit_grid_edit();
+    assert_eq!(
+        app.project.model.options["locale"]["en"].values["lang"],
+        "en-GB"
+    );
+}
+
+#[test]
+fn new_selector_op_with_shared_writes_the_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+
+    app.update(Action::VarStruct(VarStructOp::NewSelector {
+        name: "locale".into(),
+        fields: vec!["locale".into()],
+        shared: true,
+    }));
+
+    assert!(app.project.model.selectors["locale"].shared);
+    let vars = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    assert!(vars.contains("shared = true"), "{vars}");
+}
+
+#[test]
+fn new_selector_prompt_ctrl_s_toggles_shared_and_confirm_carries_it() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let keymap = Keymap::default_bindings();
+
+    app.update(Action::PromptNewSelector);
+    for c in "locale".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+    app.handle_key(&keymap, ctrl('s'));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert!(
+        app.project.model.selectors["locale"].shared,
+        "{:?}",
+        app.toasts.messages()
+    );
+}
+
+#[test]
 fn var_struct_new_group_creates_group_with_members() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
@@ -6933,6 +7046,7 @@ fn var_struct_new_group_creates_group_with_members() {
     app.update(Action::VarStruct(VarStructOp::NewSelector {
         name: "creds".into(),
         fields: vec!["user_id".into(), "customer_id".into()],
+        shared: false,
     }));
 
     assert!(app.toasts.is_empty());
@@ -6957,6 +7071,7 @@ fn var_struct_new_entry_writes_every_field_into_the_active_env() {
     app.update(Action::VarStruct(VarStructOp::NewSelector {
         name: "creds".into(),
         fields: vec!["user_id".into(), "customer_id".into()],
+        shared: false,
     }));
 
     let mut values = indexmap::IndexMap::new();
@@ -7197,6 +7312,7 @@ fn var_struct_set_fields_replaces_the_group_list() {
     app.update(Action::VarStruct(VarStructOp::NewSelector {
         name: "creds".into(),
         fields: vec!["user_id".into()],
+        shared: false,
     }));
 
     app.update(Action::VarStruct(VarStructOp::SetFields {
@@ -7647,7 +7763,7 @@ fn keyboard_n_and_g_open_the_new_var_and_new_group_prompts() {
     assert!(matches!(
         app.modals.top(),
         Some(Modal::Prompt {
-            kind: PromptKind::NewSelector,
+            kind: PromptKind::NewSelector { shared: false },
             ..
         })
     ));
@@ -7755,7 +7871,7 @@ fn clicking_the_new_variable_button_opens_the_new_variable_prompt() {
     assert!(matches!(
         app.modals.top(),
         Some(Modal::Prompt {
-            kind: PromptKind::NewSelector,
+            kind: PromptKind::NewSelector { shared: false },
             ..
         })
     ));
@@ -7811,6 +7927,7 @@ fn add_and_remove_group_members_one_at_a_time() {
     app.update(Action::VarStruct(VarStructOp::NewSelector {
         name: "creds".into(),
         fields: vec![],
+        shared: false,
     }));
 
     // `a` flow: one member name per prompt, appended in order
@@ -8186,7 +8303,7 @@ fn a_taken_name_keeps_the_new_selector_prompt_open() {
     let Some(Modal::Prompt { input, kind, .. }) = app.modals.top() else {
         panic!("the prompt must stay open")
     };
-    assert_eq!(*kind, PromptKind::NewSelector);
+    assert!(matches!(kind, PromptKind::NewSelector { .. }));
     assert_eq!(input.text(), "user");
 }
 
@@ -8569,6 +8686,7 @@ fn declaring_a_new_selector_walks_into_its_first_option() {
     app.update(Action::VarStruct(VarStructOp::NewSelector {
         name: "tier".into(),
         fields: vec!["tier".into()],
+        shared: false,
     }));
 
     let Some(Modal::MultiPrompt { kind, .. }) = app.modals.top() else {

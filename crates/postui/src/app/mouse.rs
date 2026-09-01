@@ -687,6 +687,7 @@ impl App {
                 | Hit::ModalChoiceArrow { .. }
                 | Hit::ModalRowToggle(_)
                 | Hit::ModalAddRow
+                | Hit::ModalSharedToggle
                 | Hit::ModalRemove
                 | Hit::ModalOutside
                 | Hit::DropdownRow(_)
@@ -1128,6 +1129,17 @@ impl App {
                     self.modals.top_mut()
                 {
                     state.add_row();
+                    return self.update(Action::Render);
+                }
+                false
+            }
+            Hit::ModalSharedToggle => {
+                if let Some(crate::components::modal::Modal::Prompt {
+                    kind: crate::components::modal::PromptKind::NewSelector { shared },
+                    ..
+                }) = self.modals.top_mut()
+                {
+                    *shared = !*shared;
                     return self.update(Action::Render);
                 }
                 false

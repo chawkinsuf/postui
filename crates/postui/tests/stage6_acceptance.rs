@@ -118,6 +118,7 @@ async fn stage6_acceptance_flow() {
     app.update(Action::VarStruct(VarStructOp::NewSelector {
         name: "region".into(),
         fields: vec!["region".into()],
+        shared: false,
     }));
     app.modals.pop();
 
@@ -125,6 +126,7 @@ async fn stage6_acceptance_flow() {
     app.update(Action::VarStruct(VarStructOp::NewSelector {
         name: "creds".into(),
         fields: vec!["user_id".into(), "customer_id".into()],
+        shared: false,
     }));
     app.modals.pop();
 
