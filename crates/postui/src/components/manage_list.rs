@@ -1,22 +1,22 @@
 //! The Manage screen's Environments and Spaces tabs: one list-edit face
-//! for both (spec "Manage screen"). Left: `+ New` and the item list.
-//! Right: the selected item's name (edit in place = rename), a button
-//! row, and a muted detail line.
+//! for both (spec "Manage screen"), laid out like the Variables tab so the
+//! three tabs read as one interface. Left: `+ New` and the item list.
+//! Right: a title row (`Space: name` / `Environment: name`) with the
+//! pane's buttons right-aligned on it, then a detail block — the env
+//! file's path, or the space's requests by name.
 
 use crate::action::Action;
-use crate::components::line_input::LineInput;
 use crate::components::manage::ManageTab;
 use crate::hit::{Hit, HitMap};
 use crate::paint::{
-    BUTTON_HEIGHT, Button, ButtonKind, ControlState, FIELD_HEIGHT, ListRow, RowHighlight,
-    TextField, button_min_width, fill, text,
+    BUTTON_HEIGHT, Button, ButtonKind, ControlState, ListRow, RowHighlight, button_min_width, fill,
+    text,
 };
 use crate::project_ctx::ProjectContext;
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
-use ratatui::text::Line;
 use std::collections::BTreeMap;
 
 /// The left column's width — the Variable Manager's, so both faces of the
@@ -28,8 +28,6 @@ pub struct ManageList {
     /// Index into the current tab's item list.
     pub cursor: usize,
     pub scroll: usize,
-    /// The name field under edit (`None` while the list has the keyboard).
-    pub editing: Option<LineInput>,
     visible_rows: usize,
     ensure_visible: bool,
 }
@@ -55,30 +53,11 @@ impl ManageList {
         }
     }
 
-    /// Drops every trace of the previous tab's list: its cursor, its
-    /// scroll, and any name edit in flight (the tab strip switches to a
-    /// different set of items entirely).
+    /// Drops every trace of the previous tab's list: its cursor and its
+    /// scroll (the tab strip switches to a different set of items
+    /// entirely).
     pub fn reset(&mut self) {
         *self = Self::default();
-    }
-
-    pub fn start_edit(&mut self, name: &str) {
-        self.editing = Some(LineInput::new(name));
-    }
-
-    /// `Enter` on the name field: the rename action for a changed,
-    /// non-empty name; `None` (and the edit closes) otherwise.
-    pub fn commit_edit(&mut self, tab: ManageTab, ctx: &ProjectContext) -> Option<Action> {
-        let input = self.editing.take()?;
-        let to = input.text().trim().to_string();
-        let from = self.selected(tab, ctx)?.to_string();
-        if to.is_empty() || to == from {
-            return None;
-        }
-        Some(match tab {
-            ManageTab::Spaces => Action::RenameSpace { from, to },
-            _ => Action::RenameEnv { from, to },
-        })
     }
 
     fn new_action(tab: ManageTab) -> Action {
@@ -88,6 +67,20 @@ impl ManageList {
         }
     }
 
+    /// The rename prompt for `name` — the same prompt the header
+    /// dropdowns and the Variables tab's Rename button use.
+    pub fn rename_action(tab: ManageTab, name: &str) -> Action {
+        match tab {
+            ManageTab::Spaces => Action::PromptRenameSpace(name.to_string()),
+            _ => Action::PromptRenameEnv(name.to_string()),
+        }
+    }
+
+    /// The Spaces tab's move-all chooser for `name` (`m`, or the button).
+    fn move_all_action(name: &str) -> Action {
+        Action::PromptMoveAllRequests(name.to_string())
+    }
+
     fn delete_action(tab: ManageTab, name: &str) -> Action {
         match tab {
             ManageTab::Spaces => Action::DeleteSpace(name.to_string()),
@@ -95,17 +88,13 @@ impl ManageList {
         }
     }
 
-    /// The list's own keys. `None` while a name is under edit: `App` owns
-    /// those (it needs the mutable project access a commit takes).
+    /// The list's own keys.
     pub fn handle_key(
         &mut self,
         ev: KeyEvent,
         tab: ManageTab,
         ctx: &ProjectContext,
     ) -> Option<Action> {
-        if self.editing.is_some() {
-            return None; // App owns the edit's keys
-        }
         let len = Self::items(tab, ctx).len();
         let alt = ev.modifiers.contains(KeyModifiers::ALT);
         match ev.code {
@@ -131,14 +120,11 @@ impl ManageList {
                 self.ensure_visible = true;
                 None
             }
-            KeyCode::Enter => {
-                if let Some(name) = self.selected(tab, ctx) {
-                    let name = name.to_string();
-                    self.start_edit(&name);
-                }
-                None
-            }
             KeyCode::Char('n') => Some(Self::new_action(tab)),
+            KeyCode::Char('r') => Some(Self::rename_action(tab, self.selected(tab, ctx)?)),
+            KeyCode::Char('m') if tab == ManageTab::Spaces => {
+                Some(Self::move_all_action(self.selected(tab, ctx)?))
+            }
             KeyCode::Char('d') | KeyCode::Delete => {
                 Some(Self::delete_action(tab, self.selected(tab, ctx)?))
             }
@@ -151,19 +137,14 @@ impl ManageList {
         tab: ManageTab,
         ctx: &ProjectContext,
     ) -> Vec<(&'static str, &'static str, Option<Action>)> {
-        if self.editing.is_some() {
-            return vec![("enter", "save", None), ("esc", "cancel", None)];
-        }
+        let selected = self.selected(tab, ctx);
         let mut chips = vec![
-            ("enter", "rename", None),
             ("n", "new", Some(Self::new_action(tab))),
-            (
-                "d",
-                "delete",
-                self.selected(tab, ctx).map(|n| Self::delete_action(tab, n)),
-            ),
+            ("r", "rename", selected.map(|n| Self::rename_action(tab, n))),
+            ("d", "delete", selected.map(|n| Self::delete_action(tab, n))),
         ];
         if tab == ManageTab::Spaces {
+            chips.push(("m", "move all", selected.map(Self::move_all_action)));
             chips.push(("alt+↑↓", "move", None));
         }
         chips
@@ -175,6 +156,8 @@ impl ManageList {
         self.ensure_visible = false;
     }
 
+    /// Paints both columns. `requests` maps each space to its requests'
+    /// display names, in sidebar order (the Spaces tab's detail block).
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
@@ -183,7 +166,7 @@ impl ManageList {
         theme: &Theme,
         tab: ManageTab,
         ctx: &ProjectContext,
-        counts: &BTreeMap<String, usize>,
+        requests: &BTreeMap<String, Vec<String>>,
         hits: &mut HitMap,
         hovered: Option<&Hit>,
     ) {
@@ -200,8 +183,10 @@ impl ManageList {
             width: body.width - left.width,
             ..body
         };
-        self.draw_left(frame, left, theme, tab, ctx, &items, hits, hovered);
-        self.draw_right(frame, right, theme, tab, ctx, &items, counts, hits, hovered);
+        self.draw_left(frame, left, theme, tab, &items, hits, hovered);
+        self.draw_right(
+            frame, right, theme, tab, ctx, &items, requests, hits, hovered,
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -211,7 +196,6 @@ impl ManageList {
         left: Rect,
         theme: &Theme,
         tab: ManageTab,
-        ctx: &ProjectContext,
         items: &[String],
         hits: &mut HitMap,
         hovered: Option<&Hit>,
@@ -259,10 +243,6 @@ impl ManageList {
         self.scroll = self
             .scroll
             .min(items.len().saturating_sub(self.visible_rows));
-        let active = match tab {
-            ManageTab::Spaces => Some(ctx.active_space.as_str()),
-            _ => ctx.active_env.as_deref(),
-        };
         for (row, i) in (self.scroll..items.len())
             .enumerate()
             .take(self.visible_rows)
@@ -281,14 +261,12 @@ impl ManageList {
             }
             .paint(buf, y, list.x, list.width, theme.panel, 1.0, theme);
             let bg = ListRow::resolve_fill(theme, highlight, theme.panel, 1.0);
+            // Spaces carry their `alt+<n>` jump number; the active item
+            // is not marked here — the header chip already says which one
+            // is active, and the list is for editing, not switching.
             let label = match tab {
                 ManageTab::Spaces => format!("{}  {}", i + 1, items[i]),
                 _ => items[i].clone(),
-            };
-            let label = if active == Some(items[i].as_str()) {
-                format!("{label} \u{2713}")
-            } else {
-                label
             };
             text(
                 buf,
@@ -320,7 +298,7 @@ impl ManageList {
         tab: ManageTab,
         ctx: &ProjectContext,
         items: &[String],
-        counts: &BTreeMap<String, usize>,
+        requests: &BTreeMap<String, Vec<String>>,
         hits: &mut HitMap,
         hovered: Option<&Hit>,
     ) {
@@ -344,103 +322,119 @@ impl ManageList {
             }
             return;
         };
-        if right.width < 20 || right.height < 12 {
+        if right.width < 8 || right.height < 3 {
             return;
         }
-        let x = right.x + 2;
-        let title = match tab {
-            ManageTab::Spaces => format!("Space: {name}"),
-            _ => format!("Environment: {name}"),
-        };
-        text(buf, x, right.y + 1, &title, theme.text, theme.page, true);
+        let x0 = right.x + 2;
+        let bottom = right.y + right.height;
+        let mut y = right.y + 1;
 
-        let field = Rect {
-            x,
-            y: right.y + 3,
-            width: right.width.saturating_sub(4).min(40),
-            height: FIELD_HEIGHT,
-        };
-        let (content, state) = match &self.editing {
-            Some(input) => (
-                input.draw_line_windowed(true, theme, field.width.saturating_sub(2)),
-                ControlState::Focused,
-            ),
-            None => (
-                Line::raw(name.clone()),
-                if hovered == Some(&Hit::ManageName) {
+        // --- title row: name + the pane's buttons, right-aligned --------
+        // The Variables pane's layout exactly: the title at the left, the
+        // buttons laid out from the pane's right edge inward in
+        // keep-priority order (Delete outermost, like the selector grid),
+        // a button that would run into the title dropped rather than
+        // painted over it. Dropped buttons stay reachable by key.
+        if y + BUTTON_HEIGHT <= bottom {
+            let title = match tab {
+                ManageTab::Spaces => format!("Space: {name}"),
+                _ => format!("Environment: {name}"),
+            };
+            text(buf, x0, y + 1, &title, theme.text, theme.page, true);
+            let mut buttons: Vec<(&str, Hit)> =
+                vec![("Delete", Hit::ManageDelete), ("Rename", Hit::ManageRename)];
+            if tab == ManageTab::Spaces {
+                buttons.push(("Move down", Hit::ManageMoveDown));
+                buttons.push(("Move up", Hit::ManageMoveUp));
+                buttons.push(("Move all requests\u{2026}", Hit::ManageMoveAll));
+            }
+            let mut bx = right.x + right.width;
+            for (label, hit) in buttons {
+                let w = button_min_width(label);
+                if bx < x0 + title.chars().count() as u16 + w + 3 {
+                    break;
+                }
+                bx -= w + 1;
+                let rect = Rect {
+                    x: bx,
+                    y,
+                    width: w,
+                    height: BUTTON_HEIGHT,
+                };
+                let state = if hovered == Some(&hit) {
                     ControlState::Hover
                 } else {
                     ControlState::Normal
-                },
-            ),
-        };
-        TextField { content, state }.paint(buf, field, theme);
-        hits.register(field, Hit::ManageName);
-
-        let mut bx = x;
-        let mut by = field.y + FIELD_HEIGHT + 1;
-        let mut buttons: Vec<(&str, Hit)> =
-            vec![("Rename", Hit::ManageRename), ("Delete", Hit::ManageDelete)];
-        if tab == ManageTab::Spaces {
-            buttons.push(("Move up", Hit::ManageMoveUp));
-            buttons.push(("Move down", Hit::ManageMoveDown));
-            buttons.push(("Move all requests to \u{25be}", Hit::ManageMoveAll));
-        }
-        // The Spaces tab's five buttons rarely fit on one row: a button
-        // that would run past the pane wraps onto the next row rather
-        // than being dropped, so no capability goes missing on a narrow
-        // pane (the detail line follows whatever row they end on).
-        for (label, hit) in buttons {
-            let w = button_min_width(label);
-            if bx > x && bx + w > right.x + right.width {
-                bx = x;
-                by += BUTTON_HEIGHT;
+                };
+                Button {
+                    label,
+                    kind: ButtonKind::Secondary,
+                    state,
+                }
+                .paint(buf, rect, theme);
+                hits.register(rect, hit);
             }
-            if bx + w > right.x + right.width || by + BUTTON_HEIGHT > right.y + right.height {
-                break;
-            }
-            let rect = Rect {
-                x: bx,
-                y: by,
-                width: w,
-                height: BUTTON_HEIGHT,
-            };
-            let state = if hovered == Some(&hit) {
-                ControlState::Hover
-            } else {
-                ControlState::Normal
-            };
-            Button {
-                label,
-                kind: ButtonKind::Secondary,
-                state,
-            }
-            .paint(buf, rect, theme);
-            hits.register(rect, hit);
-            bx += w + 1;
+            y += BUTTON_HEIGHT + 1;
         }
 
-        let detail = match tab {
+        // --- detail block ---------------------------------------------
+        let clip_w = right.width.saturating_sub(4);
+        match tab {
             ManageTab::Spaces => {
-                let n = counts.get(name).copied().unwrap_or(0);
-                format!("{n} request{}", if n == 1 { "" } else { "s" })
+                // The space's requests by name — the pane has the room, and
+                // names say far more than a count. As many as fit, then a
+                // "+ n more" line for the rest.
+                let names = requests.get(name).map(Vec::as_slice).unwrap_or(&[]);
+                if y >= bottom {
+                    return;
+                }
+                let heading = if names.is_empty() {
+                    "No requests"
+                } else {
+                    "Requests"
+                };
+                text(buf, x0, y, heading, theme.text_muted, theme.page, false);
+                y += 1;
+                let room = (bottom - y) as usize;
+                let shown = if names.len() > room {
+                    room.saturating_sub(1)
+                } else {
+                    names.len()
+                };
+                for n in &names[..shown] {
+                    text(
+                        buf,
+                        x0,
+                        y,
+                        super::chooser::clip(n, clip_w),
+                        theme.text,
+                        theme.page,
+                        false,
+                    );
+                    y += 1;
+                }
+                if shown < names.len() && y < bottom {
+                    let more = format!("+ {} more", names.len() - shown);
+                    text(buf, x0, y, &more, theme.text_muted, theme.page, false);
+                }
             }
-            _ => postui_core::project::environment_path(&ctx.root, name)
-                .strip_prefix(&ctx.root)
-                .map(|p| p.display().to_string())
-                .unwrap_or_default(),
-        };
-        let detail_y = by + BUTTON_HEIGHT + 1;
-        if detail_y < right.y + right.height {
-            text(
-                buf,
-                x,
-                detail_y,
-                super::chooser::clip(&detail, right.width.saturating_sub(3)),
-                theme.text_muted,
-                theme.page,
-                false,
-            );
+            _ => {
+                let path = postui_core::project::environment_path(&ctx.root, name)
+                    .strip_prefix(&ctx.root)
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default();
+                if y < bottom {
+                    text(
+                        buf,
+                        x0,
+                        y,
+                        super::chooser::clip(&path, clip_w),
+                        theme.text_muted,
+                        theme.page,
+                        false,
+                    );
+                }
+            }
         }
     }
 }

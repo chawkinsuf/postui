@@ -460,7 +460,7 @@ pub struct VarManager {
 }
 
 /// The left list's fixed width (spec §3.4's mock).
-pub const LEFT_W: u16 = 28;
+pub const LEFT_W: u16 = 31;
 
 const GLYPH_LOCK: &str = "\u{1f512}"; // 🔒
 const GLYPH_UNRESOLVED: &str = "\u{25cf}"; // ●
@@ -2134,18 +2134,60 @@ impl VarManager {
         hovered: Option<&Hit>,
     ) {
         fill(frame.buffer_mut(), left, theme.panel);
-        if left.width <= 2 || left.height == 0 {
+        if left.width <= 2 || left.height < BUTTON_HEIGHT + 2 {
             self.visible_rows = 0;
             return;
+        }
+
+        // The "new" buttons head the column — the sidebar's `+ New
+        // request` spot, and the Environments/Spaces tabs' `+ New` spot,
+        // so the three Manage tabs read as one interface. `+ Variable`
+        // is the primary; `+ Selector` sits beside it when the column has
+        // the room (it stays reachable by key and footer chip otherwise).
+        {
+            let buf = frame.buffer_mut();
+            let state_of = |hit: &Hit| {
+                if hovered == Some(hit) {
+                    ControlState::Hover
+                } else {
+                    ControlState::Normal
+                }
+            };
+            let mut bx = left.x + 1;
+            let by = left.y + 1;
+            let right_edge = left.x + left.width - 1;
+            for (label, kind, hit) in [
+                ("+ Variable", ButtonKind::Primary, Hit::VmNewVar),
+                ("+ Selector", ButtonKind::Secondary, Hit::VmNewSelector),
+            ] {
+                let w = button_min_width(label);
+                if bx + w > right_edge {
+                    break;
+                }
+                let rect = Rect {
+                    x: bx,
+                    y: by,
+                    width: w,
+                    height: BUTTON_HEIGHT,
+                };
+                Button {
+                    label,
+                    kind,
+                    state: state_of(&hit),
+                }
+                .paint(buf, rect, theme);
+                hits.register(rect, hit);
+                bx += w + 1;
+            }
         }
 
         // Rows keep a 1-column inset each side: the left column is the
         // selected row's accent lane, the right one hosts the scrollbar.
         let list = Rect {
             x: left.x + 1,
-            y: left.y,
+            y: left.y + 1 + BUTTON_HEIGHT + 1,
             width: left.width - 2,
-            height: left.height,
+            height: left.height - (BUTTON_HEIGHT + 2),
         };
         self.visible_rows = Self::rows_that_fit(list.height);
         if self.ensure_visible {
@@ -2381,12 +2423,34 @@ fields = ["user_id", "customer_id"]
 
     fn render(vm: &mut VarManager, ctx: &ProjectContext) -> (String, HitMap) {
         let theme = Theme::dark();
-        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        // Wide enough for the selector pane's four title-row buttons
+        // beside a fixture-length selector name.
+        let mut terminal = Terminal::new(TestBackend::new(104, 24)).unwrap();
         let mut hits = HitMap::default();
         terminal
             .draw(|f| vm.draw(f, f.area(), &theme, ctx, None, &mut hits, None))
             .unwrap();
         (format!("{:?}", terminal.backend().buffer()), hits)
+    }
+
+    /// The Variables tab's "new" buttons live at the top of the left
+    /// column — the same spot as the sidebar's `+ New request` and the
+    /// Environments/Spaces tabs' `+ New` — so the three Manage tabs read
+    /// as one interface, and the top bar holds only the strip and Close.
+    #[test]
+    fn new_buttons_sit_at_the_top_of_the_left_column_above_the_list() {
+        let (_dir, ctx) = fixture();
+        let mut vm = VarManager::default();
+        let (content, hits) = render(&mut vm, &ctx);
+        let var = hits.rect_of(&Hit::VmNewVar).expect("+ Variable");
+        let sel = hits.rect_of(&Hit::VmNewSelector).expect("+ Selector");
+        let row0 = hits.rect_of(&Hit::VmLeftRow(0)).expect("first row");
+        assert!(content.contains("+ Variable"), "{content}");
+        assert!(content.contains("+ Selector"), "{content}");
+        assert_eq!(var.y, sel.y, "side by side on one row");
+        assert!(var.x < sel.x);
+        assert!(sel.x + sel.width <= LEFT_W, "both fit inside the column");
+        assert!(var.y + var.height < row0.y, "the list starts under them");
     }
 
     #[test]

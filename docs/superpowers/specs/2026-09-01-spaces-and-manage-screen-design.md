@@ -222,23 +222,27 @@ New request, rename and duplicate all resolve inside the active space:
 A typed leading `/` is not special-cased; a user cannot address another
 space from the name prompt.
 
-The request row's right-click menu gains one flat **Move to <space>** row
-per other space (the dropdown has no submenus); selecting one calls
-`move_request_to_space`, records a `FileStates` step exactly like a rename
-(one file), and if the moved request was open, follows it (switches space
-and opens the new slug).
+The request row's right-click menu gains one **Move to space…** row
+(omitted in a single-space project) that opens a fuzzy chooser of the
+other spaces — a flat row per space does not scale past a few spaces;
+picking one calls `move_request_to_space`, records a `FileStates` step
+exactly like a rename (one file), and if the moved request was open,
+follows it (switches space and opens the new slug).
 
 Footer chips when the sidebar is focused: existing new/rename/delete plus
 `alt+] space`.
 
 ### Header (`components/header_bar.rs`, `hit.rs`)
 
-Left cluster order: wordmark, project chip, **space chip**, env chip
-(with its cycle pill), Manage chip. Theme stays on the right.
+Left cluster order: wordmark, project chip, env chip (with its cycle
+pill), **space chip** (with its cycle pill), Manage chip, with the same
+wide group gap after each cycle pill so no pill reads as the next chip's
+key. Theme stays on the right.
 
 The space chip mirrors the env chip's idiom: `▾ auth` with an `alt+]`
 cycle pill (`Hit::HeaderSpace`, `Hit::HeaderSpaceCycle`). Its dropdown
-lists every space as `1 main`, `2 auth`, … with ✓ on the active one, then
+lists every space as `1 main`, `2 auth`, … with ✓ on the active one (the
+Manage list carries no such mark), then
 `new space…` and `manage spaces…`. The env dropdown gains a `manage
 environments…` row after `new environment…`.
 
@@ -253,22 +257,28 @@ existing `VarManagerState` plus a `tab: ManageTab` (Variables,
 Environments, Spaces) and one `ListEditState` per simple tab. The top bar
 gains a tab strip at its left (painted with the editor's existing tab
 idiom); the Variables tab's environment switcher and `+ Variable` /
-`+ Selector` buttons only render on that tab. `alt+v` opens on the last
-used tab; the header dropdowns' manage rows open on their tab.
+`+ Selector` buttons only render on that tab, at the top of its left
+column (the sidebar's `+ New request` spot, and the other tabs' `+ New`
+spot) so the bar holds only the strip and Close. The strip's underline
+glides between tabs like the editor's. `alt+v` opens on the last used
+tab; the header dropdowns' manage rows open on their tab.
 
 Environments and Spaces tabs share one **ListEditState** face:
 
 - Left: the item list (environments in file order; spaces in `spaces`
   order, numbered). Top of the left list: a `+ New` button that opens the
   existing name prompt.
-- Right, for the selected item: a name field (edit in place, commit =
-  rename), then a button row: **Rename** (focuses the field), **Delete**,
-  and on the Spaces tab **Move up** / **Move down** and **Move all
-  requests to ▸** (a dropdown of the other spaces). A muted line beneath
-  shows the space's request count, or the environment's file path.
-- Keys within the list: `enter` edit name, `n` new, `d` delete, and on
-  Spaces `alt+up` / `alt+down` move. Footer chips advertise them. Tabs
-  switch by click or `alt+left` / `alt+right`.
+- Right, for the selected item, the Variables pane's title-row layout:
+  `Space: name` / `Environment: name` at the left and the buttons
+  right-aligned on the same row — **Rename** (opens the rename prompt),
+  **Delete**, and on the Spaces tab **Move up** / **Move down** and
+  **Move all requests…** (the same space chooser as the row menu).
+  Beneath: the environment's file path, or the space's requests listed
+  by name in sidebar order (as many as fit, then `+ n more`). No mark on
+  the active item — the header chip already says which one is active.
+- Keys within the list: `r` rename, `n` new, `d` delete, and on Spaces
+  `m` move all and `alt+up` / `alt+down` move. Footer chips advertise
+  them. Tabs switch by click or `alt+left` / `alt+right`.
 - Undo coverage on these tabs: deletes are `Trashed` steps; an
   environment rename is a `FileStates` step; **a space rename, a reorder,
   and Move all requests are not undo steps** (a directory rename or a bulk
@@ -385,11 +395,16 @@ Rulings taken during implementation that amend the text above.
   warning) toasts as `Warning`, once per change, not per refresh; walk
   errors keep the `Error` channel. An invalid name listed in `spaces` is
   reported the same way and is never rewritten away.
-- G: in the Manage bar the tab strip has priority; right-aligned buttons
-  are dropped (+ Selector, then + Variable, then Close) to make room.
-- H: in the header, the space-cycle and env-cycle keycap pills yield
-  first at narrow widths, then the Manage keycap; chip labels never
-  shorten. The space chip reads `Space: <name> ▾`.
+- G: in the Manage bar the tab strip has priority; Close is dropped to
+  make room. The "new" buttons live in each tab's left column
+  (`+ Selector` yields there when the column is too narrow). The
+  Environments/Spaces panes' title-row buttons drop from the left
+  (Move all requests…, then Move up, …) like the selector pane's; every
+  dropped button has a key.
+- H: in the header, the env-cycle and space-cycle keycap pills yield
+  first at narrow widths — and whenever the dirty bar's Save/Discard
+  group would otherwise not fit — then the Manage keycap; chip labels
+  never shorten. The space chip reads `Space: <name> ▾`.
 - I/I': move-all and move-to-space are dirty-gated when the open request
   is affected, via `ForceMoveAllRequests` / `ForceMoveRequestToSpace`;
   `ForceOpenRequest` owns the follow.

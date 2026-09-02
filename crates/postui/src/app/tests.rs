@@ -3545,7 +3545,7 @@ fn move_all_requests_holding_a_dirty_open_request_gates_first() {
 }
 
 #[test]
-fn request_context_menu_offers_a_flat_move_row_per_other_space() {
+fn request_context_menu_offers_one_move_row_that_opens_the_space_chooser() {
     let (mut app, _dir) = spaced_app();
     render_once(&mut app);
     let r = app.hits.rect_of(&Hit::SidebarRow(0)).unwrap();
@@ -3560,9 +3560,50 @@ fn request_context_menu_offers_a_flat_move_row_per_other_space() {
             "Open",
             "Duplicate",
             "Rename\u{2026}",
-            "Move to auth",
+            "Move to space\u{2026}",
             "Delete"
         ]
+    );
+    let move_row = d.items[3].action.clone();
+    assert_eq!(
+        move_row,
+        Some(Action::PromptMoveRequestToSpace("main/alpha".into()))
+    );
+    app.update(Action::Close);
+    app.update(move_row.unwrap());
+    let Some(Modal::Chooser(c)) = app.modals.top() else {
+        panic!("a chooser of the other spaces, not a flat row per space")
+    };
+    assert_eq!(c.title(), "Move to space");
+    assert_eq!(c.selected_label(), Some("auth"));
+    let result = c.confirm().unwrap();
+    assert_eq!(
+        result.actions,
+        vec![Action::MoveRequestToSpace {
+            slug: "main/alpha".into(),
+            space: "auth".into()
+        }]
+    );
+}
+
+/// With no other space to move to, the row is left out rather than
+/// opening an empty chooser.
+#[test]
+fn request_context_menu_has_no_move_row_in_a_single_space_project() {
+    let mut app = App::new_for_test();
+    postui_core::storage::save_request(&app.project.root, "main/ping", &req("https://x/ping"))
+        .unwrap();
+    app.update(Action::RefreshSidebar);
+    render_once(&mut app);
+    let r = app.hits.rect_of(&Hit::SidebarRow(0)).unwrap();
+    app.handle_mouse(right_down(r.x + 1, r.y));
+    let Some(Modal::Dropdown(d)) = app.modals.top() else {
+        panic!("menu")
+    };
+    assert!(
+        d.items.iter().all(|i| !i.label.starts_with("Move to")),
+        "{:?}",
+        d.items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>()
     );
 }
 
@@ -3622,21 +3663,6 @@ fn undo_follow_into_another_space_keeps_the_outgoing_space_s_memory() {
         app.project.space_open_for("main").as_deref(),
         Some("main/alpha")
     );
-}
-
-#[test]
-fn undo_and_redo_close_a_manage_rename_in_flight() {
-    let (mut app, _dir) = spaced_app();
-    app.update(Action::ForceOpenRequest("main/alpha".into()));
-    app.manage.list.start_edit("main");
-    app.update(Action::Undo);
-    assert!(
-        app.manage.list.editing.is_none(),
-        "a global undo must not leave a stale rename field behind"
-    );
-    app.manage.list.start_edit("main");
-    app.update(Action::Redo);
-    assert!(app.manage.list.editing.is_none());
 }
 
 #[test]
@@ -11447,6 +11473,18 @@ use crate::components::varmanager::VmField;
 /// right-aligned and drop the lowest-priority ones when the width runs
 /// short (see `components::manage::draw_manage_bar`), so a test about a
 /// specific button needs a width that actually paints it.
+/// 120 columns and tall: the Manage screen's Spaces pane needs the width
+/// for its five title-row buttons and the height for its request list.
+fn rendered_text_wide_tall(app: &mut App) -> String {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    app.anims.finish_all();
+    let backend = TestBackend::new(120, 46);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+    format!("{:?}", terminal.backend().buffer())
+}
+
 fn rendered_text_wide(app: &mut App) -> String {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -13950,20 +13988,28 @@ fn env_dropdown_gains_a_manage_row() {
 // --- Task 14: the Environments / Spaces tabs — list-edit face -------------
 
 #[test]
-fn spaces_tab_lists_numbered_spaces_with_count_and_buttons() {
+fn spaces_tab_lists_numbered_spaces_with_request_names_and_buttons() {
     use crate::components::manage::ManageTab;
     let (mut app, _dir) = spaced_app();
     app.update(Action::OpenManage {
         tab: Some(ManageTab::Spaces),
     });
-    let text = rendered_text_tall(&mut app);
+    let text = rendered_text_wide_tall(&mut app);
     assert!(text.contains("1  main"), "{text}");
     assert!(text.contains("2  auth"), "{text}");
     assert!(text.contains("Space: main"), "{text}");
-    assert!(text.contains("2 requests"), "{text}");
+    assert!(
+        !text.contains("\u{2713}"),
+        "no check mark beside the active space: {text}"
+    );
+    // The request names themselves, not a count.
+    assert!(!text.contains("2 requests"), "{text}");
+    let alpha = text.find("alpha").expect("alpha listed");
+    let beta = text.find("beta").expect("beta listed");
+    assert!(alpha < beta, "in sidebar order");
+    assert!(!text.contains("login"), "auth's request is not main's");
     for hit in [
         Hit::ManageNew,
-        Hit::ManageName,
         Hit::ManageRename,
         Hit::ManageDelete,
         Hit::ManageMoveUp,
@@ -13972,6 +14018,43 @@ fn spaces_tab_lists_numbered_spaces_with_count_and_buttons() {
     ] {
         assert!(app.hits.rect_of(&hit).is_some(), "{hit:?} missing");
     }
+}
+
+/// The Environments/Spaces panes share the Variables pane's title-row
+/// layout: the item's name at the left, the buttons right-aligned on the
+/// same row with Delete at the pane's edge, just like the selector grid.
+#[test]
+fn manage_pane_buttons_sit_right_aligned_on_the_title_row() {
+    use crate::components::manage::ManageTab;
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Spaces),
+    });
+    rendered_text_wide_tall(&mut app);
+    let delete = app.hits.rect_of(&Hit::ManageDelete).unwrap();
+    let rename = app.hits.rect_of(&Hit::ManageRename).unwrap();
+    let move_all = app.hits.rect_of(&Hit::ManageMoveAll).unwrap();
+    assert_eq!(
+        rename.x + rename.width + 1,
+        delete.x,
+        "Rename just left of it"
+    );
+    assert!(move_all.x < rename.x);
+    assert_eq!(delete.y, rename.y);
+    // The Variables pane's title row sits at the same y.
+    std::fs::write(
+        app.project.root.join("variables.toml"),
+        "[base_url]\ndefault = \"http://localhost\"\n",
+    )
+    .unwrap();
+    app.update(Action::ReloadProjectFiles);
+    app.update(Action::SelectManageTab(ManageTab::Variables));
+    rendered_text_wide_tall(&mut app); // builds the left rows
+    app.varmanager.select_row(1); // row 0 is the "Variables" section header
+    rendered_text_wide_tall(&mut app);
+    let vm_delete = app.hits.rect_of(&Hit::VmDelete).expect("a var's Delete");
+    assert_eq!(vm_delete.y, delete.y);
+    assert_eq!(vm_delete.x + vm_delete.width, delete.x + delete.width);
 }
 
 #[test]
@@ -13987,12 +14070,13 @@ fn environments_tab_lists_envs_and_hides_the_space_only_buttons() {
     assert!(text.contains("environments/prod.toml"), "{text}");
     assert!(app.hits.rect_of(&Hit::ManageMoveUp).is_none());
     assert!(app.hits.rect_of(&Hit::ManageMoveAll).is_none());
+    assert!(app.hits.rect_of(&Hit::ManageRename).is_some());
 }
 
 #[test]
-fn list_keys_move_delete_and_rename_in_place() {
+fn list_keys_move_delete_and_rename_through_the_prompt() {
     use crate::components::manage::ManageTab;
-    let (mut app, dir) = spaced_app();
+    let (mut app, _dir) = spaced_app();
     app.update(Action::OpenManage {
         tab: Some(ManageTab::Spaces),
     });
@@ -14004,27 +14088,51 @@ fn list_keys_move_delete_and_rename_in_place() {
     assert_eq!(app.manage.list.cursor, 0, "cursor follows the moved space");
 
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(app.manage.list.editing.is_some());
-    for _ in 0..4 {
-        app.handle_key(
-            &keymap,
-            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
-        );
-    }
-    for c in "identity".chars() {
-        app.handle_key(&keymap, plain(c));
-    }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(app.manage.list.editing.is_none());
-    assert_eq!(app.project.spaces, ["identity", "main"]);
-    assert!(dir.path().join("requests/identity").is_dir());
+    assert!(app.modals.is_empty(), "Enter is not rename");
+    app.handle_key(&keymap, plain('r'));
+    assert!(
+        matches!(
+            app.modals.top(),
+            Some(Modal::Prompt {
+                kind: PromptKind::RenameSpace { from },
+                ..
+            }) if from == "auth"
+        ),
+        "`r` opens the rename prompt for the selected space"
+    );
+    app.update(Action::Close);
+
+    app.handle_key(&keymap, plain('m'));
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Chooser(c)) if c.title() == "Move all requests to"),
+        "`m` opens the move-all chooser (the button drops on a narrow pane)"
+    );
+    app.update(Action::Close);
 
     app.handle_key(&keymap, plain('d'));
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
 }
 
 #[test]
-fn move_all_button_opens_a_dropdown_of_other_spaces() {
+fn rename_button_opens_the_rename_prompt() {
+    use crate::components::manage::ManageTab;
+    let (mut app, _dir) = app_with_envs();
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Environments),
+    });
+    rendered_text_tall(&mut app);
+    click_hit(&mut app, Hit::ManageRename);
+    assert!(matches!(
+        app.modals.top(),
+        Some(Modal::Prompt {
+            kind: PromptKind::RenameEnvironment { from },
+            ..
+        }) if from == "prod"
+    ));
+}
+
+#[test]
+fn move_all_button_opens_the_space_chooser() {
     use crate::components::manage::ManageTab;
     let (mut app, _dir) = spaced_app();
     app.update(Action::OpenManage {
@@ -14032,17 +14140,17 @@ fn move_all_button_opens_a_dropdown_of_other_spaces() {
     });
     rendered_text_tall(&mut app);
     click_hit(&mut app, Hit::ManageMoveAll);
-    let Some(Modal::Dropdown(d)) = app.modals.top() else {
-        panic!("dropdown")
+    let Some(Modal::Chooser(c)) = app.modals.top() else {
+        panic!("chooser")
     };
-    assert_eq!(d.items.len(), 1);
-    assert_eq!(d.items[0].label, "auth");
+    assert_eq!(c.title(), "Move all requests to");
+    assert_eq!(c.selected_label(), Some("auth"));
     assert_eq!(
-        d.items[0].action,
-        Some(Action::MoveAllRequests {
+        c.confirm().unwrap().actions,
+        vec![Action::MoveAllRequests {
             from: "main".into(),
             to: "auth".into()
-        })
+        }]
     );
 }
 
@@ -14079,8 +14187,8 @@ fn manage_tabs_footer_chips_advertise_list_keys() {
     app.update(Action::OpenManage {
         tab: Some(ManageTab::Spaces),
     });
-    let text = rendered_text_tall(&mut app);
-    for label in ["rename", "new", "delete", "move"] {
+    let text = rendered_text_wide_tall(&mut app);
+    for label in ["rename", "new", "delete", "move all", "move"] {
         assert!(text.contains(label), "{label}: {text}");
     }
 }

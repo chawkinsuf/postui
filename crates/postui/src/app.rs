@@ -2794,11 +2794,6 @@ impl App {
                 if !self.modals.is_empty() {
                     return true;
                 }
-                // A rename typed into a Manage row is not a recorded step,
-                // and the undo is about to re-list under it — drop the
-                // in-place field rather than leave it hovering over a row
-                // that may no longer be the one it opened on.
-                self.manage.list.editing = None;
                 // A live cell edit is part of what's being undone: commit it
                 // so it becomes a step, then capture any pending delta.
                 self.commit_table_edit();
@@ -2819,8 +2814,6 @@ impl App {
                 if !self.modals.is_empty() {
                     return true;
                 }
-                // See `Action::Undo`.
-                self.manage.list.editing = None;
                 self.commit_table_edit();
                 // A pending uncaptured edit means the user changed something
                 // after the last undo; capturing it clears the redo stack,
@@ -3098,11 +3091,6 @@ impl App {
                 true
             }
             Action::CloseScreen => {
-                // Leaving the screen ends any in-place name edit — a
-                // click away already committed it, `esc` already
-                // cancelled it, so nothing is left half-typed for the
-                // next visit to resume.
-                self.manage.list.editing = None;
                 self.screen = Screen::Main;
                 self.focus = self.prior_focus;
                 true
@@ -3940,6 +3928,39 @@ impl App {
                     current,
                 }));
                 self.begin_dropdown_open();
+                true
+            }
+            Action::PromptMoveRequestToSpace(slug) => {
+                use crate::components::chooser::ChooserState;
+                let own = postui_core::storage::space_of(&slug).map(str::to_string);
+                let items =
+                    self.other_space_items(own.as_deref(), |space| Action::MoveRequestToSpace {
+                        slug: slug.clone(),
+                        space,
+                    });
+                if items.is_empty() {
+                    self.toasts
+                        .push("No other space to move to", ToastKind::Info);
+                    return true;
+                }
+                self.push_modal(Modal::Chooser(ChooserState::new("Move to space", items)));
+                true
+            }
+            Action::PromptMoveAllRequests(from) => {
+                use crate::components::chooser::ChooserState;
+                let items = self.other_space_items(Some(&from), |to| Action::MoveAllRequests {
+                    from: from.clone(),
+                    to,
+                });
+                if items.is_empty() {
+                    self.toasts
+                        .push("No other space to move to", ToastKind::Info);
+                    return true;
+                }
+                self.push_modal(Modal::Chooser(ChooserState::new(
+                    "Move all requests to",
+                    items,
+                )));
                 true
             }
             Action::OpenNewSpacePrompt => {
@@ -5931,25 +5952,19 @@ impl App {
             Hit::TableRow(i) => return self.table_row_context_menu(*i),
             _ => return None,
         };
-        // A flat "Move to <space>" row per other space, ordered like
-        // `project.spaces`. Computed into a local first so the closure's
+        // One "Move to space…" row opening the chooser of the other
+        // spaces — none at all in a single-space project, where there is
+        // nowhere to move to. Computed into a local first so the closure's
         // borrow of `self` doesn't overlap the `vec![]` below (which also
         // borrows `self` via `Action::OpenRequest`/etc.).
         let move_rows = |slug: &str| -> Vec<MenuItem> {
-            self.project
-                .spaces
-                .iter()
-                .filter(|s| **s != self.project.active_space)
-                .map(|s| {
-                    MenuItem::new(
-                        format!("Move to {s}"),
-                        Action::MoveRequestToSpace {
-                            slug: slug.to_string(),
-                            space: s.clone(),
-                        },
-                    )
-                })
-                .collect()
+            if self.project.spaces.len() < 2 {
+                return Vec::new();
+            }
+            vec![MenuItem::new(
+                "Move to space\u{2026}",
+                Action::PromptMoveRequestToSpace(slug.to_string()),
+            )]
         };
         Some(match row {
             Row::Request {
@@ -6209,10 +6224,6 @@ impl App {
             return false;
         }
         if self.screen == Screen::Manage {
-            if let Some(input) = self.manage.list.editing.as_mut() {
-                input.paste(text);
-                return self.update(Action::Render);
-            }
             if let Some((_, input)) = self.varmanager.form.editing.as_mut() {
                 input.paste(text);
                 return self.update(Action::Render);
@@ -6284,9 +6295,6 @@ impl App {
             return input.selected_text();
         }
         if self.screen == Screen::Manage {
-            if let Some(input) = self.manage.list.editing.as_ref() {
-                return input.selected_text();
-            }
             if let Some((_, input)) = self.varmanager.form.editing.as_ref() {
                 return input.selected_text();
             }
@@ -6850,33 +6858,13 @@ impl App {
                 let delta = if ev.code == KeyCode::Right { 1 } else { -1 };
                 return self.update(Action::SelectManageTab(self.manage.tab.cycle(delta)));
             }
-            // The Environments and Spaces tabs: a name field under edit
-            // owns the keyboard (`Enter` commits the rename, `Esc`
-            // cancels, everything else types), otherwise the list's own
-            // keys run and anything they don't claim is swallowed like on
-            // any other non-`Main` screen.
+            // The Environments and Spaces tabs: the list's own keys run
+            // and anything they don't claim is swallowed like on any other
+            // non-`Main` screen.
             if self.screen == Screen::Manage
                 && self.manage.tab != crate::components::manage::ManageTab::Variables
             {
                 let tab = self.manage.tab;
-                if let Some(input) = self.manage.list.editing.as_mut() {
-                    match ev.code {
-                        KeyCode::Enter => {
-                            if let Some(a) = self.manage.list.commit_edit(tab, &self.project) {
-                                return self.update(a);
-                            }
-                            return true;
-                        }
-                        KeyCode::Esc => {
-                            self.manage.list.editing = None;
-                            return true;
-                        }
-                        _ => {
-                            input.handle_key(ev);
-                            return true;
-                        }
-                    }
-                }
                 if let Some(a) = self.manage.list.handle_key(ev, tab, &self.project) {
                     return self.update(a);
                 }
@@ -7213,6 +7201,26 @@ impl App {
             .retarget_with(left_key, left, dur, now, Easing::InOutCubic);
         self.anims
             .retarget_with(right_key, right, dur, now, Easing::InOutCubic);
+    }
+
+    /// The "move to space" choosers' rows: every space but `except`, in
+    /// `project.spaces` order, each dispatching `action(space)` on pick.
+    fn other_space_items(
+        &self,
+        except: Option<&str>,
+        action: impl Fn(String) -> Action,
+    ) -> Vec<crate::components::chooser::ChooserItem> {
+        self.project
+            .spaces
+            .iter()
+            .filter(|s| Some(s.as_str()) != except)
+            .map(|s| crate::components::chooser::ChooserItem {
+                label: s.clone(),
+                detail: None,
+                actions: vec![action(s.clone())],
+                ..Default::default()
+            })
+            .collect()
     }
 
     /// Like [`Self::retarget_editor_tab_underline`], for the Manage

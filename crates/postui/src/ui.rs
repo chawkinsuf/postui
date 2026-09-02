@@ -182,14 +182,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     );
                 }
                 tab => {
-                    let counts = app.sidebar.space_counts();
+                    let requests = app.sidebar.space_requests();
                     app.manage.list.draw(
                         frame,
                         body,
                         &app.theme,
                         tab,
                         &app.project,
-                        &counts,
+                        &requests,
                         &mut hits,
                         app.hovered.as_ref(),
                     );
@@ -224,12 +224,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             // The manager binds plain q to quit in every focus stop; only
             // a live edit types it.
             || app.screen == Screen::Manage
-                && (if app.manage.tab == crate::components::manage::ManageTab::Variables {
-                    app.varmanager.form.editing.is_none() && app.varmanager.grid.editing.is_none()
-                } else {
-                    // The list's own `q` quits; only a live name edit types it.
-                    app.manage.list.editing.is_none()
-                }));
+                && (app.manage.tab != crate::components::manage::ManageTab::Variables
+                    || app.varmanager.form.editing.is_none()
+                        && app.varmanager.grid.editing.is_none()));
     let vm_chips = modal_chips.or_else(|| {
         (app.screen == Screen::Manage).then(|| {
             if app.manage.tab != crate::components::manage::ManageTab::Variables {

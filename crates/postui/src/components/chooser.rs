@@ -121,6 +121,10 @@ impl ChooserState {
         self.refilter();
     }
 
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
     pub fn input(&self) -> &str {
         &self.input
     }

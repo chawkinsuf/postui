@@ -146,6 +146,29 @@ impl Sidebar {
         out
     }
 
+    /// Every space's requests by display name, in the sidebar's own order
+    /// (display name, then slug as the tiebreak) — the Manage screen's
+    /// Spaces tab lists them under the selected space.
+    pub fn space_requests(&self) -> std::collections::BTreeMap<String, Vec<String>> {
+        let mut out: std::collections::BTreeMap<String, Vec<(String, String)>> =
+            std::collections::BTreeMap::new();
+        for l in &self.listing {
+            if let Some(space) = postui_core::storage::space_of(&l.slug) {
+                let leaf = l.slug.rsplit('/').next().unwrap_or(&l.slug);
+                let name = l.name.clone().unwrap_or_else(|| leaf.to_string());
+                out.entry(space.to_string())
+                    .or_default()
+                    .push((name, l.slug.clone()));
+            }
+        }
+        out.into_iter()
+            .map(|(space, mut names)| {
+                names.sort_by_key(|(n, slug)| (n.to_lowercase(), slug.clone()));
+                (space, names.into_iter().map(|(n, _)| n).collect())
+            })
+            .collect()
+    }
+
     /// The first request row in display order (the switch-in fallback).
     pub fn first_request_slug(&self) -> Option<String> {
         self.rows.iter().find_map(|r| match r {

@@ -146,8 +146,16 @@ pub enum Action {
     /// Delete the selected sidebar slug. No confirm — the delete records
     /// an undo step, and the toast advertises it.
     DeleteSelectedRequest,
-    /// Row menu "Move to <space>": rename into that space keeping the
-    /// sub-path. Gated on unsaved edits when `slug` is the open request
+    /// Row menu "Move to space…": opens the chooser of the other spaces
+    /// for the request at `slug`; picking one dispatches
+    /// `MoveRequestToSpace`.
+    PromptMoveRequestToSpace(String),
+    /// The Spaces tab's "Move all requests…" button: opens the chooser of
+    /// the other spaces for the space `from`; picking one dispatches
+    /// `MoveAllRequests`.
+    PromptMoveAllRequests(String),
+    /// Chooser pick after "Move to space…": rename into that space keeping
+    /// the sub-path. Gated on unsaved edits when `slug` is the open request
     /// (following it reloads the editor from disk); an undo step.
     MoveRequestToSpace {
         slug: String,

@@ -1,6 +1,6 @@
 //! The Manage screen's shell: which tab is up, and the top bar shared by
-//! every tab (tab strip left, Close right, the Variables tab's own "new"
-//! buttons between). Tab bodies are drawn by `ui.rs` — `VarManager` for
+//! every tab (tab strip left, Close right). Each tab's "new" buttons live
+//! at the top of its own left column. Tab bodies are drawn by `ui.rs` — `VarManager` for
 //! Variables, `ManageList` for Environments and Spaces.
 
 use crate::action::Action;
@@ -82,18 +82,15 @@ pub struct Manage {
 pub const BAR_HEIGHT: u16 = BUTTON_HEIGHT;
 
 /// Paints the top bar: tab strip at the left edge (registering
-/// `Hit::ManageTab(i)`), `Close (esc)` at the right, and on the Variables
-/// tab the `+ Variable` / `+ Selector` buttons before it. `underline` is
+/// `Hit::ManageTab(i)`) and `Close (esc)` at the right. `underline` is
 /// the accent segment's `(left, width)` in fractional columns relative to
 /// the strip's origin — the app's eased edges mid-glide — or `None` for
 /// the active tab's own static span.
 ///
-/// The strip has priority for its natural width: the right-aligned
-/// buttons lay out only into the room left of it, and a button that would
-/// cross into the strip is dropped rather than painted over it — lowest
-/// priority (leftmost) first, so `+ Selector` goes before `+ Variable`
-/// and `Close (esc)` is the last to go. Dropped buttons stay reachable by
-/// key (`n`, `g`, `esc`) and through the footer chips, so nothing is lost.
+/// The strip has priority for its natural width: the Close button lays
+/// out only into the room left of it and is dropped rather than painted
+/// over the strip. Dropped, it stays reachable by key (`esc`) and through
+/// the footer chips, so nothing is lost.
 pub fn draw_manage_bar(
     frame: &mut Frame,
     bar: Rect,
@@ -133,21 +130,15 @@ pub fn draw_manage_bar(
     // the strip's last tab.
     let buttons_limit = left_edge + 1 + strip_w + 2;
 
-    // Right-aligned buttons, laid out from the right edge inward in
-    // keep-priority order, so the loop's `break` drops the least
-    // important first. The close button is the mouse's way back to the
-    // main screen (the header's Manage chip toggles it too), labelled
-    // with the key that does the same thing, so it is the last to go.
+    // The close button, right-aligned: the mouse's way back to the main
+    // screen (the header's Manage chip toggles it too), labelled with the
+    // key that does the same thing.
     let mut x = bar.x + bar.width;
-    let mut buttons: Vec<(&str, ButtonKind, Hit)> = vec![(
+    let buttons: Vec<(&str, ButtonKind, Hit)> = vec![(
         "Close (esc)",
         ButtonKind::Secondary,
         Hit::FooterChip(Action::CloseScreen),
     )];
-    if tab == ManageTab::Variables {
-        buttons.push(("+ Variable", ButtonKind::Primary, Hit::VmNewVar));
-        buttons.push(("+ Selector", ButtonKind::Secondary, Hit::VmNewSelector));
-    }
     for (label, kind, hit) in buttons {
         let w = button_min_width(label);
         if x < buttons_limit + w + 1 {
@@ -234,14 +225,13 @@ mod tests {
         a.x < b.x + b.width && b.x < a.x + a.width
     }
 
-    /// The tab strip has priority for its natural width: at 80 columns —
-    /// the width `app::tests::rendered_text` renders at, and too narrow
-    /// for the strip plus all three buttons — every tab label still
-    /// paints in full and no button overlaps the strip's last tab. At 120
-    /// there is room for everything.
+    /// The tab strip has priority for its natural width: on a bar too
+    /// narrow for the strip plus the Close button, every tab label still
+    /// paints in full and Close drops rather than overlapping the strip's
+    /// last tab. At 80 columns there is room for both.
     #[test]
-    fn buttons_yield_to_the_tab_strip_on_a_narrow_bar() {
-        let (content, hits) = render_at(ManageTab::Variables, 80);
+    fn close_yields_to_the_tab_strip_on_a_narrow_bar() {
+        let (content, hits) = render_at(ManageTab::Variables, 44);
         for t in ManageTab::ALL {
             assert!(
                 content.contains(t.label()),
@@ -252,37 +242,21 @@ mod tests {
         let spaces = hits
             .rect_of(&Hit::ManageTab(2))
             .expect("the last tab is registered");
-        if let Some(new_var) = hits.rect_of(&Hit::VmNewVar) {
+        if let Some(close) = hits.rect_of(&Hit::FooterChip(Action::CloseScreen)) {
             assert!(
-                !intersects(spaces, new_var),
-                "the + Variable button must not sit on the Spaces tab: \
-                 {spaces:?} vs {new_var:?}"
+                !intersects(spaces, close),
+                "Close must not sit on the Spaces tab: {spaces:?} vs {close:?}"
             );
         }
-        assert!(
-            hits.rect_of(&Hit::FooterChip(Action::CloseScreen))
-                .is_some(),
-            "close is the last button to be dropped"
-        );
 
-        let (_content, hits) = render_at(ManageTab::Variables, 120);
-        assert!(hits.rect_of(&Hit::VmNewVar).is_some());
-        assert!(hits.rect_of(&Hit::VmNewSelector).is_some());
+        let (_content, hits) = render_at(ManageTab::Variables, 80);
         let spaces = hits.rect_of(&Hit::ManageTab(2)).unwrap();
-        for hit in [
-            Hit::VmNewVar,
-            Hit::VmNewSelector,
-            Hit::FooterChip(Action::CloseScreen),
-        ] {
-            let r = hits.rect_of(&hit).unwrap();
-            assert!(!intersects(spaces, r), "{hit:?} overlaps the strip: {r:?}");
-        }
+        let r = hits
+            .rect_of(&Hit::FooterChip(Action::CloseScreen))
+            .expect("Close fits at 80");
+        assert!(!intersects(spaces, r), "Close overlaps the strip: {r:?}");
     }
 
-    /// The bar paints the underline the caller hands it — the eased
-    /// edges from the app's animation — not the active tab's static span,
-    /// so a switch glides. Painted mid-glide, the accent segment sits
-    /// between the two tabs.
     #[test]
     fn bar_paints_the_underline_where_it_is_told_to() {
         let theme = Theme::dark();
@@ -335,26 +309,11 @@ mod tests {
         assert_eq!(ManageTab::from_index(99), ManageTab::Spaces, "clamps");
     }
 
-    /// Moved here from `VarManager`'s own top-bar test when the bar became
-    /// the Manage screen's: the Variables tab still carries both "new"
-    /// buttons and the close button that is the mouse's way back.
+    /// The close button is the mouse's way back on every tab; the "new"
+    /// buttons moved into the Variables tab's own left column, so no tab
+    /// puts anything but the strip and Close on the bar.
     #[test]
-    fn variables_tab_registers_both_new_buttons_and_close() {
-        let (content, hits) = render(ManageTab::Variables);
-        assert!(hits.rect_of(&Hit::VmNewVar).is_some());
-        assert!(hits.rect_of(&Hit::VmNewSelector).is_some());
-        assert!(content.contains("+ Variable"), "{content}");
-        assert!(content.contains("+ Selector"), "{content}");
-        assert!(content.contains("Close (esc)"), "{content}");
-        assert!(
-            hits.rect_of(&Hit::FooterChip(Action::CloseScreen))
-                .is_some(),
-            "the close button is the mouse's way back"
-        );
-    }
-
-    #[test]
-    fn every_tab_gets_a_label_and_a_hit_and_only_variables_gets_new_buttons() {
+    fn every_tab_gets_a_label_a_hit_and_close_and_nothing_else() {
         for tab in ManageTab::ALL {
             let (content, hits) = render(tab);
             for (i, t) in ManageTab::ALL.iter().enumerate() {
@@ -365,15 +324,14 @@ mod tests {
                 );
                 assert!(hits.rect_of(&Hit::ManageTab(i)).is_some());
             }
+            assert!(content.contains("Close (esc)"), "{content}");
             assert!(
                 hits.rect_of(&Hit::FooterChip(Action::CloseScreen))
-                    .is_some()
+                    .is_some(),
+                "the close button is the mouse's way back"
             );
-            assert_eq!(
-                hits.rect_of(&Hit::VmNewVar).is_some(),
-                tab == ManageTab::Variables,
-                "the new buttons belong to the Variables tab only"
-            );
+            assert!(hits.rect_of(&Hit::VmNewVar).is_none(), "{tab:?}");
+            assert!(hits.rect_of(&Hit::VmNewSelector).is_none(), "{tab:?}");
         }
     }
 }

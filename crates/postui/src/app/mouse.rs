@@ -689,11 +689,10 @@ impl App {
             Action::EditorTabSelect(1),       // (converted through
             Action::EditorTabSelect(2),       //  EditorTab::from_draw_position(..).index())
             Action::EditorTabSelect(3),
-            // The Environments/Spaces tabs' `+ New` button (Hit::ManageNew)
-            // and `Delete` button (Hit::ManageDelete); the rest of that
-            // face's hits either dispatch per-item actions built from the
-            // live project (rename/move/move-all) or change list state
-            // only.
+            // The Environments/Spaces tabs' `+ New` button (Hit::ManageNew);
+            // the rest of that face's hits either dispatch per-item actions
+            // built from the live project (rename/delete/move/move-all) or
+            // change list state only.
             Action::OpenNewEnvPrompt,
             Action::OpenNewSpacePrompt,
         ]
@@ -759,19 +758,6 @@ impl App {
         if !editing_this_field && !matches!(hit, Hit::VmRevealToggle) {
             self.commit_var_form();
         }
-        // The Environments/Spaces tabs' in-place name field, same rule:
-        // any click that isn't on the field itself (or the Rename button,
-        // which opens that very edit) commits what was typed rather than
-        // throwing it away.
-        if self.screen == Screen::Manage
-            && self.manage.list.editing.is_some()
-            && !matches!(hit, Hit::ManageName | Hit::ManageRename)
-        {
-            let tab = self.manage.tab;
-            if let Some(a) = self.manage.list.commit_edit(tab, &self.project) {
-                self.update(a);
-            }
-        }
         // …and the selector grid's cell, likewise: any click that isn't on the
         // cell already under edit commits it first, so clicking straight
         // from one cell to another never drops what was typed into the
@@ -828,7 +814,6 @@ impl App {
                 crate::components::manage::ManageTab::from_index(i),
             )),
             Hit::ManageRow(i) => {
-                self.manage.list.editing = None;
                 self.manage.list.cursor = i;
                 self.update(Action::Render)
             }
@@ -836,17 +821,19 @@ impl App {
                 ManageTab::Spaces => Action::OpenNewSpacePrompt,
                 _ => Action::OpenNewEnvPrompt,
             }),
-            Hit::ManageName | Hit::ManageRename => {
+            Hit::ManageRename => {
                 let tab = self.manage.tab;
-                if let Some(name) = self
+                match self
                     .manage
                     .list
                     .selected(tab, &self.project)
                     .map(str::to_string)
                 {
-                    self.manage.list.start_edit(&name);
+                    Some(name) => self.update(
+                        crate::components::manage_list::ManageList::rename_action(tab, &name),
+                    ),
+                    None => false,
                 }
-                self.update(Action::Render)
             }
             Hit::ManageDelete => {
                 let tab = self.manage.tab;
@@ -880,42 +867,15 @@ impl App {
                 }
             }
             Hit::ManageMoveAll => {
-                use crate::components::modal::{DropdownState, MenuItem};
-                let Some(from) = self
+                match self
                     .manage
                     .list
                     .selected(ManageTab::Spaces, &self.project)
                     .map(str::to_string)
-                else {
-                    return false;
-                };
-                let items: Vec<MenuItem> = self
-                    .project
-                    .spaces
-                    .iter()
-                    .filter(|s| **s != from)
-                    .map(|s| {
-                        MenuItem::new(
-                            s.clone(),
-                            Action::MoveAllRequests {
-                                from: from.clone(),
-                                to: s.clone(),
-                            },
-                        )
-                    })
-                    .collect();
-                if items.is_empty() {
-                    return false;
+                {
+                    Some(from) => self.update(Action::PromptMoveAllRequests(from)),
+                    None => false,
                 }
-                let anchor = self.hits.rect_of(&Hit::ManageMoveAll).unwrap_or_default();
-                self.push_modal(Modal::Dropdown(DropdownState {
-                    anchor,
-                    items,
-                    selected: 0,
-                    current: None,
-                }));
-                self.begin_dropdown_open();
-                true
             }
             Hit::FooterChip(action) => {
                 // Chips that live inside the request panel (the Body
