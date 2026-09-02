@@ -3400,14 +3400,6 @@ impl App {
                             ),
                             _ => {}
                         }
-                        // A selector with no options can't resolve, so a
-                        // fresh declaration walks straight into creating
-                        // its first option.
-                        if let VarStructOp::NewSelector { name, .. } = &op {
-                            self.apply(Action::OpenNewOptionInlinePrompt {
-                                owner: name.clone(),
-                            });
-                        }
                     }
                     Err(msg) => {
                         self.toasts.push(msg, ToastKind::Error);

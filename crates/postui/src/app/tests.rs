@@ -8337,27 +8337,29 @@ fn new_selector_prompt_arrows_focus_the_toggle_and_space_flips_shared() {
     );
 }
 
-/// Confirming the name prompt closes it and immediately opens the
-/// first-option prompt. The stack is empty for that instant, but the user
-/// must not see the backdrop un-dim and the panel re-settle behind it —
-/// that reads as a flash mid-flow.
+/// Choosing the picker's "add new option…" row closes the picker and
+/// immediately opens the new-option prompt. The stack is empty for that
+/// instant, but the user must not see the backdrop un-dim and the panel
+/// re-settle behind it — that reads as a flash mid-flow.
 #[test]
-fn chaining_from_the_name_prompt_into_the_option_prompt_does_not_replay_the_open_settle() {
+fn chaining_from_the_picker_into_the_option_prompt_does_not_replay_the_open_settle() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     let keymap = Keymap::default_bindings();
 
-    app.update(Action::PromptNewSelector);
-    for c in "locale".chars() {
-        app.handle_key(&keymap, plain(c));
-    }
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    focus_url_with_cursor_on(&mut app, "https://x/{{user}}", "{{user}}");
+    app.update(Action::OpenVarPicker { completing: false });
+    // "user" has two entries (alice, bob); the ghost "add new option…" row
+    // sits one past them.
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(&keymap, enter_key());
 
     assert!(
         matches!(app.modals.top(), Some(Modal::MultiPrompt { .. })),
-        "the first-option prompt takes over"
+        "the new-option prompt takes over"
     );
     assert_eq!(
         app.anims
@@ -9286,18 +9288,8 @@ fn prompt_new_selector_takes_a_name_and_defaults_its_field() {
     }
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-    // A fresh selector has no options yet, so the first-option prompt
-    // opens on top rather than leaving an unresolvable declaration.
-    let Some(Modal::MultiPrompt { kind, .. }) = app.modals.top() else {
-        panic!("expected the first-option prompt")
-    };
-    assert_eq!(
-        *kind,
-        PromptKind::NewOptionInline {
-            owner: "creds".into()
-        }
-    );
-    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    // Creating the selector is the whole gesture: no follow-up prompt
+    // opens, the new declaration is simply selected in the manager.
     assert!(app.modals.is_empty());
     let g = app
         .project
@@ -10069,26 +10061,6 @@ fn clicking_a_token_of_a_selector_with_no_options_opens_the_add_option_prompt() 
         *kind,
         PromptKind::NewOptionInline {
             owner: "user".into()
-        }
-    );
-}
-
-#[test]
-fn declaring_a_new_selector_walks_into_its_first_option() {
-    let (mut app, _dir) = token_popup_app();
-    app.update(Action::VarStruct(VarStructOp::NewSelector {
-        name: "tier".into(),
-        fields: vec!["tier".into()],
-        shared: false,
-    }));
-
-    let Some(Modal::MultiPrompt { kind, .. }) = app.modals.top() else {
-        panic!("a fresh selector has no options; the first-option prompt must open")
-    };
-    assert_eq!(
-        *kind,
-        PromptKind::NewOptionInline {
-            owner: "tier".into()
         }
     );
 }

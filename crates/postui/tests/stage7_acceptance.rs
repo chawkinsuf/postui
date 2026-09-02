@@ -644,9 +644,7 @@ fn a_legacy_project_migrates_then_grows_a_group_whose_selection_drives_resolutio
     click(&mut app, Hit::VmNewSelector);
     type_text(&mut app, &keymap, "region");
     key(&mut app, &keymap, KeyCode::Enter);
-    // Declaring walks into the first-option prompt; this scenario adds its
-    // options through the grid's ghost row instead, so dismiss it.
-    key(&mut app, &keymap, KeyCode::Esc);
+    assert!(app.modals.is_empty(), "creating a selector opens nothing else");
     assert_eq!(
         app.project.model.selectors["region"].fields,
         ["region"],
