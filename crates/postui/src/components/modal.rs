@@ -90,9 +90,10 @@ pub enum PromptKind {
         env: String,
     },
     /// The `SelectOption` picker's "add new option…" ghost row (Task 17,
-    /// spec §6): a `Modal::MultiPrompt` with `key`/`value`/`description`
-    /// fields (in that order — see `PromptField`'s `key`s). Confirming
-    /// emits `Action::ConfirmNewOptionInline`, which writes to the active
+    /// spec §6): a `Modal::MultiPrompt` with a `key` field, then one
+    /// `field:<name>` input per selector field (see [`NEW_OPTION_FIELD`]),
+    /// optionally a trailing `description`. Confirming emits
+    /// `Action::ConfirmNewOptionInline`, which writes to the active
     /// environment and selects it.
     NewOptionInline {
         owner: String,
@@ -231,6 +232,11 @@ impl FieldsEditorState {
         slots
     }
 }
+
+/// Key prefix of a `NewOptionInline` prompt's per-field value inputs:
+/// `field:<selector field>`. The prefix keeps a selector field that happens
+/// to be named `key` from colliding with the option-name input.
+pub const NEW_OPTION_FIELD: &str = "field:";
 
 /// One field of a `Modal::MultiPrompt`: a stable domain `key` (e.g.
 /// `"value"`, `"description"`, or a selector field's own name) distinct from
@@ -1078,14 +1084,19 @@ impl ModalStack {
                     let actions = match kind {
                         PromptKind::NewOptionInline { owner } => {
                             let key_text = get("key").filter(|s| !s.is_empty())?.to_string();
-                            let value = get("value").unwrap_or("").to_string();
+                            let mut values = IndexMap::new();
+                            for f in fields.iter() {
+                                if let Some(field) = f.key.strip_prefix(NEW_OPTION_FIELD) {
+                                    values.insert(field.to_string(), f.input.text().to_string());
+                                }
+                            }
                             let description = get("description")
                                 .filter(|s| !s.is_empty())
                                 .map(str::to_string);
                             vec![Action::ConfirmNewOptionInline {
                                 owner: owner.clone(),
                                 key: key_text,
-                                value,
+                                values,
                                 description,
                             }]
                         }

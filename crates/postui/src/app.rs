@@ -3480,16 +3480,36 @@ impl App {
 
             // -- Task 17: in-context flows (spec §6) --
             Action::OpenNewOptionInlinePrompt { owner } => {
-                use crate::components::modal::PromptField;
-                // No description field here: the quick-create flow stays
-                // lean; a description can be added later through the
-                // option's edit prompt in the Manager.
+                use crate::components::modal::{NEW_OPTION_FIELD, PromptField};
+                // One input per selector field, so the option is whole
+                // when it lands: a selector's fields are meant to be set
+                // together. A one-field selector's input just reads
+                // "Value". No description field: the quick-create flow
+                // stays lean; a description can be added later through
+                // the option's edit prompt in the Manager.
+                let selector_fields = self
+                    .project
+                    .model
+                    .selectors
+                    .get(&owner)
+                    .map(|g| g.fields.clone())
+                    .unwrap_or_default();
+                let mut fields = vec![PromptField::text("key", "Name", "")];
+                for field in &selector_fields {
+                    let label = if selector_fields.len() == 1 {
+                        "Value"
+                    } else {
+                        field.as_str()
+                    };
+                    fields.push(PromptField::text(
+                        &format!("{NEW_OPTION_FIELD}{field}"),
+                        label,
+                        "",
+                    ));
+                }
                 self.push_modal(Modal::MultiPrompt {
                     title: format!("Add option on {owner}"),
-                    fields: vec![
-                        PromptField::text("key", "Name", ""),
-                        PromptField::text("value", "Value", ""),
-                    ],
+                    fields,
                     focus: 0,
                     kind: PromptKind::NewOptionInline { owner },
                 });
@@ -3525,7 +3545,7 @@ impl App {
             Action::ConfirmNewOptionInline {
                 owner,
                 key,
-                value,
+                values,
                 description,
             } => {
                 if key.is_empty() {
@@ -3575,10 +3595,11 @@ impl App {
                     self.last_action_failed = true;
                     return true;
                 }
-                // The inline prompt collects one value, but an option has
-                // to supply every field of its selector or `validate_env`
-                // rejects it: the typed value fills the first field and
-                // the rest start empty, for the Manager to fill in.
+                // An option has to supply every field of its selector or
+                // `validate_env` rejects it: the prompt collects one value
+                // per field, and any field it didn't know about (a caller
+                // passing a partial map) starts empty for the Manager.
+                let mut values = values;
                 let fields = self
                     .project
                     .model
@@ -3586,10 +3607,8 @@ impl App {
                     .get(&owner)
                     .map(|g| g.fields.clone())
                     .unwrap_or_default();
-                let field_count = fields.len();
-                let mut values = indexmap::IndexMap::new();
-                for (i, field) in fields.into_iter().enumerate() {
-                    values.insert(field, if i == 0 { value.clone() } else { String::new() });
+                for field in fields {
+                    values.entry(field).or_default();
                 }
                 let before = self.read_file_states(&self.project.var_file_paths());
                 match self.edit_options_home(&owner, &env, |doc| {
@@ -3609,12 +3628,6 @@ impl App {
                             format!("{owner} \u{2192} {key} ({where_label})"),
                             ToastKind::Success,
                         );
-                        if field_count > 1 {
-                            self.toasts.push(
-                                "other fields left empty \u{2014} fill them in the Manager",
-                                ToastKind::Info,
-                            );
-                        }
                     }
                     Err(msg) => self.toasts.push(msg, ToastKind::Error),
                 }

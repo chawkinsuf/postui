@@ -8157,7 +8157,7 @@ fn shared_selector_inline_new_option_needs_no_active_env_and_selects_globally() 
     app.update(Action::ConfirmNewOptionInline {
         owner: "locale".into(),
         key: "de".into(),
-        value: "de".into(),
+        values: indexmap::IndexMap::from([("lang".to_string(), "de".to_string())]),
         description: None,
     });
 
@@ -10467,18 +10467,20 @@ fn inline_create_accepts_a_free_form_entry_name_with_a_space() {
     assert!(env_doc.contains("9009"), "{env_doc}");
 }
 
-/// Review finding 4: an inline-created entry on a multi-field group only
-/// fills the first field — the rest start empty — so a hint toast must
-/// point the user at the Manager to fill them in.
+/// A selector's fields are meant to be set together, so the inline
+/// create prompt on a multi-field group takes one input per field —
+/// labelled by field name, in declared order — and writes them all.
 #[test]
-fn inline_create_on_a_multi_field_group_hints_at_the_empty_fields() {
+fn inline_create_on_a_multi_field_group_takes_one_input_per_field() {
     let dir = tempfile::tempdir().unwrap();
     group_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     let keymap = Keymap::default_bindings();
 
-    focus_url_with_cursor_on(&mut app, "https://x/{{user_id}}", "{{user_id}}");
+    // Start from the second field's token: the prompt is about the whole
+    // option, not the field clicked.
+    focus_url_with_cursor_on(&mut app, "https://x/{{customer_id}}", "{{customer_id}}");
     app.update(Action::OpenVarPicker { completing: false });
     // "identity" has two entries (alice, bob); the ghost row sits one past
     // them.
@@ -10486,14 +10488,28 @@ fn inline_create_on_a_multi_field_group_hints_at_the_empty_fields() {
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     app.handle_key(&keymap, enter_key());
 
+    let Some(Modal::MultiPrompt { title, fields, .. }) = app.modals.top() else {
+        panic!("expected the new-option prompt")
+    };
+    assert_eq!(title, "Add option on identity");
+    let labels: Vec<&str> = fields.iter().map(|f| f.label.as_str()).collect();
+    assert_eq!(labels, ["Name", "user_id", "customer_id"]);
+
     type_into_field(&mut app, &keymap, "carol");
+    app.handle_key(&keymap, tab_key());
+    type_into_field(&mut app, &keymap, "u-3");
+    app.handle_key(&keymap, tab_key());
+    type_into_field(&mut app, &keymap, "c-3");
     app.handle_key(&keymap, enter_key());
 
-    assert!(app.modals.is_empty());
-    let msgs = app.toasts.messages();
+    assert!(app.modals.is_empty(), "{:?}", app.toasts.messages());
+    let carol = &app.project.env_data.options["identity"]["carol"].values;
+    assert_eq!(carol["user_id"], "u-3");
+    assert_eq!(carol["customer_id"], "c-3");
     assert!(
-        msgs.iter().any(|m| m.contains("empty")),
-        "expected a hint about the unfilled fields: {msgs:?}"
+        !app.toasts.messages().iter().any(|m| m.contains("empty")),
+        "nothing is left empty: {:?}",
+        app.toasts.messages()
     );
 }
 

@@ -573,9 +573,9 @@ pub enum Action {
 
     // -- Task 17: in-context flows (spec §6) --
     /// The `SelectOption` picker's "add new option…" ghost row: opens the
-    /// key/value/description prompt for a new option on `owner`, closing
-    /// the picker (not stacking on top of it) so focus returns to the
-    /// field once the prompt itself confirms or cancels.
+    /// name + one-input-per-field prompt for a new option on `owner`,
+    /// closing the picker (not stacking on top of it) so focus returns to
+    /// the field once the prompt itself confirms or cancels.
     OpenNewOptionInlinePrompt {
         owner: String,
     },
@@ -589,14 +589,14 @@ pub enum Action {
         description: Option<String>,
         values: IndexMap<String, String>,
     },
-    /// Confirmed `PromptKind::NewOptionInline`: writes `key`/`value`/
-    /// `description` to the ACTIVE environment's `[options.owner.key]`
-    /// table (spec §1's merge rule makes it an env-specific addition) and
-    /// selects it immediately.
+    /// Confirmed `PromptKind::NewOptionInline`: writes `key` with one
+    /// value per selector field (`values`) and `description` to the ACTIVE
+    /// environment's `[options.owner.key]` table (spec §1's merge rule
+    /// makes it an env-specific addition) and selects it immediately.
     ConfirmNewOptionInline {
         owner: String,
         key: String,
-        value: String,
+        values: IndexMap<String, String>,
         description: Option<String>,
     },
     /// Confirmed `PromptKind::EditOption`: writes `values`/`description` to
