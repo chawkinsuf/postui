@@ -39,6 +39,63 @@ pub struct ProjectMeta {
 pub struct ItemSettings {
     #[serde(default)]
     pub name: Option<String>,
+    /// Environments only: force certificate verification on or off for
+    /// every request sent under this environment, overriding each
+    /// request's own `insecure` flag. Absent = per request.
+    #[serde(default)]
+    pub tls: Option<TlsPolicy>,
+}
+
+/// An environment's certificate-verification force
+/// (`[environment.<slug>] tls = "verify" | "insecure"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TlsPolicy {
+    Verify,
+    Insecure,
+}
+
+impl TlsPolicy {
+    /// The next policy in the cycle per request → verify → insecure →
+    /// per request (the Manage screen's `t` key).
+    pub fn cycle(current: Option<TlsPolicy>) -> Option<TlsPolicy> {
+        match current {
+            None => Some(TlsPolicy::Verify),
+            Some(TlsPolicy::Verify) => Some(TlsPolicy::Insecure),
+            Some(TlsPolicy::Insecure) => None,
+        }
+    }
+
+    /// The value as written in `project.toml`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TlsPolicy::Verify => "verify",
+            TlsPolicy::Insecure => "insecure",
+        }
+    }
+}
+
+/// The environment's TLS force, if any.
+pub fn env_tls(meta: &ProjectMeta, slug: &str) -> Option<TlsPolicy> {
+    meta.environment.get(slug).and_then(|s| s.tls)
+}
+
+/// Sets or clears `[environment.<slug>] tls`. Clearing removes the key
+/// but leaves the table (and its name) in place.
+pub fn set_env_tls(root: &Path, slug: &str, policy: Option<TlsPolicy>) -> Result<(), ProjectError> {
+    edit_project_toml(root, |doc| match policy {
+        Some(p) => set_item_key(doc, Kind::Environment, slug, "tls", p.as_str()),
+        None => {
+            if let Some(it) = doc
+                .get_mut(Kind::Environment.table())
+                .and_then(|i| i.as_table_mut())
+                .and_then(|t| t.get_mut(slug))
+                .and_then(|i| i.as_table_mut())
+            {
+                it.remove("tls");
+            }
+        }
+    })
 }
 
 /// The name a space shows as: its `[space.<slug>] name`, else the slug.
@@ -98,6 +155,11 @@ fn edit_project_toml(
 
 /// `[<kind>.<slug>] name = <name>`, keeping the table's other keys.
 fn set_item_name(doc: &mut toml_edit::DocumentMut, kind: Kind, slug: &str, name: &str) {
+    set_item_key(doc, kind, slug, "name", name)
+}
+
+/// `[<kind>.<slug>] <key> = <value>`, keeping the table's other keys.
+fn set_item_key(doc: &mut toml_edit::DocumentMut, kind: Kind, slug: &str, key: &str, value: &str) {
     let table = doc
         .entry(kind.table())
         .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
@@ -109,7 +171,7 @@ fn set_item_name(doc: &mut toml_edit::DocumentMut, kind: Kind, slug: &str, name:
             .entry(slug)
             .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
         if let Some(it) = item.as_table_mut() {
-            it["name"] = toml_edit::value(name);
+            it[key] = toml_edit::value(value);
         }
     }
 }
@@ -780,6 +842,77 @@ mod tests {
         assert_eq!(space_display(&meta, "main"), "main", "no table: the slug");
         assert_eq!(env_display(&meta, "staging"), "Staging (EU)");
         assert_eq!(env_display(&meta, "qa"), "qa");
+    }
+
+    #[test]
+    fn meta_parses_the_environment_tls_policy() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("project.toml"),
+            "[environment.prod]\nname = \"Prod\"\ntls = \"verify\"\n\n[environment.local]\ntls = \"insecure\"\n\n[environment.qa]\nname = \"QA\"\n",
+        )
+        .unwrap();
+        let meta = load_meta(dir.path()).unwrap();
+        assert_eq!(env_tls(&meta, "prod"), Some(TlsPolicy::Verify));
+        assert_eq!(env_tls(&meta, "local"), Some(TlsPolicy::Insecure));
+        assert_eq!(env_tls(&meta, "qa"), None, "no key: per request");
+        assert_eq!(env_tls(&meta, "missing"), None, "no table: per request");
+    }
+
+    #[test]
+    fn meta_rejects_an_unknown_tls_policy_value() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("project.toml"),
+            "[environment.prod]\ntls = \"sometimes\"\n",
+        )
+        .unwrap();
+        assert!(matches!(load_meta(dir.path()), Err(ProjectError::Parse(_))));
+    }
+
+    #[test]
+    fn set_env_tls_writes_and_clears_the_key_keeping_the_name() {
+        let dir = tempdir().unwrap();
+        create_environment(dir.path(), "Prod").unwrap();
+        set_env_tls(dir.path(), "prod", Some(TlsPolicy::Verify)).unwrap();
+        let meta = load_meta(dir.path()).unwrap();
+        assert_eq!(env_tls(&meta, "prod"), Some(TlsPolicy::Verify));
+        assert_eq!(env_display(&meta, "prod"), "Prod", "name kept");
+
+        set_env_tls(dir.path(), "prod", Some(TlsPolicy::Insecure)).unwrap();
+        assert_eq!(
+            env_tls(&load_meta(dir.path()).unwrap(), "prod"),
+            Some(TlsPolicy::Insecure)
+        );
+
+        set_env_tls(dir.path(), "prod", None).unwrap();
+        let text = std::fs::read_to_string(dir.path().join("project.toml")).unwrap();
+        assert!(!text.contains("tls"), "key removed:\n{text}");
+        assert!(text.contains("name = \"Prod\""), "name kept:\n{text}");
+    }
+
+    #[test]
+    fn set_env_tls_on_an_env_without_a_table_creates_one() {
+        let dir = tempdir().unwrap();
+        set_env_tls(dir.path(), "local", Some(TlsPolicy::Insecure)).unwrap();
+        let text = std::fs::read_to_string(dir.path().join("project.toml")).unwrap();
+        assert!(text.contains("[environment.local]"), "{text}");
+        assert!(text.contains("tls = \"insecure\""), "{text}");
+        assert!(
+            !text.contains("[environment]\n"),
+            "parent stays implicit:\n{text}"
+        );
+    }
+
+    #[test]
+    fn rename_environment_carries_the_tls_policy_along() {
+        let dir = tempdir().unwrap();
+        create_environment(dir.path(), "Prod").unwrap();
+        set_env_tls(dir.path(), "prod", Some(TlsPolicy::Verify)).unwrap();
+        rename_environment(dir.path(), "prod", "Production").unwrap();
+        let meta = load_meta(dir.path()).unwrap();
+        assert_eq!(env_tls(&meta, "production"), Some(TlsPolicy::Verify));
+        assert_eq!(env_tls(&meta, "prod"), None);
     }
 
     #[test]

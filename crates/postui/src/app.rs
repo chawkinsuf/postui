@@ -1687,7 +1687,22 @@ impl App {
             Action::ToggleInsecure => {
                 self.no_coalesce = true;
                 self.editor.insecure = !self.editor.insecure;
-                if self.editor.insecure {
+                // Under an environment force the flag still flips and
+                // saves with the request (it comes back into effect under
+                // another environment), but the send won't follow it, and
+                // the toast says so rather than claiming a change.
+                let forced = self.project.env_tls();
+                if let Some(policy) = forced {
+                    let name = self.project.env_label_display();
+                    let what = match policy {
+                        postui_core::project::TlsPolicy::Verify => "forces",
+                        postui_core::project::TlsPolicy::Insecure => "skips",
+                    };
+                    self.toasts.push(
+                        format!("Saved, but {name} {what} TLS verification"),
+                        ToastKind::Warning,
+                    );
+                } else if self.editor.insecure {
                     self.toasts.push(
                         "TLS verification disabled for this request",
                         ToastKind::Warning,
@@ -4098,6 +4113,34 @@ impl App {
                             format!("cannot rename environment: {e}"),
                             ToastKind::Warning,
                         );
+                        self.last_action_failed = true;
+                    }
+                }
+                true
+            }
+            Action::SetEnvTls { env, policy } => {
+                let root = self.project.root.clone();
+                let paths = vec![root.join("project.toml")];
+                let before = self.read_file_states(&paths);
+                match postui_core::project::set_env_tls(&root, &env, policy) {
+                    Ok(()) => {
+                        self.project.reload_meta();
+                        self.record_file_step(before, &paths, None);
+                        let name = self.project.env_name(&env);
+                        let msg = match policy {
+                            Some(postui_core::project::TlsPolicy::Verify) => {
+                                format!("{name} forces TLS verification")
+                            }
+                            Some(postui_core::project::TlsPolicy::Insecure) => {
+                                format!("{name} skips TLS verification")
+                            }
+                            None => format!("{name} leaves TLS verification to each request"),
+                        };
+                        self.toasts.push(msg, ToastKind::Info);
+                    }
+                    Err(e) => {
+                        self.toasts
+                            .push(format!("cannot save TLS setting: {e}"), ToastKind::Warning);
                         self.last_action_failed = true;
                     }
                 }

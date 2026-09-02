@@ -102,6 +102,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 let prepare_ctx = app.project.prepare_context();
                 app.editor.recompute_computed_headers(&prepare_ctx);
             }
+            app.editor.env_tls = app.project.env_tls();
             let hovered = app.hovered.as_ref();
             let dragged_pane = app.drag.as_ref().map(|d| d.pane);
             // Destructured so each component can be borrowed mutably

@@ -43,6 +43,9 @@ pub enum Hit {
     /// The Spaces tab's `Move all requests…` button: opens the chooser of
     /// the other spaces to move this space's requests into.
     ManageMoveAll,
+    /// One segment of the Environments tab's `TLS` control: sets the
+    /// selected environment's force to this policy (`None` = per request).
+    ManageEnvTls(Option<postui_core::project::TlsPolicy>),
     /// The right-aligned "theme" chip on the app bar: opens the theme
     /// picker.
     HeaderTheme,

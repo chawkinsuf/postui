@@ -293,6 +293,14 @@ pub enum Action {
         from: String,
         to: String,
     },
+    /// Set or clear (`None`) environment `env`'s TLS force
+    /// (`[environment.<slug>] tls` in project.toml), which overrides every
+    /// request's own `insecure` flag while that environment is active.
+    /// Recorded as a `FileStates` step (project.toml).
+    SetEnvTls {
+        env: String,
+        policy: Option<postui_core::project::TlsPolicy>,
+    },
     /// User asked to delete an environment: opens the confirm.
     DeleteEnv(String),
     /// Confirmed; trashes the environment file (undoable), drops its

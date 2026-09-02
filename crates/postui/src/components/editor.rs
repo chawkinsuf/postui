@@ -115,6 +115,10 @@ pub struct Editor {
     /// Whether TLS certificate verification is skipped at send time
     /// (`insecure = true` in the request TOML).
     pub insecure: bool,
+    /// The active environment's TLS force, mirrored in before each draw
+    /// (`ui.rs`) so the padlock can show the *effective* state: the force
+    /// when there is one, else `insecure`. Not part of the request.
+    pub env_tls: Option<postui_core::project::TlsPolicy>,
     pub params: IndexMap<String, Entry>,
     pub headers: IndexMap<String, Entry>,
     /// Request-scoped `[variables]`, edited by the Vars tab (shares the
@@ -250,6 +254,7 @@ impl Default for Editor {
             url: LineInput::new(""),
             substitute_body: false,
             insecure: false,
+            env_tls: None,
             params: IndexMap::new(),
             headers: IndexMap::new(),
             variables: IndexMap::new(),
@@ -1950,13 +1955,24 @@ impl Editor {
             } else {
                 url_fill
             };
+            // Under an environment force the request's flag isn't what
+            // goes out, so the lock shows the forced state and steps back
+            // toward the well's fill to read as "not yours to flip here".
+            let forced = self.env_tls.is_some();
+            let effective_insecure = match self.env_tls {
+                Some(postui_core::project::TlsPolicy::Verify) => false,
+                Some(postui_core::project::TlsPolicy::Insecure) => true,
+                None => self.insecure,
+            };
             let lock_fg = if lock_hovered {
                 theme.text
+            } else if forced {
+                mix(theme.text_muted, url_fill, 0.4)
             } else {
                 theme.text_muted
             };
             fill(buf, lock_area, lock_bg);
-            let glyph = if self.insecure {
+            let glyph = if effective_insecure {
                 " \u{F0340} " // 󰍀 nf-md-lock_outline
             } else {
                 " \u{F033E} " // 󰌾 nf-md-lock

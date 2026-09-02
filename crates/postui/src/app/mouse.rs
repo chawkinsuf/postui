@@ -866,6 +866,17 @@ impl App {
                     None => false,
                 }
             }
+            Hit::ManageEnvTls(policy) => {
+                match self
+                    .manage
+                    .list
+                    .selected(ManageTab::Environments, &self.project)
+                    .map(str::to_string)
+                {
+                    Some(env) => self.update(Action::SetEnvTls { env, policy }),
+                    None => false,
+                }
+            }
             Hit::ManageMoveAll => {
                 match self
                     .manage

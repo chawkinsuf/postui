@@ -52,6 +52,11 @@ pub struct PrepareContext {
     /// distinguish *why* a name is unresolved (needs a selection, missing
     /// secret, or simply undefined) when it doesn't appear in `vars`.
     pub meta: IndexMap<String, varmodel::VarMeta>,
+    /// The active environment's TLS policy (`[environment.<slug>] tls`),
+    /// which overrides the request's own `insecure` flag when set. The
+    /// request file is never touched — switching environments restores
+    /// its setting.
+    pub tls_override: Option<crate::project::TlsPolicy>,
 }
 
 /// Why a `{{name}}` token failed to resolve, for `PrepareError::Unresolved`.
@@ -299,7 +304,11 @@ pub fn prepare(
             display_url,
             headers,
             body,
-            insecure: req.insecure,
+            insecure: match ctx.tls_override {
+                Some(crate::project::TlsPolicy::Verify) => false,
+                Some(crate::project::TlsPolicy::Insecure) => true,
+                None => req.insecure,
+            },
         },
         warnings,
     ))
@@ -481,6 +490,7 @@ mod tests {
                 })
                 .collect(),
             meta: IndexMap::new(),
+            tls_override: None,
         }
     }
 
@@ -638,6 +648,7 @@ mod tests {
             vars: IndexMap::new(),
             default_headers: defaults,
             meta: IndexMap::new(),
+            tls_override: None,
         };
         let (p, warns) = prepare(&base("http://x.test"), &c).unwrap();
         assert_eq!(
@@ -742,6 +753,33 @@ mod tests {
         let mut r = base("https://x.test");
         r.insecure = true;
         let (p, _) = prepare(&r, &PrepareContext::default()).unwrap();
+        assert!(p.insecure);
+    }
+
+    #[test]
+    fn environment_tls_override_beats_the_request_flag() {
+        use crate::project::TlsPolicy;
+        let mut r = base("https://x.test");
+        let mut ctx = PrepareContext::default();
+
+        // Force verify: a request flagged insecure still verifies.
+        r.insecure = true;
+        ctx.tls_override = Some(TlsPolicy::Verify);
+        let (p, _) = prepare(&r, &ctx).unwrap();
+        assert!(!p.insecure, "forced verify overrides insecure = true");
+
+        // Force insecure: an unflagged request skips verification.
+        r.insecure = false;
+        ctx.tls_override = Some(TlsPolicy::Insecure);
+        let (p, _) = prepare(&r, &ctx).unwrap();
+        assert!(p.insecure, "forced insecure overrides insecure = false");
+
+        // No override: the request's own flag.
+        ctx.tls_override = None;
+        let (p, _) = prepare(&r, &ctx).unwrap();
+        assert!(!p.insecure);
+        r.insecure = true;
+        let (p, _) = prepare(&r, &ctx).unwrap();
         assert!(p.insecure);
     }
 

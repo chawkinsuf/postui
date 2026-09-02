@@ -5467,6 +5467,183 @@ fn app_with_envs() -> (App, tempfile::TempDir) {
 }
 
 #[test]
+fn set_env_tls_writes_project_toml_and_toasts() {
+    use postui_core::project::TlsPolicy;
+    let (mut app, dir) = app_with_envs();
+    app.update(Action::SetEnvTls {
+        env: "prod".into(),
+        policy: Some(TlsPolicy::Verify),
+    });
+    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    assert_eq!(
+        postui_core::project::env_tls(&meta, "prod"),
+        Some(TlsPolicy::Verify)
+    );
+    assert_eq!(
+        postui_core::project::env_tls(&app.project.meta, "prod"),
+        Some(TlsPolicy::Verify),
+        "meta reloaded in memory"
+    );
+    assert_eq!(
+        app.toasts.messages().last().copied(),
+        Some("prod forces TLS verification")
+    );
+    app.update(Action::SetEnvTls {
+        env: "prod".into(),
+        policy: Some(TlsPolicy::Insecure),
+    });
+    assert_eq!(
+        app.toasts.messages().last().copied(),
+        Some("prod skips TLS verification")
+    );
+    app.update(Action::SetEnvTls {
+        env: "prod".into(),
+        policy: None,
+    });
+    assert_eq!(
+        postui_core::project::env_tls(&app.project.meta, "prod"),
+        None
+    );
+    assert_eq!(
+        app.toasts.messages().last().copied(),
+        Some("prod leaves TLS verification to each request")
+    );
+}
+
+#[test]
+fn toggle_insecure_under_an_environment_force_saves_but_warns() {
+    use postui_core::project::TlsPolicy;
+    let (mut app, dir) = app_with_envs();
+    // The toast names the environment the way the header does: by its
+    // display name, not its slug.
+    std::fs::write(
+        dir.path().join("project.toml"),
+        "[environment.prod]\nname = \"Prod\"\n",
+    )
+    .unwrap();
+    app.project.reload_meta();
+    app.update(Action::SetEnvTls {
+        env: "prod".into(),
+        policy: Some(TlsPolicy::Verify),
+    });
+    app.update(Action::SwitchEnv(Some("prod".into())));
+    app.update(Action::ToggleInsecure);
+    assert!(app.editor.insecure, "the request's own flag still flips");
+    assert_eq!(
+        app.toasts.messages().last().copied(),
+        Some("Saved, but Prod forces TLS verification")
+    );
+    app.update(Action::SetEnvTls {
+        env: "prod".into(),
+        policy: Some(TlsPolicy::Insecure),
+    });
+    app.update(Action::ToggleInsecure);
+    assert!(!app.editor.insecure);
+    assert_eq!(
+        app.toasts.messages().last().copied(),
+        Some("Saved, but Prod skips TLS verification")
+    );
+    // No force: the plain toasts.
+    app.update(Action::SetEnvTls {
+        env: "prod".into(),
+        policy: None,
+    });
+    app.update(Action::ToggleInsecure);
+    assert_eq!(
+        app.toasts.messages().last().copied(),
+        Some("TLS verification disabled for this request")
+    );
+}
+
+#[test]
+fn manage_environments_pane_has_a_tls_control_that_writes_the_force() {
+    use crate::components::manage::ManageTab;
+    use postui_core::project::TlsPolicy;
+    let (mut app, _dir) = app_with_envs();
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Environments),
+    });
+    app.manage
+        .list
+        .select_name(ManageTab::Environments, &app.project, "prod");
+    let text = rendered_text_tall(&mut app);
+    assert!(text.contains("TLS"), "{text}");
+    assert!(text.contains("Per request"), "{text}");
+    assert!(text.contains("Verify"), "{text}");
+    assert!(text.contains("Insecure"), "{text}");
+
+    click_hit(&mut app, Hit::ManageEnvTls(Some(TlsPolicy::Verify)));
+    assert_eq!(
+        postui_core::project::env_tls(&app.project.meta, "prod"),
+        Some(TlsPolicy::Verify)
+    );
+    click_hit(&mut app, Hit::ManageEnvTls(None));
+    assert_eq!(
+        postui_core::project::env_tls(&app.project.meta, "prod"),
+        None
+    );
+
+    // `t` cycles per request → verify → insecure → per request.
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, plain('t'));
+    assert_eq!(
+        postui_core::project::env_tls(&app.project.meta, "prod"),
+        Some(TlsPolicy::Verify)
+    );
+    app.handle_key(&keymap, plain('t'));
+    assert_eq!(
+        postui_core::project::env_tls(&app.project.meta, "prod"),
+        Some(TlsPolicy::Insecure)
+    );
+    app.handle_key(&keymap, plain('t'));
+    assert_eq!(
+        postui_core::project::env_tls(&app.project.meta, "prod"),
+        None
+    );
+    // Advertised in the footer.
+    assert!(
+        app.manage
+            .list
+            .footer_chips(ManageTab::Environments, &app.project)
+            .iter()
+            .any(|(k, l, _)| *k == "t" && *l == "tls"),
+    );
+}
+
+#[test]
+fn padlock_shows_the_effective_tls_state_under_an_environment_force() {
+    use postui_core::project::TlsPolicy;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    let (mut app, _dir) = app_with_envs();
+    app.update(Action::SetEnvTls {
+        env: "prod".into(),
+        policy: Some(TlsPolicy::Insecure),
+    });
+    let lock_glyph = |app: &mut App| -> (String, ratatui::style::Color) {
+        app.anims.finish_all();
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+        let r = app
+            .hits
+            .rect_of(&Hit::FooterChip(Action::ToggleInsecure))
+            .expect("padlock registered");
+        let cell = &terminal.backend().buffer()[(r.x + 1, r.y)];
+        (cell.symbol().to_string(), cell.fg)
+    };
+    // No env, request verifying: the filled lock.
+    let (plain_glyph, plain_fg) = lock_glyph(&mut app);
+    assert_eq!(plain_glyph, "\u{F033E}");
+    // prod forces insecure: the outline lock even though the request is
+    // unflagged, and muted further to say the request isn't in charge.
+    app.update(Action::SwitchEnv(Some("prod".into())));
+    let (forced_glyph, forced_fg) = lock_glyph(&mut app);
+    assert_eq!(forced_glyph, "\u{F0340}");
+    assert_ne!(forced_fg, plain_fg, "forced lock paints differently");
+}
+
+#[test]
 fn cycle_env_wraps_and_skips_no_env() {
     let (mut app, dir) = app_with_envs();
     assert_eq!(app.project.env_label(), "no env");

@@ -596,7 +596,17 @@ impl ProjectContext {
             vars: self.resolved.values.clone(),
             default_headers: self.meta.default_headers.clone(),
             meta: self.resolved.meta.clone(),
+            tls_override: self.env_tls(),
         }
+    }
+
+    /// The active environment's TLS force (`[environment.<slug>] tls`),
+    /// `None` with no environment or when the environment leaves it to
+    /// each request.
+    pub fn env_tls(&self) -> Option<postui_core::project::TlsPolicy> {
+        self.active_env
+            .as_deref()
+            .and_then(|slug| postui_core::project::env_tls(&self.meta, slug))
     }
 
     /// Re-reads `project.toml` into `meta`, leaving the previous value in
@@ -1128,6 +1138,24 @@ mod tests {
         assert_eq!(ctx.env_data.values["tok"], "t");
         assert!(ctx.expanded.contains("users"));
         assert_eq!(ctx.local_open_request().as_deref(), Some("main/ping"));
+    }
+
+    #[test]
+    fn prepare_context_carries_the_active_environment_tls_force() {
+        use postui_core::project::TlsPolicy;
+        let dir = tempfile::tempdir().unwrap();
+        postui_core::project::init_project(dir.path(), Some("svc")).unwrap();
+        std::fs::write(dir.path().join("environments/prod.toml"), "").unwrap();
+        std::fs::write(dir.path().join("environments/qa.toml"), "").unwrap();
+        postui_core::project::set_env_tls(dir.path(), "prod", Some(TlsPolicy::Verify)).unwrap();
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        assert_eq!(ctx.env_tls(), None, "no env: per request");
+        assert_eq!(ctx.prepare_context().tls_override, None);
+        ctx.set_env(Some("prod".into()));
+        assert_eq!(ctx.env_tls(), Some(TlsPolicy::Verify));
+        assert_eq!(ctx.prepare_context().tls_override, Some(TlsPolicy::Verify));
+        ctx.set_env(Some("qa".into()));
+        assert_eq!(ctx.prepare_context().tls_override, None, "qa has no force");
     }
 
     #[test]

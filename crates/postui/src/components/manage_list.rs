@@ -76,6 +76,16 @@ impl ManageList {
         }
     }
 
+    /// The Environments tab's `t` key: steps env `name`'s TLS force
+    /// through per request → verify → insecure.
+    fn cycle_tls_action(ctx: &ProjectContext, name: &str) -> Action {
+        use postui_core::project::{TlsPolicy, env_tls};
+        Action::SetEnvTls {
+            env: name.to_string(),
+            policy: TlsPolicy::cycle(env_tls(&ctx.meta, name)),
+        }
+    }
+
     /// The Spaces tab's move-all chooser for `name` (`m`, or the button).
     fn move_all_action(name: &str) -> Action {
         Action::PromptMoveAllRequests(name.to_string())
@@ -125,6 +135,9 @@ impl ManageList {
             KeyCode::Char('m') if tab == ManageTab::Spaces => {
                 Some(Self::move_all_action(self.selected(tab, ctx)?))
             }
+            KeyCode::Char('t') if tab == ManageTab::Environments => {
+                Some(Self::cycle_tls_action(ctx, self.selected(tab, ctx)?))
+            }
             KeyCode::Char('d') | KeyCode::Delete => {
                 Some(Self::delete_action(tab, self.selected(tab, ctx)?))
             }
@@ -146,6 +159,8 @@ impl ManageList {
         if tab == ManageTab::Spaces {
             chips.push(("m", "move all", selected.map(Self::move_all_action)));
             chips.push(("alt+↑↓", "move", None));
+        } else {
+            chips.push(("t", "tls", selected.map(|n| Self::cycle_tls_action(ctx, n))));
         }
         chips
     }
@@ -187,6 +202,69 @@ impl ManageList {
         self.draw_right(
             frame, right, theme, tab, ctx, &items, requests, hits, hovered,
         );
+    }
+
+    /// The Environments tab's `TLS` row: a label and three segments,
+    /// `Per request` / `Verify` / `Insecure`, the current one filled.
+    /// Clicking a segment sets the force (`Hit::ManageEnvTls`).
+    #[allow(clippy::too_many_arguments)]
+    fn draw_tls_control(
+        &self,
+        buf: &mut ratatui::buffer::Buffer,
+        x0: u16,
+        y: u16,
+        bottom: u16,
+        right: Rect,
+        theme: &Theme,
+        ctx: &ProjectContext,
+        name: &str,
+        hits: &mut HitMap,
+        hovered: Option<&Hit>,
+    ) {
+        use postui_core::project::{TlsPolicy, env_tls};
+        if y + BUTTON_HEIGHT > bottom {
+            return;
+        }
+        let current = env_tls(&ctx.meta, name);
+        let label = "TLS";
+        text(buf, x0, y + 1, label, theme.text_muted, theme.page, false);
+        let mut x = x0 + label.chars().count() as u16 + 2;
+        let segments: [(&str, Option<TlsPolicy>); 3] = [
+            ("Per request", None),
+            ("Verify", Some(TlsPolicy::Verify)),
+            ("Insecure", Some(TlsPolicy::Insecure)),
+        ];
+        for (seg, policy) in segments {
+            let w = button_min_width(seg);
+            if x + w > right.x + right.width {
+                break;
+            }
+            let rect = Rect {
+                x,
+                y,
+                width: w,
+                height: BUTTON_HEIGHT,
+            };
+            let hit = Hit::ManageEnvTls(policy);
+            let state = if hovered == Some(&hit) {
+                ControlState::Hover
+            } else {
+                ControlState::Normal
+            };
+            let kind = if policy == current {
+                ButtonKind::Primary
+            } else {
+                ButtonKind::Secondary
+            };
+            Button {
+                label: seg,
+                kind,
+                state,
+            }
+            .paint(buf, rect, theme);
+            hits.register(rect, hit);
+            x += w + 1;
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -434,7 +512,9 @@ impl ManageList {
                         theme.page,
                         false,
                     );
+                    y += 2;
                 }
+                self.draw_tls_control(buf, x0, y, bottom, right, theme, ctx, name, hits, hovered);
             }
         }
     }
