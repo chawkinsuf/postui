@@ -217,10 +217,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let globals_live = modal_chips.is_none();
     // A plain `q` reaches the quit binding only where nothing consumes it
     // first: no modal (they capture all input), the Main screen (other
-    // screens swallow unbound plain keys), and a pane that doesn't route
-    // typing into a text input.
+    // screens swallow unbound plain keys), and a focus stop that doesn't
+    // route typing into a text input — in the editor pane that is only
+    // the URL line, the body, and a live cell edit.
     let plain_q_quits = app.modals.is_empty()
-        && (app.screen == Screen::Main && matches!(focus, PaneId::Sidebar | PaneId::Response)
+        && (app.screen == Screen::Main
+            && (matches!(focus, PaneId::Sidebar | PaneId::Response)
+                || focus == PaneId::Editor && !app.editor.plain_keys_type())
             // The manager binds plain q to quit in every focus stop; only
             // a live edit types it.
             || app.screen == Screen::Manage

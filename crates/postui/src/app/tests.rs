@@ -12194,11 +12194,27 @@ fn the_quit_chip_shows_ctrl_c_wherever_plain_q_would_type() {
     let content = rendered_text(&mut app);
     assert!(content.contains("q  quit"), "{content}");
 
-    // The editor pane routes plain keys into its inputs.
+    // The editor pane: only its text inputs eat plain keys. On the tab
+    // strip (or the method badge, or a selected table row) `q` still
+    // quits, so the chip keeps saying `q`.
     app.focus = PaneId::Editor;
+    app.editor.sub_focus = crate::components::editor::SubFocus::Tabs;
+    let content = rendered_text(&mut app);
+    assert!(content.contains("q  quit"), "{content}");
+    app.editor.sub_focus = crate::components::editor::SubFocus::Content;
+    app.editor.active_tab = crate::components::editor::EditorTab::Headers;
+    app.editor.table.selected = Some(0);
+    let content = rendered_text(&mut app);
+    assert!(content.contains("q  quit"), "{content}");
+    // The URL line and the body editor type it.
+    app.editor.sub_focus = crate::components::editor::SubFocus::Url;
     let content = rendered_text(&mut app);
     assert!(content.contains("^C  quit"), "{content}");
     assert!(!content.contains("q  quit"), "{content}");
+    app.editor.sub_focus = crate::components::editor::SubFocus::Content;
+    app.editor.active_tab = crate::components::editor::EditorTab::Body;
+    let content = rendered_text(&mut app);
+    assert!(content.contains("^C  quit"), "{content}");
 
     // A modal captures everything; only the modified combo quits.
     app.focus = PaneId::Sidebar;

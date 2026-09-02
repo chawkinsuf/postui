@@ -279,6 +279,20 @@ impl Default for Editor {
 }
 
 impl Editor {
+    /// Whether a plain printable key typed right now lands in one of the
+    /// pane's text inputs rather than falling through to the global
+    /// keymap: the URL line, the body editor, or a live table-cell edit.
+    /// The method badge, the tab strip, a selected-but-not-editing table
+    /// row, and the blurred state all pass plain keys on — so `q` quits
+    /// from them, and the footer's quit chip can say so.
+    pub fn plain_keys_type(&self) -> bool {
+        match self.sub_focus {
+            SubFocus::Url => true,
+            SubFocus::Content => self.active_tab == EditorTab::Body || self.table.editing.is_some(),
+            SubFocus::Method | SubFocus::Tabs | SubFocus::None => false,
+        }
+    }
+
     /// Loads `req` into the editor for editing, and records it as the
     /// last-saved state so `is_dirty` starts out `false`. Also re-masks the
     /// computed-headers section (`computed.revealed = false`): reveal is a
