@@ -14,6 +14,25 @@ pub enum ExtractDestination {
     Request,
 }
 
+/// One text surface a right-click context menu acts on (see
+/// `App::text_surface_menu`): names which selection `Action::CopySelection`
+/// reads, so a menu opened over the response pane copies *its* highlight
+/// even while the body editor shows one too (the ctrl+c path resolves the
+/// same ambiguity by focus priority instead — see
+/// `App::active_selection_text`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextSurface {
+    Url,
+    Body,
+    Response,
+    /// The table cell under edit (`TableEditorState::editing`).
+    TableCell,
+    /// The variable form's field under edit (`VarFormState::editing`).
+    VmField,
+    /// The selector-grid cell under edit (`OptionGridState::editing`).
+    VmCell,
+}
+
 /// What [`Action::CopyToClipboard`] copies: the ready response body, one of
 /// its headers by index, or the editor's URL as written.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -416,6 +435,10 @@ pub enum Action {
     /// content focus). Toasts "nowhere to insert" when focus isn't on a
     /// text field.
     InsertVarText(String),
+    /// Copy `surface`'s live selection to the clipboard — the context
+    /// menu's "Copy" row (right-click on a text surface). Toasts like the
+    /// ctrl+c selection copy; a no-op when nothing is selected there.
+    CopySelection(TextSurface),
     /// Paste the OS clipboard's text at the live caret (ctrl+v — GUI
     /// muscle memory; terminal-level pastes arrive as bracketed-paste
     /// events and skip the clipboard read). Routed by `App::paste_text`:

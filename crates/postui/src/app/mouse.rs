@@ -177,6 +177,15 @@ impl App {
                         None => return changed,
                     }
                 }
+                // A text surface — the URL bar, the body, the response
+                // text, or the one cell/field currently under edit — gets
+                // the Copy/Paste menu instead of a row menu, and skips the
+                // click-away commits below (which would end the edit whose
+                // selection Copy reads). Any other part of a row falls
+                // through to the row menu exactly as before.
+                if let Some(items) = self.text_surface_menu(&hit) {
+                    return self.open_context_menu(m.column, m.row, items) || changed;
+                }
                 // A right click is a click away from whatever detail-pane
                 // cell was being typed into, exactly like a left click
                 // (see `on_hit`'s blanket rule): commit it *before*

@@ -1433,6 +1433,12 @@ impl App {
                 self.session.response.click_row(row, toggle);
                 true
             }
+            Action::CopySelection(surface) => {
+                if let Some(text) = self.selection_text_of(surface) {
+                    self.copy_text_with_toast(&text, "Copied selection".to_string());
+                }
+                true
+            }
             Action::CopyToClipboard(target) => {
                 let Some((text, success_msg)) = self.resolve_copy(&target) else {
                     self.toasts
@@ -6024,6 +6030,107 @@ impl App {
         }));
         self.begin_dropdown_open();
         true
+    }
+
+    /// The right-click menu for a *text* surface under the pointer — Copy
+    /// (greyed without a selection there) and, on editable surfaces,
+    /// Paste — or `None` when `hit` isn't one: a table/grid cell that
+    /// isn't the one under edit, a form field not being edited, a row
+    /// background, chrome. The split rule for tables (see the right-click
+    /// arm of `App::handle_mouse`): only the cell currently under edit
+    /// offers this menu; every other part of a row keeps the row menu.
+    ///
+    /// Also claims focus for the surface (URL bar, body, the editor pane)
+    /// the way a left click there would, minus the caret move, so the
+    /// menu's Paste — routed by `App::paste_text` through focus — lands
+    /// where the pointer was. The response pane is read-only: Copy only.
+    /// Must run *before* the click-away commits, since a commit ends the
+    /// edit whose selection Copy would read.
+    fn text_surface_menu(&mut self, hit: &Hit) -> Option<Vec<crate::components::modal::MenuItem>> {
+        use crate::action::TextSurface;
+        use crate::components::modal::MenuItem;
+        let (surface, editable) = match hit {
+            Hit::UrlBar => {
+                self.update(Action::FocusUrl);
+                (TextSurface::Url, true)
+            }
+            Hit::BodyEditor => {
+                self.update(Action::FocusPane(PaneId::Editor));
+                self.editor.sub_focus = SubFocus::Content;
+                (TextSurface::Body, true)
+            }
+            // Only once there is response text to select: an empty pane
+            // (nothing sent yet, in flight, an error) offers no menu.
+            Hit::Pane(PaneId::Response) | Hit::JsonRow(_) | Hit::JsonArrow(_)
+                if self.session.response.view().is_some() =>
+            {
+                (TextSurface::Response, false)
+            }
+            Hit::TableCell { row, col } => {
+                let cell_col = crate::components::table_editor::Col::from_index(*col);
+                let editing_this = self
+                    .editor
+                    .table
+                    .editing
+                    .as_ref()
+                    .is_some_and(|e| e.row == *row && e.col == cell_col);
+                if !editing_this {
+                    return None;
+                }
+                self.update(Action::FocusPane(PaneId::Editor));
+                self.editor.sub_focus = SubFocus::Content;
+                (TextSurface::TableCell, true)
+            }
+            Hit::VmFormField(field) => {
+                let editing_this = self
+                    .varmanager
+                    .form
+                    .editing
+                    .as_ref()
+                    .is_some_and(|(f, _)| f == field);
+                if !editing_this {
+                    return None;
+                }
+                (TextSurface::VmField, true)
+            }
+            Hit::VmEntryCell { row, col } => {
+                let editing_this = self
+                    .varmanager
+                    .grid
+                    .editing
+                    .as_ref()
+                    .is_some_and(|e| e.row == *row && e.col == *col);
+                if !editing_this {
+                    return None;
+                }
+                (TextSurface::VmCell, true)
+            }
+            _ => return None,
+        };
+        let copy = if self.selection_text_of(surface).is_some() {
+            MenuItem::new("Copy", Action::CopySelection(surface))
+        } else {
+            MenuItem::disabled("Copy")
+        };
+        let mut items = vec![copy];
+        if editable {
+            items.push(MenuItem::new("Paste", Action::Paste));
+        }
+        Some(items)
+    }
+
+    /// The selected text on one named surface, or `None` when it has no
+    /// selection (or, for the edit-bound surfaces, no edit is live).
+    fn selection_text_of(&self, surface: crate::action::TextSurface) -> Option<String> {
+        use crate::action::TextSurface;
+        match surface {
+            TextSurface::Url => self.editor.url.selected_text(),
+            TextSurface::Body => self.editor.body_selected_text(),
+            TextSurface::Response => self.session.response.selected_text(),
+            TextSurface::TableCell => self.editor.table.editing.as_ref()?.input.selected_text(),
+            TextSurface::VmField => self.varmanager.form.editing.as_ref()?.1.selected_text(),
+            TextSurface::VmCell => self.varmanager.grid.editing.as_ref()?.input.selected_text(),
+        }
     }
 
     /// The context menu for a right-clicked `hit`, or `None` where a right

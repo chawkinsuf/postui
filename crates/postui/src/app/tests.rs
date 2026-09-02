@@ -4191,7 +4191,8 @@ fn right_click_on_dead_space_while_context_menu_open_closes_it() {
     assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))));
     render_once(&mut app);
 
-    // The response pane's background offers no context menu.
+    // The response pane's background offers no context menu while there
+    // is no response text to copy.
     let dead = app
         .hits
         .rect_of(&crate::hit::Hit::Pane(crate::layout::PaneId::Response))
@@ -15867,4 +15868,346 @@ mod undo_tests {
             "refilter re-selects row 0 and previews it"
         );
     }
+}
+
+// --- right-click text menus (Copy / Paste on text surfaces) ---------------
+
+/// A clipboard whose writes land in `out` and whose reads return `read`.
+fn file_clipboard(out: &std::path::Path, read: &str) -> crate::clipboard::Clipboard {
+    let cmd = format!("cat > {}", out.to_string_lossy());
+    let mut clipboard = crate::clipboard::Clipboard::new_for_test(Some(cmd), 65536, false);
+    clipboard.set_read_for_test(read);
+    clipboard
+}
+
+fn menu_labels(app: &App) -> Vec<String> {
+    let Some(Modal::Dropdown(menu)) = app.modals.top() else {
+        panic!(
+            "expected a context menu, got {:?}",
+            app.modals.top().is_some()
+        );
+    };
+    menu.items.iter().map(|i| i.label.clone()).collect()
+}
+
+fn menu_action(app: &App, label: &str) -> Option<Action> {
+    let Some(Modal::Dropdown(menu)) = app.modals.top() else {
+        panic!("expected a context menu");
+    };
+    menu.items
+        .iter()
+        .find(|i| i.label == label)
+        .unwrap_or_else(|| panic!("no {label:?} item"))
+        .action
+        .clone()
+}
+
+#[test]
+fn right_click_on_the_url_bar_offers_copy_and_paste_and_copy_copies_the_selection() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.txt");
+    let mut app = App::new_for_test();
+    app.set_clipboard_for_test(file_clipboard(&out, ""));
+    app.editor.url = crate::components::line_input::LineInput::new("https://example.com");
+    app.editor.sub_focus = SubFocus::Url;
+    app.editor.url.select_all();
+    render_once(&mut app);
+    let area = app.editor.last_url_text_area.expect("url area recorded");
+
+    assert!(app.handle_mouse(right_down(area.x + 3, area.y)));
+    assert_eq!(menu_labels(&app), vec!["Copy", "Paste"]);
+    assert!(
+        app.editor.url.selection().is_some(),
+        "opening the menu keeps the selection"
+    );
+    let copy = menu_action(&app, "Copy").expect("Copy is enabled with a selection");
+    app.update(Action::Close);
+    app.update(copy);
+
+    assert_eq!(
+        std::fs::read_to_string(&out).unwrap(),
+        "https://example.com"
+    );
+    assert!(
+        app.editor.url.selection().is_some(),
+        "copy keeps the selection"
+    );
+}
+
+#[test]
+fn right_click_on_the_url_bar_without_a_selection_greys_copy_and_paste_lands_in_the_url() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.txt");
+    let mut app = App::new_for_test();
+    app.set_clipboard_for_test(file_clipboard(&out, "/v2"));
+    app.editor.url = crate::components::line_input::LineInput::new("https://example.com");
+    app.editor
+        .url
+        .set_cursor(app.editor.url.text().chars().count());
+    // Focus starts elsewhere: the right click has to claim the URL bar
+    // itself, or the menu's Paste would have nowhere to land.
+    app.focus = PaneId::Sidebar;
+    app.editor.sub_focus = SubFocus::None;
+    render_once(&mut app);
+    let area = app.editor.last_url_text_area.expect("url area recorded");
+
+    app.handle_mouse(right_down(area.x + 3, area.y));
+    assert_eq!(menu_labels(&app), vec!["Copy", "Paste"]);
+    assert!(
+        menu_action(&app, "Copy").is_none(),
+        "nothing selected: Copy is greyed"
+    );
+    let paste = menu_action(&app, "Paste").expect("Paste is enabled");
+    app.update(Action::Close);
+    app.update(paste);
+
+    assert_eq!(app.editor.url.text(), "https://example.com/v2");
+    assert_eq!(app.focus, PaneId::Editor);
+    assert_eq!(app.editor.sub_focus, SubFocus::Url);
+}
+
+#[test]
+fn right_click_on_the_edited_table_cell_offers_the_text_menu_and_keeps_the_edit_live() {
+    use crate::components::table_editor::{CellEdit, Col};
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.txt");
+    let mut app = App::new_for_test();
+    app.set_clipboard_for_test(file_clipboard(&out, "-x"));
+    app.editor.params.insert(
+        "page".into(),
+        postui_core::model::Entry {
+            value: "2".into(),
+            enabled: true,
+        },
+    );
+    app.focus = PaneId::Editor;
+    app.editor.active_tab = EditorTab::Params;
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.table.selected = Some(0);
+    let mut input = crate::components::line_input::LineInput::new("page");
+    input.select_all();
+    app.editor.table.editing = Some(CellEdit {
+        row: 0,
+        col: Col::Key,
+        input,
+        original: "page".into(),
+    });
+    render_once(&mut app);
+    let cell = app
+        .hits
+        .rect_of(&crate::hit::Hit::TableCell { row: 0, col: 0 })
+        .expect("the edited cell is registered");
+
+    app.handle_mouse(right_down(cell.x, cell.y));
+    assert_eq!(menu_labels(&app), vec!["Copy", "Paste"]);
+    assert!(
+        app.editor.table.editing.is_some(),
+        "a right click on the cell under edit must not commit it"
+    );
+    let copy = menu_action(&app, "Copy").expect("Copy is enabled with a selection");
+    let paste = menu_action(&app, "Paste").expect("Paste is enabled");
+    app.update(Action::Close);
+    app.update(copy);
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "page");
+    app.update(paste);
+    let edit = app.editor.table.editing.as_ref().expect("still editing");
+    assert_eq!(edit.input.text(), "-x", "paste replaces the selection");
+}
+
+#[test]
+fn right_click_elsewhere_on_the_row_keeps_the_row_menu_and_commits_the_edit() {
+    use crate::components::table_editor::{CellEdit, Col};
+    let mut app = App::new_for_test();
+    app.editor.params.insert(
+        "page".into(),
+        postui_core::model::Entry {
+            value: "2".into(),
+            enabled: true,
+        },
+    );
+    app.focus = PaneId::Editor;
+    app.editor.active_tab = EditorTab::Params;
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.table.selected = Some(0);
+    app.editor.table.editing = Some(CellEdit {
+        row: 0,
+        col: Col::Key,
+        input: crate::components::line_input::LineInput::new("pages"),
+        original: "page".into(),
+    });
+    render_once(&mut app);
+    // The value cell of the same row is not the cell under edit.
+    let value = app
+        .hits
+        .rect_of(&crate::hit::Hit::TableCell { row: 0, col: 1 })
+        .expect("the value cell is registered");
+
+    app.handle_mouse(right_down(value.x, value.y));
+    assert_eq!(
+        menu_labels(&app),
+        vec![
+            "Duplicate row",
+            "Delete param",
+            "Extract value to variable\u{2026}"
+        ]
+    );
+    assert!(
+        app.editor.table.editing.is_none(),
+        "a row-level right click commits the edit first, as before"
+    );
+    assert!(app.editor.params.contains_key("pages"));
+}
+
+#[test]
+fn right_click_on_the_response_pane_offers_copy_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.txt");
+    let mut app = App::new_for_test();
+    app.set_clipboard_for_test(file_clipboard(&out, ""));
+    ready_response(&mut app, "plain text body"); // not JSON -> Raw view
+    render_once(&mut app);
+    let area = app
+        .session
+        .response
+        .view()
+        .unwrap()
+        .last_area
+        .expect("body area recorded");
+    app.handle_mouse(left_down(area.x + 1, area.y));
+    app.handle_mouse(left_down(area.x + 1, area.y)); // double click: "plain"
+    app.handle_mouse(left_up(area.x + 1, area.y));
+    assert_eq!(
+        app.session.response.selected_text().as_deref(),
+        Some("plain")
+    );
+
+    app.handle_mouse(right_down(area.x + 1, area.y));
+    assert_eq!(
+        menu_labels(&app),
+        vec!["Copy"],
+        "the response is read-only: no Paste"
+    );
+    let copy = menu_action(&app, "Copy").expect("Copy is enabled with a selection");
+    app.update(Action::Close);
+    app.update(copy);
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "plain");
+}
+
+#[test]
+fn right_click_on_the_response_pane_copies_the_response_selection_not_the_body_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.txt");
+    let mut app = App::new_for_test();
+    app.set_clipboard_for_test(file_clipboard(&out, ""));
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.set_body_text("body text");
+    app.editor.body_select_all();
+    ready_response(&mut app, "plain text body");
+    render_once(&mut app);
+    let area = app
+        .session
+        .response
+        .view()
+        .unwrap()
+        .last_area
+        .expect("body area recorded");
+    app.handle_mouse(left_down(area.x + 1, area.y));
+    app.handle_mouse(left_down(area.x + 1, area.y));
+    app.handle_mouse(left_up(area.x + 1, area.y));
+    assert_eq!(
+        app.session.response.selected_text().as_deref(),
+        Some("plain")
+    );
+
+    app.handle_mouse(right_down(area.x + 1, area.y));
+    let copy = menu_action(&app, "Copy").unwrap();
+    app.update(Action::Close);
+    app.update(copy);
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "plain");
+}
+
+#[test]
+fn right_click_on_the_body_editor_offers_copy_and_paste() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.txt");
+    let mut app = App::new_for_test();
+    app.set_clipboard_for_test(file_clipboard(&out, "replaced"));
+    app.focus = PaneId::Sidebar;
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.set_body_text("hello world");
+    app.editor.body_select_all();
+    render_once(&mut app);
+    let area = app.editor.last_body_area.expect("body area recorded");
+
+    app.handle_mouse(right_down(area.x + 2, area.y));
+    assert_eq!(menu_labels(&app), vec!["Copy", "Paste"]);
+    assert!(
+        app.editor.body_selected_text().is_some(),
+        "opening the menu keeps the selection"
+    );
+    let copy = menu_action(&app, "Copy").expect("Copy is enabled with a selection");
+    let paste = menu_action(&app, "Paste").expect("Paste is enabled");
+    app.update(Action::Close);
+    app.update(copy);
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "hello world");
+    app.update(paste);
+    assert_eq!(app.editor.body_text(), "replaced");
+    assert_eq!(app.focus, PaneId::Editor);
+}
+
+#[test]
+fn right_click_on_the_edited_grid_cell_offers_the_text_menu_instead_of_the_row_menu() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let out = dir.path().join("out.txt");
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.set_clipboard_for_test(file_clipboard(&out, ""));
+    goto_group(&mut app, "user");
+    app.varmanager.start_cell_edit(&app.project, 0, 1);
+    app.varmanager
+        .grid
+        .editing
+        .as_mut()
+        .unwrap()
+        .input
+        .select_all();
+    let expected = app
+        .varmanager
+        .grid
+        .editing
+        .as_ref()
+        .unwrap()
+        .input
+        .text()
+        .to_string();
+    render_once(&mut app);
+    let cell = app
+        .hits
+        .rect_of(&crate::hit::Hit::VmEntryCell { row: 0, col: 1 })
+        .expect("the edited cell is registered");
+
+    app.handle_mouse(right_down(cell.x, cell.y));
+    assert_eq!(menu_labels(&app), vec!["Copy", "Paste"]);
+    assert!(
+        app.varmanager.grid.editing.is_some(),
+        "a right click on the cell under edit must not commit it"
+    );
+    let copy = menu_action(&app, "Copy").expect("Copy is enabled with a selection");
+    app.update(Action::Close);
+    app.update(copy);
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), expected);
+
+    // Any other cell of the row still opens the row's own menu.
+    render_once(&mut app);
+    let other = app
+        .hits
+        .rect_of(&crate::hit::Hit::VmEntryCell { row: 0, col: 0 })
+        .expect("the other cell is registered");
+    app.handle_mouse(right_down(other.x, other.y));
+    assert!(
+        menu_labels(&app).iter().any(|l| l == "Rename"),
+        "{:?}",
+        menu_labels(&app)
+    );
 }
