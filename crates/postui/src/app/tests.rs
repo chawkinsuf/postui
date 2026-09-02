@@ -10047,22 +10047,21 @@ fn clicking_a_secret_token_opens_the_masked_secret_prompt() {
 }
 
 #[test]
-fn clicking_a_token_of_a_selector_with_no_options_opens_the_add_option_prompt() {
+fn clicking_a_token_of_a_selector_with_no_options_opens_the_picker_on_its_ghost_row() {
     let (mut app, _dir) = token_popup_app();
-    // dev has no options for the selector, so there is nothing to select
-    // yet — the popup walks straight into creating the first option.
+    // dev has no options for the selector, so the picker opens with only
+    // its "add new option…" ghost row — no prompt is forced on the user.
     app.update(Action::SwitchEnv(Some("dev".into())));
     app.update(Action::OpenVarTokenPopup("user".into()));
 
-    let Some(Modal::MultiPrompt { kind, .. }) = app.modals.top() else {
-        panic!("expected the add-option prompt")
+    let Some(Modal::VarPicker(p)) = app.modals.top() else {
+        panic!("expected the select picker")
     };
-    assert_eq!(
-        *kind,
-        PromptKind::NewOptionInline {
-            owner: "user".into()
-        }
-    );
+    assert!(matches!(
+        p.mode,
+        crate::components::var_picker::PickerMode::SelectOption { .. }
+    ));
+    assert_eq!(p.row_count(), 1, "the ghost row is the only row");
 }
 
 #[test]

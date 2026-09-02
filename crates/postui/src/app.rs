@@ -4629,11 +4629,9 @@ impl App {
                         .collect()
                 })
                 .unwrap_or_default();
-        if options.is_empty() {
-            // Nothing to select yet — walk straight into creating the
-            // selector's first option in this environment.
-            return self.apply(Action::OpenNewOptionInlinePrompt { owner: selector });
-        }
+        // With no options yet the picker opens on its "add new option…"
+        // ghost row alone — the user chooses to create, never gets walked
+        // into a prompt.
         self.push_modal(Modal::VarPicker(VarPickerState::new_select(
             options, name, selector, env_key,
         )));

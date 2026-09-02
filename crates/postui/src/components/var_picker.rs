@@ -262,7 +262,7 @@ impl VarPickerState {
     /// variable…" in `Insert` mode (spec §6: the autocomplete "ends with
     /// 'new variable…'"), "add new option…" in `SelectOption` mode (Task
     /// 17, spec §6's in-context "Add new option…" flow).
-    fn row_count(&self) -> usize {
+    pub(crate) fn row_count(&self) -> usize {
         self.filtered.len() + 1
     }
 
