@@ -2010,7 +2010,11 @@ impl App {
                         let from_row = self.sidebar.selected;
                         self.refresh_sidebar();
                         self.toasts.push(
-                            format!("Moved {} to {space}", self.request_display(&new_slug)),
+                            format!(
+                                "Moved {} to {}",
+                                self.request_display(&new_slug),
+                                self.project.space_name(&space)
+                            ),
                             ToastKind::Success,
                         );
                         if self.editor.slug.as_deref() == Some(slug.as_str()) {
@@ -2647,7 +2651,12 @@ impl App {
                     .project
                     .environments
                     .iter()
-                    .map(|name| MenuItem::new(name.clone(), Action::SwitchEnv(Some(name.clone()))))
+                    .map(|slug| {
+                        MenuItem::new(
+                            self.project.env_name(slug),
+                            Action::SwitchEnv(Some(slug.clone())),
+                        )
+                    })
                     .collect();
                 items.push(MenuItem::new("no environment", Action::SwitchEnv(None)));
                 items.push(MenuItem::new("new environment…", Action::OpenNewEnvPrompt));
@@ -2684,7 +2693,7 @@ impl App {
             }
             Action::OpenNewEnvPrompt => {
                 self.push_modal(Modal::Prompt {
-                    title: "New environment (a-z 0-9 - _)".into(),
+                    title: "New environment".into(),
                     input: crate::components::line_input::LineInput::new(""),
                     kind: PromptKind::NewEnvironment,
                     revealed: false,
@@ -2693,35 +2702,40 @@ impl App {
             }
             Action::CreateEnv(name) => {
                 let prev_active = self.project.active_env.clone();
+                // The name is free-form; the file is its slug, and
+                // project.toml records the name — so it is part of the
+                // step, or an undo would strand the `[environment.<slug>]`
+                // table.
+                let project_toml = self.project.root.join("project.toml");
+                let before_meta = self.read_file_states(std::slice::from_ref(&project_toml));
                 match postui_core::project::create_environment(&self.project.root, &name) {
-                    Ok(()) => {
+                    Ok(slug) => {
+                        self.project.reload_meta();
                         self.project.environments =
                             postui_core::project::list_environments(&self.project.root);
-                        let path = self
-                            .project
-                            .root
-                            .join("environments")
-                            .join(format!("{name}.toml"));
+                        let path =
+                            postui_core::project::environment_path(&self.project.root, &slug);
+                        let mut before = vec![(path.clone(), None)];
+                        before.extend(before_meta);
                         self.record_file_step(
-                            vec![(path.clone(), None)],
-                            &[path],
-                            Some((prev_active, Some(name.clone()))),
+                            before,
+                            &[path, project_toml],
+                            Some((prev_active, Some(slug.clone()))),
                         );
-                        self.apply(Action::SwitchEnv(Some(name)));
+                        self.apply(Action::SwitchEnv(Some(slug)));
+                    }
+                    Err(postui_core::project::ProjectError::AlreadyExists(name)) => {
+                        self.toasts.push(
+                            format!("environment \"{name}\" already exists"),
+                            ToastKind::Warning,
+                        );
+                        self.last_action_failed = true;
                     }
                     Err(e) => {
-                        let msg = if self
-                            .project
-                            .root
-                            .join("environments")
-                            .join(format!("{name}.toml"))
-                            .is_file()
-                        {
-                            format!("environment \"{name}\" already exists")
-                        } else {
-                            format!("cannot create environment: {e}")
-                        };
-                        self.toasts.push(msg, ToastKind::Warning);
+                        self.toasts.push(
+                            format!("cannot create environment: {e}"),
+                            ToastKind::Warning,
+                        );
                         self.last_action_failed = true;
                     }
                 }
@@ -2767,7 +2781,7 @@ impl App {
                 if self.screen == Screen::Manage {
                     self.varmanager.sync(&self.project);
                 }
-                let label = self.project.env_label();
+                let label = self.project.env_label_display();
                 self.toasts
                     .push(format!("env: {label}"), ToastKind::Success);
                 true
@@ -3911,10 +3925,10 @@ impl App {
                     .spaces
                     .iter()
                     .enumerate()
-                    .map(|(i, name)| {
+                    .map(|(i, slug)| {
                         MenuItem::new(
-                            format!("{}  {name}", i + 1),
-                            Action::SwitchSpace(name.clone()),
+                            format!("{}  {}", i + 1, self.project.space_name(slug)),
+                            Action::SwitchSpace(slug.clone()),
                         )
                     })
                     .collect();
@@ -3978,7 +3992,7 @@ impl App {
             }
             Action::OpenNewSpacePrompt => {
                 self.push_modal(Modal::Prompt {
-                    title: "New space (a-z 0-9 - _)".into(),
+                    title: "New space".into(),
                     input: crate::components::line_input::LineInput::new(""),
                     kind: PromptKind::NewSpace,
                     revealed: false,
@@ -3987,12 +4001,15 @@ impl App {
             }
             Action::CreateSpace(name) => {
                 match postui_core::project::create_space(&self.project.root, &name) {
-                    Ok(()) => {
+                    Ok(slug) => {
                         self.apply(Action::ReloadProjectFiles);
+                        self.project.reload_meta();
                         self.project.reload_spaces();
-                        self.toasts
-                            .push(format!("Created space {name}"), ToastKind::Success);
-                        self.apply(Action::SwitchSpace(name))
+                        self.toasts.push(
+                            format!("Created space {}", self.project.space_name(&slug)),
+                            ToastKind::Success,
+                        );
+                        self.apply(Action::SwitchSpace(slug))
                     }
                     Err(e) => {
                         self.toasts
@@ -4004,32 +4021,40 @@ impl App {
             }
             Action::PromptRenameEnv(name) => {
                 self.push_modal(Modal::Prompt {
-                    title: "Rename environment (a-z 0-9 - _)".into(),
-                    input: crate::components::line_input::LineInput::new(&name),
+                    title: "Rename environment".into(),
+                    input: crate::components::line_input::LineInput::new(
+                        &self.project.env_name(&name),
+                    ),
                     kind: PromptKind::RenameEnvironment { from: name },
                     revealed: false,
                 });
                 true
             }
             Action::RenameEnv { from, to } => {
-                if from == to {
+                // `from` is a slug; `to` is the display name typed.
+                if to.trim() == self.project.env_name(&from) {
                     return true;
                 }
                 let root = self.project.root.clone();
                 let from_path = postui_core::project::environment_path(&root, &from);
-                let to_path = postui_core::project::environment_path(&root, &to);
+                let to_slug =
+                    postui_core::project::environment_slug_for(&root, to.trim(), Some(&from));
+                let to_path = postui_core::project::environment_path(&root, &to_slug);
                 let secrets_path = root.join(".local").join("secrets.toml");
                 // `.local/state.toml` rides along: the per-env `selections`
                 // table is re-keyed in memory by `rename_env_state` and only
                 // ever reaches disk through `PersistLocalState`, so without
                 // it in the step an undo would strand this env's selections
-                // under the new name.
+                // under the new name. So does project.toml, which holds the
+                // display name.
                 let state_path = root.join(".local").join("state.toml");
-                let paths = vec![from_path, to_path, secrets_path, state_path];
+                let project_toml = root.join("project.toml");
+                let paths = vec![from_path, to_path, secrets_path, state_path, project_toml];
                 let before = self.read_file_states(&paths);
                 let was_active = self.project.active_env.as_deref() == Some(from.as_str());
                 match postui_core::project::rename_environment(&root, &from, &to) {
-                    Ok(()) => {
+                    Ok(to) => {
+                        self.project.reload_meta();
                         self.project.rename_env_state(&from, &to);
                         if let Err(e) =
                             postui_core::project::save_secrets(&root, &self.project.secrets)
@@ -4058,8 +4083,10 @@ impl App {
                                 .list
                                 .select_name(self.manage.tab, &self.project, &to);
                         }
-                        self.toasts
-                            .push(format!("Renamed environment to {to}"), ToastKind::Success);
+                        self.toasts.push(
+                            format!("Renamed environment to {}", self.project.env_name(&to)),
+                            ToastKind::Success,
+                        );
                     }
                     Err(e) => {
                         self.toasts.push(
@@ -4073,7 +4100,7 @@ impl App {
             }
             Action::DeleteEnv(name) => {
                 self.push_modal(Modal::Confirm {
-                    title: format!("Delete environment \"{name}\"?"),
+                    title: format!("Delete environment \"{}\"?", self.project.env_name(&name)),
                     body: "Its values and secrets are removed.".into(),
                     choices: vec![(
                         'd',
@@ -4089,12 +4116,15 @@ impl App {
                 // See `Action::RenameEnv`: the dropped env's `selections`
                 // live in `.local/state.toml`, so it is a companion file.
                 let state_path = root.join(".local").join("state.toml");
-                let companions = [secrets_path, state_path];
+                let project_toml = root.join("project.toml");
+                let companions = [secrets_path, state_path, project_toml];
                 let before = self.read_file_states(&companions);
                 let prev_active = self.project.active_env.clone();
                 let was_active = prev_active.as_deref() == Some(name.as_str());
+                let display = self.project.env_name(&name);
                 match postui_core::project::delete_environment(&root, &name) {
                     Ok(trashed) => {
+                        self.project.reload_meta();
                         self.project.remove_env_state(&name);
                         if let Err(e) =
                             postui_core::project::save_secrets(&root, &self.project.secrets)
@@ -4109,7 +4139,7 @@ impl App {
                             }
                         }
                         self.toasts.push(
-                            format!("Deleted environment {name}{}", self.undo_hint()),
+                            format!("Deleted environment {display}{}", self.undo_hint()),
                             ToastKind::Info,
                         );
                         // Persist first, so the step's "after" side records
@@ -4135,19 +4165,22 @@ impl App {
             }
             Action::PromptRenameSpace(name) => {
                 self.push_modal(Modal::Prompt {
-                    title: "Rename space (a-z 0-9 - _)".into(),
-                    input: crate::components::line_input::LineInput::new(&name),
+                    title: "Rename space".into(),
+                    input: crate::components::line_input::LineInput::new(
+                        &self.project.space_name(&name),
+                    ),
                     kind: PromptKind::RenameSpace { from: name },
                     revealed: false,
                 });
                 true
             }
             Action::RenameSpace { from, to } => {
-                if from == to {
+                // `from` is a slug; `to` is the display name typed.
+                if to.trim() == self.project.space_name(&from) {
                     return true;
                 }
                 match postui_core::project::rename_space(&self.project.root, &from, &to) {
-                    Ok(()) => {
+                    Ok(to) => {
                         // Re-key local state (the active space included)
                         // before anything re-lists: both
                         // `ReloadProjectFiles` and `reload_spaces` drop an
@@ -4155,6 +4188,7 @@ impl App {
                         // the old name is gone by now.
                         self.project.rename_space_state(&from, &to);
                         self.apply(Action::ReloadProjectFiles);
+                        self.project.reload_meta();
                         self.project.reload_spaces();
                         let from_prefix = format!("{from}/");
                         if let Some(rest) = self
@@ -4172,8 +4206,10 @@ impl App {
                         }
                         self.refresh_sidebar();
                         self.apply(Action::PersistLocalState);
-                        self.toasts
-                            .push(format!("Renamed space to {to}"), ToastKind::Success);
+                        self.toasts.push(
+                            format!("Renamed space to {}", self.project.space_name(&to)),
+                            ToastKind::Success,
+                        );
                         if self.screen == Screen::Manage {
                             self.varmanager.sync(&self.project);
                             self.manage
@@ -4220,7 +4256,7 @@ impl App {
                     )
                 };
                 self.push_modal(Modal::Confirm {
-                    title: format!("Delete space \"{name}\"?"),
+                    title: format!("Delete space \"{}\"?", self.project.space_name(&name)),
                     body,
                     choices: vec![('d', label, vec![Action::ForceDeleteSpace(name)])],
                 });
@@ -4241,10 +4277,11 @@ impl App {
                 }
                 let project_toml = self.project.root.join("project.toml");
                 let before = self.read_file_states(std::slice::from_ref(&project_toml));
+                let display = self.project.space_name(&name);
                 match postui_core::project::delete_space(&self.project.root, &name) {
                     Ok(trashed) => {
                         self.toasts.push(
-                            format!("Deleted space {name}{}", self.undo_hint()),
+                            format!("Deleted space {display}{}", self.undo_hint()),
                             ToastKind::Info,
                         );
                         self.record_trashed_step(
@@ -5846,8 +5883,10 @@ impl App {
         }
         self.sidebar.selected = None;
         self.refresh_sidebar();
-        self.toasts
-            .push(format!("space: {space}"), ToastKind::Success);
+        self.toasts.push(
+            format!("space: {}", self.project.space_name(space)),
+            ToastKind::Success,
+        );
         true
     }
 
@@ -7228,7 +7267,7 @@ impl App {
             .iter()
             .filter(|s| Some(s.as_str()) != except)
             .map(|s| crate::components::chooser::ChooserItem {
-                label: s.clone(),
+                label: self.project.space_name(s),
                 detail: None,
                 actions: vec![action(s.clone())],
                 ..Default::default()

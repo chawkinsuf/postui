@@ -183,7 +183,7 @@ impl ManageList {
             width: body.width - left.width,
             ..body
         };
-        self.draw_left(frame, left, theme, tab, &items, hits, hovered);
+        self.draw_left(frame, left, theme, tab, ctx, &items, hits, hovered);
         self.draw_right(
             frame, right, theme, tab, ctx, &items, requests, hits, hovered,
         );
@@ -196,6 +196,7 @@ impl ManageList {
         left: Rect,
         theme: &Theme,
         tab: ManageTab,
+        ctx: &ProjectContext,
         items: &[String],
         hits: &mut HitMap,
         hovered: Option<&Hit>,
@@ -265,8 +266,8 @@ impl ManageList {
             // is not marked here — the header chip already says which one
             // is active, and the list is for editing, not switching.
             let label = match tab {
-                ManageTab::Spaces => format!("{}  {}", i + 1, items[i]),
-                _ => items[i].clone(),
+                ManageTab::Spaces => format!("{}  {}", i + 1, ctx.space_name(&items[i])),
+                _ => ctx.env_name(&items[i]),
             };
             text(
                 buf,
@@ -337,8 +338,8 @@ impl ManageList {
         // painted over it. Dropped buttons stay reachable by key.
         if y + BUTTON_HEIGHT <= bottom {
             let title = match tab {
-                ManageTab::Spaces => format!("Space: {name}"),
-                _ => format!("Environment: {name}"),
+                ManageTab::Spaces => format!("Space: {}", ctx.space_name(name)),
+                _ => format!("Environment: {}", ctx.env_name(name)),
             };
             text(buf, x0, y + 1, &title, theme.text, theme.page, true);
             let mut buttons: Vec<(&str, Hit)> =

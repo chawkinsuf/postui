@@ -60,13 +60,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     hits.clear();
 
     let project_name = app.project.display_name();
-    let env_label = app.project.env_label();
+    let env_label = app.project.env_label_display();
+    let space_label = app.project.space_name(&app.project.active_space);
     crate::components::header_bar::draw_header(
         frame,
         layout.header,
         &app.theme,
         &project_name,
-        &app.project.active_space,
+        &space_label,
         &env_label,
         screen == Screen::Manage,
         // The save/discard group shows only where its keys actually work:

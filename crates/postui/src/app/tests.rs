@@ -3348,8 +3348,147 @@ fn new_space_prompt_creates_and_switches() {
     let toasts = app.toasts.messages().len();
     app.update(Action::CreateSpace("auth".into()));
     assert!(app.toasts.messages().len() > toasts, "duplicate toasts");
-    app.update(Action::CreateSpace("Bad Name".into()));
+    app.update(Action::CreateSpace("   ".into()));
     assert_eq!(app.project.spaces.len(), 3);
+}
+
+#[test]
+fn creating_a_space_with_a_free_form_name_slugs_the_folder_and_shows_the_name() {
+    let (mut app, dir) = spaced_app();
+    app.update(Action::CreateSpace("Auth v2!".into()));
+    assert!(dir.path().join("requests/auth-v2").is_dir());
+    assert_eq!(app.project.active_space, "auth-v2");
+    assert_eq!(app.project.space_name("auth-v2"), "Auth v2!");
+    let text = rendered_text_wide(&mut app);
+    assert!(text.contains("Space: Auth v2!"), "{text}");
+    assert!(
+        app.toasts.messages().contains(&"Created space Auth v2!"),
+        "{:?}",
+        app.toasts.messages()
+    );
+    // The chooser lists display names but switches by slug.
+    app.update(Action::OpenSpaceChooser);
+    let Some(Modal::Dropdown(state)) = app.modals.top() else {
+        panic!("dropdown")
+    };
+    let row = state
+        .items
+        .iter()
+        .find(|it| it.label == "3  Auth v2!")
+        .expect("display name in the chooser");
+    assert_eq!(row.action, Some(Action::SwitchSpace("auth-v2".into())));
+}
+
+#[test]
+fn renaming_a_space_takes_a_display_name_and_reslugs() {
+    let (mut app, dir) = spaced_app();
+    app.update(Action::SwitchSpace("auth".into()));
+    app.update(Action::RenameSpace {
+        from: "auth".into(),
+        to: "Identity & SSO".into(),
+    });
+    assert_eq!(app.project.spaces, ["main", "identity-sso"]);
+    assert_eq!(app.project.active_space, "identity-sso");
+    assert_eq!(app.editor.slug.as_deref(), Some("identity-sso/login"));
+    assert!(
+        dir.path()
+            .join("requests/identity-sso/login.toml")
+            .is_file()
+    );
+    assert_eq!(app.project.space_name("identity-sso"), "Identity & SSO");
+    // The rename prompt opens prefilled with the display name, not the slug.
+    app.update(Action::PromptRenameSpace("identity-sso".into()));
+    let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
+        panic!("prompt")
+    };
+    assert_eq!(input.text(), "Identity & SSO");
+}
+
+#[test]
+fn creating_an_environment_with_a_free_form_name_slugs_the_file_and_undoes_with_project_toml() {
+    let (mut app, dir) = app_with_envs();
+    app.update(Action::CreateEnv("Staging (EU)".into()));
+    assert!(dir.path().join("environments/staging-eu.toml").is_file());
+    assert_eq!(app.project.active_env.as_deref(), Some("staging-eu"));
+    assert_eq!(app.project.env_name("staging-eu"), "Staging (EU)");
+    let text = rendered_text_wide(&mut app);
+    assert!(text.contains("Environment: Staging (EU)"), "{text}");
+
+    app.update(Action::Undo);
+    assert!(!dir.path().join("environments/staging-eu.toml").exists());
+    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    assert!(
+        meta.environment.get("staging-eu").is_none(),
+        "project.toml rides along with the step"
+    );
+    app.update(Action::Redo);
+    assert!(dir.path().join("environments/staging-eu.toml").is_file());
+    assert_eq!(app.project.env_name("staging-eu"), "Staging (EU)");
+}
+
+#[test]
+fn renaming_an_environment_takes_a_display_name_and_reslugs() {
+    let (mut app, dir) = app_with_envs();
+    app.update(Action::SwitchEnv(Some("qa".into())));
+    app.update(Action::RenameEnv {
+        from: "qa".into(),
+        to: "QA / Staging".into(),
+    });
+    assert!(dir.path().join("environments/qa-staging.toml").is_file());
+    assert!(!dir.path().join("environments/qa.toml").exists());
+    assert_eq!(app.project.active_env.as_deref(), Some("qa-staging"));
+    assert_eq!(app.project.env_name("qa-staging"), "QA / Staging");
+    app.update(Action::PromptRenameEnv("qa-staging".into()));
+    let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
+        panic!("prompt")
+    };
+    assert_eq!(input.text(), "QA / Staging");
+    app.update(Action::Close);
+
+    app.update(Action::OpenEnvChooser);
+    let Some(Modal::Dropdown(state)) = app.modals.top() else {
+        panic!("dropdown")
+    };
+    let row = state
+        .items
+        .iter()
+        .find(|it| it.label == "QA / Staging")
+        .expect("display name in the chooser");
+    assert_eq!(
+        row.action,
+        Some(Action::SwitchEnv(Some("qa-staging".into())))
+    );
+    app.update(Action::Close);
+
+    // Undo puts the file and its name back.
+    app.update(Action::Undo);
+    assert!(dir.path().join("environments/qa.toml").is_file());
+    assert!(!dir.path().join("environments/qa-staging.toml").exists());
+    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    assert!(meta.environment.get("qa-staging").is_none());
+}
+
+#[test]
+fn manage_lists_show_display_names_and_the_move_toast_uses_them() {
+    use crate::components::manage::ManageTab;
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::CreateSpace("Auth v2".into()));
+    app.update(Action::SwitchSpace("main".into()));
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Spaces),
+    });
+    let text = rendered_text_tall(&mut app);
+    assert!(text.contains("3  Auth v2"), "{text}");
+    app.update(Action::Close);
+    app.update(Action::MoveRequestToSpace {
+        slug: "main/alpha".into(),
+        space: "auth-v2".into(),
+    });
+    assert!(
+        app.toasts.messages().contains(&"Moved alpha to Auth v2"),
+        "{:?}",
+        app.toasts.messages()
+    );
 }
 
 #[test]
@@ -5583,13 +5722,12 @@ fn create_env_invalid_or_duplicate_name_toasts_and_keeps_active_env() {
     app.update(Action::SwitchEnv(Some("qa".into())));
     let toasts_before = app.toasts.messages().len();
 
-    app.update(Action::CreateEnv("Bad Name".into()));
+    app.update(Action::CreateEnv("   ".into()));
     assert!(
         app.toasts.messages().len() > toasts_before,
         "invalid name must toast"
     );
     assert_eq!(app.project.env_label(), "qa");
-    assert!(!dir.path().join("environments/Bad Name.toml").exists());
 
     let toasts_before = app.toasts.messages().len();
     app.update(Action::CreateEnv("prod".into()));

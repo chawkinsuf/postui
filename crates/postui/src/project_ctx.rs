@@ -397,9 +397,30 @@ impl ProjectContext {
         postui_core::project::display_name(&self.root, &self.meta)
     }
 
-    /// The active environment's name, or `"no env"` when none is active.
+    /// The active environment's slug, or `"no env"` when none is active.
+    /// A key, not a label: see [`Self::env_label_display`] for what the
+    /// user reads.
     pub fn env_label(&self) -> String {
         self.active_env.clone().unwrap_or_else(|| "no env".into())
+    }
+
+    /// The active environment's display name, or `"no env"`.
+    pub fn env_label_display(&self) -> String {
+        self.active_env
+            .as_deref()
+            .map(|slug| self.env_name(slug))
+            .unwrap_or_else(|| "no env".into())
+    }
+
+    /// The name environment `slug` shows as (`[environment.<slug>] name`
+    /// in project.toml, else the slug).
+    pub fn env_name(&self, slug: &str) -> String {
+        postui_core::project::env_display(&self.meta, slug)
+    }
+
+    /// The name space `slug` shows as (`[space.<slug>] name`, else the slug).
+    pub fn space_name(&self, slug: &str) -> String {
+        postui_core::project::space_display(&self.meta, slug)
     }
 
     /// The key `selections`/`secrets` are keyed under for the active
@@ -597,6 +618,7 @@ impl ProjectContext {
             return None;
         }
         let gone = std::mem::take(&mut self.active_space);
+        let gone = self.space_name(&gone);
         self.active_space = self
             .spaces
             .first()

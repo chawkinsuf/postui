@@ -152,6 +152,12 @@ pub fn slug_for_path(root: &Path, path: &Path) -> Option<String> {
 /// result always passes [`validate_slug`] as a single segment — the user
 /// never sees or types it.
 pub fn slugify(name: &str) -> String {
+    slugify_or(name, "request")
+}
+
+/// [`slugify`] with a caller-chosen fallback for a name nothing safe
+/// survives from (`"space"`, `"environment"`, …).
+pub fn slugify_or(name: &str, fallback: &str) -> String {
     let mut out = String::new();
     let mut pending_dash = false;
     for c in name.chars() {
@@ -168,7 +174,7 @@ pub fn slugify(name: &str) -> String {
     }
     let out = out.trim_matches('-').to_string();
     if out.is_empty() || validate_slug(&out).is_err() {
-        "request".to_string()
+        fallback.to_string()
     } else {
         out
     }

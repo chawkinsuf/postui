@@ -23,6 +23,183 @@ pub struct ProjectMeta {
     /// listed still count — see `list_spaces`.
     #[serde(default)]
     pub spaces: Vec<String>,
+    /// Per-space settings, keyed by slug: `[space.<slug>]`.
+    #[serde(default)]
+    pub space: IndexMap<String, ItemSettings>,
+    /// Per-environment settings, keyed by slug: `[environment.<slug>]`.
+    #[serde(default)]
+    pub environment: IndexMap<String, ItemSettings>,
+}
+
+/// The settings a space or an environment carries in `project.toml`
+/// (`[space.<slug>]` / `[environment.<slug>]`). The slug is the directory
+/// or file name; the display name is free-form, the way a request's
+/// `name` is. Unknown keys are tolerated so a newer file still loads.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct ItemSettings {
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// The name a space shows as: its `[space.<slug>] name`, else the slug.
+pub fn space_display(meta: &ProjectMeta, slug: &str) -> String {
+    meta.space
+        .get(slug)
+        .and_then(|s| s.name.clone())
+        .unwrap_or_else(|| slug.to_string())
+}
+
+/// The name an environment shows as: its `[environment.<slug>] name`,
+/// else the slug.
+pub fn env_display(meta: &ProjectMeta, slug: &str) -> String {
+    meta.environment
+        .get(slug)
+        .and_then(|s| s.name.clone())
+        .unwrap_or_else(|| slug.to_string())
+}
+
+/// Which of the two settings tables an op edits.
+#[derive(Clone, Copy)]
+enum Kind {
+    Space,
+    Environment,
+}
+
+impl Kind {
+    fn table(self) -> &'static str {
+        match self {
+            Kind::Space => "space",
+            Kind::Environment => "environment",
+        }
+    }
+    fn fallback_slug(self) -> &'static str {
+        match self {
+            Kind::Space => "space",
+            Kind::Environment => "environment",
+        }
+    }
+}
+
+/// Rewrites `project.toml` through `f` (created if missing), preserving
+/// everything `f` doesn't touch, comments included.
+fn edit_project_toml(
+    root: &Path,
+    f: impl FnOnce(&mut toml_edit::DocumentMut),
+) -> Result<(), ProjectError> {
+    let path = root.join("project.toml");
+    let text = read_optional(&path)?.unwrap_or_default();
+    let mut doc: toml_edit::DocumentMut = text
+        .parse()
+        .map_err(|e: toml_edit::TomlError| ProjectError::Parse(e.to_string()))?;
+    f(&mut doc);
+    std::fs::write(&path, doc.to_string())?;
+    Ok(())
+}
+
+/// `[<kind>.<slug>] name = <name>`, keeping the table's other keys.
+fn set_item_name(doc: &mut toml_edit::DocumentMut, kind: Kind, slug: &str, name: &str) {
+    let table = doc
+        .entry(kind.table())
+        .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
+    if let Some(t) = table.as_table_mut() {
+        // A bare `[space]` line with nothing but sub-tables under it would
+        // be noise, so the parent stays implicit.
+        t.set_implicit(true);
+        let item = t
+            .entry(slug)
+            .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
+        if let Some(it) = item.as_table_mut() {
+            it["name"] = toml_edit::value(name);
+        }
+    }
+}
+
+/// Moves `[<kind>.<from>]` to `[<kind>.<to>]` whole, so any setting a
+/// future build (or the user's hand) put there survives a rename.
+fn move_item_table(doc: &mut toml_edit::DocumentMut, kind: Kind, from: &str, to: &str) {
+    if from == to {
+        return;
+    }
+    if let Some(t) = doc.get_mut(kind.table()).and_then(|i| i.as_table_mut())
+        && let Some(item) = t.remove(from)
+    {
+        t.insert(to, item);
+    }
+}
+
+fn remove_item_table(doc: &mut toml_edit::DocumentMut, kind: Kind, slug: &str) {
+    if let Some(t) = doc.get_mut(kind.table()).and_then(|i| i.as_table_mut()) {
+        t.remove(slug);
+        if t.is_empty() {
+            doc.remove(kind.table());
+        }
+    }
+}
+
+/// A trimmed, non-empty display name, or `BadName`.
+fn display_name_of(input: &str) -> Result<String, ProjectError> {
+    let name = input.trim();
+    if name.is_empty() {
+        return Err(ProjectError::BadName(input.to_string()));
+    }
+    Ok(name.to_string())
+}
+
+/// The slug `display` gets among `taken` (slugs already in use, `exclude`
+/// not counting): `slugify(display)`, then `-2`, `-3`, … until free.
+fn unique_slug_among(
+    kind: Kind,
+    display: &str,
+    taken: impl Fn(&str) -> bool,
+    exclude: Option<&str>,
+) -> String {
+    let base = crate::storage::slugify_or(display, kind.fallback_slug());
+    let mut candidate = base.clone();
+    let mut n = 2;
+    while exclude != Some(candidate.as_str()) && taken(&candidate) {
+        candidate = format!("{base}-{n}");
+        n += 1;
+    }
+    candidate
+}
+
+/// Whether `display` (case-insensitively) already names one of `slugs`,
+/// other than `exclude`.
+fn display_taken(
+    display: &str,
+    slugs: &[String],
+    display_of: impl Fn(&str) -> String,
+    exclude: Option<&str>,
+) -> bool {
+    let wanted = display.to_lowercase();
+    slugs
+        .iter()
+        .filter(|s| exclude != Some(s.as_str()))
+        .any(|s| display_of(s).to_lowercase() == wanted)
+}
+
+/// The slug [`create_space`] / [`rename_space`] would give `display`
+/// (`exclude` = the slug being renamed, which is not a collision with
+/// itself).
+pub fn space_slug_for(root: &Path, display: &str, exclude: Option<&str>) -> String {
+    let listed = write_list(root);
+    unique_slug_among(
+        Kind::Space,
+        display,
+        |slug| listed.iter().any(|s| s == slug) || space_dir(root, slug).exists(),
+        exclude,
+    )
+}
+
+/// The slug [`create_environment`] / [`rename_environment`] would give
+/// `display`.
+pub fn environment_slug_for(root: &Path, display: &str, exclude: Option<&str>) -> String {
+    unique_slug_among(
+        Kind::Environment,
+        display,
+        |slug| environment_path(root, slug).exists(),
+        exclude,
+    )
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -190,11 +367,7 @@ pub fn write_spaces(root: &Path, spaces: &[String]) -> Result<(), ProjectError> 
     let mut doc: toml_edit::DocumentMut = text
         .parse()
         .map_err(|e: toml_edit::TomlError| ProjectError::Parse(e.to_string()))?;
-    let mut arr = toml_edit::Array::new();
-    for s in spaces {
-        arr.push(s.as_str());
-    }
-    doc["spaces"] = toml_edit::value(arr);
+    doc["spaces"] = toml_edit::value(spaces_array(spaces));
     std::fs::write(&path, doc.to_string())?;
     Ok(())
 }
@@ -227,42 +400,66 @@ fn valid_count(spaces: &[String]) -> usize {
     spaces.iter().filter(|s| valid_space_name(s)).count()
 }
 
-pub fn create_space(root: &Path, name: &str) -> Result<(), ProjectError> {
-    if !valid_space_name(name) {
-        return Err(ProjectError::BadName(name.to_string()));
-    }
+/// Creates a space from a free-form display name: the directory is the
+/// slugified name (`-2`, `-3`, … on a slug collision, request-style), the
+/// name itself is recorded under `[space.<slug>]`. Returns the slug. A
+/// display name another space already answers to is refused.
+pub fn create_space(root: &Path, display: &str) -> Result<String, ProjectError> {
+    let display = display_name_of(display)?;
+    let meta = load_meta(root).unwrap_or_default();
     let mut spaces = write_list(root);
-    if spaces.iter().any(|s| s == name) || space_dir(root, name).exists() {
-        return Err(ProjectError::AlreadyExists(name.to_string()));
+    if display_taken(&display, &spaces, |s| space_display(&meta, s), None) {
+        return Err(ProjectError::AlreadyExists(display));
     }
-    std::fs::create_dir_all(space_dir(root, name))?;
-    spaces.push(name.to_string());
-    write_spaces(root, &spaces)
+    let slug = space_slug_for(root, &display, None);
+    std::fs::create_dir_all(space_dir(root, &slug))?;
+    spaces.push(slug.clone());
+    edit_project_toml(root, |doc| {
+        doc["spaces"] = toml_edit::value(spaces_array(&spaces));
+        set_item_name(doc, Kind::Space, &slug, &display);
+    })?;
+    Ok(slug)
 }
 
-/// Renames the directory (creating the target when `from` was list-only)
-/// and rewrites the list entry in place. Local-state cascades (open
-/// request, expanded folders) are the caller's job.
-pub fn rename_space(root: &Path, from: &str, to: &str) -> Result<(), ProjectError> {
-    if !valid_space_name(to) {
-        return Err(ProjectError::BadName(to.to_string()));
-    }
+/// Renames space `from` (a slug) to the display name `display`: the
+/// directory is re-slugged (created when `from` was list-only), the list
+/// entry rewritten in place, and the `[space.<slug>]` table moved whole.
+/// Returns the new slug — the same as `from` when only the display name
+/// changed. Local-state cascades (open request, expanded folders) are the
+/// caller's job.
+pub fn rename_space(root: &Path, from: &str, display: &str) -> Result<String, ProjectError> {
+    let display = display_name_of(display)?;
+    let meta = load_meta(root).unwrap_or_default();
     let mut spaces = write_list(root);
     let Some(idx) = spaces.iter().position(|s| s == from) else {
         return Err(ProjectError::NotFound(from.to_string()));
     };
-    if spaces.iter().any(|s| s == to) || space_dir(root, to).exists() {
-        return Err(ProjectError::AlreadyExists(to.to_string()));
+    if display_taken(&display, &spaces, |s| space_display(&meta, s), Some(from)) {
+        return Err(ProjectError::AlreadyExists(display));
     }
+    let to = space_slug_for(root, &display, Some(from));
     let from_dir = space_dir(root, from);
-    let to_dir = space_dir(root, to);
-    if from_dir.is_dir() {
+    let to_dir = space_dir(root, &to);
+    if to != from && from_dir.is_dir() {
         std::fs::rename(&from_dir, &to_dir)?;
-    } else {
+    } else if !to_dir.is_dir() {
         std::fs::create_dir_all(&to_dir)?;
     }
-    spaces[idx] = to.to_string();
-    write_spaces(root, &spaces)
+    spaces[idx] = to.clone();
+    edit_project_toml(root, |doc| {
+        doc["spaces"] = toml_edit::value(spaces_array(&spaces));
+        move_item_table(doc, Kind::Space, from, &to);
+        set_item_name(doc, Kind::Space, &to, &display);
+    })?;
+    Ok(to)
+}
+
+fn spaces_array(spaces: &[String]) -> toml_edit::Array {
+    let mut arr = toml_edit::Array::new();
+    for s in spaces {
+        arr.push(s.as_str());
+    }
+    arr
 }
 
 /// Trashes the space's directory (if it exists on disk) and drops the
@@ -283,7 +480,10 @@ pub fn delete_space(root: &Path, name: &str) -> Result<Option<Trashed>, ProjectE
         None
     };
     spaces.remove(idx);
-    write_spaces(root, &spaces)?;
+    edit_project_toml(root, |doc| {
+        doc["spaces"] = toml_edit::value(spaces_array(&spaces));
+        remove_item_table(doc, Kind::Space, name);
+    })?;
     Ok(trashed)
 }
 
@@ -308,20 +508,28 @@ pub fn move_space(root: &Path, name: &str, delta: i32) -> Result<(), ProjectErro
     write_spaces(root, &spaces)
 }
 
-/// Creates an empty `root/environments/<name>.toml`, making the directory
-/// if needed. Rejects names `load_environment` would reject, and an already
-/// existing file (`create_new` — the check and the create are one atomic
-/// step, so a concurrent writer can't be clobbered).
-pub fn create_environment(root: &Path, name: &str) -> Result<(), ProjectError> {
-    if name.contains('/') || crate::storage::validate_slug(name).is_err() {
-        return Err(ProjectError::BadName(name.to_string()));
+/// Creates an empty `root/environments/<slug>.toml` for a free-form
+/// display name (slug rules as [`create_space`]), making the directory if
+/// needed, and records the name under `[environment.<slug>]`. Returns the
+/// slug. The file is opened with `create_new` — the check and the create
+/// are one atomic step, so a concurrent writer can't be clobbered.
+pub fn create_environment(root: &Path, display: &str) -> Result<String, ProjectError> {
+    let display = display_name_of(display)?;
+    let meta = load_meta(root).unwrap_or_default();
+    let existing = list_environments(root);
+    if display_taken(&display, &existing, |s| env_display(&meta, s), None) {
+        return Err(ProjectError::AlreadyExists(display));
     }
+    let slug = environment_slug_for(root, &display, None);
     std::fs::create_dir_all(root.join("environments"))?;
     std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(environment_path(root, name))?;
-    Ok(())
+        .open(environment_path(root, &slug))?;
+    edit_project_toml(root, |doc| {
+        set_item_name(doc, Kind::Environment, &slug, &display);
+    })?;
+    Ok(slug)
 }
 
 /// `root/environments/<name>.toml`.
@@ -329,31 +537,45 @@ pub fn environment_path(root: &Path, name: &str) -> PathBuf {
     root.join("environments").join(format!("{name}.toml"))
 }
 
-/// Renames the environment file. Secrets and local selections keyed by
-/// the old name are the caller's cascade.
-pub fn rename_environment(root: &Path, from: &str, to: &str) -> Result<(), ProjectError> {
-    if !valid_space_name(to) {
-        return Err(ProjectError::BadName(to.to_string()));
-    }
+/// Renames environment `from` (a slug) to the display name `display`:
+/// the file is re-slugged and the `[environment.<slug>]` table moved
+/// whole. Returns the new slug — the same as `from` when only the display
+/// name changed. Secrets and local selections keyed by the old slug are
+/// the caller's cascade.
+pub fn rename_environment(root: &Path, from: &str, display: &str) -> Result<String, ProjectError> {
+    let display = display_name_of(display)?;
     let from_path = environment_path(root, from);
-    let to_path = environment_path(root, to);
     if !from_path.is_file() {
         return Err(ProjectError::NotFound(from.to_string()));
     }
-    if to_path.exists() {
-        return Err(ProjectError::AlreadyExists(to.to_string()));
+    let meta = load_meta(root).unwrap_or_default();
+    let existing = list_environments(root);
+    if display_taken(&display, &existing, |s| env_display(&meta, s), Some(from)) {
+        return Err(ProjectError::AlreadyExists(display));
     }
-    std::fs::rename(&from_path, &to_path)?;
-    Ok(())
+    let to = environment_slug_for(root, &display, Some(from));
+    if to != from {
+        std::fs::rename(&from_path, environment_path(root, &to))?;
+    }
+    edit_project_toml(root, |doc| {
+        move_item_table(doc, Kind::Environment, from, &to);
+        set_item_name(doc, Kind::Environment, &to, &display);
+    })?;
+    Ok(to)
 }
 
-/// Moves the environment file into the trash.
+/// Moves the environment file into the trash and drops its
+/// `[environment.<slug>]` table.
 pub fn delete_environment(root: &Path, name: &str) -> Result<Trashed, ProjectError> {
     let path = environment_path(root, name);
     if !path.is_file() {
         return Err(ProjectError::NotFound(name.to_string()));
     }
-    Ok(crate::trash::trash(root, &path)?)
+    let trashed = crate::trash::trash(root, &path)?;
+    edit_project_toml(root, |doc| {
+        remove_item_table(doc, Kind::Environment, name);
+    })?;
+    Ok(trashed)
 }
 
 pub fn load_environment(root: &Path, name: &str) -> Result<varmodel::EnvData, ProjectError> {
@@ -543,6 +765,191 @@ mod tests {
         ));
     }
 
+    // --- display names: `[space.<slug>]` / `[environment.<slug>]` -------
+
+    #[test]
+    fn meta_parses_per_space_and_per_environment_settings_tables() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("project.toml"),
+            "spaces = [\"main\", \"auth-v2\"]\n\n[space.auth-v2]\nname = \"Auth v2\"\n\n[environment.staging]\nname = \"Staging (EU)\"\nfuture_key = 1\n",
+        )
+        .unwrap();
+        let meta = load_meta(dir.path()).unwrap();
+        assert_eq!(space_display(&meta, "auth-v2"), "Auth v2");
+        assert_eq!(space_display(&meta, "main"), "main", "no table: the slug");
+        assert_eq!(env_display(&meta, "staging"), "Staging (EU)");
+        assert_eq!(env_display(&meta, "qa"), "qa");
+    }
+
+    #[test]
+    fn create_space_slugifies_the_display_name_and_records_it() {
+        let dir = tempdir().unwrap();
+        create_space(dir.path(), "main").unwrap();
+        assert_eq!(create_space(dir.path(), "Auth v2!").unwrap(), "auth-v2");
+        assert!(space_dir(dir.path(), "auth-v2").is_dir());
+        let meta = load_meta(dir.path()).unwrap();
+        assert_eq!(meta.spaces, ["main", "auth-v2"]);
+        assert_eq!(space_display(&meta, "auth-v2"), "Auth v2!");
+        // A slug collision gets the request-style `-2`; a display-name
+        // collision (case-insensitive) is refused.
+        assert_eq!(create_space(dir.path(), "auth V2").unwrap(), "auth-v2-2");
+        assert!(matches!(
+            create_space(dir.path(), "AUTH V2!"),
+            Err(ProjectError::AlreadyExists(_))
+        ));
+        assert!(matches!(
+            create_space(dir.path(), "  "),
+            Err(ProjectError::BadName(_))
+        ));
+        assert_eq!(
+            create_space(dir.path(), "???").unwrap(),
+            "space",
+            "all-unsafe falls back"
+        );
+    }
+
+    #[test]
+    fn rename_space_reslugs_the_dir_and_moves_its_settings_table() {
+        let dir = tempdir().unwrap();
+        create_space(dir.path(), "main").unwrap();
+        create_space(dir.path(), "auth").unwrap();
+        std::fs::write(
+            space_dir(dir.path(), "auth").join("login.toml"),
+            "url = \"x\"\n",
+        )
+        .unwrap();
+        // A hand-written extra key rides along with the rename.
+        let text = std::fs::read_to_string(dir.path().join("project.toml")).unwrap();
+        assert!(text.contains("[space.auth]\n"), "{text}");
+        let text = text.replace("[space.auth]\n", "[space.auth]\ncolor = \"red\"\n");
+        std::fs::write(dir.path().join("project.toml"), text).unwrap();
+
+        assert_eq!(
+            rename_space(dir.path(), "auth", "Identity & SSO").unwrap(),
+            "identity-sso"
+        );
+        assert!(!space_dir(dir.path(), "auth").exists());
+        assert!(
+            space_dir(dir.path(), "identity-sso")
+                .join("login.toml")
+                .is_file()
+        );
+        let meta = load_meta(dir.path()).unwrap();
+        assert_eq!(meta.spaces, ["main", "identity-sso"]);
+        assert_eq!(space_display(&meta, "identity-sso"), "Identity & SSO");
+        let text = std::fs::read_to_string(dir.path().join("project.toml")).unwrap();
+        assert!(text.contains("[space.identity-sso]"), "{text}");
+        assert!(text.contains("color = \"red\""), "{text}");
+        assert!(!text.contains("[space.auth]"), "{text}");
+
+        // Same slug, new casing: the dir stays, only the name changes.
+        assert_eq!(rename_space(dir.path(), "main", "Main").unwrap(), "main");
+        assert_eq!(
+            space_display(&load_meta(dir.path()).unwrap(), "main"),
+            "Main"
+        );
+        // Taken display names are refused, whichever slug they'd get.
+        assert!(matches!(
+            rename_space(dir.path(), "identity-sso", "main"),
+            Err(ProjectError::AlreadyExists(_))
+        ));
+    }
+
+    #[test]
+    fn delete_space_drops_its_settings_table() {
+        let dir = tempdir().unwrap();
+        create_space(dir.path(), "main").unwrap();
+        create_space(dir.path(), "Auth v2").unwrap();
+        delete_space(dir.path(), "auth-v2").unwrap();
+        let text = std::fs::read_to_string(dir.path().join("project.toml")).unwrap();
+        assert!(!text.contains("auth-v2"), "{text}");
+    }
+
+    #[test]
+    fn create_environment_slugifies_the_display_name_and_records_it() {
+        let dir = tempdir().unwrap();
+        init_project(dir.path(), None).unwrap();
+        assert_eq!(
+            create_environment(dir.path(), "Staging (EU)").unwrap(),
+            "staging-eu"
+        );
+        assert!(environment_path(dir.path(), "staging-eu").is_file());
+        assert_eq!(
+            env_display(&load_meta(dir.path()).unwrap(), "staging-eu"),
+            "Staging (EU)"
+        );
+        assert_eq!(
+            create_environment(dir.path(), "staging eu").unwrap(),
+            "staging-eu-2"
+        );
+        assert!(matches!(
+            create_environment(dir.path(), "staging (eu)"),
+            Err(ProjectError::AlreadyExists(_))
+        ));
+        assert!(matches!(
+            create_environment(dir.path(), ""),
+            Err(ProjectError::BadName(_))
+        ));
+        assert_eq!(create_environment(dir.path(), "!!").unwrap(), "environment");
+    }
+
+    #[test]
+    fn rename_environment_reslugs_the_file_and_moves_its_settings_table() {
+        let dir = tempdir().unwrap();
+        init_project(dir.path(), None).unwrap();
+        create_environment(dir.path(), "qa").unwrap();
+        create_environment(dir.path(), "prod").unwrap();
+        std::fs::write(environment_path(dir.path(), "qa"), "tok = \"q\"\n").unwrap();
+        assert_eq!(
+            rename_environment(dir.path(), "qa", "QA / Staging").unwrap(),
+            "qa-staging"
+        );
+        assert!(!environment_path(dir.path(), "qa").exists());
+        assert_eq!(
+            std::fs::read_to_string(environment_path(dir.path(), "qa-staging")).unwrap(),
+            "tok = \"q\"\n"
+        );
+        let meta = load_meta(dir.path()).unwrap();
+        assert_eq!(env_display(&meta, "qa-staging"), "QA / Staging");
+        assert!(meta.environment.get("qa").is_none());
+        assert!(matches!(
+            rename_environment(dir.path(), "qa-staging", "Prod"),
+            Err(ProjectError::AlreadyExists(_))
+        ));
+        assert!(matches!(
+            rename_environment(dir.path(), "nope", "x"),
+            Err(ProjectError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn delete_environment_drops_its_settings_table() {
+        let dir = tempdir().unwrap();
+        init_project(dir.path(), None).unwrap();
+        create_environment(dir.path(), "Staging (EU)").unwrap();
+        delete_environment(dir.path(), "staging-eu").unwrap();
+        assert!(
+            load_meta(dir.path())
+                .unwrap()
+                .environment
+                .get("staging-eu")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn slug_for_display_predicts_what_create_and_rename_will_use() {
+        let dir = tempdir().unwrap();
+        init_project(dir.path(), None).unwrap();
+        create_environment(dir.path(), "qa").unwrap();
+        assert_eq!(environment_slug_for(dir.path(), "QA", None), "qa-2");
+        assert_eq!(environment_slug_for(dir.path(), "QA", Some("qa")), "qa");
+        create_space(dir.path(), "main").unwrap();
+        assert_eq!(space_slug_for(dir.path(), "Main", None), "main-2");
+        assert_eq!(space_slug_for(dir.path(), "Main", Some("main")), "main");
+    }
+
     #[test]
     fn create_environment_writes_empty_file_and_creates_dir() {
         let dir = tempdir().unwrap();
@@ -565,7 +972,9 @@ mod tests {
     #[test]
     fn create_environment_rejects_bad_names_and_duplicates() {
         let dir = tempdir().unwrap();
-        for bad in ["", "Bad Name", "UPPER", "a/b", "..", "dev.toml"] {
+        // Names are free-form now (display name + slug); only an empty
+        // one is bad.
+        for bad in ["", "   "] {
             assert!(
                 matches!(
                     create_environment(dir.path(), bad),
@@ -896,7 +1305,7 @@ mod tests {
             Err(ProjectError::AlreadyExists(_))
         ));
         assert!(matches!(
-            create_space(dir.path(), "Bad/Name"),
+            create_space(dir.path(), "   "),
             Err(ProjectError::BadName(_))
         ));
     }
@@ -1044,7 +1453,7 @@ mod tests {
             Err(ProjectError::NotFound(_))
         ));
         assert!(matches!(
-            rename_environment(dir.path(), "staging", "Bad Name"),
+            rename_environment(dir.path(), "staging", ""),
             Err(ProjectError::BadName(_))
         ));
     }

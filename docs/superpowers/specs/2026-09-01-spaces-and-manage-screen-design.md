@@ -326,9 +326,19 @@ Manage screens when no modal is open. Configurable under the same
 
 ## Error handling
 
-- Invalid space or environment names (not `a-z 0-9 - _`, or containing
-  `/`) are rejected at the prompt with the prompt's inline error, as
-  `NewEnvironment` does today.
+- Space and environment names are free-form (2026-09-02, superseding the
+  `a-z 0-9 - _` rule): the typed name is the display name, the directory
+  or file is its slug (`slugify`, `-2`/`-3` on a slug collision, the way
+  requests work), and the name is recorded in `project.toml` under a
+  per-item settings table — `[space.<slug>] name = "…"` /
+  `[environment.<slug>] name = "…"` — with room for further per-item
+  settings. A missing table means the slug is the name, so hand-made
+  projects load unchanged. Only an empty name is rejected; a display name
+  another item already answers to (case-insensitively) is refused as a
+  duplicate. Renames re-slug and move the whole settings table; deletes
+  drop it. Environment create/rename/delete undo steps carry
+  `project.toml`. A hand-written directory or `spaces` entry that isn't a
+  valid slug is still skipped with the existing one-time warning.
 - Directory operations that fail (permissions, non-empty rename target)
   toast the error and leave state unchanged; `project.toml` is written
   only after the filesystem operation succeeds.

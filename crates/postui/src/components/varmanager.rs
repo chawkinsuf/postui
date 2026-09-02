@@ -1936,7 +1936,7 @@ impl VarManager {
 
         // --- Value in <env> (masked + reveal for a secret) -----------------
         let value_label = match &ctx.active_env {
-            Some(env) => format!("Value in {env}"),
+            Some(env) => format!("Value in {}", ctx.env_name(env)),
             None => "(no environment)".to_string(),
         };
         if y < bottom {
