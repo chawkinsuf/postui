@@ -1998,20 +1998,27 @@ impl App {
                             &[from_path, to_path],
                             None,
                         );
-                        let was_open = self.editor.slug.as_deref() == Some(slug.as_str());
+                        // The move doesn't follow the request into its
+                        // new space (user feedback: that made moving
+                        // several in a row a chore). From this space's
+                        // point of view it's a delete: the editor clears
+                        // if it held the request, and the sidebar cursor
+                        // lands on the nearest remaining request so the
+                        // next `m` has something to act on.
+                        let was_selected =
+                            self.sidebar.selected_slug().as_deref() == Some(slug.as_str());
+                        let from_row = self.sidebar.selected;
                         self.refresh_sidebar();
                         self.toasts.push(
                             format!("Moved {} to {space}", self.request_display(&new_slug)),
                             ToastKind::Success,
                         );
-                        if was_open {
-                            // `ForceOpenRequest` owns the editor, the
-                            // sidebar's open row and the re-seeded shadow —
-                            // pre-setting any of them here would defeat
-                            // `capture_undo`'s "which request is open
-                            // changed → re-seed, never record" branch and
-                            // forge a phantom edit step.
-                            self.apply(Action::ForceOpenRequest(new_slug));
+                        if self.editor.slug.as_deref() == Some(slug.as_str()) {
+                            self.editor = Editor::default();
+                            self.shadow = None;
+                        }
+                        if was_selected {
+                            self.sidebar.select_nearest_request(from_row.unwrap_or(0));
                         }
                     }
                     Err(e) => {

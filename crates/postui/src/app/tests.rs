@@ -3626,20 +3626,29 @@ fn request_context_menu_has_no_move_row_in_a_single_space_project() {
 }
 
 #[test]
-fn move_request_to_space_moves_the_file_follows_it_and_undoes() {
+fn move_request_to_space_moves_the_file_stays_put_and_undoes() {
+    // User feedback: following the request into its new space made moving
+    // several in a row a chore (each move switched spaces). The move
+    // leaves the sidebar where it was, on the neighbor, with the editor
+    // cleared — the same shape as delete from this space's point of view.
     let (mut app, dir) = spaced_app();
     app.update(Action::ForceOpenRequest("main/alpha".into()));
+    render_once(&mut app);
+    app.sidebar.select_slug("main/alpha");
     let steps_before = app.history.undo_len();
     app.update(Action::MoveRequestToSpace {
         slug: "main/alpha".into(),
         space: "auth".into(),
     });
     assert!(dir.path().join("requests/auth/alpha.toml").is_file());
-    assert_eq!(app.project.active_space, "auth");
-    assert_eq!(app.editor.slug.as_deref(), Some("auth/alpha"));
+    assert_eq!(app.project.active_space, "main");
+    assert_eq!(app.editor.slug, None, "the editor clears");
+    assert_eq!(
+        app.sidebar.selected_slug().as_deref(),
+        Some("main/beta"),
+        "the selection lands on the neighbor so the next `m` works"
+    );
 
-    // The follow re-seeds the shadow through `ForceOpenRequest`, so the
-    // move itself must never leave a phantom `EditorDelta` behind.
     assert!(!app.capture_undo(), "the move itself is not an edit");
     assert_eq!(app.history.undo_len(), steps_before + 1);
 
@@ -3650,7 +3659,34 @@ fn move_request_to_space_moves_the_file_follows_it_and_undoes() {
 }
 
 #[test]
-fn undo_follow_into_another_space_keeps_the_outgoing_space_s_memory() {
+fn moving_a_request_that_is_not_open_leaves_the_editor_alone() {
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/beta".into()));
+    render_once(&mut app);
+    app.sidebar.select_slug("main/alpha");
+    app.update(Action::MoveRequestToSpace {
+        slug: "main/alpha".into(),
+        space: "auth".into(),
+    });
+    assert_eq!(app.project.active_space, "main");
+    assert_eq!(app.editor.slug.as_deref(), Some("main/beta"));
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/beta"));
+}
+
+#[test]
+fn moving_the_last_request_selects_the_one_above() {
+    let (mut app, _dir) = spaced_app();
+    render_once(&mut app);
+    app.sidebar.select_slug("main/beta");
+    app.update(Action::MoveRequestToSpace {
+        slug: "main/beta".into(),
+        space: "auth".into(),
+    });
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/alpha"));
+}
+
+#[test]
+fn undo_of_a_move_follows_the_file_back_and_keeps_the_outgoing_space_s_memory() {
     // `enter_space` records the outgoing space's open request. On the
     // undo-follow paths the editor has *already* been moved to the
     // incoming space's slug, so recording it would take the `_ =>` arm and
@@ -3661,25 +3697,18 @@ fn undo_follow_into_another_space_keeps_the_outgoing_space_s_memory() {
         slug: "main/alpha".into(),
         space: "auth".into(),
     });
+    assert_eq!(app.project.active_space, "main");
+    // Go look at it in auth, then undo from there: the file comes back to
+    // main and the editor follows it, leaving auth on what it was on.
+    app.update(Action::ForceOpenRequest("auth/alpha".into()));
     assert_eq!(app.project.active_space, "auth");
-    assert_eq!(
-        app.project.space_open_for("auth").as_deref(),
-        Some("auth/alpha"),
-        "the follow left auth on the moved request"
-    );
-
-    // The undo moves the file back and follows it to `main`, leaving
-    // `auth` behind — `auth`'s entry is none of the undo's business.
     app.update(Action::Undo);
     assert_eq!(app.project.active_space, "main");
+    assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
     assert_eq!(
         app.project.space_open_for("auth").as_deref(),
         Some("auth/alpha"),
         "the space being left keeps what it was left on"
-    );
-    assert_eq!(
-        app.project.space_open_for("main").as_deref(),
-        Some("main/alpha")
     );
 }
 

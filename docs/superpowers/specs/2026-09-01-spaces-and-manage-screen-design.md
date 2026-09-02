@@ -226,8 +226,10 @@ The request row's right-click menu gains one **Move to space…** row
 (omitted in a single-space project) that opens a fuzzy chooser of the
 other spaces — a flat row per space does not scale past a few spaces;
 picking one calls `move_request_to_space`, records a `FileStates` step
-exactly like a rename (one file), and if the moved request was open,
-follows it (switches space and opens the new slug).
+exactly like a rename (one file). The move does not follow the request
+(user feedback 2026-09-02: following made moving several in a row a
+chore): the active space stays, the editor clears if it held the moved
+request, and the sidebar cursor lands on the nearest remaining request.
 
 Footer chips when the sidebar is focused: existing new/rename/delete plus
 `alt+] space`.
@@ -364,8 +366,8 @@ App (`crates/postui/src/app/tests.rs`):
 - Sidebar rows never include another space's slug; new/rename/duplicate
   land inside the active space.
 - Cross-space `OpenRequest` switches then opens with one gate.
-- Move to space follows an open request; move-all moves nested paths
-  intact and follows the open request.
+- Move to space stays put (editor cleared, neighbor selected); move-all
+  moves nested paths intact and follows the open request.
 - Startup resolution of `active_space` in the three cases above.
 - Header space dropdown items and ✓ position; manage rows route to the
   right tab.
@@ -407,7 +409,8 @@ Rulings taken during implementation that amend the text above.
   never shorten. The space chip reads `Space: <name> ▾`.
 - I/I': move-all and move-to-space are dirty-gated when the open request
   is affected, via `ForceMoveAllRequests` / `ForceMoveRequestToSpace`;
-  `ForceOpenRequest` owns the follow.
+  `ForceOpenRequest` owns move-all's follow (move-to-space no longer
+  follows, per the 2026-09-02 feedback round).
 - J: env rename/delete steps carry `.local/state.toml` as a companion
   file, and a file-level undo/redo reloads `selections` from it.
 - K: the Manage right-pane button row wraps to a second row rather than

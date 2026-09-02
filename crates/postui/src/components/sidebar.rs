@@ -280,6 +280,27 @@ impl Sidebar {
         }
     }
 
+    /// Puts the selection on the request row nearest to index `from`
+    /// (that row itself, then the closest below, then the closest above),
+    /// for after the row that was there disappeared. Leaves the selection
+    /// alone when no request row remains.
+    pub fn select_nearest_request(&mut self, from: usize) {
+        let is_request = |r: &Row| matches!(r, Row::Request { .. });
+        let below = self
+            .rows
+            .iter()
+            .skip(from)
+            .position(is_request)
+            .map(|i| i + from);
+        let above = self.rows[..from.min(self.rows.len())]
+            .iter()
+            .rposition(is_request);
+        if let Some(i) = below.or(above) {
+            self.selected = Some(i);
+            self.ensure_visible = true;
+        }
+    }
+
     /// The slug of the currently selected request row, or `None` if nothing
     /// is selected or the selection is on a `Folder` row.
     pub fn selected_slug(&self) -> Option<String> {
