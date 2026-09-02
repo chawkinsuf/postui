@@ -138,9 +138,24 @@ pub fn space_dir(root: &Path, name: &str) -> PathBuf {
 /// that isn't listed, alphabetically. A listed name with no directory
 /// still counts (an empty space survives git that way).
 pub fn list_spaces(root: &Path, meta: &ProjectMeta) -> Vec<String> {
+    list_spaces_with_warnings(root, meta).0
+}
+
+/// [`list_spaces`] plus one warning line per `meta.spaces` entry that was
+/// skipped for being an invalid space name. Those entries are never
+/// rewritten away (see `write_list`) — the user is told instead,
+/// so the fix stays theirs to make (spec §Error handling).
+pub fn list_spaces_with_warnings(root: &Path, meta: &ProjectMeta) -> (Vec<String>, Vec<String>) {
     let mut out: Vec<String> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
     for name in &meta.spaces {
-        if valid_space_name(name) && !out.contains(name) {
+        if !valid_space_name(name) {
+            if !skipped.contains(name) {
+                skipped.push(name.clone());
+            }
+            continue;
+        }
+        if !out.contains(name) {
             out.push(name.clone());
         }
     }
@@ -158,7 +173,13 @@ pub fn list_spaces(root: &Path, meta: &ProjectMeta) -> Vec<String> {
     }
     unlisted.sort();
     out.extend(unlisted);
-    out
+    let warnings = skipped
+        .into_iter()
+        .map(|n| {
+            format!("project.toml lists {n:?}, which is not a valid space name (space names are a-z 0-9 - _)")
+        })
+        .collect();
+    (out, warnings)
 }
 
 /// Rewrites only the `spaces` key of `project.toml` (created if missing),
@@ -178,16 +199,39 @@ pub fn write_spaces(root: &Path, spaces: &[String]) -> Result<(), ProjectError> 
     Ok(())
 }
 
-fn current_spaces(root: &Path) -> Vec<String> {
+/// The list every space op edits and hands back to [`write_spaces`]:
+/// `meta.spaces` exactly as written (duplicates dropped, **invalid names
+/// kept in their original positions** — a hand-written entry the UI can't
+/// show is still the user's, and must survive the next space op), then any
+/// unlisted directory under `requests/`, alphabetically. Filtering the
+/// display list back onto disk would silently erase those entries, which
+/// the spec forbids.
+fn write_list(root: &Path) -> Vec<String> {
     let meta = load_meta(root).unwrap_or_default();
-    list_spaces(root, &meta)
+    let mut out: Vec<String> = Vec::new();
+    for name in &meta.spaces {
+        if !out.contains(name) {
+            out.push(name.clone());
+        }
+    }
+    for name in list_spaces(root, &meta) {
+        if !out.contains(&name) {
+            out.push(name);
+        }
+    }
+    out
+}
+
+/// How many entries of a [`write_list`] are real, displayable spaces.
+fn valid_count(spaces: &[String]) -> usize {
+    spaces.iter().filter(|s| valid_space_name(s)).count()
 }
 
 pub fn create_space(root: &Path, name: &str) -> Result<(), ProjectError> {
     if !valid_space_name(name) {
         return Err(ProjectError::BadName(name.to_string()));
     }
-    let mut spaces = current_spaces(root);
+    let mut spaces = write_list(root);
     if spaces.iter().any(|s| s == name) || space_dir(root, name).exists() {
         return Err(ProjectError::AlreadyExists(name.to_string()));
     }
@@ -203,7 +247,7 @@ pub fn rename_space(root: &Path, from: &str, to: &str) -> Result<(), ProjectErro
     if !valid_space_name(to) {
         return Err(ProjectError::BadName(to.to_string()));
     }
-    let mut spaces = current_spaces(root);
+    let mut spaces = write_list(root);
     let Some(idx) = spaces.iter().position(|s| s == from) else {
         return Err(ProjectError::NotFound(from.to_string()));
     };
@@ -225,11 +269,11 @@ pub fn rename_space(root: &Path, from: &str, to: &str) -> Result<(), ProjectErro
 /// list entry. Refuses the only remaining space. Confirmation is the
 /// caller's job.
 pub fn delete_space(root: &Path, name: &str) -> Result<Option<Trashed>, ProjectError> {
-    let mut spaces = current_spaces(root);
+    let mut spaces = write_list(root);
     let Some(idx) = spaces.iter().position(|s| s == name) else {
         return Err(ProjectError::NotFound(name.to_string()));
     };
-    if spaces.len() == 1 {
+    if valid_count(&spaces) == 1 {
         return Err(ProjectError::LastSpace);
     }
     let dir = space_dir(root, name);
@@ -247,13 +291,19 @@ pub fn delete_space(root: &Path, name: &str) -> Result<Option<Trashed>, ProjectE
 /// directories are materialised into the written list so the order on
 /// disk is exactly the order displayed.
 pub fn move_space(root: &Path, name: &str, delta: i32) -> Result<(), ProjectError> {
-    let mut spaces = current_spaces(root);
-    let Some(idx) = spaces.iter().position(|s| s == name) else {
+    let mut spaces = write_list(root);
+    // Reorder among the *displayed* spaces only: an invalid listed entry
+    // isn't a row the user can see, so it must not absorb a step — and it
+    // keeps the slot it was written in.
+    let slots: Vec<usize> = (0..spaces.len())
+        .filter(|i| valid_space_name(&spaces[*i]))
+        .collect();
+    let Some(pos) = slots.iter().position(|i| spaces[*i] == *name) else {
         return Err(ProjectError::NotFound(name.to_string()));
     };
-    let target = (idx as i32 + delta).clamp(0, spaces.len() as i32 - 1) as usize;
-    if target != idx {
-        spaces.swap(idx, target);
+    let target = (pos as i32 + delta).clamp(0, slots.len() as i32 - 1) as usize;
+    if target != pos {
+        spaces.swap(slots[pos], slots[target]);
     }
     write_spaces(root, &spaces)
 }
@@ -756,6 +806,57 @@ mod tests {
         let dir = tempdir().unwrap();
         let meta = meta_with(&["main", "Not Valid", "main"]);
         assert_eq!(list_spaces(dir.path(), &meta), ["main"]);
+    }
+
+    #[test]
+    fn list_spaces_with_warnings_names_each_skipped_invalid_entry_once() {
+        let dir = tempdir().unwrap();
+        let meta = meta_with(&["main", "Not Valid", "Not Valid", "a/b"]);
+        let (spaces, warnings) = list_spaces_with_warnings(dir.path(), &meta);
+        assert_eq!(spaces, ["main"]);
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(warnings[0].contains("\"Not Valid\""), "{warnings:?}");
+        assert!(
+            warnings[0].contains("not a valid space name (space names are a-z 0-9 - _)"),
+            "{warnings:?}"
+        );
+        assert!(warnings[1].contains("\"a/b\""), "{warnings:?}");
+    }
+
+    #[test]
+    fn space_ops_preserve_an_invalid_listed_entry_in_place() {
+        let dir = tempdir().unwrap();
+        write_spaces(dir.path(), &["main".into(), "Not Valid".into()]).unwrap();
+        std::fs::create_dir_all(space_dir(dir.path(), "main")).unwrap();
+
+        create_space(dir.path(), "auth").unwrap();
+        assert_eq!(
+            load_meta(dir.path()).unwrap().spaces,
+            ["main", "Not Valid", "auth"]
+        );
+
+        // The reorder steps over the invalid entry rather than swapping
+        // with it: it keeps slot 1, the two real spaces trade places.
+        move_space(dir.path(), "auth", -1).unwrap();
+        assert_eq!(
+            load_meta(dir.path()).unwrap().spaces,
+            ["auth", "Not Valid", "main"]
+        );
+
+        rename_space(dir.path(), "main", "identity").unwrap();
+        assert_eq!(
+            load_meta(dir.path()).unwrap().spaces,
+            ["auth", "Not Valid", "identity"]
+        );
+
+        delete_space(dir.path(), "identity").unwrap();
+        assert_eq!(load_meta(dir.path()).unwrap().spaces, ["auth", "Not Valid"]);
+
+        // Only real spaces count towards "the last space".
+        assert!(matches!(
+            delete_space(dir.path(), "auth"),
+            Err(ProjectError::LastSpace)
+        ));
     }
 
     #[test]

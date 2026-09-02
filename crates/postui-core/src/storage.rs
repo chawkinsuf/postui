@@ -334,12 +334,26 @@ pub fn list_requests(root: &Path) -> (Vec<RequestListing>, Option<String>) {
         let slug = slug
             .to_string_lossy()
             .replace(std::path::MAIN_SEPARATOR, "/");
-        if space_of(&slug).is_none() {
-            loose.push(format!(
-                "requests/{} is not in a space (move it into a space directory)",
-                rel.display()
-            ));
-            return;
+        match space_of(&slug) {
+            None => {
+                loose.push(format!(
+                    "requests/{} is not in a space (move it into a space directory)",
+                    rel.display()
+                ));
+                return;
+            }
+            // A top-level directory whose name can't be a space name is no
+            // space at all: nothing roots a sidebar there, so the requests
+            // under it would be invisible without a word. Same treatment as
+            // a loose file — named, skipped, never migrated.
+            Some(space) if validate_slug(space).is_err() => {
+                loose.push(format!(
+                    "requests/{} is not in a valid space (space names are a-z 0-9 - _)",
+                    rel.display()
+                ));
+                return;
+            }
+            Some(_) => {}
         }
         let (method, name, broken) = match std::fs::read_to_string(&path) {
             Ok(contents) => match HttpRequest::from_toml_str(&contents) {
@@ -914,6 +928,27 @@ mod tests {
         let warn = warn.expect("loose file reported");
         assert!(warn.contains("loose.toml"), "{warn}");
         assert!(warn.contains("not in a space"), "{warn}");
+    }
+
+    #[test]
+    fn list_requests_skips_requests_under_an_invalid_space_dir_and_reports_them() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_project(dir.path()).unwrap();
+        save_request(dir.path(), "main/ok", &req()).unwrap();
+        std::fs::create_dir_all(dir.path().join("requests/Auth")).unwrap();
+        std::fs::write(dir.path().join("requests/Auth/login.toml"), "url = \"x\"\n").unwrap();
+        let (listing, warn) = list_requests(dir.path());
+        assert_eq!(
+            listing.iter().map(|l| l.slug.as_str()).collect::<Vec<_>>(),
+            ["main/ok"],
+            "a request under a non-space directory is never listed"
+        );
+        let warn = warn.expect("invalid space dir reported");
+        assert!(warn.contains("Auth"), "{warn}");
+        assert!(
+            warn.contains("is not in a valid space (space names are a-z 0-9 - _)"),
+            "{warn}"
+        );
     }
 
     #[test]

@@ -3,7 +3,7 @@
 //! project is opened (`ProjectContext::open`), so it only ever backs the
 //! current session's undo history.
 
-use std::path::{Path, PathBuf}; // PathBuf used in Trashed struct
+use std::path::{Path, PathBuf};
 
 /// One trashed path: where it was, and where it sits in the trash now.
 #[derive(Debug, Clone, PartialEq, Eq)]
