@@ -47,7 +47,8 @@ pub struct AppLayout {
 /// `collapse_t` is the eased `AnimKey::PaneCollapse` value (Task 14):
 /// `0.0` is the Editor pane's normal `editor_share` split with the
 /// Response pane; `1.0` is the Editor pane hidden — shrunk to exactly its
-/// [`editor::COLLAPSED_HEIGHT`]-row strip (address bar + `› show` row),
+/// [`editor::COLLAPSED_HEIGHT`]-row strip (address bar + `› show` row +
+/// one eave row for the split control),
 /// with the Response pane taking every row that frees up. Values strictly
 /// between the two interpolate the Editor pane's height (rounded to whole
 /// rows — a `Rect` can't hold a fractional one) between the two
@@ -221,7 +222,7 @@ mod tests {
         assert_eq!(
             collapsed.editor.height,
             editor::COLLAPSED_HEIGHT,
-            "editor pane shrinks to exactly its one-row strip"
+            "editor pane shrinks to exactly its collapsed strip"
         );
         assert_eq!(
             collapsed.editor.height + collapsed.response.height,

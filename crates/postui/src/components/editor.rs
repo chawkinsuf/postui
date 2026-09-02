@@ -1741,8 +1741,11 @@ pub const CHROME_HEIGHT: u16 = ADDRESS_BAR_HEIGHT + TAB_BAR_HEIGHT;
 /// shrinks the pane to while it's collapsed: the full address bar (the
 /// request's controls stay usable while its tab content is put away) plus
 /// a single tab-strip row holding only the `› show` toggle, the labels'
-/// underline row having gone with the labels.
-pub const COLLAPSED_HEIGHT: u16 = ADDRESS_BAR_HEIGHT + 1;
+/// underline row having gone with the labels — and one empty pane row
+/// under the strip, so the split control's lower half-cell eave (painted
+/// on the row below its own) lands on pane surface instead of being cut
+/// off at the pane's bottom edge.
+pub const COLLAPSED_HEIGHT: u16 = ADDRESS_BAR_HEIGHT + 2;
 
 /// Cycled through (one glyph per `Action::Tick`) at the start of the Send
 /// cap's label while a request is in flight.
@@ -4096,6 +4099,49 @@ mod tests {
             .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
             .unwrap();
         hits
+    }
+
+    /// At exactly its collapsed height the pane keeps one empty row under
+    /// the `› show` strip: the split control's lower half-cell eave paints
+    /// there, so the control isn't cut off at the pane's bottom edge.
+    #[test]
+    fn hidden_editor_keeps_a_row_for_the_split_controls_lower_eave() {
+        let theme = Theme::dark();
+        let mut e = Editor {
+            table_collapsed: true,
+            ..Editor::default()
+        };
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: None,
+            dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
+        };
+        let mut terminal = Terminal::new(TestBackend::new(120, COLLAPSED_HEIGHT)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| e.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+        let rects = control_rects(&hits);
+        let strip_y = rects[0].y;
+        assert_eq!(
+            strip_y + 1,
+            COLLAPSED_HEIGHT - 1,
+            "one row remains under the strip"
+        );
+        let cell = terminal
+            .backend()
+            .buffer()
+            .cell((rects[0].x, strip_y + 1))
+            .unwrap();
+        assert_eq!(
+            cell.symbol(),
+            "\u{2580}",
+            "the lower eave lands on the last row"
+        );
+        assert_eq!(cell.fg, theme.control);
     }
 
     /// At exactly its collapsed height the address bar still gets its full
