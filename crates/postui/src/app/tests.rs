@@ -2013,8 +2013,8 @@ fn the_header_env_chip_still_switches_environments_on_the_manager_screen() {
     let content = rendered_text(&mut app);
     assert!(content.contains("dev \u{25be}"), "{content}");
     assert!(
-        content.contains("user (needs selection)"),
-        "dev has no entries for the selector: {content}"
+        !content.contains("user (") && content.contains('\u{25cf}'),
+        "dev has no entries for the selector, so its row wears the unresolved dot: {content}"
     );
 }
 

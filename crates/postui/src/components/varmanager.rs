@@ -201,6 +201,10 @@ pub enum VmRow {
     /// a project that uses none never sees the distinction.
     SectionShared,
     Group(String),
+    /// A blank row before every section header but the first, so the
+    /// headers don't run straight into the rows above them. A label like
+    /// the headers: never a cursor stop, never a selection.
+    Spacer,
 }
 
 impl VmRow {
@@ -613,6 +617,7 @@ pub fn build_left_rows(ctx: &ProjectContext) -> Vec<VmRow> {
         }
     }
 
+    rows.push(VmRow::Spacer);
     rows.push(VmRow::SectionGroups);
     for (name, decl) in &ctx.model.selectors {
         if !decl.shared {
@@ -621,6 +626,7 @@ pub fn build_left_rows(ctx: &ProjectContext) -> Vec<VmRow> {
     }
 
     if ctx.model.selectors.values().any(|d| d.shared) {
+        rows.push(VmRow::Spacer);
         rows.push(VmRow::SectionShared);
         for (name, decl) in &ctx.model.selectors {
             if decl.shared {
@@ -684,7 +690,7 @@ impl VarManager {
                 }
                 self.detail = target;
             }
-            VmRow::SectionVars | VmRow::SectionGroups | VmRow::SectionShared => {}
+            VmRow::SectionVars | VmRow::SectionGroups | VmRow::SectionShared | VmRow::Spacer => {}
         }
     }
 
@@ -2294,6 +2300,7 @@ fn paint_left_row(
             let label = row.section_label().unwrap_or_default();
             text(buf, list.x, y, label, theme.text_muted, bg, true);
         }
+        VmRow::Spacer => {}
         VmRow::Var(name) => {
             let secret = ctx.model.vars.get(name).is_some_and(|d| d.secret);
             // The badges are right-aligned in their own columns, so names
@@ -2325,23 +2332,31 @@ fn paint_left_row(
             }
         }
         VmRow::Group(name) => {
-            let selection = match active_selection(ctx, name) {
-                Some(option) => format!("({option})"),
-                None => "(needs selection)".to_string(),
+            // No leading glyph: the SELECTORS section header already says
+            // what these rows are, and a leading mark here read as a tree
+            // handle to click rather than a label. No selection preview
+            // either — the detail pane shows the pick; the row is the
+            // name, plus the variables' unresolved dot when nothing (or
+            // something stale) is selected here.
+            let unresolved = active_selection(ctx, name).is_none();
+            let label_w = if unresolved {
+                width.saturating_sub(2)
+            } else {
+                width
             };
-            // No glyph: the SELECTORS section header already says what
-            // these rows are, and a leading mark here read as a tree
-            // handle to click rather than a label.
-            let label = format!("{name} {selection}");
             text(
                 buf,
                 x,
                 y,
-                super::chooser::clip(&label, width),
+                super::chooser::clip(name, label_w),
                 theme.text,
                 bg,
                 false,
             );
+            if unresolved {
+                let badge_x = (list.x + list.width).saturating_sub(2);
+                text(buf, badge_x, y, GLYPH_UNRESOLVED, theme.error, bg, false);
+            }
         }
     }
 }
@@ -2374,6 +2389,7 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::crossterm::event::KeyModifiers;
+    use ratatui::style::Color;
 
     /// A project with two envs (dev, qa; qa active); `base_url` simple with
     /// a default; `api_key` secret with no value anywhere (so it reads as
@@ -2429,7 +2445,27 @@ fields = ["user_id", "customer_id"]
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
+    /// `fixture()` plus a shared selector `region` (so the SHARED
+    /// SELECTORS section appears).
+    fn fixture_with_shared_selector() -> (tempfile::TempDir, ProjectContext) {
+        let (dir, _) = fixture();
+        let path = dir.path().join("variables.toml");
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str(
+            "\n[selectors.region]\nshared = true\nfields = [\"host\"]\n\n[options.region.us]\nhost = \"us.example\"\n",
+        );
+        std::fs::write(&path, text).unwrap();
+        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf());
+        assert!(warns.is_empty(), "{warns:?}");
+        (dir, ctx)
+    }
+
     fn render(vm: &mut VarManager, ctx: &ProjectContext) -> (String, HitMap) {
+        let (buf, hits) = render_buf(vm, ctx);
+        (format!("{buf:?}"), hits)
+    }
+
+    fn render_buf(vm: &mut VarManager, ctx: &ProjectContext) -> (Buffer, HitMap) {
         let theme = Theme::dark();
         // Wide enough for the selector pane's four title-row buttons
         // beside a fixture-length selector name.
@@ -2438,7 +2474,28 @@ fields = ["user_id", "customer_id"]
         terminal
             .draw(|f| vm.draw(f, f.area(), &theme, ctx, None, &mut hits, None))
             .unwrap();
-        (format!("{:?}", terminal.backend().buffer()), hits)
+        (terminal.backend().buffer().clone(), hits)
+    }
+
+    /// The text of left-list row `i`, as painted, with its cell colors.
+    fn left_row_cells(vm: &mut VarManager, ctx: &ProjectContext, i: usize) -> Vec<(String, Color)> {
+        let (buf, hits) = render_buf(vm, ctx);
+        let r = hits.rect_of(&Hit::VmLeftRow(i)).expect("row is registered");
+        (r.x..r.x + r.width)
+            .map(|x| {
+                let c = &buf[(x, r.y)];
+                (c.symbol().to_string(), c.fg)
+            })
+            .collect()
+    }
+
+    fn left_row_text(vm: &mut VarManager, ctx: &ProjectContext, i: usize) -> String {
+        left_row_cells(vm, ctx, i)
+            .into_iter()
+            .map(|(s, _)| s)
+            .collect::<String>()
+            .trim()
+            .to_string()
     }
 
     /// The Variables tab's "new" buttons live at the top of the left
@@ -2473,6 +2530,7 @@ fields = ["user_id", "customer_id"]
                 VmRow::SectionVars,
                 VmRow::Var("base_url".into()),
                 VmRow::Var("api_key".into()),
+                VmRow::Spacer,
                 VmRow::SectionGroups,
                 VmRow::Group("creds".into()),
             ],
@@ -2480,21 +2538,76 @@ fields = ["user_id", "customer_id"]
         );
         assert!(content.contains("VARIABLES"), "{content}");
         assert!(content.contains("SELECTORS"), "{content}");
-        assert!(content.contains("creds (alice)"), "{content}");
         assert!(content.contains(GLYPH_LOCK), "secret badge: {content}");
         assert!(
             content.contains(GLYPH_UNRESOLVED),
             "unresolved dot for the value-less secret: {content}"
         );
+        // User feedback: the selection preview cluttered the list — the
+        // detail pane shows the pick, the row is just the name.
+        assert_eq!(left_row_text(&mut vm, &ctx, 5), "creds");
     }
 
+    /// A blank row separates the sections so the headers don't run into
+    /// the rows above them. The spacer is a label, never a cursor stop or
+    /// a selection.
     #[test]
-    fn a_group_with_no_selection_says_so() {
+    fn a_spacer_row_precedes_each_section_after_the_first() {
+        let (_dir, ctx) = fixture_with_shared_selector();
+        let mut vm = VarManager::default();
+        render(&mut vm, &ctx);
+        assert_eq!(
+            vm.left_rows,
+            vec![
+                VmRow::SectionVars,
+                VmRow::Var("base_url".into()),
+                VmRow::Var("api_key".into()),
+                VmRow::Spacer,
+                VmRow::SectionGroups,
+                VmRow::Group("creds".into()),
+                VmRow::Spacer,
+                VmRow::SectionShared,
+                VmRow::Group("region".into()),
+            ]
+        );
+        assert_eq!(left_row_text(&mut vm, &ctx, 3), "");
+        assert_eq!(left_row_text(&mut vm, &ctx, 6), "");
+        // Down from the last variable skips the spacer and the header.
+        vm.select_row(2);
+        vm.handle_key(key(KeyCode::Down), &ctx, None);
+        assert_eq!(vm.left_cursor, 5);
+        vm.handle_key(key(KeyCode::Up), &ctx, None);
+        assert_eq!(vm.left_cursor, 2);
+    }
+
+    /// A selector with nothing (or something stale) selected in the
+    /// active environment wears the same right-aligned dot a variable
+    /// without a value does, in the same color — one mark for "this
+    /// won't resolve", whatever the row is.
+    #[test]
+    fn a_group_with_no_selection_wears_the_unresolved_dot() {
         let (_dir, mut ctx) = fixture();
         ctx.clear_selection_for("qa", "creds");
         let mut vm = VarManager::default();
         let (content, _) = render(&mut vm, &ctx);
-        assert!(content.contains("creds (needs selection)"), "{content}");
+        assert!(!content.contains("needs selection"), "{content}");
+        let creds = left_row_cells(&mut vm, &ctx, 5);
+        let api_key = left_row_cells(&mut vm, &ctx, 2);
+        let dot = |cells: &[(String, Color)]| {
+            cells
+                .iter()
+                .enumerate()
+                .find(|(_, (s, _))| s == GLYPH_UNRESOLVED)
+                .map(|(x, (_, fg))| (x, *fg))
+        };
+        let (creds_x, creds_fg) = dot(&creds).expect("creds wears the dot");
+        let (var_x, var_fg) = dot(&api_key).expect("api_key wears the dot");
+        assert_eq!(creds_x, var_x, "same column as the variable dot");
+        assert_eq!(creds_fg, var_fg, "same color as the variable dot");
+        assert!(left_row_text(&mut vm, &ctx, 5).starts_with("creds"));
+        // And with a selection, no dot.
+        let (_dir, ctx) = fixture();
+        assert!(dot(&left_row_cells(&mut vm, &ctx, 5)).is_none());
     }
 
     #[test]
@@ -3143,8 +3256,9 @@ fields = ["user_id", "customer_id"]
         );
         // fr is picked globally: exactly one row radio filled + the legend's.
         assert_eq!(content.matches(GLYPH_RADIO_ON).count(), 2, "{content}");
-        // The left list shows the pick inline too.
-        assert!(content.contains("locale (fr)"), "{content}");
+        // The left list row is just the name — the pick lives in the grid.
+        assert!(content.contains("locale"), "{content}");
+        assert!(!content.contains("locale (fr)"), "{content}");
     }
 
     #[test]
