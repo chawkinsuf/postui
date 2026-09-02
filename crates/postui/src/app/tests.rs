@@ -9994,9 +9994,9 @@ fn the_value_popup_offers_remove_only_where_a_value_is_stored() {
     );
 }
 
-/// The keyboard mirror of the popup's "✕ remove": `alt+d` removes the
-/// chosen Write-to scope's stored value and rebuilds the popup on the
-/// next supplier, exactly like the click. Where the chosen scope stores
+/// The keyboard mirror of the popup's "✕ remove": `alt+d` marks the
+/// chosen Write-to scope's stored value for removal and re-lands the
+/// popup on the next supplier, exactly like the click. Where the chosen scope stores
 /// nothing (no ✕ painted), the chord is inert.
 #[test]
 fn the_value_popup_alt_d_removes_the_chosen_scopes_value() {
@@ -10118,8 +10118,21 @@ fn the_write_to_arrows_step_and_disable_at_the_ends() {
     );
 }
 
+/// Confirms the top modal by clicking its painted Confirm button.
+fn click_modal_confirm(app: &mut App) {
+    rendered_text(app);
+    let r = app
+        .hits
+        .rect_of(&crate::hit::Hit::ModalConfirm)
+        .expect("confirm button painted");
+    app.handle_mouse(left_down(r.x, r.y));
+}
+
+/// User finding: Remove wrote to disk on the spot, so Cancel afterwards
+/// had nothing to put back. It is staged now: the popup previews the
+/// cleared state and the next supplier, and only Confirm applies it.
 #[test]
-fn remove_deletes_the_env_value_and_falls_back_to_the_default() {
+fn remove_is_pending_until_confirm_and_cancel_puts_nothing_on_disk() {
     let (mut app, dir) = token_popup_app();
     app.update(Action::OpenVarTokenPopup("base_url".into()));
     rendered_text(&mut app);
@@ -10131,43 +10144,127 @@ fn remove_deletes_the_env_value_and_falls_back_to_the_default() {
         "removal keeps the popup open to show the cleared state"
     );
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(
+        on_disk.contains("base_url"),
+        "nothing written yet: {on_disk}"
+    );
+    // The popup follows the pending removal to the scope that would
+    // supply: the default, with its stored value ready to edit (or
+    // remove in turn).
+    let content = rendered_text(&mut app);
+    assert!(content.contains("Project default"), "{content}");
+    assert!(
+        content.contains("http://localhost:8080"),
+        "the next supplier's stored value is on show: {content}"
+    );
+    let r = app
+        .hits
+        .rect_of(&crate::hit::Hit::ModalRemove)
+        .expect("the default stores a value, so it too can be marked");
+
+    // Marking the default too previews "nothing supplies".
+    app.handle_mouse(left_down(r.x, r.y));
+    let content = rendered_text(&mut app);
+    assert!(content.contains("(not set)"), "{content}");
+    assert!(
+        app.hits.rect_of(&crate::hit::Hit::ModalRemove).is_none(),
+        "nothing left to mark"
+    );
+
+    // Cancel: both marks are forgotten, nothing was ever written.
+    app.update(Action::Close);
+    assert!(app.modals.is_empty());
+    let env_on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(env_on_disk.contains("base_url"), "{env_on_disk}");
+    let vars_on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    assert!(vars_on_disk.contains("default"), "{vars_on_disk}");
+    assert_eq!(
+        app.project.resolved.values["base_url"], "https://qa.example.com",
+        "the env value still supplies"
+    );
+    // Reopening starts clean: the env value is back on offer to remove.
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    rendered_text(&mut app);
+    assert!(app.hits.rect_of(&crate::hit::Hit::ModalRemove).is_some());
+}
+
+#[test]
+fn confirming_applies_the_pending_removal_and_the_default_shows_through() {
+    let (mut app, dir) = token_popup_app();
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    rendered_text(&mut app);
+    let r = app.hits.rect_of(&crate::hit::Hit::ModalRemove).unwrap();
+    app.handle_mouse(left_down(r.x, r.y));
+
+    // Confirm on the default's own (unchanged) value: the env value goes,
+    // the default is rewritten as itself.
+    click_modal_confirm(&mut app);
+    assert!(app.modals.is_empty(), "confirm closes the popup");
+    let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(!on_disk.contains("base_url"), "{on_disk}");
     assert_eq!(
         app.project.resolved.values["base_url"], "http://localhost:8080",
         "the default shows through once the env value is gone"
     );
-    // The popup follows the removal to the new supplying scope: the
-    // default now supplies, so Write-to lands there with its stored
-    // value ready to edit (or remove in turn).
-    let content = rendered_text(&mut app);
-    assert!(content.contains("Project default"), "{content}");
-    assert!(
-        content.contains("http://localhost:8080"),
-        "the new supplier's stored value is on show: {content}"
-    );
-    let r = app
-        .hits
-        .rect_of(&crate::hit::Hit::ModalRemove)
-        .expect("the default stores a value, so it too can be removed");
+}
 
-    // Removing again clears the default — nothing supplies any more.
+#[test]
+fn confirming_with_every_scope_marked_removes_them_all_and_writes_nothing_blank() {
+    let (mut app, dir) = token_popup_app();
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    rendered_text(&mut app);
+    let r = app.hits.rect_of(&crate::hit::Hit::ModalRemove).unwrap();
     app.handle_mouse(left_down(r.x, r.y));
-    assert!(!app.modals.is_empty(), "still open");
+    rendered_text(&mut app);
+    let r = app.hits.rect_of(&crate::hit::Hit::ModalRemove).unwrap();
+    app.handle_mouse(left_down(r.x, r.y));
+
+    click_modal_confirm(&mut app);
+    assert!(app.modals.is_empty());
+    let env_on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(!env_on_disk.contains("base_url"), "{env_on_disk}");
     let vars_on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     assert!(!vars_on_disk.contains("default"), "{vars_on_disk}");
-    let content = rendered_text(&mut app);
     assert!(
-        content.contains("(not set)"),
-        "no scope stores anything now: {content}"
-    );
-    assert!(
-        app.hits.rect_of(&crate::hit::Hit::ModalRemove).is_none(),
-        "nothing left to remove"
+        app.project.model.vars["base_url"].default.is_none(),
+        "an empty box on a removed scope means removed, not set to \"\""
     );
 }
 
 #[test]
-fn remove_deletes_a_request_override() {
+fn typing_a_value_on_a_marked_scope_writes_it_instead_of_removing() {
+    let (mut app, dir) = token_popup_app();
+    app.update(Action::OpenVarTokenPopup("base_url".into()));
+    rendered_text(&mut app);
+    let r = app.hits.rect_of(&crate::hit::Hit::ModalRemove).unwrap();
+    app.handle_mouse(left_down(r.x, r.y));
+
+    // Cycle Write-to back onto the (marked) env scope and type a value.
+    let keymap = Keymap::default_bindings();
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
+        panic!("popup open")
+    };
+    let scope = fields.iter().find(|f| f.key == "destination").unwrap();
+    assert_eq!(scope.input.text(), "Active env value");
+    app.handle_key(
+        &keymap,
+        KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
+    );
+    for c in "http://new.qa".chars() {
+        app.handle_key(&keymap, plain(c));
+    }
+
+    click_modal_confirm(&mut app);
+    assert!(app.modals.is_empty());
+    let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(on_disk.contains("http://new.qa"), "{on_disk}");
+    assert_eq!(app.project.resolved.values["base_url"], "http://new.qa");
+}
+
+#[test]
+fn remove_marks_a_request_override_and_confirm_drops_it() {
     let (mut app, _dir) = token_popup_app();
     app.editor.variables.insert(
         "base_url".into(),
@@ -10183,13 +10280,18 @@ fn remove_deletes_a_request_override() {
 
     assert!(!app.modals.is_empty(), "the popup stays open");
     assert!(
+        app.editor.variables.contains_key("base_url"),
+        "pending: the [variables] override is still there"
+    );
+    click_modal_confirm(&mut app);
+    assert!(
         !app.editor.variables.contains_key("base_url"),
-        "the [variables] override is gone"
+        "the [variables] override is gone on confirm"
     );
 }
 
 #[test]
-fn remove_deletes_the_default_when_it_is_the_supplier() {
+fn remove_marks_the_default_when_it_is_the_supplier_and_confirm_clears_it() {
     let (mut app, dir) = token_popup_app();
     // dev has no flat values, so the default supplies base_url there.
     app.update(Action::SwitchEnv(Some("dev".into())));
@@ -10199,6 +10301,9 @@ fn remove_deletes_the_default_when_it_is_the_supplier() {
     app.handle_mouse(left_down(r.x, r.y));
 
     assert!(!app.modals.is_empty(), "the popup stays open");
+    let on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    assert!(on_disk.contains("default"), "pending: {on_disk}");
+    click_modal_confirm(&mut app);
     let on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     assert!(!on_disk.contains("default"), "{on_disk}");
     assert!(

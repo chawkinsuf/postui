@@ -4649,40 +4649,22 @@ impl App {
     }
 
     /// The value popup's remove — shared by the clicked "✕ remove"
-    /// (`Hit::ModalRemove`) and its keyboard chord (`alt+d`): removes the
-    /// chosen Write-to scope's stored value, then rebuilds the popup so
-    /// Write-to lands on the next supplier with its value ready to edit.
-    /// Inert (returns `false`) unless the top modal is the value popup
-    /// and the chosen scope actually stores something — mirroring when
-    /// the ✕ is painted at all.
+    /// (`Hit::ModalRemove`) and its keyboard chord (`alt+d`): marks the
+    /// chosen Write-to scope's stored value for removal on Confirm, then
+    /// re-lands the popup on the next supplier with its value ready to
+    /// edit. Inert (returns `false`) unless the top modal is the value
+    /// popup and the chosen scope actually stores something — mirroring
+    /// when the ✕ is painted at all.
     pub(crate) fn remove_from_value_popup(&mut self) -> bool {
-        use crate::components::modal::{Modal, PromptKind, chosen_scope, destination_from_label};
-        let Some(Modal::MultiPrompt { fields, kind, .. }) = self.modals.top() else {
+        use crate::components::modal::{Modal, stage_value_removal};
+        let Some(Modal::MultiPrompt { fields, kind, .. }) = self.modals.top_mut() else {
             return false;
         };
-        let PromptKind::EditVarValue { name, scope_values } = kind else {
-            return false;
-        };
-        let name = name.clone();
-        let (chosen, stored) = chosen_scope(fields, scope_values);
-        if !stored {
-            return false;
-        }
-        let destination = destination_from_label(&chosen);
-        // The popup stays open, rebuilt from scratch on success: the
-        // removal moved supply to the next wider scope, and reopening
-        // re-runs the supplying-scope math, so Write-to lands on the new
-        // supplier with its stored value ready to edit (or "(not set)"
-        // when nothing supplies at all).
-        let changed = self.update(Action::RemoveVarValue {
-            name: name.clone(),
-            destination,
-        });
-        if !self.last_action_failed {
-            self.modals.pop();
-            self.open_edit_value_popup(&name);
-        }
-        changed
+        // Staged, not written: the popup is a transaction, so the removal
+        // waits for Confirm (and Cancel forgets it). The popup re-lands on
+        // whichever scope would supply once the value is gone, with its
+        // stored value ready to edit or remove in turn.
+        stage_value_removal(fields, kind) && self.update(Action::Render)
     }
 
     /// Builds and opens the value-edit popup for a simple (or
@@ -4709,26 +4691,11 @@ impl App {
             .or_else(|| self.project.resolved.values.get(name).cloned())
             .unwrap_or_default();
 
-        // Only the supplying scope and narrower are on offer: a scope
-        // shadowed by a higher-precedence value (request beats env beats
-        // default) would take the write and change nothing visible.
-        // Wider scopes stay editable in the Variable Manager.
-        let mut choices: Vec<&str> = Vec::new();
-        let preselect = if request_value.is_some() {
-            "This request"
-        } else if has_env && env_value.is_some() {
-            "Active env value"
-        } else {
-            choices.push("Project default");
-            if has_env {
-                choices.push("Active env value");
-            }
-            "Project default"
-        };
-        if preselect == "Active env value" {
-            choices.push("Active env value");
-        }
-        choices.push("This request");
+        let (choices, preselect) = crate::components::modal::value_popup_choices(
+            request_value.is_some(),
+            has_env,
+            env_value.is_some(),
+        );
 
         let mut destination = PromptField::choice("destination", "Write to", &choices);
         destination.input = LineInput::new(preselect);
@@ -4757,6 +4724,7 @@ impl App {
             kind: PromptKind::EditVarValue {
                 name: name.to_string(),
                 scope_values,
+                pending_removals: Vec::new(),
             },
         });
         true

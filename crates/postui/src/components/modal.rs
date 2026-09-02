@@ -125,11 +125,18 @@ pub enum PromptKind {
     /// when that scope stores nothing); cycling the destination reseeds
     /// the value field from it, so the box always shows what the chosen
     /// scope holds, and the Remove button shows only where there is a
-    /// stored value to delete. Confirming emits
+    /// stored value to delete. Removals are *pending* until confirm:
+    /// `pending_removals` lists the destination labels whose stored value
+    /// the popup's Remove marked for deletion (their `scope_values` entry
+    /// is already `None`, so the box previews the cleared state and the
+    /// next supplier), applied by [`stage_value_removal`]'s confirm-time
+    /// twin below; Cancel simply drops them with the popup. Confirming
+    /// emits one `Action::RemoveVarValue` per pending scope and then
     /// `Action::ConfirmEditVarValue`.
     EditVarValue {
         name: String,
         scope_values: Vec<(String, Option<String>)>,
+        pending_removals: Vec<String>,
     },
 }
 
@@ -367,6 +374,73 @@ pub(crate) fn chosen_scope(
         .and_then(|(_, v)| v.as_ref())
         .is_some();
     (chosen, stored)
+}
+
+/// The value popup's Write-to choices and preselection for a variable
+/// whose scopes currently store (`request_stored`, `env_stored`) — and
+/// whether an environment is active at all. Only the supplying scope and
+/// narrower are on offer: a scope shadowed by a higher-precedence value
+/// (request beats env beats default) would take the write and change
+/// nothing visible; wider scopes stay editable in the Variable Manager.
+pub(crate) fn value_popup_choices(
+    request_stored: bool,
+    has_env: bool,
+    env_stored: bool,
+) -> (Vec<&'static str>, &'static str) {
+    let mut choices: Vec<&'static str> = Vec::new();
+    let preselect = if request_stored {
+        "This request"
+    } else if has_env && env_stored {
+        "Active env value"
+    } else {
+        choices.push("Project default");
+        if has_env {
+            choices.push("Active env value");
+        }
+        "Project default"
+    };
+    if preselect == "Active env value" {
+        choices.push("Active env value");
+    }
+    choices.push("This request");
+    (choices, preselect)
+}
+
+/// The value popup's Remove, staged: marks the chosen Write-to scope's
+/// stored value for deletion *on confirm* (nothing is written yet — Cancel
+/// discards it), then re-lands the popup on the scope that would supply
+/// once it is gone, with that scope's stored value ready to edit or remove
+/// in turn (or "(not set)" when nothing would supply at all). Returns
+/// `false`, changing nothing, when the chosen scope stores nothing.
+pub(crate) fn stage_value_removal(fields: &mut [PromptField], kind: &mut PromptKind) -> bool {
+    let PromptKind::EditVarValue {
+        scope_values,
+        pending_removals,
+        ..
+    } = kind
+    else {
+        return false;
+    };
+    let (chosen, stored) = chosen_scope(fields, scope_values);
+    if !stored {
+        return false;
+    }
+    if let Some((_, v)) = scope_values.iter_mut().find(|(label, _)| *label == chosen) {
+        *v = None;
+    }
+    if !pending_removals.contains(&chosen) {
+        pending_removals.push(chosen);
+    }
+    let stores = |label: &str| scope_values.iter().any(|(l, v)| l == label && v.is_some());
+    let has_env = scope_values.iter().any(|(l, _)| l == "Active env value");
+    let (choices, preselect) =
+        value_popup_choices(stores("This request"), has_env, stores("Active env value"));
+    if let Some(dest) = fields.iter_mut().find(|f| f.key == "destination") {
+        dest.choices = choices.iter().map(|s| s.to_string()).collect();
+        dest.input = LineInput::new(preselect);
+    }
+    resync_after_choice_cycle(kind, fields);
+    true
 }
 
 /// The `ExtractDestination` a Write-to label stands for — shared by the
@@ -1144,7 +1218,11 @@ impl ModalStack {
                                 surface: *surface,
                             }]
                         }
-                        PromptKind::EditVarValue { name, .. } => {
+                        PromptKind::EditVarValue {
+                            name,
+                            pending_removals,
+                            ..
+                        } => {
                             // An emptied value is a legitimate edit, so no
                             // non-empty filter here; removing the stored
                             // value outright is the Remove button.
@@ -1152,13 +1230,32 @@ impl ModalStack {
                                 .iter()
                                 .find(|f| f.key == "value")
                                 .map(|f| f.input.text().to_string())?;
-                            let destination =
-                                destination_from_label(get("destination").unwrap_or_default());
-                            vec![Action::ConfirmEditVarValue {
-                                name: name.clone(),
-                                value,
-                                destination,
-                            }]
+                            let chosen = get("destination").unwrap_or_default();
+                            let destination = destination_from_label(chosen);
+                            // Pending removals land first. The chosen scope
+                            // is the one exception: cycling back onto a
+                            // removed scope and typing a value means "set
+                            // it after all" (the write replaces the
+                            // removal); leaving its box empty means the
+                            // removal stands and nothing blank is written.
+                            let chosen_pending = pending_removals.iter().any(|l| l == chosen);
+                            let keep_write = !(chosen_pending && value.is_empty());
+                            let mut actions: Vec<Action> = pending_removals
+                                .iter()
+                                .filter(|l| !(keep_write && *l == chosen))
+                                .map(|l| Action::RemoveVarValue {
+                                    name: name.clone(),
+                                    destination: destination_from_label(l),
+                                })
+                                .collect();
+                            if keep_write {
+                                actions.push(Action::ConfirmEditVarValue {
+                                    name: name.clone(),
+                                    value,
+                                    destination,
+                                });
+                            }
+                            actions
                         }
                         _ => return None, // not a MultiPrompt kind
                     };
