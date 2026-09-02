@@ -851,10 +851,15 @@ impl TableEditorState {
         } else {
             (theme.text_muted, bg)
         };
-        // VS16 (`\u{FE0F}`) pins the trash to emoji presentation: the
-        // terminal was already drawing it two cells wide, and the selector
-        // makes unicode-width agree, so the padding actually centers it.
-        text(buf, trash_x, y, " \u{1F5D1}\u{FE0F} ", dfg, dbg, false);
+        // The bare glyph, no VS16, with a blank cell after it: unicode-width
+        // counts it as one cell, so ratatui paints every cell of the zone
+        // (bg included) and its cursor accounting matches the terminal's.
+        // A VS16-widened glyph makes ratatui skip the second cell entirely,
+        // and terminals that widen on the selector (Ghostty) leave that
+        // cell's old style in place, so it showed whatever was drawn there
+        // before. Emoji-capable terminals still render the glyph across the
+        // blank neighbour, so it sits centred in the four-cell zone.
+        text(buf, trash_x, y, " \u{1F5D1}  ", dfg, dbg, false);
 
         hits.register(Rect::new(toggle_x, y, 3, 1), toggle_hit);
         hits.register(Rect::new(trash_x, y, 4, 1), trash_hit);

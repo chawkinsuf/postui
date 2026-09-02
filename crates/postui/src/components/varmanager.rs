@@ -1605,7 +1605,9 @@ impl VarManager {
         if y >= bottom || cols.x.is_empty() {
             return;
         }
-        fill(buf, Rect::new(right.x, y, right.width, 1), theme.panel);
+        // The header strip is exactly as wide as the rows beneath it, so
+        // the grid reads as one inset block with the pane's margin around it.
+        fill(buf, Rect::new(x0, y, inner_w, 1), theme.panel);
         for (i, label) in std::iter::once("ENTRY".to_string())
             .chain(fields.iter().map(|f| f.to_uppercase()))
             .chain(std::iter::once("DESCRIPTION".to_string()))
@@ -1772,9 +1774,15 @@ impl VarManager {
                 } else {
                     (theme.text_muted, bg)
                 };
-                // VS16 pins the trash to two-cell emoji presentation, the
-                // same treatment `table_editor::draw_row_buttons` uses.
-                text(buf, trash_x, ry, " \u{1F5D1}\u{FE0F} ", dfg, dbg, false);
+                // The bare glyph, no VS16, with a blank cell after it: unicode-width
+                // counts it as one cell, so ratatui paints every cell of the zone
+                // (bg included) and its cursor accounting matches the terminal's.
+                // A VS16-widened glyph makes ratatui skip the second cell entirely,
+                // and terminals that widen on the selector (Ghostty) leave that
+                // cell's old style in place, so it showed whatever was drawn there
+                // before. Emoji-capable terminals still render the glyph across the
+                // blank neighbour, so it sits centred in the four-cell zone.
+                text(buf, trash_x, ry, " \u{1F5D1}  ", dfg, dbg, false);
                 hits.register(Rect::new(trash_x, ry, TRASH_W, 1), trash_hit);
             }
         }
