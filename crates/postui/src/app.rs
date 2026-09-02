@@ -3070,10 +3070,19 @@ impl App {
                 if self.manage.tab != target {
                     self.manage.list.reset();
                 }
+                let prev = self.manage.tab;
                 self.manage.tab = target;
                 if self.screen != Screen::Manage {
                     self.prior_focus = self.focus;
                     self.screen = Screen::Manage;
+                    // A freshly opened screen snaps its underline onto
+                    // the active tab: a glide from wherever the strip
+                    // last was would read as a switch that never happened.
+                    self.anims.clear(AnimKey::TabUnderline(StripId::ManageTabs));
+                    self.anims
+                        .clear(AnimKey::TabUnderlineWidth(StripId::ManageTabs));
+                } else if prev != target {
+                    self.retarget_manage_tab_underline(prev);
                 }
                 true
             }
@@ -3082,8 +3091,10 @@ impl App {
                 // edit) carried across would point at the wrong item.
                 if self.manage.tab != tab {
                     self.manage.list.reset();
+                    let prev = self.manage.tab;
+                    self.manage.tab = tab;
+                    self.retarget_manage_tab_underline(prev);
                 }
-                self.manage.tab = tab;
                 true
             }
             Action::CloseScreen => {
@@ -7202,6 +7213,32 @@ impl App {
             .retarget_with(left_key, left, dur, now, Easing::InOutCubic);
         self.anims
             .retarget_with(right_key, right, dur, now, Easing::InOutCubic);
+    }
+
+    /// Like [`Self::retarget_editor_tab_underline`], for the Manage
+    /// screen's tab strip: called from `Action::SelectManageTab` (clicks
+    /// and alt+arrows both funnel through it) and from `OpenManage` when
+    /// it switches tabs on an already-open screen, after `manage.tab` has
+    /// moved; `prev` is where the glide starts.
+    fn retarget_manage_tab_underline(&mut self, prev: crate::components::manage::ManageTab) {
+        let spans = crate::components::manage::ManageTab::strip_spans();
+        let now = Instant::now();
+        let left_key = AnimKey::TabUnderline(StripId::ManageTabs);
+        let right_key = AnimKey::TabUnderlineWidth(StripId::ManageTabs);
+        if self.anims.value(left_key, now).is_none()
+            && let Some((x, w)) = spans.get(prev.index())
+        {
+            self.anims.snap(left_key, *x as f32);
+            self.anims.snap(right_key, (*x + *w) as f32);
+        }
+        let Some((x, w)) = spans.get(self.manage.tab.index()) else {
+            return;
+        };
+        let dur = self.ui_settings.anim_ms.tab_slide;
+        self.anims
+            .retarget_with(left_key, *x as f32, dur, now, Easing::InOutCubic);
+        self.anims
+            .retarget_with(right_key, (*x + *w) as f32, dur, now, Easing::InOutCubic);
     }
 
     /// Like [`Self::retarget_editor_tab_underline`], but for

@@ -142,11 +142,25 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 height: layout.body.height - bar.height,
                 ..layout.body
             };
+            // The strip's underline follows the app's eased edges while a
+            // tab switch glides; untracked (the screen just opened) it
+            // sits on the active tab's static span.
+            let underline = {
+                use crate::anim::{AnimKey, StripId};
+                let left = app
+                    .anims
+                    .value(AnimKey::TabUnderline(StripId::ManageTabs), now);
+                let right = app
+                    .anims
+                    .value(AnimKey::TabUnderlineWidth(StripId::ManageTabs), now);
+                left.zip(right).map(|(l, r)| (l, r - l))
+            };
             crate::components::manage::draw_manage_bar(
                 frame,
                 bar,
                 &app.theme,
                 app.manage.tab,
+                underline,
                 &mut hits,
                 app.hovered.as_ref(),
             );

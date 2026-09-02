@@ -46,6 +46,7 @@ impl Easing {
 pub enum StripId {
     EditorTabs,
     ResponseTabs,
+    ManageTabs,
 }
 
 /// Identifies which scrollable list an animation belongs to.

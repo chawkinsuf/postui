@@ -49,6 +49,17 @@ impl ManageTab {
         Self::ALL[i.min(Self::ALL.len() - 1)]
     }
 
+    /// Each tab's `(x, width)` span relative to the strip's origin — the
+    /// geometry `draw_manage_bar` lays the strip out with, exposed so the
+    /// app can glide the underline between them.
+    pub fn strip_spans() -> Vec<(u16, u16)> {
+        let tabs: Vec<(String, Option<(char, ratatui::style::Color)>)> = Self::ALL
+            .iter()
+            .map(|t| (t.label().to_string(), None))
+            .collect();
+        TabStrip::spans(&tabs)
+    }
+
     /// Steps `delta` tabs along `ALL`, wrapping in both directions.
     pub fn cycle(self, delta: i32) -> Self {
         let n = Self::ALL.len() as i32;
@@ -72,7 +83,10 @@ pub const BAR_HEIGHT: u16 = BUTTON_HEIGHT;
 
 /// Paints the top bar: tab strip at the left edge (registering
 /// `Hit::ManageTab(i)`), `Close (esc)` at the right, and on the Variables
-/// tab the `+ Variable` / `+ Selector` buttons before it.
+/// tab the `+ Variable` / `+ Selector` buttons before it. `underline` is
+/// the accent segment's `(left, width)` in fractional columns relative to
+/// the strip's origin — the app's eased edges mid-glide — or `None` for
+/// the active tab's own static span.
 ///
 /// The strip has priority for its natural width: the right-aligned
 /// buttons lay out only into the room left of it, and a button that would
@@ -85,6 +99,7 @@ pub fn draw_manage_bar(
     bar: Rect,
     theme: &Theme,
     tab: ManageTab,
+    underline: Option<(f32, f32)>,
     hits: &mut HitMap,
     hovered: Option<&Hit>,
 ) {
@@ -156,10 +171,12 @@ pub fn draw_manage_bar(
         .enumerate()
         .find(|(i, _)| hovered == Some(&Hit::ManageTab(*i)))
         .map(|(i, _)| i);
-    let (ul_x, ul_w) = spans
-        .get(tab.index())
-        .map(|(x, w)| (*x as f32, *w as f32))
-        .unwrap_or((0.0, 0.0));
+    let (ul_x, ul_w) = underline.unwrap_or_else(|| {
+        spans
+            .get(tab.index())
+            .map(|(x, w)| (*x as f32, *w as f32))
+            .unwrap_or((0.0, 0.0))
+    });
     let strip_area = Rect {
         x: left_edge + 1,
         y: bar.y + BUTTON_HEIGHT / 2,
@@ -208,7 +225,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(width, 3)).unwrap();
         let mut hits = HitMap::default();
         terminal
-            .draw(|f| draw_manage_bar(f, f.area(), &theme, tab, &mut hits, None))
+            .draw(|f| draw_manage_bar(f, f.area(), &theme, tab, None, &mut hits, None))
             .unwrap();
         (format!("{:?}", terminal.backend().buffer()), hits)
     }
@@ -260,6 +277,50 @@ mod tests {
             let r = hits.rect_of(&hit).unwrap();
             assert!(!intersects(spaces, r), "{hit:?} overlaps the strip: {r:?}");
         }
+    }
+
+    /// The bar paints the underline the caller hands it — the eased
+    /// edges from the app's animation — not the active tab's static span,
+    /// so a switch glides. Painted mid-glide, the accent segment sits
+    /// between the two tabs.
+    #[test]
+    fn bar_paints_the_underline_where_it_is_told_to() {
+        let theme = Theme::dark();
+        let spans = ManageTab::strip_spans();
+        let (x0, _) = spans[0];
+        let (x2, w2) = spans[2];
+        let mid = ((x0 + x2) / 2) as f32;
+        let mut terminal = Terminal::new(TestBackend::new(100, 3)).unwrap();
+        let mut hits = HitMap::default();
+        terminal
+            .draw(|f| {
+                draw_manage_bar(
+                    f,
+                    f.area(),
+                    &theme,
+                    ManageTab::Spaces,
+                    Some((mid, w2 as f32)),
+                    &mut hits,
+                    None,
+                )
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let strip = hits.rect_of(&Hit::ManageTab(0)).unwrap();
+        let ul_y = strip.y + 1;
+        let accent_at = |x: u16| {
+            buf.cell((x, ul_y)).unwrap().fg == theme.accent
+                && buf.cell((x, ul_y)).unwrap().symbol() != " "
+        };
+        let strip_x = hits.rect_of(&Hit::ManageTab(0)).unwrap().x;
+        assert!(
+            accent_at(strip_x + mid as u16 + 1),
+            "the segment is painted at the handed-in position"
+        );
+        assert!(
+            !accent_at(strip_x + x2 + w2 - 1),
+            "and not at the active tab's own static span"
+        );
     }
 
     #[test]

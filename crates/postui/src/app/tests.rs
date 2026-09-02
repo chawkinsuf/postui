@@ -1665,6 +1665,49 @@ fn switching_editor_tabs_retargets_the_underline_slide() {
     );
 }
 
+/// The Manage screen's tab strip glides like the editor's: selecting a
+/// tab (by click, alt+arrows, or `Action::SelectManageTab`) retargets the
+/// `StripId::ManageTabs` edges from the previous tab's span toward the new
+/// one's; opening the screen from Main snaps straight to the active tab.
+#[test]
+fn switching_manage_tabs_retargets_the_underline_slide() {
+    use crate::components::manage::ManageTab;
+    let mut app = App::new_for_test_with_anims(true);
+    let left_key = AnimKey::TabUnderline(StripId::ManageTabs);
+    let right_key = AnimKey::TabUnderlineWidth(StripId::ManageTabs);
+    app.update(Action::OpenManage { tab: None });
+    render_once(&mut app);
+    assert!(
+        app.anims.value(left_key, Instant::now()).is_none(),
+        "opening the screen snaps: nothing is in flight"
+    );
+
+    app.update(Action::SelectManageTab(ManageTab::Spaces));
+    let now = Instant::now();
+    assert!(
+        app.anims.active(now),
+        "the underline is easing after the switch"
+    );
+    let spans = ManageTab::strip_spans();
+    let (x, w) = spans[ManageTab::Spaces.index()];
+    let done_at = now + app.ui_settings.anim_ms.tab_slide + Duration::from_millis(5);
+    assert_eq!(app.anims.value(left_key, done_at), Some(x as f32));
+    assert_eq!(app.anims.value(right_key, done_at), Some((x + w) as f32));
+    let (vx, _) = spans[ManageTab::Variables.index()];
+    let mid = app.anims.value(left_key, now).unwrap();
+    assert!(
+        (vx as f32) <= mid && mid < x as f32,
+        "the left edge is on its way from Variables ({vx}) to Spaces ({x}): {mid}"
+    );
+
+    // Closing and reopening forgets the glide so the reopened bar snaps.
+    app.update(Action::CloseScreen);
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Variables),
+    });
+    assert!(app.anims.value(left_key, Instant::now()).is_none());
+}
+
 #[test]
 fn up_from_a_cell_under_edit_commits_and_never_desyncs_the_focus() {
     let mut app = app_with_one_param();
