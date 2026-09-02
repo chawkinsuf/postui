@@ -1085,43 +1085,25 @@ impl Component for Response {
         let data = match &self.state {
             ResponseState::Ready(data) => data,
             other => {
-                // Hidden with no response: the pane is nothing but its
-                // one-row strip — a compact state hint (so an in-flight
-                // send stays visible) plus the `› show` toggle.
-                if self.collapsed {
-                    let strip = Rect {
-                        height: inner.height.min(COLLAPSED_HEIGHT),
-                        ..inner
-                    };
-                    crate::paint::fill(frame.buffer_mut(), strip, t.panel);
-                    draw_step_pill(frame.buffer_mut(), hits, strip, self.split, ctx);
-                    let hint = match other {
-                        ResponseState::Empty => None,
-                        ResponseState::InFlight { started } => {
-                            let e = started.elapsed();
-                            let frame_i = (e.subsec_millis() / 100) as usize % SPINNER.len();
-                            Some((
-                                format!("{} sending… {}", SPINNER[frame_i], human_elapsed(e)),
-                                t.text_muted,
-                            ))
-                        }
-                        ResponseState::Failed(_) => Some(("failed".to_string(), t.error)),
-                        ResponseState::Cancelled => Some(("cancelled".to_string(), t.text_muted)),
-                        ResponseState::Ready(_) => unreachable!("handled above"),
-                    };
-                    if let Some((s, color)) = hint {
-                        crate::paint::text(
-                            frame.buffer_mut(),
-                            strip.x + 1,
-                            strip.y,
-                            &s,
-                            color,
-                            t.panel,
-                            false,
-                        );
-                    }
+                // No response yet: row 0 is the same panel-tone header
+                // strip the ready pane has — a status-shaped chip naming
+                // the state in the status chip's slot, the step pill at
+                // the right — so the pane reads as a pane with a header
+                // before the first send too. Hidden, that strip is the
+                // whole pane.
+                let strip = Rect {
+                    height: inner.height.min(COLLAPSED_HEIGHT),
+                    ..inner
+                };
+                draw_pending_strip(frame.buffer_mut(), hits, strip, other, self.split, ctx);
+                if self.collapsed || inner.height <= COLLAPSED_HEIGHT {
                     return;
                 }
+                let inner = Rect {
+                    y: inner.y + COLLAPSED_HEIGHT,
+                    height: inner.height - COLLAPSED_HEIGHT,
+                    ..inner
+                };
                 let muted = Style::default().fg(t.text_muted);
                 let lines = match other {
                     ResponseState::Empty => vec![
@@ -1161,9 +1143,6 @@ impl Component for Response {
                 };
                 let widget = Paragraph::new(lines).style(muted).centered();
                 frame.render_widget(widget, inner);
-                // The step pill rides row 0 here too, so the split can be
-                // nudged from this header before the first response lands.
-                draw_step_pill(frame.buffer_mut(), hits, inner, self.split, ctx);
                 return;
             }
         };
@@ -1262,6 +1241,48 @@ pub const HEADER_STRIP_HEIGHT: u16 = 3;
 /// (status chip + `› show`), the tabs and icon actions having slid away
 /// with the body.
 pub const COLLAPSED_HEIGHT: u16 = 1;
+
+/// The not-yet-ready pane's one-row header strip on `area`: panel fill,
+/// a status-shaped chip at the left naming the state — `—` while empty,
+/// the spinner and elapsed time in flight, `failed` in the error tone,
+/// `cancelled` — and the ▲/▼ step pill at the right. The same strip
+/// serves the hidden pane (where it is the whole pane) and the expanded
+/// one (where the body message sits below it), so the header never
+/// changes shape when the pane opens.
+fn draw_pending_strip(
+    buf: &mut ratatui::buffer::Buffer,
+    hits: &mut crate::hit::HitMap,
+    area: Rect,
+    state: &ResponseState,
+    split: crate::split::SplitState,
+    ctx: &DrawCtx,
+) {
+    let t = ctx.theme;
+    crate::paint::fill(buf, area, t.panel);
+    let pill_x = draw_step_pill(buf, hits, area, split, ctx);
+    let (label, color) = match state {
+        ResponseState::Empty => ("\u{2014}".to_string(), t.text_muted),
+        ResponseState::InFlight { started } => {
+            let e = started.elapsed();
+            let frame_i = (e.subsec_millis() / 100) as usize % SPINNER.len();
+            (
+                format!("{} sending\u{2026} {}", SPINNER[frame_i], human_elapsed(e)),
+                t.text_muted,
+            )
+        }
+        ResponseState::Failed(_) => ("failed".to_string(), t.error),
+        ResponseState::Cancelled => ("cancelled".to_string(), t.text_muted),
+        ResponseState::Ready(_) => unreachable!("the ready pane paints its own header"),
+    };
+    let chip = crate::paint::Chip {
+        label: &label,
+        color,
+    };
+    // On a strip too tight for both, the pill wins: it is the control.
+    if area.x + chip.width() < pill_x {
+        chip.paint(buf, area.x, area.y, t.panel, t);
+    }
+}
 
 /// Paints the header's ▲/▼ step pill right-aligned on `area`'s first
 /// row (one cell in from the right edge, like the tab strip below it)
@@ -3439,6 +3460,114 @@ mod tests {
             "x",
             "URL text runs right up to it"
         );
+    }
+
+    /// Before a response lands the pane still reads as a pane with a
+    /// header: row 0 is the same panel-tone strip the ready header uses,
+    /// with a status-shaped chip in the status chip's slot naming the
+    /// state (`—` empty, spinner in flight, `failed`, `cancelled`) and the
+    /// step pill at the right — and the centred body message below it.
+    #[test]
+    fn pending_pane_row_0_is_a_panel_strip_with_a_state_chip() {
+        let theme = Theme::dark();
+        let cases: Vec<(&str, ResponseState, &str, ratatui::style::Color)> = vec![
+            ("empty", ResponseState::Empty, "\u{2014}", theme.text_muted),
+            (
+                "failed",
+                ResponseState::Failed("boom".into()),
+                "failed",
+                theme.error,
+            ),
+            (
+                "cancelled",
+                ResponseState::Cancelled,
+                "cancelled",
+                theme.text_muted,
+            ),
+        ];
+        for (name, state, word, color) in cases {
+            let mut r = Response::default();
+            r.set_state(state, 0);
+            let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+            let mut hits = crate::hit::HitMap::default();
+            let ctx = DrawCtx {
+                theme: &theme,
+                focused: true,
+                hovered: None,
+                dragging: false,
+                anims: test_anims(),
+                now: std::time::Instant::now(),
+            };
+            terminal
+                .draw(|f| r.draw(f, f.area(), &ctx, &mut hits))
+                .unwrap();
+            let buf = terminal.backend().buffer();
+            // The strip spans the inner width on the panel tone (a cell
+            // clear of both the chip and the pill).
+            assert_eq!(
+                buf[(30, 0)].bg,
+                theme.panel,
+                "{name}: row 0 is a panel strip"
+            );
+            assert_eq!(
+                buf[(30, 1)].bg,
+                theme.page,
+                "{name}: the body stays page-toned"
+            );
+            // The chip sits where the ready header's status chip sits:
+            // inner x (1), label from x + 1.
+            let label: String = (2..2 + word.chars().count() as u16)
+                .map(|x| buf[(x, 0)].symbol().to_string())
+                .collect();
+            assert_eq!(label, word, "{name}: chip label");
+            // The chip's fill is the state tone tinted onto the strip,
+            // exactly as the ready status chip is (its text picks a
+            // contrasting tone from that fill).
+            assert_eq!(
+                buf[(2, 0)].bg,
+                theme.tint(color, theme.panel),
+                "{name}: chip fill"
+            );
+            assert!(
+                hits.rect_of(&crate::hit::Hit::SplitStep(1)).is_some(),
+                "{name}: pill still on row 0"
+            );
+        }
+        // The body message survives, below the strip.
+        let mut r = Response::default();
+        let out = render(&mut r);
+        assert!(out.contains("Send a request"), "{out}");
+    }
+
+    /// In flight, the chip carries the spinner and elapsed time — the
+    /// strip is where the wait shows, collapsed or not.
+    #[test]
+    fn pending_in_flight_chip_shows_the_spinner() {
+        let mut r = Response::default();
+        r.set_state(
+            ResponseState::InFlight {
+                started: std::time::Instant::now(),
+            },
+            0,
+        );
+        let theme = Theme::dark();
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: None,
+            dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
+        };
+        terminal
+            .draw(|f| r.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let row0: String = (0..60).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        assert!(row0.contains("sending"), "{row0}");
+        assert_ne!(buf[(2, 0)].bg, theme.panel, "chip has a fill");
     }
 
     /// Hiding hides the controls too: collapsed, the header strip drops its
