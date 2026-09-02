@@ -6,11 +6,14 @@
 //!
 //! Each chip's glyph is a two-tone mini-picture of its state: the
 //! editor's share in one tone above the response's in another, drawn
-//! with a lower-block glyph whose fg paints the response mass over an
-//! editor-tone bg. The chips sit flush against each other — two glyph
-//! cells each, no padding — so the row fuses into one continuous
-//! staircase (`▁▁▂▂▄▄▆▆██`) reading left to right as the boundary
-//! sliding down; the current state's picture lights up accent.
+//! with a lower-block glyph whose bg paints the editor mass above a
+//! response-tone fg. The editor's share is the lit one — the control
+//! reads as "how much of the column the upper pane gets", shrinking
+//! left to right until the response-full chip carries no lit mass at
+//! all. The chips sit flush against each other — two glyph cells each,
+//! no padding — so the row fuses into one continuous staircase
+//! (`  ▂▂▄▄▆▆▇▇`) reading left to right as the boundary sliding down;
+//! the current state's picture lights up accent.
 
 use crate::split::{SplitState, SplitStop};
 use crate::theme::Theme;
@@ -24,17 +27,19 @@ pub const SPLIT_SEGMENT_WIDTH: u16 = 2;
 /// face rather than a loose graphic.
 pub const SPLIT_CONTROL_WIDTH: u16 = SPLIT_SEGMENT_WIDTH * 5 + 2;
 
-/// `stop`'s mini-picture: the response mass painted bottom-up in fg over
-/// the editor-tone bg. The ramp is the canonical `▁▂▄▆█` so the tall
-/// steps stay even (a `▇` endpoint reserving a strip for the editor made
-/// the last step visibly shallower than its neighbors).
+/// `stop`'s mini-picture: the response mass painted bottom-up in fg under
+/// the editor-tone bg (the lit share). The lit editor mass runs
+/// `8/8 → 6/8 → 4/8 → 2/8 → 1/8` of the cell, so the tall steps stay
+/// even and the response-full endpoint keeps a one-eighth editor strip
+/// (a `█` there left the chip with no lit mass at all, so it read as an
+/// empty slot rather than the last stop).
 pub fn split_glyph(stop: SplitStop) -> &'static str {
     match stop {
-        SplitStop::EditorFull => "\u{2581}\u{2581}", // ▁▁ response strip
-        SplitStop::EditorBig => "\u{2582}\u{2582}",  // ▂▂ 75/25
-        SplitStop::Even => "\u{2584}\u{2584}",       // ▄▄ 50/50
-        SplitStop::ResponseBig => "\u{2586}\u{2586}", // ▆▆ 25/75
-        SplitStop::ResponseFull => "\u{2588}\u{2588}", // ██ response takes all
+        SplitStop::EditorFull => "  ",                 // editor takes all
+        SplitStop::EditorBig => "\u{2582}\u{2582}",    // ▂▂ 75/25
+        SplitStop::Even => "\u{2584}\u{2584}",         // ▄▄ 50/50
+        SplitStop::ResponseBig => "\u{2586}\u{2586}",  // ▆▆ 25/75
+        SplitStop::ResponseFull => "\u{2587}\u{2587}", // ▇▇ editor strip
     }
 }
 
@@ -83,23 +88,24 @@ impl SplitControl {
             let hovered = self.hovered == Some(stop);
             // The mini-picture fully covers its own cells, so hover and
             // "lit" are the picture's own tones changing. The tones follow
-            // the app's glyph-on-button idiom: the editor mass is the
-            // control fill itself (one dark pill face with the caps), the
-            // response mass a glyph-grey drawn on it — hover lifts both a
-            // step like any button, and the active chip swaps into the
-            // accent pair (accent mass on the dim selection tint) instead
-            // of a solid glowing block.
-            // Resting response mass: halfway between disabled and muted
+            // the app's glyph-on-button idiom, with the editor's share as
+            // the lit mass (the control sets the upper pane's size): the
+            // response mass is the control fill itself (one dark pill
+            // face with the caps), the editor mass a glyph-grey above it
+            // — hover lifts both a step like any button, and the active
+            // chip swaps into the accent pair (accent mass over the dim
+            // selection tint) instead of a solid glowing block.
+            // Resting editor mass: halfway between disabled and muted
             // text — `text_disabled` alone vanishes against the control
             // fill, full `text_muted` reads too hot as a solid 2-cell
             // block (it's a mass, not a glyph stroke).
             let resting_mass = crate::theme::mix(theme.text_disabled, theme.text_muted, 0.5);
             let (editor_tone, response_tone) = if active == stop {
-                (theme.selection, theme.accent)
+                (theme.accent, theme.selection)
             } else if hovered {
-                (theme.control_hover, theme.text_muted)
+                (theme.text_muted, theme.control_hover)
             } else {
-                (theme.control, resting_mass)
+                (resting_mass, theme.control)
             };
             let glyph = split_glyph(stop);
             crate::paint::text(buf, rect.x, y, glyph, response_tone, editor_tone, false);
@@ -168,7 +174,9 @@ mod tests {
             }
             let glyph = split_glyph(stop);
             let mass = crate::theme::mix(theme.text_disabled, theme.text_muted, 0.5);
-            let (want_fg, want_bg) = (mass, theme.control);
+            // The editor mass (the bg, above the glyph) is the lit grey;
+            // the response mass below is the control fill.
+            let (want_fg, want_bg) = (theme.control, mass);
             // Both cells carry the doubled glyph — the chip is nothing
             // but its picture, fusing flush with its neighbors.
             let one_char = &glyph[..glyph.len() / 2];
@@ -189,12 +197,12 @@ mod tests {
             hovered: None,
         });
         let even = rects[2].0;
-        // ▄ over an editor-tone bg: response mass in accent over the dim
-        // selection tint standing in for the editor's share.
-        assert_eq!(cell(&term, even.x + 1, 0).bg, theme.selection);
-        assert_eq!(cell(&term, even.x + 1, 0).fg, theme.accent);
+        // ▄ under an editor-tone bg: the editor's share in accent above
+        // the dim selection tint standing in for the response's.
+        assert_eq!(cell(&term, even.x + 1, 0).bg, theme.accent);
+        assert_eq!(cell(&term, even.x + 1, 0).fg, theme.selection);
         assert_eq!(
-            cell(&term, rects[0].0.x + 1, 0).bg,
+            cell(&term, rects[0].0.x + 1, 0).fg,
             theme.control,
             "the other chips' pictures stay quiet"
         );
@@ -210,11 +218,11 @@ mod tests {
             },
             hovered: None,
         });
-        // ResponseFull's █: the response mass in accent covering the
-        // whole chip (its bg is the selection tint, fully hidden).
+        // ResponseFull's ▇: the response's selection-tint mass under a
+        // one-eighth strip of accent editor mass.
         let chip = rects[4].0;
-        assert_eq!(cell(&term, chip.x + 1, 0).fg, theme.accent);
-        assert_eq!(cell(&term, chip.x + 1, 0).bg, theme.selection);
+        assert_eq!(cell(&term, chip.x + 1, 0).fg, theme.selection);
+        assert_eq!(cell(&term, chip.x + 1, 0).bg, theme.accent);
     }
 
     #[test]
@@ -225,8 +233,8 @@ mod tests {
             hovered: Some(SplitStop::EditorBig),
         });
         let chip = rects[1].0;
-        assert_eq!(cell(&term, chip.x, 0).bg, theme.control_hover);
-        assert_eq!(cell(&term, chip.x, 0).fg, theme.text_muted);
+        assert_eq!(cell(&term, chip.x, 0).bg, theme.text_muted);
+        assert_eq!(cell(&term, chip.x, 0).fg, theme.control_hover);
 
         // Hovering the lit chip changes nothing — its picture already
         // glows accent, and there is no face behind it to lift.
@@ -235,15 +243,15 @@ mod tests {
             hovered: Some(SplitStop::Even),
         });
         let chip = rects[2].0;
-        assert_eq!(cell(&term, chip.x, 0).bg, theme.selection);
-        assert_eq!(cell(&term, chip.x, 0).fg, theme.accent);
+        assert_eq!(cell(&term, chip.x, 0).bg, theme.accent);
+        assert_eq!(cell(&term, chip.x, 0).fg, theme.selection);
     }
 
     #[test]
     fn the_boundary_slides_down_across_the_glyph_row() {
-        // The pictures' response mass grows chip by chip with even tall
-        // steps — flush, the row fuses into one staircase.
+        // The pictures' lit editor mass shrinks chip by chip with even
+        // tall steps — flush, the row fuses into one staircase.
         let glyphs: Vec<_> = SplitStop::ALL.iter().map(|s| split_glyph(*s)).collect();
-        assert_eq!(glyphs, ["▁▁", "▂▂", "▄▄", "▆▆", "██"]);
+        assert_eq!(glyphs, ["  ", "▂▂", "▄▄", "▆▆", "▇▇"]);
     }
 }
