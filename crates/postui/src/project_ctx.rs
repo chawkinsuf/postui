@@ -578,6 +578,17 @@ impl ProjectContext {
         }
     }
 
+    /// Re-reads `project.toml` into `meta`, leaving the previous value in
+    /// place if it can't be read. Space ops write that file directly, and
+    /// `reload_if_changed` is mtime-gated — on a coarse-mtime filesystem
+    /// two writes in the same tick look unchanged — so an op that must see
+    /// its own write calls this before `reload_spaces`.
+    pub fn reload_meta(&mut self) {
+        if let Ok(meta) = postui_core::project::load_meta(&self.root) {
+            self.meta = meta;
+        }
+    }
+
     /// Re-lists spaces from `meta` + disk. A vanished active space falls
     /// back to the first one; returns a warning when that happened.
     pub fn reload_spaces(&mut self) -> Option<String> {
@@ -620,7 +631,10 @@ impl ProjectContext {
         self.space_open.get(space).cloned()
     }
 
-    /// Drops everything local state remembers about `name`.
+    /// Drops everything local state remembers about `name` (its open
+    /// request and any expanded folders under it). Deliberately does *not*
+    /// touch `active_space`: the caller must `reload_spaces` afterwards,
+    /// which is what repairs an `active_space` the delete just removed.
     pub fn forget_space(&mut self, name: &str) {
         self.space_open.shift_remove(name);
         let prefix = format!("{name}/");
@@ -1746,6 +1760,41 @@ mod tests {
         assert_eq!(st.space_open["auth"], "auth/login");
         assert!(!ctx.set_active_space("nope"));
         assert_eq!(ctx.active_space, "auth");
+        // A slug from *another* space says nothing about the active one,
+        // so it clears the active space's entry rather than recording a
+        // request that doesn't live there.
+        ctx.record_space_open(Some("main/health"));
+        assert!(!ctx.space_open.contains_key("auth"));
+        assert_eq!(ctx.space_open["main"], "main/health");
+    }
+
+    #[test]
+    fn reload_meta_sees_a_write_the_stamp_cannot() {
+        let dir = tempfile::tempdir().unwrap();
+        spaced_project(dir.path());
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        assert_eq!(ctx.spaces, ["main", "auth"]);
+
+        let toml = dir.path().join("project.toml");
+        let stamped = std::fs::metadata(&toml).unwrap().modified().unwrap();
+        postui_core::project::write_spaces(dir.path(), &["auth".into(), "main".into()]).unwrap();
+        // Put the mtime back where the stamp left it: exactly what a
+        // coarse-mtime filesystem does to a write in the same tick.
+        std::fs::File::options()
+            .write(true)
+            .open(&toml)
+            .unwrap()
+            .set_modified(stamped)
+            .unwrap();
+
+        let (changed, _) = ctx.reload_if_changed();
+        assert!(!changed, "the stamp cannot see this write");
+        ctx.reload_spaces();
+        assert_eq!(ctx.spaces, ["main", "auth"], "still the stale `meta`");
+
+        ctx.reload_meta();
+        ctx.reload_spaces();
+        assert_eq!(ctx.spaces, ["auth", "main"]);
     }
 
     #[test]

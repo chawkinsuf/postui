@@ -286,6 +286,11 @@ pub struct App {
     /// warning surfaces once per distinct set of loose files, and reset
     /// whenever the project root changes.
     last_loose_warning: Option<String>,
+    /// The same warn-once channel as `last_loose_warning`, for entries in
+    /// `project.toml`'s `spaces` that aren't valid space names. They are
+    /// never rewritten away (the user's file stays the user's), so they
+    /// too are a chronic state that must not re-toast on every refresh.
+    last_spaces_warning: Option<String>,
     /// Keeps the test-only channel's receiver alive so `tx` doesn't become
     /// a dangling sender in `App::new_for_test()`. Always `None` outside
     /// of tests.
@@ -398,6 +403,19 @@ fn resolve_startup(
         return Some((root, disposition, stale_last));
     }
     None
+}
+
+/// What `App::enter_space` should do with the space it is leaving.
+#[derive(Debug, Clone, Copy)]
+enum SpaceExit<'a> {
+    /// The editor still holds the outgoing space's request: remember it
+    /// (`None` — nothing open — clears the entry). Every normal switch.
+    Remember(Option<&'a str>),
+    /// Leave the outgoing space's remembered request untouched. Used by
+    /// the undo-follow paths, where the editor has *already* been moved to
+    /// the incoming space's slug and so describes the destination, not the
+    /// space being left.
+    Keep,
 }
 
 /// The theme picker's title-row toggle label for the given polarity —
@@ -530,11 +548,7 @@ impl App {
 
         match disposition {
             StartupDisposition::InitDefault => {
-                let _ = postui_core::project::init_project(&app.project.root, Some("default"));
-                app.registry.register(app.project.root.clone());
-                if let Some(path) = &app.registry_path {
-                    let _ = app.registry.save_to(path);
-                }
+                app.init_default_project();
             }
             StartupDisposition::PromptCreate => {
                 let path = app.project.root.display().to_string();
@@ -574,6 +588,28 @@ impl App {
         }
 
         app
+    }
+
+    /// The `StartupDisposition::InitDefault` tail: writes `project.toml`
+    /// into the platform default directory and registers it.
+    ///
+    /// `with_root` already ran `ensure_project`, but on a *bare* directory
+    /// — with no `project.toml` it can only make `requests/main`. The
+    /// second `ensure_project` here, after `init_project` has written the
+    /// file, is what seeds `spaces = ["main"]` (same order as
+    /// `Action::InitProjectHere`).
+    fn init_default_project(&mut self) {
+        let _ = postui_core::project::init_project(&self.project.root, Some("default"));
+        if let Err(e) = postui_core::storage::ensure_project(&self.project.root) {
+            self.toasts
+                .push(format!("could not open project: {e}"), ToastKind::Error);
+        }
+        self.project.reload_meta();
+        self.project.reload_spaces();
+        self.registry.register(self.project.root.clone());
+        if let Some(path) = &self.registry_path {
+            let _ = self.registry.save_to(path);
+        }
     }
 
     /// Opens `root` as the project directory: ensures `root/requests/`
@@ -809,6 +845,7 @@ impl App {
             last_click: None,
             last_action_failed: false,
             last_loose_warning: None,
+            last_spaces_warning: None,
             _test_rx: None,
             _test_dir: None,
             history: crate::undo::History::new(),
@@ -1696,9 +1733,10 @@ impl App {
                 // A slug from another space (palette, cross-space click)
                 // switches spaces first, so the sidebar it lands in is the
                 // one that actually contains it.
+                let outgoing = self.editor.slug.clone();
                 if let Some(space) = postui_core::storage::space_of(&slug).map(str::to_string)
                     && space != self.project.active_space
-                    && !self.enter_space(&space)
+                    && !self.enter_space(&space, SpaceExit::Remember(outgoing.as_deref()))
                 {
                     return true;
                 }
@@ -1922,7 +1960,13 @@ impl App {
                 true
             }
             Action::MoveRequestToSpace { slug, space } => {
-                if space == self.project.active_space || !self.project.spaces.contains(&space) {
+                if space == self.project.active_space {
+                    self.toasts
+                        .push(format!("already in {space}"), ToastKind::Warning);
+                    self.last_action_failed = true;
+                    return true;
+                }
+                if !self.project.spaces.contains(&space) {
                     self.toasts
                         .push(format!("no space named {space:?}"), ToastKind::Warning);
                     self.last_action_failed = true;
@@ -2475,6 +2519,7 @@ impl App {
                 self.project = project;
                 // A different tree has a different set of loose files.
                 self.last_loose_warning = None;
+                self.last_spaces_warning = None;
                 for w in warnings {
                     self.toasts.push(w, ToastKind::Warning);
                 }
@@ -2749,6 +2794,11 @@ impl App {
                 if !self.modals.is_empty() {
                     return true;
                 }
+                // A rename typed into a Manage row is not a recorded step,
+                // and the undo is about to re-list under it — drop the
+                // in-place field rather than leave it hovering over a row
+                // that may no longer be the one it opened on.
+                self.manage.list.editing = None;
                 // A live cell edit is part of what's being undone: commit it
                 // so it becomes a step, then capture any pending delta.
                 self.commit_table_edit();
@@ -2769,6 +2819,8 @@ impl App {
                 if !self.modals.is_empty() {
                     return true;
                 }
+                // See `Action::Undo`.
+                self.manage.list.editing = None;
                 self.commit_table_edit();
                 // A pending uncaptured edit means the user changed something
                 // after the last undo; capturing it clears the redo stack,
@@ -3795,7 +3847,8 @@ impl App {
                 }
             }
             Action::ForceSwitchSpace(name) => {
-                if !self.enter_space(&name) {
+                let outgoing = self.editor.slug.clone();
+                if !self.enter_space(&name, SpaceExit::Remember(outgoing.as_deref())) {
                     return true;
                 }
                 // What the space was last left on, when that request still
@@ -3933,7 +3986,12 @@ impl App {
                 match postui_core::project::rename_environment(&root, &from, &to) {
                     Ok(()) => {
                         self.project.rename_env_state(&from, &to);
-                        let _ = postui_core::project::save_secrets(&root, &self.project.secrets);
+                        if let Err(e) =
+                            postui_core::project::save_secrets(&root, &self.project.secrets)
+                        {
+                            self.toasts
+                                .push(format!("could not save secrets: {e}"), ToastKind::Warning);
+                        }
                         self.project.environments = postui_core::project::list_environments(&root);
                         if was_active {
                             // Reload data under the new name (set_env re-stamps too).
@@ -3993,7 +4051,12 @@ impl App {
                 match postui_core::project::delete_environment(&root, &name) {
                     Ok(trashed) => {
                         self.project.remove_env_state(&name);
-                        let _ = postui_core::project::save_secrets(&root, &self.project.secrets);
+                        if let Err(e) =
+                            postui_core::project::save_secrets(&root, &self.project.secrets)
+                        {
+                            self.toasts
+                                .push(format!("could not save secrets: {e}"), ToastKind::Warning);
+                        }
                         self.project.environments = postui_core::project::list_environments(&root);
                         if was_active {
                             for w in self.project.set_env(None) {
@@ -4105,9 +4168,10 @@ impl App {
                 let (body, label) = if count == 0 {
                     (String::new(), "Delete space".to_string())
                 } else {
+                    let noun = if count == 1 { "request" } else { "requests" };
                     (
-                        format!("Its {count} requests will be deleted."),
-                        format!("Delete {count} requests"),
+                        format!("Its {count} {noun} will be deleted."),
+                        format!("Delete {count} {noun}"),
                     )
                 };
                 self.push_modal(Modal::Confirm {
@@ -4145,7 +4209,7 @@ impl App {
                             None,
                         );
                         self.project.forget_space(&name);
-                        self.after_file_level_undo();
+                        self.reload_after_file_change();
                         self.apply(Action::PersistLocalState);
                     }
                     Err(e) => {
@@ -4160,6 +4224,12 @@ impl App {
                 match postui_core::project::move_space(&self.project.root, &name, delta) {
                     Ok(()) => {
                         self.apply(Action::ReloadProjectFiles);
+                        // `ReloadProjectFiles` is mtime-gated, so a second
+                        // reorder in the same clock tick would re-list from
+                        // a stale `meta` and undo itself on screen. Read
+                        // the file we just wrote instead of waiting for the
+                        // stamp to move.
+                        self.project.reload_meta();
                         self.project.reload_spaces();
                         // The Manage screen's list cursor follows the space
                         // that just moved, rather than staying on the row
@@ -4179,6 +4249,9 @@ impl App {
             }
             Action::MoveAllRequests { from, to } => {
                 if from == to {
+                    self.toasts
+                        .push(format!("already in {to}"), ToastKind::Warning);
+                    self.last_action_failed = true;
                     return true;
                 }
                 if !self.project.spaces.contains(&to) {
@@ -5608,7 +5681,11 @@ impl App {
     /// Writes each `(path, content)`: `Some` writes atomically, `None`
     /// removes (a missing file counts as removed). Stops at the first
     /// failure with a toast-ready message; earlier writes stand.
-    fn write_file_states(&mut self, target: &[(PathBuf, Option<String>)]) -> Result<(), String> {
+    fn write_file_states(
+        &mut self,
+        target: &[(PathBuf, Option<String>)],
+        verb: &str,
+    ) -> Result<(), String> {
         for (path, content) in target {
             let result: std::io::Result<()> = match content {
                 Some(text) => crate::project_ctx::atomic_write(path, text),
@@ -5621,7 +5698,7 @@ impl App {
                 }),
             };
             if let Err(e) = result {
-                return Err(format!("undo failed at {}: {e}", path.display()));
+                return Err(format!("{verb} failed at {}: {e}", path.display()));
             }
         }
         Ok(())
@@ -5652,11 +5729,13 @@ impl App {
         });
     }
 
-    /// Shared tail of the file-level undo arms: files changed under the
-    /// app, so reload wholesale, and drop the editor if its file is gone.
-    /// When the editor followed a rename into another space, the sidebar
-    /// follows it there too (it is rooted at the active space).
-    fn after_file_level_undo(&mut self) {
+    /// Shared tail of every arm that changes files under the app — the
+    /// file-level undo/redo arms and the forward-path ops that write
+    /// through the trash (`ForceDeleteSpace`). Files changed underneath
+    /// the app, so reload wholesale, and drop the editor if its file is
+    /// gone. When the editor followed a rename into another space, the
+    /// sidebar follows it there too (it is rooted at the active space).
+    fn reload_after_file_change(&mut self) {
         self.project.reload_selections_from_disk();
         self.project.invalidate_stamps();
         self.apply(Action::ReloadProjectFiles);
@@ -5671,7 +5750,10 @@ impl App {
             .filter(|s| *s != self.project.active_space)
             .map(str::to_string)
         {
-            self.enter_space(&space);
+            // The editor has already followed its file into `space`, so
+            // it says nothing about the space being left — recording it
+            // would erase that space's remembered request.
+            self.enter_space(&space, SpaceExit::Keep);
         }
         self.refresh_sidebar();
         if self.screen == Screen::Manage {
@@ -5706,10 +5788,12 @@ impl App {
     }
 
     /// Makes `space` the active one without opening anything: records the
-    /// outgoing space's open request, roots the sidebar, toasts. `false`
-    /// (with a toast) for an unknown space.
-    fn enter_space(&mut self, space: &str) -> bool {
-        self.project.record_space_open(self.editor.slug.as_deref());
+    /// outgoing space's open request (see [`SpaceExit`]), roots the
+    /// sidebar, toasts. `false` (with a toast) for an unknown space.
+    fn enter_space(&mut self, space: &str, outgoing: SpaceExit<'_>) -> bool {
+        if let SpaceExit::Remember(slug) = outgoing {
+            self.project.record_space_open(slug);
+        }
         if !self.project.set_active_space(space) {
             self.toasts
                 .push(format!("no space named {space:?}"), ToastKind::Warning);
@@ -5734,9 +5818,9 @@ impl App {
             // (transient, worth an error toast every time) and the
             // loose-file lines (chronic by design — never migrated — so
             // they get a warning toast, and only when the set changes).
-            let (loose, walk): (Vec<&str>, Vec<&str>) = warning
-                .split("; ")
-                .partition(|line| line.contains(" is not in a space "));
+            let (loose, walk): (Vec<&str>, Vec<&str>) = warning.split("; ").partition(|line| {
+                line.contains(" is not in a space ") || line.contains(" is not in a valid space ")
+            });
             if !walk.is_empty() {
                 self.toasts.push(
                     format!("could not fully list requests: {}", walk.join("; ")),
@@ -5751,6 +5835,22 @@ impl App {
         } else {
             self.last_loose_warning = None;
         }
+        // An invalid name hand-written into `project.toml`'s `spaces` is
+        // the same shape of problem: chronic (never rewritten for the
+        // user — see `project::write_list`), so it warns once per change
+        // through its own channel rather than on every refresh.
+        let spaces_warning = {
+            let (_, warnings) = postui_core::project::list_spaces_with_warnings(
+                &self.project.root,
+                &self.project.meta,
+            );
+            (!warnings.is_empty()).then(|| warnings.join("; "))
+        };
+        if spaces_warning.is_some() && spaces_warning != self.last_spaces_warning {
+            self.toasts
+                .push(spaces_warning.clone().unwrap(), ToastKind::Warning);
+        }
+        self.last_spaces_warning = spaces_warning;
         self.project
             .expanded
             .append(&mut self.sidebar.pending_expand);
@@ -7358,7 +7458,8 @@ impl App {
                 active_env,
             } => {
                 let target = if redo { after } else { before };
-                if let Err(msg) = self.write_file_states(target) {
+                if let Err(msg) = self.write_file_states(target, if redo { "redo" } else { "undo" })
+                {
                     self.toasts.push(msg, ToastKind::Error);
                     // Earlier writes in this step stand — the sidebar
                     // and Variable Manager must reflect them (and drop
@@ -7429,11 +7530,14 @@ impl App {
                                 // the active one (e.g. undoing a
                                 // `MoveRequestToSpace`) — the sidebar is
                                 // rooted at the active space, so follow it
-                                // there, same as `after_file_level_undo`.
+                                // there, same as `reload_after_file_change`.
                                 if let Some(space) = postui_core::storage::space_of(&new_slug)
                                     .filter(|s| *s != self.project.active_space)
                                 {
-                                    self.enter_space(space);
+                                    // As in `reload_after_file_change`:
+                                    // the editor already followed, so the
+                                    // outgoing space keeps its memory.
+                                    self.enter_space(space, SpaceExit::Keep);
                                 }
                             }
                             None => {
@@ -7470,7 +7574,7 @@ impl App {
                                 format!("redo failed at {}: {e}", t.original.display())
                             })
                         })
-                        .and_then(|()| self.write_file_states(files_after))
+                        .and_then(|()| self.write_file_states(files_after, "redo"))
                 } else {
                     items
                         .iter()
@@ -7480,11 +7584,11 @@ impl App {
                                 format!("undo failed at {}: {e}", t.original.display())
                             })
                         })
-                        .and_then(|()| self.write_file_states(files_before))
+                        .and_then(|()| self.write_file_states(files_before, "undo"))
                 };
                 if let Err(msg) = result {
                     self.toasts.push(msg, ToastKind::Error);
-                    self.after_file_level_undo();
+                    self.reload_after_file_change();
                     return false; // step dropped; earlier renames stand
                 }
                 // See the `FileStates` arm: `SwitchEnv` persists, so the
@@ -7494,7 +7598,7 @@ impl App {
                     let env = if redo { after_env } else { before_env };
                     self.apply(Action::SwitchEnv(env.clone()));
                 }
-                self.after_file_level_undo();
+                self.reload_after_file_change();
                 self.apply(Action::PersistLocalState);
                 let what = items
                     .first()

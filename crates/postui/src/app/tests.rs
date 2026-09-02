@@ -13,6 +13,27 @@ fn resolve_startup_fresh_install_picks_default_dir_to_init_with_no_prompt() {
 }
 
 #[test]
+fn init_default_startup_writes_project_toml_with_the_main_space() {
+    // The fresh-install path: `with_root` runs `ensure_project` on a bare
+    // directory (which can only make `requests/main`, never a
+    // `project.toml`), then the disposition writes one — and only a second
+    // `ensure_project` after that seeds `spaces`.
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    assert!(!dir.path().join("project.toml").exists());
+
+    app.init_default_project();
+
+    assert_eq!(
+        postui_core::project::load_meta(dir.path()).unwrap().spaces,
+        ["main"]
+    );
+    assert_eq!(app.project.spaces, ["main"]);
+    assert!(dir.path().join("requests/main").is_dir());
+}
+
+#[test]
 fn resolve_startup_cli_non_project_root_prompts_create() {
     let dir = tempfile::tempdir().unwrap();
     let registry = crate::config::ProjectsRegistry::default();
@@ -3143,6 +3164,101 @@ fn a_loose_top_level_file_warns_once_and_never_enters_the_tree() {
 }
 
 #[test]
+fn a_request_under_an_invalid_space_dir_warns_once_and_never_enters_the_tree() {
+    let (mut app, dir) = spaced_app();
+    let rows_before = app.sidebar.rows.clone();
+    std::fs::create_dir_all(dir.path().join("requests/Auth")).unwrap();
+    std::fs::write(dir.path().join("requests/Auth/login.toml"), "url = \"x\"\n").unwrap();
+
+    app.toasts = Default::default();
+    app.update(Action::RefreshSidebar);
+    let warned: Vec<_> = app
+        .toasts
+        .entries()
+        .into_iter()
+        .filter(|(m, _)| m.contains("Auth/login.toml"))
+        .collect();
+    assert_eq!(warned.len(), 1, "{:?}", app.toasts.messages());
+    assert!(
+        warned[0]
+            .0
+            .contains("is not in a valid space (space names are a-z 0-9 - _)"),
+        "{}",
+        warned[0].0
+    );
+    assert_eq!(
+        warned[0].1,
+        &crate::components::toast::ToastKind::Warning,
+        "a chronic, never-migrated state is a warning, not an error"
+    );
+
+    // Chronic, so it rides the same warn-once channel as a loose file.
+    app.toasts = Default::default();
+    app.update(Action::RefreshSidebar);
+    assert!(
+        !app.toasts
+            .messages()
+            .iter()
+            .any(|m| m.contains("Auth/login.toml")),
+        "{:?}",
+        app.toasts.messages()
+    );
+
+    assert!(
+        !app.project.spaces.iter().any(|s| s == "Auth"),
+        "{:?}",
+        app.project.spaces
+    );
+    assert_eq!(
+        app.sidebar.rows, rows_before,
+        "the request under a non-space directory is skipped, never listed"
+    );
+}
+
+#[test]
+fn an_invalid_listed_space_name_warns_once_and_survives_the_next_space_op() {
+    let (mut app, dir) = spaced_app();
+    postui_core::project::write_spaces(
+        dir.path(),
+        &["main".into(), "Not Valid".into(), "auth".into()],
+    )
+    .unwrap();
+    app.project.reload_meta();
+    app.project.reload_spaces();
+
+    app.toasts = Default::default();
+    app.update(Action::RefreshSidebar);
+    let warned: Vec<_> = app
+        .toasts
+        .entries()
+        .into_iter()
+        .filter(|(m, _)| m.contains("Not Valid"))
+        .collect();
+    assert_eq!(warned.len(), 1, "{:?}", app.toasts.messages());
+    assert_eq!(warned[0].1, &crate::components::toast::ToastKind::Warning);
+
+    app.toasts = Default::default();
+    app.update(Action::RefreshSidebar);
+    assert!(
+        !app.toasts
+            .messages()
+            .iter()
+            .any(|m| m.contains("Not Valid")),
+        "{:?}",
+        app.toasts.messages()
+    );
+
+    // The next space op must not quietly erase the user's hand-written
+    // entry — it keeps its slot in `project.toml`.
+    app.update(Action::CreateSpace("billing".into()));
+    assert_eq!(
+        postui_core::project::load_meta(dir.path()).unwrap().spaces,
+        ["main", "Not Valid", "auth", "billing"]
+    );
+    assert_eq!(app.project.spaces, ["main", "auth", "billing"]);
+}
+
+#[test]
 fn sidebar_footer_advertises_the_space_cycle_key() {
     let (mut app, _dir) = spaced_app();
     app.focus = PaneId::Sidebar;
@@ -3249,6 +3365,15 @@ fn delete_space_refuses_the_last_space_and_shows_a_plain_label_for_an_empty_one(
     assert_eq!(choices[0].1, "Delete space");
     app.update(Action::Close);
 
+    // One request is a *request*, not "1 requests".
+    app.update(Action::DeleteSpace("auth".into()));
+    let Some(Modal::Confirm { body, choices, .. }) = app.modals.top() else {
+        panic!("confirm")
+    };
+    assert_eq!(body, "Its 1 request will be deleted.");
+    assert_eq!(choices[0].1, "Delete 1 request");
+    app.update(Action::Close);
+
     app.update(Action::ForceDeleteSpace("auth".into()));
     app.update(Action::ForceDeleteSpace("empty".into()));
     assert_eq!(app.project.spaces, ["main"]);
@@ -3286,6 +3411,33 @@ fn move_space_reorders_and_persists() {
     assert_eq!(
         app.project.active_space, "auth",
         "alt+1 follows the new order"
+    );
+}
+
+#[test]
+fn two_move_space_steps_in_a_row_both_land_without_waiting_for_mtime() {
+    // `ReloadProjectFiles` is mtime-gated; on a coarse-mtime filesystem two
+    // writes in the same tick look unchanged. Nothing here sleeps. (The
+    // mtime hazard itself is pinned deterministically by
+    // `project_ctx::tests::reload_meta_sees_a_write_the_stamp_cannot`.)
+    let (mut app, dir) = spaced_app();
+    postui_core::project::create_space(dir.path(), "billing").unwrap();
+    app.project.reload_meta();
+    app.project.reload_spaces();
+    assert_eq!(app.project.spaces, ["main", "auth", "billing"]);
+
+    app.update(Action::MoveSpace {
+        name: "billing".into(),
+        delta: -1,
+    });
+    app.update(Action::MoveSpace {
+        name: "billing".into(),
+        delta: -1,
+    });
+    assert_eq!(app.project.spaces, ["billing", "main", "auth"]);
+    assert_eq!(
+        postui_core::project::load_meta(dir.path()).unwrap().spaces,
+        ["billing", "main", "auth"]
     );
 }
 
@@ -3393,6 +3545,114 @@ fn move_request_to_space_moves_the_file_follows_it_and_undoes() {
     assert!(dir.path().join("requests/main/alpha.toml").is_file());
     assert!(!dir.path().join("requests/auth/alpha.toml").exists());
     assert_eq!(app.project.active_space, "main");
+}
+
+#[test]
+fn undo_follow_into_another_space_keeps_the_outgoing_space_s_memory() {
+    // `enter_space` records the outgoing space's open request. On the
+    // undo-follow paths the editor has *already* been moved to the
+    // incoming space's slug, so recording it would take the `_ =>` arm and
+    // erase the space being left. `SpaceExit::Keep` is what stops that.
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.update(Action::MoveRequestToSpace {
+        slug: "main/alpha".into(),
+        space: "auth".into(),
+    });
+    assert_eq!(app.project.active_space, "auth");
+    assert_eq!(
+        app.project.space_open_for("auth").as_deref(),
+        Some("auth/alpha"),
+        "the follow left auth on the moved request"
+    );
+
+    // The undo moves the file back and follows it to `main`, leaving
+    // `auth` behind — `auth`'s entry is none of the undo's business.
+    app.update(Action::Undo);
+    assert_eq!(app.project.active_space, "main");
+    assert_eq!(
+        app.project.space_open_for("auth").as_deref(),
+        Some("auth/alpha"),
+        "the space being left keeps what it was left on"
+    );
+    assert_eq!(
+        app.project.space_open_for("main").as_deref(),
+        Some("main/alpha")
+    );
+}
+
+#[test]
+fn undo_and_redo_close_a_manage_rename_in_flight() {
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.manage.list.start_edit("main");
+    app.update(Action::Undo);
+    assert!(
+        app.manage.list.editing.is_none(),
+        "a global undo must not leave a stale rename field behind"
+    );
+    app.manage.list.start_edit("main");
+    app.update(Action::Redo);
+    assert!(app.manage.list.editing.is_none());
+}
+
+#[test]
+fn renaming_an_environment_reports_a_secrets_write_failure() {
+    let (mut app, dir) = spaced_app();
+    postui_core::project::create_environment(dir.path(), "dev").unwrap();
+    app.project.environments = postui_core::project::list_environments(dir.path());
+    // Block `.local/secrets.toml` with a non-empty directory.
+    std::fs::create_dir_all(dir.path().join(".local/secrets.toml/in-the-way")).unwrap();
+
+    app.toasts = Default::default();
+    app.update(Action::RenameEnv {
+        from: "dev".into(),
+        to: "staging".into(),
+    });
+    let msg = app.toasts.messages().join(" | ");
+    assert!(msg.contains("could not save secrets:"), "{msg}");
+    assert!(
+        dir.path().join("environments/staging.toml").is_file(),
+        "the rename itself still happened"
+    );
+}
+
+#[test]
+fn a_failed_redo_of_a_file_step_says_redo_not_undo() {
+    let (mut app, dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.update(Action::MoveRequestToSpace {
+        slug: "main/alpha".into(),
+        space: "auth".into(),
+    });
+    app.update(Action::Undo);
+    assert!(dir.path().join("requests/main/alpha.toml").is_file());
+
+    // Block the redo's write with a non-empty directory in its place.
+    let blocked = dir.path().join("requests/auth/alpha.toml");
+    std::fs::create_dir_all(blocked.join("in-the-way")).unwrap();
+    app.toasts = Default::default();
+    app.update(Action::Redo);
+    let msg = app.toasts.messages().join(" | ");
+    assert!(msg.contains("redo failed at"), "{msg}");
+}
+
+#[test]
+fn move_request_to_the_space_it_is_already_in_says_so() {
+    let (mut app, _dir) = spaced_app();
+    app.toasts = Default::default();
+    app.update(Action::MoveRequestToSpace {
+        slug: "main/alpha".into(),
+        space: "main".into(),
+    });
+    assert_eq!(app.toasts.messages(), ["already in main"]);
+
+    app.toasts = Default::default();
+    app.update(Action::MoveRequestToSpace {
+        slug: "main/alpha".into(),
+        space: "nope".into(),
+    });
+    assert_eq!(app.toasts.messages(), ["no space named \"nope\""]);
 }
 
 #[test]
