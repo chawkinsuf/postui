@@ -87,6 +87,10 @@ pub enum Hit {
     /// [`crate::paint::SplitControl`]): click dispatches the matching
     /// `Action::SplitStop`.
     SplitStop(crate::split::SplitStop),
+    /// One of the response header's ▲/▼ nudge buttons (see
+    /// [`crate::paint::StepControl`]): click dispatches
+    /// `Action::SplitStep` with the same delta.
+    SplitStep(i8),
     /// Raw mouse event forwarded to edtui (click-to-place, wheel).
     BodyEditor,
     ResponseTab(crate::components::response::ViewMode),

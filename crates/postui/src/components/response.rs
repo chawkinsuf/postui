@@ -536,6 +536,11 @@ pub struct Response {
     /// request switches instead of swapping it with the response.
     /// Session-only — never persisted.
     pub collapsed: bool,
+    /// Display copy of the column's split, refreshed by the app before
+    /// every draw: the header's ▲/▼ step pill greys the arrow that
+    /// points past an endpoint from it. The app state stays the
+    /// authority; `collapsed` above is still this pane's own flag.
+    pub split: crate::split::SplitState,
 }
 
 impl Response {
@@ -1089,6 +1094,7 @@ impl Component for Response {
                         ..inner
                     };
                     crate::paint::fill(frame.buffer_mut(), strip, t.panel);
+                    draw_step_pill(frame.buffer_mut(), hits, strip, self.split, ctx);
                     let hint = match other {
                         ResponseState::Empty => None,
                         ResponseState::InFlight { started } => {
@@ -1155,6 +1161,9 @@ impl Component for Response {
                 };
                 let widget = Paragraph::new(lines).style(muted).centered();
                 frame.render_widget(widget, inner);
+                // The step pill rides row 0 here too, so the split can be
+                // nudged from this header before the first response lands.
+                draw_step_pill(frame.buffer_mut(), hits, inner, self.split, ctx);
                 return;
             }
         };
@@ -1172,7 +1181,16 @@ impl Component for Response {
             ])
             .split(inner);
 
-        draw_header_strip(frame, hits, rows[0], data, view, self.collapsed, ctx);
+        draw_header_strip(
+            frame,
+            hits,
+            rows[0],
+            data,
+            view,
+            self.collapsed,
+            self.split,
+            ctx,
+        );
 
         let mut body_area = rows[1];
         crate::paint::fill(frame.buffer_mut(), body_area, t.page);
@@ -1245,11 +1263,47 @@ pub const HEADER_STRIP_HEIGHT: u16 = 3;
 /// with the body.
 pub const COLLAPSED_HEIGHT: u16 = 1;
 
+/// Paints the header's ▲/▼ step pill right-aligned on `area`'s first
+/// row (one cell in from the right edge, like the tab strip below it)
+/// and registers its two `Hit::SplitStep` chips. Returns the x of the
+/// pill's leading cap — the column the row's text must stop short of.
+/// Shared by the ready header strip and the not-yet-ready pane so the
+/// arrows sit in the same place in every state.
+fn draw_step_pill(
+    buf: &mut ratatui::buffer::Buffer,
+    hits: &mut crate::hit::HitMap,
+    area: Rect,
+    split: crate::split::SplitState,
+    ctx: &DrawCtx,
+) -> u16 {
+    let x = area
+        .right()
+        .saturating_sub(crate::paint::STEP_CONTROL_WIDTH + 1);
+    if x <= area.x || area.height == 0 {
+        return area.right();
+    }
+    let hovered = match ctx.hovered {
+        Some(crate::hit::Hit::SplitStep(d)) => Some(*d),
+        _ => None,
+    };
+    let rects = crate::paint::StepControl {
+        state: split,
+        hovered,
+    }
+    .paint(buf, x, area.y, ctx.theme);
+    for (rect, delta) in rects {
+        hits.register(rect, crate::hit::Hit::SplitStep(delta));
+    }
+    x
+}
+
 /// Paints the 3-row header strip on `theme.panel`: the status chip plus
 /// the timing + size chips (plain muted text — they are not clickable) and
-/// content type, all on row 0; the response tabs right-aligned on row 1;
+/// content type, all on row 0, with the ▲/▼ step pill at its right end;
+/// the response tabs right-aligned on row 1;
 /// row 2 holds the tabs' accent underline on the right and the icon
 /// actions (search / edit / save / copy) on the left, directly above the body they act on.
+#[allow(clippy::too_many_arguments)] // one display-state flag per row feature, all from `Response`
 fn draw_header_strip(
     frame: &mut Frame,
     hits: &mut crate::hit::HitMap,
@@ -1257,11 +1311,16 @@ fn draw_header_strip(
     data: &crate::http::ResponseData,
     view: &ReadyView,
     collapsed: bool,
+    split: crate::split::SplitState,
     ctx: &DrawCtx,
 ) {
     let t = ctx.theme;
     let buf = frame.buffer_mut();
     crate::paint::fill(buf, area, t.panel);
+
+    // Row 0 (right): the ▲/▼ step pill. Painted first so the URL below
+    // knows where to stop.
+    let pill_x = draw_step_pill(buf, hits, area, split, ctx);
 
     // Row 0 (left): the status chip, e.g. " 200 ", then timing + size,
     // plain muted text (not clickable, so no control fill — chip fill
@@ -1298,7 +1357,7 @@ fn draw_header_strip(
     // of the row, and dropped entirely on a row too tight to say
     // anything useful.
     if !data.url.is_empty() {
-        let right = area.right().saturating_sub(1);
+        let right = pill_x.saturating_sub(1);
         if right > x + 2 {
             let avail = (right - x - 1) as usize;
             let s = if data.url.chars().count() > avail {
@@ -3272,6 +3331,114 @@ mod tests {
         let out = render_sized(&mut r, 60, 1);
         assert!(out.contains("sending"), "{out}");
         assert!(!out.contains("esc to cancel"), "{out}");
+    }
+
+    /// The header's own split affordance is the one-step ▲/▼ pill,
+    /// right-aligned on row 0 — the row that survives every state, so the
+    /// arrows are reachable expanded, collapsed, and before the first
+    /// response has arrived.
+    #[test]
+    fn header_row_0_carries_the_step_pill_in_every_state() {
+        use crate::hit::Hit;
+        let mut r = ready(r#"{"a": 1}"#);
+        let mut empty = Response::default();
+        for (name, resp) in [("ready", &mut r), ("empty", &mut empty)] {
+            for collapsed in [false, true] {
+                resp.collapsed = collapsed;
+                let hits = render_hits(resp);
+                let up = hits
+                    .rect_of(&Hit::SplitStep(1))
+                    .unwrap_or_else(|| panic!("{name} collapsed={collapsed}: ▲ hit"));
+                let down = hits
+                    .rect_of(&Hit::SplitStep(-1))
+                    .unwrap_or_else(|| panic!("{name} collapsed={collapsed}: ▼ hit"));
+                assert_eq!(up.y, 0, "{name} collapsed={collapsed}");
+                assert_eq!(down.y, 0, "{name} collapsed={collapsed}");
+                assert_eq!(up.x + up.width, down.x, "▲ then ▼, flush");
+                // Right-aligned: the trailing cap sits one cell in from the
+                // pane's inner right edge (the 60-wide pane insets one
+                // column each side).
+                assert_eq!(
+                    down.x + down.width + 1,
+                    60 - 2,
+                    "{name} collapsed={collapsed}"
+                );
+            }
+        }
+    }
+
+    /// The pill lights from the display copy of the split the app hands
+    /// the pane: with the response minimized, ▼ has nowhere to go.
+    #[test]
+    fn step_pill_greys_from_the_panes_split_copy() {
+        let theme = Theme::dark();
+        let mut r = ready(r#"{"a": 1}"#);
+        r.collapsed = true;
+        r.split = crate::split::SplitState {
+            response_minimized: true,
+            ..Default::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: None,
+            dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
+        };
+        terminal
+            .draw(|f| r.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+        let down = hits.rect_of(&crate::hit::Hit::SplitStep(-1)).unwrap();
+        let buf = terminal.backend().buffer();
+        assert_eq!(buf[(down.x + 1, 0)].symbol(), "\u{25BC}");
+        assert_eq!(buf[(down.x + 1, 0)].fg, theme.text_disabled);
+        let up = hits.rect_of(&crate::hit::Hit::SplitStep(1)).unwrap();
+        assert_ne!(buf[(up.x + 1, 0)].fg, theme.text_disabled, "▲ still live");
+    }
+
+    /// A long sent URL truncates short of the pill instead of running
+    /// underneath it.
+    #[test]
+    fn sent_url_stops_clear_of_the_step_pill() {
+        let mut r = ready(r#"{"a": 1}"#);
+        if let ResponseState::Ready(d) = &mut r.state {
+            d.url = format!("https://example.com/{}", "x".repeat(200));
+        }
+        let theme = Theme::dark();
+        // Wide enough that the row-0 facts leave room for some URL.
+        let mut terminal = Terminal::new(TestBackend::new(120, 20)).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        let ctx = DrawCtx {
+            theme: &theme,
+            focused: true,
+            hovered: None,
+            dragging: false,
+            anims: test_anims(),
+            now: std::time::Instant::now(),
+        };
+        terminal
+            .draw(|f| r.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let up = hits.rect_of(&crate::hit::Hit::SplitStep(1)).unwrap();
+        let cap_x = up.x - 1;
+        assert_eq!(buf[(cap_x, 0)].bg, theme.control, "leading cap");
+        // The cell before the cap is a gap, and the URL ends in an
+        // ellipsis just before it — it never runs under the pill.
+        assert_eq!(buf[(cap_x - 1, 0)].symbol(), " ", "gap before the pill");
+        assert_eq!(
+            buf[(cap_x - 2, 0)].symbol(),
+            "\u{2026}",
+            "URL ends in an ellipsis"
+        );
+        assert_eq!(
+            buf[(cap_x - 3, 0)].symbol(),
+            "x",
+            "URL text runs right up to it"
+        );
     }
 
     /// Hiding hides the controls too: collapsed, the header strip drops its

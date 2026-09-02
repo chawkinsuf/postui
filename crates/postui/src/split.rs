@@ -52,6 +52,18 @@ impl SplitStop {
         let i = SplitStop::ALL.iter().position(|s| *s == self).unwrap();
         SplitStop::ALL[(i + SplitStop::ALL.len() - 1) % SplitStop::ALL.len()]
     }
+
+    /// The stop `delta` steps along on-screen order *without* wrapping —
+    /// the response header's ▲/▼ nudge buttons (`Action::SplitStep`).
+    /// `+1` moves the boundary up (the response grows), `-1` down; `None`
+    /// past either endpoint, so the button at the edge can grey out
+    /// instead of jumping the column to the far end.
+    pub fn step(self, delta: i8) -> Option<SplitStop> {
+        let i = SplitStop::ALL.iter().position(|s| *s == self).unwrap() as i32;
+        SplitStop::ALL
+            .get(usize::try_from(i + i32::from(delta)).ok()?)
+            .copied()
+    }
 }
 
 /// The editor's share of the column while both panes are visible.
@@ -255,6 +267,18 @@ mod tests {
             assert_eq!(s.prev().next(), s);
         }
         assert_eq!(EditorFull.prev(), ResponseFull, "wraps back to the bottom");
+    }
+
+    #[test]
+    fn step_moves_one_stop_and_stalls_at_the_endpoints() {
+        // +1 grows the response (boundary up); -1 grows the editor.
+        assert_eq!(Even.step(1), Some(ResponseBig));
+        assert_eq!(Even.step(-1), Some(EditorBig));
+        assert_eq!(ResponseFull.step(1), None, "no wrap past the bottom stop");
+        assert_eq!(EditorFull.step(-1), None, "no wrap past the top stop");
+        assert_eq!(EditorFull.step(1), Some(EditorBig));
+        assert_eq!(ResponseFull.step(-1), Some(ResponseBig));
+        assert_eq!(Even.step(0), Some(Even));
     }
 
     #[test]

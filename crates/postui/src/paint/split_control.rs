@@ -14,6 +14,9 @@
 //! no padding — so the row fuses into one continuous staircase
 //! (`  ▂▂▄▄▆▆▇▇`) reading left to right as the boundary sliding down;
 //! the current state's picture lights up accent.
+//!
+//! [`StepControl`] is its one-step sibling on the response header: the
+//! same pill face holding ▲/▼ chips that nudge the split a stop at a time.
 
 use crate::split::{SplitState, SplitStop};
 use crate::theme::Theme;
@@ -110,6 +113,58 @@ impl SplitControl {
             let glyph = split_glyph(stop);
             crate::paint::text(buf, rect.x, y, glyph, response_tone, editor_tone, false);
             (rect, stop)
+        })
+    }
+}
+
+/// Each step chip is 3 cells: the arrow centred with one cell of face
+/// either side, so a hover lift reads as a button rather than a lone
+/// glyph changing colour.
+pub const STEP_SEGMENT_WIDTH: u16 = 3;
+/// The step control: two chips plus the same one-cell caps as the split
+/// control, so the two read as one family of pill.
+pub const STEP_CONTROL_WIDTH: u16 = STEP_SEGMENT_WIDTH * 2 + 2;
+
+/// The split control's one-step sibling on the response header: ▲ grows
+/// the response a stop, ▼ shrinks it (the arrows move the header they
+/// sit on). Same pill face, caps and tones as [`SplitControl`], minus
+/// the eaves: the header's row 0 is the pane's top edge (the row above
+/// is the editor's) and the response tabs sit right under it, so the
+/// pill stays flat. The arrow pointing past an endpoint greys out
+/// instead of wrapping.
+pub struct StepControl {
+    pub state: SplitState,
+    /// The delta (`+1` for ▲, `-1` for ▼) of the chip under the pointer.
+    pub hovered: Option<i8>,
+}
+
+impl StepControl {
+    /// Paints the control with its left edge at `(x, y)` and returns each
+    /// chip's rect with the delta it steps by, for hit registration.
+    pub fn paint(&self, buf: &mut Buffer, x: u16, y: u16, theme: &Theme) -> [(Rect, i8); 2] {
+        crate::paint::fill(buf, Rect::new(x, y, 1, 1), theme.control);
+        crate::paint::fill(
+            buf,
+            Rect::new(x + STEP_CONTROL_WIDTH - 1, y, 1, 1),
+            theme.control,
+        );
+        let current = self.state.stop();
+        let resting_mass = crate::theme::mix(theme.text_disabled, theme.text_muted, 0.5);
+        let mut i = 0u16;
+        [(1i8, "\u{25B2}"), (-1i8, "\u{25BC}")].map(|(delta, arrow)| {
+            let rect = Rect::new(x + 1 + i * STEP_SEGMENT_WIDTH, y, STEP_SEGMENT_WIDTH, 1);
+            i += 1;
+            let live = current.step(delta).is_some();
+            let (fg, bg) = if !live {
+                (theme.text_disabled, theme.control)
+            } else if self.hovered == Some(delta) {
+                (theme.text_muted, theme.control_hover)
+            } else {
+                (resting_mass, theme.control)
+            };
+            crate::paint::fill(buf, rect, bg);
+            crate::paint::text(buf, rect.x + 1, y, arrow, fg, bg, false);
+            (rect, delta)
         })
     }
 }
@@ -253,5 +308,101 @@ mod tests {
         // tall steps — flush, the row fuses into one staircase.
         let glyphs: Vec<_> = SplitStop::ALL.iter().map(|s| split_glyph(*s)).collect();
         assert_eq!(glyphs, ["  ", "▂▂", "▄▄", "▆▆", "▇▇"]);
+    }
+
+    fn paint_step(control: StepControl) -> (Terminal<TestBackend>, [(Rect, i8); 2]) {
+        let theme = Theme::dark();
+        let mut term = Terminal::new(TestBackend::new(20, 3)).unwrap();
+        // Painted on the middle row: the pill must leave both neighbours
+        // alone (no eaves — see `StepControl`).
+        let mut rects = None;
+        term.draw(|f| {
+            rects = Some(control.paint(f.buffer_mut(), 2, 1, &theme));
+        })
+        .unwrap();
+        (term, rects.unwrap())
+    }
+
+    #[test]
+    fn step_control_is_two_arrow_chips_between_control_fill_caps() {
+        let theme = Theme::dark();
+        let (term, rects) = paint_step(StepControl {
+            state: SplitState::default(),
+            hovered: None,
+        });
+        assert_eq!(rects.map(|(_, d)| d), [1, -1], "▲ (response grows) then ▼");
+        for (i, (rect, _)) in rects.iter().enumerate() {
+            assert_eq!(rect.width, STEP_SEGMENT_WIDTH);
+            assert_eq!(rect.height, 1);
+            assert_eq!(rect.x, 3 + i as u16 * STEP_SEGMENT_WIDTH);
+        }
+        assert_eq!(cell(&term, 2, 1).bg, theme.control);
+        assert_eq!(cell(&term, 2 + STEP_CONTROL_WIDTH - 1, 1).bg, theme.control);
+        // The arrows sit centred in their chips, in the split control's
+        // resting-mass tone on the one shared control face.
+        let mass = crate::theme::mix(theme.text_disabled, theme.text_muted, 0.5);
+        let up = cell(&term, rects[0].0.x + 1, 1);
+        assert_eq!(up.symbol(), "\u{25B2}");
+        assert_eq!(up.fg, mass);
+        assert_eq!(up.bg, theme.control);
+        let down = cell(&term, rects[1].0.x + 1, 1);
+        assert_eq!(down.symbol(), "\u{25BC}");
+        assert_eq!(down.fg, mass);
+        assert_eq!(
+            cell(&term, rects[0].0.x, 1).bg,
+            theme.control,
+            "chip padding is the face"
+        );
+        for dx in 0..STEP_CONTROL_WIDTH {
+            assert_eq!(cell(&term, 2 + dx, 0).symbol(), " ", "no upper eave");
+            assert_eq!(cell(&term, 2 + dx, 2).symbol(), " ", "no lower eave");
+        }
+    }
+
+    #[test]
+    fn step_control_hover_lifts_the_whole_chip() {
+        let theme = Theme::dark();
+        let (term, rects) = paint_step(StepControl {
+            state: SplitState::default(),
+            hovered: Some(-1),
+        });
+        let down = rects[1].0;
+        for dx in 0..STEP_SEGMENT_WIDTH {
+            assert_eq!(cell(&term, down.x + dx, 1).bg, theme.control_hover);
+        }
+        assert_eq!(cell(&term, down.x + 1, 1).fg, theme.text_muted);
+        assert_eq!(
+            cell(&term, rects[0].0.x, 1).bg,
+            theme.control,
+            "the other chip rests"
+        );
+    }
+
+    #[test]
+    fn step_control_greys_the_arrow_pointing_past_an_endpoint() {
+        let theme = Theme::dark();
+        // Response-full: ▲ has nowhere to go, and hovering it lifts nothing.
+        let (term, rects) = paint_step(StepControl {
+            state: SplitState {
+                editor_minimized: true,
+                ..Default::default()
+            },
+            hovered: Some(1),
+        });
+        let up = rects[0].0;
+        assert_eq!(cell(&term, up.x + 1, 1).fg, theme.text_disabled);
+        assert_eq!(cell(&term, up.x + 1, 1).bg, theme.control);
+        let mass = crate::theme::mix(theme.text_disabled, theme.text_muted, 0.5);
+        assert_eq!(cell(&term, rects[1].0.x + 1, 1).fg, mass, "▼ still live");
+        // Editor-full: the mirror.
+        let (term, rects) = paint_step(StepControl {
+            state: SplitState {
+                response_minimized: true,
+                ..Default::default()
+            },
+            hovered: None,
+        });
+        assert_eq!(cell(&term, rects[1].0.x + 1, 1).fg, theme.text_disabled);
+        assert_eq!(cell(&term, rects[0].0.x + 1, 1).fg, mass);
     }
 }

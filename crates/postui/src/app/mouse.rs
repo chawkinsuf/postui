@@ -689,14 +689,16 @@ impl App {
             // registers Hit::FooterChip(CycleSplit) outside `footer_chips`,
             // so the parity sweep's Group A never sees it.
             Action::CycleSplit,
+            Action::SplitStep(1),  // Hit::SplitStep (response header ▲)
+            Action::SplitStep(-1), // Hit::SplitStep (response header ▼)
             Action::OpenManage { tab: None }, // Hit::HeaderManage
-            Action::OpenThemeChooser,         // Hit::HeaderTheme
-            Action::OpenMethodDropdown,       // Hit::MethodSelector
-            Action::FocusUrl,                 // Hit::UrlBar
-            Action::Send,                     // Hit::SendButton (not in flight)
-            Action::EditorTabSelect(0),       // Hit::EditorTab, any draw position
-            Action::EditorTabSelect(1),       // (converted through
-            Action::EditorTabSelect(2),       //  EditorTab::from_draw_position(..).index())
+            Action::OpenThemeChooser, // Hit::HeaderTheme
+            Action::OpenMethodDropdown, // Hit::MethodSelector
+            Action::FocusUrl,      // Hit::UrlBar
+            Action::Send,          // Hit::SendButton (not in flight)
+            Action::EditorTabSelect(0), // Hit::EditorTab, any draw position
+            Action::EditorTabSelect(1), // (converted through
+            Action::EditorTabSelect(2), //  EditorTab::from_draw_position(..).index())
             Action::EditorTabSelect(3),
             // The Environments/Spaces tabs' `+ New` button (Hit::ManageNew);
             // the rest of that face's hits either dispatch per-item actions
@@ -723,6 +725,7 @@ impl App {
                 | Hit::TableDelete(_)
                 | Hit::TableCell { .. }
                 | Hit::SplitStop(_)
+                | Hit::SplitStep(_)
                 | Hit::ModalCancel
                 | Hit::ModalConfirm
                 | Hit::ConfirmChoice(_)
@@ -1074,6 +1077,10 @@ impl App {
             Hit::SplitStop(stop) => {
                 self.update(Action::FocusPane(PaneId::Editor));
                 self.update(Action::SplitStop(stop))
+            }
+            Hit::SplitStep(delta) => {
+                self.update(Action::FocusPane(PaneId::Response));
+                self.update(Action::SplitStep(delta))
             }
             Hit::UrlBar => {
                 let was_focused = self.editor.sub_focus == SubFocus::Url;

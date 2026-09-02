@@ -14204,6 +14204,47 @@ fn cycle_split_steps_through_every_stop_and_wraps() {
     );
 }
 
+/// `Action::SplitStep` (the response header's ▲/▼ buttons) nudges the
+/// split exactly one stop per press and stalls at the endpoints rather
+/// than wrapping — the button at the edge is a no-op, not a jump across
+/// the column.
+#[test]
+fn split_step_moves_one_stop_and_stalls_at_the_ends() {
+    use crate::split::SplitStop::*;
+    let mut app = App::new_for_test();
+    assert_eq!(app.split_state().stop(), Even);
+    app.update(Action::SplitStep(1));
+    assert_eq!(
+        app.split_state().stop(),
+        ResponseBig,
+        "▲ grows the response"
+    );
+    app.update(Action::SplitStep(1));
+    assert_eq!(app.split_state().stop(), ResponseFull);
+    assert!(app.table_collapsed);
+    app.update(Action::SplitStep(1));
+    assert_eq!(
+        app.split_state().stop(),
+        ResponseFull,
+        "stalls at the bottom stop"
+    );
+    for _ in 0..4 {
+        app.update(Action::SplitStep(-1));
+    }
+    assert_eq!(
+        app.split_state().stop(),
+        EditorFull,
+        "▼ shrinks the response"
+    );
+    assert!(app.session.response.collapsed);
+    app.update(Action::SplitStep(-1));
+    assert_eq!(
+        app.split_state().stop(),
+        EditorFull,
+        "stalls at the top stop"
+    );
+}
+
 /// The split is a persisted layout preference: chip presses and the
 /// keyboard toggles record it in the project's `.local/state.toml`, and
 /// opening the project seeds the split back from it.

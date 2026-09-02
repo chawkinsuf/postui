@@ -964,6 +964,7 @@ impl App {
         // Display copies for the panes' split clusters — the app state
         // stays the authority, the components only light segments from it.
         self.editor.split = self.split_state();
+        self.session.response.split = self.editor.split;
         self.sync_pane_collapse_anim();
         self.sync_response_collapse_anim();
         self.sync_split_ratio_anim();
@@ -1679,6 +1680,10 @@ impl App {
             Action::SplitStop(stop) => self.apply_split_stop(stop),
             Action::CycleSplit => self.apply_split_stop(self.split_state().stop().next()),
             Action::CycleSplitBack => self.apply_split_stop(self.split_state().stop().prev()),
+            Action::SplitStep(delta) => match self.split_state().stop().step(delta) {
+                Some(stop) => self.apply_split_stop(stop),
+                None => false,
+            },
             Action::FormatBody => {
                 self.no_coalesce = true;
                 self.transform_body(postui_core::json::format)
