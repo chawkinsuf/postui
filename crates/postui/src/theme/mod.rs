@@ -136,12 +136,6 @@ impl Theme {
         let selection = blend(bg, accent, 0.35);
 
         let mut text = fg;
-        let text_muted = blend(fg, bg, 0.55);
-        // `blend`'s `t` is the *bg* weight, so disabled must sit closer to
-        // 1.0 than muted to actually read dimmer — 0.35 had it the wrong
-        // way around, leaving disabled text brighter than muted.
-        let text_disabled = blend(fg, bg, 0.82);
-
         // Contrast clamp: push text away from bg until |ΔL| >= 0.4. The
         // target overshoots to 0.405 because the Oklab→sRGB→u8 round-trip
         // can quantize the result ~0.001 short — aiming at exactly 0.4
@@ -159,6 +153,28 @@ impl Theme {
             }
             text = lift(text, target_l.clamp(0.0, 1.0) - oklab_l(text));
         }
+
+        // Muted text carries real content (ghost-row labels, inactive tab
+        // names, response status/placeholder copy), so it has to clear a
+        // readable contrast on its own. Derived from the *clamped* text so
+        // a soft seed pair doesn't drag it down twice: 0.38 lands the
+        // built-in dark seeds at ~5:1 against the page where 0.55 left
+        // them at 3.4:1 — visibly washed out on macOS, whose text
+        // rasterizer renders light-on-dark glyphs thinner than Linux does.
+        //
+        // Seeds can also arrive from the terminal's own palette (OSC
+        // query), so the ratio is only the starting point: a floor lifts
+        // muted toward WCAG AA (4.5:1), but never closer to `text` than a
+        // fixed gap (text's ratio / MUTED_TEXT_GAP), so on a palette whose
+        // text itself sits near the floor (Solarized) the two tones stay
+        // distinguishable rather than collapsing into one.
+        let text_ratio = wcag_contrast(text, page);
+        let muted_floor = MUTED_MIN_CONTRAST.min(text_ratio / MUTED_TEXT_GAP);
+        let text_muted = ensure_wcag_contrast(blend(text, bg, 0.38), page, muted_floor);
+        // `blend`'s `t` is the *bg* weight, so disabled must sit closer to
+        // 1.0 than muted to actually read dimmer — 0.35 had it the wrong
+        // way around, leaving disabled text brighter than muted.
+        let text_disabled = blend(text, bg, 0.82);
 
         let to_color = |c: (u8, u8, u8)| Color::Rgb(c.0, c.1, c.2);
 
@@ -329,6 +345,54 @@ pub(crate) fn ensure_min_contrast(fg: Color, bg: Color, min_delta: f32) -> Color
     }
     let (r, g, b) = lift((fr, fgc, fb), target.clamp(0.0, 1.0) - fg_l);
     Color::Rgb(r, g, b)
+}
+
+/// WCAG AA minimum contrast ratio for body text, the floor `Theme::generate`
+/// holds `text_muted` to against `page`.
+pub(crate) const MUTED_MIN_CONTRAST: f32 = 4.5;
+
+/// Minimum ratio between `text`'s and `text_muted`'s page contrast, so
+/// muted always reads as a visibly quieter tone than text.
+pub(crate) const MUTED_TEXT_GAP: f32 = 1.3;
+
+/// WCAG 2.x relative luminance of an srgb color (0 = black, 1 = white).
+fn relative_luminance((r, g, b): (u8, u8, u8)) -> f32 {
+    0.2126 * srgb_to_linear(r) + 0.7152 * srgb_to_linear(g) + 0.0722 * srgb_to_linear(b)
+}
+
+/// WCAG 2.x contrast ratio between two srgb colors, 1.0 (identical) to 21.0
+/// (black on white). Symmetric in its arguments.
+pub(crate) fn wcag_contrast(a: (u8, u8, u8), b: (u8, u8, u8)) -> f32 {
+    let (la, lb) = (relative_luminance(a), relative_luminance(b));
+    let (hi, lo) = if la >= lb { (la, lb) } else { (lb, la) };
+    (hi + 0.05) / (lo + 0.05)
+}
+
+/// Returns `fg` with its Oklab lightness pushed away from `bg` — keeping
+/// hue/chroma, in `fg`'s natural direction — until the pair's WCAG contrast
+/// reaches `min_ratio`, or that side runs out of room. Unlike
+/// `ensure_min_contrast`'s fixed Oklab ΔL, this targets the perceptual
+/// ratio directly, which is what makes a light-page palette (where the
+/// same ΔL buys far less legibility) clear the bar too.
+fn ensure_wcag_contrast(fg: (u8, u8, u8), bg: (u8, u8, u8), min_ratio: f32) -> (u8, u8, u8) {
+    if wcag_contrast(fg, bg) >= min_ratio {
+        return fg;
+    }
+    let fg_l = oklab_l(fg);
+    let direction = if fg_l >= oklab_l(bg) { 1.0 } else { -1.0 };
+    // Walk lightness outward in small steps: a 0.01 step is finer than
+    // any u8 quantization, so the first step that clears the ratio
+    // overshoots by at most one rung.
+    let mut delta = 0.0f32;
+    let mut best = fg;
+    while (0.0..=1.0).contains(&(fg_l + direction * delta)) {
+        delta += 0.01;
+        best = lift(fg, direction * delta);
+        if wcag_contrast(best, bg) >= min_ratio {
+            return best;
+        }
+    }
+    best
 }
 
 pub(crate) fn is_light(c: Color) -> bool {
@@ -584,6 +648,31 @@ mod tests {
         let m = crate::theme::mix(a, b, 0.5);
         let Color::Rgb(r, ..) = m else { panic!() };
         assert!(r > 0 && r < 200);
+    }
+
+    /// A soft terminal palette (queried fg/bg closer together than any
+    /// built-in) must still get its muted text lifted past what the blend
+    /// alone would give — up to AA, or as far as the gap under `text`
+    /// allows — without touching a pair that already clears the bar.
+    #[test]
+    fn wcag_floor_lifts_soft_seeds_and_leaves_strong_pairs_alone() {
+        let soft = Seeds {
+            bg: (0x22, 0x28, 0x2c),
+            fg: (0x8a, 0x92, 0x96),
+            ..Seeds::dark()
+        };
+        let t = Theme::generate(&soft);
+        let (page, text, muted) = (rgb_of(t.page), rgb_of(t.text), rgb_of(t.text_muted));
+        let floor = MUTED_MIN_CONTRAST.min(wcag_contrast(text, page) / MUTED_TEXT_GAP);
+        let ratio = wcag_contrast(muted, page);
+        assert!(ratio >= floor, "soft muted {ratio:.2} < floor {floor:.2}");
+        let raw = blend(text, page, 0.38);
+        assert!(wcag_contrast(raw, page) < floor, "fixture too strong");
+        assert!(ratio > wcag_contrast(raw, page), "floor didn't lift");
+
+        let strong = (0xdd, 0xdd, 0xdd);
+        assert_eq!(ensure_wcag_contrast(strong, (0, 0, 0), 4.5), strong);
+        assert!((wcag_contrast((0, 0, 0), (255, 255, 255)) - 21.0).abs() < 1e-3);
     }
 
     /// Disabled text must read clearly dimmer than muted text — at most

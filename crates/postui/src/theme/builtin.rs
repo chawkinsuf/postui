@@ -123,7 +123,34 @@ pub fn builtin_themes() -> Vec<BuiltinTheme> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::{Theme, oklab_l, rgb_of};
+    use crate::theme::{MUTED_MIN_CONTRAST, MUTED_TEXT_GAP, Theme, oklab_l, rgb_of, wcag_contrast};
+
+    /// Muted text carries real labels ("+ Add header", inactive tab
+    /// names, response status copy), so it must clear WCAG AA against the
+    /// page on every catalog entry — the old 55% blend left the dark
+    /// built-in at 3.4:1 and the light one at 2.5:1. The one concession is
+    /// a palette whose own text sits near the floor (Solarized): there
+    /// muted yields just enough to stay a visibly quieter tone than text.
+    #[test]
+    fn muted_text_clears_wcag_aa_on_every_builtin() {
+        for b in builtin_themes() {
+            let t = Theme::generate(&b.seeds);
+            let ratio = wcag_contrast(rgb_of(t.text_muted), rgb_of(t.page));
+            let text = wcag_contrast(rgb_of(t.text), rgb_of(t.page));
+            let floor = MUTED_MIN_CONTRAST.min(text / MUTED_TEXT_GAP);
+            assert!(
+                ratio >= floor,
+                "{}: muted vs page {ratio:.2} (floor {floor:.2})",
+                b.name
+            );
+            // ...while still reading as a quieter tone than `text`.
+            assert!(
+                text > ratio,
+                "{}: text {text:.2} vs muted {ratio:.2}",
+                b.name
+            );
+        }
+    }
 
     #[test]
     fn builtins_in_stable_order_with_unique_names() {
