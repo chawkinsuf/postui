@@ -1,7 +1,7 @@
 # Spaces and the Manage Screen — Design
 
 Date: 2026-09-01
-Status: approved
+Status: implemented
 
 ## Goal
 

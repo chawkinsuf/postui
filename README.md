@@ -6,6 +6,12 @@ they belong to. The whole interface works with the mouse — buttons, tabs,
 and menus all click — with the keyboard as a full alternative, not a
 requirement.
 
+Requests are grouped into **spaces** — top-level folders under `requests/`
+that you switch between with `alt+1`…`alt+9` (or `alt+]` / `alt+[`). One
+space is visible at a time and each remembers the request you had open.
+Spaces, environments and variables are all edited on the Manage screen
+(`alt+v`).
+
 ## Build and run
 
 ```sh
@@ -18,7 +24,7 @@ Run with no argument to open the last project, or pass a directory to open
 
 ## Mouse
 
-Every control clicks: header project/env names open their choosers, sidebar
+Every control clicks: header project/space/env names open their choosers, sidebar
 rows open requests, the method cell opens its dropdown, `[ Send ]` sends (and
 becomes `[ Cancel ]` mid-flight), response tabs and the JSON tree arrows
 toggle, and footer chips run their action. Scrollbars drag. Clicking outside
