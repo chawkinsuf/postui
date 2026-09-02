@@ -113,6 +113,10 @@ pub enum PromptKind {
     /// `Action::ConfirmExtractVariable`; the origin field to rewrite is
     /// re-read from current focus rather than carried here.
     ExtractVariable,
+    /// `Action::ExtractSelection`: the same prompt, for the selected text
+    /// of one surface. Confirming emits `Action::ConfirmExtractSelection`
+    /// carrying the surface; its selection is re-read then.
+    ExtractSelection(crate::action::TextSurface),
     /// Clicking a simple variable's inline `{{token}}`
     /// (`Action::OpenVarTokenPopup`): a `Modal::MultiPrompt` with a `value`
     /// field and a `destination` choice field preselected to whichever
@@ -931,6 +935,7 @@ impl ModalStack {
                         PromptKind::NewOptionInline { .. }
                         | PromptKind::EditOption { .. }
                         | PromptKind::ExtractVariable
+                        | PromptKind::ExtractSelection(_)
                         | PromptKind::EditVarValue { .. } => {
                             unreachable!(
                                 "multi-field prompt kinds only ever back Modal::MultiPrompt"
@@ -1125,6 +1130,19 @@ impl ModalStack {
                                 _ => ExtractDestination::ProjectDefault,
                             };
                             vec![Action::ConfirmExtractVariable { name, destination }]
+                        }
+                        PromptKind::ExtractSelection(surface) => {
+                            let name = get("name").filter(|s| !s.is_empty())?.to_string();
+                            let destination = match get("destination") {
+                                Some("Active env value") => ExtractDestination::ActiveEnv,
+                                Some("This request") => ExtractDestination::Request,
+                                _ => ExtractDestination::ProjectDefault,
+                            };
+                            vec![Action::ConfirmExtractSelection {
+                                name,
+                                destination,
+                                surface: *surface,
+                            }]
                         }
                         PromptKind::EditVarValue { name, .. } => {
                             // An emptied value is a legitimate edit, so no

@@ -657,6 +657,23 @@ pub enum Action {
         name: String,
         destination: ExtractDestination,
     },
+    /// The text menu's "Extract to variable…" (right-click on a text
+    /// surface with a selection): opens the same name/destination prompt
+    /// as `ExtractToVariable`, for the selected text of `surface` only.
+    /// Refused with a toast when nothing is selected there.
+    ExtractSelection(TextSurface),
+    /// Confirmed `PromptKind::ExtractSelection`: like
+    /// `ConfirmExtractVariable`, but the value is `surface`'s live
+    /// selection (re-read at confirm time — the selection can't change
+    /// while the modal has input captured) and only that selected range
+    /// is replaced with `{{name}}`, the rest of the field kept. The
+    /// response pane is read-only, so there the variable is created and
+    /// nothing is replaced.
+    ConfirmExtractSelection {
+        name: String,
+        destination: ExtractDestination,
+        surface: TextSurface,
+    },
 
     // -- Stage 7: variable-format migration (spec §3.3) --
     /// The migration confirm modal's "Migrate": rewrites `variables.toml`

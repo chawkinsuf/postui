@@ -73,6 +73,15 @@ pub enum TextDrag {
     VmCell,
 }
 
+/// Where `App::confirm_extract` reads the value to extract from — and so
+/// what it replaces with the token afterwards: the whole focused field
+/// (the palette/row-menu flow) or one surface's selection (the text menu).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExtractSource {
+    FocusedField,
+    Selection(crate::action::TextSurface),
+}
+
 /// Which full-frame screen is showing. `ui::draw` and `App::handle_key`
 /// each branch on this once; every screen but `Main` replaces the three
 /// panes with its own full-frame draw while the header and footer stay.
@@ -3753,138 +3762,40 @@ impl App {
                 true
             }
             Action::ConfirmExtractVariable { name, destination } => {
-                if !postui_core::vars::is_valid_var_name(&name) {
-                    self.toasts.push(
-                        format!("\"{name}\" is not a valid variable name"),
-                        ToastKind::Error,
-                    );
-                    self.last_action_failed = true;
-                    return true;
-                }
-                let Some(text) = self.focused_field_text().map(|(t, _)| t.to_string()) else {
+                self.confirm_extract(name, destination, ExtractSource::FocusedField)
+            }
+            Action::ConfirmExtractSelection {
+                name,
+                destination,
+                surface,
+            } => self.confirm_extract(name, destination, ExtractSource::Selection(surface)),
+            Action::ExtractSelection(surface) => {
+                let Some(text) = self.selection_text_of(surface) else {
                     self.toasts
-                        .push("focus a text field first", ToastKind::Warning);
+                        .push("select some text first", ToastKind::Warning);
                     return true;
                 };
-                let before = self.read_file_states(&self.project.var_file_paths());
-                use crate::action::ExtractDestination;
-                let write_result: Result<(), String> = match destination {
-                    ExtractDestination::ProjectDefault => {
-                        if self.project.model.vars.contains_key(&name)
-                            || self.project.model.selectors.contains_key(&name)
-                        {
-                            Err(format!("\"{name}\" already exists"))
-                        } else {
-                            self.project.edit_variables(|doc| {
-                                postui_core::varedit::upsert_var(doc, &name, None, Some(&text))
-                            })
-                        }
-                    }
-                    ExtractDestination::ActiveEnv => {
-                        let Some(env) = self.project.active_env.clone() else {
-                            self.toasts
-                                .push("no active environment", ToastKind::Warning);
-                            return true;
-                        };
-                        // Same namespace-collision guard as `ProjectDefault`
-                        // (a selector of this name would otherwise sit
-                        // alongside a same-named plain variable), plus the
-                        // one `validate_env` would reject outright if we
-                        // wrote a flat env value anyway: a secret variable
-                        // (env values for secrets are forbidden —
-                        // `ModelError::EnvValueForSecret`). Catching it
-                        // here — rather than letting `edit_env` fail after
-                        // the fact — keeps the refusal a clean toast
-                        // instead of a write attempt against a doc that
-                        // `validate_env` would then reject.
-                        if self.project.model.selectors.contains_key(&name) {
-                            self.toasts
-                                .push(format!("\"{name}\" already exists"), ToastKind::Error);
-                            self.last_action_failed = true;
-                            return true;
-                        }
-                        if let Some(decl) = self.project.model.vars.get(&name) {
-                            if decl.secret {
-                                self.toasts.push(
-                                    format!(
-                                        "\"{name}\" is a secret variable \u{2014} can't set a plain env value for it"
-                                    ),
-                                    ToastKind::Error,
-                                );
-                                self.last_action_failed = true;
-                                return true;
-                            }
-                        } else if let Err(msg) = self.project.edit_variables(|doc| {
-                            postui_core::varedit::upsert_var(doc, &name, None, None)
-                        }) {
-                            self.toasts.push(msg, ToastKind::Error);
-                            self.last_action_failed = true;
-                            return true;
-                        }
-                        self.project.edit_env(&env, |doc| {
-                            postui_core::varedit::set_env_value(doc, &name, Some(&text))
-                        })
-                    }
-                    ExtractDestination::Request => {
-                        // No structural-file hazard here — `[variables]`
-                        // options are a separate resolution layer (spec §2)
-                        // with no `validate_env`-style cross-checks — but an
-                        // existing option of the same name would otherwise be
-                        // silently clobbered, same as `ProjectDefault`'s
-                        // "already exists" refusal.
-                        if self.editor.variables.contains_key(&name) {
-                            self.toasts.push(
-                                format!("\"{name}\" already exists in this request's variables"),
-                                ToastKind::Error,
-                            );
-                            self.last_action_failed = true;
-                            return true;
-                        }
-                        self.editor.variables.insert(
-                            name.clone(),
-                            postui_core::model::Entry {
-                                value: text.clone(),
-                                enabled: true,
-                            },
-                        );
-                        Ok(())
-                    }
-                };
-                let wrote_to_request = matches!(destination, ExtractDestination::Request);
-                match write_result {
-                    Ok(()) => {
-                        // The var-file half of the gesture (ProjectDefault/
-                        // ActiveEnv write variables.toml/an env file; a
-                        // Request destination touches neither, so this is a
-                        // no-op there). The editor-side half (the token
-                        // replacement, and a Request destination's
-                        // `[variables]` insert) is captured by the next
-                        // `capture_undo` as an EditorDelta — undo peels the
-                        // token-replacement, then the declaration.
-                        self.record_var_file_step(before);
-                        self.replace_focused_field_with_token(&name);
-                        // Finding 2, same ruling as promote: the
-                        // `Request` destination's write only exists so far
-                        // in the dirty editor buffer (both the new
-                        // `[variables]` option above and the field text
-                        // `replace_focused_field_with_token` just
-                        // committed) — save it synchronously rather than
-                        // leaving it save-on-demand, so "extract to
-                        // request, then quit" can't lose it.
-                        if wrote_to_request && let Err(e) = self.save_open_request() {
-                            self.toasts.push(
-                                format!(
-                                    "extracted to {{{{{name}}}}} but {e} \u{2014} save the request manually"
-                                ),
-                                ToastKind::Error,
-                            );
-                            return true;
-                        }
-                        self.toasts
-                            .push(format!("extracted to {{{{{name}}}}}"), ToastKind::Success);
-                    }
-                    Err(msg) => self.toasts.push(msg, ToastKind::Error),
+                if text.trim().is_empty() {
+                    self.toasts.push(
+                        "nothing to extract \u{2014} the selection is blank",
+                        ToastKind::Warning,
+                    );
+                    return true;
                 }
+                use crate::components::modal::PromptField;
+                self.push_modal(Modal::MultiPrompt {
+                    title: "Extract to variable".into(),
+                    fields: vec![
+                        PromptField::text("name", "Name", ""),
+                        PromptField::choice(
+                            "destination",
+                            "Destination",
+                            &["Project default", "Active env value", "This request"],
+                        ),
+                    ],
+                    focus: 0,
+                    kind: PromptKind::ExtractSelection(surface),
+                });
                 true
             }
             Action::SwitchSpace(name) => {
@@ -4506,6 +4417,166 @@ impl App {
         }
     }
 
+    /// The shared tail of `Action::ConfirmExtractVariable` and
+    /// `Action::ConfirmExtractSelection`: validates `name`, reads the value
+    /// from `source`, writes it at `destination` (with the per-destination
+    /// collision guards), then swaps the origin text for `{{name}}` —
+    /// the whole field for `FocusedField`, just the selected range for
+    /// `Selection` (nothing at all on the read-only response).
+    fn confirm_extract(
+        &mut self,
+        name: String,
+        destination: crate::action::ExtractDestination,
+        source: ExtractSource,
+    ) -> bool {
+        if !postui_core::vars::is_valid_var_name(&name) {
+            self.toasts.push(
+                format!("\"{name}\" is not a valid variable name"),
+                ToastKind::Error,
+            );
+            self.last_action_failed = true;
+            return true;
+        }
+        let text = match source {
+            ExtractSource::FocusedField => self.focused_field_text().map(|(t, _)| t.to_string()),
+            ExtractSource::Selection(surface) => self.selection_text_of(surface),
+        };
+        let Some(text) = text else {
+            let msg = match source {
+                ExtractSource::FocusedField => "focus a text field first",
+                ExtractSource::Selection(_) => "select some text first",
+            };
+            self.toasts.push(msg, ToastKind::Warning);
+            return true;
+        };
+        let before = self.read_file_states(&self.project.var_file_paths());
+        use crate::action::ExtractDestination;
+        let write_result: Result<(), String> = match destination {
+            ExtractDestination::ProjectDefault => {
+                if self.project.model.vars.contains_key(&name)
+                    || self.project.model.selectors.contains_key(&name)
+                {
+                    Err(format!("\"{name}\" already exists"))
+                } else {
+                    self.project.edit_variables(|doc| {
+                        postui_core::varedit::upsert_var(doc, &name, None, Some(&text))
+                    })
+                }
+            }
+            ExtractDestination::ActiveEnv => {
+                let Some(env) = self.project.active_env.clone() else {
+                    self.toasts
+                        .push("no active environment", ToastKind::Warning);
+                    return true;
+                };
+                // Same namespace-collision guard as `ProjectDefault`
+                // (a selector of this name would otherwise sit
+                // alongside a same-named plain variable), plus the
+                // one `validate_env` would reject outright if we
+                // wrote a flat env value anyway: a secret variable
+                // (env values for secrets are forbidden —
+                // `ModelError::EnvValueForSecret`). Catching it
+                // here — rather than letting `edit_env` fail after
+                // the fact — keeps the refusal a clean toast
+                // instead of a write attempt against a doc that
+                // `validate_env` would then reject.
+                if self.project.model.selectors.contains_key(&name) {
+                    self.toasts
+                        .push(format!("\"{name}\" already exists"), ToastKind::Error);
+                    self.last_action_failed = true;
+                    return true;
+                }
+                if let Some(decl) = self.project.model.vars.get(&name) {
+                    if decl.secret {
+                        self.toasts.push(
+                            format!(
+                                "\"{name}\" is a secret variable \u{2014} can't set a plain env value for it"
+                            ),
+                            ToastKind::Error,
+                        );
+                        self.last_action_failed = true;
+                        return true;
+                    }
+                } else if let Err(msg) = self
+                    .project
+                    .edit_variables(|doc| postui_core::varedit::upsert_var(doc, &name, None, None))
+                {
+                    self.toasts.push(msg, ToastKind::Error);
+                    self.last_action_failed = true;
+                    return true;
+                }
+                self.project.edit_env(&env, |doc| {
+                    postui_core::varedit::set_env_value(doc, &name, Some(&text))
+                })
+            }
+            ExtractDestination::Request => {
+                // No structural-file hazard here — `[variables]`
+                // options are a separate resolution layer (spec §2)
+                // with no `validate_env`-style cross-checks — but an
+                // existing option of the same name would otherwise be
+                // silently clobbered, same as `ProjectDefault`'s
+                // "already exists" refusal.
+                if self.editor.variables.contains_key(&name) {
+                    self.toasts.push(
+                        format!("\"{name}\" already exists in this request's variables"),
+                        ToastKind::Error,
+                    );
+                    self.last_action_failed = true;
+                    return true;
+                }
+                self.editor.variables.insert(
+                    name.clone(),
+                    postui_core::model::Entry {
+                        value: text.clone(),
+                        enabled: true,
+                    },
+                );
+                Ok(())
+            }
+        };
+        let wrote_to_request = matches!(destination, ExtractDestination::Request);
+        match write_result {
+            Ok(()) => {
+                // The var-file half of the gesture (ProjectDefault/
+                // ActiveEnv write variables.toml/an env file; a
+                // Request destination touches neither, so this is a
+                // no-op there). The editor-side half (the token
+                // replacement, and a Request destination's
+                // `[variables]` insert) is captured by the next
+                // `capture_undo` as an EditorDelta — undo peels the
+                // token-replacement, then the declaration.
+                self.record_var_file_step(before);
+                match source {
+                    ExtractSource::FocusedField => self.replace_focused_field_with_token(&name),
+                    ExtractSource::Selection(surface) => {
+                        self.replace_selection_with_token(surface, &name);
+                    }
+                }
+                // Finding 2, same ruling as promote: the
+                // `Request` destination's write only exists so far
+                // in the dirty editor buffer (both the new
+                // `[variables]` option above and the field text
+                // `replace_focused_field_with_token` just
+                // committed) — save it synchronously rather than
+                // leaving it save-on-demand, so "extract to
+                // request, then quit" can't lose it.
+                if wrote_to_request && let Err(e) = self.save_open_request() {
+                    self.toasts.push(
+                        format!(
+                            "extracted to {{{{{name}}}}} but {e} \u{2014} save the request manually"
+                        ),
+                        ToastKind::Error,
+                    );
+                    return true;
+                }
+                self.toasts
+                    .push(format!("extracted to {{{{{name}}}}}"), ToastKind::Success);
+            }
+            Err(msg) => self.toasts.push(msg, ToastKind::Error),
+        }
+        true
+    }
+
     /// `Action::ConfirmExtractVariable`'s tail: replaces whichever field
     /// `focused_field_text` found (unchanged since the extract flow opened
     /// — modals capture all input) with `{{name}}`. For the URL, that's a
@@ -4525,6 +4596,39 @@ impl App {
         } else {
             return;
         }
+        self.commit_table_edit_with_enter();
+    }
+
+    /// Replaces `surface`'s live selection with `{{name}}`, keeping the
+    /// rest of the text: the line inputs and the body all take it through
+    /// their paste path (which replaces a selection); a table cell is then
+    /// committed through the table's own `Enter` path, exactly like
+    /// [`Self::replace_focused_field_with_token`]. The response is
+    /// read-only — nothing to replace.
+    fn replace_selection_with_token(&mut self, surface: crate::action::TextSurface, name: &str) {
+        use crate::action::TextSurface;
+        let token = format!("{{{{{name}}}}}");
+        match surface {
+            TextSurface::Url => self.editor.url.paste(&token),
+            TextSurface::Body => {
+                self.editor.paste_body(&token);
+            }
+            TextSurface::TableCell => {
+                if let Some(edit) = self.editor.table.editing.as_mut() {
+                    edit.input.paste(&token);
+                    self.commit_table_edit_with_enter();
+                }
+            }
+            TextSurface::Response => {}
+            // Never offered on the Variable Manager's own surfaces.
+            TextSurface::VmField | TextSurface::VmCell => {}
+        }
+    }
+
+    /// Commits the table cell under edit through the active tab's own
+    /// `Enter` handling, so the new text lands in the map (not left as a
+    /// pending edit) and rides the same dirty/save path as any row commit.
+    fn commit_table_edit_with_enter(&mut self) {
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
         match self.editor.active_tab {
             EditorTab::Params => {
@@ -6107,7 +6211,8 @@ impl App {
             }
             _ => return None,
         };
-        let copy = if self.selection_text_of(surface).is_some() {
+        let has_selection = self.selection_text_of(surface).is_some();
+        let copy = if has_selection {
             MenuItem::new("Copy", Action::CopySelection(surface))
         } else {
             MenuItem::disabled("Copy")
@@ -6115,6 +6220,20 @@ impl App {
         let mut items = vec![copy];
         if editable {
             items.push(MenuItem::new("Paste", Action::Paste));
+        }
+        // Extracting a selection to a variable — offered on the request's
+        // own text and on the response (where it only creates the
+        // variable, there being nothing to rewrite); never on the Variable
+        // Manager's surfaces, which already *are* variables.
+        if !matches!(surface, TextSurface::VmField | TextSurface::VmCell) {
+            items.push(if has_selection {
+                MenuItem::new(
+                    "Extract to variable\u{2026}",
+                    Action::ExtractSelection(surface),
+                )
+            } else {
+                MenuItem::disabled("Extract to variable\u{2026}")
+            });
         }
         Some(items)
     }

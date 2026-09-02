@@ -15915,7 +15915,10 @@ fn right_click_on_the_url_bar_offers_copy_and_paste_and_copy_copies_the_selectio
     let area = app.editor.last_url_text_area.expect("url area recorded");
 
     assert!(app.handle_mouse(right_down(area.x + 3, area.y)));
-    assert_eq!(menu_labels(&app), vec!["Copy", "Paste"]);
+    assert_eq!(
+        menu_labels(&app),
+        vec!["Copy", "Paste", "Extract to variable\u{2026}"]
+    );
     assert!(
         app.editor.url.selection().is_some(),
         "opening the menu keeps the selection"
@@ -15952,7 +15955,10 @@ fn right_click_on_the_url_bar_without_a_selection_greys_copy_and_paste_lands_in_
     let area = app.editor.last_url_text_area.expect("url area recorded");
 
     app.handle_mouse(right_down(area.x + 3, area.y));
-    assert_eq!(menu_labels(&app), vec!["Copy", "Paste"]);
+    assert_eq!(
+        menu_labels(&app),
+        vec!["Copy", "Paste", "Extract to variable\u{2026}"]
+    );
     assert!(
         menu_action(&app, "Copy").is_none(),
         "nothing selected: Copy is greyed"
@@ -15999,7 +16005,10 @@ fn right_click_on_the_edited_table_cell_offers_the_text_menu_and_keeps_the_edit_
         .expect("the edited cell is registered");
 
     app.handle_mouse(right_down(cell.x, cell.y));
-    assert_eq!(menu_labels(&app), vec!["Copy", "Paste"]);
+    assert_eq!(
+        menu_labels(&app),
+        vec!["Copy", "Paste", "Extract to variable\u{2026}"]
+    );
     assert!(
         app.editor.table.editing.is_some(),
         "a right click on the cell under edit must not commit it"
@@ -16084,7 +16093,7 @@ fn right_click_on_the_response_pane_offers_copy_only() {
     app.handle_mouse(right_down(area.x + 1, area.y));
     assert_eq!(
         menu_labels(&app),
-        vec!["Copy"],
+        vec!["Copy", "Extract to variable\u{2026}"],
         "the response is read-only: no Paste"
     );
     let copy = menu_action(&app, "Copy").expect("Copy is enabled with a selection");
@@ -16140,7 +16149,10 @@ fn right_click_on_the_body_editor_offers_copy_and_paste() {
     let area = app.editor.last_body_area.expect("body area recorded");
 
     app.handle_mouse(right_down(area.x + 2, area.y));
-    assert_eq!(menu_labels(&app), vec!["Copy", "Paste"]);
+    assert_eq!(
+        menu_labels(&app),
+        vec!["Copy", "Paste", "Extract to variable\u{2026}"]
+    );
     assert!(
         app.editor.body_selected_text().is_some(),
         "opening the menu keeps the selection"
@@ -16188,7 +16200,11 @@ fn right_click_on_the_edited_grid_cell_offers_the_text_menu_instead_of_the_row_m
         .expect("the edited cell is registered");
 
     app.handle_mouse(right_down(cell.x, cell.y));
-    assert_eq!(menu_labels(&app), vec!["Copy", "Paste"]);
+    assert_eq!(
+        menu_labels(&app),
+        vec!["Copy", "Paste"],
+        "the manager's own cells are variables already: no extract"
+    );
     assert!(
         app.varmanager.grid.editing.is_some(),
         "a right click on the cell under edit must not commit it"
@@ -16209,5 +16225,241 @@ fn right_click_on_the_edited_grid_cell_offers_the_text_menu_instead_of_the_row_m
         menu_labels(&app).iter().any(|l| l == "Rename"),
         "{:?}",
         menu_labels(&app)
+    );
+}
+
+// --- extract a selection to a variable (right-click text menu) ------------
+
+/// Selects `needle` inside the URL bar (first occurrence) the way a mouse
+/// sweep would.
+fn select_in_url(app: &mut App, needle: &str) {
+    let text = app.editor.url.text().to_string();
+    let start = text.find(needle).expect("needle in url");
+    let start_chars = text[..start].chars().count();
+    let end_chars = start_chars + needle.chars().count();
+    app.editor.url.set_cursor(start_chars);
+    app.editor.url.begin_mouse_selection();
+    app.editor.url.extend_mouse_selection_to(end_chars);
+    assert_eq!(app.editor.url.selected_text().as_deref(), Some(needle));
+}
+
+#[test]
+fn text_menu_offers_extract_to_variable_only_with_a_selection() {
+    use crate::action::TextSurface;
+    let mut app = App::new_for_test();
+    app.editor.url = crate::components::line_input::LineInput::new("https://x/ping/abc-123");
+    render_once(&mut app);
+    let area = app.editor.last_url_text_area.expect("url area recorded");
+
+    app.handle_mouse(right_down(area.x + 3, area.y));
+    assert_eq!(
+        menu_labels(&app),
+        vec!["Copy", "Paste", "Extract to variable\u{2026}"]
+    );
+    assert!(
+        menu_action(&app, "Extract to variable\u{2026}").is_none(),
+        "nothing selected: greyed"
+    );
+    app.update(Action::Close);
+
+    select_in_url(&mut app, "abc-123");
+    app.handle_mouse(right_down(area.x + 3, area.y));
+    assert_eq!(
+        menu_action(&app, "Extract to variable\u{2026}"),
+        Some(Action::ExtractSelection(TextSurface::Url))
+    );
+    let open = menu_action(&app, "Extract to variable\u{2026}").unwrap();
+    app.update(Action::Close);
+    app.update(open);
+    let Some(Modal::MultiPrompt { kind, .. }) = app.modals.top() else {
+        panic!("expected the extract prompt");
+    };
+    assert!(matches!(
+        kind,
+        PromptKind::ExtractSelection(TextSurface::Url)
+    ));
+}
+
+#[test]
+fn extracting_a_url_selection_replaces_only_the_selected_part() {
+    use crate::action::TextSurface;
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    postui_core::storage::save_request(dir.path(), "main/ping", &req("https://x/ping/abc-123"))
+        .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("main/ping".into()));
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Url;
+    select_in_url(&mut app, "abc-123");
+
+    app.update(Action::ConfirmExtractSelection {
+        name: "trace_id".into(),
+        destination: crate::action::ExtractDestination::ProjectDefault,
+        surface: TextSurface::Url,
+    });
+
+    assert_eq!(app.editor.url.text(), "https://x/ping/{{trace_id}}");
+    let on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    assert!(on_disk.contains("default = \"abc-123\""), "{on_disk}");
+    assert!(
+        app.toasts
+            .messages()
+            .iter()
+            .any(|m| m.contains("extracted to {{trace_id}}")),
+        "{:?}",
+        app.toasts.messages()
+    );
+}
+
+#[test]
+fn extracting_a_table_cell_selection_replaces_the_part_and_commits_the_cell() {
+    use crate::action::TextSurface;
+    use crate::components::table_editor::{CellEdit, Col};
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    postui_core::storage::save_request(dir.path(), "main/ping", &req("https://x/ping")).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("main/ping".into()));
+    app.editor.headers.insert(
+        "authorization".into(),
+        postui_core::model::Entry {
+            value: "Bearer abc".into(),
+            enabled: true,
+        },
+    );
+    app.focus = PaneId::Editor;
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.table.selected = Some(0);
+    let mut input = crate::components::line_input::LineInput::new("Bearer abc");
+    input.set_cursor(7);
+    input.begin_mouse_selection();
+    input.extend_mouse_selection_to(10);
+    assert_eq!(input.selected_text().as_deref(), Some("abc"));
+    app.editor.table.editing = Some(CellEdit {
+        row: 0,
+        col: Col::Value,
+        input,
+        original: "Bearer abc".into(),
+    });
+
+    app.update(Action::ConfirmExtractSelection {
+        name: "token".into(),
+        destination: crate::action::ExtractDestination::Request,
+        surface: TextSurface::TableCell,
+    });
+
+    assert!(app.editor.table.editing.is_none(), "the cell commits");
+    assert_eq!(
+        app.editor.headers["authorization"].value,
+        "Bearer {{token}}"
+    );
+    assert_eq!(app.editor.variables["token"].value, "abc");
+}
+
+#[test]
+fn extracting_a_body_selection_replaces_it_with_the_token() {
+    use crate::action::TextSurface;
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    postui_core::storage::save_request(dir.path(), "main/ping", &req("https://x/ping")).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("main/ping".into()));
+    app.focus = PaneId::Editor;
+    app.editor.active_tab = EditorTab::Body;
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.set_body_text("{\"id\": 1}");
+    app.editor.body_select_all();
+
+    app.update(Action::ConfirmExtractSelection {
+        name: "payload".into(),
+        destination: crate::action::ExtractDestination::ProjectDefault,
+        surface: TextSurface::Body,
+    });
+
+    assert_eq!(app.editor.body_text(), "{{payload}}");
+    let on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    assert!(
+        on_disk.contains("{\\\"id\\\": 1}") || on_disk.contains("'{\"id\": 1}'"),
+        "{on_disk}"
+    );
+}
+
+#[test]
+fn extracting_a_response_selection_creates_the_variable_without_touching_the_editor() {
+    use crate::action::TextSurface;
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.editor.url = crate::components::line_input::LineInput::new("https://x/login");
+    ready_response(&mut app, "session abc123 ok"); // not JSON -> Raw view
+    render_once(&mut app);
+    let area = app
+        .session
+        .response
+        .view()
+        .unwrap()
+        .last_area
+        .expect("body area recorded");
+    app.handle_mouse(left_down(area.x + 9, area.y));
+    app.handle_mouse(left_down(area.x + 9, area.y)); // double click: "abc123"
+    app.handle_mouse(left_up(area.x + 9, area.y));
+    assert_eq!(
+        app.session.response.selected_text().as_deref(),
+        Some("abc123")
+    );
+
+    app.handle_mouse(right_down(area.x + 9, area.y));
+    assert_eq!(
+        menu_labels(&app),
+        vec!["Copy", "Extract to variable\u{2026}"]
+    );
+    let open = menu_action(&app, "Extract to variable\u{2026}").unwrap();
+    app.update(Action::Close);
+    app.update(open);
+    assert!(matches!(
+        app.modals.top(),
+        Some(Modal::MultiPrompt {
+            kind: PromptKind::ExtractSelection(TextSurface::Response),
+            ..
+        })
+    ));
+    app.update(Action::Close);
+
+    app.update(Action::ConfirmExtractSelection {
+        name: "session".into(),
+        destination: crate::action::ExtractDestination::ProjectDefault,
+        surface: TextSurface::Response,
+    });
+
+    let on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    assert!(on_disk.contains("default = \"abc123\""), "{on_disk}");
+    assert_eq!(
+        app.editor.url.text(),
+        "https://x/login",
+        "nothing to replace"
+    );
+    assert_eq!(
+        app.session.response.selected_text().as_deref(),
+        Some("abc123")
+    );
+}
+
+#[test]
+fn extract_selection_refuses_when_the_selection_is_gone() {
+    use crate::action::TextSurface;
+    let mut app = App::new_for_test();
+    app.editor.url = crate::components::line_input::LineInput::new("https://x/ping");
+    app.update(Action::ExtractSelection(TextSurface::Url));
+    assert!(app.modals.is_empty(), "no prompt without a selection");
+    assert!(
+        app.toasts.messages().iter().any(|m| m.contains("select")),
+        "{:?}",
+        app.toasts.messages()
     );
 }
