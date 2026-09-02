@@ -697,7 +697,7 @@ impl Response {
         view.set_mode(mode);
     }
 
-    /// Opens the in-pane search, exactly as `/` does (the `🔍` button).
+    /// Opens the in-pane search, exactly as `/` does (the search button).
     pub fn open_search(&mut self) -> bool {
         let Some(view) = self.view.as_mut() else {
             return false;
@@ -1249,7 +1249,7 @@ pub const COLLAPSED_HEIGHT: u16 = 1;
 /// the timing + size chips (plain muted text — they are not clickable) and
 /// content type, all on row 0; the response tabs right-aligned on row 1;
 /// row 2 holds the tabs' accent underline on the right and the icon
-/// actions (🔍 / ❐ / 💾) on the left, directly above the body they act on.
+/// actions (search / edit / save / copy) on the left, directly above the body they act on.
 fn draw_header_strip(
     frame: &mut Frame,
     hits: &mut crate::hit::HitMap,
@@ -1408,16 +1408,20 @@ fn tabstrip_width(tabs: &[(String, Option<(char, ratatui::style::Color)>)]) -> u
         .unwrap_or(0)
 }
 
-/// The icon actions in the header strip — `🔍` (search), `📝` (open the
-/// view in `$EDITOR`; emoji presentation to sit level with its 2-column
-/// neighbors), `💾` (save to file), `❐` (copy, the same glyph every other
-/// copy affordance uses, keeping the group's right edge).
+/// The icon actions in the header strip: search, open the view in
+/// `$EDITOR`, save to file, copy. Nerd Font Material icons (the family
+/// the address bar's lock uses), not emoji: they are one cell in every
+/// width table, so ratatui paints each cell and its cursor accounting
+/// matches the terminal's (a wide emoji leaves its second cell unpainted,
+/// which showed stale content in terminals that restyle only the first),
+/// and as text glyphs they take the theme's foreground instead of the
+/// emoji font's fixed colours — so all four sit level, at one size.
 /// All of them act on the *active tab's* text, following it like search.
 const HEADER_ACTIONS: [(&str, crate::hit::Hit); 4] = [
-    (" 🔍 ", crate::hit::Hit::ResponseSearchButton),
-    (" 📝 ", crate::hit::Hit::ResponseEditorButton),
-    (" 💾 ", crate::hit::Hit::SaveBodyButton),
-    (" ❐ ", crate::hit::Hit::CopyBodyButton),
+    (" \u{F0349} ", crate::hit::Hit::ResponseSearchButton), // 󰍉 nf-md-magnify
+    (" \u{F03EB} ", crate::hit::Hit::ResponseEditorButton), // 󰏫 nf-md-pencil
+    (" \u{F0193} ", crate::hit::Hit::SaveBodyButton),       // 󰆓 nf-md-content_save
+    (" \u{F018F} ", crate::hit::Hit::CopyBodyButton),       // 󰆏 nf-md-content_copy
 ];
 
 /// The header strip's icon actions, left-aligned on the underline row
@@ -1435,7 +1439,7 @@ fn draw_header_actions(
     let buf = frame.buffer_mut();
     let mut rects = Vec::new();
     for (label, hit) in HEADER_ACTIONS {
-        // Display width, not char count — the emoji are 2-column glyphs.
+        // Display width, not char count, so the labels' padding is honoured.
         let w = label.width() as u16;
         let rect = Rect::new(x, y, w, 1);
         draw_pane_action(
@@ -2216,7 +2220,7 @@ mod tests {
             .draw(|f| r.draw(f, f.area(), &ctx, &mut hits))
             .unwrap();
         let out = format!("{:?}", terminal.backend().buffer());
-        assert!(out.contains("📝"), "editor icon: {out}");
+        assert!(out.contains("\u{F03EB}"), "editor icon: {out}");
         assert!(
             hits.rect_of(&crate::hit::Hit::ResponseEditorButton)
                 .is_some(),
@@ -3133,7 +3137,7 @@ mod tests {
         // magnifier can't be misread.
         let mut r = ready(r#"{"a": 1}"#);
         let out = render(&mut r);
-        assert!(out.contains("🔍"), "{out}");
+        assert!(out.contains("\u{F0349}"), "search icon: {out}");
         assert!(!out.contains("⌕"), "{out}");
     }
 
@@ -3191,16 +3195,16 @@ mod tests {
         );
     }
 
-    /// The header actions are icons — 🔍 (search), ❐ (copy body, the same
-    /// glyph every other copy affordance uses), 💾 (save to file) — sitting
+    /// The header actions are icons — search, copy body, save to file —
+    /// Nerd Font glyphs at one cell each, sitting
     /// left-aligned on the underline row, directly above the body they act
     /// on. The old text labels are gone.
     #[test]
     fn header_actions_are_icons_on_the_underline_row() {
         let mut r = ready(r#"{"a": 1}"#);
         let (out, hits) = render_hovered(&mut r, None);
-        assert!(out.contains("❐"), "copy icon: {out}");
-        assert!(out.contains("💾"), "save icon: {out}");
+        assert!(out.contains("\u{F018F}"), "copy icon: {out}");
+        assert!(out.contains("\u{F0193}"), "save icon: {out}");
         assert!(!out.contains("Copy body"), "no text label at rest: {out}");
         assert!(
             !out.contains("Save to file"),
