@@ -282,9 +282,10 @@ Delete semantics:
   `.local/secrets.toml`; if it was active, the project switches to no
   environment. Recorded as one `Trashed` step: the env file as the item,
   `.local/secrets.toml` in the companion files, and `active_env` set so
-  undo restores the active environment. Selections are local UI state and
-  are not restored. Rename is a `FileStates` step as env edits are
-  today.
+  undo restores the active environment. `.local/state.toml` rides in the
+  companion files too, so undo also restores that environment's
+  per-environment selections. Rename is a `FileStates` step as env edits
+  are today, with the same `state.toml` companion.
 - Space: confirm modal. Title: "Delete space `auth`?". Body: "Its 7
   requests will be deleted." The confirm button reads "Delete 7 requests"
   (not "OK"/"Yes"); an empty space gets "Delete space" and drops the body
@@ -370,3 +371,29 @@ App (`crates/postui/src/app/tests.rs`):
 - Drag-and-drop between spaces in the sidebar.
 - A trash that survives the session (a "restore deleted" browser). The
   trash exists only to back this session's undo.
+
+## Implementation notes (2026-09-01)
+
+Rulings taken during implementation that amend the text above.
+
+- E/E': `ensure_project` writes the `spaces` list only for a real project
+  (`project.toml` present); a bare directory gets `requests/main/` but
+  never a `project.toml` behind the "create a project here?" consent gate.
+  On open, an existing project with no `spaces` key has its on-disk
+  directories materialised into the list.
+- F: the loose-file warning (and the sibling "not in a valid space"
+  warning) toasts as `Warning`, once per change, not per refresh; walk
+  errors keep the `Error` channel. An invalid name listed in `spaces` is
+  reported the same way and is never rewritten away.
+- G: in the Manage bar the tab strip has priority; right-aligned buttons
+  are dropped (+ Selector, then + Variable, then Close) to make room.
+- H: in the header, the space-cycle and env-cycle keycap pills yield
+  first at narrow widths, then the Manage keycap; chip labels never
+  shorten. The space chip reads `Space: <name> ▾`.
+- I/I': move-all and move-to-space are dirty-gated when the open request
+  is affected, via `ForceMoveAllRequests` / `ForceMoveRequestToSpace`;
+  `ForceOpenRequest` owns the follow.
+- J: env rename/delete steps carry `.local/state.toml` as a companion
+  file, and a file-level undo/redo reloads `selections` from it.
+- K: the Manage right-pane button row wraps to a second row rather than
+  dropping buttons on overflow.
