@@ -13804,13 +13804,13 @@ fn header_chip_reads_manage_and_toggles_the_screen() {
 // --- Task 10: header space chip, cycle pill, space/env dropdown rows ----
 
 #[test]
-fn header_shows_the_space_chip_between_project_and_env() {
+fn header_shows_the_space_chip_between_env_and_manage() {
     let (mut app, _dir) = spaced_app();
     render_once(&mut app);
     let space = app.hits.rect_of(&Hit::HeaderSpace).expect("space chip");
     let env = app.hits.rect_of(&Hit::HeaderEnv).expect("env chip");
-    let project = app.hits.rect_of(&Hit::HeaderProject).expect("project chip");
-    assert!(project.x < space.x && space.x < env.x);
+    let manage = app.hits.rect_of(&Hit::HeaderManage).expect("manage chip");
+    assert!(env.x < space.x && space.x < manage.x);
     let text = rendered_text(&mut app);
     assert!(text.contains("Space: main"), "{text}");
     click_hit(&mut app, Hit::HeaderSpaceCycle);

@@ -9,26 +9,33 @@ use ratatui::layout::Rect;
 /// bottom — matching the painted 3-row rhythm of buttons/fields elsewhere.
 pub const HEADER_HEIGHT: u16 = 3;
 
-/// The gap between the env chip's cycle pill and the Manage chip — the
-/// footer's own save-group width, keeping the pill reading as the env
-/// chip's shortcut rather than the Manage screen's. Collapses to the
-/// ordinary one-column chip gap when the pills yield on a narrow bar.
+/// The gap after each cycle pill (env → space, space → Manage) — the
+/// footer's own save-group width, keeping each pill reading as its own
+/// chip's shortcut rather than the next chip's. Collapses to the ordinary
+/// one-column chip gap when the pills yield on a narrow bar.
 const MANAGE_GROUP_GAP: u16 = 8;
+
+const SAVE_LABEL: &str = " Save ";
+const DISCARD_LABEL: &str = " Discard ";
+/// The dirty bar's save/discard group: ` Discard  alt+d ` + 2 + ` Save  ^S `.
+const SAVE_GROUP_W: u16 =
+    (DISCARD_LABEL.len() + " alt+d ".len() + 2 + SAVE_LABEL.len() + " ^S ".len()) as u16;
 
 /// Paints the app bar: a flat `theme.panel` fill across all 3 rows, the bold
 /// `postui` wordmark, and the project/space/env selectors as single-row
 /// `theme.control`-filled chips (lifting to `theme.control_hover` while
 /// hovered) with a trailing `▾` marker. Registers the same
-/// [`Hit::HeaderProject`]/[`Hit::HeaderSpace`]/[`Hit::HeaderEnv`] hits on
-/// the chip rects, plus the `alt+]`/`alt+c` cycle pills beside the space
-/// and env chips ([`Hit::HeaderSpaceCycle`]/[`Hit::HeaderEnvCycle`]).
+/// [`Hit::HeaderProject`]/[`Hit::HeaderEnv`]/[`Hit::HeaderSpace`] hits on
+/// the chip rects (in that on-screen order), plus the `alt+c`/`alt+]`
+/// cycle pills beside the env and space chips
+/// ([`Hit::HeaderEnvCycle`]/[`Hit::HeaderSpaceCycle`]).
 ///
 /// Narrow-bar rule: the chip *labels* never yield — their keycaps do, in
 /// order. The left cluster is measured through the Manage chip (wordmark,
-/// project chip, space chip + its pill, env chip + its pill, Manage chip,
+/// project chip, env chip + its pill, space chip + its pill, Manage chip,
 /// with the gaps between them). If it overruns `area`, the two cycle pills
-/// are dropped and the group gap before the Manage chip collapses to the
-/// ordinary one-column gap. If it still overruns, the Manage chip's own
+/// are dropped and the group gaps after them collapse to the ordinary
+/// one-column gap. If it still overruns, the Manage chip's own
 /// `alt+v` keycap goes too and the chip becomes a bare ` Manage `. The
 /// keys themselves keep working in every case, and their hints stay in the
 /// footer/palette. If even that doesn't fit, the cluster clips as before.
@@ -99,18 +106,28 @@ pub fn draw_header(
     // env pill left to disambiguate it has nothing to separate; then
     // without the Manage chip's own keycap as well. The labels are in
     // every measurement: they never yield.
-    let chips_w = (x - area.x) + project_w + 1 + space_w + 1 + env_w;
+    let chips_w = (x - area.x) + project_w + 1 + env_w + 1 + space_w;
     let cluster_full = chips_w
         + 1
-        + space_pill.width()
-        + 1
         + env_pill.width()
+        + MANAGE_GROUP_GAP
+        + 1
+        + space_pill.width()
         + MANAGE_GROUP_GAP
         + manage_label_w
         + manage_pill.width();
     let cluster_no_cycle_pills = chips_w + 1 + manage_label_w + manage_pill.width();
-    let show_cycle_pills = cluster_full <= area.width;
-    let show_manage_pill = show_cycle_pills || cluster_no_cycle_pills <= area.width;
+    // While the request is dirty the save/discard group (laid out below)
+    // needs its own room at the bar's right: saving beats keycaps, so the
+    // cluster's budget shrinks by the group and its margin and the pills
+    // yield to it exactly as they yield to the Manage chip.
+    let budget = if dirty {
+        area.width.saturating_sub(SAVE_GROUP_W + 3 + 1)
+    } else {
+        area.width
+    };
+    let show_cycle_pills = cluster_full <= budget;
+    let show_manage_pill = show_cycle_pills || cluster_no_cycle_pills <= budget;
     let project_rect = Rect {
         x,
         y: mid_y,
@@ -134,52 +151,6 @@ pub fn draw_header(
     );
     hits.register(project_rect, Hit::HeaderProject);
     x += project_w + 1;
-
-    // The space chip sits between the project and env chips — a space is
-    // a partition of the project, so it reads in the same idiom as the
-    // env chip (labelled, bold) with its own `alt+]` cycle pill beside it.
-    let space_rect = Rect {
-        x,
-        y: mid_y,
-        width: space_w,
-        height: 1,
-    };
-    let space_bg = if hovered == Some(&Hit::HeaderSpace) {
-        theme.control_hover
-    } else {
-        theme.control
-    };
-    fill(buf, space_rect, space_bg);
-    text(
-        buf,
-        space_rect.x,
-        mid_y,
-        &space_label,
-        theme.text,
-        space_bg,
-        true,
-    );
-    hits.register(space_rect, Hit::HeaderSpace);
-    x += space_w + 1;
-
-    if show_cycle_pills {
-        let space_cycle_on = if hovered == Some(&Hit::HeaderSpaceCycle) {
-            theme.control_hover
-        } else {
-            theme.control
-        };
-        let space_cycle_w = space_pill.paint(buf, x, mid_y, space_cycle_on, theme);
-        hits.register(
-            Rect {
-                x,
-                y: mid_y,
-                width: space_cycle_w,
-                height: 1,
-            },
-            Hit::HeaderSpaceCycle,
-        );
-        x += space_cycle_w + 1;
-    }
 
     // This chip is the app's one environment control, and the environment
     // shapes what every screen shows (resolved {{vars}}, "Value in <env>",
@@ -221,10 +192,59 @@ pub fn draw_header(
             },
             Hit::HeaderEnvCycle,
         );
-        // A wide group gap (the footer's own save-group width): the Manage
-        // chip follows in the left cluster, and the env-cycle pill must keep
-        // reading as the env chip's — not the Manage screen's — shortcut.
+        // A wide group gap (the footer's own save-group width) before the
+        // space chip, so the env-cycle pill keeps reading as the env
+        // chip's — not the space chip's — shortcut.
         x += cycle_w + MANAGE_GROUP_GAP;
+    }
+
+    // The space chip follows the env chip — a space is a partition of the
+    // project, so it reads in the same idiom (labelled, bold) with its own
+    // `alt+]` cycle pill beside it.
+    let space_rect = Rect {
+        x,
+        y: mid_y,
+        width: space_w,
+        height: 1,
+    };
+    let space_bg = if hovered == Some(&Hit::HeaderSpace) {
+        theme.control_hover
+    } else {
+        theme.control
+    };
+    fill(buf, space_rect, space_bg);
+    text(
+        buf,
+        space_rect.x,
+        mid_y,
+        &space_label,
+        theme.text,
+        space_bg,
+        true,
+    );
+    hits.register(space_rect, Hit::HeaderSpace);
+    x += space_w + 1;
+
+    if show_cycle_pills {
+        let space_cycle_on = if hovered == Some(&Hit::HeaderSpaceCycle) {
+            theme.control_hover
+        } else {
+            theme.control
+        };
+        let space_cycle_w = space_pill.paint(buf, x, mid_y, space_cycle_on, theme);
+        hits.register(
+            Rect {
+                x,
+                y: mid_y,
+                width: space_cycle_w,
+                height: 1,
+            },
+            Hit::HeaderSpaceCycle,
+        );
+        // The same wide group gap as after the env pill: the Manage chip
+        // follows, and this pill must keep reading as the space chip's
+        // shortcut rather than the Manage screen's.
+        x += space_cycle_w + MANAGE_GROUP_GAP;
     }
 
     // The Manage-screen toggle, in the footer's clickable idiom with
@@ -281,11 +301,9 @@ pub fn draw_header(
     // still, discard drops before save — the group's essential half
     // survives longest.
     const GROUP_GAP: u16 = 8;
-    let save_label = " Save ";
-    let discard_label = " Discard ";
-    let save_w = save_label.chars().count() as u16 + " ^S ".chars().count() as u16;
-    let discard_w = discard_label.chars().count() as u16 + " alt+d ".chars().count() as u16;
-    let group_w = discard_w + 2 + save_w;
+    let save_w = SAVE_LABEL.chars().count() as u16 + " ^S ".chars().count() as u16;
+    let discard_w = DISCARD_LABEL.chars().count() as u16 + " alt+d ".chars().count() as u16;
+    let group_w = SAVE_GROUP_W;
     let beside_theme = theme_x > x + group_w + GROUP_GAP;
     let theme_visible = if dirty {
         theme_x > x && beside_theme
@@ -314,7 +332,7 @@ pub fn draw_header(
                 buf,
                 save_x,
                 mid_y,
-                save_label,
+                SAVE_LABEL,
                 theme.text,
                 theme.panel,
                 false,
@@ -325,7 +343,7 @@ pub fn draw_header(
             }
             .paint(
                 buf,
-                save_x + save_label.chars().count() as u16,
+                save_x + SAVE_LABEL.chars().count() as u16,
                 mid_y,
                 pill_on,
                 theme,
@@ -349,7 +367,7 @@ pub fn draw_header(
                     buf,
                     discard_x,
                     mid_y,
-                    discard_label,
+                    DISCARD_LABEL,
                     theme.text,
                     theme.panel,
                     false,
@@ -360,7 +378,7 @@ pub fn draw_header(
                 }
                 .paint(
                     buf,
-                    discard_x + discard_label.chars().count() as u16,
+                    discard_x + DISCARD_LABEL.chars().count() as u16,
                     mid_y,
                     pill_on,
                     theme,
@@ -430,11 +448,11 @@ mod tests {
         env: &str,
         hovered: Option<&Hit>,
     ) -> (Terminal<TestBackend>, HitMap) {
-        // Wide enough for the whole left cluster (project + space chip +
-        // its cycle pill + env chip + its cycle pill); the right-aligned
-        // Theme chip needs more room still, so its tests pass their own
-        // width to `render_wide`.
-        render_wide(theme, project, env, false, hovered, 100)
+        // Wide enough for the whole left cluster (project, env chip + its
+        // cycle pill, space chip + its pill, Manage, and the two group
+        // gaps); the right-aligned Theme chip needs more room still, so
+        // its tests pass their own width to `render_wide`.
+        render_wide(theme, project, env, false, hovered, 110)
     }
 
     fn render_wide(
@@ -579,26 +597,41 @@ mod tests {
         assert!(c.modifier.contains(Modifier::BOLD));
     }
 
+    /// The left cluster reads project, env (+ pill), space (+ pill),
+    /// Manage — the env chip first because it shapes what every screen
+    /// shows, the space chip next, and the same wide group gap between
+    /// each of the three so no keycap pill reads as the next chip's key.
     #[test]
-    fn space_chip_and_its_cycle_pill_sit_between_project_and_env() {
+    fn env_then_space_then_manage_each_a_group_gap_apart() {
         let theme = Theme::dark();
-        let (term, hits) = render(&theme, "alpha", "qa", None);
+        let (term, hits) = render_wide(&theme, "alpha", "qa", false, None, 110);
         let project = hits.rect_of(&Hit::HeaderProject).unwrap();
-        let space = hits.rect_of(&Hit::HeaderSpace).expect("space hit");
-        let cycle = hits.rect_of(&Hit::HeaderSpaceCycle).expect("cycle hit");
         let env = hits.rect_of(&Hit::HeaderEnv).unwrap();
-        assert!(
-            project.x < space.x,
-            "space chip is right of the project chip"
+        let env_cycle = hits.rect_of(&Hit::HeaderEnvCycle).expect("env cycle hit");
+        let space = hits.rect_of(&Hit::HeaderSpace).expect("space hit");
+        let space_cycle = hits
+            .rect_of(&Hit::HeaderSpaceCycle)
+            .expect("space cycle hit");
+        let manage = hits.rect_of(&Hit::HeaderManage).unwrap();
+        assert_eq!(env.x, project.x + project.width + 1, "env follows project");
+        assert_eq!(env_cycle.x, env.x + env.width + 1, "its pill trails it");
+        assert_eq!(
+            space.x,
+            env_cycle.x + env_cycle.width + 8,
+            "a group gap before the space chip"
         );
-        assert!(space.x < cycle.x, "cycle pill trails the space chip");
-        assert!(cycle.x < env.x, "the env chip follows both");
+        assert_eq!(space_cycle.x, space.x + space.width + 1);
+        assert_eq!(
+            manage.x,
+            space_cycle.x + space_cycle.width + 8,
+            "and the same gap before Manage"
+        );
         let label: String = (space.x..space.x + space.width)
             .map(|x| cell(&term, x, space.y).symbol().to_string())
             .collect();
         assert_eq!(label, " Space: main \u{25be} ");
-        let pill: String = (cycle.x..cycle.x + cycle.width)
-            .map(|x| cell(&term, x, cycle.y).symbol().to_string())
+        let pill: String = (space_cycle.x..space_cycle.x + space_cycle.width)
+            .map(|x| cell(&term, x, space_cycle.y).symbol().to_string())
             .collect();
         assert!(pill.contains("alt+]"), "{pill:?}");
     }
@@ -625,15 +658,15 @@ mod tests {
             " Space: main \u{25be} ".chars().count() as u16,
             "chips keep their full labels"
         );
-        assert_eq!(env.x, space.x + space.width + 1, "no pill gap left");
-        assert_eq!(manage.x, env.x + env.width + 1, "group gap collapses");
+        assert_eq!(space.x, env.x + env.width + 1, "no pill gap left");
+        assert_eq!(manage.x, space.x + space.width + 1, "group gap collapses");
         assert!(
             manage.x + manage.width <= 75,
             "the whole Manage chip fits: {manage:?}"
         );
 
         // Given the room for the full cluster, both pills are back.
-        let (_term, hits) = render_wide(&theme, "alpha", "qa", false, None, 100);
+        let (_term, hits) = render_wide(&theme, "alpha", "qa", false, None, 110);
         assert!(hits.rect_of(&Hit::HeaderSpaceCycle).is_some());
         assert!(hits.rect_of(&Hit::HeaderEnvCycle).is_some());
     }
@@ -730,21 +763,21 @@ mod tests {
     }
 
     /// The Manage chip sits in the left cluster — a wide group gap after
-    /// the env-cycle pill, so that pill still clearly belongs to the env
+    /// the space-cycle pill, so that pill still clearly belongs to the space
     /// chip — in the footer's clickable idiom with the keycap trailing
     /// the name: prominent full name + `alt+v` pill.
     #[test]
     fn manage_chip_follows_the_env_cluster_with_a_trailing_keycap() {
         let theme = Theme::dark();
-        let (term, hits) = render_wide(&theme, "alpha", "qa", false, None, 100);
+        let (term, hits) = render_wide(&theme, "alpha", "qa", false, None, 110);
         let rect = hits
             .rect_of(&Hit::HeaderManage)
             .expect("manage chip registered");
-        let cycle_rect = hits.rect_of(&Hit::HeaderEnvCycle).unwrap();
+        let cycle_rect = hits.rect_of(&Hit::HeaderSpaceCycle).unwrap();
         assert_eq!(
             rect.x,
             cycle_rect.x + cycle_rect.width + 8,
-            "a group gap after the env-cycle pill"
+            "a group gap after the space-cycle pill"
         );
         assert_eq!(
             row_text(&term, &rect),
@@ -766,7 +799,7 @@ mod tests {
     #[test]
     fn manage_chip_holds_the_pressed_fill_while_active() {
         let theme = Theme::dark();
-        let (term, hits) = render_wide(&theme, "alpha", "qa", true, None, 100);
+        let (term, hits) = render_wide(&theme, "alpha", "qa", true, None, 110);
         let rect = hits.rect_of(&Hit::HeaderManage).unwrap();
         assert_eq!(
             cell(&term, rect.x + 1, rect.y).bg,
@@ -786,9 +819,9 @@ mod tests {
     #[test]
     fn theme_chip_shows_its_name_and_trailing_keycap() {
         let theme = Theme::dark();
-        let (term, hits) = render_wide(&theme, "alpha", "qa", false, None, 120);
+        let (term, hits) = render_wide(&theme, "alpha", "qa", false, None, 130);
         let rect = hits.rect_of(&Hit::HeaderTheme).unwrap();
-        assert_eq!(rect.x + rect.width, 120 - 3, "right-aligned");
+        assert_eq!(rect.x + rect.width, 130 - 3, "right-aligned");
         assert_eq!(
             row_text(&term, &rect),
             format!(" Theme  {}+t ", crate::keys::alt_label())
@@ -803,12 +836,42 @@ mod tests {
             "trailing keycap pill tint matches the footer chips'"
         );
 
-        let (term, hits) = render_wide(&theme, "alpha", "qa", false, Some(&Hit::HeaderTheme), 120);
+        let (term, hits) = render_wide(&theme, "alpha", "qa", false, Some(&Hit::HeaderTheme), 130);
         let rect = hits.rect_of(&Hit::HeaderTheme).unwrap();
         assert_eq!(
             cell(&term, rect.x + 8, rect.y).bg,
             theme.tint(theme.text_muted, theme.control_hover),
             "hover lifts the keycap pill fill"
+        );
+    }
+
+    /// Saving beats keycaps: on a bar where the full left cluster would
+    /// leave no room for the save/discard group, the cycle pills yield
+    /// (exactly as they do for the Manage chip) so both Save and Discard
+    /// stay on the bar while the request is dirty.
+    #[test]
+    fn cycle_pills_yield_to_the_save_group_on_a_dirty_bar() {
+        let theme = Theme::dark();
+        let (_term, hits) = render_wide(&theme, "alpha", "qa", false, None, 120);
+        assert!(
+            hits.rect_of(&Hit::HeaderSpaceCycle).is_some(),
+            "clean: pills stay"
+        );
+        let (_term, hits) = render_dirty(&theme, 120);
+        assert!(
+            hits.rect_of(&Hit::FooterChip(crate::action::Action::SaveRequest))
+                .is_some(),
+            "dirty: the save chip is on the bar"
+        );
+        assert!(
+            hits.rect_of(&Hit::FooterChip(crate::action::Action::DiscardChanges))
+                .is_some(),
+            "and so is discard"
+        );
+        assert!(
+            hits.rect_of(&Hit::HeaderSpaceCycle).is_none()
+                && hits.rect_of(&Hit::HeaderEnvCycle).is_none(),
+            "the pills made the room"
         );
     }
 
