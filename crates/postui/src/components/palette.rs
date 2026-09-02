@@ -102,6 +102,12 @@ pub fn all_commands() -> Vec<Command> {
             action: Action::DeleteSelectedRequest,
         },
         Command {
+            id: "request-move-to-space",
+            name: "Request: move to space",
+            description: "Move the selected request into another space",
+            action: Action::PromptMoveSelectedRequestToSpace,
+        },
+        Command {
             id: "method-cycle",
             name: "Method: cycle",
             description: "Step to the next HTTP method",

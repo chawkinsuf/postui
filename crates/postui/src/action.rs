@@ -150,6 +150,10 @@ pub enum Action {
     /// for the request at `slug`; picking one dispatches
     /// `MoveRequestToSpace`.
     PromptMoveRequestToSpace(String),
+    /// The sidebar's `m` key / footer chip / palette: "Move to space…" for
+    /// the selected sidebar request — resolves the selection, then runs
+    /// `PromptMoveRequestToSpace`. A no-op when no request is selected.
+    PromptMoveSelectedRequestToSpace,
     /// The Spaces tab's "Move all requests…" button: opens the chooser of
     /// the other spaces for the space `from`; picking one dispatches
     /// `MoveAllRequests`.

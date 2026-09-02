@@ -3302,13 +3302,31 @@ fn an_invalid_listed_space_name_warns_once_and_survives_the_next_space_op() {
 }
 
 #[test]
-fn sidebar_footer_advertises_the_space_cycle_key() {
+fn sidebar_footer_advertises_move_to_space_not_the_space_cycle() {
     let (mut app, _dir) = spaced_app();
     app.focus = PaneId::Sidebar;
     // Wide enough that the chip strip isn't truncated before the last
     // sidebar chip.
     let text = rendered_text_tall(&mut app);
-    assert!(text.contains("space"), "{text}");
+    assert!(text.contains("m  move"), "{text}");
+    // Switching spaces is the header's (space pill + cycle pill); the
+    // footer no longer repeats it.
+    assert!(!text.contains("alt+]"), "{text}");
+}
+
+/// `m` on a selected sidebar request opens the "Move to space" chooser —
+/// the keyboard twin of the row menu's "Move to space…" — and the footer
+/// chip / palette dispatch the same slug-less action.
+#[test]
+fn m_in_the_sidebar_opens_the_move_to_space_chooser_for_the_selection() {
+    let (mut app, _dir) = spaced_app();
+    app.focus = PaneId::Sidebar;
+    app.sidebar.select_slug("main/alpha");
+    app.handle_key(&Keymap::default_bindings(), plain('m'));
+    let Some(Modal::Chooser(c)) = app.modals.top() else {
+        panic!("expected the Move to space chooser");
+    };
+    assert_eq!(c.title(), "Move to space");
 }
 
 // -- Task 11: space CRUD --------------------------------------------------

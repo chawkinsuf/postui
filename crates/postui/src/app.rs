@@ -1959,6 +1959,12 @@ impl App {
                 }
                 true
             }
+            Action::PromptMoveSelectedRequestToSpace => {
+                if let Some(slug) = self.sidebar.selected_slug() {
+                    self.apply(Action::PromptMoveRequestToSpace(slug));
+                }
+                true
+            }
             Action::MoveRequestToSpace { slug, space } => {
                 if space == self.project.active_space {
                     self.toasts

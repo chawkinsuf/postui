@@ -403,6 +403,8 @@ impl Component for Sidebar {
                 .then_some(Action::PromptRenameRequest),
             KeyCode::Char('d') => matches!(self.selected_row()?, Row::Request { .. })
                 .then_some(Action::DeleteSelectedRequest),
+            KeyCode::Char('m') => matches!(self.selected_row()?, Row::Request { .. })
+                .then_some(Action::PromptMoveSelectedRequestToSpace),
             _ => None,
         }
     }

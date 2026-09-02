@@ -41,7 +41,10 @@ pub(crate) fn footer_chips(
             ("n", "new", Some(Action::PromptNewRequest)),
             ("r", "rename", Some(Action::PromptRenameRequest)),
             ("d", "delete", Some(Action::DeleteSelectedRequest)),
-            ("alt+]", "space", Some(Action::CycleSpace(1))),
+            // Space *switching* is the header's job (its space pill and
+            // cycle pill); the sidebar's own space action is moving the
+            // selected request into another one.
+            ("m", "move", Some(Action::PromptMoveSelectedRequestToSpace)),
         ],
         PaneId::Editor => {
             let mut chips = vec![
