@@ -26,7 +26,7 @@ const SAVE_GROUP_W: u16 =
 /// `theme.control`-filled chips (lifting to `theme.control_hover` while
 /// hovered) with a trailing `▾` marker. Registers the same
 /// [`Hit::HeaderProject`]/[`Hit::HeaderEnv`]/[`Hit::HeaderSpace`] hits on
-/// the chip rects (in that on-screen order), plus the `alt+c`/`alt+]`
+/// the chip rects (in that on-screen order), plus the `alt+c`/`alt+l`
 /// cycle pills beside the env and space chips
 /// ([`Hit::HeaderEnvCycle`]/[`Hit::HeaderSpaceCycle`]).
 ///
@@ -86,7 +86,7 @@ pub fn draw_header(
     let env_label = format!(" Environment: {env} \u{25be} ");
     let env_w = env_label.chars().count() as u16;
     let space_pill = crate::paint::Chip {
-        label: "alt+]",
+        label: "alt+l",
         color: theme.text_muted,
     };
     let env_pill = crate::paint::Chip {
@@ -200,7 +200,7 @@ pub fn draw_header(
 
     // The space chip follows the env chip — a space is a partition of the
     // project, so it reads in the same idiom (labelled, bold) with its own
-    // `alt+]` cycle pill beside it.
+    // `alt+l` cycle pill beside it.
     let space_rect = Rect {
         x,
         y: mid_y,
@@ -633,7 +633,7 @@ mod tests {
         let pill: String = (space_cycle.x..space_cycle.x + space_cycle.width)
             .map(|x| cell(&term, x, space_cycle.y).symbol().to_string())
             .collect();
-        assert!(pill.contains("alt+]"), "{pill:?}");
+        assert!(pill.contains("alt+l"), "{pill:?}");
     }
 
     /// The narrow-bar rule: chips keep their full labels and the two

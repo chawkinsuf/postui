@@ -6911,7 +6911,7 @@ impl App {
         // 4-exception: with the caret live in the body editor, alt+←/→
         // are the macOS word-jump spelling (option+arrow) and go to the
         // editor instead of the global tab-cycle binding; tab switching
-        // from inside the body is mouse-only (alt-digits now switch
+        // from inside the body is mouse-only (ctrl-digits now switch
         // spaces), and everywhere else alt+arrows cycle as before. The
         // shifted variants and alt+backspace need no carve-out: those
         // combos are unbound, so step 4 already falls through to the
@@ -7691,7 +7691,7 @@ impl App {
 /// environment (alt+c) — the one Main shortcut whose target state, the
 /// active env, is also meaningful inside the Variable Manager (it shows
 /// per-env values; `SwitchEnv` re-syncs the Manager) — and the space
-/// switchers (alt-digits, alt+]/[, alt+shift+s), since spaces are global
+/// switchers (ctrl-digits, alt+l / alt+shift+l, alt+shift+s), since spaces are global
 /// context that the Manage screen itself is scoped to. Everything else in
 /// the global keymap (send, save, cycle project, focus URL, …) targets
 /// panes that aren't even drawn while a non-`Main` screen is open, so it

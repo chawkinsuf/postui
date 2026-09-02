@@ -348,7 +348,7 @@ pub enum Action {
     ForceSwitchSpace(String),
     /// `alt+N`: switch to the Nth space (1-based). Out of range: no-op.
     JumpSpace(usize),
-    /// `alt+]` / `alt+[`: next/previous space, wrapping.
+    /// `alt+l` / `alt+shift+l`: next/previous space, wrapping.
     CycleSpace(i32),
     /// Re-check the open project's files (project.toml, variables.toml,
     /// environments/, the active env file) against their recorded mtimes

@@ -315,20 +315,27 @@ impl Keymap {
             ("shift+tab", Action::FocusPrev),
             ("ctrl+p", Action::OpenPalette),
             ("esc", Action::Close),
-            // Spaces own the alt-digits (i3 style: the number swaps the
-            // whole working set). Editor tabs keep alt+left/right and
-            // clicks; `editor_tab_N` stays bindable from keys.toml.
-            ("alt+1", Action::JumpSpace(1)),
-            ("alt+2", Action::JumpSpace(2)),
-            ("alt+3", Action::JumpSpace(3)),
-            ("alt+4", Action::JumpSpace(4)),
-            ("alt+5", Action::JumpSpace(5)),
-            ("alt+6", Action::JumpSpace(6)),
-            ("alt+7", Action::JumpSpace(7)),
-            ("alt+8", Action::JumpSpace(8)),
-            ("alt+9", Action::JumpSpace(9)),
-            ("alt+]", Action::CycleSpace(1)),
-            ("alt+[", Action::CycleSpace(-1)),
+            // Spaces own the ctrl-digits (i3 style: the number swaps the
+            // whole working set). ctrl, not alt: Ghostty on Linux takes
+            // alt+1..9 for its own tabs. ctrl+digit has no legacy byte, so
+            // it needs the kitty protocol the app pushes — the same
+            // dependency as every other ctrl chord here. Editor tabs keep
+            // alt+left/right and clicks; `editor_tab_N` stays bindable
+            // from keys.toml.
+            ("ctrl+1", Action::JumpSpace(1)),
+            ("ctrl+2", Action::JumpSpace(2)),
+            ("ctrl+3", Action::JumpSpace(3)),
+            ("ctrl+4", Action::JumpSpace(4)),
+            ("ctrl+5", Action::JumpSpace(5)),
+            ("ctrl+6", Action::JumpSpace(6)),
+            ("ctrl+7", Action::JumpSpace(7)),
+            ("ctrl+8", Action::JumpSpace(8)),
+            ("ctrl+9", Action::JumpSpace(9)),
+            // A letter with shift for reverse, like the split's alt+w:
+            // the bracket chords (alt+] / alt+[) never arrived through
+            // opt on macOS.
+            ("alt+l", Action::CycleSpace(1)),
+            ("alt+shift+l", Action::CycleSpace(-1)),
             ("alt+shift+s", Action::OpenSpaceChooser),
             ("alt+right", Action::EditorTabCycle(1)),
             ("alt+left", Action::EditorTabCycle(-1)),
@@ -717,11 +724,17 @@ mod tests {
         assert_eq!(get("shift+tab"), Some(Action::FocusPrev));
         assert_eq!(get("ctrl+p"), Some(Action::OpenPalette));
         assert_eq!(get("esc"), Some(Action::Close));
-        assert_eq!(get("alt+1"), Some(Action::JumpSpace(1)));
-        assert_eq!(get("alt+4"), Some(Action::JumpSpace(4)));
-        assert_eq!(get("alt+9"), Some(Action::JumpSpace(9)));
-        assert_eq!(get("alt+]"), Some(Action::CycleSpace(1)));
-        assert_eq!(get("alt+["), Some(Action::CycleSpace(-1)));
+        // ctrl-digits, not alt-digits: Ghostty on Linux owns alt+1..9
+        // for its own tabs. alt+l / alt+shift+l, not alt+] / alt+[: the
+        // bracket chords never arrived through opt on macOS.
+        assert_eq!(get("ctrl+1"), Some(Action::JumpSpace(1)));
+        assert_eq!(get("ctrl+4"), Some(Action::JumpSpace(4)));
+        assert_eq!(get("ctrl+9"), Some(Action::JumpSpace(9)));
+        assert_eq!(get("alt+1"), None);
+        assert_eq!(get("alt+l"), Some(Action::CycleSpace(1)));
+        assert_eq!(get("alt+shift+l"), Some(Action::CycleSpace(-1)));
+        assert_eq!(get("alt+]"), None);
+        assert_eq!(get("alt+["), None);
         assert_eq!(get("alt+shift+s"), Some(Action::OpenSpaceChooser));
         assert_eq!(get("alt+right"), Some(Action::EditorTabCycle(1)));
         assert_eq!(get("alt+left"), Some(Action::EditorTabCycle(-1)));
@@ -786,14 +799,18 @@ mod tests {
                 .any(|(n, a)| *n == "editor_tab_1" && *a == Action::EditorTabSelect(0))
         );
         assert_eq!(m.combo_for("editor_tab_1"), None);
-        assert_eq!(m.combo_for("space_1"), Some("alt+1".to_string()));
-        assert_eq!(m.combo_for("space_next"), Some("alt+]".to_string()));
+        assert_eq!(m.combo_for("space_1"), Some("^1".to_string()));
+        assert_eq!(m.combo_for("space_next"), Some("alt+l".to_string()));
+        assert_eq!(m.combo_for("space_prev"), Some("alt+shift+l".to_string()));
     }
 
     #[test]
-    fn bracket_combos_parse() {
+    fn bracket_and_digit_combos_parse() {
         assert_eq!(KeyCombo::parse("alt+]").unwrap().code, KeyCode::Char(']'));
         assert_eq!(KeyCombo::parse("alt+[").unwrap().code, KeyCode::Char('['));
+        let c = KeyCombo::parse("ctrl+1").unwrap();
+        assert_eq!(c.code, KeyCode::Char('1'));
+        assert_eq!(c.modifiers, KeyModifiers::CONTROL);
     }
 
     #[test]

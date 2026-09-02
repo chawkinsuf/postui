@@ -43,8 +43,10 @@ implementation is a find-and-replace.
   set is unchanged (its paths already carry the space prefix).
 - **Switching spaces goes through the existing dirty gate**, same as
   opening another request.
-- **Keys:** `alt+1`..`alt+9` jump by position; `alt+]` / `alt+[` next and
-  previous, wrapping; `alt+shift+s` opens the space dropdown (mirroring
+- **Keys:** `ctrl+1`..`ctrl+9` jump by position; `alt+l` / `alt+shift+l`
+  next and previous, wrapping (rebound 2026-09-02 from `alt+1..9` and
+  `alt+]`/`alt+[`: Ghostty on Linux owns alt-digits, and the bracket
+  chords never arrived through opt on macOS); `alt+shift+s` opens the space dropdown (mirroring
   `alt+shift+e` for environments). All rebindable. **The editor tabs give
   up `alt+1`..`alt+4`** (decided 2026-09-01): tabs keep `alt+left` /
   `alt+right` and clicks, and the `editor_tab_N` names stay bindable in
@@ -232,7 +234,7 @@ chore): the active space stays, the editor clears if it held the moved
 request, and the sidebar cursor lands on the nearest remaining request.
 
 Footer chips when the sidebar is focused: existing new/rename/delete plus
-`alt+] space`.
+`alt+l space` (later replaced by the move chip).
 
 ### Header (`components/header_bar.rs`, `hit.rs`)
 
@@ -241,7 +243,7 @@ pill), **space chip** (with its cycle pill), Manage chip, with the same
 wide group gap after each cycle pill so no pill reads as the next chip's
 key. Theme stays on the right.
 
-The space chip mirrors the env chip's idiom: `▾ auth` with an `alt+]`
+The space chip mirrors the env chip's idiom: `▾ auth` with an `alt+l`
 cycle pill (`Hit::HeaderSpace`, `Hit::HeaderSpaceCycle`). Its dropdown
 lists every space as `1 main`, `2 auth`, … with ✓ on the active one (the
 Manage list carries no such mark), then
@@ -317,8 +319,8 @@ the old prefix, and the editor's open slug.
 
 ### Keys (`config.rs`, `keys.rs`)
 
-Default bindings: `alt+1`..`alt+9` → `JumpSpace(n)`, `alt+]` →
-`CycleSpace(1)`, `alt+[` → `CycleSpace(-1)`. Active on the Main and
+Default bindings: `ctrl+1`..`ctrl+9` → `JumpSpace(n)`, `alt+l` →
+`CycleSpace(1)`, `alt+shift+l` → `CycleSpace(-1)`. Active on the Main and
 Manage screens when no modal is open. Configurable under the same
 `[keys]` table as existing bindings.
 

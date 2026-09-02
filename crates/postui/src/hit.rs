@@ -14,7 +14,7 @@ pub enum Hit {
     HeaderProject,
     /// The header's `Space: <name> ▾` chip: opens the space dropdown.
     HeaderSpace,
-    /// The `alt+]` keycap pill beside the space chip: next space on click.
+    /// The `alt+l` keycap pill beside the space chip: next space on click.
     HeaderSpaceCycle,
     HeaderEnv,
     /// The `alt+c` keycap pill beside the env chip: cycles the active

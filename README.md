@@ -7,7 +7,7 @@ and menus all click — with the keyboard as a full alternative, not a
 requirement.
 
 Requests are grouped into **spaces** — top-level folders under `requests/`
-that you switch between with `alt+1`…`alt+9` (or `alt+]` / `alt+[`). One
+that you switch between with `ctrl+1`…`ctrl+9` (or `alt+l` / `alt+shift+l`). One
 space is visible at a time and each remembers the request you had open.
 Spaces, environments and variables are all edited on the Manage screen
 (`alt+v`).
