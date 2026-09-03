@@ -34,6 +34,14 @@ Mouse capture means the terminal's own drag-to-select is off. To select text
 (to copy it out with your terminal, not postui's clipboard command), hold
 Shift while dragging — most terminals bypass capture for that.
 
+### jq filter
+
+Press `alt+q` (or click 󰈲 in the response header) to open the jq bar and filter a JSON
+response live; the filter is saved with the request. Right-click any line of the tree for
+verbs that write the jq for you (Filter to this, Count, Pluck field…, Where field…, Only
+items where…). "Describe a filter…" sends the response's *structure* (key names and types,
+never values) to the command in `ai_cmd` (default `claude -p`) and puts the reply in the bar.
+
 ## Configuration
 
 Global settings live in `config.toml` (in your platform's config directory,
@@ -47,3 +55,7 @@ e.g. `~/.config/postui/config.toml` on Linux):
 - `osc52_limit` — the largest payload, in bytes, that the OSC 52 fallback
   will send. Above this size a copy is refused rather than silently
   truncated or dumped to the terminal. Default: `65536`.
+- `ai_cmd` — the command that reads a describe-a-filter prompt on stdin and
+  writes the jq filter it suggests to stdout. Default: `"claude -p"`.
+- `ai_confirmed` — whether the one-time confirmation to send response
+  structure to `ai_cmd` has been accepted.
