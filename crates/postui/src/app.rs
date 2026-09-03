@@ -1,4 +1,4 @@
-use crate::action::{Action, CopyTarget};
+use crate::action::{Action, CopyTarget, ExtractSource};
 use crate::anim::{AnimKey, Anims, Easing, ListId, StripId};
 use crate::components::editor::{Editor, EditorTab, SubFocus};
 use crate::components::line_input::LineInput;
@@ -73,13 +73,32 @@ pub enum TextDrag {
     VmCell,
 }
 
-/// Where `App::confirm_extract` reads the value to extract from — and so
-/// what it replaces with the token afterwards: the whole focused field
-/// (the palette/row-menu flow) or one surface's selection (the text menu).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ExtractSource {
-    FocusedField,
-    Selection(crate::action::TextSurface),
+/// Whether `n` can't be a new declaration's name: one of the reserved
+/// table names, or a variable / selector that already exists.
+fn name_taken(ctx: &ProjectContext, n: &str) -> bool {
+    n == "options"
+        || n == "groups"
+        || n == "entries"
+        || n == "selectors"
+        || ctx.model.vars.contains_key(n)
+        || ctx.model.selectors.contains_key(n)
+}
+
+/// The option-name seed for "Extract to selector": the value itself when
+/// it is short and reads as a name (letters, digits, `-`, `_`, `.`, spaces),
+/// so `en` or `user 1` arrive ready to confirm; blank for a UUID, a URL or
+/// anything long, which would make a poor option name.
+fn option_name_seed(text: &str) -> String {
+    let text = text.trim();
+    let name_like = text.chars().count() <= 24
+        && text
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | ' '));
+    if name_like {
+        text.to_string()
+    } else {
+        String::new()
+    }
 }
 
 /// Which full-frame screen is showing. `ui::draw` and `App::handle_key`
@@ -3712,42 +3731,7 @@ impl App {
                 true
             }
             Action::ExtractToVariable => {
-                if self.focus == PaneId::Editor
-                    && self.editor.active_tab == EditorTab::Body
-                    && self.editor.sub_focus == SubFocus::Content
-                {
-                    self.toasts.push(
-                        "extract to variable isn't available in the body yet",
-                        ToastKind::Warning,
-                    );
-                    return true;
-                }
-                // The table-row context menu's "Extract value to variable"
-                // only ever *selects* a row (see `context_menu_for`) — it
-                // never leaves a cell genuinely under edit, which is what
-                // `focused_field_text` requires below. Promote the selected
-                // row's Value cell to a live edit here, exactly as clicking
-                // it would, so the menu path reaches the same text the
-                // direct-action/palette paths do.
-                if self.focus == PaneId::Editor
-                    && self.editor.sub_focus == SubFocus::Content
-                    && self.editor.table.editing.is_none()
-                    && let Some(row) = self.editor.table.selected
-                    && row < self.editor.table_len()
-                {
-                    self.editor
-                        .click_table_cell(row, crate::components::table_editor::Col::Value);
-                }
-                let Some(text) = self.focused_field_text().map(|(t, _)| t.to_string()) else {
-                    self.toasts
-                        .push("focus a text field first", ToastKind::Warning);
-                    return true;
-                };
-                if text.trim().is_empty() {
-                    self.toasts.push(
-                        "nothing to extract \u{2014} the field is empty",
-                        ToastKind::Warning,
-                    );
+                if self.focused_extract_text().is_none() {
                     return true;
                 }
                 use crate::components::modal::PromptField;
@@ -3775,16 +3759,7 @@ impl App {
                 surface,
             } => self.confirm_extract(name, destination, ExtractSource::Selection(surface)),
             Action::ExtractSelection(surface) => {
-                let Some(text) = self.selection_text_of(surface) else {
-                    self.toasts
-                        .push("select some text first", ToastKind::Warning);
-                    return true;
-                };
-                if text.trim().is_empty() {
-                    self.toasts.push(
-                        "nothing to extract \u{2014} the selection is blank",
-                        ToastKind::Warning,
-                    );
+                if self.selection_extract_text(surface).is_none() {
                     return true;
                 }
                 use crate::components::modal::PromptField;
@@ -3803,6 +3778,24 @@ impl App {
                 });
                 true
             }
+            Action::ExtractToSelector => {
+                if let Some(text) = self.focused_extract_text() {
+                    self.open_extract_selector_prompt(&text, ExtractSource::FocusedField);
+                }
+                true
+            }
+            Action::ExtractSelectionToSelector(surface) => {
+                if let Some(text) = self.selection_extract_text(surface) {
+                    self.open_extract_selector_prompt(&text, ExtractSource::Selection(surface));
+                }
+                true
+            }
+            Action::ConfirmExtractToSelector {
+                name,
+                option,
+                shared,
+                source,
+            } => self.confirm_extract_to_selector(name, option, shared, source),
             Action::SwitchSpace(name) => {
                 if name == self.project.active_space {
                     return true;
@@ -4422,6 +4415,184 @@ impl App {
         }
     }
 
+    /// The text an extract-from-focused-field gesture (palette / row menu)
+    /// would take, or `None` after toasting why there is none: the body
+    /// (not supported yet), no focused field, or an empty one. As a side
+    /// effect, promotes a merely-selected table row to a live Value-cell
+    /// edit, which is what `focused_field_text` needs — the row menu only
+    /// ever *selects* a row (see `context_menu_for`).
+    fn focused_extract_text(&mut self) -> Option<String> {
+        if self.focus == PaneId::Editor
+            && self.editor.active_tab == EditorTab::Body
+            && self.editor.sub_focus == SubFocus::Content
+        {
+            self.toasts.push(
+                "extract isn't available in the body yet",
+                ToastKind::Warning,
+            );
+            return None;
+        }
+        if self.focus == PaneId::Editor
+            && self.editor.sub_focus == SubFocus::Content
+            && self.editor.table.editing.is_none()
+            && let Some(row) = self.editor.table.selected
+            && row < self.editor.table_len()
+        {
+            self.editor
+                .click_table_cell(row, crate::components::table_editor::Col::Value);
+        }
+        let Some(text) = self.focused_field_text().map(|(t, _)| t.to_string()) else {
+            self.toasts
+                .push("focus a text field first", ToastKind::Warning);
+            return None;
+        };
+        if text.trim().is_empty() {
+            self.toasts.push(
+                "nothing to extract \u{2014} the field is empty",
+                ToastKind::Warning,
+            );
+            return None;
+        }
+        Some(text)
+    }
+
+    /// `surface`'s selected text for an extract, or `None` after toasting
+    /// that nothing (or only whitespace) is selected there.
+    fn selection_extract_text(&mut self, surface: crate::action::TextSurface) -> Option<String> {
+        let Some(text) = self.selection_text_of(surface) else {
+            self.toasts
+                .push("select some text first", ToastKind::Warning);
+            return None;
+        };
+        if text.trim().is_empty() {
+            self.toasts.push(
+                "nothing to extract \u{2014} the selection is blank",
+                ToastKind::Warning,
+            );
+            return None;
+        }
+        Some(text)
+    }
+
+    /// The "Extract to selector" prompt: selector name, option name (seeded
+    /// from the value when it reads as a name — see `option_name_seed`),
+    /// and whether the selector's options are per-environment or shared.
+    fn open_extract_selector_prompt(&mut self, text: &str, source: ExtractSource) {
+        use crate::components::modal::PromptField;
+        self.push_modal(Modal::MultiPrompt {
+            title: "Extract to selector".into(),
+            fields: vec![
+                PromptField::text("name", "Name", ""),
+                PromptField::text("option", "Option", &option_name_seed(text)),
+                PromptField::choice("scope", "Options", &["Per environment", "Shared"]),
+            ],
+            focus: 0,
+            kind: PromptKind::ExtractSelector(source),
+        });
+    }
+
+    /// `Action::ConfirmExtractToSelector`: creates selector `name` with
+    /// the one field `name`, adds `option` holding the extracted text in
+    /// the active environment (or the shared options), selects it there,
+    /// and rewrites the source text to `{{name}}`. Every name check runs
+    /// before the first write, so a refusal leaves both files untouched;
+    /// the two writes plus the selection are one undo step.
+    fn confirm_extract_to_selector(
+        &mut self,
+        name: String,
+        option: String,
+        shared: bool,
+        source: ExtractSource,
+    ) -> bool {
+        if !postui_core::vars::is_valid_var_name(&name) {
+            self.toasts.push(
+                format!("\"{name}\" is not a valid selector name"),
+                ToastKind::Error,
+            );
+            self.last_action_failed = true;
+            return true;
+        }
+        if name_taken(&self.project, &name) {
+            self.toasts
+                .push(format!("\"{name}\" already exists"), ToastKind::Error);
+            self.last_action_failed = true;
+            return true;
+        }
+        let option = option.trim().to_string();
+        if option.is_empty() {
+            self.toasts
+                .push("give the option a name", ToastKind::Warning);
+            self.last_action_failed = true;
+            return true;
+        }
+        let text = match source {
+            ExtractSource::FocusedField => self.focused_field_text().map(|(t, _)| t.to_string()),
+            ExtractSource::Selection(surface) => self.selection_text_of(surface),
+        };
+        let Some(text) = text else {
+            let msg = match source {
+                ExtractSource::FocusedField => "focus a text field first",
+                ExtractSource::Selection(_) => "select some text first",
+            };
+            self.toasts.push(msg, ToastKind::Warning);
+            return true;
+        };
+        // A per-environment selector's option needs an environment file to
+        // land in; a shared one writes variables.toml whatever is active,
+        // and its selection is global too.
+        let env = match self.project.active_env.clone() {
+            Some(env) => env,
+            None if shared => String::new(),
+            None => {
+                self.toasts
+                    .push("no active environment", ToastKind::Warning);
+                return true;
+            }
+        };
+        let before = self.read_file_states(&self.project.var_file_paths());
+        let result = self
+            .apply_var_struct(&VarStructOp::NewSelector {
+                name: name.clone(),
+                fields: vec![name.clone()],
+                shared,
+            })
+            .and_then(|()| {
+                let mut values = indexmap::IndexMap::new();
+                values.insert(name.clone(), text.clone());
+                self.apply_var_struct(&VarStructOp::NewOption {
+                    env: env.clone(),
+                    selector: name.clone(),
+                    name: option.clone(),
+                    description: None,
+                    values,
+                })
+            });
+        match result {
+            Ok(()) => {
+                self.project.set_selection_for(&env, &name, &option);
+                self.varmanager.sync(&self.project);
+                self.record_var_file_step(before);
+                match source {
+                    ExtractSource::FocusedField => self.replace_focused_field_with_token(&name),
+                    ExtractSource::Selection(surface) => {
+                        self.replace_selection_with_token(surface, &name);
+                    }
+                }
+                self.toasts
+                    .push(format!("extracted to {{{{{name}}}}}"), ToastKind::Success);
+            }
+            Err(msg) => {
+                // The selector may already be declared by the time the
+                // option write fails; the recorded step lets undo peel it.
+                self.varmanager.sync(&self.project);
+                self.record_var_file_step(before);
+                self.toasts.push(msg, ToastKind::Error);
+                self.last_action_failed = true;
+            }
+        }
+        true
+    }
+
     /// The shared tail of `Action::ConfirmExtractVariable` and
     /// `Action::ConfirmExtractSelection`: validates `name`, reads the value
     /// from `source`, writes it at `destination` (with the per-destination
@@ -4993,15 +5164,6 @@ impl App {
     fn apply_var_struct(&mut self, op: &VarStructOp) -> Result<(), String> {
         use postui_core::varedit;
         use postui_core::vars::is_valid_var_name;
-
-        let name_taken = |ctx: &ProjectContext, n: &str| {
-            n == "options"
-                || n == "groups"
-                || n == "entries"
-                || n == "selectors"
-                || ctx.model.vars.contains_key(n)
-                || ctx.model.selectors.contains_key(n)
-        };
 
         match op {
             VarStructOp::NewVar { name, description } => {
@@ -6207,6 +6369,14 @@ impl App {
             } else {
                 MenuItem::disabled("Extract to variable\u{2026}")
             });
+            items.push(if has_selection {
+                MenuItem::new(
+                    "Extract to selector\u{2026}",
+                    Action::ExtractSelectionToSelector(surface),
+                )
+            } else {
+                MenuItem::disabled("Extract to selector\u{2026}")
+            });
         }
         Some(items)
     }
@@ -6329,6 +6499,7 @@ impl App {
             MenuItem::new("Duplicate row", Action::DuplicateTableRow(i)),
             MenuItem::new(format!("Delete {noun}"), Action::DeleteTableRow(i)),
             MenuItem::new("Extract value to variable…", Action::ExtractToVariable),
+            MenuItem::new("Extract value to selector…", Action::ExtractToSelector),
         ])
     }
 

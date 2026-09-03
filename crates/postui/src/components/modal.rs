@@ -117,6 +117,10 @@ pub enum PromptKind {
     /// of one surface. Confirming emits `Action::ConfirmExtractSelection`
     /// carrying the surface; its selection is re-read then.
     ExtractSelection(crate::action::TextSurface),
+    /// `Action::ExtractToSelector` / `ExtractSelectionToSelector`: the
+    /// name / option / scope prompt whose confirm emits
+    /// `Action::ConfirmExtractToSelector` for `source`.
+    ExtractSelector(crate::action::ExtractSource),
     /// Clicking a simple variable's inline `{{token}}`
     /// (`Action::OpenVarTokenPopup`): a `Modal::MultiPrompt` with a `value`
     /// field and a `destination` choice field preselected to whichever
@@ -1010,6 +1014,7 @@ impl ModalStack {
                         | PromptKind::EditOption { .. }
                         | PromptKind::ExtractVariable
                         | PromptKind::ExtractSelection(_)
+                        | PromptKind::ExtractSelector(_)
                         | PromptKind::EditVarValue { .. } => {
                             unreachable!(
                                 "multi-field prompt kinds only ever back Modal::MultiPrompt"
@@ -1216,6 +1221,16 @@ impl ModalStack {
                                 name,
                                 destination,
                                 surface: *surface,
+                            }]
+                        }
+                        PromptKind::ExtractSelector(source) => {
+                            let name = get("name").filter(|s| !s.is_empty())?.to_string();
+                            let option = get("option").filter(|s| !s.is_empty())?.to_string();
+                            vec![Action::ConfirmExtractToSelector {
+                                name,
+                                option,
+                                shared: get("scope") == Some("Shared"),
+                                source: *source,
                             }]
                         }
                         PromptKind::EditVarValue {

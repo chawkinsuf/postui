@@ -14,6 +14,15 @@ pub enum ExtractDestination {
     Request,
 }
 
+/// Where an extract reads the value from — and so what it replaces with
+/// the token afterwards: the whole focused field (the palette/row-menu
+/// flow) or one surface's selection (the text menu).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtractSource {
+    FocusedField,
+    Selection(TextSurface),
+}
+
 /// One text surface a right-click context menu acts on (see
 /// `App::text_surface_menu`): names which selection `Action::CopySelection`
 /// reads, so a menu opened over the response pane copies *its* highlight
@@ -678,6 +687,25 @@ pub enum Action {
         name: String,
         destination: ExtractDestination,
         surface: TextSurface,
+    },
+    /// Palette "Extract to selector" / the row menu's "Extract value to
+    /// selector…": like `ExtractToVariable`, but the prompt asks for a
+    /// selector name, an option name and a scope, and confirming creates a
+    /// new one-field selector whose only option holds the field's text.
+    ExtractToSelector,
+    /// The text menu's "Extract to selector…": the same prompt for the
+    /// selected text of `surface` only (see `ExtractSelection`).
+    ExtractSelectionToSelector(TextSurface),
+    /// Confirmed `PromptKind::ExtractSelector`: declares selector `name`
+    /// with the single field `name` (`shared` picks where its options
+    /// live), adds option `option` with that field set to the extracted
+    /// text, selects it in the active environment, and swaps the source
+    /// text for `{{name}}` as the variable extract does.
+    ConfirmExtractToSelector {
+        name: String,
+        option: String,
+        shared: bool,
+        source: ExtractSource,
     },
 
     // -- Stage 7: variable-format migration (spec §3.3) --

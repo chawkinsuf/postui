@@ -589,7 +589,8 @@ fn table_row_context_menu_duplicate_delete_extract_end_to_end() {
         vec![
             "Duplicate row",
             "Delete param",
-            "Extract value to variable\u{2026}"
+            "Extract value to variable\u{2026}",
+            "Extract value to selector\u{2026}"
         ]
     );
     let duplicate = menu.items[0].action.clone().unwrap();
@@ -16063,7 +16064,12 @@ fn right_click_on_the_url_bar_offers_copy_and_paste_and_copy_copies_the_selectio
     assert!(app.handle_mouse(right_down(area.x + 3, area.y)));
     assert_eq!(
         menu_labels(&app),
-        vec!["Copy", "Paste", "Extract to variable\u{2026}"]
+        vec![
+            "Copy",
+            "Paste",
+            "Extract to variable\u{2026}",
+            "Extract to selector\u{2026}"
+        ]
     );
     assert!(
         app.editor.url.selection().is_some(),
@@ -16103,7 +16109,12 @@ fn right_click_on_the_url_bar_without_a_selection_greys_copy_and_paste_lands_in_
     app.handle_mouse(right_down(area.x + 3, area.y));
     assert_eq!(
         menu_labels(&app),
-        vec!["Copy", "Paste", "Extract to variable\u{2026}"]
+        vec![
+            "Copy",
+            "Paste",
+            "Extract to variable\u{2026}",
+            "Extract to selector\u{2026}"
+        ]
     );
     assert!(
         menu_action(&app, "Copy").is_none(),
@@ -16153,7 +16164,12 @@ fn right_click_on_the_edited_table_cell_offers_the_text_menu_and_keeps_the_edit_
     app.handle_mouse(right_down(cell.x, cell.y));
     assert_eq!(
         menu_labels(&app),
-        vec!["Copy", "Paste", "Extract to variable\u{2026}"]
+        vec![
+            "Copy",
+            "Paste",
+            "Extract to variable\u{2026}",
+            "Extract to selector\u{2026}"
+        ]
     );
     assert!(
         app.editor.table.editing.is_some(),
@@ -16203,7 +16219,8 @@ fn right_click_elsewhere_on_the_row_keeps_the_row_menu_and_commits_the_edit() {
         vec![
             "Duplicate row",
             "Delete param",
-            "Extract value to variable\u{2026}"
+            "Extract value to variable\u{2026}",
+            "Extract value to selector\u{2026}"
         ]
     );
     assert!(
@@ -16239,7 +16256,11 @@ fn right_click_on_the_response_pane_offers_copy_only() {
     app.handle_mouse(right_down(area.x + 1, area.y));
     assert_eq!(
         menu_labels(&app),
-        vec!["Copy", "Extract to variable\u{2026}"],
+        vec![
+            "Copy",
+            "Extract to variable\u{2026}",
+            "Extract to selector\u{2026}"
+        ],
         "the response is read-only: no Paste"
     );
     let copy = menu_action(&app, "Copy").expect("Copy is enabled with a selection");
@@ -16297,7 +16318,12 @@ fn right_click_on_the_body_editor_offers_copy_and_paste() {
     app.handle_mouse(right_down(area.x + 2, area.y));
     assert_eq!(
         menu_labels(&app),
-        vec!["Copy", "Paste", "Extract to variable\u{2026}"]
+        vec![
+            "Copy",
+            "Paste",
+            "Extract to variable\u{2026}",
+            "Extract to selector\u{2026}"
+        ]
     );
     assert!(
         app.editor.body_selected_text().is_some(),
@@ -16400,7 +16426,12 @@ fn text_menu_offers_extract_to_variable_only_with_a_selection() {
     app.handle_mouse(right_down(area.x + 3, area.y));
     assert_eq!(
         menu_labels(&app),
-        vec!["Copy", "Paste", "Extract to variable\u{2026}"]
+        vec![
+            "Copy",
+            "Paste",
+            "Extract to variable\u{2026}",
+            "Extract to selector\u{2026}"
+        ]
     );
     assert!(
         menu_action(&app, "Extract to variable\u{2026}").is_none(),
@@ -16563,7 +16594,11 @@ fn extracting_a_response_selection_creates_the_variable_without_touching_the_edi
     app.handle_mouse(right_down(area.x + 9, area.y));
     assert_eq!(
         menu_labels(&app),
-        vec!["Copy", "Extract to variable\u{2026}"]
+        vec![
+            "Copy",
+            "Extract to variable\u{2026}",
+            "Extract to selector\u{2026}"
+        ]
     );
     let open = menu_action(&app, "Extract to variable\u{2026}").unwrap();
     app.update(Action::Close);
@@ -16608,4 +16643,267 @@ fn extract_selection_refuses_when_the_selection_is_gone() {
         "{:?}",
         app.toasts.messages()
     );
+}
+
+// -- Extract to selector: a new one-field selector whose only option holds
+// the extracted value --
+
+#[test]
+fn text_menu_offers_extract_to_selector_under_extract_to_variable() {
+    use crate::action::{ExtractSource, TextSurface};
+    let mut app = App::new_for_test();
+    app.editor.url = crate::components::line_input::LineInput::new("https://x/ping/abc-123");
+    render_once(&mut app);
+    let area = app.editor.last_url_text_area.expect("url area recorded");
+
+    app.handle_mouse(right_down(area.x + 3, area.y));
+    assert_eq!(
+        menu_labels(&app),
+        vec![
+            "Copy",
+            "Paste",
+            "Extract to variable\u{2026}",
+            "Extract to selector\u{2026}"
+        ]
+    );
+    assert!(
+        menu_action(&app, "Extract to selector\u{2026}").is_none(),
+        "nothing selected: greyed"
+    );
+    app.update(Action::Close);
+
+    select_in_url(&mut app, "abc-123");
+    app.handle_mouse(right_down(area.x + 3, area.y));
+    let open = menu_action(&app, "Extract to selector\u{2026}").unwrap();
+    assert_eq!(open, Action::ExtractSelectionToSelector(TextSurface::Url));
+    app.update(Action::Close);
+    app.update(open);
+    let Some(Modal::MultiPrompt { kind, fields, .. }) = app.modals.top() else {
+        panic!("expected the extract-selector prompt");
+    };
+    assert!(matches!(
+        kind,
+        PromptKind::ExtractSelector(ExtractSource::Selection(TextSurface::Url))
+    ));
+    let keys: Vec<&str> = fields.iter().map(|f| f.key.as_str()).collect();
+    assert_eq!(keys, vec!["name", "option", "scope"]);
+    assert_eq!(
+        fields[1].input.text(),
+        "abc-123",
+        "a short, name-safe value seeds the option name"
+    );
+    assert_eq!(fields[2].choices, vec!["Per environment", "Shared"]);
+}
+
+#[test]
+fn extract_selector_option_seed_is_blank_for_a_long_or_unsafe_value() {
+    use crate::action::TextSurface;
+    let mut app = App::new_for_test();
+    app.editor.url = crate::components::line_input::LineInput::new(
+        "https://x/ping/3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+    );
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Url;
+    select_in_url(&mut app, "3f2504e0-4f89-11d3-9a0c-0305e82c3301");
+    app.update(Action::ExtractSelectionToSelector(TextSurface::Url));
+    let Some(Modal::MultiPrompt { fields, .. }) = app.modals.top() else {
+        panic!("expected the extract-selector prompt");
+    };
+    assert_eq!(fields[1].input.text(), "");
+}
+
+#[test]
+fn extract_selector_from_a_url_selection_creates_the_selector_its_option_and_selects_it() {
+    use crate::action::{ExtractSource, TextSurface};
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    postui_core::storage::save_request(dir.path(), "main/ping", &req("https://x/ping/east"))
+        .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("main/ping".into()));
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Url;
+    select_in_url(&mut app, "east");
+
+    app.update(Action::ConfirmExtractToSelector {
+        name: "region".into(),
+        option: "us-east".into(),
+        shared: false,
+        source: ExtractSource::Selection(TextSurface::Url),
+    });
+
+    assert!(app.modals.is_empty());
+    assert_eq!(app.editor.url.text(), "https://x/ping/{{region}}");
+    let vars = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    assert!(vars.contains("[selectors.region]"), "{vars}");
+    assert!(vars.contains("fields = [\"region\"]"), "{vars}");
+    assert!(!vars.contains("[options.region"), "not shared: {vars}");
+    let env = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(env.contains("[options.region.us-east]"), "{env}");
+    assert!(env.contains("region = \"east\""), "{env}");
+    assert_eq!(
+        app.project
+            .selections_for("qa")
+            .get("region")
+            .map(String::as_str),
+        Some("us-east"),
+        "the new option is selected so the token resolves"
+    );
+    assert_eq!(app.project.resolved.values["region"], "east");
+    assert!(
+        app.toasts
+            .messages()
+            .iter()
+            .any(|m| m.contains("extracted to {{region}}")),
+        "{:?}",
+        app.toasts.messages()
+    );
+}
+
+#[test]
+fn extract_selector_shared_puts_the_option_in_variables_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let keymap = Keymap::default_bindings();
+    app.editor.url = LineInput::new("v2");
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Url;
+
+    app.update(Action::ExtractToSelector);
+    assert!(matches!(
+        app.modals.top(),
+        Some(Modal::MultiPrompt {
+            kind: PromptKind::ExtractSelector(crate::action::ExtractSource::FocusedField),
+            ..
+        })
+    ));
+    type_into_field(&mut app, &keymap, "api_version");
+    app.handle_key(&keymap, tab_key()); // option, seeded "v2"
+    app.handle_key(&keymap, tab_key()); // scope
+    app.handle_key(&keymap, right_key()); // Shared
+    app.handle_key(&keymap, enter_key());
+
+    assert!(app.modals.is_empty(), "{:?}", app.toasts.messages());
+    assert_eq!(app.editor.url.text(), "{{api_version}}");
+    let vars = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    assert!(vars.contains("[selectors.api_version]"), "{vars}");
+    assert!(vars.contains("shared = true"), "{vars}");
+    assert!(vars.contains("[options.api_version.v2]"), "{vars}");
+    assert!(vars.contains("api_version = \"v2\""), "{vars}");
+    let env = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+    assert!(!env.contains("api_version"), "{env}");
+    assert_eq!(
+        app.project
+            .shared_selections()
+            .get("api_version")
+            .map(String::as_str),
+        Some("v2")
+    );
+    assert_eq!(app.project.resolved.values["api_version"], "v2");
+}
+
+#[test]
+fn extract_selector_refuses_a_taken_name_and_leaves_everything_alone() {
+    use crate::action::{ExtractSource, TextSurface};
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.editor.url = LineInput::new("https://x/ping/east");
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Url;
+    select_in_url(&mut app, "east");
+    let vars_before = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+    let env_before = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
+
+    for taken in ["user", "base_url"] {
+        app.update(Action::ConfirmExtractToSelector {
+            name: taken.into(),
+            option: "x".into(),
+            shared: false,
+            source: ExtractSource::Selection(TextSurface::Url),
+        });
+    }
+
+    assert_eq!(app.editor.url.text(), "https://x/ping/east");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("variables.toml")).unwrap(),
+        vars_before
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap(),
+        env_before
+    );
+    let errors = app
+        .toasts
+        .messages()
+        .iter()
+        .filter(|m| m.contains("already exists"))
+        .count();
+    assert_eq!(errors, 2, "{:?}", app.toasts.messages());
+}
+
+#[test]
+fn row_menu_extract_value_to_selector_promotes_the_row_and_replaces_the_cell() {
+    use crate::action::ExtractSource;
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.editor.params.insert(
+        "tenant".into(),
+        postui_core::model::Entry {
+            value: "acme".into(),
+            enabled: true,
+        },
+    );
+    app.focus = PaneId::Editor;
+    app.editor.active_tab = EditorTab::Params;
+    app.editor.sub_focus = SubFocus::Content;
+    app.editor.table.selected = Some(0);
+    render_once(&mut app);
+    let r = app
+        .hits
+        .rect_of(&crate::hit::Hit::TableRow(0))
+        .expect("the row's background is registered");
+
+    app.handle_mouse(right_down(r.x, r.y));
+    assert_eq!(
+        menu_labels(&app),
+        vec![
+            "Duplicate row",
+            "Delete param",
+            "Extract value to variable\u{2026}",
+            "Extract value to selector\u{2026}"
+        ]
+    );
+    let extract = menu_action(&app, "Extract value to selector\u{2026}").unwrap();
+    assert_eq!(extract, Action::ExtractToSelector);
+    app.update(Action::Close);
+    app.update(extract);
+    let Some(Modal::MultiPrompt { kind, fields, .. }) = app.modals.top() else {
+        panic!("expected the extract-selector prompt");
+    };
+    assert!(matches!(
+        kind,
+        PromptKind::ExtractSelector(ExtractSource::FocusedField)
+    ));
+    assert_eq!(fields[1].input.text(), "acme");
+    app.modals.pop();
+
+    app.update(Action::ConfirmExtractToSelector {
+        name: "tenant".into(),
+        option: "acme".into(),
+        shared: false,
+        source: ExtractSource::FocusedField,
+    });
+    assert_eq!(app.editor.params["tenant"].value, "{{tenant}}");
+    assert!(
+        app.editor.table.editing.is_none(),
+        "the cell edit is committed"
+    );
+    assert_eq!(app.project.resolved.values["tenant"], "acme");
 }

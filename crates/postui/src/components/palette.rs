@@ -294,6 +294,12 @@ pub fn all_commands() -> Vec<Command> {
             action: Action::ExtractToVariable,
         },
         Command {
+            id: "vars-extract-selector",
+            name: "Extract to selector",
+            description: "Turn the selected text into a new selector's only option",
+            action: Action::ExtractToSelector,
+        },
+        Command {
             id: "undo",
             name: "Undo",
             description: "Undo the last change",
