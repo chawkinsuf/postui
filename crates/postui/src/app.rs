@@ -1042,6 +1042,33 @@ impl App {
         }
     }
 
+    /// Hands a body too big to parse on the UI thread to a blocking
+    /// worker, whose result comes back as `PrettyParsed` tagged with
+    /// `generation`. Outside a tokio runtime (`App::new_for_test`) the
+    /// parse runs inline and its result is dispatched immediately.
+    fn spawn_pretty_parse(&mut self, generation: u64, body: String) {
+        use crate::components::json_tree::JsonTree;
+        if tokio::runtime::Handle::try_current().is_err() {
+            let tree = JsonTree::parse(&body);
+            self.dispatch(Action::PrettyParsed {
+                generation,
+                tree: tree.map(Box::new),
+            });
+            return;
+        }
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let tree = tokio::task::spawn_blocking(move || JsonTree::parse(&body))
+                .await
+                .ok()
+                .flatten();
+            let _ = tx.send(Action::PrettyParsed {
+                generation,
+                tree: tree.map(Box::new),
+            });
+        });
+    }
+
     /// Hands a background-pool jq run to the runtime. `App::new_for_test`
     /// builds its channel outside a tokio runtime, so tests run the worker
     /// inline and dispatch its result immediately instead of spawning.
@@ -1106,6 +1133,12 @@ impl App {
         // ran, so the underline glide from the outgoing response is stale.
         if swapped {
             self.reset_response_tab_underline();
+            // A response that shed its tree while cached (see
+            // `Session::KEEP_WARM`) gets the same background parse a
+            // fresh arrival does.
+            if let Some((generation, body)) = self.session.response.take_reparse() {
+                self.spawn_pretty_parse(generation, body);
+            }
         }
         // The send button shows "sending" only when the in-flight send
         // belongs to the request being looked at.
@@ -2507,19 +2540,7 @@ impl App {
                     self.reset_response_tab_underline();
                 }
                 if delivered && let Some(body) = big {
-                    let tx = self.tx.clone();
-                    tokio::spawn(async move {
-                        let tree = tokio::task::spawn_blocking(move || {
-                            crate::components::json_tree::JsonTree::parse(&body)
-                        })
-                        .await
-                        .ok()
-                        .flatten();
-                        let _ = tx.send(Action::PrettyParsed {
-                            generation,
-                            tree: tree.map(Box::new),
-                        });
-                    });
+                    self.spawn_pretty_parse(generation, body);
                 }
                 delivered
             }

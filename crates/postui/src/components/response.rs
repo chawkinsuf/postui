@@ -208,6 +208,10 @@ pub struct ReadyView {
     /// True while a background parse of this body is still running: no tree
     /// yet, but one may still arrive.
     pub parsing: bool,
+    /// The tree (and jq state) were shed to save memory while this response
+    /// sat in the session cache (`Response::shed_derived`); the next time it
+    /// comes on screen `take_reparse` starts the parse again.
+    shed: bool,
     /// When the background parse started, so the wait can animate.
     parse_started: Instant,
     /// Verbatim body lines — never reformatted, never re-wrapped.
@@ -304,6 +308,7 @@ impl ReadyView {
             tree,
             generation,
             parsing,
+            shed: false,
             parse_started: Instant::now(),
             raw_lines: data.body.split('\n').map(|l| l.to_string()).collect(),
             header_lines: data
@@ -949,6 +954,61 @@ impl Response {
     /// actually run. Resetting `jq_applied` to `None` makes `sync_jq`'s
     /// next reconcile re-apply the filter (a fresh run) instead of no-oping
     /// on a filter it only ever *started*.
+    /// Whether this response holds the derived state a big body is worth
+    /// shedding from a cache slot: a tree or a jq document over a body past
+    /// the background-parse threshold. Small bodies are never shed — their
+    /// tree is cheap and re-parsing it would be pure churn.
+    pub fn holds_big_derived(&self) -> bool {
+        let Some(view) = self.view.as_ref() else {
+            return false;
+        };
+        let big =
+            matches!(&self.state, ResponseState::Ready(d) if d.body.len() > SYNC_PRETTY_BYTES);
+        big && (view.tree.is_some() || view.jq_doc.is_some())
+    }
+
+    /// Drops the tree, the filtered tree, the jq document and the raw
+    /// column index — everything derived from the body — while keeping the
+    /// body, headers and view settings (tab, cursor, scroll, filter). The
+    /// response reads as "parsing" again, so the Tree tab stays and shows
+    /// its spinner once the response is back on screen and
+    /// `take_reparse` has restarted the parse; `attach_tree` then clears
+    /// `jq_applied` so the filter re-runs against the fresh tree.
+    pub fn shed_derived(&mut self) {
+        let Some(view) = self.view.as_mut() else {
+            return;
+        };
+        view.tree = None;
+        view.jq_tree = None;
+        view.jq_doc = None;
+        view.jq_tree_code = None;
+        view.jq_applied = None;
+        view.jq_outputs = 1;
+        view.raw_marks.clear();
+        view.content_width = None;
+        view.clear_sel();
+        view.parsing = true;
+        view.shed = true;
+        self.jq.pending = None;
+    }
+
+    /// The parse a shed response needs now that it is back on screen: its
+    /// generation and body, once — the caller hands them to the same
+    /// background parse a fresh arrival gets. `None` when nothing was shed.
+    pub fn take_reparse(&mut self) -> Option<(u64, String)> {
+        let view = self.view.as_mut()?;
+        if !view.shed {
+            return None;
+        }
+        view.shed = false;
+        view.parse_started = Instant::now();
+        let body = match &self.state {
+            ResponseState::Ready(d) => d.body.clone(),
+            _ => return None,
+        };
+        Some((view.generation, body))
+    }
+
     pub fn drop_pending_jq(&mut self) {
         if self.jq.pending.take().is_some()
             && let Some(view) = self.view.as_mut()

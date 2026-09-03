@@ -10,8 +10,15 @@
 //! screen.
 
 use crate::components::response::{Response, ResponseState};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
+
+/// How many big responses keep their tree and jq state while cached.
+/// Switching back to any of the last few is instant; older ones shed that
+/// state (`Response::shed_derived`) and re-parse in the background when
+/// they return, so a session that has touched many large responses holds
+/// a few trees, not one per request.
+pub const KEEP_WARM: usize = 3;
 
 /// A dispatched request: when it started (for the elapsed display), which
 /// generation it belongs to (so a stale result can be told apart from the
@@ -40,6 +47,10 @@ pub struct Session {
     /// flight, and `begin_send` defensively supersedes a same-request
     /// entry), any number of entries across requests.
     pub in_flight: Vec<InFlight>,
+    /// The cached big responses still holding their derived state, oldest
+    /// first; at most `KEEP_WARM` long — pushing past that sheds the
+    /// oldest.
+    warm: VecDeque<Option<String>>,
     /// Bumped on every `begin_send`; tags each spawned send so a result
     /// that arrives after a newer send has started can be told apart and
     /// dropped. Public so tests can fabricate delivery actions.
@@ -72,8 +83,21 @@ impl Session {
         // cache to requests that actually have a result bounds its size to
         // the requests used this session.
         if !matches!(outgoing.state(), ResponseState::Empty) {
+            let big = outgoing.holds_big_derived();
             self.cache.insert(self.open_slug.clone(), outgoing);
+            if big {
+                self.warm.retain(|s| s != &self.open_slug);
+                self.warm.push_back(self.open_slug.clone());
+                while self.warm.len() > KEEP_WARM {
+                    if let Some(old) = self.warm.pop_front()
+                        && let Some(cold) = self.cache.get_mut(&old)
+                    {
+                        cold.shed_derived();
+                    }
+                }
+            }
         }
+        self.warm.retain(|s| s != open);
         self.response = self.cache.remove(open).unwrap_or_default();
         self.response.drop_pending_jq();
         self.response.collapsed = collapsed;
@@ -204,6 +228,7 @@ impl Session {
         }
         self.send_generation += 1;
         self.cache.clear();
+        self.warm.clear();
         // The collapse layout preference survives even a project switch.
         let collapsed = self.response.collapsed;
         self.response = Response::default();
@@ -248,6 +273,65 @@ mod tests {
             slug: Some(slug.to_string()),
             task: tokio::spawn(async {}),
         }
+    }
+
+    #[test]
+    fn big_responses_beyond_the_last_few_shed_their_trees_and_reparse_on_return() {
+        use crate::components::json_tree::JsonTree;
+        use crate::components::response::SYNC_PRETTY_BYTES;
+        let big = |n: usize| {
+            format!(
+                r#"{{"pad": "{}", "n": {n}}}"#,
+                "x".repeat(SYNC_PRETTY_BYTES)
+            )
+        };
+        let mut s = Session::default();
+        // A small response and KEEP_WARM + 1 big ones, each parsed.
+        open(&mut s, "small");
+        s.response
+            .set_state(ResponseState::Ready(data("{\"n\": 0}")), 0);
+        for i in 1..=KEEP_WARM + 1 {
+            open(&mut s, &format!("big{i}"));
+            let body = big(i);
+            s.response
+                .set_state(ResponseState::Ready(data(&body)), i as u64);
+            assert!(s.response.attach_tree(i as u64, JsonTree::parse(&body)));
+        }
+        open(&mut s, "elsewhere");
+        let has_tree = |s: &Session, slug: &str| {
+            s.cache[&Some(slug.to_string())]
+                .view()
+                .is_some_and(|v| v.tree.is_some())
+        };
+        assert!(has_tree(&s, "small"), "a small response is never shed");
+        assert!(
+            !has_tree(&s, "big1"),
+            "the oldest big one past KEEP_WARM sheds its tree"
+        );
+        for i in 2..=KEEP_WARM + 1 {
+            assert!(has_tree(&s, &format!("big{i}")), "big{i} stays warm");
+        }
+        assert_eq!(
+            body_of(&s.cache[&Some("big1".into())]).map(str::len),
+            Some(big(1).len()),
+            "the body itself is kept"
+        );
+        // A warm one returns as it was: nothing to re-parse.
+        open(&mut s, "big3");
+        assert!(s.response.view().unwrap().tree.is_some());
+        assert_eq!(s.response.take_reparse(), None);
+        // The shed one returns parsing, and hands its body back once.
+        open(&mut s, "big1");
+        let view = s.response.view().unwrap();
+        assert!(view.tree.is_none() && view.parsing, "shed: parsing again");
+        let (generation, body) = s.response.take_reparse().expect("needs a parse");
+        assert_eq!((generation, body.len()), (1, big(1).len()));
+        assert_eq!(s.response.take_reparse(), None, "handed out once");
+        assert!(s.response.attach_tree(generation, JsonTree::parse(&body)));
+        assert!(
+            s.response.view().unwrap().tree.is_some(),
+            "the tree is back"
+        );
     }
 
     #[test]

@@ -18024,3 +18024,52 @@ async fn esc_while_asking_cancels_and_a_late_reply_is_dropped() {
     app.update(stale);
     assert_eq!(app.session.response.jq_text(), "");
 }
+
+/// A big response that sat in the cache past `Session::KEEP_WARM` newer big
+/// ones comes back without its tree; the switch restarts the background
+/// parse (inline here), and once the tree lands the filter the editor
+/// holds is applied to it again.
+#[test]
+fn returning_to_a_shed_response_reparses_it_and_reapplies_its_filter() {
+    use crate::session::KEEP_WARM;
+    let mut app = App::new_for_test_with_anims(false);
+    let big = |n: usize| {
+        format!(
+            r#"{{"pad": "{}", "n": {n}}}"#,
+            "x".repeat(crate::components::response::SYNC_PRETTY_BYTES)
+        )
+    };
+    for i in 1..=KEEP_WARM + 1 {
+        app.editor.slug = Some(format!("big{i}"));
+        app.update(Action::Render);
+        app.session.send_generation = i as u64;
+        ready_response(&mut app, &big(i));
+        app.update(Action::PrettyParsed {
+            generation: i as u64,
+            tree: crate::components::json_tree::JsonTree::parse(&big(i)).map(Box::new),
+        });
+        // On the Tree tab, so `view_text` below reads the (filtered) tree.
+        app.update(Action::ResponseViewMode(
+            crate::components::response::ViewMode::Pretty,
+        ));
+    }
+    app.editor.slug = Some("elsewhere".into());
+    app.update(Action::Render);
+
+    app.editor.jq = ".n".into();
+    app.editor.jq_enabled = true;
+    app.editor.slug = Some("big1".into());
+    app.update(Action::Render);
+    let view = app
+        .session
+        .response
+        .view()
+        .expect("big1's response is back");
+    assert!(view.tree.is_some(), "the shed tree was re-parsed on return");
+    assert!(!view.parsing, "…and the parse is over");
+    assert_eq!(
+        view.view_text(),
+        "1",
+        "the filter ran against the fresh tree"
+    );
+}
