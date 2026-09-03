@@ -323,3 +323,41 @@ typing, using the existing coalescing).
   per-line path work here is the foundation for it.
 - jq on the request side (body templating).
 - Keyboard-only access to the structural verbs.
+
+## Implementation notes
+
+A few details of the shipped behaviour are worth recording against this
+design, either because they differ from what's described above or
+because they're easy to get wrong reading the code cold:
+
+- The footer chips shown while the bar is focused are `esc done / alt+q
+  tree / ✦ describe…` — not a chip per action described elsewhere in this
+  doc. Enter blurs the bar (it does not "commit" anything separately);
+  the filter is already live on every keystroke.
+- The palette's "describe" entry stays listed even when `ai_cmd` isn't
+  configured or the program is missing — the palette has no gating
+  mechanism. Choosing it in that state toasts the missing-program hint
+  instead of running.
+- Staleness (the last run failed; the tree on screen is the previous
+  good one) is shown by the `jq` chip's colour dimming, not by a `jq ·`
+  suffix or any other text marker.
+- `OUTPUT_CAP` bounds the *serialised* size of all outputs collected from
+  one run, so it guards a filter that emits many documents (or one very
+  verbose one) — it does not stop a single giant output completing
+  before the cap is checked (e.g. `[range(1e9)]` building one huge array
+  in memory before serialisation). A per-output size guard in
+  `run_with_cap` is a tracked follow-up.
+- The filtered tree (`JsonTree::parse_many`) is built on the UI thread
+  once a run's outputs come back, whether the run itself was inline or
+  handed to the blocking pool. Moving that build off-thread too, for
+  large bodies, is a tracked follow-up.
+- There is no `JqFilter` (compiled-and-cached) value anywhere in this
+  feature: `postui_core::jq::check` and `postui_core::jq::run` both
+  recompile the filter text from scratch on every call. A `JqDocument`
+  (the *body's* parse) is what gets cached and reused.
+- The bar's `LineInput` lives on `Response::jq` (a `JqBar`), not on the
+  editor. `Editor.jq: String` is the persisted source of truth (what
+  round-trips through `to_toml_string`); `App::sync_jq` reconciles the
+  two once per `update` — editor → bar on everything but a bar edit,
+  bar → editor on a bar edit — and is also where the filter is actually
+  applied (`Response::apply_jq`).
