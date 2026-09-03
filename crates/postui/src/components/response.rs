@@ -2824,7 +2824,9 @@ fn draw_jq_bar(
     let chip_color = if bar.stale { t.text_muted } else { t.accent };
     // A background run past its grace period takes over the `jq` chip —
     // the spinner sits right beside the text being typed, where the wait
-    // is felt, and a run that finishes sooner never flickers it.
+    // is felt, and a run that finishes sooner never flickers it. Both
+    // chips are three columns (` ⠋ ` / `jq `), so the text never shifts;
+    // the leading space keeps the glyph off the pane edge.
     let spinning = bar.running_long(ctx.now);
     let chip = if spinning {
         let frame_i = (ctx
@@ -2833,7 +2835,7 @@ fn draw_jq_bar(
             .as_millis()
             / 80) as usize
             % SPINNER.len();
-        format!("{} ", SPINNER[frame_i])
+        format!(" {} ", SPINNER[frame_i])
     } else {
         "jq ".to_string()
     };
@@ -4884,12 +4886,13 @@ mod tests {
         r.set_jq_text(".data");
         let req = r.apply_jq(".data", 0).expect("background run");
         let since = r.jq.pending_since;
-        // The spinner takes over the `jq` chip at the bar's left edge.
+        // The spinner takes over the `jq` chip at the bar's left edge;
+        // both chips are three columns, so the text keeps its column.
         let spinner_at = |r: &mut Response, now| {
             let out = render_sized_at(r, 60, 20, now);
             let bar_row = buffer_rows(&out)
                 .into_iter()
-                .find(|row| row.contains("jq ") || SPINNER.iter().any(|g| row.contains(*g)))
+                .find(|row| row.contains(".data"))
                 .expect("the jq bar row");
             let spins = SPINNER.iter().any(|g| bar_row.contains(*g));
             assert_ne!(
@@ -4897,16 +4900,15 @@ mod tests {
                 bar_row.contains("jq "),
                 "spinner and chip swap: {bar_row}"
             );
-            spins
+            // A char column, not a byte offset: the braille glyph is 3 bytes.
+            let col = bar_row.find(".data").map(|b| bar_row[..b].chars().count());
+            (spins, col)
         };
-        assert!(
-            !spinner_at(&mut r, since + Duration::from_millis(50)),
-            "inside the grace period the bar is unchanged"
-        );
-        assert!(
-            spinner_at(&mut r, since + JQ_SPINNER_AFTER),
-            "past it the bar spins"
-        );
+        let (spins, col_before) = spinner_at(&mut r, since + Duration::from_millis(50));
+        assert!(!spins, "inside the grace period the bar is unchanged");
+        let (spins, col_during) = spinner_at(&mut r, since + JQ_SPINNER_AFTER);
+        assert!(spins, "past it the bar spins");
+        assert_eq!(col_before, col_during, "the filter text does not shift");
         assert!(
             r.attach_jq_result(
                 req.generation,
@@ -4916,7 +4918,7 @@ mod tests {
             "the run lands"
         );
         assert!(
-            !spinner_at(&mut r, since + Duration::from_secs(5)),
+            !spinner_at(&mut r, since + Duration::from_secs(5)).0,
             "and the spinner goes with it"
         );
     }
