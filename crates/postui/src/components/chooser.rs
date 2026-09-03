@@ -37,10 +37,10 @@ pub struct ChooserToggle {
 /// `label + " " + detail`; arrows move the selection; `Enter` dispatches the
 /// selected item's actions and closes; `Esc` closes with no actions.
 pub struct ChooserState {
-    title: String,
+    pub title: String,
     input: String,
     selected: usize,
-    items: Vec<ChooserItem>,
+    pub items: Vec<ChooserItem>,
     filtered: Vec<usize>,
     toggle: Option<ChooserToggle>,
     /// First visible row's index into `filtered`. Kept in view of `selected`

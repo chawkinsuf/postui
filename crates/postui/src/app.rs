@@ -3059,6 +3059,54 @@ impl App {
             Action::CancelJqDescribe => true,
             // Task 9 (describe-a-filter) implements the AI call.
             Action::OpenJqDescribe => true,
+            Action::JqPluckPrompt { path, keys } => {
+                use crate::components::chooser::{ChooserItem, ChooserState};
+                use postui_core::jq::{PathSeg, compose, render_path};
+                let bar = self.session.response.jq_text().to_string();
+                let items = keys
+                    .into_iter()
+                    .map(|k| {
+                        let key = render_path(&[PathSeg::Key(k.clone())]);
+                        let expr = format!("map({key})");
+                        ChooserItem {
+                            label: k,
+                            detail: None,
+                            actions: vec![Action::JqApply(compose(&bar, &path, Some(&expr)))],
+                            id: None,
+                        }
+                    })
+                    .collect();
+                self.push_modal(Modal::Chooser(ChooserState::new("Pluck field", items)));
+                true
+            }
+            Action::JqWherePrompt { path, keys } => {
+                use crate::components::chooser::{ChooserItem, ChooserState};
+                use postui_core::jq::{PathSeg, compose, render_path};
+                let bar = self.session.response.jq_text().to_string();
+                let items = keys
+                    .into_iter()
+                    .map(|k| {
+                        let key = render_path(&[PathSeg::Key(k.clone())]);
+                        let expr = format!("map(select({key} == ))");
+                        let text = compose(&bar, &path, Some(&expr));
+                        let cursor = text.chars().count() - 2; // before "))"
+                        ChooserItem {
+                            label: k,
+                            detail: None,
+                            actions: vec![Action::JqTeeUp { text, cursor }],
+                            id: None,
+                        }
+                    })
+                    .collect();
+                self.push_modal(Modal::Chooser(ChooserState::new("Where field", items)));
+                true
+            }
+            Action::JqCollect => {
+                let text = format!("[ {} ]", self.session.response.jq_text().trim());
+                let cursor = text.chars().count();
+                self.session.response.set_jq_text_with_cursor(&text, cursor);
+                true
+            }
             Action::ReloadProjectFiles => {
                 let (changed, warnings) = self.project.reload_if_changed();
                 if changed {
@@ -6435,6 +6483,7 @@ impl App {
     fn text_surface_menu(&mut self, hit: &Hit) -> Option<Vec<crate::components::modal::MenuItem>> {
         use crate::action::TextSurface;
         use crate::components::modal::MenuItem;
+        let mut jq_row = None;
         let (surface, editable) = match hit {
             Hit::UrlBar => {
                 self.update(Action::FocusUrl);
@@ -6447,9 +6496,11 @@ impl App {
             }
             // Only once there is response text to select: an empty pane
             // (nothing sent yet, in flight, an error) offers no menu.
-            Hit::Pane(PaneId::Response) | Hit::JsonRow(_) | Hit::JsonArrow(_)
-                if self.session.response.view().is_some() =>
-            {
+            Hit::Pane(PaneId::Response) if self.session.response.view().is_some() => {
+                (TextSurface::Response, false)
+            }
+            Hit::JsonRow(row) | Hit::JsonArrow(row) if self.session.response.view().is_some() => {
+                jq_row = Some(*row);
                 (TextSurface::Response, false)
             }
             Hit::TableCell { row, col } => {
@@ -6525,7 +6576,97 @@ impl App {
                 MenuItem::disabled("Extract to selector\u{2026}")
             });
         }
+        if let Some(row) = jq_row {
+            let structural = self.jq_menu_items(row);
+            if !structural.is_empty() {
+                let mut all = structural;
+                all.push(MenuItem::disabled("\u{2500}\u{2500}"));
+                all.extend(items);
+                items = all;
+            }
+        }
         Some(items)
+    }
+
+    /// The structural (jq) items for visible tree row `row` of the Pretty
+    /// view, or empty when the view is not the tree (Raw/Headers, non-JSON).
+    fn jq_menu_items(&self, row: usize) -> Vec<crate::components::modal::MenuItem> {
+        use crate::components::modal::MenuItem;
+        use postui_core::jq::{compose, render_path};
+        let response = &self.session.response;
+        let Some(view) = response.view() else { return Vec::new() };
+        if view.mode != crate::components::response::ViewMode::Pretty {
+            return Vec::new();
+        }
+        let Some(tree) = response.active_tree() else { return Vec::new() };
+        let Some(full) = tree.full_index_of_visible(row) else { return Vec::new() };
+        let line = tree.line(full);
+        if line.is_separator() {
+            return Vec::new();
+        }
+        let bar = response.jq_text();
+        let path = tree.jq_path_of(full);
+        let multi = response.jq_output_count() > 1;
+        let apply = |expr: Option<&str>| Action::JqApply(compose(bar, &path, expr));
+        let gated = |label: &str, action: Action| {
+            if multi {
+                MenuItem::disabled(format!("{label}  (collect into array first)"))
+            } else {
+                MenuItem::new(label, action)
+            }
+        };
+        let mut items = vec![
+            gated("Filter to this", apply(None)),
+            MenuItem::new("Copy path", Action::CopyJqPath(path.clone())),
+        ];
+        match &line.container {
+            Some(c) if c.is_array => {
+                items.push(gated("Count", apply(Some("length"))));
+                let keys = tree.first_element_keys(full);
+                if !keys.is_empty() {
+                    items.push(gated(
+                        "Pluck field\u{2026}",
+                        Action::JqPluckPrompt {
+                            path: path.clone(),
+                            keys: keys.clone(),
+                        },
+                    ));
+                    items.push(gated(
+                        "Where field\u{2026}",
+                        Action::JqWherePrompt { path: path.clone(), keys },
+                    ));
+                }
+            }
+            Some(_) => {}
+            None => {
+                if let (Some(value), Some((array_line, rel))) =
+                    (line.scalar_text(), tree.nearest_array_ancestor(full))
+                    && !rel.is_empty()
+                {
+                    let rel_path = render_path(&rel);
+                    let array_path = tree.jq_path_of(array_line);
+                    let key_label = rel_path.trim_start_matches('.').to_string();
+                    let shown = if value.chars().count() > 24 {
+                        format!("{}…", value.chars().take(23).collect::<String>())
+                    } else {
+                        value.to_string()
+                    };
+                    items.push(gated(
+                        &format!("Only items where {key_label} == {shown}"),
+                        Action::JqApply(compose(
+                            bar,
+                            &array_path,
+                            Some(&format!("map(select({rel_path} == {value}))")),
+                        )),
+                    ));
+                }
+            }
+        }
+        if multi {
+            items.push(MenuItem::new("Collect into array", Action::JqCollect));
+        }
+        items.push(MenuItem::new("Describe a filter\u{2026}", Action::OpenJqDescribe));
+        items
     }
 
     /// The selected text on one named surface, or `None` when it has no

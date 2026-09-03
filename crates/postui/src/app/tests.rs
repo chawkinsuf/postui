@@ -17108,3 +17108,132 @@ fn jq_is_a_no_op_on_a_non_json_response() {
     assert!(!app.session.response.jq_focused());
     assert_eq!(app.toasts.messages().len(), 1, "a toast says the response is not JSON");
 }
+
+// --- structural (jq) right-click menu ---
+
+fn row_containing(app: &App, needle: &str) -> usize {
+    let tree = app.session.response.active_tree().expect("tree");
+    tree.visible_lines()
+        .iter()
+        .position(|l| l.plain_text().contains(needle))
+        .unwrap_or_else(|| panic!("no visible row containing {needle:?}"))
+}
+
+fn right_click_row(app: &mut App, needle: &str) {
+    render_once(app);
+    let row = row_containing(app, needle);
+    // The response pane's default split may be too short to show every
+    // row of a deep tree at once — scroll the row into view (a no-op when
+    // it is already visible) before re-rendering to pick up its hit.
+    if app.hits.rect_of(&Hit::JsonRow(row)).is_none() {
+        app.session.response.set_scroll(row);
+        render_once(app);
+    }
+    let rect = app.hits.rect_of(&Hit::JsonRow(row)).expect("row is on screen");
+    app.handle_mouse(right_down(rect.x + 1, rect.y));
+}
+
+#[test]
+fn right_click_on_an_array_line_offers_the_array_verbs_above_the_text_menu() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    right_click_row(&mut app, "\"items\"");
+    let labels = menu_labels(&app);
+    assert_eq!(
+        labels,
+        vec![
+            "Filter to this", "Copy path", "Count", "Pluck field\u{2026}", "Where field\u{2026}",
+            "Describe a filter\u{2026}", "\u{2500}\u{2500}", // a disabled rule between the sections
+            "Copy", "Extract to variable\u{2026}", "Extract to selector\u{2026}",
+        ],
+        "{labels:?}"
+    );
+    assert_eq!(menu_action(&app, "Filter to this"), Some(Action::JqApply(".data.items".into())));
+    assert_eq!(menu_action(&app, "Copy path"), Some(Action::CopyJqPath(".data.items".into())));
+    assert_eq!(menu_action(&app, "Count"), Some(Action::JqApply(".data.items | length".into())));
+    assert_eq!(
+        menu_action(&app, "Pluck field\u{2026}"),
+        Some(Action::JqPluckPrompt { path: ".data.items".into(), keys: vec!["id".into(), "status".into()] })
+    );
+}
+
+#[test]
+fn a_scalar_inside_an_array_element_offers_only_items_where() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    right_click_row(&mut app, "\"status\": \"active\"");
+    let labels = menu_labels(&app);
+    assert!(labels.contains(&"Only items where status == \"active\"".to_string()), "{labels:?}");
+    assert!(!labels.contains(&"Count".to_string()));
+    assert_eq!(
+        menu_action(&app, "Only items where status == \"active\""),
+        Some(Action::JqApply(r#".data.items | map(select(.status == "active"))"#.into()))
+    );
+    app.update(Action::Close);
+    right_click_row(&mut app, "\"total\"");
+    assert!(!menu_labels(&app).iter().any(|l| l.starts_with("Only items")), "no enclosing array");
+}
+
+#[test]
+fn verbs_compose_onto_an_existing_filter_with_relative_paths() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.update(Action::JqApply(".data".into()));
+    right_click_row(&mut app, "\"items\"");
+    assert_eq!(menu_action(&app, "Count"), Some(Action::JqApply(".data | .items | length".into())));
+    app.update(Action::Close);
+    app.update(Action::JqApply(".data.items".into()));
+    right_click_row(&mut app, "[");
+    assert_eq!(menu_action(&app, "Count"), Some(Action::JqApply(".data.items | length".into())), "a root path is dropped");
+}
+
+#[test]
+fn with_several_outputs_the_composing_verbs_are_disabled_and_collect_is_offered() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.update(Action::JqApply(".data.items[]".into()));
+    right_click_row(&mut app, "\"id\": 1");
+    let labels = menu_labels(&app);
+    assert!(labels.contains(&"Collect into array".to_string()), "{labels:?}");
+    assert_eq!(menu_action(&app, "Filter to this  (collect into array first)"), None, "disabled, with the hint in its label");
+    let collect = menu_action(&app, "Collect into array").unwrap();
+    app.update(Action::Close);
+    app.update(collect);
+    assert_eq!(app.session.response.jq_text(), "[ .data.items[] ]");
+    assert_eq!(app.session.response.jq_output_count(), 1);
+}
+
+#[test]
+fn pluck_and_where_open_a_key_chooser_that_writes_the_verb() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.update(Action::JqPluckPrompt { path: ".data.items".into(), keys: vec!["id".into(), "status".into()] });
+    let Some(Modal::Chooser(c)) = app.modals.top() else { panic!("chooser") };
+    assert_eq!(c.title, "Pluck field");
+    let pick = c.items[1].actions.clone();
+    app.update(Action::Close);
+    for a in pick { app.update(a); }
+    assert_eq!(app.session.response.jq_text(), ".data.items | map(.status)");
+    assert_eq!(app.session.response.view().unwrap().view_text(), "[\n  \"active\",\n  \"off\"\n]");
+
+    app.update(Action::JqApply("".into()));
+    app.update(Action::JqWherePrompt { path: ".data.items".into(), keys: vec!["status".into()] });
+    let Some(Modal::Chooser(c)) = app.modals.top() else { panic!("chooser") };
+    let pick = c.items[0].actions.clone();
+    app.update(Action::Close);
+    for a in pick { app.update(a); }
+    assert_eq!(app.session.response.jq_text(), ".data.items | map(select(.status == ))");
+    assert!(app.session.response.jq_focused());
+    assert_eq!(app.session.response.jq_bar().input.cursor(), ".data.items | map(select(.status == ".len());
+}
+
+#[test]
+fn the_structural_menu_is_absent_on_raw_and_non_json_views() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.update(Action::ResponseViewMode(crate::components::response::ViewMode::Raw));
+    render_once(&mut app);
+    let area = app.session.response.view().unwrap().last_area.unwrap();
+    app.handle_mouse(right_down(area.x + 1, area.y));
+    assert_eq!(menu_labels(&app)[0], "Copy");
+}

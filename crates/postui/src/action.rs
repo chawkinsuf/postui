@@ -751,4 +751,13 @@ pub enum Action {
     /// Palette/footer/AI button: asks the configured AI command to write a
     /// jq filter from a sentence. Implemented by the describe-a-filter task.
     OpenJqDescribe,
+    /// Structural menu's "Pluck field…" on an array: opens a chooser of
+    /// `keys`; picking `k` applies `compose(bar, path, "map(.k)")`.
+    JqPluckPrompt { path: String, keys: Vec<String> },
+    /// Structural menu's "Where field…" on an array: opens a chooser of
+    /// `keys`; picking `k` tees up `compose(bar, path, "map(select(.k == ))")`
+    /// with the cursor before the closing `)`.
+    JqWherePrompt { path: String, keys: Vec<String> },
+    /// Structural menu's "Collect into array": wraps the bar text in `[ … ]`.
+    JqCollect,
 }
