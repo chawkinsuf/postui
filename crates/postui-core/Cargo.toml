@@ -13,3 +13,6 @@ toml_edit.workspace = true
 tempfile.workspace = true
 directories.workspace = true
 form_urlencoded.workspace = true
+jaq-core.workspace = true
+jaq-std.workspace = true
+jaq-json.workspace = true
