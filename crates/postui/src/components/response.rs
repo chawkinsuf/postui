@@ -106,6 +106,14 @@ pub struct JqBar {
 }
 
 impl JqBar {
+    /// Whether a background run has been outstanding long enough (as of
+    /// `now`) for the bar to spin and the tree to dim: past
+    /// `JQ_SPINNER_AFTER`, so a run that finishes sooner never flickers.
+    fn running_long(&self, now: Instant) -> bool {
+        self.pending.is_some()
+            && now.saturating_duration_since(self.pending_since) >= JQ_SPINNER_AFTER
+    }
+
     /// See [`Response::jq_open`].
     fn is_open(&self) -> bool {
         self.focused
@@ -1846,7 +1854,18 @@ impl Component for Response {
         if view.mode == ViewMode::Raw && view.h_scroll > 0 {
             view.index_raw_rows(view.scroll..view.scroll + view.height);
         }
-        let body = body_lines(view, t, ctx.focused, ctx.hovered, hits, body_area);
+        let mut body = body_lines(view, t, ctx.focused, ctx.hovered, hits, body_area);
+        // While a filter run outlives its grace period the tree on screen
+        // is about to be replaced: it dims (in step with the bar's
+        // spinner) rather than vanishing, so nothing flickers on a fast
+        // run and the reader keeps their place through a slow one.
+        if view.mode == ViewMode::Pretty && self.jq.running_long(ctx.now) {
+            for line in &mut body {
+                for span in &mut line.spans {
+                    span.style = span.style.fg(t.text_muted);
+                }
+            }
+        }
         frame.render_widget(Paragraph::new(body), body_area);
 
         if footer {
@@ -2750,8 +2769,7 @@ fn draw_jq_bar(
         // A background run past its grace period shows a spinner at the
         // row's right end (the filter text's window gives up two columns
         // for it); one that finishes sooner never flickers.
-        let spinning = bar.pending.is_some()
-            && ctx.now.saturating_duration_since(bar.pending_since) >= JQ_SPINNER_AFTER;
+        let spinning = bar.running_long(ctx.now);
         let spinner_w = if spinning { 2 } else { 0 };
         let line =
             bar.input
@@ -4805,6 +4823,61 @@ mod tests {
         assert!(
             !spinner_at(&mut r, since + Duration::from_secs(5)),
             "and the spinner goes with it"
+        );
+    }
+
+    #[test]
+    fn the_tree_dims_while_a_background_run_is_past_the_grace_period() {
+        let theme = Theme::dark();
+        let mut r = ready(ITEMS);
+        r.set_view_mode(ViewMode::Pretty);
+        r.open_jq();
+        r.set_jq_text(".data");
+        let req = r.apply_jq(".data", 0).expect("background run");
+        let since = r.jq.pending_since;
+        // Row 1 of the tree starts with the accent-coloured `"data"` key.
+        let key_fg = |r: &mut Response, now| {
+            let ctx_theme = Theme::dark();
+            let ctx = DrawCtx {
+                theme: &ctx_theme,
+                focused: true,
+                hovered: None,
+                dragging: false,
+                anims: test_anims(),
+                now,
+            };
+            let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+            let mut hits = crate::hit::HitMap::default();
+            terminal
+                .draw(|f| r.draw(f, f.area(), &ctx, &mut hits))
+                .unwrap();
+            let area = r.view().unwrap().last_area.unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .cell((area.x + 3, area.y + 1))
+                .unwrap()
+                .fg
+        };
+        assert_eq!(
+            key_fg(&mut r, since + Duration::from_millis(50)),
+            theme.accent,
+            "inside the grace period the key keeps its colour"
+        );
+        assert_eq!(
+            key_fg(&mut r, since + JQ_SPINNER_AFTER),
+            theme.text_muted,
+            "past it the whole tree dims"
+        );
+        r.attach_jq_result(
+            req.generation,
+            req.run,
+            Ok(JqRunOutput::from_outputs(None, vec![r#"{"k": 1}"#.into()])),
+        );
+        assert_eq!(
+            key_fg(&mut r, since + Duration::from_secs(5)),
+            theme.accent,
+            "the landed tree is drawn in full colour"
         );
     }
 
