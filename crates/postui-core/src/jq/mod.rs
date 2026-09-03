@@ -9,6 +9,9 @@ use jaq_core::load::{Arena, File, Loader};
 use jaq_core::{Compiler, Ctx, Vars, data};
 use jaq_json::Val;
 
+pub mod path;
+pub use path::{PathSeg, compose, render_path};
+
 type Data = data::JustLut<Val>;
 
 /// Refuse to collect more than this much output text in one run — a
