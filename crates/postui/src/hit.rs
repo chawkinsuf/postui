@@ -243,6 +243,16 @@ pub enum Hit {
     /// The value popup's "Remove" button: deletes the stored value at the
     /// chosen Write-to scope, so the next wider scope shows through.
     ModalRemove,
+    /// The response header strip's jq (nf-md-filter) icon action: opens
+    /// the jq filter bar and focuses it, exactly as focusing it any other
+    /// way does. Registered only while `Response::jq_available()`.
+    ResponseJqButton,
+    /// The jq filter bar's text row: click focuses it and places the
+    /// caret at the clicked column, like `UrlBar`.
+    ResponseJqBar,
+    /// The jq bar's `✦` button: asks the AI to turn a plain-language
+    /// description into a filter (the describe-a-filter task).
+    ResponseJqAiButton,
 }
 
 /// A terminal pointer-shape hint (Kitty's OSC 22 protocol, `\x1b]22;{shape}\x07`),
@@ -289,9 +299,13 @@ impl PointerShape {
     pub fn for_hit(hit: Option<&Hit>) -> Self {
         match hit {
             None => PointerShape::Default,
-            Some(Hit::UrlBar | Hit::BodyEditor | Hit::JsonRow(_) | Hit::ModalInput(_)) => {
-                PointerShape::Text
-            }
+            Some(
+                Hit::UrlBar
+                | Hit::BodyEditor
+                | Hit::JsonRow(_)
+                | Hit::ModalInput(_)
+                | Hit::ResponseJqBar,
+            ) => PointerShape::Text,
             // The response pane's bare content is selectable text (a click
             // anchors a selection sweep), so it I-beams like the editors.
             Some(Hit::Pane(PaneId::Response)) => PointerShape::Text,

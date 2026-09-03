@@ -5,6 +5,7 @@ use crate::action::{Action, CopyTarget};
 use crate::hit::ScrollbarSpec;
 use crate::layout::PaneId;
 use crate::theme::Theme;
+use postui_core::jq::{JqDocument, JqError};
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -65,6 +66,51 @@ pub struct SearchState {
     pub current: usize,
 }
 
+/// The jq filter bar's own state: the input, focus, and the outcome of the
+/// last filter applied. Lives on [`Response`], not [`ReadyView`] — the bar
+/// (and whatever filter the user typed) survives a new response landing in
+/// the same slot, exactly like the address bar survives a send.
+pub struct JqBar {
+    pub input: LineInput,
+    pub focused: bool,
+    /// Set on every bar edit; [`Response::take_jq_edited`] clears it.
+    edited: bool,
+    pub error: Option<JqError>,
+    /// The last run failed; the tree on screen is the previous good one.
+    pub stale: bool,
+    /// A background run is outstanding (its per-view counter).
+    pub pending: Option<u64>,
+    pub ai_pending: bool,
+    /// When the AI request started, for the spinner.
+    pub ai_started: std::time::Instant,
+}
+
+impl Default for JqBar {
+    fn default() -> Self {
+        Self {
+            input: LineInput::new(""),
+            focused: false,
+            edited: false,
+            error: None,
+            stale: false,
+            pending: None,
+            ai_pending: false,
+            ai_started: Instant::now(),
+        }
+    }
+}
+
+/// Work the app must hand to the blocking pool: a jq run too big to run
+/// inline. `doc` is the cached parse when there is one; otherwise `body` is
+/// the raw text for the worker to parse before running the filter.
+pub struct JqRunRequest {
+    pub generation: u64,
+    pub run: u64,
+    pub code: String,
+    pub doc: Option<JqDocument>,
+    pub body: Option<String>,
+}
+
 /// Everything about *how* a ready response is being looked at. Rebuilt from
 /// scratch whenever a new response lands, so no state leaks between requests.
 pub struct ReadyView {
@@ -115,6 +161,23 @@ pub struct ReadyView {
     /// sweeps extend by whole words from this span instead of by cells.
     /// Cleared by any single click (`clear_sel`).
     sel_word_anchor: Option<((usize, usize), (usize, usize))>,
+    /// The cached parse of the response body for jq to run filters
+    /// against — built lazily (a sync run parses it the first time it's
+    /// needed) or handed back from a background run.
+    jq_doc: Option<JqDocument>,
+    /// The tree the last successful filter produced; `active_tree` prefers
+    /// this over `tree` while it's set.
+    jq_tree: Option<JsonTree>,
+    /// The code `jq_tree` (or `Response::jq`'s error) reflects — `None`
+    /// before any filter has run, `Some("")` for an explicitly cleared one.
+    jq_applied: Option<String>,
+    /// How many outputs the last successful filter produced (1 when no
+    /// filter is applied, or the filter emits exactly one document).
+    jq_outputs: usize,
+    /// Counts every `apply_jq` run started for this view, so a background
+    /// result can be matched to the run it was started for (and only that
+    /// one — a superseded run's result is dropped).
+    jq_runs: u64,
 }
 
 impl ReadyView {
@@ -162,6 +225,11 @@ impl ReadyView {
             sel_anchor: None,
             sel: None,
             sel_word_anchor: None,
+            jq_doc: None,
+            jq_tree: None,
+            jq_applied: None,
+            jq_outputs: 1,
+            jq_runs: 0,
         }
     }
 
@@ -177,6 +245,20 @@ impl ReadyView {
         self.parsing && self.generation == generation
     }
 
+    /// The tree the `Pretty` view actually shows: the filtered tree while a
+    /// jq filter is applied, otherwise the body tree.
+    pub fn active_tree(&self) -> Option<&JsonTree> {
+        self.jq_tree.as_ref().or(self.tree.as_ref())
+    }
+
+    fn active_tree_mut(&mut self) -> Option<&mut JsonTree> {
+        if self.jq_tree.is_some() {
+            self.jq_tree.as_mut()
+        } else {
+            self.tree.as_mut()
+        }
+    }
+
     fn open_search(&mut self) {
         self.search = Some(SearchState {
             input: LineInput::new(""),
@@ -190,7 +272,7 @@ impl ReadyView {
     /// How many lines the current view shows right now (collapse included).
     pub fn visible_len(&self) -> usize {
         match self.mode {
-            ViewMode::Pretty => self.tree.as_ref().map_or(0, |t| t.visible_indices().len()),
+            ViewMode::Pretty => self.active_tree().map_or(0, |t| t.visible_indices().len()),
             ViewMode::Raw => self.raw_lines.len(),
             ViewMode::Headers => self.header_lines.len().max(1),
         }
@@ -207,7 +289,7 @@ impl ReadyView {
             return w;
         }
         let w = match self.mode {
-            ViewMode::Pretty => self.tree.as_ref().map_or(0, |t| {
+            ViewMode::Pretty => self.active_tree().map_or(0, |t| {
                 t.visible_lines()
                     .iter()
                     .map(|l| {
@@ -259,8 +341,7 @@ impl ReadyView {
     fn search_corpus(&self) -> Vec<String> {
         match self.mode {
             ViewMode::Pretty => self
-                .tree
-                .as_ref()
+                .active_tree()
                 .map(|t| t.full_text_lines())
                 .unwrap_or_default(),
             ViewMode::Raw => self.raw_lines.clone(),
@@ -342,7 +423,7 @@ impl ReadyView {
         let Some(&(line, _)) = search.matches.get(search.current) else {
             return;
         };
-        match (self.mode, self.tree.as_mut()) {
+        match (self.mode, self.active_tree_mut()) {
             (ViewMode::Pretty, Some(tree)) => {
                 tree.expand_ancestors(line);
                 self.cursor = tree.visible_index_of(line).unwrap_or(0);
@@ -400,7 +481,7 @@ impl ReadyView {
             ViewMode::Raw => self.raw_lines.get(i).cloned(),
             ViewMode::Headers => self.header_lines.get(i).cloned(),
             ViewMode::Pretty => {
-                let tree = self.tree.as_ref()?;
+                let tree = self.active_tree()?;
                 let line = tree.visible_lines().get(i).copied()?;
                 let mut out = " ".repeat(line.indent);
                 for tok in line.render_tokens() {
@@ -541,6 +622,11 @@ pub struct Response {
     /// points past an endpoint from it. The app state stays the
     /// authority; `collapsed` above is still this pane's own flag.
     pub split: crate::split::SplitState,
+    /// The jq filter bar. Lives here rather than on `ReadyView` so it
+    /// survives a new response landing in the same slot — the filter the
+    /// user typed keeps working (once reconciled) against the new body,
+    /// exactly like the address bar survives a send.
+    jq: JqBar,
 }
 
 impl Response {
@@ -578,6 +664,11 @@ impl Response {
         match tree {
             Some(tree) => {
                 view.tree = Some(tree);
+                // A filter typed while the body was still parsing has
+                // nothing to run against yet (`apply_jq` bails out); now
+                // that the body tree exists, forget what was "applied" so
+                // the app's reconcile step re-runs the pending filter.
+                view.jq_applied = None;
                 // Already on the Tree tab (watching the spinner): the tree
                 // it was waiting for is now the view's content.
                 if view.mode == ViewMode::Pretty {
@@ -604,6 +695,205 @@ impl Response {
 
     pub fn view(&self) -> Option<&ReadyView> {
         self.view.as_ref()
+    }
+
+    /// The jq bar's current text.
+    pub fn jq_text(&self) -> &str {
+        self.jq.input.text()
+    }
+
+    /// Sets the bar's text programmatically (the editor ↔ bar sync), cursor
+    /// at the end. Not an edit — [`Response::take_jq_edited`] is unaffected.
+    pub fn set_jq_text(&mut self, text: &str) {
+        self.jq.input = LineInput::new(text);
+    }
+
+    /// Sets the bar's text and cursor together (a tee-up from elsewhere —
+    /// e.g. the AI describe flow seeding a filter). Counts as an edit.
+    pub fn set_jq_text_with_cursor(&mut self, text: &str, cursor: usize) {
+        self.jq.input = LineInput::new(text);
+        self.jq.input.set_cursor(cursor);
+        self.jq.edited = true;
+    }
+
+    /// Whether the bar's text changed since the last call — set on every
+    /// edit, cleared here so the app's reconcile step runs each change
+    /// exactly once.
+    pub fn take_jq_edited(&mut self) -> bool {
+        std::mem::take(&mut self.jq.edited)
+    }
+
+    pub fn jq_focused(&self) -> bool {
+        self.jq.focused
+    }
+
+    /// Focuses (or blurs) the jq bar. Returns whether it took: focusing
+    /// fails with no ready view or a body jq can't run against.
+    pub fn set_jq_focus(&mut self, focused: bool) -> bool {
+        if focused && !self.jq_available() {
+            return false;
+        }
+        self.jq.focused = focused;
+        true
+    }
+
+    pub fn jq_bar(&self) -> &JqBar {
+        &self.jq
+    }
+
+    pub fn jq_bar_mut(&mut self) -> &mut JqBar {
+        &mut self.jq
+    }
+
+    /// Whether jq has anything to run against: a ready view with a parsed
+    /// (or still-parsing) JSON body.
+    pub fn jq_available(&self) -> bool {
+        self.view.as_ref().is_some_and(|v| v.has_tree_view())
+    }
+
+    /// Pastes into the jq bar (the bracketed-paste/ctrl+v path). `false`
+    /// while the bar isn't focused, mirroring `paste_into_search`.
+    pub fn paste_into_jq(&mut self, text: &str) -> bool {
+        if !self.jq.focused {
+            return false;
+        }
+        self.jq.input.paste(text);
+        self.jq.edited = true;
+        true
+    }
+
+    /// The tree the `Pretty` view is showing: the filtered tree while a jq
+    /// filter is applied, otherwise the body tree.
+    pub fn active_tree(&self) -> Option<&JsonTree> {
+        self.view.as_ref().and_then(|v| v.active_tree())
+    }
+
+    /// How many outputs the applied filter produced (1 when unfiltered, or
+    /// the filter emits exactly one document).
+    pub fn jq_output_count(&self) -> usize {
+        self.view.as_ref().map_or(1, |v| v.jq_outputs)
+    }
+
+    /// Ensures the view reflects filter `code`: runs it inline when the
+    /// body is small enough (`sync_limit`, in bytes), or hands the run to
+    /// the caller for the blocking pool when it's not. `None` means either
+    /// nothing to do (already applied, or nothing to filter yet) or that
+    /// the run finished inline; `Some` is work the app must complete with
+    /// [`Response::attach_jq_result`].
+    pub fn apply_jq(&mut self, code: &str, sync_limit: usize) -> Option<JqRunRequest> {
+        let view = self.view.as_mut()?;
+        if !view.has_tree_view() {
+            return None;
+        }
+        if view.jq_applied.as_deref() == Some(code) {
+            return None;
+        }
+        let code_trim = code.trim();
+        if code_trim.is_empty() {
+            view.jq_tree = None;
+            view.jq_outputs = 1;
+            view.jq_applied = Some(code.to_string());
+            self.jq.error = None;
+            self.jq.stale = false;
+            self.jq.pending = None;
+            view.clear_sel();
+            view.clamp_cursor();
+            view.recompute_matches();
+            return None;
+        }
+        if let Err(e) = postui_core::jq::check(code_trim) {
+            self.jq.error = Some(e);
+            self.jq.stale = true;
+            self.jq.pending = None;
+            view.jq_applied = Some(code.to_string());
+            return None;
+        }
+        // Body parse still running: nothing to filter yet; reconcile
+        // re-applies once `attach_tree` lands.
+        view.tree.as_ref()?;
+        let body_len = view.raw_lines.iter().map(|l| l.len() + 1).sum::<usize>();
+        if view.jq_doc.is_none() && body_len <= sync_limit {
+            match JqDocument::parse(&view.raw_lines.join("\n")) {
+                Ok(doc) => view.jq_doc = Some(doc),
+                Err(e) => {
+                    self.jq.error = Some(e);
+                    self.jq.stale = true;
+                    view.jq_applied = Some(code.to_string());
+                    return None;
+                }
+            }
+        }
+        view.jq_applied = Some(code.to_string());
+        view.jq_runs += 1;
+        let run = view.jq_runs;
+        if body_len <= sync_limit {
+            let doc = view.jq_doc.clone().expect("parsed above");
+            // Already cached on `view.jq_doc` above: no document to hand
+            // back, just the outputs.
+            let result = postui_core::jq::run(code_trim, &doc).map(|outputs| (None, outputs));
+            self.jq.pending = None;
+            let generation = view.generation;
+            self.attach_jq_result(generation, run, result);
+            return None;
+        }
+        self.jq.pending = Some(run);
+        let doc = view.jq_doc.clone();
+        let body = doc.is_none().then(|| view.raw_lines.join("\n"));
+        Some(JqRunRequest {
+            generation: view.generation,
+            run,
+            code: code_trim.to_string(),
+            doc,
+            body,
+        })
+    }
+
+    /// Accepts (or drops) the result of a background jq run. Dropped when
+    /// the view it was started for is gone, or a later run for the same
+    /// view has since started (superseded). Returns whether it was
+    /// accepted.
+    pub fn attach_jq_result(
+        &mut self,
+        generation: u64,
+        run: u64,
+        result: Result<(Option<JqDocument>, Vec<String>), JqError>,
+    ) -> bool {
+        let Some(view) = self.view.as_mut() else {
+            return false;
+        };
+        if view.generation != generation || view.jq_runs != run {
+            return false;
+        }
+        self.jq.pending = None;
+        match result {
+            Ok((doc, outputs)) => {
+                if let Some(doc) = doc {
+                    view.jq_doc = Some(doc);
+                }
+                match JsonTree::parse_many(&outputs) {
+                    Some(tree) => {
+                        view.jq_outputs = outputs.len();
+                        view.jq_tree = Some(tree);
+                        self.jq.error = None;
+                        self.jq.stale = false;
+                        view.clear_sel();
+                        view.clamp_cursor();
+                        view.recompute_matches();
+                    }
+                    None => {
+                        self.jq.error = Some(JqError::Runtime {
+                            message: "filter output is not JSON".into(),
+                        });
+                        self.jq.stale = true;
+                    }
+                }
+            }
+            Err(e) => {
+                self.jq.error = Some(e);
+                self.jq.stale = true;
+            }
+        }
+        true
     }
 
     /// Pastes into the in-pane search's live input (the bracketed-paste/
@@ -746,11 +1036,12 @@ impl Response {
             return;
         };
         view.cursor = row.min(view.visible_len().saturating_sub(1));
+        let cursor = view.cursor;
         if toggle
             && view.mode == ViewMode::Pretty
-            && let Some(tree) = view.tree.as_mut()
+            && let Some(tree) = view.active_tree_mut()
         {
-            tree.toggle(view.cursor);
+            tree.toggle(cursor);
             // Collapsing/expanding renumbers the visible lines a selection
             // is addressed in.
             view.clear_sel();
@@ -893,6 +1184,29 @@ impl Response {
     /// Ready-state key handling. Split out so [`Component::handle_key`] stays
     /// a readable state dispatch.
     fn ready_key(&mut self, ev: KeyEvent) -> Option<Action> {
+        // The jq bar swallows everything while focused: chars and editing
+        // keys go to its LineInput, Enter blurs (committing is implicit —
+        // every edit re-runs the filter), Esc blurs unless an AI request
+        // is pending, in which case it cancels that instead. Runs before
+        // the view is borrowed, so it works even with no ready view (it
+        // never should, in practice: the bar can't focus without one).
+        if self.jq.focused {
+            match ev.code {
+                KeyCode::Enter => self.jq.focused = false,
+                KeyCode::Esc => {
+                    if self.jq.ai_pending {
+                        return Some(Action::CancelJqDescribe);
+                    }
+                    self.jq.focused = false;
+                }
+                _ => {
+                    self.jq.input.handle_key(ev);
+                    self.jq.edited = true;
+                }
+            }
+            return Some(Action::Render);
+        }
+
         let view = self.view.as_mut()?;
 
         // An active search input swallows everything: chars and editing keys
@@ -1007,10 +1321,11 @@ impl Response {
                 Some(Action::Render)
             }
             KeyCode::Char(' ') | KeyCode::Enter => {
+                let cursor = view.cursor;
                 if view.mode == ViewMode::Pretty
-                    && let Some(tree) = view.tree.as_mut()
+                    && let Some(tree) = view.active_tree_mut()
                 {
-                    tree.toggle(view.cursor);
+                    tree.toggle(cursor);
                     view.clear_sel();
                     view.clamp_cursor();
                     view.follow_cursor();
@@ -1151,10 +1466,25 @@ impl Component for Response {
         };
 
         let footer = view.search.is_some();
+        // Open while focused, holding typed text, an AI request is
+        // pending, or a background run is outstanding — so the bar stays
+        // up through a run that outlives the keystroke that started it,
+        // and a bad filter's error row (the second `jq_rows` line) stays
+        // visible after the bar itself loses focus.
+        let jq_open = self.jq.focused
+            || !self.jq.input.text().is_empty()
+            || self.jq.ai_pending
+            || self.jq.pending.is_some();
+        let jq_rows = if jq_open {
+            1 + u16::from(self.jq.error.is_some())
+        } else {
+            0
+        };
         let rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(HEADER_STRIP_HEIGHT), // status chip / chips+tabs / underline
+                Constraint::Length(jq_rows),             // jq bar (+ error row)
                 Constraint::Min(0),                      // body
                 Constraint::Length(if footer { 1 } else { 0 }), // search footer
             ])
@@ -1166,12 +1496,16 @@ impl Component for Response {
             rows[0],
             data,
             view,
+            &self.jq,
             self.collapsed,
             self.split,
             ctx,
         );
+        if jq_open {
+            draw_jq_bar(frame, hits, rows[1], &self.jq, ctx);
+        }
 
-        let mut body_area = rows[1];
+        let mut body_area = rows[2];
         crate::paint::fill(frame.buffer_mut(), body_area, t.page);
 
         // A line wider than the pane reserves the bottom row for a
@@ -1225,7 +1559,7 @@ impl Component for Response {
         frame.render_widget(Paragraph::new(body), body_area);
 
         if footer {
-            draw_search_footer(frame, hits, rows[2], view, ctx);
+            draw_search_footer(frame, hits, rows[3], view, ctx);
         }
     }
 }
@@ -1331,6 +1665,7 @@ fn draw_header_strip(
     area: Rect,
     data: &crate::http::ResponseData,
     view: &ReadyView,
+    bar: &JqBar,
     collapsed: bool,
     split: crate::split::SplitState,
     ctx: &DrawCtx,
@@ -1401,14 +1736,15 @@ fn draw_header_strip(
 
     // Row 2 (left): the icon actions, on the stretch of the underline row
     // the tabs' rule doesn't reach.
-    draw_header_actions(frame, hits, area, ctx);
+    let jq_available = view.has_tree_view();
+    draw_header_actions(frame, hits, area, jq_available, ctx);
 
     let buf = frame.buffer_mut();
     let row1_y = area.y + 1;
 
     // Row 1 (right) + row 2 (its underline): the response tabs,
     // right-aligned.
-    let (tabs, modes) = response_tab_defs(view);
+    let (tabs, modes) = response_tab_defs(view, bar, t);
 
     let tabs_width = tabstrip_width(&tabs);
     let tabs_x = area.right().saturating_sub(tabs_width).max(area.x);
@@ -1464,11 +1800,23 @@ type TabLabels = Vec<(String, Option<(char, ratatui::style::Color)>)>;
 /// `Headers`. Shared by [`draw_header_strip`] and `app.rs`'s tab-switch
 /// handling (Task 10), so the underline animation's retarget geometry can
 /// never drift from what's actually painted.
-pub fn response_tab_defs(view: &ReadyView) -> (TabLabels, Vec<ViewMode>) {
+///
+/// The `Tree` tab wears a filter badge (nf-md-filter) while a jq filter is
+/// applied: `theme.accent` normally, `theme.error` while the last run
+/// failed and the tree on screen is stale.
+pub fn response_tab_defs(
+    view: &ReadyView,
+    bar: &JqBar,
+    theme: &Theme,
+) -> (TabLabels, Vec<ViewMode>) {
     let mut tabs: TabLabels = Vec::new();
     let mut modes: Vec<ViewMode> = Vec::new();
     if view.has_tree_view() {
-        tabs.push(("Tree".to_string(), None));
+        let badge = view.jq_tree.is_some().then_some((
+            '\u{F0232}',
+            if bar.stale { theme.error } else { theme.accent },
+        ));
+        tabs.push(("Tree".to_string(), badge));
         modes.push(ViewMode::Pretty);
     }
     tabs.push(("Raw".to_string(), None));
@@ -1497,20 +1845,24 @@ fn tabstrip_width(tabs: &[(String, Option<(char, ratatui::style::Color)>)]) -> u
 /// and as text glyphs they take the theme's foreground instead of the
 /// emoji font's fixed colours — so all four sit level, at one size.
 /// All of them act on the *active tab's* text, following it like search.
-const HEADER_ACTIONS: [(&str, crate::hit::Hit); 4] = [
+const HEADER_ACTIONS: [(&str, crate::hit::Hit); 5] = [
     (" \u{F0349} ", crate::hit::Hit::ResponseSearchButton), // 󰍉 nf-md-magnify
     (" \u{F03EB} ", crate::hit::Hit::ResponseEditorButton), // 󰏫 nf-md-pencil
     (" \u{F0193} ", crate::hit::Hit::SaveBodyButton),       // 󰆓 nf-md-content_save
     (" \u{F018F} ", crate::hit::Hit::CopyBodyButton),       // 󰆏 nf-md-content_copy
+    (" \u{F0232} ", crate::hit::Hit::ResponseJqButton),     // 󰈲 nf-md-filter
 ];
 
 /// The header strip's icon actions, left-aligned on the underline row
 /// (`area`'s third row) — the stretch the tabs' rule doesn't reach — so
-/// they sit directly above the response body they act on.
+/// they sit directly above the response body they act on. The jq button
+/// (the last entry) is skipped entirely while `jq_available` is false —
+/// there is nothing for it to filter.
 fn draw_header_actions(
     frame: &mut Frame,
     hits: &mut crate::hit::HitMap,
     area: Rect,
+    jq_available: bool,
     ctx: &DrawCtx,
 ) {
     use unicode_width::UnicodeWidthStr;
@@ -1519,6 +1871,9 @@ fn draw_header_actions(
     let buf = frame.buffer_mut();
     let mut rects = Vec::new();
     for (label, hit) in HEADER_ACTIONS {
+        if !jq_available && hit == crate::hit::Hit::ResponseJqButton {
+            continue;
+        }
         // Display width, not char count, so the labels' padding is honoured.
         let w = label.width() as u16;
         let rect = Rect::new(x, y, w, 1);
@@ -1640,7 +1995,7 @@ fn body_lines(
 
     match view.mode {
         ViewMode::Pretty => {
-            let Some(tree) = &view.tree else {
+            let Some(tree) = view.active_tree() else {
                 if view.parsing {
                     let e = view.parse_started.elapsed();
                     let frame_i = (e.subsec_millis() / 100) as usize % SPINNER.len();
@@ -1942,6 +2297,98 @@ fn highlighted(pieces: Vec<(String, Style)>, hits: &LineMatches) -> Line<'static
         offset += chars.len();
     }
     Line::from(spans)
+}
+
+/// The jq filter bar: a `jq ` chip, the live filter text (or the "asking…"
+/// spinner while an AI request is pending), and the `✦` AI button
+/// right-aligned. A second row — when the bar reserved one — shows the
+/// last error's message, with its span (when known) underlined in the bar
+/// text above it.
+fn draw_jq_bar(
+    frame: &mut Frame,
+    hits: &mut crate::hit::HitMap,
+    area: Rect,
+    bar: &JqBar,
+    ctx: &DrawCtx,
+) {
+    let t = ctx.theme;
+    crate::paint::fill(frame.buffer_mut(), area, t.page);
+    if area.height == 0 {
+        return;
+    }
+    const AI: &str = " ✦ ";
+    let ai_w = AI.chars().count() as u16;
+    let text_w = area.width.saturating_sub(ai_w + 1);
+    let row = Rect {
+        height: 1,
+        width: text_w,
+        ..area
+    };
+    let chip_color = if bar.stale { t.text_muted } else { t.accent };
+    let mut spans = vec![Span::styled("jq ", Style::default().fg(chip_color))];
+    if bar.ai_pending {
+        let frame_i = (ctx
+            .now
+            .saturating_duration_since(bar.ai_started)
+            .as_millis()
+            / 80) as usize
+            % SPINNER.len();
+        spans.push(Span::styled(
+            format!("{} asking…", SPINNER[frame_i]),
+            Style::default().fg(t.text_muted),
+        ));
+    } else {
+        let line = bar
+            .input
+            .draw_line_windowed(bar.focused, t, text_w.saturating_sub(3));
+        spans.extend(line.spans);
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), row);
+    hits.register(row, crate::hit::Hit::ResponseJqBar);
+    if area.width > ai_w {
+        let ai_area = Rect::new(area.right() - ai_w, area.y, ai_w, 1);
+        draw_pane_action(
+            frame.buffer_mut(),
+            ai_area,
+            AI,
+            crate::hit::Hit::ResponseJqAiButton,
+            ctx.hovered,
+            t.page,
+            t,
+        );
+        hits.register(ai_area, crate::hit::Hit::ResponseJqAiButton);
+    }
+    if let Some(err) = &bar.error
+        && area.height >= 2
+    {
+        let err_row = Rect {
+            y: area.y + 1,
+            height: 1,
+            ..area
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("   {}", err.message()),
+                Style::default().fg(t.error),
+            ))),
+            err_row,
+        );
+        // Underline the span in the bar text when known. Ignores
+        // horizontal windowing of a very long filter — acceptable.
+        if let Some(span) = err.span() {
+            let text = bar.input.text();
+            let start = text[..span.start.min(text.len())].chars().count() as u16;
+            let len = text[span.clone()].chars().count().max(1) as u16;
+            let x0 = row.x + 3 + start; // after "jq "
+            for x in x0..(x0 + len).min(row.right()) {
+                frame.buffer_mut()[(x, row.y)].set_style(
+                    Style::default()
+                        .add_modifier(Modifier::UNDERLINED)
+                        .fg(t.error),
+                );
+            }
+        }
+    }
 }
 
 /// The search row: the query/match counter (or the live input) on the left,
@@ -3665,5 +4112,163 @@ mod tests {
             render(&mut r).contains("\"z\""),
             "back to pretty for the new body"
         );
+    }
+
+    const ITEMS: &str =
+        r#"{"data":{"items":[{"id":1,"status":"active"},{"id":2,"status":"off"}]}}"#;
+
+    #[test]
+    fn applying_a_filter_swaps_the_filtered_tree_into_the_pretty_view() {
+        let mut r = ready(ITEMS);
+        assert!(
+            r.apply_jq(".data.items | length", SYNC_PRETTY_BYTES)
+                .is_none(),
+            "small bodies run inline"
+        );
+        let view = r.view().unwrap();
+        assert_eq!(view.view_text(), "2");
+        assert_eq!(view.visible_len(), 1);
+        assert_eq!(r.jq_output_count(), 1);
+        assert!(r.jq_bar().error.is_none());
+        r.apply_jq("", SYNC_PRETTY_BYTES);
+        assert!(
+            r.view().unwrap().view_text().starts_with("{"),
+            "an empty filter shows the body again"
+        );
+    }
+
+    #[test]
+    fn multiple_outputs_render_as_separate_documents_and_are_counted() {
+        let mut r = ready(ITEMS);
+        r.apply_jq(".data.items[] | .id", SYNC_PRETTY_BYTES);
+        assert_eq!(r.view().unwrap().view_text(), "1\n\n2");
+        assert_eq!(r.jq_output_count(), 2);
+    }
+
+    #[test]
+    fn a_bad_filter_keeps_the_previous_tree_and_marks_the_bar_stale() {
+        let mut r = ready(ITEMS);
+        r.apply_jq(".data.items | length", SYNC_PRETTY_BYTES);
+        r.apply_jq(".data.items | select(", SYNC_PRETTY_BYTES);
+        assert_eq!(r.view().unwrap().view_text(), "2", "last good output stays");
+        assert!(r.jq_bar().stale);
+        let err = r.jq_bar().error.clone().expect("syntax error recorded");
+        assert!(err.span().is_some());
+        r.apply_jq(".data.items | length", SYNC_PRETTY_BYTES);
+        assert!(!r.jq_bar().stale && r.jq_bar().error.is_none());
+    }
+
+    #[test]
+    fn a_runtime_error_is_reported_the_same_way_without_a_span() {
+        let mut r = ready(ITEMS);
+        r.apply_jq(".data.items[0].id | .x", SYNC_PRETTY_BYTES);
+        let err = r.jq_bar().error.clone().expect("runtime error recorded");
+        assert!(err.span().is_none());
+        assert!(
+            r.view().unwrap().view_text().starts_with("{"),
+            "no good output yet: the body stays"
+        );
+    }
+
+    #[test]
+    fn big_bodies_hand_the_run_to_the_caller_and_accept_only_the_latest_result() {
+        let mut r = ready(ITEMS);
+        let req = r
+            .apply_jq(".data.items | length", 0)
+            .expect("over the sync limit → background");
+        assert_eq!(req.code, ".data.items | length");
+        assert!(r.jq_bar().pending.is_some());
+        let req2 = r.apply_jq(".data.items[0].id", 0).unwrap();
+        assert!(
+            req.doc.is_none() && req.body.is_some(),
+            "no cached document yet: the worker parses the body"
+        );
+        assert!(
+            !r.attach_jq_result(req.generation, req.run, Ok((None, vec!["2".into()]))),
+            "superseded run is dropped"
+        );
+        assert!(r.attach_jq_result(req2.generation, req2.run, Ok((None, vec!["1".into()]))));
+        assert_eq!(r.view().unwrap().view_text(), "1");
+        assert!(r.jq_bar().pending.is_none());
+        assert!(
+            !r.attach_jq_result(req2.generation + 1, req2.run, Ok((None, vec!["9".into()]))),
+            "wrong generation is dropped"
+        );
+    }
+
+    #[test]
+    fn applying_the_same_code_twice_is_a_no_op() {
+        let mut r = ready(ITEMS);
+        r.apply_jq(".data", SYNC_PRETTY_BYTES);
+        let before = r.view().unwrap().view_text();
+        assert!(
+            r.apply_jq(".data", 0).is_none(),
+            "already applied: no background run either"
+        );
+        assert_eq!(r.view().unwrap().view_text(), before);
+    }
+
+    #[test]
+    fn the_bar_text_is_settable_and_edits_are_flagged_until_taken() {
+        let mut r = ready(ITEMS);
+        r.set_jq_text(".a");
+        assert_eq!(r.jq_text(), ".a");
+        assert!(!r.take_jq_edited(), "programmatic set is not an edit");
+        assert!(r.set_jq_focus(true));
+        r.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
+        assert_eq!(r.jq_text(), ".ab");
+        assert!(r.take_jq_edited());
+        assert!(!r.take_jq_edited());
+        r.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!r.jq_focused(), "Esc blurs");
+        assert_eq!(r.jq_text(), ".ab", "…without clearing");
+        r.set_jq_text_with_cursor("map(select(.x == ))", 17);
+        assert!(r.take_jq_edited(), "a tee-up counts as an edit");
+        assert_eq!(r.jq_bar().input.cursor(), 17);
+    }
+
+    #[test]
+    fn a_focused_bar_swallows_plain_keys_and_enter_blurs() {
+        let mut r = ready(ITEMS);
+        r.set_jq_focus(true);
+        assert!(
+            r.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE))
+                .is_some()
+        );
+        assert_eq!(r.jq_text(), "j", "j typed, not cursor-down");
+        r.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(!r.jq_focused());
+    }
+
+    #[test]
+    fn paste_lands_in_the_bar_only_while_it_is_focused() {
+        let mut r = ready(ITEMS);
+        assert!(!r.paste_into_jq(".x"));
+        r.set_jq_focus(true);
+        assert!(r.paste_into_jq(".x"));
+        assert_eq!(r.jq_text(), ".x");
+    }
+
+    #[test]
+    fn jq_is_unavailable_without_a_json_body() {
+        let mut r = ready("plain text");
+        assert!(!r.jq_available());
+        assert!(!r.set_jq_focus(true));
+        assert!(r.apply_jq(".a", SYNC_PRETTY_BYTES).is_none());
+        assert!(
+            r.jq_bar().error.is_none(),
+            "nothing runs on a non-JSON body"
+        );
+    }
+
+    #[test]
+    fn the_tree_tab_wears_a_filter_badge_while_a_filter_is_applied() {
+        let mut r = ready(ITEMS);
+        let theme = Theme::dark();
+        let (tabs, _) = response_tab_defs(r.view().unwrap(), r.jq_bar(), &theme);
+        assert_eq!(tabs[0].1, None);
+        r.apply_jq(".data", SYNC_PRETTY_BYTES);
+        let (tabs, _) = response_tab_defs(r.view().unwrap(), r.jq_bar(), &theme);
+        assert_eq!(tabs[0].1.map(|(c, _)| c), Some('\u{F0232}'));
     }
 }

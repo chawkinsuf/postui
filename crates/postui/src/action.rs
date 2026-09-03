@@ -724,4 +724,9 @@ pub enum Action {
     /// Re-apply the most recently undone change. Same modality rules as
     /// [`Action::Undo`].
     Redo,
+
+    // -- jq response filter (spec: docs/superpowers/sdd/2026-09-03-jq-response-filter) --
+    /// Esc in the jq bar while an AI request is pending: cancels it.
+    /// Implemented by the describe-a-filter task.
+    CancelJqDescribe,
 }

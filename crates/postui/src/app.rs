@@ -2913,6 +2913,8 @@ impl App {
                 }
                 true
             }
+            // Task 9 (describe-a-filter) implements cancellation.
+            Action::CancelJqDescribe => true,
             Action::ReloadProjectFiles => {
                 let (changed, warnings) = self.project.reload_if_changed();
                 if changed {
@@ -7745,7 +7747,11 @@ impl App {
         let Some(view) = self.session.response.view() else {
             return;
         };
-        let (tabs, modes) = crate::components::response::response_tab_defs(view);
+        let (tabs, modes) = crate::components::response::response_tab_defs(
+            view,
+            self.session.response.jq_bar(),
+            &self.theme,
+        );
         let spans = crate::paint::TabStrip::spans(&tabs);
         let active_idx = modes.iter().position(|m| *m == view.mode).unwrap_or(0);
         let now = Instant::now();

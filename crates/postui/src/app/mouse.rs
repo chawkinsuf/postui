@@ -1390,6 +1390,13 @@ impl App {
             Hit::CopyBodyButton => self.update(Action::CopyToClipboard(CopyTarget::ResponseView)),
             Hit::SaveBodyButton => self.update(Action::PromptSaveView),
             Hit::ResponseEditorButton => self.update(Action::OpenResponseInEditor),
+            Hit::ResponseJqButton | Hit::ResponseJqBar => {
+                self.update(Action::FocusPane(PaneId::Response));
+                self.session.response.set_jq_focus(true);
+                self.update(Action::Render)
+            }
+            // The describe-a-filter task wires this button's click.
+            Hit::ResponseJqAiButton => false,
             Hit::HeaderCopy(i) => {
                 self.update(Action::CopyToClipboard(CopyTarget::ResponseHeader(i)))
             }
