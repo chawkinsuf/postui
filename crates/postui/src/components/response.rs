@@ -12,6 +12,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 /// Bodies up to this size are parsed on the UI thread, where the parse is
@@ -230,6 +231,10 @@ pub struct ReadyView {
     /// result can be matched to the run it was started for (and only that
     /// one — a superseded run's result is dropped).
     jq_runs: u64,
+    /// Column indexes (`col_marks`) of the raw lines that have been
+    /// scrolled sideways, by line — built lazily by `index_raw_rows`, never
+    /// invalidated (the raw lines are immutable for the view's life).
+    raw_marks: HashMap<usize, Vec<ColMark>>,
 }
 
 impl ReadyView {
@@ -283,6 +288,7 @@ impl ReadyView {
             jq_tree_code: None,
             jq_outputs: 1,
             jq_runs: 0,
+            raw_marks: HashMap::new(),
         }
     }
 
@@ -328,6 +334,20 @@ impl ReadyView {
             ViewMode::Pretty => self.active_tree().map_or(0, |t| t.visible_indices().len()),
             ViewMode::Raw => self.raw_lines.len(),
             ViewMode::Headers => self.header_lines.len().max(1),
+        }
+    }
+
+    /// Builds the column index of every raw line in `rows` that is long
+    /// enough to need one, ahead of a sideways-scrolled frame — the one
+    /// `&mut` step `body_lines` (which borrows the view shared) relies on.
+    fn index_raw_rows(&mut self, rows: std::ops::Range<usize>) {
+        for i in rows {
+            let Some(line) = self.raw_lines.get(i) else {
+                break;
+            };
+            if line.len() > COL_MARK_STEP && !self.raw_marks.contains_key(&i) {
+                self.raw_marks.insert(i, col_marks(line));
+            }
         }
     }
 
@@ -664,6 +684,21 @@ fn char_cell_at_display_col(text: &str, col: usize) -> usize {
 struct LineMatches {
     ranges: Vec<(usize, usize)>,
     current: Option<(usize, usize)>,
+}
+
+impl LineMatches {
+    /// The same ranges in the coordinates of a row that starts `char_start`
+    /// chars into the line: shifted left, clipped at the row's start, and
+    /// dropped when they end before it.
+    fn shifted(self, char_start: usize) -> Self {
+        let shift = |(s, e): (usize, usize)| {
+            (e > char_start).then(|| (s.saturating_sub(char_start), e - char_start))
+        };
+        LineMatches {
+            ranges: self.ranges.into_iter().filter_map(shift).collect(),
+            current: self.current.and_then(shift),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -1774,6 +1809,9 @@ impl Component for Response {
         // `body_lines` already starts at `view.scroll` and each line is
         // cropped by `view.h_scroll` columns, so the paragraph itself is
         // drawn unscrolled.
+        if view.mode == ViewMode::Raw && view.h_scroll > 0 {
+            view.index_raw_rows(view.scroll..view.scroll + view.height);
+        }
         let body = body_lines(view, t, ctx.focused, ctx.hovered, hits, body_area);
         frame.render_widget(Paragraph::new(body), body_area);
 
@@ -2195,9 +2233,18 @@ fn body_lines(
     let start = view.scroll;
     let end = start.saturating_add(view.height.max(1));
 
-    let mut push = |i: usize, full: usize, pieces: Vec<(String, Style)>, highlightable: bool| {
+    // `window` is where `pieces` sit in the full line: the char offset
+    // they start at, and the display columns `crop_cols` still has to drop
+    // from their front — `(0, h_scroll)` for a row built from its whole
+    // text, or whatever `viewport_window` cut for a raw row.
+    let mut push = |i: usize,
+                    full: usize,
+                    pieces: Vec<(String, Style)>,
+                    highlightable: bool,
+                    window: (usize, usize)| {
+        let (char_start, crop) = window;
         let hits = if highlightable {
-            view.match_ranges(full)
+            view.match_ranges(full).shifted(char_start)
         } else {
             LineMatches {
                 ranges: Vec::new(),
@@ -2206,11 +2253,17 @@ fn body_lines(
         };
         let mut line = highlighted(pieces, &hits);
         // Selection bg on top of search styling, before the h-crop (its
-        // char columns are pre-crop coordinates).
+        // char columns are pre-crop coordinates, shifted into the window).
         if let Some((from, to)) = view.sel_range_on_line(i) {
-            line = apply_col_bg(line, from, to, t.selection);
+            let (from, to) = (
+                from.saturating_sub(char_start),
+                to.saturating_sub(char_start),
+            );
+            if to > from {
+                line = apply_col_bg(line, from, to, t.selection);
+            }
         }
-        let mut line = crop_cols(line, view.h_scroll);
+        let mut line = crop_cols(line, crop);
         if focused && i == view.cursor {
             line = line.style(cursor_bg);
         }
@@ -2244,7 +2297,7 @@ fn body_lines(
                 // A collapsed line renders its summary, not its real text, so
                 // the match columns computed over the expanded text no longer
                 // apply to it.
-                push(i, indices[i], pieces, !line.collapsed);
+                push(i, indices[i], pieces, !line.collapsed, (0, view.h_scroll));
 
                 let y = area.y.saturating_add((i - start) as u16);
                 if y < area.y.saturating_add(area.height) {
@@ -2266,8 +2319,21 @@ fn body_lines(
             }
         }
         ViewMode::Raw => {
+            // A verbatim line can be megabytes long (a minified body is one
+            // line), and this runs on every frame of a scrollbar drag: only
+            // the chars that can reach the viewport are copied and styled.
+            let width = area.width as usize;
             for i in start..end.min(view.raw_lines.len()) {
-                push(i, i, vec![(view.raw_lines[i].clone(), text)], true);
+                let from = mark_for(view.raw_marks.get(&i).map(Vec::as_slice), view.h_scroll);
+                let (char_start, crop, slice) =
+                    viewport_window(&view.raw_lines[i], view.h_scroll, width, from);
+                push(
+                    i,
+                    i,
+                    vec![(slice.to_string(), text)],
+                    true,
+                    (char_start, crop),
+                );
             }
         }
         ViewMode::Headers => {
@@ -2297,7 +2363,7 @@ fn body_lines(
                     (value_piece, text),
                     (" ❐ ".to_string(), glyph_style),
                 ];
-                push(i, i, pieces, true);
+                push(i, i, pieces, true, (0, view.h_scroll));
 
                 let y = area.y.saturating_add((i - start) as u16);
                 if y < area.y.saturating_add(area.height) {
@@ -2430,6 +2496,91 @@ fn apply_col_bg(line: Line<'static>, from: usize, to: usize, bg: Color) -> Line<
         }
     }
     Line::from(spans).style(style)
+}
+
+/// Columns between two entries of a raw line's column index (`col_marks`).
+/// A window lookup walks at most this many chars from the nearest mark, so
+/// a scrolled frame on a megabyte line stays flat instead of re-walking
+/// its whole prefix.
+const COL_MARK_STEP: usize = 1024;
+
+/// A resume point for `viewport_window` — a char's byte offset, char index
+/// and the display column it starts at. `(0, 0, 0)` is the line start.
+type ColMark = (usize, usize, usize);
+
+/// The column index of `text`: entry `k` is the char covering display
+/// column `k * COL_MARK_STEP` (a wide char covering two marks appears
+/// twice). Built once per long raw line, on the first frame that scrolls
+/// it sideways; `O(chars)` then, `O(1)` to look up after.
+fn col_marks(text: &str) -> Vec<ColMark> {
+    use unicode_width::UnicodeWidthChar;
+    let mut marks = Vec::new();
+    let mut cols = 0usize;
+    for (idx, (byte, c)) in text.char_indices().enumerate() {
+        let w = c.width().unwrap_or(0);
+        while marks.len() * COL_MARK_STEP < cols + w {
+            marks.push((byte, idx, cols));
+        }
+        cols += w;
+    }
+    marks
+}
+
+/// The mark to resume a `skip`-column window from: the one at or before
+/// column `skip`, or the last one when `skip` runs past the index. `None`
+/// for a line with no index (short, or never scrolled).
+fn mark_for(marks: Option<&[ColMark]>, skip: usize) -> ColMark {
+    marks
+        .and_then(|m| m.get(skip / COL_MARK_STEP).or(m.last()))
+        .copied()
+        .unwrap_or((0, 0, 0))
+}
+
+/// The part of `text` that can reach a viewport `width` columns wide once
+/// its first `skip` display columns are cropped: the char offset the window
+/// starts at, the columns `crop_cols` still has to drop (a wide char
+/// straddling the crop is kept whole, so its already-covered column is
+/// owed), and the window itself — a slice starting on that char and
+/// running at least `width` columns, so cropping and truncating it paints
+/// exactly what cropping the whole line would. Skipping past the end gives
+/// an empty window at the line's end. The walk starts from `from`, a
+/// `col_marks` entry at or before `skip` (or the line start), so it costs
+/// `O(COL_MARK_STEP + width)` chars with an index and `O(skip + width)`
+/// without — never the whole line.
+fn viewport_window(text: &str, skip: usize, width: usize, from: ColMark) -> (usize, usize, &str) {
+    use unicode_width::UnicodeWidthChar;
+    let (from_byte, from_char, from_col) = from;
+    debug_assert!(from_col <= skip, "a resume mark must not lie past the crop");
+    let mut chars = text[from_byte..]
+        .char_indices()
+        .enumerate()
+        .map(|(i, (b, c))| (i + from_char, (b + from_byte, c)));
+    let mut cols = from_col;
+    let mut total_chars = from_char;
+    let mut start = None;
+    for (idx, (byte, c)) in chars.by_ref() {
+        total_chars = idx + 1;
+        let w = c.width().unwrap_or(0);
+        if cols + w > skip {
+            start = Some((idx, byte, skip - cols, w));
+            break;
+        }
+        cols += w;
+    }
+    let Some((char_start, byte_start, residual, first_w)) = start else {
+        return (total_chars, 0, "");
+    };
+    let need = residual + width;
+    let mut taken = first_w;
+    let mut byte_end = text.len();
+    for (_, (byte, c)) in chars {
+        if taken >= need {
+            byte_end = byte;
+            break;
+        }
+        taken += c.width().unwrap_or(0);
+    }
+    (char_start, residual, &text[byte_start..byte_end])
 }
 
 /// Drops the first `skip` display columns of `line`, keeping every span
@@ -4661,5 +4812,140 @@ mod tests {
             view.cursor
         );
         assert_eq!(view.h_scroll, 0, "horizontal scroll resets with the filter");
+    }
+
+    #[test]
+    fn viewport_window_starts_at_the_first_char_touching_the_cropped_edge() {
+        // Plain ASCII: skip 3 columns of a 10-char line, show 4.
+        let (start, residual, slice) = viewport_window("abcdefghij", 3, 4, (0, 0, 0));
+        assert_eq!((start, residual), (3, 0));
+        assert!(
+            slice.starts_with("defg"),
+            "window begins at col 3: {slice:?}"
+        );
+        assert!(
+            slice.len() < 10,
+            "the window is a slice, not the whole line: {slice:?}"
+        );
+        // A wide char straddling the crop: the window starts on it and
+        // owes `crop_cols` the column it already covered.
+        let (start, residual, slice) = viewport_window("a日本b", 2, 4, (0, 0, 0));
+        assert_eq!((start, residual), (1, 1));
+        assert!(slice.starts_with('日'), "{slice:?}");
+        // Nothing to skip: the whole width from the line start.
+        let (start, residual, slice) = viewport_window("abc", 0, 10, (0, 0, 0));
+        assert_eq!((start, residual, slice), (0, 0, "abc"));
+        // Skipping past the end yields an empty window at the line's end.
+        let (start, _, slice) = viewport_window("abc", 7, 4, (0, 0, 0));
+        assert_eq!((start, slice), (3, ""));
+        // A wide char after an ASCII run still owes its straddled column.
+        let (start, residual, slice) = viewport_window("abcd日本e", 5, 3, (0, 0, 0));
+        assert_eq!((start, residual), (4, 1));
+        assert!(slice.starts_with('日'), "{slice:?}");
+        // Skipping exactly the length: an empty window at the end.
+        let (start, _, slice) = viewport_window("abc", 3, 4, (0, 0, 0));
+        assert_eq!((start, slice), (3, ""));
+    }
+
+    #[test]
+    fn a_window_resumed_from_a_column_mark_matches_the_walk_from_the_start() {
+        // Mixed widths across several mark steps: narrow, wide, and
+        // zero-width chars, so marks land inside and between wide chars.
+        let text: String = "ab日\u{301}c".repeat(COL_MARK_STEP).chars().collect();
+        let marks = col_marks(&text);
+        assert!(marks.len() > 3, "several steps: {}", marks.len());
+        assert_eq!(marks[0], (0, 0, 0), "mark 0 is the line start");
+        for (k, &(_, _, col)) in marks.iter().enumerate() {
+            assert!(
+                col <= k * COL_MARK_STEP && col + 2 > k * COL_MARK_STEP,
+                "mark {k} covers its column: {col}"
+            );
+        }
+        for skip in [
+            0,
+            1,
+            3,
+            COL_MARK_STEP - 1,
+            COL_MARK_STEP,
+            2 * COL_MARK_STEP + 5,
+            4000,
+        ] {
+            let from = mark_for(Some(&marks), skip);
+            assert_eq!(
+                viewport_window(&text, skip, 7, from),
+                viewport_window(&text, skip, 7, (0, 0, 0)),
+                "skip {skip}"
+            );
+        }
+        // Past the end of the index: resume from the last mark, land on
+        // the line's end.
+        let far = text.chars().count() * 3;
+        let from = mark_for(Some(&marks), far);
+        assert_eq!(viewport_window(&text, far, 7, from).2, "");
+        // A short line has no index and resumes from the start.
+        assert_eq!(mark_for(None, 500), (0, 0, 0));
+    }
+
+    #[test]
+    fn a_long_raw_line_gets_its_column_index_on_the_first_sideways_frame() {
+        let mut r = ready(&format!("{}TAIL", "x".repeat(COL_MARK_STEP * 3)));
+        render(&mut r);
+        assert!(
+            r.view().unwrap().raw_marks.is_empty(),
+            "no index while unscrolled"
+        );
+        r.handle_scroll_h(COL_MARK_STEP as i16 * 2);
+        let out = render(&mut r);
+        let marks = &r.view().unwrap().raw_marks;
+        assert_eq!(marks.len(), 1, "the one scrolled row is indexed");
+        assert_eq!(marks[&0].len(), 4, "one mark per {COL_MARK_STEP} columns");
+        assert!(out.contains("x"), "{out}");
+        r.handle_scroll_h(10_000);
+        assert!(render(&mut r).contains("TAIL"), "window reaches the end");
+    }
+
+    #[test]
+    fn a_raw_search_match_far_into_a_windowed_line_still_highlights() {
+        let body = format!("{}needle{}", "x".repeat(300), "y".repeat(300));
+        let mut r = ready(&body);
+        r.handle_key(ch('/'));
+        for c in "needle".chars() {
+            r.handle_key(ch(c));
+        }
+        r.handle_key(key(KeyCode::Enter));
+        r.view.as_mut().unwrap().h_scroll = 295;
+        let (area, buf) = render_buf(&mut r);
+        let reversed = |x: u16| {
+            buf.cell((x, area.y))
+                .unwrap()
+                .modifier
+                .contains(Modifier::REVERSED)
+        };
+        assert!(!reversed(area.x + 4), "col 299 is an x, not highlighted");
+        assert!(reversed(area.x + 5), "col 300 starts the match");
+        assert!(reversed(area.x + 10), "col 305 ends the match");
+        assert!(!reversed(area.x + 11), "col 306 is a y");
+    }
+
+    #[test]
+    fn a_selection_far_into_a_windowed_raw_line_paints_in_place() {
+        let theme = Theme::dark();
+        let mut r = ready(&"z".repeat(600));
+        render_buf(&mut r);
+        r.view.as_mut().unwrap().h_scroll = 298;
+        let (area, _) = render_buf(&mut r);
+        r.begin_selection_at(area.x + 2, area.y);
+        r.drag_selection_to(area.x + 6, area.y);
+        let (area, buf) = render_buf(&mut r);
+        let bg = |x: u16| buf.cell((x, area.y)).unwrap().bg;
+        assert_ne!(bg(area.x + 1), theme.selection, "col 299 is outside");
+        assert_eq!(bg(area.x + 2), theme.selection, "col 300 is the anchor");
+        assert_eq!(bg(area.x + 6), theme.selection, "col 304 is the head");
+        assert_ne!(bg(area.x + 7), theme.selection, "col 305 is outside");
+        assert_eq!(
+            r.selected_text().as_deref(),
+            Some("zzzzz"),
+            "the copied text is the five selected cells"
+        );
     }
 }
