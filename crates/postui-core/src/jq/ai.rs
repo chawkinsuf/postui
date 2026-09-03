@@ -14,7 +14,11 @@ single representative element followed by an item count.";
 /// The whole stdin text for the AI command: system section, shape, current
 /// filter, and the user's sentence.
 pub fn prompt(shape: &str, current_filter: &str, request: &str) -> String {
-    let current = if current_filter.trim().is_empty() { "(none)" } else { current_filter.trim() };
+    let current = if current_filter.trim().is_empty() {
+        "(none)"
+    } else {
+        current_filter.trim()
+    };
     format!("{SYSTEM}\n\nStructure: {shape}\nCurrent filter: {current}\n\nRequest: {request}\n")
 }
 
@@ -38,7 +42,10 @@ mod tests {
         let filter_at = p.find("Current filter: .a").expect("filter line");
         let req_at = p.find("Request: double it").expect("request line");
         assert!(shape_at < filter_at && filter_at < req_at, "{p}");
-        assert!(p.contains("jq 1.7"), "system section names the dialect: {p}");
+        assert!(
+            p.contains("jq 1.7"),
+            "system section names the dialect: {p}"
+        );
         assert!(p.contains("no code fences"), "{p}");
     }
 
@@ -49,9 +56,18 @@ mod tests {
 
     #[test]
     fn replies_are_trimmed_unfenced_and_cut_to_their_first_line() {
-        assert_eq!(extract_filter("  .a | length \n"), Some(".a | length".into()));
-        assert_eq!(extract_filter("```jq\n.a | length\n```"), Some(".a | length".into()));
-        assert_eq!(extract_filter("```\n\n.a\n\nexplanation\n```"), Some(".a".into()));
+        assert_eq!(
+            extract_filter("  .a | length \n"),
+            Some(".a | length".into())
+        );
+        assert_eq!(
+            extract_filter("```jq\n.a | length\n```"),
+            Some(".a | length".into())
+        );
+        assert_eq!(
+            extract_filter("```\n\n.a\n\nexplanation\n```"),
+            Some(".a".into())
+        );
         assert_eq!(extract_filter("\n\n"), None);
     }
 }

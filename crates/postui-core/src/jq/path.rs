@@ -102,14 +102,20 @@ mod tests {
 
     #[test]
     fn compose_on_an_empty_bar_is_just_the_path_and_verb() {
-        assert_eq!(compose("", ".data.items", Some("length")), ".data.items | length");
+        assert_eq!(
+            compose("", ".data.items", Some("length")),
+            ".data.items | length"
+        );
         assert_eq!(compose("   ", ".data.items", None), ".data.items");
         assert_eq!(compose("", ".", Some("length")), "length");
     }
 
     #[test]
     fn compose_appends_to_an_existing_filter_with_a_pipe() {
-        assert_eq!(compose(".data", ".items", Some("length")), ".data | .items | length");
+        assert_eq!(
+            compose(".data", ".items", Some("length")),
+            ".data | .items | length"
+        );
         assert_eq!(compose(".data ", ".", Some("length")), ".data | length");
         assert_eq!(compose(".data", ".", None), ".data");
     }

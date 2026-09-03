@@ -12,7 +12,11 @@ pub struct ShapeLimits {
 
 impl Default for ShapeLimits {
     fn default() -> Self {
-        Self { max_depth: 6, max_bytes: 4096, max_keys: 40 }
+        Self {
+            max_depth: 6,
+            max_bytes: 4096,
+            max_keys: 40,
+        }
     }
 }
 
@@ -76,7 +80,10 @@ fn write_shape(value: &Value, depth: usize, limits: &ShapeLimits, out: &mut Stri
                 write_shape(v, depth + 1, limits, out);
             }
             if map.len() > limits.max_keys {
-                out.push_str(&format!(r#", "…": "+{} more keys""#, map.len() - limits.max_keys));
+                out.push_str(&format!(
+                    r#", "…": "+{} more keys""#,
+                    map.len() - limits.max_keys
+                ));
             }
             out.push('}');
         }
@@ -85,8 +92,15 @@ fn write_shape(value: &Value, depth: usize, limits: &ShapeLimits, out: &mut Stri
 
 fn string_tag(s: &str) -> Option<&'static str> {
     let b = s.as_bytes();
-    let digits = |r: std::ops::Range<usize>| b.get(r).is_some_and(|x| x.iter().all(u8::is_ascii_digit));
-    if b.len() >= 10 && digits(0..4) && b[4] == b'-' && digits(5..7) && b[7] == b'-' && digits(8..10) {
+    let digits =
+        |r: std::ops::Range<usize>| b.get(r).is_some_and(|x| x.iter().all(u8::is_ascii_digit));
+    if b.len() >= 10
+        && digits(0..4)
+        && b[4] == b'-'
+        && digits(5..7)
+        && b[7] == b'-'
+        && digits(8..10)
+    {
         return Some("date-time");
     }
     if s.starts_with("http://") || s.starts_with("https://") {
@@ -116,14 +130,28 @@ mod tests {
 
     #[test]
     fn scalars_become_type_names_and_keys_are_kept() {
-        let s = shape(r#"{"id": 1, "name": "x", "ok": true, "none": null}"#, ShapeLimits::default()).unwrap();
-        assert_eq!(s, r#"{"id": number, "name": string, "ok": boolean, "none": null}"#);
+        let s = shape(
+            r#"{"id": 1, "name": "x", "ok": true, "none": null}"#,
+            ShapeLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            s,
+            r#"{"id": number, "name": string, "ok": boolean, "none": null}"#
+        );
     }
 
     #[test]
     fn arrays_are_sampled_to_their_first_element_with_a_length_hint() {
-        let s = shape(r#"{"items": [{"a": 1}, {"a": 2}, {"a": 3}], "empty": []}"#, ShapeLimits::default()).unwrap();
-        assert_eq!(s, r#"{"items": [{"a": number}] /* 3 items */, "empty": []}"#);
+        let s = shape(
+            r#"{"items": [{"a": 1}, {"a": 2}, {"a": 3}], "empty": []}"#,
+            ShapeLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            s,
+            r#"{"items": [{"a": number}] /* 3 items */, "empty": []}"#
+        );
     }
 
     #[test]
@@ -142,21 +170,42 @@ mod tests {
     #[test]
     fn keys_past_the_cap_are_summarised() {
         let body = r#"{"a":1,"b":2,"c":3,"d":4}"#;
-        let s = shape(body, ShapeLimits { max_keys: 2, ..ShapeLimits::default() }).unwrap();
+        let s = shape(
+            body,
+            ShapeLimits {
+                max_keys: 2,
+                ..ShapeLimits::default()
+            },
+        )
+        .unwrap();
         assert_eq!(s, r#"{"a": number, "b": number, "…": "+2 more keys"}"#);
     }
 
     #[test]
     fn depth_past_the_cap_is_elided() {
         let body = r#"{"a":{"b":{"c":{"d":1}}}}"#;
-        let s = shape(body, ShapeLimits { max_depth: 2, ..ShapeLimits::default() }).unwrap();
+        let s = shape(
+            body,
+            ShapeLimits {
+                max_depth: 2,
+                ..ShapeLimits::default()
+            },
+        )
+        .unwrap();
         assert_eq!(s, r#"{"a": {"b": …}}"#);
     }
 
     #[test]
     fn output_past_the_byte_cap_is_truncated_with_an_ellipsis() {
         let body = r#"{"alpha": 1, "beta": 2, "gamma": 3}"#;
-        let s = shape(body, ShapeLimits { max_bytes: 20, ..ShapeLimits::default() }).unwrap();
+        let s = shape(
+            body,
+            ShapeLimits {
+                max_bytes: 20,
+                ..ShapeLimits::default()
+            },
+        )
+        .unwrap();
         assert!(s.len() <= 20 + '…'.len_utf8(), "len {}: {s}", s.len());
         assert!(s.ends_with('…'), "{s}");
         assert!(s.is_char_boundary(s.len() - '…'.len_utf8()));

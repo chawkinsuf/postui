@@ -6,7 +6,9 @@ use tokio::io::AsyncWriteExt as _;
 
 /// Whether `cmd`'s first word resolves on `PATH` (or is an existing path).
 pub fn program_available(cmd: &str) -> bool {
-    let Some(program) = cmd.split_whitespace().next() else { return false };
+    let Some(program) = cmd.split_whitespace().next() else {
+        return false;
+    };
     if program.contains('/') {
         return std::path::Path::new(program).is_file();
     }
@@ -43,8 +45,14 @@ pub async fn run_command(cmd: String, stdin: String) -> Result<String, String> {
         return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
     }
     let stderr = String::from_utf8_lossy(&out.stderr);
-    let last = stderr.lines().rev().find(|l| !l.trim().is_empty()).map(str::trim);
-    Err(last.map(str::to_string).unwrap_or_else(|| out.status.to_string()))
+    let last = stderr
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .map(str::trim);
+    Err(last
+        .map(str::to_string)
+        .unwrap_or_else(|| out.status.to_string()))
 }
 
 #[cfg(test)]
@@ -71,7 +79,9 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err, "two");
-        let err = run_command("exit 4".into(), String::new()).await.unwrap_err();
+        let err = run_command("exit 4".into(), String::new())
+            .await
+            .unwrap_err();
         assert!(err.contains("4"), "{err}");
     }
 }

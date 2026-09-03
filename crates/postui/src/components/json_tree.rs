@@ -157,7 +157,8 @@ impl JsonTree {
     }
 
     pub fn visible_line(&self, visible_index: usize) -> Option<&TreeLine> {
-        self.full_index_of_visible(visible_index).map(|i| &self.lines[i])
+        self.full_index_of_visible(visible_index)
+            .map(|i| &self.lines[i])
     }
 
     pub fn jq_path_of(&self, full_index: usize) -> String {
@@ -198,12 +199,21 @@ impl JsonTree {
         // A closing line belongs to its container, which lives one level up.
         let path = &line.path;
         let mut ids = line.parent_ids.clone();
-        if line.container.is_none() && line.tokens.first().is_some_and(|t| t.text == "}" || t.text == "]") {
+        if line.container.is_none()
+            && line
+                .tokens
+                .first()
+                .is_some_and(|t| t.text == "}" || t.text == "]")
+        {
             ids.pop();
         }
         for &id in ids.iter().rev() {
             let open = self.container_lines[id];
-            if self.lines[open].container.as_ref().is_some_and(|c| c.is_array) {
+            if self.lines[open]
+                .container
+                .as_ref()
+                .is_some_and(|c| c.is_array)
+            {
                 let array_len = self.lines[open].path.len();
                 // path = array path + [Index] + relative
                 if path.len() < array_len + 1 {
@@ -365,7 +375,15 @@ impl JsonTree {
             is_array,
             end_line: open_line,
         };
-        self.push(indent, open_tokens, summary, Some(container), parents, path, None);
+        self.push(
+            indent,
+            open_tokens,
+            summary,
+            Some(container),
+            parents,
+            path,
+            None,
+        );
 
         let mut inner_parents = parents.to_vec();
         inner_parents.push(id);
@@ -402,7 +420,15 @@ impl JsonTree {
             close_tokens.push(Token::new(",", TokenKind::Punct));
         }
         let end_line = self.lines.len();
-        self.push(indent, close_tokens, Vec::new(), None, &inner_parents, path, None);
+        self.push(
+            indent,
+            close_tokens,
+            Vec::new(),
+            None,
+            &inner_parents,
+            path,
+            None,
+        );
         if let Some(c) = &mut self.lines[open_line].container {
             c.end_line = end_line;
         }
@@ -662,12 +688,19 @@ mod tests {
 
     #[test]
     fn every_line_carries_its_jq_path_and_closing_lines_carry_their_containers() {
-        let t = JsonTree::parse(r#"{"data": {"items": [{"name": "a"}, 2], "odd key": true}}"#).unwrap();
+        let t =
+            JsonTree::parse(r#"{"data": {"items": [{"name": "a"}, 2], "odd key": true}}"#).unwrap();
         assert_eq!(t.jq_path_of(0), ".");
         assert_eq!(t.jq_path_of(line_with(&t, "\"items\"")), ".data.items");
-        assert_eq!(t.jq_path_of(line_with(&t, "\"name\"")), ".data.items[0].name");
+        assert_eq!(
+            t.jq_path_of(line_with(&t, "\"name\"")),
+            ".data.items[0].name"
+        );
         assert_eq!(t.jq_path_of(line_with(&t, "2")), ".data.items[1]");
-        assert_eq!(t.jq_path_of(line_with(&t, "\"odd key\"")), r#".data["odd key"]"#);
+        assert_eq!(
+            t.jq_path_of(line_with(&t, "\"odd key\"")),
+            r#".data["odd key"]"#
+        );
         let items_open = line_with(&t, "\"items\"");
         let items_close = t.line(items_open).container.as_ref().unwrap().end_line;
         assert_eq!(t.jq_path_of(items_close), ".data.items");
@@ -675,23 +708,49 @@ mod tests {
 
     #[test]
     fn scalar_lines_expose_their_json_value_text() {
-        let t = JsonTree::parse(r#"{"s": "a\"b", "n": 1.5, "b": true, "z": null, "o": {}, "arr": [1]}"#).unwrap();
-        assert_eq!(t.line(line_with(&t, "\"s\"")).scalar_text(), Some(r#""a\"b""#));
+        let t = JsonTree::parse(
+            r#"{"s": "a\"b", "n": 1.5, "b": true, "z": null, "o": {}, "arr": [1]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            t.line(line_with(&t, "\"s\"")).scalar_text(),
+            Some(r#""a\"b""#)
+        );
         assert_eq!(t.line(line_with(&t, "\"n\"")).scalar_text(), Some("1.5"));
-        assert_eq!(t.line(line_with(&t, "\"b\": true")).scalar_text(), Some("true"));
+        assert_eq!(
+            t.line(line_with(&t, "\"b\": true")).scalar_text(),
+            Some("true")
+        );
         assert_eq!(t.line(line_with(&t, "\"z\"")).scalar_text(), Some("null"));
-        assert_eq!(t.line(line_with(&t, "\"o\"")).scalar_text(), None, "empty containers are not scalars");
+        assert_eq!(
+            t.line(line_with(&t, "\"o\"")).scalar_text(),
+            None,
+            "empty containers are not scalars"
+        );
         assert_eq!(t.line(line_with(&t, "\"arr\"")).scalar_text(), None);
-        assert_eq!(t.line(t.line_count() - 1).scalar_text(), None, "closing brace");
+        assert_eq!(
+            t.line(t.line_count() - 1).scalar_text(),
+            None,
+            "closing brace"
+        );
     }
 
     #[test]
     fn first_element_keys_come_from_an_array_whose_first_element_is_an_object() {
-        let t = JsonTree::parse(r#"{"items": [{"id": 1, "name": "a"}, {"id": 2}], "nums": [1, 2], "empty": []}"#).unwrap();
-        assert_eq!(t.first_element_keys(line_with(&t, "\"items\"")), vec!["id", "name"]);
+        let t = JsonTree::parse(
+            r#"{"items": [{"id": 1, "name": "a"}, {"id": 2}], "nums": [1, 2], "empty": []}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            t.first_element_keys(line_with(&t, "\"items\"")),
+            vec!["id", "name"]
+        );
         assert!(t.first_element_keys(line_with(&t, "\"nums\"")).is_empty());
         assert!(t.first_element_keys(line_with(&t, "\"empty\"")).is_empty());
-        assert!(t.first_element_keys(line_with(&t, "\"id\": 1")).is_empty(), "not an array");
+        assert!(
+            t.first_element_keys(line_with(&t, "\"id\": 1")).is_empty(),
+            "not an array"
+        );
     }
 
     #[test]
@@ -699,22 +758,34 @@ mod tests {
         let t = JsonTree::parse(r#"{"items": [{"meta": {"status": "on"}}], "top": 1}"#).unwrap();
         let items = line_with(&t, "\"items\"");
         let status = line_with(&t, "\"status\"");
-        let (array_line, rel) = t.nearest_array_ancestor(status).expect("status sits inside items[0]");
+        let (array_line, rel) = t
+            .nearest_array_ancestor(status)
+            .expect("status sits inside items[0]");
         assert_eq!(array_line, items);
         assert_eq!(render_path(&rel), ".meta.status");
         let element = line_with(&t, "\"meta\"") - 1; // the `{` opening items[0]
-        assert_eq!(t.nearest_array_ancestor(element), Some((items, vec![])), "the element itself has an empty relative path");
+        assert_eq!(
+            t.nearest_array_ancestor(element),
+            Some((items, vec![])),
+            "the element itself has an empty relative path"
+        );
         assert_eq!(t.nearest_array_ancestor(line_with(&t, "\"top\"")), None);
     }
 
     #[test]
     fn parse_many_runs_documents_together_like_jq_and_restarts_paths() {
         let t = JsonTree::parse_many(&["{\"a\": 1}".to_string(), "[2]".to_string()]).unwrap();
-        assert_eq!(t.full_text_lines(), vec!["{", "  \"a\": 1", "}", "[", "  2", "]"]);
+        assert_eq!(
+            t.full_text_lines(),
+            vec!["{", "  \"a\": 1", "}", "[", "  2", "]"]
+        );
         assert_eq!(t.jq_path_of(3), ".");
         assert_eq!(t.jq_path_of(4), ".[0]");
         assert!(JsonTree::parse_many(&["{".to_string()]).is_none());
-        assert!(JsonTree::parse_many(&[]).is_some(), "no outputs is an empty tree, not a failure");
+        assert!(
+            JsonTree::parse_many(&[]).is_some(),
+            "no outputs is an empty tree, not a failure"
+        );
     }
 
     #[test]
@@ -724,7 +795,10 @@ mod tests {
         t.toggle(a);
         // visible: 0 "{", 1 "a": {…}, 2 "c": 2, 3 "}"
         assert_eq!(t.full_index_of_visible(2), Some(line_with(&t, "\"c\"")));
-        assert_eq!(t.visible_line(2).map(|l| l.expanded_text()), Some("  \"c\": 2".to_string()));
+        assert_eq!(
+            t.visible_line(2).map(|l| l.expanded_text()),
+            Some("  \"c\": 2".to_string())
+        );
         assert_eq!(t.visible_line(9), None);
     }
 }

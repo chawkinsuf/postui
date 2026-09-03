@@ -44,9 +44,16 @@ impl Eq for JqDocument {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JqError {
     /// Lex/parse failure; `span` is a byte range into the filter text.
-    Syntax { message: String, span: Option<Range<usize>> },
+    Syntax {
+        message: String,
+        span: Option<Range<usize>>,
+    },
     /// `nosuchfn/1` — name and arity, with the call's span when known.
-    Unknown { name: String, arity: usize, span: Option<Range<usize>> },
+    Unknown {
+        name: String,
+        arity: usize,
+        span: Option<Range<usize>>,
+    },
     /// A runtime error from jaq (`cannot index number with "foo"`), a body
     /// that is not JSON, or output past the cap.
     Runtime { message: String },
@@ -78,7 +85,9 @@ impl JqDocument {
     pub fn parse(body: &str) -> Result<Self, JqError> {
         jaq_json::read::parse_single(body.as_bytes())
             .map(|v| JqDocument(Arc::new(v)))
-            .map_err(|e| JqError::Runtime { message: format!("not JSON: {e}") })
+            .map_err(|e| JqError::Runtime {
+                message: format!("not JSON: {e}"),
+            })
     }
 }
 
@@ -95,11 +104,15 @@ fn span_of(code: &str, token: &str) -> Option<Range<usize>> {
 }
 
 fn defs() -> impl Iterator<Item = jaq_core::load::parse::Def<&'static str>> {
-    jaq_core::defs().chain(jaq_std::defs()).chain(jaq_json::defs())
+    jaq_core::defs()
+        .chain(jaq_std::defs())
+        .chain(jaq_json::defs())
 }
 
 fn funs() -> impl Iterator<Item = jaq_core::native::Fun<Data>> {
-    jaq_core::funs::<Data>().chain(jaq_std::funs()).chain(jaq_json::funs())
+    jaq_core::funs::<Data>()
+        .chain(jaq_std::funs())
+        .chain(jaq_json::funs())
 }
 
 /// Compiles `code` against a fresh arena and hands the compiled filter to
@@ -128,7 +141,11 @@ pub fn run(code: &str, doc: &JqDocument) -> Result<Vec<String>, JqError> {
     run_with_cap(code, doc, OUTPUT_CAP)
 }
 
-pub fn run_with_cap(code: &str, doc: &JqDocument, cap_bytes: usize) -> Result<Vec<String>, JqError> {
+pub fn run_with_cap(
+    code: &str,
+    doc: &JqDocument,
+    cap_bytes: usize,
+) -> Result<Vec<String>, JqError> {
     with_compiled(code, |filter| {
         let ctx = Ctx::<Data>::new(&filter.lut, Vars::new([]));
         let mut out = Vec::new();
@@ -169,11 +186,17 @@ fn load_error(code: &str, errs: jaq_core::load::Errors<&str, ()>) -> JqError {
             }
             Error::Io(v) => {
                 let msg = v.into_iter().next().map(|(_, e)| e).unwrap_or_default();
-                return JqError::Syntax { message: msg, span: None };
+                return JqError::Syntax {
+                    message: msg,
+                    span: None,
+                };
             }
         }
     }
-    JqError::Syntax { message: "invalid filter".into(), span: None }
+    JqError::Syntax {
+        message: "invalid filter".into(),
+        span: None,
+    }
 }
 
 /// Builds a `Syntax` error for an unexpected token. jaq points at the
@@ -184,7 +207,10 @@ fn unexpected<S: std::fmt::Debug>(code: &str, expect: &S, tok: &str) -> JqError 
     if tok.is_empty() {
         let span = code.char_indices().last().map(|(i, c)| i..i + c.len_utf8());
         return JqError::Syntax {
-            message: format!("unexpected end of filter — expected {}", expect_text(expect)),
+            message: format!(
+                "unexpected end of filter — expected {}",
+                expect_text(expect)
+            ),
             span,
         };
     }
@@ -206,12 +232,22 @@ fn compile_error(code: &str, errs: jaq_core::compile::Errors<&str, ()>) -> JqErr
         if let Some((name, kind)) = undefined.into_iter().next() {
             let span = span_of(code, name);
             return match kind {
-                Undefined::Filter(arity) => JqError::Unknown { name: name.to_string(), arity, span },
-                other => JqError::Syntax { message: format!("undefined {}: `{name}`", other.as_str()), span },
+                Undefined::Filter(arity) => JqError::Unknown {
+                    name: name.to_string(),
+                    arity,
+                    span,
+                },
+                other => JqError::Syntax {
+                    message: format!("undefined {}: `{name}`", other.as_str()),
+                    span,
+                },
             };
         }
     }
-    JqError::Syntax { message: "invalid filter".into(), span: None }
+    JqError::Syntax {
+        message: "invalid filter".into(),
+        span: None,
+    }
 }
 
 #[cfg(test)]
@@ -228,7 +264,11 @@ mod tests {
     fn a_filter_runs_and_returns_compact_json_outputs() {
         let out = run(".data.items | length", &doc()).unwrap();
         assert_eq!(out, vec!["2"]);
-        let out = run(r#".data.items | map(select(.status == "active")) | map(.name)"#, &doc()).unwrap();
+        let out = run(
+            r#".data.items | map(select(.status == "active")) | map(.name)"#,
+            &doc(),
+        )
+        .unwrap();
         assert_eq!(out, vec![r#"["a"]"#]);
     }
 
@@ -245,7 +285,11 @@ mod tests {
             panic!("expected a syntax error, got {err:?}");
         };
         let span = span.clone().expect("lex/parse errors carry a span");
-        assert_eq!(&".foo | select("[span.clone()], "(", "span covers the token: {span:?}");
+        assert_eq!(
+            &".foo | select("[span.clone()],
+            "(",
+            "span covers the token: {span:?}"
+        );
     }
 
     #[test]

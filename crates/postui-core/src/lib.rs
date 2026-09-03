@@ -24,8 +24,8 @@ pub fn config_dir() -> Option<std::path::PathBuf> {
     }
 }
 
-pub mod json;
 pub mod jq;
+pub mod json;
 pub mod migrate;
 pub mod model;
 pub mod prepare;
