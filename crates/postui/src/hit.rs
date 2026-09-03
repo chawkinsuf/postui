@@ -11,13 +11,17 @@ use ratatui::widgets::Paragraph;
 pub enum Hit {
     /// Pane background: click focuses, wheel scrolls.
     Pane(PaneId),
+    /// The header's `Project: <name>` chip: opens the project chooser.
     HeaderProject,
+    /// The `alt+z` keycap pill beside the project chip: next project on
+    /// click, same as the key itself.
+    HeaderProjectCycle,
     /// The header's `Space: <name> ▾` chip: opens the space dropdown.
     HeaderSpace,
-    /// The `alt+l` keycap pill beside the space chip: next space on click.
+    /// The `alt+c` keycap pill beside the space chip: next space on click.
     HeaderSpaceCycle,
     HeaderEnv,
-    /// The `alt+c` keycap pill beside the env chip: cycles the active
+    /// The `alt+x` keycap pill beside the env chip: cycles the active
     /// environment on click, same as the key itself.
     HeaderEnvCycle,
     /// The header's "Manage" chip: toggles the Manage screen.

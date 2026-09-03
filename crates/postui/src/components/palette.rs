@@ -177,7 +177,13 @@ pub fn all_commands() -> Vec<Command> {
             id: "project-next",
             name: "Project: next",
             description: "Cycle to the next registered project",
-            action: Action::CycleProject,
+            action: Action::CycleProject(1),
+        },
+        Command {
+            id: "project-prev",
+            name: "Project: previous",
+            description: "Cycle to the previous registered project",
+            action: Action::CycleProject(-1),
         },
         Command {
             id: "project-open-path",
@@ -201,7 +207,13 @@ pub fn all_commands() -> Vec<Command> {
             id: "env-next",
             name: "Environment: next",
             description: "Cycle to the next environment",
-            action: Action::CycleEnv,
+            action: Action::CycleEnv(1),
+        },
+        Command {
+            id: "env-prev",
+            name: "Environment: previous",
+            description: "Cycle to the previous environment",
+            action: Action::CycleEnv(-1),
         },
         Command {
             id: "env-new",

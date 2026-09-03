@@ -273,9 +273,10 @@ pub enum Action {
     /// Apply the named theme, persist it as the config `theme` key, and
     /// record it as the session's theme. Dispatched by the picker's Enter.
     ApplyTheme(String),
-    /// Switch to the next registered project after the current one,
-    /// wrapping; toasts "only one project registered" when there isn't one.
-    CycleProject,
+    /// `alt+z` / `alt+shift+z`: switch to the next (`1`) or previous
+    /// (`-1`) registered project, wrapping; toasts "only one project
+    /// registered" when there isn't one.
+    CycleProject(i32),
     /// User asked to switch to `root`. If the editor is dirty this is
     /// intercepted into a `Modal::Confirm` rather than applied directly
     /// (see `App::dirty_gate`); a no-op when `root` equals the current
@@ -301,20 +302,22 @@ pub enum Action {
         name: String,
         path: String,
     },
-    /// Open the environment chooser: every `project.environments` option
-    /// plus a final "no environment" option and a "new environment…" option.
-    /// With no environments the chooser still opens (just those two rows) —
-    /// the create row is the escape hatch from the empty state.
+    /// Open the environment dropdown (anchored under the header's env
+    /// chip): every `project.environments` option plus a "new
+    /// environment…" row and a "manage environments…" row. With no
+    /// environments the dropdown still opens (just those two rows) — the
+    /// create row is the escape hatch from the empty state.
     OpenEnvChooser,
     /// Open the `PromptKind::NewEnvironment` name prompt.
     OpenNewEnvPrompt,
     /// Create an empty `environments/<name>.toml` and switch to it. Toasts
     /// (and changes nothing) on an invalid name or an existing file.
     CreateEnv(String),
-    /// Switch to the next environment after the active one, wrapping;
-    /// skips the "no environment" state (from `None`, starts at the
-    /// first). Toasts when the project has no environments.
-    CycleEnv,
+    /// `alt+x` / `alt+shift+x`: switch to the next (`1`) or previous
+    /// (`-1`) environment, wrapping; never lands on the "no environment"
+    /// state (from `None`, starts at the first). Toasts when the project
+    /// has no environments.
+    CycleEnv(i32),
     /// Switch the active environment to `env` (`None` clears it), reload
     /// its values, persist the choice, and toast the result.
     SwitchEnv(Option<String>),
@@ -391,7 +394,7 @@ pub enum Action {
     ForceSwitchSpace(String),
     /// `alt+N`: switch to the Nth space (1-based). Out of range: no-op.
     JumpSpace(usize),
-    /// `alt+l` / `alt+shift+l`: next/previous space, wrapping.
+    /// `alt+c` / `alt+shift+c`: next/previous space, wrapping.
     CycleSpace(i32),
     /// Re-check the open project's files (project.toml, variables.toml,
     /// environments/, the active env file) against their recorded mtimes
@@ -742,13 +745,17 @@ pub enum Action {
     JqApply(String),
     /// Replaces the bar text, focuses it with the cursor at `cursor`, runs
     /// nothing yet.
-    JqTeeUp { text: String, cursor: usize },
+    JqTeeUp {
+        text: String,
+        cursor: usize,
+    },
     /// A background run finished for the response of `generation`, run
     /// `run`.
     JqRunFinished {
         generation: u64,
         run: u64,
-        result: Result<(Option<postui_core::jq::JqDocument>, Vec<String>), postui_core::jq::JqError>,
+        result:
+            Result<(Option<postui_core::jq::JqDocument>, Vec<String>), postui_core::jq::JqError>,
     },
     /// Copies a tree line's jq path.
     CopyJqPath(String),
@@ -779,11 +786,17 @@ pub enum Action {
     },
     /// Structural menu's "Pluck field…" on an array: opens a chooser of
     /// `keys`; picking `k` applies `compose(bar, path, "map(.k)")`.
-    JqPluckPrompt { path: String, keys: Vec<String> },
+    JqPluckPrompt {
+        path: String,
+        keys: Vec<String>,
+    },
     /// Structural menu's "Where field…" on an array: opens a chooser of
     /// `keys`; picking `k` tees up `compose(bar, path, "map(select(.k == ))")`
     /// with the cursor before the closing `)`.
-    JqWherePrompt { path: String, keys: Vec<String> },
+    JqWherePrompt {
+        path: String,
+        keys: Vec<String>,
+    },
     /// Structural menu's "Collect into array": wraps the bar text in `[ … ]`.
     JqCollect,
 }

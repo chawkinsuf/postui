@@ -502,8 +502,9 @@ mod tests {
         let content = render(&mut app);
         assert!(!content.contains("REQUESTS")); // no sidebar header; the button is the identity
         assert!(content.contains("New request")); // sidebar's + New request button
-        assert!(content.contains("postui")); // header bar app name
-        assert!(content.contains("no env")); // header env selector placeholder
+        assert!(!content.contains("postui")); // no wordmark: the window title carries the name
+        assert!(content.contains("Project:")); // header project chip
+        assert!(content.contains("no env")); // header env chip: a bare dir has no envs
         assert!(content.contains("quit")); // footer hint mentions quit key
         assert!(content.contains("No requests yet")); // sidebar empty state
         assert!(content.contains("response will appear here")); // response empty state

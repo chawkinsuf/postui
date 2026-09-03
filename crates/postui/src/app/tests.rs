@@ -151,6 +151,10 @@ fn init_project_here_creates_project_toml_at_current_root() {
             .spaces,
         ["main"]
     );
+    // The stock `default` env is written and the app lands in it, exactly
+    // as an open of the finished project would.
+    assert_eq!(app.project.environments, vec!["default".to_string()]);
+    assert_eq!(app.project.active_env.as_deref(), Some("default"));
 }
 
 #[test]
@@ -2172,7 +2176,7 @@ fn click_header_env_opens_env_chooser() {
 }
 
 /// The keycap pill beside the env chip is a real cycle button: clicking
-/// it steps the environment exactly as alt+c does, no chooser involved.
+/// it steps the environment exactly as alt+x does, no chooser involved.
 #[test]
 fn click_header_env_cycle_pill_cycles_the_environment() {
     let (mut app, _dir) = app_with_envs();
@@ -2181,9 +2185,9 @@ fn click_header_env_cycle_pill_cycles_the_environment() {
         .hits
         .rect_of(&crate::hit::Hit::HeaderEnvCycle)
         .expect("env-cycle pill registered in the header");
-    assert_eq!(app.project.env_label(), "no env");
+    assert_eq!(app.project.env_label(), "prod", "opens in the first env");
     app.handle_mouse(left_down(r.x + 1, r.y));
-    assert_eq!(app.project.env_label(), "prod");
+    assert_eq!(app.project.env_label(), "qa");
     assert!(app.modals.is_empty(), "cycling opens no dropdown");
 }
 
@@ -5146,7 +5150,7 @@ fn rendered_text(app: &mut App) -> String {
 #[test]
 fn cycle_switches_to_next_project_and_lists_its_requests() {
     let (mut app, _a, b) = two_projects();
-    app.update(Action::CycleProject);
+    app.update(Action::CycleProject(1));
     assert_eq!(app.project.root, b.path());
     assert!(
         app.sidebar
@@ -5172,7 +5176,7 @@ fn cycle_with_dirty_editor_shows_no_switch_toast_until_discard() {
     app.handle_key(&Keymap::default_bindings(), plain('/'));
     assert!(app.editor.is_dirty());
 
-    app.update(Action::CycleProject);
+    app.update(Action::CycleProject(1));
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
     assert_ne!(app.project.root, b.path(), "not switched yet");
     assert!(
@@ -5328,7 +5332,7 @@ fn cycle_env_reloads_project_files_before_switching() {
         .unwrap();
     f.set_modified(t).unwrap();
 
-    app.update(Action::CycleEnv);
+    app.update(Action::CycleEnv(1));
     assert_eq!(
         app.project.model.vars["greeting"].default.as_deref(),
         Some("hi"),
@@ -5463,6 +5467,9 @@ fn app_with_envs() -> (App, tempfile::TempDir) {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();
     postui_core::project::init_project(dir.path(), Some("svc")).unwrap();
+    // A project whose author replaced the stock `default` env with their
+    // own two: `prod` (first, so it's the one an open lands in) and `qa`.
+    std::fs::remove_file(dir.path().join("environments/default.toml")).unwrap();
     std::fs::write(dir.path().join("environments/prod.toml"), "tok = \"p\"\n").unwrap();
     std::fs::write(dir.path().join("environments/qa.toml"), "tok = \"q\"\n").unwrap();
     (App::with_root(tx, dir.path().to_path_buf()), dir)
@@ -5634,7 +5641,8 @@ fn padlock_shows_the_effective_tls_state_under_an_environment_force() {
         let cell = &terminal.backend().buffer()[(r.x + 1, r.y)];
         (cell.symbol().to_string(), cell.fg)
     };
-    // No env, request verifying: the filled lock.
+    // In an env with no policy (qa), request verifying: the filled lock.
+    app.update(Action::SwitchEnv(Some("qa".into())));
     let (plain_glyph, plain_fg) = lock_glyph(&mut app);
     assert_eq!(plain_glyph, "\u{F033E}");
     // prod forces insecure: the outline lock even though the request is
@@ -5648,12 +5656,14 @@ fn padlock_shows_the_effective_tls_state_under_an_environment_force() {
 #[test]
 fn cycle_env_wraps_and_skips_no_env() {
     let (mut app, dir) = app_with_envs();
-    assert_eq!(app.project.env_label(), "no env");
-    app.update(Action::CycleEnv);
-    assert_eq!(app.project.env_label(), "prod");
-    app.update(Action::CycleEnv);
+    assert_eq!(
+        app.project.env_label(),
+        "prod",
+        "an open lands in the first env"
+    );
+    app.update(Action::CycleEnv(1));
     assert_eq!(app.project.env_label(), "qa");
-    app.update(Action::CycleEnv);
+    app.update(Action::CycleEnv(1));
     assert_eq!(
         app.project.env_label(),
         "prod",
@@ -5662,6 +5672,18 @@ fn cycle_env_wraps_and_skips_no_env() {
     assert_eq!(app.project.env_data.values["tok"], "p");
     let st = postui_core::project::load_local_state(dir.path()).unwrap();
     assert_eq!(st.environment.as_deref(), Some("prod"), "persisted");
+
+    // alt+shift+x: the other way round, wrapping the same way.
+    app.update(Action::CycleEnv(-1));
+    assert_eq!(app.project.env_label(), "qa");
+    app.update(Action::CycleEnv(-1));
+    assert_eq!(app.project.env_label(), "prod");
+
+    // From no env (only reachable by a file going missing), a backward
+    // step lands on the last env rather than skipping one.
+    app.update(Action::SwitchEnv(None));
+    app.update(Action::CycleEnv(-1));
+    assert_eq!(app.project.env_label(), "qa");
 }
 
 #[test]
@@ -5761,7 +5783,11 @@ fn delete_env_confirms_trashes_clears_the_active_env_and_undoes() {
     let keymap = Keymap::default_bindings();
     app.handle_key(&keymap, plain(confirm));
     assert!(!dir.path().join("environments/qa.toml").exists());
-    assert_eq!(app.project.env_label(), "no env");
+    assert_eq!(
+        app.project.env_label(),
+        "prod",
+        "deleting the active env falls through to the first remaining one"
+    );
     assert!(
         !postui_core::project::load_secrets(dir.path())
             .unwrap()
@@ -5800,21 +5826,43 @@ fn delete_env_confirms_trashes_clears_the_active_env_and_undoes() {
     );
 }
 
+/// There is no "no environment" row: a project always has at least one
+/// environment, so the dropdown only ever offers envs and the two
+/// create/manage rows.
 #[test]
-fn env_chooser_includes_no_environment_entry() {
+fn env_dropdown_has_no_no_environment_row() {
     let (mut app, _dir) = app_with_envs();
     app.update(Action::SwitchEnv(Some("qa".into())));
     app.update(Action::OpenEnvChooser);
     let Some(Modal::Dropdown(state)) = app.modals.top() else {
         panic!("expected dropdown")
     };
-    assert!(
-        state.items.iter().any(|it| it.label == "no environment"),
-        "the dropdown offers a way back to no-env"
+    let labels: Vec<&str> = state.items.iter().map(|it| it.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        ["prod", "qa", "new environment…", "manage environments…"],
+        "{labels:?}"
     );
-    app.update(Action::Close);
-    app.update(Action::SwitchEnv(None));
-    assert_eq!(app.project.env_label(), "no env");
+}
+
+/// The last environment can't be deleted — the app has no no-env state
+/// to fall back to, only a default env — so the delete is refused with a
+/// toast pointing at rename instead of opening the confirm.
+#[test]
+fn deleting_the_last_environment_is_refused() {
+    let (mut app, dir) = app_with_envs();
+    app.update(Action::ForceDeleteEnv("qa".into()));
+    assert_eq!(app.project.environments, vec!["prod".to_string()]);
+    app.update(Action::DeleteEnv("prod".into()));
+    assert!(app.modals.is_empty(), "no confirm for the last env");
+    assert!(
+        app.toasts
+            .last_message()
+            .is_some_and(|m| m.contains("at least one environment")),
+        "{:?}",
+        app.toasts.messages()
+    );
+    assert!(dir.path().join("environments/prod.toml").is_file());
 }
 
 #[test]
@@ -5836,14 +5884,15 @@ fn env_chooser_opens_on_the_active_environment() {
     );
     app.update(Action::Close);
 
-    // With no env active it opens on the "no environment" row.
+    // With no env active (an env file gone missing) it opens on row 0
+    // with no ✓ anywhere.
     app.update(Action::SwitchEnv(None));
     app.update(Action::OpenEnvChooser);
     let Some(Modal::Dropdown(state)) = app.modals.top() else {
         panic!("expected dropdown")
     };
-    assert_eq!(state.items[state.selected].label, "no environment");
-    assert_eq!(state.current, Some(state.selected));
+    assert_eq!(state.selected, 0);
+    assert_eq!(state.current, None);
 }
 
 #[test]
@@ -5939,7 +5988,7 @@ fn env_chooser_with_no_environments_still_opens_with_create_row() {
 #[test]
 fn cycle_env_with_no_environments_toasts() {
     let mut app = App::new_for_test();
-    app.update(Action::CycleEnv);
+    app.update(Action::CycleEnv(1));
     assert!(!app.toasts.is_empty());
     assert_eq!(app.project.env_label(), "no env");
 }
@@ -7672,7 +7721,7 @@ fn manager_screen_replaces_the_three_panes_but_keeps_header_and_footer() {
     let mut app = App::new_for_test();
     app.update(Action::OpenManage { tab: None });
     let content = rendered_text(&mut app);
-    assert!(content.contains("postui"), "header wordmark stays");
+    assert!(content.contains("Project:"), "header chips stay");
     assert!(
         content.contains("esc"),
         "footer hint stays / manager hint shows"
@@ -7744,11 +7793,11 @@ fn alt_u_does_not_move_focus_from_the_manager_screen() {
     );
 }
 
-/// Same finding: alt+o (`Action::CycleProject`) — an arbitrary other
+/// Same finding: alt+z (`Action::CycleProject(1)`) — an arbitrary other
 /// global shortcut — must not reach its action from the Manager screen
-/// either. (alt+c/`Action::CycleEnv` is deliberately whitelisted: the
+/// either. (alt+x/`Action::CycleEnv(1)` is deliberately whitelisted: the
 /// active environment is meaningful inside the Manager — see
-/// `alt_c_cycles_env_from_the_manager_screen`.)
+/// `alt_x_cycles_env_from_the_manager_screen`.)
 #[test]
 fn other_unwhitelisted_global_shortcuts_are_swallowed_by_the_manager_screen() {
     let mut app = App::new_for_test();
@@ -7757,31 +7806,31 @@ fn other_unwhitelisted_global_shortcuts_are_swallowed_by_the_manager_screen() {
     assert_eq!(app.screen, crate::app::Screen::Manage);
     assert!(app.toasts.is_empty());
 
-    app.handle_key(&keymap, alt('o')); // CycleProject: would toast "only one project registered"
+    app.handle_key(&keymap, alt('z')); // CycleProject: would toast "only one project registered"
     assert!(
         app.toasts.is_empty(),
-        "alt+o must not reach Action::CycleProject"
+        "alt+z must not reach Action::CycleProject(1)"
     );
     assert_eq!(app.screen, crate::app::Screen::Manage);
 }
 
 /// Unlike send/focus/cycle-project, the active environment IS meaningful
-/// inside the Variable Manager (it shows per-env values), so alt+c
+/// inside the Variable Manager (it shows per-env values), so alt+x
 /// escapes the screen's input capture, switches the env, and re-syncs
 /// the Manager without leaving it.
 #[test]
-fn alt_c_cycles_env_from_the_manager_screen() {
+fn alt_x_cycles_env_from_the_manager_screen() {
     let (mut app, _dir) = app_with_envs();
     let keymap = Keymap::default_bindings();
     app.handle_key(&keymap, alt('v'));
     assert_eq!(app.screen, crate::app::Screen::Manage);
-    assert_eq!(app.project.env_label(), "no env");
+    assert_eq!(app.project.env_label(), "prod");
 
-    app.handle_key(&keymap, alt('c'));
+    app.handle_key(&keymap, alt('x'));
     assert_eq!(
         app.project.env_label(),
-        "prod",
-        "alt+c must reach Action::CycleEnv from the Manager screen"
+        "qa",
+        "alt+x must reach Action::CycleEnv(1) from the Manager screen"
     );
     assert_eq!(
         app.screen,
@@ -11566,6 +11615,8 @@ fn declining_the_migration_leaves_the_files_alone_and_the_project_open() {
 fn migrating_a_project_with_no_environments_creates_default_toml_for_the_entries() {
     let dir = tempfile::tempdir().unwrap();
     postui_core::project::init_project(dir.path(), Some("legacy")).unwrap();
+    // A legacy project predates the stock `default` env.
+    std::fs::remove_file(dir.path().join("environments/default.toml")).unwrap();
     std::fs::write(
         dir.path().join("variables.toml"),
         "[tier]\n[tier.options.gold]\nvalue = \"g-1\"\n",
@@ -11573,7 +11624,10 @@ fn migrating_a_project_with_no_environments_creates_default_toml_for_the_entries
     .unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    assert!(app.project.environments.is_empty());
+    assert!(
+        app.project.environments.is_empty(),
+        "mid-migration, no default env is written under the migration's feet"
+    );
 
     let Some(Modal::Confirm { body, .. }) = app.modals.top() else {
         panic!("a legacy project must offer the migration");
@@ -14468,8 +14522,9 @@ fn header_cycle_pills_yield_at_eighty_columns_so_the_manage_chip_fits() {
         "so does the env cycle pill"
     );
 
-    // The 120-column path keeps both pills.
+    // The 120-column path keeps all three pills.
     render_once(&mut app);
+    assert!(app.hits.rect_of(&Hit::HeaderProjectCycle).is_some());
     assert!(app.hits.rect_of(&Hit::HeaderSpaceCycle).is_some());
     assert!(app.hits.rect_of(&Hit::HeaderEnvCycle).is_some());
 }
@@ -16927,7 +16982,8 @@ fn row_menu_extract_value_to_selector_promotes_the_row_and_replaces_the_cell() {
 
 // --- jq filter bar ---
 
-const JQ_BODY: &str = r#"{"data":{"items":[{"id":1,"status":"active"},{"id":2,"status":"off"}],"total":2}}"#;
+const JQ_BODY: &str =
+    r#"{"data":{"items":[{"id":1,"status":"active"},{"id":2,"status":"off"}],"total":2}}"#;
 
 fn type_str(app: &mut App, s: &str) {
     for c in s.chars() {
@@ -16947,7 +17003,10 @@ fn alt_q_focuses_the_jq_bar_and_typing_filters_the_tree_live() {
     assert!(app.session.response.jq_focused());
     type_str(&mut app, ".data.total");
     assert_eq!(app.session.response.view().unwrap().view_text(), "2");
-    assert_eq!(app.editor.jq, ".data.total", "the bar mirrors into the request");
+    assert_eq!(
+        app.editor.jq, ".data.total",
+        "the bar mirrors into the request"
+    );
     assert!(app.editor.is_dirty());
     app.handle_key(&Keymap::default_bindings(), alt('q'));
     assert!(!app.session.response.jq_focused(), "alt+q again blurs");
@@ -16988,15 +17047,24 @@ fn esc_clears_the_filter_and_keeps_the_bar_open_and_a_second_esc_leaves() {
     );
     assert_eq!(app.editor.jq, "", "esc clears the text");
     assert!(app.editor.jq_enabled, "…and leaves the switch on");
-    assert!(app.session.response.jq_focused(), "…and the caret stays in the bar");
+    assert!(
+        app.session.response.jq_focused(),
+        "…and the caret stays in the bar"
+    );
     assert!(app.session.response.jq_open());
     assert_eq!(app.session.response.view().unwrap().view_text(), full);
     app.handle_key(
         &Keymap::default_bindings(),
         KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
     );
-    assert!(!app.session.response.jq_focused(), "esc on an empty bar leaves it");
-    assert!(!app.session.response.jq_open(), "…and an empty bar is hidden");
+    assert!(
+        !app.session.response.jq_focused(),
+        "esc on an empty bar leaves it"
+    );
+    assert!(
+        !app.session.response.jq_open(),
+        "…and an empty bar is hidden"
+    );
     // The clear was an edit: undo brings the filter back.
     app.capture_undo();
     app.update(Action::Undo);
@@ -17179,7 +17247,12 @@ fn the_focused_bar_advertises_enter_apply_and_esc_clear() {
     let keys: Vec<(&str, &str)> = chips.iter().map(|(k, l, _)| (*k, *l)).collect();
     assert_eq!(
         keys,
-        vec![("enter", "apply"), ("esc", "clear"), ("alt+q", "close"), ("✦", "describe…")],
+        vec![
+            ("enter", "apply"),
+            ("esc", "clear"),
+            ("alt+q", "close"),
+            ("✦", "describe…")
+        ],
         "{chips:?}"
     );
     assert_eq!(
@@ -17224,7 +17297,10 @@ fn jq_apply_and_tee_up_drive_the_bar() {
     ready_response(&mut app, JQ_BODY);
     app.update(Action::JqApply(".data.items | length".into()));
     assert_eq!(app.session.response.view().unwrap().view_text(), "2");
-    assert!(!app.session.response.jq_focused(), "apply does not focus the bar");
+    assert!(
+        !app.session.response.jq_focused(),
+        "apply does not focus the bar"
+    );
     app.update(Action::JqTeeUp {
         text: ".data.items | map(select(.status == ))".into(),
         cursor: 37,
@@ -17282,10 +17358,16 @@ fn a_big_body_runs_the_filter_in_the_background_and_lands_via_an_action() {
     let req2 = app
         .session
         .response
-        .apply_jq(".pad | length", crate::components::response::SYNC_PRETTY_BYTES)
+        .apply_jq(
+            ".pad | length",
+            crate::components::response::SYNC_PRETTY_BYTES,
+        )
         .expect("still a background-sized run");
     assert!(req2.doc.is_some(), "the doc from the first run is cached");
-    assert!(req2.body.is_none(), "…so no body needs to be handed to the worker");
+    assert!(
+        req2.body.is_none(),
+        "…so no body needs to be handed to the worker"
+    );
 
     // Direct coverage of the worker itself: parses the body when handed no
     // cached document, and runs the filter against it.
@@ -17394,7 +17476,11 @@ fn jq_is_a_no_op_on_a_non_json_response() {
     ready_response(&mut app, "plain");
     assert!(app.handle_key(&Keymap::default_bindings(), alt('q')));
     assert!(!app.session.response.jq_focused());
-    assert_eq!(app.toasts.messages().len(), 1, "a toast says the response is not JSON");
+    assert_eq!(
+        app.toasts.messages().len(),
+        1,
+        "a toast says the response is not JSON"
+    );
 }
 
 // --- structural (jq) right-click menu ---
@@ -17417,7 +17503,10 @@ fn right_click_row(app: &mut App, needle: &str) {
         app.session.response.set_scroll(row);
         render_once(app);
     }
-    let rect = app.hits.rect_of(&Hit::JsonRow(row)).expect("row is on screen");
+    let rect = app
+        .hits
+        .rect_of(&Hit::JsonRow(row))
+        .expect("row is on screen");
     app.handle_mouse(right_down(rect.x + 1, rect.y));
 }
 
@@ -17431,18 +17520,37 @@ fn right_click_on_an_array_line_offers_the_array_verbs_above_the_text_menu() {
     assert_eq!(
         labels,
         vec![
-            "Filter to this", "Copy path", "Count", "Pluck field\u{2026}", "Where field\u{2026}",
-            "Describe a filter\u{2026}", "\u{2500}\u{2500}", // a disabled rule between the sections
-            "Copy", "Extract to variable\u{2026}", "Extract to selector\u{2026}",
+            "Filter to this",
+            "Copy path",
+            "Count",
+            "Pluck field\u{2026}",
+            "Where field\u{2026}",
+            "Describe a filter\u{2026}",
+            "\u{2500}\u{2500}", // a disabled rule between the sections
+            "Copy",
+            "Extract to variable\u{2026}",
+            "Extract to selector\u{2026}",
         ],
         "{labels:?}"
     );
-    assert_eq!(menu_action(&app, "Filter to this"), Some(Action::JqApply(".data.items".into())));
-    assert_eq!(menu_action(&app, "Copy path"), Some(Action::CopyJqPath(".data.items".into())));
-    assert_eq!(menu_action(&app, "Count"), Some(Action::JqApply(".data.items | length".into())));
+    assert_eq!(
+        menu_action(&app, "Filter to this"),
+        Some(Action::JqApply(".data.items".into()))
+    );
+    assert_eq!(
+        menu_action(&app, "Copy path"),
+        Some(Action::CopyJqPath(".data.items".into()))
+    );
+    assert_eq!(
+        menu_action(&app, "Count"),
+        Some(Action::JqApply(".data.items | length".into()))
+    );
     assert_eq!(
         menu_action(&app, "Pluck field\u{2026}"),
-        Some(Action::JqPluckPrompt { path: ".data.items".into(), keys: vec!["id".into(), "status".into()] })
+        Some(Action::JqPluckPrompt {
+            path: ".data.items".into(),
+            keys: vec!["id".into(), "status".into()]
+        })
     );
 }
 
@@ -17452,15 +17560,25 @@ fn a_scalar_inside_an_array_element_offers_only_items_where() {
     ready_response(&mut app, JQ_BODY);
     right_click_row(&mut app, "\"status\": \"active\"");
     let labels = menu_labels(&app);
-    assert!(labels.contains(&"Only items where status == \"active\"".to_string()), "{labels:?}");
+    assert!(
+        labels.contains(&"Only items where status == \"active\"".to_string()),
+        "{labels:?}"
+    );
     assert!(!labels.contains(&"Count".to_string()));
     assert_eq!(
         menu_action(&app, "Only items where status == \"active\""),
-        Some(Action::JqApply(r#".data.items | map(select(.status == "active"))"#.into()))
+        Some(Action::JqApply(
+            r#".data.items | map(select(.status == "active"))"#.into()
+        ))
     );
     app.update(Action::Close);
     right_click_row(&mut app, "\"total\"");
-    assert!(!menu_labels(&app).iter().any(|l| l.starts_with("Only items")), "no enclosing array");
+    assert!(
+        !menu_labels(&app)
+            .iter()
+            .any(|l| l.starts_with("Only items")),
+        "no enclosing array"
+    );
 }
 
 #[test]
@@ -17585,9 +17703,18 @@ fn the_response_footer_names_the_jq_chip_after_what_alt_q_will_do() {
         .find(|(k, _, _)| *k == "alt+q")
         .map(|(_, l, a)| (l, a))
     };
-    assert_eq!(chip(JqBarState::Closed), Some(("filter", Some(Action::ToggleJqBar))));
-    assert_eq!(chip(JqBarState::Open), Some(("close", Some(Action::ToggleJqBar))));
-    assert_eq!(chip(JqBarState::Focused), Some(("close", Some(Action::ToggleJqBar))));
+    assert_eq!(
+        chip(JqBarState::Closed),
+        Some(("filter", Some(Action::ToggleJqBar)))
+    );
+    assert_eq!(
+        chip(JqBarState::Open),
+        Some(("close", Some(Action::ToggleJqBar)))
+    );
+    assert_eq!(
+        chip(JqBarState::Focused),
+        Some(("close", Some(Action::ToggleJqBar)))
+    );
 }
 
 #[test]
@@ -17596,11 +17723,18 @@ fn verbs_compose_onto_an_existing_filter_with_relative_paths() {
     ready_response(&mut app, JQ_BODY);
     app.update(Action::JqApply(".data".into()));
     right_click_row(&mut app, "\"items\"");
-    assert_eq!(menu_action(&app, "Count"), Some(Action::JqApply(".data | .items | length".into())));
+    assert_eq!(
+        menu_action(&app, "Count"),
+        Some(Action::JqApply(".data | .items | length".into()))
+    );
     app.update(Action::Close);
     app.update(Action::JqApply(".data.items".into()));
     right_click_row(&mut app, "[");
-    assert_eq!(menu_action(&app, "Count"), Some(Action::JqApply(".data.items | length".into())), "a root path is dropped");
+    assert_eq!(
+        menu_action(&app, "Count"),
+        Some(Action::JqApply(".data.items | length".into())),
+        "a root path is dropped"
+    );
 }
 
 #[test]
@@ -17610,8 +17744,15 @@ fn with_several_outputs_the_composing_verbs_are_disabled_and_collect_is_offered(
     app.update(Action::JqApply(".data.items[]".into()));
     right_click_row(&mut app, "\"id\": 1");
     let labels = menu_labels(&app);
-    assert!(labels.contains(&"Collect into array".to_string()), "{labels:?}");
-    assert_eq!(menu_action(&app, "Filter to this  (collect into array first)"), None, "disabled, with the hint in its label");
+    assert!(
+        labels.contains(&"Collect into array".to_string()),
+        "{labels:?}"
+    );
+    assert_eq!(
+        menu_action(&app, "Filter to this  (collect into array first)"),
+        None,
+        "disabled, with the hint in its label"
+    );
     let collect = menu_action(&app, "Collect into array").unwrap();
     app.update(Action::Close);
     app.update(collect);
@@ -17623,31 +17764,56 @@ fn with_several_outputs_the_composing_verbs_are_disabled_and_collect_is_offered(
 fn pluck_and_where_open_a_key_chooser_that_writes_the_verb() {
     let mut app = App::new_for_test();
     ready_response(&mut app, JQ_BODY);
-    app.update(Action::JqPluckPrompt { path: ".data.items".into(), keys: vec!["id".into(), "status".into()] });
-    let Some(Modal::Chooser(c)) = app.modals.top() else { panic!("chooser") };
+    app.update(Action::JqPluckPrompt {
+        path: ".data.items".into(),
+        keys: vec!["id".into(), "status".into()],
+    });
+    let Some(Modal::Chooser(c)) = app.modals.top() else {
+        panic!("chooser")
+    };
     assert_eq!(c.title, "Pluck field");
     let pick = c.items[1].actions.clone();
     app.update(Action::Close);
-    for a in pick { app.update(a); }
+    for a in pick {
+        app.update(a);
+    }
     assert_eq!(app.session.response.jq_text(), ".data.items | map(.status)");
-    assert_eq!(app.session.response.view().unwrap().view_text(), "[\n  \"active\",\n  \"off\"\n]");
+    assert_eq!(
+        app.session.response.view().unwrap().view_text(),
+        "[\n  \"active\",\n  \"off\"\n]"
+    );
 
     app.update(Action::JqApply("".into()));
-    app.update(Action::JqWherePrompt { path: ".data.items".into(), keys: vec!["status".into()] });
-    let Some(Modal::Chooser(c)) = app.modals.top() else { panic!("chooser") };
+    app.update(Action::JqWherePrompt {
+        path: ".data.items".into(),
+        keys: vec!["status".into()],
+    });
+    let Some(Modal::Chooser(c)) = app.modals.top() else {
+        panic!("chooser")
+    };
     let pick = c.items[0].actions.clone();
     app.update(Action::Close);
-    for a in pick { app.update(a); }
-    assert_eq!(app.session.response.jq_text(), ".data.items | map(select(.status == ))");
+    for a in pick {
+        app.update(a);
+    }
+    assert_eq!(
+        app.session.response.jq_text(),
+        ".data.items | map(select(.status == ))"
+    );
     assert!(app.session.response.jq_focused());
-    assert_eq!(app.session.response.jq_bar().input.cursor(), ".data.items | map(select(.status == ".len());
+    assert_eq!(
+        app.session.response.jq_bar().input.cursor(),
+        ".data.items | map(select(.status == ".len()
+    );
 }
 
 #[test]
 fn the_structural_menu_is_absent_on_raw_and_non_json_views() {
     let mut app = App::new_for_test();
     ready_response(&mut app, JQ_BODY);
-    app.update(Action::ResponseViewMode(crate::components::response::ViewMode::Raw));
+    app.update(Action::ResponseViewMode(
+        crate::components::response::ViewMode::Raw,
+    ));
     render_once(&mut app);
     let area = app.session.response.view().unwrap().last_area.unwrap();
     app.handle_mouse(right_down(area.x + 1, area.y));
@@ -17665,7 +17831,11 @@ async fn drain_ai(app: &mut App) -> Action {
     // The AI task is a tokio task; await its JoinHandle then read the action it sent.
     let (_, handle) = app.ai_task.take().expect("an AI request is in flight");
     handle.await.unwrap();
-    app._test_rx.as_mut().unwrap().try_recv().expect("the task sent its result")
+    app._test_rx
+        .as_mut()
+        .unwrap()
+        .try_recv()
+        .expect("the task sent its result")
 }
 
 #[tokio::test]
@@ -17674,11 +17844,23 @@ async fn describe_a_filter_sends_the_shape_and_lands_the_reply_in_the_bar() {
     let seen = dir.path().join("seen.txt");
     let mut app = App::new_for_test();
     ready_response(&mut app, JQ_BODY);
-    stub_ai(&mut app, &format!("cat > {} && echo '.data.total'", seen.display()));
+    stub_ai(
+        &mut app,
+        &format!("cat > {} && echo '.data.total'", seen.display()),
+    );
     app.update(Action::OpenJqDescribe);
-    let Some(Modal::Prompt { kind: PromptKind::JqDescribe, .. }) = app.modals.top() else { panic!("prompt") };
+    let Some(Modal::Prompt {
+        kind: PromptKind::JqDescribe,
+        ..
+    }) = app.modals.top()
+    else {
+        panic!("prompt")
+    };
     type_str(&mut app, "just the total");
-    app.handle_key(&Keymap::default_bindings(), KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(
+        &Keymap::default_bindings(),
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+    );
     assert!(app.session.response.jq_bar().ai_pending);
     let action = drain_ai(&mut app).await;
     app.update(action);
@@ -17705,7 +17887,11 @@ async fn a_fenced_reply_is_unwrapped_and_a_bad_reply_lands_with_its_error() {
     app.update(Action::RunJqDescribe("x".into()));
     let a = drain_ai(&mut app).await;
     app.update(a);
-    assert_eq!(app.session.response.jq_text(), "this is not jq", "lands for hand repair");
+    assert_eq!(
+        app.session.response.jq_text(),
+        "this is not jq",
+        "lands for hand repair"
+    );
     assert!(app.session.response.jq_bar().error.is_some());
     assert!(app.session.response.jq_focused());
 }
@@ -17731,15 +17917,28 @@ fn the_first_use_asks_for_confirmation_and_always_persists_the_flag() {
     ready_response(&mut app, JQ_BODY);
     app.ui_settings.ai_cmd = "true".into();
     app.update(Action::ConfirmJqDescribe("x".into()));
-    let Some(Modal::Confirm { choices, body, .. }) = app.modals.top() else { panic!("confirm modal") };
+    let Some(Modal::Confirm { choices, body, .. }) = app.modals.top() else {
+        panic!("confirm modal")
+    };
     assert!(body.contains("key names and types"), "{body}");
-    let always = choices.iter().find(|(c, _, _)| *c == 'a').expect("an Always choice").2.clone();
-    assert_eq!(always, vec![Action::SetAiConfirmed, Action::RunJqDescribe("x".into())]);
+    let always = choices
+        .iter()
+        .find(|(c, _, _)| *c == 'a')
+        .expect("an Always choice")
+        .2
+        .clone();
+    assert_eq!(
+        always,
+        vec![Action::SetAiConfirmed, Action::RunJqDescribe("x".into())]
+    );
     app.update(Action::Close);
     app.update(Action::SetAiConfirmed);
     assert!(app.ui_settings.ai_confirmed);
     app.update(Action::ConfirmJqDescribe("y".into()));
-    assert!(!matches!(app.modals.top(), Some(Modal::Confirm { .. })), "no second confirmation");
+    assert!(
+        !matches!(app.modals.top(), Some(Modal::Confirm { .. })),
+        "no second confirmation"
+    );
 }
 
 #[test]
@@ -17748,7 +17947,13 @@ fn describe_is_disabled_when_the_program_is_missing() {
     ready_response(&mut app, JQ_BODY);
     app.ui_settings.ai_cmd = "definitely-not-a-program-42 -p".into();
     right_click_row(&mut app, "\"items\"");
-    assert_eq!(menu_action(&app, "Describe a filter\u{2026}  (definitely-not-a-program-42 not found)"), None);
+    assert_eq!(
+        menu_action(
+            &app,
+            "Describe a filter\u{2026}  (definitely-not-a-program-42 not found)"
+        ),
+        None
+    );
     app.update(Action::Close);
     app.update(Action::OpenJqDescribe);
     assert!(app.modals.top().is_none(), "no prompt");
@@ -17763,11 +17968,18 @@ async fn esc_while_asking_cancels_and_a_late_reply_is_dropped() {
     app.update(Action::RunJqDescribe("x".into()));
     app.focus = PaneId::Response;
     app.session.response.set_jq_focus(true);
-    app.handle_key(&Keymap::default_bindings(), KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    app.handle_key(
+        &Keymap::default_bindings(),
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+    );
     assert!(!app.session.response.jq_bar().ai_pending);
     assert!(app.ai_task.is_none());
     // A reply for the cancelled request is ignored.
-    let stale = Action::JqAiFinished { generation: app.session.send_generation, request: 1, result: Ok(".x".into()) };
+    let stale = Action::JqAiFinished {
+        generation: app.session.send_generation,
+        request: 1,
+        result: Ok(".x".into()),
+    };
     app.update(stale);
     assert_eq!(app.session.response.jq_text(), "");
 }

@@ -376,6 +376,14 @@ type TestApp = (App, tempfile::TempDir, UnboundedReceiver<Action>);
 fn app_in_project(files: &[(&str, &str)]) -> TestApp {
     let dir = tempfile::tempdir().unwrap();
     postui_core::project::init_project(dir.path(), Some("svc")).unwrap();
+    // A scenario that brings its own environments stands in for a project
+    // whose author replaced the stock `default`; keep only theirs.
+    if files
+        .iter()
+        .any(|(name, _)| name.starts_with("environments/"))
+    {
+        std::fs::remove_file(dir.path().join("environments/default.toml")).unwrap();
+    }
     for (name, body) in files {
         let path = dir.path().join(name);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -631,14 +639,16 @@ fn a_legacy_project_migrates_then_grows_a_group_whose_selection_drives_resolutio
     // --- into the Manager, from the header chip ---
     click(&mut app, Hit::HeaderManage);
     assert_eq!(app.screen, postui::app::Screen::Manage);
-    // Entries belong to an environment, so pick one — from the header's
-    // env chip, still on screen above the Manager. `qa` is the only one.
-    assert_eq!(app.project.active_env, None);
+    // Entries belong to an environment; the project opened in its first
+    // (and only) one, `qa`, migration or not. Picking it again from the
+    // header's env chip — still on screen above the Manager — is the
+    // mouse path: the chip opens an anchored dropdown; one click on `qa`
+    // (row 0) activates it and closes the menu.
+    assert_eq!(app.project.active_env.as_deref(), Some("qa"));
     click(&mut app, Hit::HeaderEnv);
-    // The chip opens an anchored dropdown; one click on `qa` (row 0)
-    // activates it and closes the menu.
     click(&mut app, Hit::DropdownRow(0));
     assert_eq!(app.project.active_env.as_deref(), Some("qa"));
+    assert!(app.modals.is_empty());
     let keymap = Keymap::default_bindings();
 
     // --- create a selector: the [+ Selector] button takes just a name and

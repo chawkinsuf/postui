@@ -2535,7 +2535,7 @@ impl Editor {
             ("alt+g", "minify", Some(Action::MinifyBody)),
             ("alt+s", sub_label, Some(Action::ToggleBodyVars)),
             ("alt+e", "$EDITOR", Some(Action::OpenBodyInEditor)),
-            ("alt+x", "clear", Some(Action::BodyClear)),
+            ("alt+k", "clear", Some(Action::BodyClear)),
         ];
 
         let right_limit = area.x + area.width;

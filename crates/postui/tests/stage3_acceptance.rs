@@ -169,6 +169,9 @@ async fn stage3_acceptance_flow() {
     assert!(!app.editor.is_dirty(), "saved: editor is clean again");
 
     // --- send with no environment active: unresolved, nothing sent ---
+    // (Only reachable by an env file going missing — a project opens in
+    // its first env — so drop into it explicitly.)
+    app.update(Action::SwitchEnv(None));
     app.update(Action::Send);
     assert!(
         app.session.in_flight.is_empty(),
@@ -184,7 +187,7 @@ async fn stage3_acceptance_flow() {
     app.update(Action::SwitchEnv(Some("qa".into())));
     let frame = render(&mut app);
     assert!(
-        frame.contains("alpha \u{25be}") && frame.contains("qa \u{25be}"),
+        frame.contains("Project: alpha") && frame.contains("qa \u{25be}"),
         "header bar shows project and env chips: {frame}"
     );
 
@@ -199,8 +202,8 @@ async fn stage3_acceptance_flow() {
     assert!(frame.contains("200"), "qa response is Ready: {frame}");
     assert!(frame.contains("qa"), "qa response body visible: {frame}");
 
-    // --- cycle to prod via alt+c (real binding), send again ----------
-    app.handle_key(&keymap, alt('c'));
+    // --- cycle to prod via alt+x (real binding), send again ----------
+    app.handle_key(&keymap, alt('x'));
     assert_eq!(app.project.active_env.as_deref(), Some("prod"));
     app.update(Action::Send);
     let generation = app.session.send_generation;
@@ -240,8 +243,8 @@ async fn stage3_acceptance_flow() {
         "wheel scroll must not snap back after a draw"
     );
 
-    // --- alt+o cycles projects (real binding): alpha -> beta -> alpha
-    app.handle_key(&keymap, alt('o'));
+    // --- alt+z cycles projects (real binding): alpha -> beta -> alpha
+    app.handle_key(&keymap, alt('z'));
     assert!(
         app.modals.is_empty(),
         "editor is clean: no dirty-gate prompt"
@@ -262,7 +265,7 @@ async fn stage3_acceptance_flow() {
     app.update(Action::ForceOpenRequest("main/ping".into()));
     assert_eq!(app.editor.slug.as_deref(), Some("main/ping"));
 
-    app.handle_key(&keymap, alt('o'));
+    app.handle_key(&keymap, alt('z'));
     assert_eq!(app.project.root, alpha_dir.path().to_path_buf());
     assert_eq!(
         app.editor.slug.as_deref(),

@@ -698,10 +698,11 @@ impl App {
         vec![
             Action::Close,              // Hit::ModalOutside
             Action::OpenProjectChooser, // Hit::HeaderProject
+            Action::CycleProject(1),    // Hit::HeaderProjectCycle
             Action::OpenSpaceChooser,   // Hit::HeaderSpace
             Action::CycleSpace(1),      // Hit::HeaderSpaceCycle
             Action::OpenEnvChooser,     // Hit::HeaderEnv
-            Action::CycleEnv,           // Hit::HeaderEnvCycle
+            Action::CycleEnv(1),        // Hit::HeaderEnvCycle
             // The split control's own keycap pill (editor tab-bar row)
             // registers Hit::FooterChip(CycleSplit) outside `footer_chips`,
             // so the parity sweep's Group A never sees it.
@@ -833,10 +834,11 @@ impl App {
                 self.update(Action::Render)
             }
             Hit::HeaderProject => self.update(Action::OpenProjectChooser),
+            Hit::HeaderProjectCycle => self.update(Action::CycleProject(1)),
             Hit::HeaderSpace => self.update(Action::OpenSpaceChooser),
             Hit::HeaderSpaceCycle => self.update(Action::CycleSpace(1)),
             Hit::HeaderEnv => self.update(Action::OpenEnvChooser),
-            Hit::HeaderEnvCycle => self.update(Action::CycleEnv),
+            Hit::HeaderEnvCycle => self.update(Action::CycleEnv(1)),
             Hit::HeaderTheme => self.update(Action::OpenThemeChooser),
             Hit::HeaderManage => self.update(Action::OpenManage { tab: None }),
             Hit::ManageTab(i) => self.update(Action::SelectManageTab(

@@ -11,7 +11,7 @@ use ratatui::crossterm::event::{
     PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::execute;
-use ratatui::crossterm::terminal::EndSynchronizedUpdate;
+use ratatui::crossterm::terminal::{EndSynchronizedUpdate, SetTitle};
 use std::time::Duration;
 
 #[tokio::main]
@@ -44,6 +44,8 @@ async fn main() -> anyhow::Result<()> {
 
     let mut terminal = ratatui::init(); // installs a panic hook that restores the terminal
     enable_mouse_and_wrap_panic_hook();
+    // The app name lives in the window title, not the header bar.
+    let _ = execute!(std::io::stdout(), SetTitle("postui"));
 
     let result = run(&mut terminal, cli_root).await;
     reset_pointer_shape();

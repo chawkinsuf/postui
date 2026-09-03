@@ -7,10 +7,11 @@ and menus all click — with the keyboard as a full alternative, not a
 requirement.
 
 Requests are grouped into **spaces** — top-level folders under `requests/`
-that you switch between with `ctrl+1`…`ctrl+9` (or `alt+l` / `alt+shift+l`). One
+that you switch between with `ctrl+1`…`ctrl+9` (or `alt+c` / `alt+shift+c`). One
 space is visible at a time and each remembers the request you had open.
 Spaces, environments and variables are all edited on the Manage screen
-(`alt+v`).
+(`alt+v`). Every project has at least one environment — a new one starts with
+`default`, which you can rename; the last environment can't be deleted.
 
 ## Build and run
 
@@ -24,7 +25,9 @@ Run with no argument to open the last project, or pass a directory to open
 
 ## Mouse
 
-Every control clicks: header project/space/env names open their choosers, sidebar
+Every control clicks: the header's project chip opens the project chooser and the
+environment and space chips open their dropdowns, with the keycap pill beside each
+(`alt+z` / `alt+x` / `alt+c`, shift for the other way round) cycling it, sidebar
 rows open requests, the method cell opens its dropdown, `[ Send ]` sends (and
 becomes `[ Cancel ]` mid-flight), response tabs and the JSON tree arrows
 toggle, and footer chips run their action. Scrollbars drag. Clicking outside

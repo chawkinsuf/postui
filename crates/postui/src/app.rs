@@ -2546,6 +2546,16 @@ impl App {
                                 .push(format!("could not open project: {e}"), ToastKind::Error);
                         }
                         self.refresh_sidebar();
+                        // The context was opened on a bare directory, before
+                        // init wrote the stock `default` env: land in it now,
+                        // as an open of the finished project would.
+                        self.project.environments =
+                            postui_core::project::list_environments(&self.project.root);
+                        if self.project.active_env.is_none()
+                            && let Some(first) = self.project.environments.first().cloned()
+                        {
+                            self.apply(Action::SwitchEnv(Some(first)));
+                        }
                     }
                     Err(e) => {
                         self.toasts.push(
@@ -2680,8 +2690,8 @@ impl App {
                 }
                 true
             }
-            Action::CycleProject => {
-                match self.registry.next_after(&self.project.root) {
+            Action::CycleProject(delta) => {
+                match self.registry.neighbor(&self.project.root, delta) {
                     None => {
                         self.toasts
                             .push("only one project registered", ToastKind::Warning);
@@ -2846,7 +2856,6 @@ impl App {
                         )
                     })
                     .collect();
-                items.push(MenuItem::new("no environment", Action::SwitchEnv(None)));
                 items.push(MenuItem::new("new environment…", Action::OpenNewEnvPrompt));
                 items.push(MenuItem::new(
                     "manage environments…",
@@ -2855,12 +2864,14 @@ impl App {
                     },
                 ));
                 // The ✓ (and the opening cursor) sits on the active
-                // environment; with none active, on the "no environment"
-                // row just after the env rows.
-                let current = match self.project.active_env.as_deref() {
-                    Some(active) => self.project.environments.iter().position(|n| n == active),
-                    None => Some(self.project.environments.len()),
-                };
+                // environment. There is no "no environment" row: a project
+                // always has at least one env (a fresh one gets `default`),
+                // so the no-env state is only ever reached by a file going
+                // missing — in which case the cursor opens on row 0.
+                let current =
+                    self.project.active_env.as_deref().and_then(|active| {
+                        self.project.environments.iter().position(|n| n == active)
+                    });
                 // Anchored under the header's env chip — the one env
                 // button, visible on every screen. A keyboard open with
                 // no frame drawn yet (bare test apps) falls back to the
@@ -2929,28 +2940,30 @@ impl App {
                 }
                 true
             }
-            Action::CycleEnv => {
+            Action::CycleEnv(delta) => {
                 self.apply(Action::ReloadProjectFiles);
                 self.project.environments =
                     postui_core::project::list_environments(&self.project.root);
-                if self.project.environments.is_empty() {
+                let envs = &self.project.environments;
+                if envs.is_empty() {
                     self.toasts.push(
                         "no environments — create environments/<name>.toml in the project",
                         ToastKind::Warning,
                     );
                     return true;
                 }
-                let next = match &self.project.active_env {
-                    None => self.project.environments[0].clone(),
-                    Some(current) => {
-                        let idx = self.project.environments.iter().position(|e| e == current);
-                        match idx {
-                            Some(i) => self.project.environments
-                                [(i + 1) % self.project.environments.len()]
-                            .clone(),
-                            None => self.project.environments[0].clone(),
-                        }
-                    }
+                let len = envs.len() as i32;
+                let next = match self
+                    .project
+                    .active_env
+                    .as_deref()
+                    .and_then(|current| envs.iter().position(|e| e == current))
+                {
+                    Some(i) => envs[(i as i32 + delta).rem_euclid(len) as usize].clone(),
+                    // From no env, step onto the list's first (or last, going
+                    // back) rather than skipping one.
+                    None if delta < 0 => envs[envs.len() - 1].clone(),
+                    None => envs[0].clone(),
                 };
                 self.apply(Action::SwitchEnv(Some(next)))
             }
@@ -2964,7 +2977,7 @@ impl App {
                 }
                 self.apply(Action::PersistLocalState);
                 // The Manager caches per-env rows; an env switched under it
-                // (alt+c is whitelisted through its input capture) must show
+                // (alt+x is whitelisted through its input capture) must show
                 // the new env's values.
                 if self.screen == Screen::Manage {
                     self.varmanager.sync(&self.project);
@@ -3048,7 +3061,8 @@ impl App {
             }
             Action::ToggleJqBar => {
                 if !self.session.response.jq_available() {
-                    self.toasts.push("The response is not JSON", ToastKind::Info);
+                    self.toasts
+                        .push("The response is not JSON", ToastKind::Info);
                     return true;
                 }
                 // Open ⇄ closed, regardless of focus: an open bar closes
@@ -3068,7 +3082,8 @@ impl App {
             }
             Action::OpenJqBar => {
                 if !self.session.response.jq_available() {
-                    self.toasts.push("The response is not JSON", ToastKind::Info);
+                    self.toasts
+                        .push("The response is not JSON", ToastKind::Info);
                     return true;
                 }
                 self.dispatch(Action::FocusPane(PaneId::Response));
@@ -3090,7 +3105,10 @@ impl App {
                 generation,
                 run,
                 result,
-            } => self.session.response.attach_jq_result(generation, run, result),
+            } => self
+                .session
+                .response
+                .attach_jq_result(generation, run, result),
             Action::CopyJqPath(path) => {
                 self.copy_text_with_toast(&path, "Copied path".to_string());
                 true
@@ -3108,7 +3126,8 @@ impl App {
             }
             Action::OpenJqDescribe => {
                 if !self.session.response.jq_available() {
-                    self.toasts.push("The response is not JSON", ToastKind::Info);
+                    self.toasts
+                        .push("The response is not JSON", ToastKind::Info);
                     return true;
                 }
                 if !crate::ai::program_available(&self.ui_settings.ai_cmd) {
@@ -3156,18 +3175,23 @@ impl App {
                 if let Some(path) = &self.config_path
                     && let Err(e) = crate::config::save_ui_flag(path, "ai_confirmed", true)
                 {
-                    self.toasts.push(format!("could not save config: {e}"), ToastKind::Warning);
+                    self.toasts
+                        .push(format!("could not save config: {e}"), ToastKind::Warning);
                 }
                 true
             }
             Action::RunJqDescribe(sentence) => {
-                let Some(view) = self.session.response.view() else { return true };
-                let body = view.body_text();
-                let Some(shape) = postui_core::jq::shape::shape(&body, Default::default()) else {
-                    self.toasts.push("The response is not JSON", ToastKind::Info);
+                let Some(view) = self.session.response.view() else {
                     return true;
                 };
-                let stdin = postui_core::jq::ai::prompt(&shape, self.session.response.jq_text(), &sentence);
+                let body = view.body_text();
+                let Some(shape) = postui_core::jq::shape::shape(&body, Default::default()) else {
+                    self.toasts
+                        .push("The response is not JSON", ToastKind::Info);
+                    return true;
+                };
+                let stdin =
+                    postui_core::jq::ai::prompt(&shape, self.session.response.jq_text(), &sentence);
                 // No ambient runtime happens only in a plain `#[test]` that
                 // reaches an already-confirmed `ConfirmJqDescribe` — the
                 // real main loop, and every async test, always has one.
@@ -3184,7 +3208,11 @@ impl App {
                 let tx = self.tx.clone();
                 let task = handle.spawn(async move {
                     let result = crate::ai::run_command(cmd, stdin).await;
-                    let _ = tx.send(Action::JqAiFinished { generation, request, result });
+                    let _ = tx.send(Action::JqAiFinished {
+                        generation,
+                        request,
+                        result,
+                    });
                 });
                 self.ai_task = Some((request, task));
                 let bar = self.session.response.jq_bar_mut();
@@ -3194,7 +3222,11 @@ impl App {
                 self.session.response.set_jq_focus(true);
                 true
             }
-            Action::JqAiFinished { generation, request, result } => {
+            Action::JqAiFinished {
+                generation,
+                request,
+                result,
+            } => {
                 // Dropped when superseded by a newer request (or cancelled
                 // — `CancelJqDescribe` bumps `ai_request` too) or when the
                 // response it was shaped from is gone. Compared against the
@@ -3202,7 +3234,11 @@ impl App {
                 // took the handle to await it (tests) still gets a valid
                 // reply landed.
                 if request != self.ai_request
-                    || self.session.response.view().is_none_or(|v| v.generation != generation)
+                    || self
+                        .session
+                        .response
+                        .view()
+                        .is_none_or(|v| v.generation != generation)
                 {
                     return false;
                 }
@@ -3211,11 +3247,17 @@ impl App {
                 match result.map(|reply| postui_core::jq::ai::extract_filter(&reply)) {
                     Ok(Some(filter)) => {
                         let cursor = filter.chars().count();
-                        self.session.response.set_jq_text_with_cursor(&filter, cursor);
+                        self.session
+                            .response
+                            .set_jq_text_with_cursor(&filter, cursor);
                         self.session.response.set_jq_focus(true);
                     }
-                    Ok(None) => self.toasts.push("The AI command returned nothing", ToastKind::Warning),
-                    Err(e) => self.toasts.push(format!("AI command failed: {e}"), ToastKind::Error),
+                    Ok(None) => self
+                        .toasts
+                        .push("The AI command returned nothing", ToastKind::Warning),
+                    Err(e) => self
+                        .toasts
+                        .push(format!("AI command failed: {e}"), ToastKind::Error),
                 }
                 true
             }
@@ -4417,6 +4459,15 @@ impl App {
                 true
             }
             Action::DeleteEnv(name) => {
+                // The last environment stays: the app has no "no
+                // environment" state to fall back to, only a default env.
+                if self.project.environments.len() <= 1 {
+                    self.toasts.push(
+                        "a project keeps at least one environment — rename it instead",
+                        ToastKind::Warning,
+                    );
+                    return true;
+                }
                 self.push_modal(Modal::Confirm {
                     title: format!("Delete environment \"{}\"?", self.project.env_name(&name)),
                     body: "Its values and secrets are removed.".into(),
@@ -4451,8 +4502,11 @@ impl App {
                                 .push(format!("could not save secrets: {e}"), ToastKind::Warning);
                         }
                         self.project.environments = postui_core::project::list_environments(&root);
+                        // The active env is gone: fall through to the
+                        // first remaining one rather than to no env.
+                        let fallback = self.project.environments.first().cloned();
                         if was_active {
-                            for w in self.project.set_env(None) {
+                            for w in self.project.set_env(fallback.clone()) {
                                 self.toasts.push(w, ToastKind::Warning);
                             }
                         }
@@ -4467,7 +4521,7 @@ impl App {
                             vec![trashed],
                             before,
                             &companions,
-                            was_active.then(|| (prev_active.clone(), None)),
+                            was_active.then(|| (prev_active.clone(), fallback)),
                         );
                         if self.screen == Screen::Manage {
                             self.varmanager.sync(&self.project);
@@ -6766,12 +6820,18 @@ impl App {
         use crate::components::modal::MenuItem;
         use postui_core::jq::{compose, render_path};
         let response = &self.session.response;
-        let Some(view) = response.view() else { return Vec::new() };
+        let Some(view) = response.view() else {
+            return Vec::new();
+        };
         if view.mode != crate::components::response::ViewMode::Pretty {
             return Vec::new();
         }
-        let Some(tree) = response.active_tree() else { return Vec::new() };
-        let Some(full) = tree.full_index_of_visible(row) else { return Vec::new() };
+        let Some(tree) = response.active_tree() else {
+            return Vec::new();
+        };
+        let Some(full) = tree.full_index_of_visible(row) else {
+            return Vec::new();
+        };
         let line = tree.line(full);
         // Compose onto the filter whose output is on screen, not the bar
         // text: while a null-yielding or broken filter leaves another tree
@@ -6805,7 +6865,10 @@ impl App {
                     ));
                     items.push(gated(
                         "Where field\u{2026}",
-                        Action::JqWherePrompt { path: path.clone(), keys },
+                        Action::JqWherePrompt {
+                            path: path.clone(),
+                            keys,
+                        },
                     ));
                 }
             }
@@ -6839,7 +6902,10 @@ impl App {
         }
         let program = crate::ai::program_name(&self.ui_settings.ai_cmd);
         if crate::ai::program_available(&self.ui_settings.ai_cmd) {
-            items.push(MenuItem::new("Describe a filter\u{2026}", Action::OpenJqDescribe));
+            items.push(MenuItem::new(
+                "Describe a filter\u{2026}",
+                Action::OpenJqDescribe,
+            ));
         } else {
             items.push(MenuItem::disabled(format!(
                 "Describe a filter\u{2026}  ({program} not found)"
@@ -8619,10 +8685,10 @@ impl App {
 /// palette and the theme chooser — the spec's "the modal stack works on
 /// top unchanged"), the
 /// screen open/close actions themselves, quit, cycling the active
-/// environment (alt+c) — the one Main shortcut whose target state, the
+/// environment (alt+x) — the one Main shortcut whose target state, the
 /// active env, is also meaningful inside the Variable Manager (it shows
 /// per-env values; `SwitchEnv` re-syncs the Manager) — and the space
-/// switchers (ctrl-digits, alt+l / alt+shift+l, alt+shift+s), since spaces are global
+/// switchers (ctrl-digits, alt+c / alt+shift+c), since spaces are global
 /// context that the Manage screen itself is scoped to. Everything else in
 /// the global keymap (send, save, cycle project, focus URL, …) targets
 /// panes that aren't even drawn while a non-`Main` screen is open, so it
@@ -8639,7 +8705,7 @@ fn screen_escape_whitelist(action: &Action) -> bool {
             | Action::Quit
             | Action::Undo
             | Action::Redo
-            | Action::CycleEnv
+            | Action::CycleEnv(_)
             | Action::CycleSpace(_)
             | Action::JumpSpace(_)
             | Action::OpenSpaceChooser

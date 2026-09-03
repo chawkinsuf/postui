@@ -118,17 +118,27 @@ impl ProjectsRegistry {
     /// over entries that no longer exist on disk or that equal `current`.
     /// `None` when fewer than two projects are known or none qualify.
     pub fn next_after(&self, current: &Path) -> Option<PathBuf> {
+        self.neighbor(current, 1)
+    }
+
+    /// The registered project `delta` steps (`1` next, `-1` previous)
+    /// from `current`, wrapping and skipping roots that no longer exist
+    /// on disk. `None` with fewer than two projects registered or none
+    /// other than `current` present.
+    pub fn neighbor(&self, current: &Path, delta: i32) -> Option<PathBuf> {
         if self.known.len() < 2 {
             return None;
         }
-        let start = self
-            .known
-            .iter()
-            .position(|p| p == current)
-            .map(|i| (i + 1) % self.known.len())
-            .unwrap_or(0);
+        let len = self.known.len() as i32;
+        let pos = self.known.iter().position(|p| p == current);
+        let start = match pos {
+            Some(i) => (i as i32 + delta).rem_euclid(len) as usize,
+            None => 0,
+        };
+        // Step onward in `delta`'s direction past any missing roots.
+        let step_dir = if delta < 0 { -1 } else { 1 };
         for step in 0..self.known.len() {
-            let idx = (start + step) % self.known.len();
+            let idx = (start as i32 + step_dir * step as i32).rem_euclid(len) as usize;
             let candidate = &self.known[idx];
             if candidate != current && candidate.is_dir() {
                 return Some(candidate.clone());
@@ -597,7 +607,10 @@ mod tests {
         save_ui_flag(&p, "ai_confirmed", true).unwrap();
         let text = std::fs::read_to_string(&p).unwrap();
         assert!(text.contains("ai_confirmed = true"), "{text}");
-        assert!(text.contains("theme = \"x\"") && text.contains("[projects]"), "{text}");
+        assert!(
+            text.contains("theme = \"x\"") && text.contains("[projects]"),
+            "{text}"
+        );
         assert!(load_ui_settings(&p).0.ai_confirmed);
     }
 

@@ -253,10 +253,12 @@ pub(crate) fn named_actions() -> Vec<(&'static str, Action)> {
         ("discard", Action::DiscardChanges),
         ("send", Action::Send),
         ("project_choose", Action::OpenProjectChooser),
-        ("project_cycle", Action::CycleProject),
+        ("project_next", Action::CycleProject(1)),
+        ("project_prev", Action::CycleProject(-1)),
         ("project_new", Action::PromptNewProject),
         ("env_choose", Action::OpenEnvChooser),
-        ("env_cycle", Action::CycleEnv),
+        ("env_next", Action::CycleEnv(1)),
+        ("env_prev", Action::CycleEnv(-1)),
         ("space_choose", Action::OpenSpaceChooser),
         ("space_next", Action::CycleSpace(1)),
         ("space_prev", Action::CycleSpace(-1)),
@@ -332,12 +334,20 @@ impl Keymap {
             ("ctrl+7", Action::JumpSpace(7)),
             ("ctrl+8", Action::JumpSpace(8)),
             ("ctrl+9", Action::JumpSpace(9)),
-            // A letter with shift for reverse, like the split's alt+w:
-            // the bracket chords (alt+] / alt+[) never arrived through
-            // opt on macOS.
-            ("alt+l", Action::CycleSpace(1)),
-            ("alt+shift+l", Action::CycleSpace(-1)),
-            ("alt+shift+s", Action::OpenSpaceChooser),
+            // The header's three selectors sit on the bottom row in
+            // their on-screen order — project, environment, space on
+            // alt+z / alt+x / alt+c — so the keys are positional rather
+            // than mnemonic. A letter with shift for reverse, like the
+            // split's alt+w: the bracket chords (alt+] / alt+[) never
+            // arrived through opt on macOS. The env and space dropdowns
+            // open by click or from the palette; the project chooser
+            // keeps ctrl+o.
+            ("alt+z", Action::CycleProject(1)),
+            ("alt+shift+z", Action::CycleProject(-1)),
+            ("alt+x", Action::CycleEnv(1)),
+            ("alt+shift+x", Action::CycleEnv(-1)),
+            ("alt+c", Action::CycleSpace(1)),
+            ("alt+shift+c", Action::CycleSpace(-1)),
             ("alt+right", Action::EditorTabCycle(1)),
             ("alt+left", Action::EditorTabCycle(-1)),
             ("alt+m", Action::CycleMethod),
@@ -351,7 +361,7 @@ impl Keymap {
             // keys.toml may still bind any of them deliberately.
             ("alt+j", Action::FormatBody),
             ("alt+g", Action::MinifyBody),
-            ("alt+x", Action::BodyClear),
+            ("alt+k", Action::BodyClear),
             ("alt+s", Action::ToggleBodyVars),
             ("alt+i", Action::ToggleInsecure),
             ("alt+t", Action::OpenThemeChooser),
@@ -365,11 +375,8 @@ impl Keymap {
             ("ctrl+enter", Action::Send),
             ("shift+enter", Action::Send),
             ("ctrl+o", Action::OpenProjectChooser),
-            ("alt+o", Action::CycleProject),
             ("alt+n", Action::PromptNewProject),
             ("alt+e", Action::OpenBodyInEditor),
-            ("alt+shift+e", Action::OpenEnvChooser),
-            ("alt+c", Action::CycleEnv),
             ("ctrl+v", Action::Paste),
             ("alt+shift+v", Action::OpenVarPicker { completing: false }),
             ("alt+a", Action::TableAddRow),
@@ -727,17 +734,25 @@ mod tests {
         assert_eq!(get("ctrl+p"), Some(Action::OpenPalette));
         assert_eq!(get("esc"), Some(Action::Close));
         // ctrl-digits, not alt-digits: Ghostty on Linux owns alt+1..9
-        // for its own tabs. alt+l / alt+shift+l, not alt+] / alt+[: the
-        // bracket chords never arrived through opt on macOS.
+        // for its own tabs. The header selectors take the bottom row in
+        // on-screen order (z/x/c), shift for reverse — not alt+] / alt+[:
+        // the bracket chords never arrived through opt on macOS.
         assert_eq!(get("ctrl+1"), Some(Action::JumpSpace(1)));
         assert_eq!(get("ctrl+4"), Some(Action::JumpSpace(4)));
         assert_eq!(get("ctrl+9"), Some(Action::JumpSpace(9)));
         assert_eq!(get("alt+1"), None);
-        assert_eq!(get("alt+l"), Some(Action::CycleSpace(1)));
-        assert_eq!(get("alt+shift+l"), Some(Action::CycleSpace(-1)));
+        assert_eq!(get("alt+z"), Some(Action::CycleProject(1)));
+        assert_eq!(get("alt+shift+z"), Some(Action::CycleProject(-1)));
+        assert_eq!(get("alt+x"), Some(Action::CycleEnv(1)));
+        assert_eq!(get("alt+shift+x"), Some(Action::CycleEnv(-1)));
+        assert_eq!(get("alt+c"), Some(Action::CycleSpace(1)));
+        assert_eq!(get("alt+shift+c"), Some(Action::CycleSpace(-1)));
+        assert_eq!(get("alt+l"), None);
+        assert_eq!(get("alt+o"), None);
         assert_eq!(get("alt+]"), None);
         assert_eq!(get("alt+["), None);
-        assert_eq!(get("alt+shift+s"), Some(Action::OpenSpaceChooser));
+        assert_eq!(get("alt+shift+s"), None);
+        assert_eq!(get("alt+shift+e"), None);
         assert_eq!(get("alt+right"), Some(Action::EditorTabCycle(1)));
         assert_eq!(get("alt+left"), Some(Action::EditorTabCycle(-1)));
         assert_eq!(get("alt+m"), Some(Action::CycleMethod));
@@ -745,7 +760,7 @@ mod tests {
         assert_eq!(get("alt+u"), Some(Action::FocusUrl));
         assert_eq!(get("alt+j"), Some(Action::FormatBody));
         assert_eq!(get("alt+g"), Some(Action::MinifyBody));
-        assert_eq!(get("alt+x"), Some(Action::BodyClear));
+        assert_eq!(get("alt+k"), Some(Action::BodyClear));
         assert_eq!(get("alt+s"), Some(Action::ToggleBodyVars));
         assert_eq!(get("alt+i"), Some(Action::ToggleInsecure));
         assert_eq!(get("alt+t"), Some(Action::OpenThemeChooser));
@@ -776,10 +791,7 @@ mod tests {
         assert_eq!(get("ctrl+enter"), Some(Action::Send));
         assert_eq!(get("shift+enter"), Some(Action::Send));
         assert_eq!(get("ctrl+o"), Some(Action::OpenProjectChooser));
-        assert_eq!(get("alt+o"), Some(Action::CycleProject));
         assert_eq!(get("alt+n"), Some(Action::PromptNewProject));
-        assert_eq!(get("alt+shift+e"), Some(Action::OpenEnvChooser));
-        assert_eq!(get("alt+c"), Some(Action::CycleEnv));
         assert_eq!(get("ctrl+v"), Some(Action::Paste), "ctrl+v pastes now");
         assert_eq!(
             get("alt+shift+v"),
@@ -803,8 +815,10 @@ mod tests {
         );
         assert_eq!(m.combo_for("editor_tab_1"), None);
         assert_eq!(m.combo_for("space_1"), Some("^1".to_string()));
-        assert_eq!(m.combo_for("space_next"), Some("alt+l".to_string()));
-        assert_eq!(m.combo_for("space_prev"), Some("alt+shift+l".to_string()));
+        assert_eq!(m.combo_for("space_next"), Some("alt+c".to_string()));
+        assert_eq!(m.combo_for("space_prev"), Some("alt+shift+c".to_string()));
+        assert_eq!(m.combo_for("env_next"), Some("alt+x".to_string()));
+        assert_eq!(m.combo_for("project_prev"), Some("alt+shift+z".to_string()));
     }
 
     #[test]

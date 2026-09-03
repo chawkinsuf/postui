@@ -271,7 +271,25 @@ impl ProjectContext {
                 VarModel::default()
             })
         };
-        let environments = postui_core::project::list_environments(&root);
+        let mut environments = postui_core::project::list_environments(&root);
+        // A project always has an environment to be in: one opened with
+        // none left (every env file deleted by hand, or a project made
+        // before `default` existed) gets its default back. Only a real
+        // project — a bare directory isn't touched — and not mid-migration,
+        // when the env files are legacy and stay unread.
+        if environments.is_empty() && !legacy && postui_core::project::is_project(&root) {
+            match postui_core::project::ensure_default_environment(&root) {
+                Ok(true) => {
+                    warnings.push(format!(
+                        "no environments — created environments/{}.toml",
+                        postui_core::project::DEFAULT_ENVIRONMENT
+                    ));
+                    environments = postui_core::project::list_environments(&root);
+                }
+                Ok(false) => {}
+                Err(e) => warnings.push(format!("could not create the default environment: {e}")),
+            }
+        }
 
         let local_state = postui_core::project::load_local_state(&root).unwrap_or_else(|e| {
             warnings.push(format!("could not read local state: {e}"));
@@ -314,10 +332,18 @@ impl ProjectContext {
 
         let mut active_env = None;
         let mut env_data = varmodel::EnvData::default();
-        if let Some(env) = local_state.environment {
-            if !environments.contains(&env) {
+        // The saved env, else the first one listed: an open project sits in
+        // some environment from the start rather than in none.
+        let wanted = match local_state.environment {
+            Some(env) if !environments.contains(&env) => {
                 warnings.push(format!("saved environment {env:?} no longer exists"));
-            } else if legacy {
+                environments.first().cloned()
+            }
+            Some(env) => Some(env),
+            None => environments.first().cloned(),
+        };
+        if let Some(env) = wanted {
+            if legacy {
                 // Same reasoning as `model` above: the env file is legacy
                 // too, so it stays unread — but the environment is still
                 // the active one, so applying the migration loads it.
@@ -1171,8 +1197,42 @@ mod tests {
         )
         .unwrap();
         let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf());
-        assert_eq!(ctx.env_label(), "no env");
+        assert_eq!(
+            ctx.env_label(),
+            "default",
+            "falls through to the first env on disk, never to no env"
+        );
         assert!(!warns.is_empty(), "stale env must be surfaced");
+    }
+
+    /// A project always opens in some environment: a fresh init lands in
+    /// its stock `default`, and a project whose env files were all removed
+    /// gets `default` written back (with a warning saying so). A bare
+    /// directory that isn't a project is left alone.
+    #[test]
+    fn open_lands_in_the_first_env_and_recreates_default_when_none_are_left() {
+        let dir = tempfile::tempdir().unwrap();
+        postui_core::project::init_project(dir.path(), None).unwrap();
+        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf());
+        assert!(warns.is_empty(), "{warns:?}");
+        assert_eq!(ctx.active_env.as_deref(), Some("default"));
+
+        std::fs::remove_file(dir.path().join("environments/default.toml")).unwrap();
+        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf());
+        assert_eq!(ctx.environments, vec!["default".to_string()]);
+        assert_eq!(ctx.active_env.as_deref(), Some("default"));
+        assert!(
+            warns
+                .iter()
+                .any(|w| w.contains("environments/default.toml")),
+            "{warns:?}"
+        );
+        assert!(dir.path().join("environments/default.toml").is_file());
+
+        let bare = tempfile::tempdir().unwrap();
+        let (ctx, _) = ProjectContext::open(bare.path().to_path_buf());
+        assert!(ctx.environments.is_empty());
+        assert!(!bare.path().join("environments").exists());
     }
 
     #[test]
@@ -1591,12 +1651,15 @@ mod tests {
     fn set_secret_resolves_immediately_with_no_active_environment() {
         let dir = tempfile::tempdir().unwrap();
         postui_core::project::init_project(dir.path(), None).unwrap();
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        // The no-env state is only reachable by an env file going missing.
+        ctx.set_env(None);
         std::fs::write(
             dir.path().join("variables.toml"),
             "[api_key]\nsecret = true\n",
         )
         .unwrap();
-        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        ctx.reload_if_changed();
         assert!(ctx.active_env.is_none());
         assert!(!ctx.resolved.values.contains_key("api_key"));
 

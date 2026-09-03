@@ -696,9 +696,30 @@ fn write_if_absent(path: &Path, contents: &str) -> std::io::Result<()> {
     Ok(())
 }
 
+/// The environment every project starts with. A project always has at
+/// least one environment — there is no "no environment" state to fall
+/// back to — so this one is written at init and recreated on open when a
+/// project has none left.
+pub const DEFAULT_ENVIRONMENT: &str = "default";
+
+/// Writes `root/environments/default.toml` when the project has no
+/// environment files at all. Returns whether it wrote one.
+pub fn ensure_default_environment(root: &Path) -> std::io::Result<bool> {
+    if !list_environments(root).is_empty() {
+        return Ok(false);
+    }
+    std::fs::create_dir_all(root.join("environments"))?;
+    std::fs::write(
+        environment_path(root, DEFAULT_ENVIRONMENT),
+        "# environments/default.toml: values for this project's variables\n",
+    )?;
+    Ok(true)
+}
+
 pub fn init_project(root: &Path, name: Option<&str>) -> std::io::Result<()> {
     std::fs::create_dir_all(root.join("requests"))?;
     std::fs::create_dir_all(root.join("environments"))?;
+    ensure_default_environment(root)?;
 
     let project_toml = match name {
         Some(n) => {
@@ -732,6 +753,11 @@ mod tests {
         assert!(dir.path().join("project.toml").is_file());
         assert!(dir.path().join("requests").is_dir());
         assert!(dir.path().join("environments").is_dir());
+        assert_eq!(
+            list_environments(dir.path()),
+            vec![DEFAULT_ENVIRONMENT.to_string()],
+            "a new project starts with its default environment"
+        );
         assert!(dir.path().join("variables.toml").is_file());
         let gi = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
         assert!(gi.contains("/.local/"));
