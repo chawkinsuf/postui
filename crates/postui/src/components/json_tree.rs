@@ -416,6 +416,10 @@ impl JsonTree {
         }
     }
 
+    // Private helper mirroring `walk`'s own parameters one-for-one; splitting
+    // them into a struct would just move the same fields without reducing
+    // anything a caller has to supply.
+    #[allow(clippy::too_many_arguments)]
     fn push(
         &mut self,
         indent: usize,
