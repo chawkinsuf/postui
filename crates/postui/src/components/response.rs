@@ -217,6 +217,12 @@ pub struct ReadyView {
     /// sat in the session cache (`Response::shed_derived`); the next time it
     /// comes on screen `take_reparse` starts the parse again.
     shed: bool,
+    /// The body tree landed while a filter was switched on: it stays
+    /// hidden behind the spinner until that filter's output (`jq_tree`)
+    /// lands too, so the user never sees the unfiltered tree flash up and
+    /// dim. Cleared by the run's result, or by the filter being cleared
+    /// or failing to compile.
+    awaiting_filter: bool,
     /// When the background parse started, so the wait can animate.
     parse_started: Instant,
     /// Verbatim body lines — never reformatted, never re-wrapped.
@@ -320,6 +326,7 @@ impl ReadyView {
             generation,
             parsing,
             shed: false,
+            awaiting_filter: false,
             parse_started: Instant::now(),
             raw_lines: data.body.split('\n').map(|l| l.to_string()).collect(),
             header_lines: data
@@ -797,6 +804,7 @@ impl Response {
     /// this response no longer holds, or one that is not waiting for a
     /// parse, is dropped.
     pub fn attach_tree(&mut self, generation: u64, tree: Option<JsonTree>) -> bool {
+        let filter_on = self.jq.enabled && !self.jq.input.text().trim().is_empty();
         let Some(view) = self.view.as_mut() else {
             return false;
         };
@@ -808,6 +816,11 @@ impl Response {
         match tree {
             Some(tree) => {
                 view.tree = Some(tree);
+                // A switched-on filter is about to run against this tree
+                // (see the `jq_applied` reset below): keep the spinner up
+                // until its output lands rather than showing the full
+                // body first.
+                view.awaiting_filter = filter_on;
                 // A filter typed while the body was still parsing has
                 // nothing to run against yet (`apply_jq` bails out); now
                 // that the body tree exists, forget what was "applied" so
@@ -1095,6 +1108,7 @@ impl Response {
         }
         let code_trim = code.trim();
         if code_trim.is_empty() {
+            view.awaiting_filter = false;
             view.jq_tree = None;
             view.jq_tree_code = None;
             view.jq_outputs = 1;
@@ -1111,6 +1125,7 @@ impl Response {
             return None;
         }
         if let Err(e) = postui_core::jq::check(code_trim) {
+            view.awaiting_filter = false;
             self.jq.error = Some(e);
             self.jq.stale = true;
             self.jq.note = None;
@@ -1190,6 +1205,7 @@ impl Response {
             return false;
         }
         self.jq.pending = None;
+        view.awaiting_filter = false;
         match result {
             Ok(JqRunOutput { doc, outputs, tree }) => {
                 if let Some(doc) = doc {
@@ -2394,12 +2410,16 @@ fn body_lines(
 
     match view.mode {
         ViewMode::Pretty => {
-            let Some(tree) = view.active_tree() else {
-                if view.parsing {
+            // The body tree stays behind the spinner while a switched-on
+            // filter's output is still on its way.
+            let held = view.awaiting_filter && view.jq_tree.is_none();
+            let Some(tree) = view.active_tree().filter(|_| !held) else {
+                if view.parsing || held {
                     let e = view.parse_started.elapsed();
                     let frame_i = (e.subsec_millis() / 100) as usize % SPINNER.len();
+                    let verb = if view.parsing { "parsing" } else { "filtering" };
                     out.push(Line::styled(
-                        format!(" {} parsing…", SPINNER[frame_i]),
+                        format!(" {} {verb}…", SPINNER[frame_i]),
                         Style::default().fg(t.text_muted),
                     ));
                 }
@@ -4963,6 +4983,57 @@ mod tests {
             key_fg(&mut r, since + Duration::from_secs(5)),
             theme.accent,
             "the landed tree is drawn in full colour"
+        );
+    }
+
+    #[test]
+    fn a_parsed_body_stays_behind_the_spinner_until_a_switched_on_filter_lands() {
+        let big = format!(
+            r#"{{"pad": "{}", "data": {{"n": 1}}}}"#,
+            "x".repeat(SYNC_PRETTY_BYTES)
+        );
+        let mut r = ready_gen(&big, 1);
+        r.set_view_mode(ViewMode::Pretty);
+        r.open_jq();
+        r.set_jq_text(".data");
+        assert!(r.attach_tree(1, JsonTree::parse(&big)));
+        let out = render(&mut r);
+        assert!(
+            out.contains("filtering") && !out.contains("\"pad\""),
+            "the full tree is held back, the wait is named: {out}"
+        );
+        let req = r.apply_jq(".data", 0).expect("background run");
+        assert!(
+            render(&mut r).contains("filtering"),
+            "still held while the run is out"
+        );
+        assert!(r.attach_jq_result(
+            req.generation,
+            req.run,
+            Ok(JqRunOutput::from_outputs(None, vec![r#"{"n": 1}"#.into()]))
+        ));
+        let out = render(&mut r);
+        assert!(
+            out.contains("\"n\"") && !out.contains("filtering"),
+            "the filtered tree is what appears: {out}"
+        );
+        // A failing filter gives the full tree back with its error.
+        let req = r.apply_jq(".data | error", 0).expect("background run");
+        r.attach_jq_result(
+            req.generation,
+            req.run,
+            Err(JqError::Runtime {
+                message: "boom".into(),
+            }),
+        );
+        assert!(!r.view().unwrap().awaiting_filter);
+        // And a body parsed with the filter switched off shows at once.
+        let mut r = ready_gen(&big, 2);
+        r.set_view_mode(ViewMode::Pretty);
+        assert!(r.attach_tree(2, JsonTree::parse(&big)));
+        assert!(
+            render(&mut r).contains("\"pad\""),
+            "no filter: the tree shows"
         );
     }
 
