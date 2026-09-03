@@ -243,13 +243,13 @@ pub struct ReadyView {
     /// counterpart of `height`, used to clamp `h_scroll`.
     width: usize,
     /// Cached widest visible line in display columns, keyed by the (mode,
-    /// visible line count, jq run) it was measured for — a collapse/expand
-    /// or a view switch changes the visible set, so either invalidates it,
-    /// and so does a new jq run: a filtered tree can have the same line
-    /// count as the body tree (or an earlier filtered tree) while its
-    /// content is entirely different, which the (mode, len) key alone
-    /// can't tell apart. Measuring is O(all visible lines), too much to
-    /// redo per wheel tick on a megabyte body.
+    /// visible line count, tree epoch) it was measured for — a
+    /// collapse/expand or a view switch changes the visible set, so either
+    /// invalidates it, and so does a tree swap: a filtered tree can have
+    /// the same line count as the body tree (or an earlier filtered tree)
+    /// while its content is entirely different, which the (mode, len) key
+    /// alone can't tell apart. Measuring is O(all visible lines), too much
+    /// to redo per wheel tick — or per keystroke — on a megabyte body.
     content_width: Option<(ViewMode, usize, u64, usize)>,
     /// The body content rect as of the last draw — the coordinate frame
     /// mouse selection maps through. `None` before the first frame.
@@ -288,6 +288,11 @@ pub struct ReadyView {
     /// result can be matched to the run it was started for (and only that
     /// one — a superseded run's result is dropped).
     jq_runs: u64,
+    /// Bumped whenever the tree on screen is swapped for another (a
+    /// filter's output landing, or the body tree coming back) — what the
+    /// content-width cache is keyed on, so a run that leaves the same tree
+    /// up (a null result, a superseded run) keeps the measure.
+    tree_epoch: u64,
     /// Column indexes (`col_marks`) of the raw lines that have been
     /// scrolled sideways, by line — built lazily by `index_raw_rows`, never
     /// invalidated (the raw lines are immutable for the view's life).
@@ -353,6 +358,7 @@ impl ReadyView {
             jq_tree_code: None,
             jq_outputs: 1,
             jq_runs: 0,
+            tree_epoch: 0,
             raw_marks: HashMap::new(),
         }
     }
@@ -373,6 +379,16 @@ impl ReadyView {
     /// jq filter is applied, otherwise the body tree.
     pub fn active_tree(&self) -> Option<&JsonTree> {
         self.jq_tree.as_ref().or(self.tree.as_ref())
+    }
+
+    /// Swaps the filtered tree in (or out), bumping the epoch only when
+    /// the tree on screen actually changes — clearing an already-absent
+    /// filter tree leaves the body tree, and its width measure, as it was.
+    fn set_jq_tree(&mut self, tree: Option<JsonTree>) {
+        if tree.is_some() || self.jq_tree.is_some() {
+            self.tree_epoch += 1;
+        }
+        self.jq_tree = tree;
     }
 
     fn active_tree_mut(&mut self) -> Option<&mut JsonTree> {
@@ -417,23 +433,18 @@ impl ReadyView {
     }
 
     /// Widest visible line of the current view, in display columns, from
-    /// the cache when its (mode, visible count) key still matches.
+    /// the cache when its (mode, visible count, tree epoch) key still
+    /// matches.
     fn content_width(&mut self) -> usize {
         use unicode_width::UnicodeWidthStr;
-        let key = (self.mode, self.visible_len(), self.jq_runs);
+        let key = (self.mode, self.visible_len(), self.tree_epoch);
         if let Some((mode, len, run, w)) = self.content_width
             && (mode, len, run) == key
         {
             return w;
         }
         let w = match self.mode {
-            ViewMode::Pretty => self.active_tree().map_or(0, |t| {
-                t.visible_indices()
-                    .iter()
-                    .map(|&i| t.line(i as usize).render_width())
-                    .max()
-                    .unwrap_or(0)
-            }),
+            ViewMode::Pretty => self.active_tree().map_or(0, JsonTree::visible_width),
             ViewMode::Raw => self.raw_lines.iter().map(|l| l.width()).max().unwrap_or(0),
             // + 3 for the ` ❐ ` copy pill appended to each rendered row.
             ViewMode::Headers => self
@@ -818,6 +829,7 @@ impl Response {
         match tree {
             Some(tree) => {
                 view.tree = Some(tree);
+                view.tree_epoch += 1;
                 // A switched-on filter is about to run against this tree
                 // (see the `jq_applied` reset below): keep the spinner up
                 // until its output lands rather than showing the full
@@ -1005,7 +1017,7 @@ impl Response {
             return;
         };
         view.tree = None;
-        view.jq_tree = None;
+        view.set_jq_tree(None);
         view.jq_doc = None;
         view.jq_tree_code = None;
         view.jq_applied = None;
@@ -1111,7 +1123,7 @@ impl Response {
         let code_trim = code.trim();
         if code_trim.is_empty() {
             view.awaiting_filter = false;
-            view.jq_tree = None;
+            view.set_jq_tree(None);
             view.jq_tree_code = None;
             view.jq_outputs = 1;
             view.jq_applied = Some(code.to_string());
@@ -1218,7 +1230,7 @@ impl Response {
                         // Nothing to show: keep the full body up with a
                         // note rather than replace it with `null`s.
                         view.jq_outputs = 1;
-                        view.jq_tree = None;
+                        view.set_jq_tree(None);
                         view.jq_tree_code = None;
                         self.jq.error = None;
                         self.jq.stale = true;
@@ -1235,7 +1247,7 @@ impl Response {
                     }
                     Some(tree) => {
                         view.jq_outputs = outputs.len();
-                        view.jq_tree = Some(tree);
+                        view.set_jq_tree(Some(tree));
                         view.jq_tree_code = view.jq_applied.clone();
                         self.jq.error = None;
                         self.jq.stale = false;
@@ -4710,6 +4722,29 @@ mod tests {
             r.view().unwrap().view_text().starts_with("{"),
             "an empty filter shows the body again"
         );
+    }
+
+    /// Every keystroke in the bar is a new jq run, but most of them leave
+    /// the tree on screen exactly as it was (a null result keeps the body
+    /// tree up). The width cache must survive those: re-measuring every
+    /// visible line of a big body costs a frame's worth of time each time.
+    #[test]
+    fn a_run_that_leaves_the_tree_unchanged_keeps_the_content_width_cache() {
+        let mut r = ready(ITEMS);
+        r.apply_jq(".data.nope", SYNC_PRETTY_BYTES);
+        assert_eq!(r.jq_bar().note, Some("null"));
+        render(&mut r);
+        let cached = r.view().unwrap().content_width;
+        assert!(cached.is_some(), "the frame measured the width");
+        r.apply_jq(".data.other", SYNC_PRETTY_BYTES);
+        assert_eq!(r.jq_bar().note, Some("null"));
+        assert_eq!(
+            r.view().unwrap().content_width,
+            cached,
+            "same tree on screen, so the measure is still good"
+        );
+        render(&mut r);
+        assert_eq!(r.view().unwrap().content_width, cached);
     }
 
     #[test]

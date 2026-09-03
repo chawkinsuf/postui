@@ -262,6 +262,10 @@ pub struct JsonTree {
     /// Rebuilt by whatever changes collapse state (`toggle`,
     /// `expand_ancestors`) — `O(lines)` there, so every read is `O(1)`.
     visible: Vec<u32>,
+    /// Display width of the widest visible line, kept in step with
+    /// `visible` — measured where the tree is built (off the UI thread
+    /// for a big body), so the pane never has to walk every line for it.
+    visible_width: usize,
 }
 
 impl JsonTree {
@@ -271,6 +275,7 @@ impl JsonTree {
             lines: Vec::new(),
             containers: Vec::new(),
             visible: Vec::new(),
+            visible_width: 0,
         }
     }
 
@@ -462,6 +467,12 @@ impl JsonTree {
         self.visible.len()
     }
 
+    /// Display width of the widest visible line — a collapsed container
+    /// counts as its summary. `O(1)`: measured whenever `visible` is.
+    pub fn visible_width(&self) -> usize {
+        self.visible_width
+    }
+
     /// Recomputes `visible` from the collapse flags: a walk over the lines
     /// that skips each collapsed container's subtree as a range.
     fn rebuild_visible(&mut self) {
@@ -476,6 +487,12 @@ impl JsonTree {
                 i += 1;
             }
         }
+        self.visible_width = self
+            .visible
+            .iter()
+            .map(|&i| self.line(i as usize).render_width())
+            .max()
+            .unwrap_or(0);
     }
 
     /// The visible lines, in order. A collapsed container's opening line
@@ -806,6 +823,28 @@ mod tests {
             .visible_index_of(deep)
             .expect("expanding ancestors reveals the line");
         assert!(t.visible_lines()[vis].plain_text().contains("deep"));
+    }
+
+    #[test]
+    fn visible_width_tracks_the_widest_visible_line_through_collapse() {
+        let mut tree =
+            JsonTree::parse(r#"{"k":{"long_key":"a long string value"},"z":1}"#).unwrap();
+        let measure = |t: &JsonTree| {
+            t.visible_indices()
+                .iter()
+                .map(|&i| t.line(i as usize).render_width())
+                .max()
+                .unwrap_or(0)
+        };
+        assert_eq!(tree.visible_width(), measure(&tree));
+        let before = tree.visible_width();
+        // Collapse `k`: its long inner line disappears behind a summary.
+        tree.toggle(1);
+        assert!(tree.visible_width() < before, "the long line is hidden");
+        assert_eq!(tree.visible_width(), measure(&tree));
+        tree.toggle(1);
+        assert_eq!(tree.visible_width(), before);
+        assert_eq!(JsonTree::parse_many(&[]).unwrap().visible_width(), 0);
     }
 
     #[test]
