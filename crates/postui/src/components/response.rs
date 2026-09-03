@@ -288,15 +288,21 @@ pub struct ReadyView {
 
 impl ReadyView {
     fn new(data: &crate::http::ResponseData, generation: u64) -> Self {
-        // A big body is parsed off-thread; until that lands there is no tree
-        // to show, so the raw view leads and the Tree tab spins.
+        // A big body is parsed off-thread; until that lands there is no
+        // tree to show. One that looks like JSON (starts with `{` or `[`)
+        // still leads with the Tree tab — showing its spinner, the same
+        // pane it will settle on — rather than flashing the raw body first;
+        // `attach_tree` kicks it back to Raw should the parse prove it
+        // isn't JSON after all. A big body that plainly isn't JSON leads
+        // with Raw at once, no spinner to sit through.
         let parsing = data.body.len() > SYNC_PRETTY_BYTES;
         let tree = if parsing {
             None
         } else {
             JsonTree::parse(&data.body)
         };
-        let mode = if tree.is_some() {
+        let looks_json = data.body.trim_start().starts_with(['{', '[']);
+        let mode = if tree.is_some() || (parsing && looks_json) {
             ViewMode::Pretty
         } else {
             ViewMode::Raw
@@ -3596,17 +3602,32 @@ mod tests {
     }
 
     #[test]
-    fn a_big_body_defers_its_parse_and_leads_with_raw() {
+    fn a_big_json_body_defers_its_parse_and_leads_with_the_spinning_tree_tab() {
         let body = big_json();
         let mut r = ready(&body);
         let v = r.view().unwrap();
         assert!(v.parsing, "the parse was handed off, not run inline");
         assert!(v.tree.is_none(), "no tree until it lands");
-        assert_eq!(v.mode, ViewMode::Raw, "the raw body is readable at once");
-        assert!(
-            render(&mut r).contains("Tree"),
-            "the Tree tab is offered while the parse runs"
+        assert_eq!(
+            v.mode,
+            ViewMode::Pretty,
+            "the Tree tab leads, as it will once the parse lands"
         );
+        let out = render(&mut r);
+        assert!(out.contains("parsing"), "…showing the wait: {out}");
+        assert!(out.contains("Raw"), "the raw body is a tab away: {out}");
+    }
+
+    #[test]
+    fn a_big_body_that_does_not_look_like_json_leads_with_raw() {
+        let body = format!("<html>{}</html>", "x".repeat(SYNC_PRETTY_BYTES));
+        let r = ready(&body);
+        let v = r.view().unwrap();
+        assert!(
+            v.parsing,
+            "the parse still runs (the body might yet be JSON)"
+        );
+        assert_eq!(v.mode, ViewMode::Raw, "no spinner to sit through");
     }
 
     #[test]

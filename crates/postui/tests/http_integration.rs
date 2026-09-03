@@ -182,7 +182,11 @@ async fn a_multi_megabyte_json_body_is_pretty_printed_in_the_background() {
         view.parsing && view.tree.is_none(),
         "a body this big is not parsed on the UI thread"
     );
-    assert_eq!(view.mode, ViewMode::Raw, "the raw body is readable at once");
+    assert_eq!(
+        view.mode,
+        ViewMode::Pretty,
+        "the Tree tab leads (spinning) rather than flashing the raw body"
+    );
 
     // Pump on until the background parse reports in.
     loop {

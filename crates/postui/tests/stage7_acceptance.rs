@@ -762,7 +762,7 @@ fn add_entry(app: &mut App, keymap: &Keymap, cells: &[&str]) {
 /// the tree arrives later over the action channel, and nothing anywhere
 /// says the body was too big to format.
 #[tokio::test]
-async fn a_three_megabyte_json_body_shows_raw_at_once_and_pretty_when_it_parses() {
+async fn a_three_megabyte_json_body_spins_on_the_tree_tab_and_shows_it_when_it_parses() {
     use postui::components::response::ViewMode;
 
     let big = format!("{{\"blob\": \"{}\"}}", "x".repeat(3 * 1024 * 1024));
@@ -795,9 +795,9 @@ async fn a_three_megabyte_json_body_shows_raw_at_once_and_pretty_when_it_parses(
         }
     }
 
-    // Raw, immediately — no cap, no forced-Raw-forever gate.
+    // The Tree tab, immediately, spinning — no cap, no forced-Raw gate.
     let view = app.session.response.view().expect("a response");
-    assert_eq!(view.mode, ViewMode::Raw);
+    assert_eq!(view.mode, ViewMode::Pretty);
     assert!(
         view.parsing && view.tree.is_none(),
         "the parse is off-thread"
