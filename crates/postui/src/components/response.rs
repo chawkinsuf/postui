@@ -798,6 +798,8 @@ impl Response {
             self.jq.pending = None;
             view.clear_sel();
             view.clamp_cursor();
+            view.follow_cursor();
+            view.h_scroll = 0;
             view.recompute_matches();
             return None;
         }
@@ -878,6 +880,8 @@ impl Response {
                         self.jq.stale = false;
                         view.clear_sel();
                         view.clamp_cursor();
+                        view.follow_cursor();
+                        view.h_scroll = 0;
                         view.recompute_matches();
                     }
                     None => {
@@ -4270,5 +4274,37 @@ mod tests {
         r.apply_jq(".data", SYNC_PRETTY_BYTES);
         let (tabs, _) = response_tab_defs(r.view().unwrap(), r.jq_bar(), &theme);
         assert_eq!(tabs[0].1.map(|(c, _)| c), Some('\u{F0232}'));
+    }
+
+    #[test]
+    fn applying_a_shrinking_filter_pulls_the_scroll_back_onto_the_new_content() {
+        let items: Vec<String> = (0..50).map(|n| n.to_string()).collect();
+        let body = format!(r#"{{"data":{{"items":[{}]}}}}"#, items.join(","));
+        let mut r = ready(&body);
+        // Scroll deep into the 50-item body and put the cursor even
+        // deeper, mirroring the reviewer's repro (scroll=35, cursor=40)
+        // against the default 10-row viewport height.
+        r.click_row(40, false);
+        assert_eq!(r.view().unwrap().cursor, 40);
+        assert!(r.set_scroll(35));
+        assert_eq!(r.view().unwrap().scroll, 35);
+        // Same-module field access (private field, same crate module tree):
+        // stand in for a horizontal scroll the wheel would otherwise need a
+        // wide-enough drawn viewport to produce.
+        r.view.as_mut().unwrap().h_scroll = 20;
+
+        // A filter that collapses the whole body down to one short line —
+        // far shorter than the old scroll position.
+        r.apply_jq(".data.items | length", SYNC_PRETTY_BYTES);
+
+        let view = r.view().unwrap();
+        assert_eq!(view.visible_len(), 1, "filtered down to a single line");
+        assert!(
+            view.scroll <= view.cursor && view.cursor < view.scroll + view.height.max(1),
+            "the cursor line is back on screen: scroll={} cursor={}",
+            view.scroll,
+            view.cursor
+        );
+        assert_eq!(view.h_scroll, 0, "horizontal scroll resets with the filter");
     }
 }
