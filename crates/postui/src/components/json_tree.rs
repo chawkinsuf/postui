@@ -10,6 +10,8 @@
 //! The module is deliberately theme-agnostic: tokens carry a semantic
 //! [`TokenKind`] and the caller maps that to its own palette.
 
+use postui_core::jq::{PathSeg, render_path};
+
 /// Semantic class of a rendered token, so the caller can color it with its
 /// own theme tokens without this module knowing about themes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,9 +68,23 @@ pub struct TreeLine {
     pub parent_ids: Vec<usize>,
     /// Only ever true on a line with a `container`.
     pub collapsed: bool,
+    /// This line's jq path from the document root.
+    pub path: Vec<PathSeg>,
+    /// The JSON text of a scalar line's value (`"a"`, `1`, `true`, `null`).
+    /// `None` for container-opening, closing and separator lines.
+    scalar: Option<String>,
 }
 
 impl TreeLine {
+    pub fn scalar_text(&self) -> Option<&str> {
+        self.scalar.as_deref()
+    }
+
+    /// The blank line `parse_many` puts between documents.
+    pub fn is_separator(&self) -> bool {
+        self.tokens.is_empty()
+    }
+
     /// The tokens to draw right now — the collapsed summary when this line
     /// opens a collapsed container, the full rendering otherwise.
     pub fn render_tokens(&self) -> &[Token] {
@@ -118,8 +134,93 @@ impl JsonTree {
             lines: Vec::new(),
             container_lines: Vec::new(),
         };
-        tree.walk(None, &value, 0, &[], false);
+        tree.walk(None, &value, 0, &[], &[], false);
         Some(tree)
+    }
+
+    /// Several documents in one tree — a filter's outputs — separated by a
+    /// blank line each, exactly as `jq` prints them. Paths restart at `.`
+    /// for every document. An empty list is an empty tree.
+    pub fn parse_many(docs: &[String]) -> Option<JsonTree> {
+        let mut tree = JsonTree {
+            lines: Vec::new(),
+            container_lines: Vec::new(),
+        };
+        for (i, doc) in docs.iter().enumerate() {
+            let value: serde_json::Value = serde_json::from_str(doc).ok()?;
+            if i > 0 {
+                tree.push(0, Vec::new(), Vec::new(), None, &[], &[], None);
+            }
+            tree.walk(None, &value, 0, &[], &[], false);
+        }
+        Some(tree)
+    }
+
+    pub fn line(&self, full_index: usize) -> &TreeLine {
+        &self.lines[full_index]
+    }
+
+    pub fn full_index_of_visible(&self, visible_index: usize) -> Option<usize> {
+        self.visible_indices().get(visible_index).copied()
+    }
+
+    pub fn visible_line(&self, visible_index: usize) -> Option<&TreeLine> {
+        self.full_index_of_visible(visible_index).map(|i| &self.lines[i])
+    }
+
+    pub fn jq_path_of(&self, full_index: usize) -> String {
+        render_path(&self.lines[full_index].path)
+    }
+
+    /// The keys of an array line's first element when that element is an object.
+    pub fn first_element_keys(&self, full_index: usize) -> Vec<String> {
+        let Some(c) = &self.lines[full_index].container else {
+            return Vec::new();
+        };
+        if !c.is_array {
+            return Vec::new();
+        }
+        let first = full_index + 1;
+        let Some(fc) = &self.lines[first].container else {
+            return Vec::new();
+        };
+        if fc.is_array {
+            return Vec::new();
+        }
+        // Direct children of the first element: lines nested exactly one
+        // container deeper whose path ends in a key.
+        let depth = self.lines[first].parent_ids.len() + 1;
+        (first + 1..fc.end_line)
+            .filter(|&i| self.lines[i].parent_ids.len() == depth)
+            .filter_map(|i| match self.lines[i].path.last() {
+                Some(PathSeg::Key(k)) => Some(k.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// For a line inside an array element: the array's opening line index and the
+    /// path from the element down to this line (empty when the line *is* the element).
+    pub fn nearest_array_ancestor(&self, full_index: usize) -> Option<(usize, Vec<PathSeg>)> {
+        let line = &self.lines[full_index];
+        // A closing line belongs to its container, which lives one level up.
+        let path = &line.path;
+        let mut ids = line.parent_ids.clone();
+        if line.container.is_none() && line.tokens.first().is_some_and(|t| t.text == "}" || t.text == "]") {
+            ids.pop();
+        }
+        for &id in ids.iter().rev() {
+            let open = self.container_lines[id];
+            if self.lines[open].container.as_ref().is_some_and(|c| c.is_array) {
+                let array_len = self.lines[open].path.len();
+                // path = array path + [Index] + relative
+                if path.len() < array_len + 1 {
+                    return None;
+                }
+                return Some((open, path[array_len + 1..].to_vec()));
+            }
+        }
+        None
     }
 
     /// Total number of lines, ignoring collapse state. Indices into this
@@ -209,6 +310,7 @@ impl JsonTree {
         value: &serde_json::Value,
         indent: usize,
         parents: &[usize],
+        path: &[PathSeg],
         comma: bool,
     ) {
         use serde_json::Value;
@@ -225,11 +327,13 @@ impl JsonTree {
             Value::Array(items) => ("[", "]", items.len(), true),
             scalar => {
                 let mut tokens = prefix();
-                tokens.push(scalar_token(scalar));
+                let scalar = scalar_token(scalar);
+                let text = scalar.text.clone();
+                tokens.push(scalar);
                 if comma {
                     tokens.push(Token::new(",", TokenKind::Punct));
                 }
-                self.push(indent, tokens, Vec::new(), None, parents);
+                self.push(indent, tokens, Vec::new(), None, parents, path, Some(text));
                 return;
             }
         };
@@ -242,7 +346,7 @@ impl JsonTree {
             if comma {
                 tokens.push(Token::new(",", TokenKind::Punct));
             }
-            self.push(indent, tokens, Vec::new(), None, parents);
+            self.push(indent, tokens, Vec::new(), None, parents, path, None);
             return;
         }
 
@@ -269,19 +373,33 @@ impl JsonTree {
             is_array,
             end_line: open_line,
         };
-        self.push(indent, open_tokens, summary, Some(container), parents);
+        self.push(indent, open_tokens, summary, Some(container), parents, path, None);
 
         let mut inner_parents = parents.to_vec();
         inner_parents.push(id);
         match value {
             Value::Object(map) => {
                 for (i, (k, v)) in map.iter().enumerate() {
-                    self.walk(Some(k), v, indent + 2, &inner_parents, i + 1 < len);
+                    self.walk(
+                        Some(k),
+                        v,
+                        indent + 2,
+                        &inner_parents,
+                        &child_path(path, PathSeg::Key(k.clone())),
+                        i + 1 < len,
+                    );
                 }
             }
             Value::Array(items) => {
                 for (i, v) in items.iter().enumerate() {
-                    self.walk(None, v, indent + 2, &inner_parents, i + 1 < len);
+                    self.walk(
+                        None,
+                        v,
+                        indent + 2,
+                        &inner_parents,
+                        &child_path(path, PathSeg::Index(i)),
+                        i + 1 < len,
+                    );
                 }
             }
             _ => unreachable!("only containers reach here"),
@@ -292,7 +410,7 @@ impl JsonTree {
             close_tokens.push(Token::new(",", TokenKind::Punct));
         }
         let end_line = self.lines.len();
-        self.push(indent, close_tokens, Vec::new(), None, &inner_parents);
+        self.push(indent, close_tokens, Vec::new(), None, &inner_parents, path, None);
         if let Some(c) = &mut self.lines[open_line].container {
             c.end_line = end_line;
         }
@@ -305,6 +423,8 @@ impl JsonTree {
         collapsed_tokens: Vec<Token>,
         container: Option<Container>,
         parents: &[usize],
+        path: &[PathSeg],
+        scalar: Option<String>,
     ) {
         self.lines.push(TreeLine {
             indent,
@@ -313,8 +433,16 @@ impl JsonTree {
             container,
             parent_ids: parents.to_vec(),
             collapsed: false,
+            path: path.to_vec(),
+            scalar,
         });
     }
+}
+
+fn child_path(path: &[PathSeg], seg: PathSeg) -> Vec<PathSeg> {
+    let mut p = path.to_vec();
+    p.push(seg);
+    p
 }
 
 fn child_count(len: usize, is_array: bool) -> String {
@@ -346,6 +474,7 @@ fn scalar_token(value: &serde_json::Value) -> Token {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use postui_core::jq::render_path;
 
     #[test]
     fn tree_flattens_and_collapses() {
@@ -527,5 +656,80 @@ mod tests {
     fn keys_and_strings_are_escaped() {
         let t = JsonTree::parse(r#"{"a\"b": "c\nd"}"#).unwrap();
         assert_eq!(t.full_text_lines()[1], r#"  "a\"b": "c\nd""#);
+    }
+
+    fn line_with(t: &JsonTree, needle: &str) -> usize {
+        (0..t.line_count())
+            .find(|&i| t.line(i).expanded_text().contains(needle))
+            .unwrap_or_else(|| panic!("no line containing {needle:?}"))
+    }
+
+    #[test]
+    fn every_line_carries_its_jq_path_and_closing_lines_carry_their_containers() {
+        let t = JsonTree::parse(r#"{"data": {"items": [{"name": "a"}, 2], "odd key": true}}"#).unwrap();
+        assert_eq!(t.jq_path_of(0), ".");
+        assert_eq!(t.jq_path_of(line_with(&t, "\"items\"")), ".data.items");
+        assert_eq!(t.jq_path_of(line_with(&t, "\"name\"")), ".data.items[0].name");
+        assert_eq!(t.jq_path_of(line_with(&t, "2")), ".data.items[1]");
+        assert_eq!(t.jq_path_of(line_with(&t, "\"odd key\"")), r#".data["odd key"]"#);
+        let items_open = line_with(&t, "\"items\"");
+        let items_close = t.line(items_open).container.as_ref().unwrap().end_line;
+        assert_eq!(t.jq_path_of(items_close), ".data.items");
+    }
+
+    #[test]
+    fn scalar_lines_expose_their_json_value_text() {
+        let t = JsonTree::parse(r#"{"s": "a\"b", "n": 1.5, "b": true, "z": null, "o": {}, "arr": [1]}"#).unwrap();
+        assert_eq!(t.line(line_with(&t, "\"s\"")).scalar_text(), Some(r#""a\"b""#));
+        assert_eq!(t.line(line_with(&t, "\"n\"")).scalar_text(), Some("1.5"));
+        assert_eq!(t.line(line_with(&t, "\"b\": true")).scalar_text(), Some("true"));
+        assert_eq!(t.line(line_with(&t, "\"z\"")).scalar_text(), Some("null"));
+        assert_eq!(t.line(line_with(&t, "\"o\"")).scalar_text(), None, "empty containers are not scalars");
+        assert_eq!(t.line(line_with(&t, "\"arr\"")).scalar_text(), None);
+        assert_eq!(t.line(t.line_count() - 1).scalar_text(), None, "closing brace");
+    }
+
+    #[test]
+    fn first_element_keys_come_from_an_array_whose_first_element_is_an_object() {
+        let t = JsonTree::parse(r#"{"items": [{"id": 1, "name": "a"}, {"id": 2}], "nums": [1, 2], "empty": []}"#).unwrap();
+        assert_eq!(t.first_element_keys(line_with(&t, "\"items\"")), vec!["id", "name"]);
+        assert!(t.first_element_keys(line_with(&t, "\"nums\"")).is_empty());
+        assert!(t.first_element_keys(line_with(&t, "\"empty\"")).is_empty());
+        assert!(t.first_element_keys(line_with(&t, "\"id\": 1")).is_empty(), "not an array");
+    }
+
+    #[test]
+    fn nearest_array_ancestor_gives_the_array_line_and_the_path_below_its_element() {
+        let t = JsonTree::parse(r#"{"items": [{"meta": {"status": "on"}}], "top": 1}"#).unwrap();
+        let items = line_with(&t, "\"items\"");
+        let status = line_with(&t, "\"status\"");
+        let (array_line, rel) = t.nearest_array_ancestor(status).expect("status sits inside items[0]");
+        assert_eq!(array_line, items);
+        assert_eq!(render_path(&rel), ".meta.status");
+        let element = line_with(&t, "\"meta\"") - 1; // the `{` opening items[0]
+        assert_eq!(t.nearest_array_ancestor(element), Some((items, vec![])), "the element itself has an empty relative path");
+        assert_eq!(t.nearest_array_ancestor(line_with(&t, "\"top\"")), None);
+    }
+
+    #[test]
+    fn parse_many_separates_documents_with_a_blank_line_and_restarts_paths() {
+        let t = JsonTree::parse_many(&["{\"a\": 1}".to_string(), "[2]".to_string()]).unwrap();
+        assert_eq!(t.full_text_lines(), vec!["{", "  \"a\": 1", "}", "", "[", "  2", "]"]);
+        assert!(t.line(3).is_separator());
+        assert_eq!(t.jq_path_of(4), ".");
+        assert_eq!(t.jq_path_of(5), ".[0]");
+        assert!(JsonTree::parse_many(&["{".to_string()]).is_none());
+        assert!(JsonTree::parse_many(&[]).is_some(), "no outputs is an empty tree, not a failure");
+    }
+
+    #[test]
+    fn visible_line_maps_through_collapse_state() {
+        let mut t = JsonTree::parse(r#"{"a": {"b": 1}, "c": 2}"#).unwrap();
+        let a = line_with(&t, "\"a\"");
+        t.toggle(a);
+        // visible: 0 "{", 1 "a": {…}, 2 "c": 2, 3 "}"
+        assert_eq!(t.full_index_of_visible(2), Some(line_with(&t, "\"c\"")));
+        assert_eq!(t.visible_line(2).map(|l| l.expanded_text()), Some("  \"c\": 2".to_string()));
+        assert_eq!(t.visible_line(9), None);
     }
 }

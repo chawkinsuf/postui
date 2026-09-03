@@ -28,12 +28,20 @@ pub fn render_path(path: &[PathSeg]) -> String {
                 out.push_str(k);
             }
             PathSeg::Key(k) => {
+                // A leading "." is jq's identity before an index; bracket
+                // indexing after another segment applies directly.
+                if out.is_empty() {
+                    out.push('.');
+                }
                 // serde_json's string encoding is exactly jq's.
-                out.push_str(".[");
+                out.push('[');
                 out.push_str(&serde_json::to_string(k).expect("strings always encode"));
                 out.push(']');
             }
             PathSeg::Index(i) => {
+                if out.is_empty() {
+                    out.push('.');
+                }
                 out.push('[');
                 out.push_str(&i.to_string());
                 out.push(']');
