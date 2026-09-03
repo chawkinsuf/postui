@@ -107,8 +107,8 @@ pub struct JqBar {
 
 impl JqBar {
     /// Whether a background run has been outstanding long enough (as of
-    /// `now`) for the bar to spin and the tree to dim: past
-    /// `JQ_SPINNER_AFTER`, so a run that finishes sooner never flickers.
+    /// `now`) for the bar's chip to spin: past `JQ_SPINNER_AFTER`, so a
+    /// run that finishes sooner never flickers.
     fn running_long(&self, now: Instant) -> bool {
         self.pending.is_some()
             && now.saturating_duration_since(self.pending_since) >= JQ_SPINNER_AFTER
@@ -194,11 +194,6 @@ impl JqRunOutput {
 /// How long a background run may take before the bar shows a spinner:
 /// a run that finishes inside this window never flickers one.
 pub const JQ_SPINNER_AFTER: Duration = Duration::from_millis(100);
-
-/// How far the tree's colours blend toward the page while a run is past
-/// `JQ_SPINNER_AFTER`: half way keeps every hue recognisable at roughly
-/// half the contrast.
-const JQ_RUNNING_FADE: f32 = 0.5;
 
 /// Everything about *how* a ready response is being looked at. Rebuilt from
 /// scratch whenever a new response lands, so no state leaks between requests.
@@ -1935,22 +1930,7 @@ impl Component for Response {
         if view.mode == ViewMode::Raw && view.h_scroll > 0 {
             view.index_raw_rows(view.scroll..view.scroll + view.height);
         }
-        let mut body = body_lines(view, t, ctx.focused, ctx.hovered, hits, body_area);
-        // While a filter run outlives its grace period the tree on screen
-        // is about to be replaced: it drops contrast (in step with the
-        // bar's spinner) rather than vanishing, so nothing flickers on a
-        // fast run and the reader keeps their place through a slow one.
-        // Every span keeps its own hue, blended partway toward the page —
-        // keys still read as keys, just quieter.
-        if view.mode == ViewMode::Pretty && self.jq.running_long(ctx.now) {
-            for line in &mut body {
-                for span in &mut line.spans {
-                    if let Some(fg) = span.style.fg {
-                        span.style.fg = Some(crate::theme::mix(fg, t.page, JQ_RUNNING_FADE));
-                    }
-                }
-            }
-        }
+        let body = body_lines(view, t, ctx.focused, ctx.hovered, hits, body_area);
         frame.render_widget(Paragraph::new(body), body_area);
 
         if footer {
@@ -2842,7 +2822,22 @@ fn draw_jq_bar(
         ..area
     };
     let chip_color = if bar.stale { t.text_muted } else { t.accent };
-    let mut spans = vec![Span::styled("jq ", Style::default().fg(chip_color))];
+    // A background run past its grace period takes over the `jq` chip —
+    // the spinner sits right beside the text being typed, where the wait
+    // is felt, and a run that finishes sooner never flickers it.
+    let spinning = bar.running_long(ctx.now);
+    let chip = if spinning {
+        let frame_i = (ctx
+            .now
+            .saturating_duration_since(bar.pending_since)
+            .as_millis()
+            / 80) as usize
+            % SPINNER.len();
+        format!("{} ", SPINNER[frame_i])
+    } else {
+        "jq ".to_string()
+    };
+    let mut spans = vec![Span::styled(chip, Style::default().fg(chip_color))];
     if bar.ai_pending {
         let frame_i = (ctx
             .now
@@ -2856,27 +2851,11 @@ fn draw_jq_bar(
         ));
         frame.render_widget(Paragraph::new(Line::from(spans)), row);
     } else {
-        // A background run past its grace period shows a spinner at the
-        // row's right end (the filter text's window gives up two columns
-        // for it); one that finishes sooner never flickers.
-        let spinning = bar.running_long(ctx.now);
-        let spinner_w = if spinning { 2 } else { 0 };
-        let line =
-            bar.input
-                .draw_line_windowed(bar.focused, t, text_w.saturating_sub(3 + spinner_w));
+        let line = bar
+            .input
+            .draw_line_windowed(bar.focused, t, text_w.saturating_sub(3));
         spans.extend(line.spans);
         frame.render_widget(Paragraph::new(Line::from(spans)), row);
-        if spinning && text_w >= 5 {
-            let frame_i = (ctx
-                .now
-                .saturating_duration_since(bar.pending_since)
-                .as_millis()
-                / 80) as usize
-                % SPINNER.len();
-            frame.buffer_mut()[(row.right() - 2, row.y)]
-                .set_symbol(SPINNER[frame_i])
-                .set_fg(t.text_muted);
-        }
     }
     hits.register(row, crate::hit::Hit::ResponseJqBar);
     if area.width > ai_w {
@@ -4905,9 +4884,20 @@ mod tests {
         r.set_jq_text(".data");
         let req = r.apply_jq(".data", 0).expect("background run");
         let since = r.jq.pending_since;
+        // The spinner takes over the `jq` chip at the bar's left edge.
         let spinner_at = |r: &mut Response, now| {
             let out = render_sized_at(r, 60, 20, now);
-            SPINNER.iter().any(|g| out.contains(*g))
+            let bar_row = buffer_rows(&out)
+                .into_iter()
+                .find(|row| row.contains("jq ") || SPINNER.iter().any(|g| row.contains(*g)))
+                .expect("the jq bar row");
+            let spins = SPINNER.iter().any(|g| bar_row.contains(*g));
+            assert_ne!(
+                spins,
+                bar_row.contains("jq "),
+                "spinner and chip swap: {bar_row}"
+            );
+            spins
         };
         assert!(
             !spinner_at(&mut r, since + Duration::from_millis(50)),
@@ -4928,61 +4918,6 @@ mod tests {
         assert!(
             !spinner_at(&mut r, since + Duration::from_secs(5)),
             "and the spinner goes with it"
-        );
-    }
-
-    #[test]
-    fn the_tree_loses_contrast_while_a_background_run_is_past_the_grace_period() {
-        let theme = Theme::dark();
-        let mut r = ready(ITEMS);
-        r.set_view_mode(ViewMode::Pretty);
-        r.open_jq();
-        r.set_jq_text(".data");
-        let req = r.apply_jq(".data", 0).expect("background run");
-        let since = r.jq.pending_since;
-        // Row 1 of the tree starts with the accent-coloured `"data"` key.
-        let key_fg = |r: &mut Response, now| {
-            let ctx_theme = Theme::dark();
-            let ctx = DrawCtx {
-                theme: &ctx_theme,
-                focused: true,
-                hovered: None,
-                dragging: false,
-                anims: test_anims(),
-                now,
-            };
-            let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
-            let mut hits = crate::hit::HitMap::default();
-            terminal
-                .draw(|f| r.draw(f, f.area(), &ctx, &mut hits))
-                .unwrap();
-            let area = r.view().unwrap().last_area.unwrap();
-            terminal
-                .backend()
-                .buffer()
-                .cell((area.x + 3, area.y + 1))
-                .unwrap()
-                .fg
-        };
-        assert_eq!(
-            key_fg(&mut r, since + Duration::from_millis(50)),
-            theme.accent,
-            "inside the grace period the key keeps its colour"
-        );
-        assert_eq!(
-            key_fg(&mut r, since + JQ_SPINNER_AFTER),
-            crate::theme::mix(theme.accent, theme.page, JQ_RUNNING_FADE),
-            "past it the key keeps its hue at lower contrast"
-        );
-        r.attach_jq_result(
-            req.generation,
-            req.run,
-            Ok(JqRunOutput::from_outputs(None, vec![r#"{"k": 1}"#.into()])),
-        );
-        assert_eq!(
-            key_fg(&mut r, since + Duration::from_secs(5)),
-            theme.accent,
-            "the landed tree is drawn in full colour"
         );
     }
 
