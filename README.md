@@ -37,7 +37,13 @@ Shift while dragging — most terminals bypass capture for that.
 ### jq filter
 
 Press `alt+q` (or click 󰈲 in the response header) to open the jq bar and filter a JSON
-response live; the filter is saved with the request. Right-click any line of the tree for
+response live; the filter is saved with the request. `Enter` hands focus back to the
+filtered tree; `Esc` clears the filter (in the bar it keeps the caret for the next one; `Esc`
+again leaves the empty bar). 󰈲 or `alt+q` on an open
+bar closes it instead, which switches the filter off without deleting it — the full body
+shows until you open it again, and the off state is saved too. A filter that yields only `null` (or nothing) keeps the full body on screen and shows
+"invalid filter" under the bar, so a half-typed path doesn't blank the response you're reading. Multiple
+outputs run together, one after another, as `jq` prints them. Right-click any line of the tree for
 verbs that write the jq for you (Filter to this, Count, Pluck field…, Where field…, Only
 items where…). "Describe a filter…" sends the response's *structure* (key names and types,
 never values) to the command in `ai_cmd` (default `claude -p`) and puts the reply in the bar.

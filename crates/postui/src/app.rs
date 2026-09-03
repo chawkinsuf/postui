@@ -60,6 +60,8 @@ pub enum TextDrag {
     Body,
     Url,
     Response,
+    /// A sweep inside the response pane's jq filter bar.
+    Jq,
     /// A sweep inside the top modal's text box `i` (see `Hit::ModalInput`).
     ModalInput(usize),
     /// A sweep inside the table cell under edit (`TableEditorState::editing`
@@ -1013,10 +1015,22 @@ impl App {
         let response = &mut self.session.response;
         if response.take_jq_edited() {
             self.editor.jq = response.jq_text().to_string();
-        } else if response.jq_text() != self.editor.jq {
-            response.set_jq_text(&self.editor.jq);
+            self.editor.jq_enabled = response.jq_enabled();
+        } else {
+            if response.jq_text() != self.editor.jq {
+                response.set_jq_text(&self.editor.jq);
+            }
+            if response.jq_enabled() != self.editor.jq_enabled {
+                response.set_jq_enabled(self.editor.jq_enabled);
+            }
         }
-        let code = self.editor.jq.clone();
+        // A switched-off filter is applied as no filter: the text stays in
+        // the bar (closed), the tree shows the full body.
+        let code = if self.editor.jq_enabled {
+            self.editor.jq.clone()
+        } else {
+            String::new()
+        };
         if let Some(req) = self
             .session
             .response
@@ -2212,6 +2226,7 @@ impl App {
                     substitute_body: false,
                     insecure: false,
                     jq: None,
+                    jq_enabled: true,
                     params: Default::default(),
                     headers: Default::default(),
                     variables: Default::default(),
@@ -3036,13 +3051,20 @@ impl App {
                     self.toasts.push("The response is not JSON", ToastKind::Info);
                     return true;
                 }
-                if self.session.response.jq_focused() {
-                    self.session.response.set_jq_focus(false);
+                // Open ⇄ closed, regardless of focus: an open bar closes
+                // (filter off, text kept) whether or not the caret is in
+                // it; a closed one opens switched on and focused.
+                if self.session.response.jq_open() {
+                    self.session.response.close_jq();
                 } else {
                     self.dispatch(Action::FocusPane(PaneId::Response));
-                    self.session.response.set_jq_focus(true);
+                    self.session.response.open_jq();
                 }
                 true
+            }
+            Action::ClearJqBar => {
+                self.session.response.clear_jq();
+                true // sync_jq lands the empty text in the editor
             }
             Action::OpenJqBar => {
                 if !self.session.response.jq_available() {
@@ -3050,7 +3072,7 @@ impl App {
                     return true;
                 }
                 self.dispatch(Action::FocusPane(PaneId::Response));
-                self.session.response.set_jq_focus(true);
+                self.session.response.open_jq();
                 true
             }
             Action::JqApply(text) => {
@@ -5129,8 +5151,9 @@ impl App {
                 }
             }
             TextSurface::Response => {}
-            // Never offered on the Variable Manager's own surfaces.
-            TextSurface::VmField | TextSurface::VmCell => {}
+            // Never offered on the Variable Manager's own surfaces, nor
+            // the jq bar.
+            TextSurface::VmField | TextSurface::VmCell | TextSurface::Jq => {}
         }
     }
 
@@ -6641,6 +6664,13 @@ impl App {
                 jq_row = Some(*row);
                 (TextSurface::Response, false)
             }
+            Hit::ResponseJqBar => {
+                self.update(Action::FocusPane(PaneId::Response));
+                if !self.session.response.set_jq_focus(true) {
+                    return None;
+                }
+                (TextSurface::Jq, true)
+            }
             Hit::TableCell { row, col } => {
                 let cell_col = crate::components::table_editor::Col::from_index(*col);
                 let editing_this = self
@@ -6695,8 +6725,12 @@ impl App {
         // Extracting a selection to a variable — offered on the request's
         // own text and on the response (where it only creates the
         // variable, there being nothing to rewrite); never on the Variable
-        // Manager's surfaces, which already *are* variables.
-        if !matches!(surface, TextSurface::VmField | TextSurface::VmCell) {
+        // Manager's surfaces, which already *are* variables, nor on the jq
+        // bar, whose text is a filter rather than a value.
+        if !matches!(
+            surface,
+            TextSurface::VmField | TextSurface::VmCell | TextSurface::Jq
+        ) {
             items.push(if has_selection {
                 MenuItem::new(
                     "Extract to variable\u{2026}",
@@ -6739,10 +6773,10 @@ impl App {
         let Some(tree) = response.active_tree() else { return Vec::new() };
         let Some(full) = tree.full_index_of_visible(row) else { return Vec::new() };
         let line = tree.line(full);
-        if line.is_separator() {
-            return Vec::new();
-        }
-        let bar = response.jq_text();
+        // Compose onto the filter whose output is on screen, not the bar
+        // text: while a null-yielding or broken filter leaves another tree
+        // up, the clicked path belongs to *that* tree.
+        let bar = response.jq_tree_code().unwrap_or("");
         let path = tree.jq_path_of(full);
         let multi = response.jq_output_count() > 1;
         let apply = |expr: Option<&str>| Action::JqApply(compose(bar, &path, expr));
@@ -6825,6 +6859,7 @@ impl App {
             TextSurface::TableCell => self.editor.table.editing.as_ref()?.input.selected_text(),
             TextSurface::VmField => self.varmanager.form.editing.as_ref()?.1.selected_text(),
             TextSurface::VmCell => self.varmanager.grid.editing.as_ref()?.input.selected_text(),
+            TextSurface::Jq => self.session.response.jq_bar().input.selected_text(),
         }
     }
 

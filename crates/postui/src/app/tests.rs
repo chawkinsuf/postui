@@ -13799,7 +13799,7 @@ fn every_named_action_is_mouse_reachable() {
                 Some("add header"),
                 false,
                 None,
-                false,
+                crate::components::footer::JqBarState::Closed,
             )
             .into_iter()
             .filter_map(|(_, _, a)| a),
@@ -13814,7 +13814,7 @@ fn every_named_action_is_mouse_reachable() {
                 Some("add header"),
                 true,
                 None,
-                false,
+                crate::components::footer::JqBarState::Closed,
             )
             .into_iter()
             .filter_map(|(_, _, a)| a),
@@ -13829,7 +13829,7 @@ fn every_named_action_is_mouse_reachable() {
                 Some("add header"),
                 false,
                 None,
-                true,
+                crate::components::footer::JqBarState::Focused,
             )
             .into_iter()
             .filter_map(|(_, _, a)| a),
@@ -16954,6 +16954,242 @@ fn alt_q_focuses_the_jq_bar_and_typing_filters_the_tree_live() {
 }
 
 #[test]
+fn enter_commits_the_filter_and_leaves_it_on() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.handle_key(&Keymap::default_bindings(), alt('q'));
+    type_str(&mut app, ".data.total");
+    app.handle_key(
+        &Keymap::default_bindings(),
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+    );
+    assert!(!app.session.response.jq_focused());
+    assert!(app.editor.jq_enabled);
+    assert!(
+        app.session.response.jq_open(),
+        "the bar stays up over a filtered tree"
+    );
+    assert_eq!(app.session.response.view().unwrap().view_text(), "2");
+}
+
+#[test]
+fn esc_clears_the_filter_and_keeps_the_bar_open_and_a_second_esc_leaves() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    let full = app.session.response.view().unwrap().view_text();
+    app.handle_key(&Keymap::default_bindings(), alt('q'));
+    type_str(&mut app, ".data.total");
+    app.capture_undo();
+    app.no_coalesce = true;
+    assert_eq!(app.session.response.view().unwrap().view_text(), "2");
+    app.handle_key(
+        &Keymap::default_bindings(),
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+    );
+    assert_eq!(app.editor.jq, "", "esc clears the text");
+    assert!(app.editor.jq_enabled, "…and leaves the switch on");
+    assert!(app.session.response.jq_focused(), "…and the caret stays in the bar");
+    assert!(app.session.response.jq_open());
+    assert_eq!(app.session.response.view().unwrap().view_text(), full);
+    app.handle_key(
+        &Keymap::default_bindings(),
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+    );
+    assert!(!app.session.response.jq_focused(), "esc on an empty bar leaves it");
+    assert!(!app.session.response.jq_open(), "…and an empty bar is hidden");
+    // The clear was an edit: undo brings the filter back.
+    app.capture_undo();
+    app.update(Action::Undo);
+    assert_eq!(app.editor.jq, ".data.total");
+    assert_eq!(app.session.response.view().unwrap().view_text(), "2");
+}
+
+#[test]
+fn esc_clears_a_switched_off_filter_too() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.update(Action::JqApply(".data.total".into()));
+    app.update(Action::ToggleJqBar); // off, text kept, bar hidden
+    assert!(!app.editor.jq_enabled);
+    app.update(Action::ToggleJqBar); // on + focused
+    app.handle_key(
+        &Keymap::default_bindings(),
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+    );
+    assert_eq!(app.editor.jq, "");
+    assert!(app.editor.jq_enabled, "nothing left to be off");
+}
+
+#[test]
+fn esc_in_the_tree_clears_an_open_bar_after_selection_and_search() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    let full = app.session.response.view().unwrap().view_text();
+    app.update(Action::JqApply(".data.total".into()));
+    app.focus = PaneId::Response;
+    app.update(Action::OpenResponseSearch);
+    // First Esc: the search line goes; the bar (and filter) stay.
+    app.handle_key(
+        &Keymap::default_bindings(),
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+    );
+    assert!(app.session.response.view().unwrap().search.is_none());
+    assert!(app.session.response.jq_open());
+    assert_eq!(app.session.response.view().unwrap().view_text(), "2");
+    // Next Esc: the filter is cleared; unfocused and empty, the bar is gone.
+    app.handle_key(
+        &Keymap::default_bindings(),
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+    );
+    assert!(!app.session.response.jq_open());
+    assert!(!app.session.response.jq_focused());
+    assert_eq!(app.editor.jq, "");
+    assert_eq!(app.session.response.view().unwrap().view_text(), full);
+}
+
+#[test]
+fn the_toggle_closes_an_open_bar_whether_or_not_it_is_focused() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    let full = app.session.response.view().unwrap().view_text();
+    app.update(Action::JqApply(".data.total".into()));
+    assert!(app.session.response.jq_open() && !app.session.response.jq_focused());
+    // The header button (and alt+q, and the palette's toggle) all route here.
+    app.update(Action::ToggleJqBar);
+    assert!(
+        !app.session.response.jq_open(),
+        "open + unfocused → closed, not focused"
+    );
+    assert!(!app.editor.jq_enabled);
+    assert_eq!(app.session.response.view().unwrap().view_text(), full);
+    app.update(Action::ToggleJqBar);
+    assert!(app.session.response.jq_focused());
+    assert_eq!(app.session.response.view().unwrap().view_text(), "2");
+    app.update(Action::ToggleJqBar);
+    assert!(!app.session.response.jq_open(), "open + focused → closed");
+    assert!(!app.editor.jq_enabled);
+}
+
+#[test]
+fn esc_on_an_empty_bar_just_hides_it() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.handle_key(&Keymap::default_bindings(), alt('q'));
+    app.handle_key(
+        &Keymap::default_bindings(),
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+    );
+    assert!(!app.session.response.jq_open());
+    assert!(app.editor.jq_enabled, "nothing to switch off");
+    assert!(!app.editor.is_dirty());
+}
+
+#[test]
+fn a_saved_off_filter_stays_off_when_the_request_opens() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    let full = app.session.response.view().unwrap().view_text();
+    app.editor.jq = ".data.total".into();
+    app.editor.jq_enabled = false;
+    app.update(Action::Render);
+    assert_eq!(app.session.response.jq_text(), ".data.total");
+    assert!(!app.session.response.jq_open());
+    assert_eq!(app.session.response.view().unwrap().view_text(), full);
+}
+
+#[test]
+fn a_null_or_empty_result_keeps_the_full_body_with_a_note() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    let full = app.session.response.view().unwrap().view_text();
+    app.handle_key(&Keymap::default_bindings(), alt('q'));
+    // Mid-typing: `.dat` is valid jq that yields null.
+    type_str(&mut app, ".dat");
+    assert_eq!(app.session.response.view().unwrap().view_text(), full);
+    assert!(app.session.response.jq_bar().stale);
+    assert_eq!(app.session.response.jq_bar().note, Some("null"));
+    assert!(app.session.response.jq_bar().error.is_none());
+    // Drawn like an error: a red "invalid filter" on the row under the bar.
+    {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        let rect = app
+            .hits
+            .rect_of(&Hit::ResponseJqBar)
+            .expect("bar row registered");
+        let buf = terminal.backend().buffer();
+        let row: String = (rect.x..rect.x + rect.width)
+            .map(|x| buf.cell((x, rect.y + 1)).unwrap().symbol().to_string())
+            .collect();
+        assert!(row.contains("invalid filter"), "{row:?}");
+        let x = rect.x + row.find("invalid").unwrap() as u16;
+        assert_eq!(buf.cell((x, rect.y + 1)).unwrap().fg, app.theme.error);
+    }
+    // A list of nulls is no better.
+    app.update(Action::JqApply(".data.items[].nam".into()));
+    assert_eq!(app.session.response.view().unwrap().view_text(), full);
+    assert_eq!(app.session.response.jq_bar().note, Some("null"));
+    // …nor is one array made only of nulls (what a mistyped `map(.x)` gives).
+    app.update(Action::JqApply(".data.items | map(.nam)".into()));
+    assert_eq!(app.session.response.view().unwrap().view_text(), full);
+    assert_eq!(app.session.response.jq_bar().note, Some("null"));
+    // No output at all.
+    app.update(Action::JqApply(".data.items[] | select(.id == 9)".into()));
+    assert_eq!(app.session.response.view().unwrap().view_text(), full);
+    assert_eq!(app.session.response.jq_bar().note, Some("no output"));
+    // Enter does not change that: it is the committed state too.
+    app.handle_key(
+        &Keymap::default_bindings(),
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+    );
+    assert_eq!(app.session.response.view().unwrap().view_text(), full);
+    assert_eq!(app.session.response.jq_bar().note, Some("no output"));
+    // A real result clears the note.
+    app.update(Action::JqApply(".data.total".into()));
+    assert_eq!(app.session.response.view().unwrap().view_text(), "2");
+    assert_eq!(app.session.response.jq_bar().note, None);
+    assert!(!app.session.response.jq_bar().stale);
+}
+
+#[test]
+fn multiple_outputs_run_together_without_a_blank_line() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.update(Action::JqApply(".data.items[].status".into()));
+    assert_eq!(
+        app.session.response.view().unwrap().view_text(),
+        "\"active\"\n\"off\""
+    );
+}
+
+#[test]
+fn the_focused_bar_advertises_enter_apply_and_esc_clear() {
+    let chips = crate::components::footer::footer_chips(
+        PaneId::Response,
+        false,
+        false,
+        None,
+        false,
+        None,
+        crate::components::footer::JqBarState::Focused,
+    );
+    let keys: Vec<(&str, &str)> = chips.iter().map(|(k, l, _)| (*k, *l)).collect();
+    assert_eq!(
+        keys,
+        vec![("enter", "apply"), ("esc", "clear"), ("alt+q", "close"), ("✦", "describe…")],
+        "{chips:?}"
+    );
+    assert_eq!(
+        chips[1].2,
+        Some(Action::ClearJqBar),
+        "the esc chip is clickable"
+    );
+}
+
+#[test]
 fn a_saved_filter_is_applied_when_the_request_opens_and_when_a_response_lands() {
     let mut app = App::new_for_test();
     app.editor.jq = ".data.total".into();
@@ -17134,12 +17370,12 @@ fn the_footer_and_palette_reach_the_jq_bar() {
         None,
         false,
         None,
-        false,
+        crate::components::footer::JqBarState::Closed,
     );
     assert!(
         chips
             .iter()
-            .any(|(k, l, a)| *k == "alt+q" && *l == "jq" && *a == Some(Action::ToggleJqBar)),
+            .any(|(k, l, a)| *k == "alt+q" && *l == "filter" && *a == Some(Action::ToggleJqBar)),
         "{chips:?}"
     );
     app.update(Action::OpenPalette);
@@ -17225,6 +17461,133 @@ fn a_scalar_inside_an_array_element_offers_only_items_where() {
     app.update(Action::Close);
     right_click_row(&mut app, "\"total\"");
     assert!(!menu_labels(&app).iter().any(|l| l.starts_with("Only items")), "no enclosing array");
+}
+
+#[test]
+fn verbs_compose_onto_the_filter_whose_output_is_on_screen_not_the_bar_text() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    // A filter that yields null: the full body is showing under a note,
+    // so a verb on a body line must start from the body, replacing the
+    // bar text rather than piping the body path through `.nope`.
+    app.update(Action::JqApply(".nope".into()));
+    assert_eq!(app.session.response.jq_bar().note, Some("null"));
+    right_click_row(&mut app, "\"items\"");
+    assert_eq!(
+        menu_action(&app, "Count"),
+        Some(Action::JqApply(".data.items | length".into()))
+    );
+    app.update(Action::Close);
+    // A syntax error keeps the previous good tree (`.data`'s output) on
+    // screen: verbs compose onto `.data`, not onto the broken text.
+    app.update(Action::JqApply(".data".into()));
+    app.update(Action::JqApply(".data | select(".into()));
+    assert!(app.session.response.jq_bar().error.is_some());
+    right_click_row(&mut app, "\"items\"");
+    assert_eq!(
+        menu_action(&app, "Count"),
+        Some(Action::JqApply(".data | .items | length".into()))
+    );
+}
+
+#[test]
+fn clicking_in_the_jq_bar_places_the_caret_and_dragging_selects() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.update(Action::JqApply(".data.total".into()));
+    render_once(&mut app);
+    let rect = app
+        .hits
+        .rect_of(&Hit::ResponseJqBar)
+        .expect("bar row registered");
+    let text_x = rect.x + 3; // after the `jq ` prefix
+
+    // A click focuses the bar and puts the caret under the pointer.
+    app.handle_mouse(left_down(text_x + 1, rect.y));
+    assert!(app.session.response.jq_focused());
+    assert_eq!(app.session.response.jq_bar().input.cursor(), 1);
+    // Sweeping right selects.
+    assert!(app.handle_mouse(dragged(text_x + 5, rect.y)));
+    app.handle_mouse(left_up(text_x + 5, rect.y));
+    let selected = |app: &App| app.session.response.jq_bar().input.selected_text();
+    assert_eq!(selected(&app).as_deref(), Some("data"));
+
+    // A double click selects the word under the pointer.
+    app.last_click = None;
+    app.handle_mouse(left_down(text_x + 7, rect.y));
+    app.handle_mouse(left_down(text_x + 7, rect.y));
+    assert_eq!(selected(&app).as_deref(), Some("total"));
+    // A plain click collapses it.
+    app.handle_mouse(left_down(text_x, rect.y));
+    assert_eq!(app.session.response.jq_bar().input.selection(), None);
+    assert_eq!(app.session.response.jq_bar().input.cursor(), 0);
+}
+
+#[test]
+fn right_click_on_the_jq_bar_offers_copy_and_paste_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.txt");
+    let mut app = App::new_for_test();
+    app.set_clipboard_for_test(file_clipboard(&out, " | length"));
+    ready_response(&mut app, JQ_BODY);
+    app.update(Action::JqApply(".data.items".into()));
+    // Focus starts elsewhere: the right click has to claim the bar.
+    app.focus = PaneId::Sidebar;
+    render_once(&mut app);
+    let rect = app
+        .hits
+        .rect_of(&Hit::ResponseJqBar)
+        .expect("bar row registered");
+
+    assert!(app.handle_mouse(right_down(rect.x + 5, rect.y)));
+    assert_eq!(
+        menu_labels(&app),
+        vec!["Copy", "Paste"],
+        "no extract items on a filter"
+    );
+    assert!(
+        menu_action(&app, "Copy").is_none(),
+        "nothing selected: Copy is greyed"
+    );
+    let paste = menu_action(&app, "Paste").expect("Paste is enabled");
+    app.update(Action::Close);
+    app.update(paste);
+    assert_eq!(app.session.response.jq_text(), ".data.items | length");
+    assert!(app.session.response.jq_focused());
+
+    // With a selection, Copy copies it and keeps it.
+    app.session.response.jq_bar_mut().input.select_all();
+    app.handle_mouse(right_down(rect.x + 5, rect.y));
+    let copy = menu_action(&app, "Copy").expect("Copy is enabled with a selection");
+    app.update(Action::Close);
+    app.update(copy);
+    assert_eq!(
+        std::fs::read_to_string(&out).unwrap(),
+        ".data.items | length"
+    );
+    assert!(app.session.response.jq_bar().input.selection().is_some());
+}
+
+#[test]
+fn the_response_footer_names_the_jq_chip_after_what_alt_q_will_do() {
+    use crate::components::footer::JqBarState;
+    let chip = |state: JqBarState| {
+        crate::components::footer::footer_chips(
+            PaneId::Response,
+            false,
+            false,
+            None,
+            false,
+            None,
+            state,
+        )
+        .into_iter()
+        .find(|(k, _, _)| *k == "alt+q")
+        .map(|(_, l, a)| (l, a))
+    };
+    assert_eq!(chip(JqBarState::Closed), Some(("filter", Some(Action::ToggleJqBar))));
+    assert_eq!(chip(JqBarState::Open), Some(("close", Some(Action::ToggleJqBar))));
+    assert_eq!(chip(JqBarState::Focused), Some(("close", Some(Action::ToggleJqBar))));
 }
 
 #[test]

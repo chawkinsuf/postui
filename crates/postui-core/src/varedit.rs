@@ -1794,6 +1794,7 @@ tier = "g-1"
             substitute_body: false,
             insecure: false,
             jq: None,
+            jq_enabled: true,
             params: params
                 .iter()
                 .map(|(k, v)| (k.to_string(), option(v)))

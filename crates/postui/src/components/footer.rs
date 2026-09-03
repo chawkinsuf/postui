@@ -12,6 +12,16 @@ use ratatui::layout::Rect;
 /// the bottom — the same painted 3-row rhythm as the header app bar.
 pub const FOOTER_HEIGHT: u16 = 3;
 
+/// Where the response pane's jq bar is, for the chips that name what
+/// `alt+q` will do next: open a closed bar (`filter`), or close an open
+/// one (`close`) whether or not the caret is in it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JqBarState {
+    Closed,
+    Open,
+    Focused,
+}
+
 /// The context-sensitive chips for the focused pane. Each entry is `(key,
 /// label, action)`; `None` actions render as plain (unregistered, muted)
 /// text on the panel background rather than a filled chip — they describe
@@ -34,10 +44,10 @@ pub(crate) fn footer_chips(
     // edit live): advertise its toggle/delete keys. `(index, enabled)` —
     // the toggle chip names the state change it would make.
     table_row_selected: Option<(usize, bool)>,
-    // The response pane's jq bar has the caret: swaps its chip set for the
-    // bar's own (done/tree/describe) instead of the response pane's usual
-    // three.
-    jq_bar_focused: bool,
+    // The response pane's jq bar: focused swaps the chip set for the bar's
+    // own (apply/clear/close/describe); open vs closed names what alt+q
+    // does next.
+    jq_bar: JqBarState,
 ) -> Vec<(&'static str, &'static str, Option<Action>)> {
     let chips: Vec<(&'static str, &'static str, Option<Action>)> = match focus {
         PaneId::Sidebar => vec![
@@ -107,10 +117,15 @@ pub(crate) fn footer_chips(
             chips
         }
         PaneId::Response => {
-            if jq_bar_focused {
+            if jq_bar == JqBarState::Focused {
+                // Enter commits (the filter is live already; Enter just
+                // hands focus back to the tree with the filter on), Esc
+                // clears the filter, alt+q closes the bar — switching the
+                // filter off without losing it.
                 vec![
-                    ("esc", "done", None),
-                    ("alt+q", "tree", Some(Action::ToggleJqBar)),
+                    ("enter", "apply", None),
+                    ("esc", "clear", Some(Action::ClearJqBar)),
+                    ("alt+q", "close", Some(Action::ToggleJqBar)),
                     ("✦", "describe…", Some(Action::OpenJqDescribe)),
                 ]
             } else {
@@ -130,7 +145,15 @@ pub(crate) fn footer_chips(
                         )),
                     ),
                     ("/", "search", Some(Action::OpenResponseSearch)),
-                    ("alt+q", "jq", Some(Action::ToggleJqBar)),
+                    (
+                        "alt+q",
+                        if jq_bar == JqBarState::Open {
+                            "close"
+                        } else {
+                            "filter"
+                        },
+                        Some(Action::ToggleJqBar),
+                    ),
                 ]
             }
         }
@@ -172,8 +195,8 @@ pub fn draw_footer(
     url_focused: bool,
     // See `footer_chips`: a data row of the active table is selected.
     table_row_selected: Option<(usize, bool)>,
-    // See `footer_chips`: the response pane's jq bar has the caret.
-    jq_bar_focused: bool,
+    // See `footer_chips`: where the response pane's jq bar is.
+    jq_bar: JqBarState,
     // Replaces the per-pane chips wholesale when `Some` — a modal's own
     // chip set, or the Variable Manager screen's
     // (`VarManager::footer_chips`), whose actions target
@@ -259,7 +282,7 @@ pub fn draw_footer(
             add_row_label,
             url_focused,
             table_row_selected,
-            jq_bar_focused,
+            jq_bar,
         ),
     };
     paint_chip_row(
@@ -387,7 +410,7 @@ mod tests {
                     Some("add header"),
                     false,
                     None,
-                    false,
+                    JqBarState::Closed,
                     None,
                     true,
                     true,
@@ -408,7 +431,7 @@ mod tests {
             Some("add header"),
             false,
             None,
-            false,
+            JqBarState::Closed,
         );
         assert!(with.iter().any(|(k, l, _)| *k == "⇧enter" && *l == "send"));
         let without = footer_chips(
@@ -418,7 +441,7 @@ mod tests {
             Some("add header"),
             false,
             None,
-            false,
+            JqBarState::Closed,
         );
         assert!(without.iter().any(|(k, l, _)| *k == "^R" && *l == "send"));
     }
@@ -435,7 +458,7 @@ mod tests {
             Some("add header"),
             false,
             None,
-            false,
+            JqBarState::Closed,
         );
         assert!(
             sending
@@ -479,7 +502,7 @@ mod tests {
             Some("add header"),
             false,
             None,
-            false,
+            JqBarState::Closed,
         );
         assert!(chips.iter().any(|(k, l, a)| *k == "alt+shift+v"
             && *l == "vars"
@@ -504,7 +527,7 @@ mod tests {
             Some("add header"),
             true,
             None,
-            false,
+            JqBarState::Closed,
         );
         assert!(
             !chips
@@ -528,7 +551,7 @@ mod tests {
             Some("add header"),
             false,
             None,
-            false,
+            JqBarState::Closed,
         );
         assert!(
             chips
@@ -558,7 +581,7 @@ mod tests {
                     Some("add header"),
                     url_focused,
                     None,
-                    false,
+                    JqBarState::Closed,
                 );
                 assert!(
                     !chips.iter().any(|(_, _, a)| *a == Some(Action::CycleSplit)),
@@ -582,7 +605,7 @@ mod tests {
             Some("add header"),
             false,
             Some((2, true)),
-            false,
+            JqBarState::Closed,
         );
         assert!(chips.iter().any(|(k, l, a)| *k == "␣"
             && *l == "disable"
@@ -600,7 +623,7 @@ mod tests {
             Some("add header"),
             false,
             Some((2, false)),
-            false,
+            JqBarState::Closed,
         );
         assert!(
             chips
@@ -615,7 +638,7 @@ mod tests {
             Some("add header"),
             false,
             None,
-            false,
+            JqBarState::Closed,
         );
         assert!(
             !chips
@@ -667,7 +690,7 @@ mod tests {
                     Some("add header"),
                     false,
                     None,
-                    false,
+                    JqBarState::Closed,
                     None,
                     true,
                     true,
@@ -711,7 +734,7 @@ mod tests {
                     Some("add header"),
                     false,
                     None,
-                    false,
+                    JqBarState::Closed,
                     None,
                     true,
                     true,
@@ -758,7 +781,7 @@ mod tests {
                     Some("add header"),
                     false,
                     None,
-                    false,
+                    JqBarState::Closed,
                     None,
                     true,
                     true,
@@ -794,7 +817,7 @@ mod tests {
                     Some("add header"),
                     false,
                     None,
-                    false,
+                    JqBarState::Closed,
                     None,
                     true,
                     true,
@@ -864,7 +887,7 @@ mod tests {
                     Some("add header"),
                     false,
                     None,
-                    false,
+                    JqBarState::Closed,
                     None,
                     true,
                     true,
@@ -920,7 +943,7 @@ mod tests {
                     Some("add header"),
                     false,
                     None,
-                    false,
+                    JqBarState::Closed,
                     None,
                     true,
                     true,
@@ -1015,7 +1038,7 @@ mod tests {
                     Some("add header"),
                     false,
                     None,
-                    false,
+                    JqBarState::Closed,
                     None,
                     true,
                     true,

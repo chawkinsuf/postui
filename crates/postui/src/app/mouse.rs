@@ -53,6 +53,7 @@ impl App {
                             self.session.response.drag_selection_to(m.column, m.row)
                         }
                         Some(TextDrag::Url) => self.url_drag_to(m.column),
+                        Some(TextDrag::Jq) => self.jq_drag_to(m.column),
                         Some(TextDrag::ModalInput(i)) => self.modal_input_drag_to(i, m.column),
                         Some(TextDrag::TableCell) => self.table_cell_drag_to(m.column),
                         Some(TextDrag::VmField) => self.vm_field_drag_to(m.column),
@@ -512,6 +513,22 @@ impl App {
         let start = self.editor.url.window_start(true, area.width);
         let col = usize::from(column.clamp(area.x, area.x + area.width - 1) - area.x);
         self.editor.url.extend_mouse_selection_to(start + col);
+        true
+    }
+
+    /// Like [`Self::url_drag_to`], for the jq filter bar.
+    fn jq_drag_to(&mut self, column: u16) -> bool {
+        let Some(area) = self.hits.rect_of(&Hit::ResponseJqBar) else {
+            return false;
+        };
+        let (text_x, inner_w) = jq_bar_text_geometry(area);
+        if inner_w == 0 {
+            return false;
+        }
+        let input = &mut self.session.response.jq_bar_mut().input;
+        let start = input.window_start(true, inner_w);
+        let col = usize::from(column.clamp(text_x, text_x + inner_w - 1) - text_x);
+        input.extend_mouse_selection_to(start + col);
         true
     }
 
@@ -1392,8 +1409,29 @@ impl App {
             Hit::ResponseEditorButton => self.update(Action::OpenResponseInEditor),
             Hit::ResponseJqButton => self.update(Action::ToggleJqBar),
             Hit::ResponseJqBar => {
+                let Some(area) = self.hits.rect_of(&Hit::ResponseJqBar) else {
+                    return false;
+                };
+                let was_focused = self.session.response.jq_focused();
                 self.update(Action::FocusPane(PaneId::Response));
-                self.session.response.set_jq_focus(true);
+                if !self.session.response.set_jq_focus(true) {
+                    return false;
+                }
+                // The text sits after the `jq ` chip; map the clicked
+                // column back through the window math the bar drew with
+                // (from 0 unfocused, following the caret once focused),
+                // exactly like the URL bar and a modal's text box.
+                let (text_x, inner_w) = jq_bar_text_geometry(area);
+                let input = &mut self.session.response.jq_bar_mut().input;
+                let start = input.window_start(was_focused, inner_w.max(1));
+                let col = usize::from(m.column.saturating_sub(text_x));
+                if clicks == 2 {
+                    input.select_word_at(start + col);
+                } else {
+                    input.set_cursor(start + col);
+                    input.begin_mouse_selection();
+                }
+                self.text_drag = Some(TextDrag::Jq);
                 self.update(Action::Render)
             }
             Hit::ResponseJqAiButton => self.update(Action::OpenJqDescribe),
@@ -1670,4 +1708,11 @@ impl App {
             }
         }
     }
+}
+
+/// Where the jq bar's text starts and how wide it is, given the bar row's
+/// hit rect: the text follows the 3-cell `jq ` chip
+/// (`response::draw_jq_bar`).
+fn jq_bar_text_geometry(area: ratatui::layout::Rect) -> (u16, u16) {
+    (area.x + 3, area.width.saturating_sub(3))
 }

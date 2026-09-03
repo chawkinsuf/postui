@@ -330,10 +330,50 @@ A few details of the shipped behaviour are worth recording against this
 design, either because they differ from what's described above or
 because they're easy to get wrong reading the code cold:
 
-- The footer chips shown while the bar is focused are `esc done / alt+q
-  tree / ✦ describe…` — not a chip per action described elsewhere in this
-  doc. Enter blurs the bar (it does not "commit" anything separately);
-  the filter is already live on every keystroke.
+- **Closing the bar is the filter's off switch** (2026-09-03 usability
+  round). The design above said the bar hides only when its text is
+  empty and "clearing the text is how the filter is removed". Shipped:
+  the header 󰈲 button, `alt+q` and the palette's toggle all *close* an
+  open bar whether or not it is focused — the text stays, the filter is
+  switched off, and the tree shows the full body. Opening it again (same
+  three routes) switches the filter back on and focuses the input.
+  `Esc` is different: in the bar, or from the tree once a selection and
+  the search have been dismissed (innermost first), it *clears* the
+  filter text (`Action::ClearJqBar`, an undoable edit) so the full body
+  shows — Esc is "get rid of it", the button is the switch. In the bar
+  the caret stays for the next filter; Esc again on the empty bar leaves
+  it (and an empty, unfocused bar is hidden). From the tree the cleared
+  bar is unfocused, so it disappears. `Enter` blurs to the tree with the filter on and the bar
+  still showing. The off state persists as `jq_enabled = false` in the request
+  TOML (omitted when on, and never written without a filter to switch
+  off); toggling dirties the request like a text edit. A structural verb
+  or an AI reply landing a filter switches a closed bar back on.
+- The footer chips shown while the bar is focused are `enter apply /
+  esc clear / alt+q close / ✦ describe…`; the response pane's own
+  `alt+q` chip reads `filter` while the bar is closed and `close` while
+  it is open. Clicking in the bar places the caret, dragging selects,
+  double-click selects the word, and right-click offers Copy / Paste
+  (`TextSurface::Jq`; no extract-to-variable/selector items — the text is
+  a filter, not a value). The same as the URL bar otherwise.
+- Structural verbs compose onto `ReadyView::jq_tree_code` — the filter
+  whose output is actually on screen — not the bar text, so a verb
+  clicked on the body under a null-note (or on the previous good tree
+  under a syntax error) starts from the right document. Enter does not "commit" anything separately;
+  the filter is already live on every keystroke. The 󰈲 button paints
+  pressed (inverted) while a filter is on.
+- **A run whose outputs are all `null` — every document `null`, or one
+  array of nothing but nulls — or that produces no output at all does
+  not replace the tree.** The full body shows, the chip dims as for an
+  error, and a red `invalid filter` line under the bar says why (the
+  bar's `note` still records `null` vs `no output` internally). This is what a half-typed path (`.mo`)
+  yields on every keystroke, and blanking the tree under someone who is
+  reading it while they write the filter was the complaint. It is the
+  committed behaviour too, not only a preview while typing: a saved
+  filter that matches nothing on a new response shows the body with the
+  note. An empty array is a real answer and is shown.
+- **Multiple outputs are not separated by a blank line.** `parse_many`
+  runs the documents together, exactly as `jq` prints a stream; the
+  design's "separated by a blank line" was wrong about jq.
 - The palette's "describe" entry stays listed even when `ai_cmd` isn't
   configured or the program is missing — the palette has no gating
   mechanism. Choosing it in that state toasts the missing-program hint

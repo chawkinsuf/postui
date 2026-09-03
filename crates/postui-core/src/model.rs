@@ -203,6 +203,11 @@ pub struct HttpRequest {
     /// filter and is omitted from the TOML.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jq: Option<String>,
+    /// Whether `jq` is switched on. Closing the bar switches the filter
+    /// off without deleting its text; `true` is the default and is omitted
+    /// from the TOML, as is `false` when there is no filter to switch off.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub jq_enabled: bool,
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
     pub params: IndexMap<String, Entry>,
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
@@ -211,6 +216,14 @@ pub struct HttpRequest {
     pub variables: IndexMap<String, Entry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<Body>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
 }
 
 impl HttpRequest {
@@ -237,6 +250,9 @@ impl HttpRequest {
         }
         if let Some(jq) = self.jq.as_deref().filter(|s| !s.is_empty()) {
             doc["jq"] = value(jq);
+            if !self.jq_enabled {
+                doc["jq_enabled"] = value(false);
+            }
         }
         let kv_table = |map: &IndexMap<String, Entry>| {
             let mut t = Table::new();
@@ -307,6 +323,7 @@ mod tests {
             substitute_body: false,
             insecure: false,
             jq: None,
+            jq_enabled: true,
             params,
             headers,
             variables: IndexMap::new(),
@@ -491,6 +508,31 @@ mod tests {
         let params_at = out.find("[params]").unwrap_or(usize::MAX);
         assert!(insecure_at < jq_at && jq_at < params_at, "{out}");
         assert_eq!(HttpRequest::from_toml_str(&out).unwrap(), req);
+    }
+
+    #[test]
+    fn jq_enabled_defaults_true_and_only_false_is_written_beside_a_filter() {
+        let mut req = sample();
+        assert!(req.jq_enabled);
+        req.jq_enabled = false;
+        let out = req.to_toml_string();
+        assert!(
+            !out.contains("jq_enabled"),
+            "off without a filter is meaningless:\n{out}"
+        );
+        req.jq = Some(".a".into());
+        let out = req.to_toml_string();
+        let jq_at = out.find("jq = \".a\"").expect("jq line:\n{out}");
+        let enabled_at = out
+            .find("jq_enabled = false")
+            .expect("jq_enabled line:\n{out}");
+        assert!(jq_at < enabled_at, "{out}");
+        assert_eq!(HttpRequest::from_toml_str(&out).unwrap(), req);
+        req.jq_enabled = true;
+        assert!(
+            !req.to_toml_string().contains("jq_enabled"),
+            "on is the default"
+        );
     }
 
     #[test]

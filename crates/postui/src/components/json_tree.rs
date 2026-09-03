@@ -71,18 +71,13 @@ pub struct TreeLine {
     /// This line's jq path from the document root.
     pub path: Vec<PathSeg>,
     /// The JSON text of a scalar line's value (`"a"`, `1`, `true`, `null`).
-    /// `None` for container-opening, closing and separator lines.
+    /// `None` for container-opening and closing lines.
     scalar: Option<String>,
 }
 
 impl TreeLine {
     pub fn scalar_text(&self) -> Option<&str> {
         self.scalar.as_deref()
-    }
-
-    /// The blank line `parse_many` puts between documents.
-    pub fn is_separator(&self) -> bool {
-        self.tokens.is_empty()
     }
 
     /// The tokens to draw right now — the collapsed summary when this line
@@ -138,19 +133,16 @@ impl JsonTree {
         Some(tree)
     }
 
-    /// Several documents in one tree — a filter's outputs — separated by a
-    /// blank line each, exactly as `jq` prints them. Paths restart at `.`
+    /// Several documents in one tree — a filter's outputs — one straight
+    /// after another, exactly as `jq` prints a stream. Paths restart at `.`
     /// for every document. An empty list is an empty tree.
     pub fn parse_many(docs: &[String]) -> Option<JsonTree> {
         let mut tree = JsonTree {
             lines: Vec::new(),
             container_lines: Vec::new(),
         };
-        for (i, doc) in docs.iter().enumerate() {
+        for doc in docs {
             let value: serde_json::Value = serde_json::from_str(doc).ok()?;
-            if i > 0 {
-                tree.push(0, Vec::new(), Vec::new(), None, &[], &[], None);
-            }
             tree.walk(None, &value, 0, &[], &[], false);
         }
         Some(tree)
@@ -716,12 +708,11 @@ mod tests {
     }
 
     #[test]
-    fn parse_many_separates_documents_with_a_blank_line_and_restarts_paths() {
+    fn parse_many_runs_documents_together_like_jq_and_restarts_paths() {
         let t = JsonTree::parse_many(&["{\"a\": 1}".to_string(), "[2]".to_string()]).unwrap();
-        assert_eq!(t.full_text_lines(), vec!["{", "  \"a\": 1", "}", "", "[", "  2", "]"]);
-        assert!(t.line(3).is_separator());
-        assert_eq!(t.jq_path_of(4), ".");
-        assert_eq!(t.jq_path_of(5), ".[0]");
+        assert_eq!(t.full_text_lines(), vec!["{", "  \"a\": 1", "}", "[", "  2", "]"]);
+        assert_eq!(t.jq_path_of(3), ".");
+        assert_eq!(t.jq_path_of(4), ".[0]");
         assert!(JsonTree::parse_many(&["{".to_string()]).is_none());
         assert!(JsonTree::parse_many(&[]).is_some(), "no outputs is an empty tree, not a failure");
     }

@@ -118,6 +118,9 @@ pub struct Editor {
     /// The jq filter bar's text, mirrored from the response pane; empty is
     /// no filter.
     pub jq: String,
+    /// Whether that filter is switched on. Closing the bar switches it off
+    /// and keeps the text; `false` only means something with text to keep.
+    pub jq_enabled: bool,
     /// The active environment's TLS force, mirrored in before each draw
     /// (`ui.rs`) so the padlock can show the *effective* state: the force
     /// when there is one, else `insecure`. Not part of the request.
@@ -258,6 +261,7 @@ impl Default for Editor {
             substitute_body: false,
             insecure: false,
             jq: String::new(),
+            jq_enabled: true,
             env_tls: None,
             params: IndexMap::new(),
             headers: IndexMap::new(),
@@ -317,6 +321,7 @@ impl Editor {
         self.substitute_body = req.substitute_body;
         self.insecure = req.insecure;
         self.jq = req.jq.clone().unwrap_or_default();
+        self.jq_enabled = req.jq_enabled;
         self.params = req.params.clone();
         self.headers = req.headers.clone();
         self.variables = req.variables.clone();
@@ -343,6 +348,7 @@ impl Editor {
         self.substitute_body = req.substitute_body;
         self.insecure = req.insecure;
         self.jq = req.jq.clone().unwrap_or_default();
+        self.jq_enabled = req.jq_enabled;
         self.params = req.params.clone();
         self.headers = req.headers.clone();
         self.variables = req.variables.clone();
@@ -427,6 +433,7 @@ impl Editor {
             substitute_body: self.substitute_body,
             insecure: self.insecure,
             jq: (!self.jq.is_empty()).then(|| self.jq.clone()),
+            jq_enabled: self.jq.is_empty() || self.jq_enabled,
             params: self.params.clone(),
             headers: self.headers.clone(),
             variables: self.variables.clone(),
@@ -4421,6 +4428,34 @@ mod tests {
         req.jq = None;
         ed.apply_snapshot(&req);
         assert_eq!(ed.jq, "");
+    }
+
+    #[test]
+    fn jq_enabled_round_trips_and_switching_off_dirties_the_request() {
+        let mut ed = Editor::default();
+        let req = HttpRequest {
+            jq: Some(".a".into()),
+            jq_enabled: false,
+            url: "https://x".into(),
+            ..ed.current_request()
+        };
+        ed.load(Some("s".into()), req.clone());
+        assert!(!ed.jq_enabled);
+        assert!(!ed.current_request().jq_enabled);
+        assert!(!ed.is_dirty());
+        ed.jq_enabled = true;
+        assert!(
+            ed.is_dirty(),
+            "switching the filter on modifies the request"
+        );
+        ed.jq.clear();
+        ed.jq_enabled = false;
+        assert!(
+            ed.current_request().jq_enabled,
+            "off with no filter normalises to on: there is nothing to switch off"
+        );
+        ed.apply_snapshot(&req);
+        assert!(!ed.jq_enabled);
     }
 
     #[test]

@@ -73,11 +73,27 @@ pub struct SearchState {
 pub struct JqBar {
     pub input: LineInput,
     pub focused: bool,
-    /// Set on every bar edit; [`Response::take_jq_edited`] clears it.
+    /// Whether the filter is switched on. Closing the bar (`Esc`, the
+    /// header button, `alt+q`) switches it off and keeps the text; the
+    /// tree shows the full body until it is opened again. Mirrors
+    /// `Editor::jq_enabled`, which is what persists.
+    pub enabled: bool,
+    /// Set on every bar edit — text or the on/off switch;
+    /// [`Response::take_jq_edited`] clears it.
     edited: bool,
     pub error: Option<JqError>,
-    /// The last run failed; the tree on screen is the previous good one.
+    /// The last run produced nothing to show: it failed (`error` says
+    /// why, and the previous good tree stays) or every output was `null`
+    /// (`note` says which, and the full body shows). Either way the tree
+    /// on screen is not this filter's output.
     pub stale: bool,
+    /// Why a run that succeeded still shows the full body: every output
+    /// was `null` (or one array of nothing but nulls) → `"null"`; no
+    /// output at all → `"no output"`. A mid-typing `.mo` yields `null`,
+    /// and blanking the tree under someone reading it is worse than
+    /// leaving it up. Drawn as a red "invalid filter" under the bar (the
+    /// distinction is kept for tests and a future, wordier message).
+    pub note: Option<&'static str>,
     /// A background run is outstanding (its per-view counter).
     pub pending: Option<u64>,
     pub ai_pending: bool,
@@ -85,19 +101,46 @@ pub struct JqBar {
     pub ai_started: std::time::Instant,
 }
 
+impl JqBar {
+    /// See [`Response::jq_open`].
+    fn is_open(&self) -> bool {
+        self.focused
+            || (self.enabled && !self.input.text().is_empty())
+            || self.ai_pending
+            || self.pending.is_some()
+    }
+}
+
 impl Default for JqBar {
     fn default() -> Self {
         Self {
             input: LineInput::new(""),
             focused: false,
+            enabled: true,
             edited: false,
             error: None,
             stale: false,
+            note: None,
             pending: None,
             ai_pending: false,
             ai_started: Instant::now(),
         }
     }
+}
+
+/// Whether a filter's outputs are all `null` — every document is `null`,
+/// or the single document is an array holding nothing but nulls (what a
+/// mistyped `map(.fied)` gives). An empty array is a real answer, not this.
+fn all_null(outputs: &[String]) -> bool {
+    if outputs.iter().all(|o| o == "null") {
+        return true;
+    }
+    let [only] = outputs else { return false };
+    let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(only)
+    else {
+        return false;
+    };
+    !items.is_empty() && items.iter().all(serde_json::Value::is_null)
 }
 
 /// Work the app must hand to the blocking pool: a jq run too big to run
@@ -174,6 +217,12 @@ pub struct ReadyView {
     /// The code `jq_tree` (or `Response::jq`'s error) reflects — `None`
     /// before any filter has run, `Some("")` for an explicitly cleared one.
     jq_applied: Option<String>,
+    /// The code `jq_tree` is the output of — what the structural verbs
+    /// compose onto, since the tree on screen is what the user clicked.
+    /// `None` while the body tree shows (no filter, or a filter with
+    /// nothing to show), and differs from `jq_applied` while a bad filter
+    /// keeps the previous good tree up.
+    jq_tree_code: Option<String>,
     /// How many outputs the last successful filter produced (1 when no
     /// filter is applied, or the filter emits exactly one document).
     jq_outputs: usize,
@@ -231,6 +280,7 @@ impl ReadyView {
             jq_doc: None,
             jq_tree: None,
             jq_applied: None,
+            jq_tree_code: None,
             jq_outputs: 1,
             jq_runs: 0,
         }
@@ -721,15 +771,75 @@ impl Response {
         // early (e.g. the new response isn't JSON).
         self.jq.error = None;
         self.jq.stale = false;
+        self.jq.note = None;
         self.jq.pending = None;
     }
 
+    /// Clears the filter: wipes the bar's text (an edit, when there was
+    /// any) so the full body shows. Focus is untouched — from the bar the
+    /// caret stays put for the next filter; from the tree the empty,
+    /// unfocused bar simply disappears. The on/off switch is left on —
+    /// there is nothing left to be off — so the request never persists
+    /// `jq_enabled = false` without a filter.
+    pub fn clear_jq(&mut self) {
+        if !self.jq.input.text().is_empty() {
+            self.jq.input = LineInput::new("");
+            self.jq.edited = true;
+        }
+        self.jq.enabled = true;
+    }
+
     /// Sets the bar's text and cursor together (a tee-up from elsewhere —
-    /// e.g. the AI describe flow seeding a filter). Counts as an edit.
+    /// e.g. the AI describe flow seeding a filter). Counts as an edit, and
+    /// switches a closed bar back on: a verb or the AI landing a filter
+    /// means "show me this".
     pub fn set_jq_text_with_cursor(&mut self, text: &str, cursor: usize) {
         self.jq.input = LineInput::new(text);
         self.jq.input.set_cursor(cursor);
+        self.jq.enabled = true;
         self.jq.edited = true;
+    }
+
+    /// The bar's on/off switch as the editor holds it (the persisted
+    /// state). Not an edit.
+    pub fn set_jq_enabled(&mut self, enabled: bool) {
+        self.jq.enabled = enabled;
+    }
+
+    pub fn jq_enabled(&self) -> bool {
+        self.jq.enabled
+    }
+
+    /// Whether the bar is showing: focused, holding a switched-on filter,
+    /// or waiting on a run or an AI reply. Closed means the filter is off.
+    pub fn jq_open(&self) -> bool {
+        self.jq.is_open()
+    }
+
+    /// Opens the bar: switches the filter on (an edit, when that changes
+    /// anything) and focuses the input. `false` when jq has nothing to run
+    /// against, in which case nothing changes.
+    pub fn open_jq(&mut self) -> bool {
+        if !self.jq_available() {
+            return false;
+        }
+        if !self.jq.enabled {
+            self.jq.enabled = true;
+            self.jq.edited = true;
+        }
+        self.jq.focused = true;
+        true
+    }
+
+    /// Closes the bar: blurs it and, when there is text to keep, switches
+    /// the filter off (an edit — the request remembers). An empty bar just
+    /// goes away; there is nothing to switch off.
+    pub fn close_jq(&mut self) {
+        self.jq.focused = false;
+        if self.jq.enabled && !self.jq.input.text().is_empty() {
+            self.jq.enabled = false;
+            self.jq.edited = true;
+        }
     }
 
     /// Whether the bar's text changed since the last call — set on every
@@ -803,6 +913,12 @@ impl Response {
 
     /// How many outputs the applied filter produced (1 when unfiltered, or
     /// the filter emits exactly one document).
+    /// The filter whose output the Pretty view is showing — what a
+    /// structural verb composes onto. `None` when the body tree shows.
+    pub fn jq_tree_code(&self) -> Option<&str> {
+        self.view.as_ref().and_then(|v| v.jq_tree_code.as_deref())
+    }
+
     pub fn jq_output_count(&self) -> usize {
         self.view.as_ref().map_or(1, |v| v.jq_outputs)
     }
@@ -819,6 +935,7 @@ impl Response {
             // nothing left over from a previous response should linger.
             self.jq.error = None;
             self.jq.stale = false;
+            self.jq.note = None;
             self.jq.pending = None;
             return None;
         };
@@ -829,6 +946,7 @@ impl Response {
             // survive as a stale, undrawable leftover.
             self.jq.error = None;
             self.jq.stale = false;
+            self.jq.note = None;
             self.jq.pending = None;
             return None;
         }
@@ -838,10 +956,12 @@ impl Response {
         let code_trim = code.trim();
         if code_trim.is_empty() {
             view.jq_tree = None;
+            view.jq_tree_code = None;
             view.jq_outputs = 1;
             view.jq_applied = Some(code.to_string());
             self.jq.error = None;
             self.jq.stale = false;
+            self.jq.note = None;
             self.jq.pending = None;
             view.clear_sel();
             view.clamp_cursor();
@@ -853,6 +973,7 @@ impl Response {
         if let Err(e) = postui_core::jq::check(code_trim) {
             self.jq.error = Some(e);
             self.jq.stale = true;
+            self.jq.note = None;
             self.jq.pending = None;
             view.jq_applied = Some(code.to_string());
             return None;
@@ -867,6 +988,7 @@ impl Response {
                 Err(e) => {
                     self.jq.error = Some(e);
                     self.jq.stale = true;
+                    self.jq.note = None;
                     view.jq_applied = Some(code.to_string());
                     return None;
                 }
@@ -932,11 +1054,32 @@ impl Response {
                     view.jq_doc = Some(doc);
                 }
                 match JsonTree::parse_many(&outputs) {
+                    Some(_) if outputs.is_empty() || all_null(&outputs) => {
+                        // Nothing to show: keep the full body up with a
+                        // note rather than replace it with `null`s.
+                        view.jq_outputs = 1;
+                        view.jq_tree = None;
+                        view.jq_tree_code = None;
+                        self.jq.error = None;
+                        self.jq.stale = true;
+                        self.jq.note = Some(if outputs.is_empty() {
+                            "no output"
+                        } else {
+                            "null"
+                        });
+                        view.clear_sel();
+                        view.clamp_cursor();
+                        view.follow_cursor();
+                        view.h_scroll = 0;
+                        view.recompute_matches();
+                    }
                     Some(tree) => {
                         view.jq_outputs = outputs.len();
                         view.jq_tree = Some(tree);
+                        view.jq_tree_code = view.jq_applied.clone();
                         self.jq.error = None;
                         self.jq.stale = false;
+                        self.jq.note = None;
                         view.clear_sel();
                         view.clamp_cursor();
                         view.follow_cursor();
@@ -948,12 +1091,14 @@ impl Response {
                             message: "filter output is not JSON".into(),
                         });
                         self.jq.stale = true;
+                        self.jq.note = None;
                     }
                 }
             }
             Err(e) => {
                 self.jq.error = Some(e);
                 self.jq.stale = true;
+                self.jq.note = None;
             }
         }
         true
@@ -1249,10 +1394,12 @@ impl Response {
     fn ready_key(&mut self, ev: KeyEvent) -> Option<Action> {
         // The jq bar swallows everything while focused: chars and editing
         // keys go to its LineInput, Enter blurs (committing is implicit —
-        // every edit re-runs the filter), Esc blurs unless an AI request
-        // is pending, in which case it cancels that instead. Runs before
-        // the view is borrowed, so it works even with no ready view (it
-        // never should, in practice: the bar can't focus without one).
+        // every edit re-runs the filter — so the filter stays on), Esc
+        // clears the filter and keeps the caret (a second Esc, on the
+        // now-empty bar, leaves it) unless an AI request is pending, in
+        // which case it cancels that instead. Runs before the
+        // view is borrowed, so it works even with no ready view (it never
+        // should, in practice: the bar can't focus without one).
         if self.jq.focused {
             match ev.code {
                 KeyCode::Enter => self.jq.focused = false,
@@ -1260,7 +1407,11 @@ impl Response {
                     if self.jq.ai_pending {
                         return Some(Action::CancelJqDescribe);
                     }
-                    self.jq.focused = false;
+                    if self.jq.input.text().is_empty() {
+                        self.jq.focused = false;
+                    } else {
+                        self.clear_jq();
+                    }
                 }
                 _ => {
                     self.jq.input.handle_key(ev);
@@ -1415,6 +1566,14 @@ impl Response {
                 view.search = None;
                 Some(Action::Render)
             }
+            // Innermost thing first: selection, then search, then the jq
+            // filter — so Enter-to-browse, Esc-to-drop-the-filter reads as
+            // one gesture from the tree. Clears rather than switches off:
+            // Esc is "get rid of it", the 󰈲 button/alt+q are the switch.
+            KeyCode::Esc if self.jq.is_open() => {
+                self.clear_jq();
+                Some(Action::Render)
+            }
             _ => None,
         }
     }
@@ -1529,17 +1688,14 @@ impl Component for Response {
         };
 
         let footer = view.search.is_some();
-        // Open while focused, holding typed text, an AI request is
-        // pending, or a background run is outstanding — so the bar stays
-        // up through a run that outlives the keystroke that started it,
-        // and a bad filter's error row (the second `jq_rows` line) stays
-        // visible after the bar itself loses focus.
-        let jq_open = self.jq.focused
-            || !self.jq.input.text().is_empty()
-            || self.jq.ai_pending
-            || self.jq.pending.is_some();
+        // Open while focused, holding a switched-on filter, an AI request
+        // is pending, or a background run is outstanding — so the bar
+        // stays up through a run that outlives the keystroke that started
+        // it, and a bad filter's error row (the second `jq_rows` line)
+        // stays visible after the bar itself loses focus.
+        let jq_open = self.jq.is_open();
         let jq_rows = if jq_open {
-            1 + u16::from(self.jq.error.is_some())
+            1 + u16::from(self.jq.error.is_some() || self.jq.note.is_some())
         } else {
             0
         };
@@ -1800,7 +1956,8 @@ fn draw_header_strip(
     // Row 2 (left): the icon actions, on the stretch of the underline row
     // the tabs' rule doesn't reach.
     let jq_available = view.has_tree_view();
-    draw_header_actions(frame, hits, area, jq_available, ctx);
+    let jq_on = jq_available && bar.enabled && !bar.input.text().is_empty();
+    draw_header_actions(frame, hits, area, jq_available, jq_on, ctx);
 
     let buf = frame.buffer_mut();
     let row1_y = area.y + 1;
@@ -1920,12 +2077,15 @@ const HEADER_ACTIONS: [(&str, crate::hit::Hit); 5] = [
 /// (`area`'s third row) — the stretch the tabs' rule doesn't reach — so
 /// they sit directly above the response body they act on. The jq button
 /// (the last entry) is skipped entirely while `jq_available` is false —
-/// there is nothing for it to filter.
+/// there is nothing for it to filter — and painted in its pressed
+/// (inverted) state while `jq_on`, so a filtered tree is explained even
+/// when the bar has scrolled out of mind.
 fn draw_header_actions(
     frame: &mut Frame,
     hits: &mut crate::hit::HitMap,
     area: Rect,
     jq_available: bool,
+    jq_on: bool,
     ctx: &DrawCtx,
 ) {
     use unicode_width::UnicodeWidthStr;
@@ -1940,12 +2100,13 @@ fn draw_header_actions(
         // Display width, not char count, so the labels' padding is honoured.
         let w = label.width() as u16;
         let rect = Rect::new(x, y, w, 1);
+        let pressed = jq_on && hit == crate::hit::Hit::ResponseJqButton;
         draw_pane_action(
             buf,
             rect,
             label,
             hit.clone(),
-            ctx.hovered,
+            if pressed { Some(&hit) } else { ctx.hovered },
             ctx.theme.panel,
             ctx.theme,
         );
@@ -2420,6 +2581,22 @@ fn draw_jq_bar(
             t,
         );
         hits.register(ai_area, crate::hit::Hit::ResponseJqAiButton);
+    }
+    // A filter with nothing to show reads as an error to the user — the
+    // tree they're looking at isn't its output — so it's drawn like one.
+    if bar.note.is_some() && bar.error.is_none() && area.height >= 2 {
+        let note_row = Rect {
+            y: area.y + 1,
+            height: 1,
+            ..area
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "   invalid filter",
+                Style::default().fg(t.error),
+            ))),
+            note_row,
+        );
     }
     if let Some(err) = &bar.error
         && area.height >= 2
@@ -4247,7 +4424,11 @@ mod tests {
     fn multiple_outputs_render_as_separate_documents_and_are_counted() {
         let mut r = ready(ITEMS);
         r.apply_jq(".data.items[] | .id", SYNC_PRETTY_BYTES);
-        assert_eq!(r.view().unwrap().view_text(), "1\n\n2");
+        assert_eq!(
+            r.view().unwrap().view_text(),
+            "1\n2",
+            "one after another, as jq prints"
+        );
         assert_eq!(r.jq_output_count(), 2);
     }
 
@@ -4394,8 +4575,12 @@ mod tests {
         assert!(r.take_jq_edited());
         assert!(!r.take_jq_edited());
         r.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert!(!r.jq_focused(), "Esc blurs");
-        assert_eq!(r.jq_text(), ".ab", "…without clearing");
+        assert_eq!(r.jq_text(), "", "Esc clears");
+        assert!(r.jq_focused(), "…and keeps the caret in the bar");
+        assert!(r.take_jq_edited(), "a clear is an edit");
+        r.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!r.jq_focused(), "Esc on an empty bar blurs");
+        assert!(!r.take_jq_edited(), "…which is not an edit");
         r.set_jq_text_with_cursor("map(select(.x == ))", 17);
         assert!(r.take_jq_edited(), "a tee-up counts as an edit");
         assert_eq!(r.jq_bar().input.cursor(), 17);

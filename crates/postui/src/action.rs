@@ -40,6 +40,8 @@ pub enum TextSurface {
     VmField,
     /// The selector-grid cell under edit (`OptionGridState::editing`).
     VmCell,
+    /// The response pane's jq filter bar.
+    Jq,
 }
 
 /// What [`Action::CopyToClipboard`] copies: the ready response body, one of
@@ -726,9 +728,14 @@ pub enum Action {
     Redo,
 
     // -- jq response filter (spec: docs/superpowers/sdd/2026-09-03-jq-response-filter) --
-    /// alt+q / the header 󰈲 button: focuses the response pane and its jq
-    /// bar; blurs when already focused.
+    /// alt+q / the header 󰈲 button / the palette: opens a closed jq bar
+    /// (filter on, focused) or closes an open one (filter off, text kept).
     ToggleJqBar,
+    /// Esc in the bar or the tree (and the footer's `esc clear` chip):
+    /// wipes the filter text so the full body shows. The bar stays open
+    /// while it has the caret; Esc again on the empty bar leaves it. An
+    /// edit — undo brings the filter back.
+    ClearJqBar,
     /// Palette/footer: focus the bar (never blurs).
     OpenJqBar,
     /// Replaces the bar text and applies it (structural menu "apply" items).

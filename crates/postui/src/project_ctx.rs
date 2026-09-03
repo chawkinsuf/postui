@@ -1725,6 +1725,7 @@ mod tests {
                     substitute_body: false,
                     insecure: false,
                     jq: None,
+                    jq_enabled: true,
                     params: Default::default(),
                     headers: Default::default(),
                     variables: Default::default(),
