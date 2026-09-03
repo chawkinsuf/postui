@@ -331,7 +331,7 @@ impl ReadyView {
     /// How many lines the current view shows right now (collapse included).
     pub fn visible_len(&self) -> usize {
         match self.mode {
-            ViewMode::Pretty => self.active_tree().map_or(0, |t| t.visible_indices().len()),
+            ViewMode::Pretty => self.active_tree().map_or(0, |t| t.visible_len()),
             ViewMode::Raw => self.raw_lines.len(),
             ViewMode::Headers => self.header_lines.len().max(1),
         }
@@ -561,7 +561,7 @@ impl ReadyView {
             ViewMode::Headers => self.header_lines.get(i).cloned(),
             ViewMode::Pretty => {
                 let tree = self.active_tree()?;
-                let line = tree.visible_lines().get(i).copied()?;
+                let line = tree.visible_line(i)?;
                 let mut out = " ".repeat(line.indent);
                 for tok in line.render_tokens() {
                     out.push_str(&tok.text);
@@ -2283,10 +2283,9 @@ fn body_lines(
                 }
                 return out;
             };
-            let lines = tree.visible_lines();
             let indices = tree.visible_indices();
-            for i in start..end.min(lines.len()) {
-                let line = lines[i];
+            for (i, &full) in indices.iter().enumerate().take(end).skip(start) {
+                let line = tree.line(full);
                 let mut pieces = vec![(" ".repeat(line.indent), text)];
                 for tok in line.render_tokens() {
                     pieces.push((
@@ -2297,7 +2296,7 @@ fn body_lines(
                 // A collapsed line renders its summary, not its real text, so
                 // the match columns computed over the expanded text no longer
                 // apply to it.
-                push(i, indices[i], pieces, !line.collapsed, (0, view.h_scroll));
+                push(i, full, pieces, !line.collapsed, (0, view.h_scroll));
 
                 let y = area.y.saturating_add((i - start) as u16);
                 if y < area.y.saturating_add(area.height) {

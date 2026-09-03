@@ -2,10 +2,13 @@
 //!
 //! `JsonTree::parse` walks a `serde_json::Value` once and produces a flat
 //! `Vec<TreeLine>` — one entry per pretty-printed line. Collapsing never
-//! rebuilds anything: a container line carries the index of its closing line,
-//! so hiding its subtree is a range skip, and both the expanded and the
-//! collapsed (`{…} 2 keys`) renderings of a line are precomputed at build
-//! time.
+//! rebuilds the lines: a container line carries the index of its closing
+//! line, so hiding its subtree is a range skip, and both the expanded and
+//! the collapsed (`{…} 2 keys`) renderings of a line are precomputed at
+//! build time. What a collapse does rebuild is the `visible` index — the
+//! full-line index of every line currently on show — so that a frame, a
+//! cursor move or a mouse drag on a million-line tree is `O(rows)`, not
+//! `O(lines)` per row.
 //!
 //! The module is deliberately theme-agnostic: tokens carry a semantic
 //! [`TokenKind`] and the caller maps that to its own palette.
@@ -116,6 +119,10 @@ pub struct JsonTree {
     lines: Vec<TreeLine>,
     /// Container id -> index of the line that opens it.
     container_lines: Vec<usize>,
+    /// Full-line indices of everything currently visible, in order.
+    /// Rebuilt by whatever changes collapse state (`toggle`,
+    /// `expand_ancestors`) — `O(lines)` there, so every read is `O(1)`.
+    visible: Vec<usize>,
 }
 
 impl JsonTree {
@@ -128,8 +135,10 @@ impl JsonTree {
         let mut tree = JsonTree {
             lines: Vec::new(),
             container_lines: Vec::new(),
+            visible: Vec::new(),
         };
         tree.walk(None, &value, 0, &[], &[], false);
+        tree.rebuild_visible();
         Some(tree)
     }
 
@@ -140,11 +149,13 @@ impl JsonTree {
         let mut tree = JsonTree {
             lines: Vec::new(),
             container_lines: Vec::new(),
+            visible: Vec::new(),
         };
         for doc in docs {
             let value: serde_json::Value = serde_json::from_str(doc).ok()?;
             tree.walk(None, &value, 0, &[], &[], false);
         }
+        tree.rebuild_visible();
         Some(tree)
     }
 
@@ -153,7 +164,7 @@ impl JsonTree {
     }
 
     pub fn full_index_of_visible(&self, visible_index: usize) -> Option<usize> {
-        self.visible_indices().get(visible_index).copied()
+        self.visible.get(visible_index).copied()
     }
 
     pub fn visible_line(&self, visible_index: usize) -> Option<&TreeLine> {
@@ -233,53 +244,63 @@ impl JsonTree {
     }
 
     /// Full-line indices of everything currently visible, in order.
-    pub fn visible_indices(&self) -> Vec<usize> {
-        let mut out = Vec::new();
+    pub fn visible_indices(&self) -> &[usize] {
+        &self.visible
+    }
+
+    /// How many lines are visible right now.
+    pub fn visible_len(&self) -> usize {
+        self.visible.len()
+    }
+
+    /// Recomputes `visible` from the collapse flags: a walk over the lines
+    /// that skips each collapsed container's subtree as a range.
+    fn rebuild_visible(&mut self) {
+        self.visible.clear();
         let mut i = 0;
         while i < self.lines.len() {
-            out.push(i);
+            self.visible.push(i);
             let line = &self.lines[i];
             match (&line.container, line.collapsed) {
                 (Some(c), true) => i = c.end_line + 1,
                 _ => i += 1,
             }
         }
-        out
     }
 
     /// The visible lines, in order. A collapsed container's opening line
-    /// renders as its `{…} N keys` summary.
+    /// renders as its `{…} N keys` summary. Allocates a `Vec` the size of
+    /// the visible set — for a whole-tree pass, not for a per-row lookup
+    /// (that is `visible_line`).
     pub fn visible_lines(&self) -> Vec<&TreeLine> {
-        self.visible_indices()
-            .into_iter()
-            .map(|i| &self.lines[i])
-            .collect()
+        self.visible.iter().map(|&i| &self.lines[i]).collect()
     }
 
     /// Where `full_index` sits among the visible lines, or `None` if it is
     /// currently hidden inside a collapsed container.
     pub fn visible_index_of(&self, full_index: usize) -> Option<usize> {
-        self.visible_indices().iter().position(|&i| i == full_index)
+        // `visible` is sorted (it is a subsequence of the line indices).
+        self.visible.binary_search(&full_index).ok()
     }
 
     /// Whether the line at `visible_index` opens a container (and so carries
     /// a `▸`/`▾` toggle glyph). `false` for an out-of-range index.
     pub fn is_container_at_visible(&self, visible_index: usize) -> bool {
-        self.visible_indices()
-            .get(visible_index)
-            .is_some_and(|&full| self.lines[full].container.is_some())
+        self.visible_line(visible_index)
+            .is_some_and(|line| line.container.is_some())
     }
 
     /// Collapses or expands the container opened by the line at
     /// `visible_index`. A no-op on lines that open no container (and on an
     /// out-of-range index).
     pub fn toggle(&mut self, visible_index: usize) {
-        let Some(&full) = self.visible_indices().get(visible_index) else {
+        let Some(&full) = self.visible.get(visible_index) else {
             return;
         };
         let line = &mut self.lines[full];
         if line.container.is_some() {
             line.collapsed = !line.collapsed;
+            self.rebuild_visible();
         }
     }
 
@@ -290,9 +311,14 @@ impl JsonTree {
             return;
         };
         let parents = line.parent_ids.clone();
+        let mut changed = false;
         for id in parents {
             let opener = self.container_lines[id];
+            changed |= self.lines[opener].collapsed;
             self.lines[opener].collapsed = false;
+        }
+        if changed {
+            self.rebuild_visible();
         }
     }
 
@@ -786,6 +812,32 @@ mod tests {
             JsonTree::parse_many(&[]).is_some(),
             "no outputs is an empty tree, not a failure"
         );
+    }
+
+    #[test]
+    fn the_visible_index_tracks_every_collapse_change() {
+        // {"a": {"b": {"c": 1}}, "d": 2}
+        let mut t = JsonTree::parse(r#"{"a": {"b": {"c": 1}}, "d": 2}"#).unwrap();
+        let all: Vec<usize> = (0..t.line_count()).collect();
+        assert_eq!(
+            t.visible_indices(),
+            &all[..],
+            "everything visible after parse"
+        );
+        assert_eq!(t.visible_len(), all.len());
+        t.toggle(1); // "a": {
+        assert_eq!(t.visible_indices(), &[0, 1, 6, 7], "a's subtree is skipped");
+        assert_eq!(t.visible_index_of(2), None, "b is hidden");
+        assert_eq!(t.visible_index_of(6), Some(2), "d sits at visible row 2");
+        assert!(!t.is_container_at_visible(2), "d is a scalar");
+        t.toggle(0); // collapse the root too
+        assert_eq!(t.visible_indices(), &[0]);
+        t.expand_ancestors(3); // "c": 1, inside b inside a inside root
+        assert_eq!(t.visible_indices(), &all[..], "every ancestor reopened");
+        t.toggle(5); // a scalar-less closing line: no-op, index unchanged
+        assert_eq!(t.visible_indices(), &all[..]);
+        t.toggle(99);
+        assert_eq!(t.visible_indices(), &all[..], "out of range is a no-op");
     }
 
     #[test]
