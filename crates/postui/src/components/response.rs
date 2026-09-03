@@ -403,15 +403,9 @@ impl ReadyView {
         }
         let w = match self.mode {
             ViewMode::Pretty => self.active_tree().map_or(0, |t| {
-                t.visible_lines()
+                t.visible_indices()
                     .iter()
-                    .map(|l| {
-                        l.indent
-                            + l.render_tokens()
-                                .iter()
-                                .map(|tok| tok.text.width())
-                                .sum::<usize>()
-                    })
+                    .map(|&i| t.line(i as usize).render_width())
                     .max()
                     .unwrap_or(0)
             }),
@@ -2338,11 +2332,12 @@ fn body_lines(
             };
             let indices = tree.visible_indices();
             for (i, &full) in indices.iter().enumerate().take(end).skip(start) {
+                let full = full as usize;
                 let line = tree.line(full);
                 let mut pieces = vec![(" ".repeat(line.indent), text)];
                 for tok in line.render_tokens() {
                     pieces.push((
-                        tok.text.clone(),
+                        tok.text.into_owned(),
                         Style::default().fg(token_color(tok.kind, t)),
                     ));
                 }

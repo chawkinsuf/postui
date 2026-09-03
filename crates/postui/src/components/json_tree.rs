@@ -1,19 +1,28 @@
 //! A flattened, collapsible view of a JSON document.
 //!
-//! `JsonTree::parse` walks a `serde_json::Value` once and produces a flat
-//! `Vec<TreeLine>` — one entry per pretty-printed line. Collapsing never
-//! rebuilds the lines: a container line carries the index of its closing
-//! line, so hiding its subtree is a range skip, and both the expanded and
-//! the collapsed (`{…} 2 keys`) renderings of a line are precomputed at
-//! build time. What a collapse does rebuild is the `visible` index — the
+//! `JsonTree::parse` walks a `serde_json::Value` once and produces one
+//! entry per pretty-printed line. Collapsing never rebuilds the lines: a
+//! container line knows its closing line, so hiding its subtree is a range
+//! skip. What a collapse does rebuild is the `visible` index — the
 //! full-line index of every line currently on show — so that a frame, a
 //! cursor move or a mouse drag on a million-line tree is `O(rows)`, not
 //! `O(lines)` per row.
+//!
+//! The tree is built to be small: a multi-megabyte body flattens to
+//! hundreds of thousands of lines, and the session keeps a tree per cached
+//! response. Every line's rendered text (its content after the indent —
+//! `"key": "value",`) lives back to back in one arena `String`, and a line
+//! is a 24-byte record of where its text ends, where its key token ends,
+//! which container it sits in and which (if any) it opens. Tokens, the
+//! `{…} N keys` summary, the jq path and the ancestor chain are all
+//! derived on demand from that — a per-row cost at draw time, in place of
+//! dozens of heap allocations per line at parse time.
 //!
 //! The module is deliberately theme-agnostic: tokens carry a semantic
 //! [`TokenKind`] and the caller maps that to its own palette.
 
 use postui_core::jq::{PathSeg, render_path};
+use std::borrow::Cow;
 
 /// Semantic class of a rendered token, so the caller can color it with its
 /// own theme tokens without this module knowing about themes.
@@ -31,14 +40,16 @@ pub enum TokenKind {
     Punct,
 }
 
+/// A run of a line's text with one semantic class. Borrows the tree's
+/// arena where it can; only a collapsed summary's child count is built.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Token {
-    pub text: String,
+pub struct Token<'a> {
+    pub text: Cow<'a, str>,
     pub kind: TokenKind,
 }
 
-impl Token {
-    fn new(text: impl Into<String>, kind: TokenKind) -> Self {
+impl<'a> Token<'a> {
+    fn new(text: impl Into<Cow<'a, str>>, kind: TokenKind) -> Self {
         Self {
             text: text.into(),
             kind,
@@ -49,7 +60,7 @@ impl Token {
 /// The container a line opens (objects and arrays with at least one child).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Container {
-    /// Dense id, also the index into `JsonTree::container_lines`.
+    /// Dense id, the index into the tree's container table.
     pub id: usize,
     pub children: usize,
     pub is_array: bool,
@@ -57,39 +68,157 @@ pub struct Container {
     pub end_line: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TreeLine {
-    pub indent: usize,
-    /// The fully-expanded rendering of this line.
-    pub tokens: Vec<Token>,
-    /// The `{…} N keys` rendering, used when `collapsed`. Empty for lines
-    /// that do not open a container.
-    collapsed_tokens: Vec<Token>,
-    /// `Some` when this line opens a non-empty object or array.
-    pub container: Option<Container>,
-    /// Ids of every container this line lives inside, outermost first.
-    pub parent_ids: Vec<usize>,
-    /// Only ever true on a line with a `container`.
-    pub collapsed: bool,
-    /// This line's jq path from the document root.
-    pub path: Vec<PathSeg>,
-    /// The JSON text of a scalar line's value (`"a"`, `1`, `true`, `null`).
-    /// `None` for container-opening and closing lines.
-    scalar: Option<String>,
+/// What a line is, structurally.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum Kind {
+    /// `"k": 1,` — a scalar value (with or without a key).
+    Scalar,
+    /// `"k": {` — opens a non-empty container.
+    Open,
+    /// `},` — closes one.
+    Close,
+    /// `"k": [],` — an empty container: one line, nothing to collapse.
+    Empty,
 }
 
-impl TreeLine {
-    pub fn scalar_text(&self) -> Option<&str> {
-        self.scalar.as_deref()
+const NONE: u32 = u32::MAX;
+
+/// One line's record. `#[repr(C)]` keeps the layout at 24 bytes — five
+/// `u32`s, a `u16` and two `u8`s — which is what makes a tree of a million
+/// lines a few tens of megabytes rather than a gigabyte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+struct LineRec {
+    /// Byte end of this line's text in the arena; it starts where the
+    /// previous line's ends.
+    end: u32,
+    /// Bytes of the quoted key token at the start of the text, 0 for a
+    /// keyless line (array element, root, closing bracket).
+    key_len: u32,
+    /// Id of the container this line sits in (`NONE` at the root). A
+    /// closing line sits in the container it closes.
+    parent: u32,
+    /// This line's ordinal among its parent's children — its array index
+    /// when the parent is an array. `NONE` for the root and closing lines.
+    index: u32,
+    /// Id of the container this line opens, `NONE` otherwise.
+    container: u32,
+    indent: u16,
+    kind: Kind,
+    /// Bit 0: a comma follows — in the text for every kind but `Open`,
+    /// whose comma is drawn by its closing line when expanded and by its
+    /// summary when collapsed. Bit 1: collapsed (only ever set on `Open`).
+    flags: u8,
+}
+
+const COMMA: u8 = 1;
+const COLLAPSED: u8 = 2;
+
+impl LineRec {
+    fn comma(&self) -> bool {
+        self.flags & COMMA != 0
+    }
+
+    fn collapsed(&self) -> bool {
+        self.flags & COLLAPSED != 0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ContainerRec {
+    open_line: u32,
+    end_line: u32,
+    children: u32,
+    is_array: bool,
+}
+
+/// A line, resolved against its tree: the borrowed view `JsonTree::line`
+/// hands out. Cheap to build (a few field reads); the text-shaped
+/// accessors derive their answers from the arena slice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeLine<'a> {
+    pub indent: usize,
+    /// `Some` when this line opens a non-empty object or array.
+    pub container: Option<Container>,
+    /// Only ever true on a line with a `container`.
+    pub collapsed: bool,
+    /// The line's text after its indent — `"key": "value",` in full.
+    text: &'a str,
+    key_len: usize,
+    kind: Kind,
+    /// A sibling follows. In the text unless this line opens a container.
+    comma: bool,
+}
+
+impl<'a> TreeLine<'a> {
+    /// The JSON text of a scalar line's value (`"a"`, `1`, `true`, `null`).
+    /// `None` for container-opening, empty-container and closing lines.
+    pub fn scalar_text(&self) -> Option<&'a str> {
+        (self.kind == Kind::Scalar).then(|| self.value_text())
+    }
+
+    /// Whether the text ends with the sibling comma (an opening line's
+    /// comma is not in its text — see `LineRec::flags`).
+    fn comma_in_text(&self) -> bool {
+        self.comma && self.kind != Kind::Open
+    }
+
+    /// The text after the key (and `: `) and before any trailing comma.
+    fn value_text(&self) -> &'a str {
+        let start = if self.key_len > 0 {
+            self.key_len + 2
+        } else {
+            0
+        };
+        let end = self.text.len() - usize::from(self.comma_in_text());
+        &self.text[start..end]
+    }
+
+    /// The fully-expanded tokens of this line, ignoring collapse state.
+    pub fn tokens(&self) -> Vec<Token<'a>> {
+        let mut out = Vec::with_capacity(4);
+        self.push_prefix(&mut out);
+        let value = self.value_text();
+        let kind = match self.kind {
+            Kind::Scalar => match value.as_bytes().first() {
+                Some(b'"') => TokenKind::Str,
+                Some(b'n' | b't' | b'f') => TokenKind::Literal,
+                _ => TokenKind::Number,
+            },
+            Kind::Open | Kind::Close | Kind::Empty => TokenKind::Punct,
+        };
+        out.push(Token::new(value, kind));
+        if self.comma_in_text() {
+            out.push(Token::new(",", TokenKind::Punct));
+        }
+        out
     }
 
     /// The tokens to draw right now — the collapsed summary when this line
     /// opens a collapsed container, the full rendering otherwise.
-    pub fn render_tokens(&self) -> &[Token] {
-        if self.collapsed {
-            &self.collapsed_tokens
-        } else {
-            &self.tokens
+    pub fn render_tokens(&self) -> Vec<Token<'a>> {
+        let Some(c) = self.container.as_ref().filter(|_| self.collapsed) else {
+            return self.tokens();
+        };
+        let mut out = Vec::with_capacity(5);
+        self.push_prefix(&mut out);
+        let (open, close) = if c.is_array { ("[", "]") } else { ("{", "}") };
+        out.push(Token::new(format!("{open}…{close}"), TokenKind::Punct));
+        out.push(Token::new(
+            format!(" {}", child_count(c.children, c.is_array)),
+            TokenKind::Literal,
+        ));
+        if self.comma {
+            out.push(Token::new(",", TokenKind::Punct));
+        }
+        out
+    }
+
+    fn push_prefix(&self, out: &mut Vec<Token<'a>>) {
+        if self.key_len > 0 {
+            out.push(Token::new(&self.text[..self.key_len], TokenKind::Key));
+            out.push(Token::new(": ", TokenKind::Punct));
         }
     }
 
@@ -97,47 +226,62 @@ impl TreeLine {
     /// [`TreeLine::render_tokens`], so char offsets into this string line up
     /// with the rendered spans.
     pub fn plain_text(&self) -> String {
-        Self::join(self.indent, self.render_tokens())
+        let mut s = " ".repeat(self.indent);
+        for t in self.render_tokens() {
+            s.push_str(&t.text);
+        }
+        s
     }
 
     /// The fully-expanded text of this line, ignoring collapse state.
     pub fn expanded_text(&self) -> String {
-        Self::join(self.indent, &self.tokens)
+        let mut s = String::with_capacity(self.indent + self.text.len());
+        s.extend(std::iter::repeat_n(' ', self.indent));
+        s.push_str(self.text);
+        s
     }
 
-    fn join(indent: usize, tokens: &[Token]) -> String {
-        let mut s = " ".repeat(indent);
-        for t in tokens {
-            s.push_str(&t.text);
+    /// Display width of what [`TreeLine::plain_text`] would draw, without
+    /// building it — what the widest-line measure over a whole tree runs.
+    pub fn render_width(&self) -> usize {
+        use unicode_width::UnicodeWidthStr;
+        if self.collapsed && self.container.is_some() {
+            return self.plain_text().width();
         }
-        s
+        self.indent + self.text.width()
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JsonTree {
-    lines: Vec<TreeLine>,
-    /// Container id -> index of the line that opens it.
-    container_lines: Vec<usize>,
+    /// Every line's text after its indent, back to back.
+    text: String,
+    lines: Vec<LineRec>,
+    containers: Vec<ContainerRec>,
     /// Full-line indices of everything currently visible, in order.
     /// Rebuilt by whatever changes collapse state (`toggle`,
     /// `expand_ancestors`) — `O(lines)` there, so every read is `O(1)`.
-    visible: Vec<usize>,
+    visible: Vec<u32>,
 }
 
 impl JsonTree {
+    fn empty() -> Self {
+        JsonTree {
+            text: String::new(),
+            lines: Vec::new(),
+            containers: Vec::new(),
+            visible: Vec::new(),
+        }
+    }
+
     /// Parses `text` as JSON and flattens it. Returns `None` when the text
     /// is not JSON at all. Synchronous and potentially slow on a large
     /// document: past `response::SYNC_PRETTY_BYTES` its caller runs it on a
     /// blocking worker rather than on the UI thread.
     pub fn parse(text: &str) -> Option<JsonTree> {
         let value: serde_json::Value = serde_json::from_str(text).ok()?;
-        let mut tree = JsonTree {
-            lines: Vec::new(),
-            container_lines: Vec::new(),
-            visible: Vec::new(),
-        };
-        tree.walk(None, &value, 0, &[], &[], false);
+        let mut tree = Self::empty();
+        tree.walk(None, &value, 0, NONE, NONE, false);
         tree.rebuild_visible();
         Some(tree)
     }
@@ -146,58 +290,131 @@ impl JsonTree {
     /// after another, exactly as `jq` prints a stream. Paths restart at `.`
     /// for every document. An empty list is an empty tree.
     pub fn parse_many(docs: &[String]) -> Option<JsonTree> {
-        let mut tree = JsonTree {
-            lines: Vec::new(),
-            container_lines: Vec::new(),
-            visible: Vec::new(),
-        };
+        let mut tree = Self::empty();
         for doc in docs {
             let value: serde_json::Value = serde_json::from_str(doc).ok()?;
-            tree.walk(None, &value, 0, &[], &[], false);
+            tree.walk(None, &value, 0, NONE, NONE, false);
         }
         tree.rebuild_visible();
         Some(tree)
     }
 
-    pub fn line(&self, full_index: usize) -> &TreeLine {
-        &self.lines[full_index]
+    fn line_text(&self, full_index: usize) -> &str {
+        let start = if full_index == 0 {
+            0
+        } else {
+            self.lines[full_index - 1].end as usize
+        };
+        &self.text[start..self.lines[full_index].end as usize]
+    }
+
+    fn container_of(&self, rec: &LineRec) -> Option<Container> {
+        (rec.container != NONE).then(|| {
+            let c = &self.containers[rec.container as usize];
+            Container {
+                id: rec.container as usize,
+                children: c.children as usize,
+                is_array: c.is_array,
+                end_line: c.end_line as usize,
+            }
+        })
+    }
+
+    pub fn line(&self, full_index: usize) -> TreeLine<'_> {
+        let rec = &self.lines[full_index];
+        TreeLine {
+            indent: usize::from(rec.indent),
+            container: self.container_of(rec),
+            collapsed: rec.collapsed(),
+            text: self.line_text(full_index),
+            key_len: rec.key_len as usize,
+            kind: rec.kind,
+            comma: rec.comma(),
+        }
     }
 
     pub fn full_index_of_visible(&self, visible_index: usize) -> Option<usize> {
-        self.visible.get(visible_index).copied()
+        self.visible.get(visible_index).map(|&i| i as usize)
     }
 
-    pub fn visible_line(&self, visible_index: usize) -> Option<&TreeLine> {
+    pub fn visible_line(&self, visible_index: usize) -> Option<TreeLine<'_>> {
         self.full_index_of_visible(visible_index)
-            .map(|i| &self.lines[i])
+            .map(|i| self.line(i))
+    }
+
+    /// The path segment `full_index` contributes: its key, or its index
+    /// inside an array parent. `None` for the root and closing lines.
+    fn own_seg(&self, full_index: usize) -> Option<PathSeg> {
+        let rec = &self.lines[full_index];
+        if rec.kind == Kind::Close || rec.parent == NONE {
+            return None;
+        }
+        if rec.key_len > 0 {
+            let quoted = &self.line_text(full_index)[..rec.key_len as usize];
+            return Some(PathSeg::Key(unescape(quoted)));
+        }
+        self.containers[rec.parent as usize]
+            .is_array
+            .then_some(PathSeg::Index(rec.index as usize))
+    }
+
+    /// The container ids `full_index` lives inside, outermost first. A
+    /// closing line lives inside the container it closes.
+    fn parent_ids(&self, full_index: usize) -> Vec<usize> {
+        let mut ids = Vec::new();
+        let mut parent = self.lines[full_index].parent;
+        while parent != NONE {
+            ids.push(parent as usize);
+            parent = self.lines[self.containers[parent as usize].open_line as usize].parent;
+        }
+        ids.reverse();
+        ids
+    }
+
+    /// This line's jq path from the document root, derived by walking its
+    /// ancestors — a closing line's path is its container's.
+    fn path_of(&self, full_index: usize) -> Vec<PathSeg> {
+        let mut segs = Vec::new();
+        let rec = &self.lines[full_index];
+        let mut at = if rec.kind == Kind::Close {
+            // Its container's opening line carries the segment.
+            Some(self.containers[rec.parent as usize].open_line as usize)
+        } else {
+            Some(full_index)
+        };
+        while let Some(i) = at {
+            if let Some(seg) = self.own_seg(i) {
+                segs.push(seg);
+            }
+            let parent = self.lines[i].parent;
+            at = (parent != NONE).then(|| self.containers[parent as usize].open_line as usize);
+        }
+        segs.reverse();
+        segs
     }
 
     pub fn jq_path_of(&self, full_index: usize) -> String {
-        render_path(&self.lines[full_index].path)
+        render_path(&self.path_of(full_index))
     }
 
     /// The keys of an array line's first element when that element is an object.
     pub fn first_element_keys(&self, full_index: usize) -> Vec<String> {
-        let Some(c) = &self.lines[full_index].container else {
-            return Vec::new();
-        };
-        if !c.is_array {
+        let rec = &self.lines[full_index];
+        if rec.container == NONE || !self.containers[rec.container as usize].is_array {
             return Vec::new();
         }
         let first = full_index + 1;
-        let Some(fc) = &self.lines[first].container else {
-            return Vec::new();
-        };
-        if fc.is_array {
+        let fc = self.lines[first].container;
+        if fc == NONE || self.containers[fc as usize].is_array {
             return Vec::new();
         }
-        // Direct children of the first element: lines nested exactly one
-        // container deeper whose path ends in a key.
-        let depth = self.lines[first].parent_ids.len() + 1;
-        (first + 1..fc.end_line)
-            .filter(|&i| self.lines[i].parent_ids.len() == depth)
-            .filter_map(|i| match self.lines[i].path.last() {
-                Some(PathSeg::Key(k)) => Some(k.clone()),
+        let end = self.containers[fc as usize].end_line as usize;
+        // Direct children of the first element: the lines whose parent is
+        // that object (its closing line sits in it too — skipped).
+        (first + 1..end)
+            .filter(|&i| self.lines[i].parent == fc && self.lines[i].kind != Kind::Close)
+            .filter_map(|i| match self.own_seg(i) {
+                Some(PathSeg::Key(k)) => Some(k),
                 _ => None,
             })
             .collect()
@@ -206,26 +423,18 @@ impl JsonTree {
     /// For a line inside an array element: the array's opening line index and the
     /// path from the element down to this line (empty when the line *is* the element).
     pub fn nearest_array_ancestor(&self, full_index: usize) -> Option<(usize, Vec<PathSeg>)> {
-        let line = &self.lines[full_index];
+        let rec = &self.lines[full_index];
+        let mut ids = self.parent_ids(full_index);
         // A closing line belongs to its container, which lives one level up.
-        let path = &line.path;
-        let mut ids = line.parent_ids.clone();
-        if line.container.is_none()
-            && line
-                .tokens
-                .first()
-                .is_some_and(|t| t.text == "}" || t.text == "]")
-        {
+        if rec.kind == Kind::Close {
             ids.pop();
         }
+        let path = self.path_of(full_index);
         for &id in ids.iter().rev() {
-            let open = self.container_lines[id];
-            if self.lines[open]
-                .container
-                .as_ref()
-                .is_some_and(|c| c.is_array)
-            {
-                let array_len = self.lines[open].path.len();
+            let c = &self.containers[id];
+            if c.is_array {
+                let open = c.open_line as usize;
+                let array_len = self.path_of(open).len();
                 // path = array path + [Index] + relative
                 if path.len() < array_len + 1 {
                     return None;
@@ -244,7 +453,7 @@ impl JsonTree {
     }
 
     /// Full-line indices of everything currently visible, in order.
-    pub fn visible_indices(&self) -> &[usize] {
+    pub fn visible_indices(&self) -> &[u32] {
         &self.visible
     }
 
@@ -259,11 +468,12 @@ impl JsonTree {
         self.visible.clear();
         let mut i = 0;
         while i < self.lines.len() {
-            self.visible.push(i);
-            let line = &self.lines[i];
-            match (&line.container, line.collapsed) {
-                (Some(c), true) => i = c.end_line + 1,
-                _ => i += 1,
+            self.visible.push(i as u32);
+            let rec = &self.lines[i];
+            if rec.collapsed() {
+                i = self.containers[rec.container as usize].end_line as usize + 1;
+            } else {
+                i += 1;
             }
         }
     }
@@ -272,34 +482,39 @@ impl JsonTree {
     /// renders as its `{…} N keys` summary. Allocates a `Vec` the size of
     /// the visible set — for a whole-tree pass, not for a per-row lookup
     /// (that is `visible_line`).
-    pub fn visible_lines(&self) -> Vec<&TreeLine> {
-        self.visible.iter().map(|&i| &self.lines[i]).collect()
+    pub fn visible_lines(&self) -> Vec<TreeLine<'_>> {
+        self.visible
+            .iter()
+            .map(|&i| self.line(i as usize))
+            .collect()
     }
 
     /// Where `full_index` sits among the visible lines, or `None` if it is
     /// currently hidden inside a collapsed container.
     pub fn visible_index_of(&self, full_index: usize) -> Option<usize> {
         // `visible` is sorted (it is a subsequence of the line indices).
-        self.visible.binary_search(&full_index).ok()
+        u32::try_from(full_index)
+            .ok()
+            .and_then(|i| self.visible.binary_search(&i).ok())
     }
 
     /// Whether the line at `visible_index` opens a container (and so carries
     /// a `▸`/`▾` toggle glyph). `false` for an out-of-range index.
     pub fn is_container_at_visible(&self, visible_index: usize) -> bool {
-        self.visible_line(visible_index)
-            .is_some_and(|line| line.container.is_some())
+        self.full_index_of_visible(visible_index)
+            .is_some_and(|full| self.lines[full].container != NONE)
     }
 
     /// Collapses or expands the container opened by the line at
     /// `visible_index`. A no-op on lines that open no container (and on an
     /// out-of-range index).
     pub fn toggle(&mut self, visible_index: usize) {
-        let Some(&full) = self.visible.get(visible_index) else {
+        let Some(full) = self.full_index_of_visible(visible_index) else {
             return;
         };
-        let line = &mut self.lines[full];
-        if line.container.is_some() {
-            line.collapsed = !line.collapsed;
+        let rec = &mut self.lines[full];
+        if rec.container != NONE {
+            rec.flags ^= COLLAPSED;
             self.rebuild_visible();
         }
     }
@@ -307,15 +522,14 @@ impl JsonTree {
     /// Expands every container that `full_index` lives inside, so that line
     /// becomes visible. Used when jumping to a search match.
     pub fn expand_ancestors(&mut self, full_index: usize) {
-        let Some(line) = self.lines.get(full_index) else {
+        if full_index >= self.lines.len() {
             return;
-        };
-        let parents = line.parent_ids.clone();
+        }
         let mut changed = false;
-        for id in parents {
-            let opener = self.container_lines[id];
-            changed |= self.lines[opener].collapsed;
-            self.lines[opener].collapsed = false;
+        for id in self.parent_ids(full_index) {
+            let opener = &mut self.lines[self.containers[id].open_line as usize];
+            changed |= opener.collapsed();
+            opener.flags &= !COLLAPSED;
         }
         if changed {
             self.rebuild_visible();
@@ -326,42 +540,33 @@ impl JsonTree {
     /// corpus search runs over, so a match inside a collapsed container is
     /// still findable.
     pub fn full_text_lines(&self) -> Vec<String> {
-        self.lines.iter().map(|l| l.expanded_text()).collect()
+        (0..self.lines.len())
+            .map(|i| self.line(i).expanded_text())
+            .collect()
     }
 
     /// Recursive flattening walk. `key` is the object key this value hangs
-    /// off (`None` for the root and for array elements), `comma` whether a
-    /// sibling follows it.
+    /// off (`None` for the root and for array elements), `parent` the
+    /// enclosing container's id, `index` the value's ordinal among its
+    /// siblings, `comma` whether a sibling follows it.
     fn walk(
         &mut self,
         key: Option<&str>,
         value: &serde_json::Value,
-        indent: usize,
-        parents: &[usize],
-        path: &[PathSeg],
+        indent: u16,
+        parent: u32,
+        index: u32,
         comma: bool,
     ) {
         use serde_json::Value;
-        let prefix = || match key {
-            Some(k) => vec![
-                Token::new(escape(k), TokenKind::Key),
-                Token::new(": ", TokenKind::Punct),
-            ],
-            None => Vec::new(),
-        };
 
         let (open, close, len, is_array) = match value {
             Value::Object(map) => ("{", "}", map.len(), false),
             Value::Array(items) => ("[", "]", items.len(), true),
             scalar => {
-                let mut tokens = prefix();
-                let scalar = scalar_token(scalar);
-                let text = scalar.text.clone();
-                tokens.push(scalar);
-                if comma {
-                    tokens.push(Token::new(",", TokenKind::Punct));
-                }
-                self.push(indent, tokens, Vec::new(), None, parents, path, Some(text));
+                let key_len = self.push_key(key);
+                push_scalar(&mut self.text, scalar);
+                self.push_line(Kind::Scalar, key_len, indent, parent, index, NONE, comma);
                 return;
             }
         };
@@ -369,128 +574,89 @@ impl JsonTree {
         // An empty container is one line and cannot be collapsed — there is
         // nothing to hide, and `{…} 0 keys` is longer than `{}`.
         if len == 0 {
-            let mut tokens = prefix();
-            tokens.push(Token::new(format!("{open}{close}"), TokenKind::Punct));
-            if comma {
-                tokens.push(Token::new(",", TokenKind::Punct));
-            }
-            self.push(indent, tokens, Vec::new(), None, parents, path, None);
+            let key_len = self.push_key(key);
+            self.text.push_str(open);
+            self.text.push_str(close);
+            self.push_line(Kind::Empty, key_len, indent, parent, index, NONE, comma);
             return;
         }
 
-        let id = self.container_lines.len();
-        let mut open_tokens = prefix();
-        open_tokens.push(Token::new(open, TokenKind::Punct));
-
-        let mut summary = prefix();
-        summary.push(Token::new(format!("{open}…{close}"), TokenKind::Punct));
-        summary.push(Token::new(
-            format!(" {}", child_count(len, is_array)),
-            TokenKind::Literal,
-        ));
+        let id = self.containers.len() as u32;
+        let open_line = self.lines.len() as u32;
+        self.containers.push(ContainerRec {
+            open_line,
+            // Patched once the children have been emitted.
+            end_line: open_line,
+            children: len as u32,
+            is_array,
+        });
+        let key_len = self.push_key(key);
+        self.text.push_str(open);
+        // The comma rides on the flag only: the closing line's text has it.
+        self.push_line(Kind::Open, key_len, indent, parent, index, id, false);
         if comma {
-            summary.push(Token::new(",", TokenKind::Punct));
+            self.lines[open_line as usize].flags |= COMMA;
         }
 
-        let open_line = self.lines.len();
-        self.container_lines.push(open_line);
-        // `end_line` is patched once the children have been emitted.
-        let container = Container {
-            id,
-            children: len,
-            is_array,
-            end_line: open_line,
-        };
-        self.push(
-            indent,
-            open_tokens,
-            summary,
-            Some(container),
-            parents,
-            path,
-            None,
-        );
-
-        let mut inner_parents = parents.to_vec();
-        inner_parents.push(id);
         match value {
             Value::Object(map) => {
                 for (i, (k, v)) in map.iter().enumerate() {
-                    self.walk(
-                        Some(k),
-                        v,
-                        indent + 2,
-                        &inner_parents,
-                        &child_path(path, PathSeg::Key(k.clone())),
-                        i + 1 < len,
-                    );
+                    self.walk(Some(k), v, indent + 2, id, i as u32, i + 1 < len);
                 }
             }
             Value::Array(items) => {
                 for (i, v) in items.iter().enumerate() {
-                    self.walk(
-                        None,
-                        v,
-                        indent + 2,
-                        &inner_parents,
-                        &child_path(path, PathSeg::Index(i)),
-                        i + 1 < len,
-                    );
+                    self.walk(None, v, indent + 2, id, i as u32, i + 1 < len);
                 }
             }
             _ => unreachable!("only containers reach here"),
         }
 
-        let mut close_tokens = vec![Token::new(close, TokenKind::Punct)];
-        if comma {
-            close_tokens.push(Token::new(",", TokenKind::Punct));
-        }
-        let end_line = self.lines.len();
-        self.push(
-            indent,
-            close_tokens,
-            Vec::new(),
-            None,
-            &inner_parents,
-            path,
-            None,
-        );
-        if let Some(c) = &mut self.lines[open_line].container {
-            c.end_line = end_line;
-        }
+        let end_line = self.lines.len() as u32;
+        self.text.push_str(close);
+        self.push_line(Kind::Close, 0, indent, id, NONE, NONE, comma);
+        self.containers[id as usize].end_line = end_line;
     }
 
-    // Private helper mirroring `walk`'s own parameters one-for-one; splitting
-    // them into a struct would just move the same fields without reducing
-    // anything a caller has to supply.
+    /// Appends `"key": ` to the arena; returns the quoted key's byte length
+    /// (0 when there is no key).
+    fn push_key(&mut self, key: Option<&str>) -> u32 {
+        let Some(k) = key else { return 0 };
+        let before = self.text.len();
+        push_escaped(&mut self.text, k);
+        let key_len = (self.text.len() - before) as u32;
+        self.text.push_str(": ");
+        key_len
+    }
+
+    /// Closes the line whose text has just been appended: the trailing
+    /// comma, then the record. `#[allow]`: a private helper mirroring
+    /// `walk`'s own parameters one-for-one.
     #[allow(clippy::too_many_arguments)]
-    fn push(
+    fn push_line(
         &mut self,
-        indent: usize,
-        tokens: Vec<Token>,
-        collapsed_tokens: Vec<Token>,
-        container: Option<Container>,
-        parents: &[usize],
-        path: &[PathSeg],
-        scalar: Option<String>,
+        kind: Kind,
+        key_len: u32,
+        indent: u16,
+        parent: u32,
+        index: u32,
+        container: u32,
+        comma: bool,
     ) {
-        self.lines.push(TreeLine {
-            indent,
-            tokens,
-            collapsed_tokens,
+        if comma {
+            self.text.push(',');
+        }
+        self.lines.push(LineRec {
+            end: self.text.len() as u32,
+            key_len,
+            parent,
+            index,
             container,
-            parent_ids: parents.to_vec(),
-            collapsed: false,
-            path: path.to_vec(),
-            scalar,
+            indent,
+            kind,
+            flags: if comma { COMMA } else { 0 },
         });
     }
-}
-
-fn child_path(path: &[PathSeg], seg: PathSeg) -> Vec<PathSeg> {
-    let mut p = path.to_vec();
-    p.push(seg);
-    p
 }
 
 fn child_count(len: usize, is_array: bool) -> String {
@@ -503,18 +669,26 @@ fn child_count(len: usize, is_array: bool) -> String {
     format!("{len} {noun}")
 }
 
-/// A JSON string literal (quotes and escapes included) for `s`.
-fn escape(s: &str) -> String {
-    serde_json::Value::String(s.to_string()).to_string()
+/// Appends the JSON string literal (quotes and escapes included) for `s`.
+fn push_escaped(out: &mut String, s: &str) {
+    out.push_str(&serde_json::Value::String(s.to_string()).to_string());
 }
 
-fn scalar_token(value: &serde_json::Value) -> Token {
+/// The key a quoted, escaped key token spells — the inverse of
+/// `push_escaped`. Falls back to the token itself, quotes and all, should
+/// the arena ever hold something that isn't a string literal.
+fn unescape(quoted: &str) -> String {
+    serde_json::from_str::<String>(quoted).unwrap_or_else(|_| quoted.to_string())
+}
+
+fn push_scalar(out: &mut String, value: &serde_json::Value) {
     use serde_json::Value;
+    use std::fmt::Write;
     match value {
-        Value::Null => Token::new("null", TokenKind::Literal),
-        Value::Bool(b) => Token::new(b.to_string(), TokenKind::Literal),
-        Value::Number(n) => Token::new(n.to_string(), TokenKind::Number),
-        Value::String(s) => Token::new(escape(s), TokenKind::Str),
+        Value::Null => out.push_str("null"),
+        Value::Bool(b) => write!(out, "{b}").expect("String never fails"),
+        Value::Number(n) => write!(out, "{n}").expect("String never fails"),
+        Value::String(s) => push_escaped(out, s),
         _ => unreachable!("containers are handled by the caller"),
     }
 }
@@ -686,7 +860,13 @@ mod tests {
     #[test]
     fn token_kinds_classify_keys_strings_numbers_and_literals() {
         let t = JsonTree::parse(r#"{"k": "s", "n": 1, "b": null}"#).unwrap();
-        let kinds = |i: usize| t.lines[i].tokens.iter().map(|x| x.kind).collect::<Vec<_>>();
+        let kinds = |i: usize| {
+            t.line(i)
+                .tokens()
+                .iter()
+                .map(|x| x.kind)
+                .collect::<Vec<_>>()
+        };
         assert_eq!(
             kinds(1),
             vec![
@@ -815,10 +995,17 @@ mod tests {
     }
 
     #[test]
+    fn a_line_record_stays_24_bytes() {
+        // The whole point of the arena layout: a million-line tree is a
+        // few tens of megabytes. Growing the record is a deliberate call.
+        assert_eq!(std::mem::size_of::<LineRec>(), 24);
+    }
+
+    #[test]
     fn the_visible_index_tracks_every_collapse_change() {
         // {"a": {"b": {"c": 1}}, "d": 2}
         let mut t = JsonTree::parse(r#"{"a": {"b": {"c": 1}}, "d": 2}"#).unwrap();
-        let all: Vec<usize> = (0..t.line_count()).collect();
+        let all: Vec<u32> = (0..t.line_count() as u32).collect();
         assert_eq!(
             t.visible_indices(),
             &all[..],
