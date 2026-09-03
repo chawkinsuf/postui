@@ -151,6 +151,10 @@ pub struct App {
     /// Where to save `registry` back to. `None` in tests, so test runs never
     /// touch the real global config file.
     registry_path: Option<PathBuf>,
+    /// The same `config.toml` path, for `Action::SetAiConfirmed` to persist
+    /// through `save_ui_flag`. `None` in tests, same posture as
+    /// `registry_path`.
+    config_path: Option<PathBuf>,
     /// The tiered clipboard (external command / OS clipboard / OSC 52),
     /// configured from `ui_settings`.
     pub clipboard: crate::clipboard::Clipboard,
@@ -214,6 +218,14 @@ pub struct App {
     /// Sender for background tasks (e.g. in-flight requests) to push
     /// `Action`s back into the main loop without blocking on it.
     pub tx: UnboundedSender<Action>,
+    /// The outstanding "describe a filter" AI task, if any: its request
+    /// counter (matched against `JqAiFinished::request`) and join handle
+    /// (aborted by `CancelJqDescribe`, and by a new `RunJqDescribe`).
+    pub ai_task: Option<(u64, tokio::task::JoinHandle<()>)>,
+    /// Counts every AI request ever started, so a finished background task
+    /// can be matched to the request it was started for (and only that
+    /// one — a cancelled or superseded one is dropped).
+    ai_request: u64,
     /// An action that can only be applied by suspending the terminal, parked
     /// here by `update` for the main loop to take and run. Keeps `update`
     /// itself terminal-free (and therefore testable without a TTY).
@@ -525,7 +537,8 @@ impl App {
         ) else {
             let mut app = Self::bare(tx, PathBuf::new());
             app.registry = registry;
-            app.registry_path = registry_path;
+            app.registry_path = registry_path.clone();
+            app.config_path = registry_path;
             app.themes = themes;
             app.terminal_colors = terminal_colors;
             app.themes_dir = themes_dir;
@@ -550,7 +563,8 @@ impl App {
 
         let mut app = Self::with_root(tx, root);
         app.registry = registry;
-        app.registry_path = registry_path;
+        app.registry_path = registry_path.clone();
+        app.config_path = registry_path;
         app.themes = themes;
         app.terminal_colors = terminal_colors;
         app.themes_dir = themes_dir;
@@ -836,6 +850,7 @@ impl App {
             project,
             registry: crate::config::ProjectsRegistry::default(),
             registry_path: None,
+            config_path: None,
             clipboard: crate::clipboard::Clipboard::new(&crate::config::UiSettings::default()),
             ui_settings: crate::config::UiSettings::default(),
             themes: crate::theme::ThemeRegistry::builtin(),
@@ -851,6 +866,8 @@ impl App {
             usage_path: None,
             clients: crate::http::Clients::new(),
             tx,
+            ai_task: None,
+            ai_request: 0,
             pending_terminal_action: None,
             hits: HitMap::default(),
             hovered: None,
@@ -2410,6 +2427,7 @@ impl App {
                 for w in &warnings {
                     self.toasts.push(w.to_string(), ToastKind::Warning);
                 }
+                self.dispatch(Action::CancelJqDescribe);
                 let generation = self.session.begin_send(&self.editor.slug);
                 let tx = self.tx.clone();
                 let client = self.clients.for_request(&prepared).clone();
@@ -3055,10 +3073,130 @@ impl App {
                 self.copy_text_with_toast(&path, "Copied path".to_string());
                 true
             }
-            // Task 9 (describe-a-filter) implements cancellation.
-            Action::CancelJqDescribe => true,
-            // Task 9 (describe-a-filter) implements the AI call.
-            Action::OpenJqDescribe => true,
+            Action::CancelJqDescribe => {
+                if let Some((_, task)) = self.ai_task.take() {
+                    task.abort();
+                }
+                // Invalidates any reply still in flight for the cancelled
+                // request — `JqAiFinished` compares against this counter,
+                // not against `ai_task` (already cleared above).
+                self.ai_request += 1;
+                self.session.response.jq_bar_mut().ai_pending = false;
+                true
+            }
+            Action::OpenJqDescribe => {
+                if !self.session.response.jq_available() {
+                    self.toasts.push("The response is not JSON", ToastKind::Info);
+                    return true;
+                }
+                if !crate::ai::program_available(&self.ui_settings.ai_cmd) {
+                    self.toasts.push(
+                        format!(
+                            "{} not found \u{2014} set ai_cmd in config.toml",
+                            crate::ai::program_name(&self.ui_settings.ai_cmd)
+                        ),
+                        ToastKind::Error,
+                    );
+                    return true;
+                }
+                self.push_modal(Modal::Prompt {
+                    title: "Describe a filter \u{2014} what do you want to see?".into(),
+                    input: LineInput::new(""),
+                    kind: PromptKind::JqDescribe,
+                    revealed: false,
+                });
+                true
+            }
+            Action::ConfirmJqDescribe(sentence) => {
+                if self.ui_settings.ai_confirmed {
+                    return self.dispatch(Action::RunJqDescribe(sentence));
+                }
+                let program = crate::ai::program_name(&self.ui_settings.ai_cmd).to_string();
+                self.push_modal(Modal::Confirm {
+                    title: "Send to AI?".into(),
+                    body: format!(
+                        "The response's structure (key names and types, no values) will be sent to `{program}`."
+                    ),
+                    choices: vec![
+                        ('s', "Send once".into(), vec![Action::RunJqDescribe(sentence.clone())]),
+                        (
+                            'a',
+                            "Always send".into(),
+                            vec![Action::SetAiConfirmed, Action::RunJqDescribe(sentence)],
+                        ),
+                        ('n', "Cancel".into(), vec![]),
+                    ],
+                });
+                true
+            }
+            Action::SetAiConfirmed => {
+                self.ui_settings.ai_confirmed = true;
+                if let Some(path) = &self.config_path
+                    && let Err(e) = crate::config::save_ui_flag(path, "ai_confirmed", true)
+                {
+                    self.toasts.push(format!("could not save config: {e}"), ToastKind::Warning);
+                }
+                true
+            }
+            Action::RunJqDescribe(sentence) => {
+                let Some(view) = self.session.response.view() else { return true };
+                let body = view.body_text();
+                let Some(shape) = postui_core::jq::shape::shape(&body, Default::default()) else {
+                    self.toasts.push("The response is not JSON", ToastKind::Info);
+                    return true;
+                };
+                let stdin = postui_core::jq::ai::prompt(&shape, self.session.response.jq_text(), &sentence);
+                // No ambient runtime happens only in a plain `#[test]` that
+                // reaches an already-confirmed `ConfirmJqDescribe` — the
+                // real main loop, and every async test, always has one.
+                let Ok(handle) = tokio::runtime::Handle::try_current() else {
+                    return true;
+                };
+                if let Some((_, task)) = self.ai_task.take() {
+                    task.abort();
+                }
+                self.ai_request += 1;
+                let request = self.ai_request;
+                let generation = view.generation;
+                let cmd = self.ui_settings.ai_cmd.clone();
+                let tx = self.tx.clone();
+                let task = handle.spawn(async move {
+                    let result = crate::ai::run_command(cmd, stdin).await;
+                    let _ = tx.send(Action::JqAiFinished { generation, request, result });
+                });
+                self.ai_task = Some((request, task));
+                let bar = self.session.response.jq_bar_mut();
+                bar.ai_pending = true;
+                bar.ai_started = Instant::now();
+                self.dispatch(Action::FocusPane(PaneId::Response));
+                self.session.response.set_jq_focus(true);
+                true
+            }
+            Action::JqAiFinished { generation, request, result } => {
+                // Dropped when superseded by a newer request (or cancelled
+                // — `CancelJqDescribe` bumps `ai_request` too) or when the
+                // response it was shaped from is gone. Compared against the
+                // counter, not `ai_task`'s handle: a caller that already
+                // took the handle to await it (tests) still gets a valid
+                // reply landed.
+                if request != self.ai_request
+                    || self.session.response.view().is_none_or(|v| v.generation != generation)
+                {
+                    return false;
+                }
+                self.ai_task = None;
+                self.session.response.jq_bar_mut().ai_pending = false;
+                match result.map(|reply| postui_core::jq::ai::extract_filter(&reply)) {
+                    Ok(Some(filter)) => {
+                        let cursor = filter.chars().count();
+                        self.session.response.set_jq_text_with_cursor(&filter, cursor);
+                        self.session.response.set_jq_focus(true);
+                    }
+                    Ok(None) => self.toasts.push("The AI command returned nothing", ToastKind::Warning),
+                    Err(e) => self.toasts.push(format!("AI command failed: {e}"), ToastKind::Error),
+                }
+                true
+            }
             Action::JqPluckPrompt { path, keys } => {
                 use crate::components::chooser::{ChooserItem, ChooserState};
                 use postui_core::jq::{PathSeg, compose, render_path};
@@ -6665,7 +6803,14 @@ impl App {
         if multi {
             items.push(MenuItem::new("Collect into array", Action::JqCollect));
         }
-        items.push(MenuItem::new("Describe a filter\u{2026}", Action::OpenJqDescribe));
+        let program = crate::ai::program_name(&self.ui_settings.ai_cmd);
+        if crate::ai::program_available(&self.ui_settings.ai_cmd) {
+            items.push(MenuItem::new("Describe a filter\u{2026}", Action::OpenJqDescribe));
+        } else {
+            items.push(MenuItem::disabled(format!(
+                "Describe a filter\u{2026}  ({program} not found)"
+            )));
+        }
         items
     }
 

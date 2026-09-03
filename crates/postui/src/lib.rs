@@ -1,4 +1,5 @@
 pub mod action;
+pub mod ai;
 pub mod anim;
 pub mod app;
 pub mod clipboard;

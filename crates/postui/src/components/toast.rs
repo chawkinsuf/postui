@@ -176,6 +176,13 @@ impl Toasts {
         self.entries.iter().map(|t| t.message.as_str()).collect()
     }
 
+    /// The most recently pushed still-live toast's text, for tests that
+    /// only care about the last thing reported.
+    #[cfg(test)]
+    pub fn last_message(&self) -> Option<&str> {
+        self.entries.last().map(|t| t.message.as_str())
+    }
+
     /// Every live toast as `(message, kind)` — the kind-aware companion to
     /// [`Self::messages`], for callers that care *how* something was
     /// reported and not just what it said.

@@ -356,6 +356,12 @@ impl ReadyView {
         self.search_corpus().join("\n")
     }
 
+    /// The raw response body, regardless of the active tab — what the
+    /// "describe a filter" prompt shapes.
+    pub fn body_text(&self) -> String {
+        self.raw_lines.join("\n")
+    }
+
     fn clamp_cursor(&mut self) {
         self.cursor = self.cursor.min(self.visible_len().saturating_sub(1));
     }

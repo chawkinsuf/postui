@@ -745,12 +745,31 @@ pub enum Action {
     },
     /// Copies a tree line's jq path.
     CopyJqPath(String),
-    /// Esc in the jq bar while an AI request is pending: cancels it.
-    /// Implemented by the describe-a-filter task.
+    /// Esc in the jq bar while an AI request is pending, or a new send:
+    /// cancels the outstanding AI task and clears `ai_pending`.
     CancelJqDescribe,
-    /// Palette/footer/AI button: asks the configured AI command to write a
-    /// jq filter from a sentence. Implemented by the describe-a-filter task.
+    /// Palette/footer/AI button: opens the "Describe a filter" prompt
+    /// (gated on the response being JSON and the configured `ai_cmd`'s
+    /// program being found on PATH).
     OpenJqDescribe,
+    /// The describe prompt's Enter: asks for confirmation before the first
+    /// AI call ever made (`ui_settings.ai_confirmed`), then runs it.
+    ConfirmJqDescribe(String),
+    /// Sends `sentence` to the configured AI command with the response's
+    /// shape and current filter on stdin; lands the reply (or its error)
+    /// asynchronously as `JqAiFinished`.
+    RunJqDescribe(String),
+    /// The confirm modal's "Always send": persists `ai_confirmed = true`
+    /// to config.toml so later requests skip the confirmation.
+    SetAiConfirmed,
+    /// A `RunJqDescribe` background task finished: `generation` and
+    /// `request` must both still match the current view/task, or the
+    /// result is dropped (a superseded response, or a cancelled request).
+    JqAiFinished {
+        generation: u64,
+        request: u64,
+        result: Result<String, String>,
+    },
     /// Structural menu's "Pluck field…" on an array: opens a chooser of
     /// `keys`; picking `k` applies `compose(bar, path, "map(.k)")`.
     JqPluckPrompt { path: String, keys: Vec<String> },

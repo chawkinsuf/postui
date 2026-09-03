@@ -89,6 +89,10 @@ pub enum PromptKind {
         name: String,
         env: String,
     },
+    /// `Action::OpenJqDescribe`: a sentence describing the filter to write.
+    /// Confirming emits `Action::ConfirmJqDescribe`, which asks for
+    /// confirmation before the first AI call and then runs it.
+    JqDescribe,
     /// The `SelectOption` picker's "add new option…" ghost row (Task 17,
     /// spec §6): a `Modal::MultiPrompt` with a `key` field, then one
     /// `field:<name>` input per selector field (see [`NEW_OPTION_FIELD`]),
@@ -1008,6 +1012,9 @@ impl ModalStack {
                             name: name.clone(),
                             value: text.to_string(),
                         }]),
+                        PromptKind::JqDescribe => {
+                            Some(vec![Action::ConfirmJqDescribe(text.to_string())])
+                        }
                         // These kinds are `Modal::MultiPrompt` only — never a
                         // single-input `Modal::Prompt`.
                         PromptKind::NewOptionInline { .. }

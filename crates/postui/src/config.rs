@@ -202,6 +202,14 @@ pub struct UiSettings {
     /// Per-transition durations, tunable via the optional `[animation_ms]`
     /// table; see [`AnimDurations`].
     pub anim_ms: AnimDurations,
+    /// The shell command "Describe a filter…" runs, with the prompt piped
+    /// in on stdin: `claude -p` by default. Only its first word (the
+    /// program name) is looked up on PATH to gate the menu item.
+    pub ai_cmd: String,
+    /// Whether the user has already confirmed sending the response's shape
+    /// to `ai_cmd` — set once via the "Always send" choice and persisted,
+    /// so later requests skip the confirmation.
+    pub ai_confirmed: bool,
 }
 
 impl Default for UiSettings {
@@ -212,6 +220,8 @@ impl Default for UiSettings {
             theme: "terminal".into(),
             animations: true,
             anim_ms: AnimDurations::default(),
+            ai_cmd: "claude -p".into(),
+            ai_confirmed: false,
         }
     }
 }
@@ -246,6 +256,12 @@ pub fn load_ui_settings(path: &Path) -> (UiSettings, Vec<String>) {
     }
     if let Some(b) = value.get("animations").and_then(|v| v.as_bool()) {
         settings.animations = b;
+    }
+    if let Some(cmd) = value.get("ai_cmd").and_then(|v| v.as_str()) {
+        settings.ai_cmd = cmd.to_string();
+    }
+    if let Some(b) = value.get("ai_confirmed").and_then(|v| v.as_bool()) {
+        settings.ai_confirmed = b;
     }
 
     if let Some(table) = value.get("animation_ms").and_then(|v| v.as_table()) {
@@ -307,6 +323,19 @@ pub fn save_ui_theme(path: &Path, name: &str) -> anyhow::Result<()> {
     let existing = std::fs::read_to_string(path).unwrap_or_default();
     let mut doc: toml_edit::DocumentMut = existing.parse().unwrap_or_default();
     doc["theme"] = toml_edit::value(name);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, doc.to_string())?;
+    Ok(())
+}
+
+/// Sets one top-level boolean in `config.toml`, keeping everything else
+/// byte-for-byte (the `ai_confirmed` "don't ask again" flag).
+pub fn save_ui_flag(path: &Path, key: &str, value: bool) -> anyhow::Result<()> {
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let mut doc: toml_edit::DocumentMut = existing.parse().unwrap_or_default();
+    doc[key] = toml_edit::value(value);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -544,6 +573,32 @@ mod tests {
         save_ui_theme(&p, "light").unwrap();
         let (s, _) = load_ui_settings(&p);
         assert_eq!(s.theme, "light");
+    }
+
+    #[test]
+    fn ai_settings_default_and_parse() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        let (s, _) = load_ui_settings(&p);
+        assert_eq!(s.ai_cmd, "claude -p");
+        assert!(!s.ai_confirmed);
+        std::fs::write(&p, "ai_cmd = \"my-llm --jq\"\nai_confirmed = true\n").unwrap();
+        let (s, warnings) = load_ui_settings(&p);
+        assert_eq!(s.ai_cmd, "my-llm --jq");
+        assert!(s.ai_confirmed);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn save_ui_flag_sets_the_key_and_preserves_unrelated_content() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        std::fs::write(&p, "theme = \"x\"\n\n[projects]\nknown = []\n").unwrap();
+        save_ui_flag(&p, "ai_confirmed", true).unwrap();
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(text.contains("ai_confirmed = true"), "{text}");
+        assert!(text.contains("theme = \"x\"") && text.contains("[projects]"), "{text}");
+        assert!(load_ui_settings(&p).0.ai_confirmed);
     }
 
     #[test]

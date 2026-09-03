@@ -17137,6 +17137,7 @@ fn right_click_row(app: &mut App, needle: &str) {
 fn right_click_on_an_array_line_offers_the_array_verbs_above_the_text_menu() {
     let mut app = App::new_for_test();
     ready_response(&mut app, JQ_BODY);
+    app.ui_settings.ai_cmd = "sh -c true".into();
     right_click_row(&mut app, "\"items\"");
     let labels = menu_labels(&app);
     assert_eq!(
@@ -17236,4 +17237,122 @@ fn the_structural_menu_is_absent_on_raw_and_non_json_views() {
     let area = app.session.response.view().unwrap().last_area.unwrap();
     app.handle_mouse(right_down(area.x + 1, area.y));
     assert_eq!(menu_labels(&app)[0], "Copy");
+}
+
+// --- "Describe a filter…" via the configured AI command ---
+
+fn stub_ai(app: &mut App, script: &str) {
+    app.ui_settings.ai_cmd = script.to_string();
+    app.ui_settings.ai_confirmed = true;
+}
+
+async fn drain_ai(app: &mut App) -> Action {
+    // The AI task is a tokio task; await its JoinHandle then read the action it sent.
+    let (_, handle) = app.ai_task.take().expect("an AI request is in flight");
+    handle.await.unwrap();
+    app._test_rx.as_mut().unwrap().try_recv().expect("the task sent its result")
+}
+
+#[tokio::test]
+async fn describe_a_filter_sends_the_shape_and_lands_the_reply_in_the_bar() {
+    let dir = tempfile::tempdir().unwrap();
+    let seen = dir.path().join("seen.txt");
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    stub_ai(&mut app, &format!("cat > {} && echo '.data.total'", seen.display()));
+    app.update(Action::OpenJqDescribe);
+    let Some(Modal::Prompt { kind: PromptKind::JqDescribe, .. }) = app.modals.top() else { panic!("prompt") };
+    type_str(&mut app, "just the total");
+    app.handle_key(&Keymap::default_bindings(), KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(app.session.response.jq_bar().ai_pending);
+    let action = drain_ai(&mut app).await;
+    app.update(action);
+    assert!(!app.session.response.jq_bar().ai_pending);
+    assert_eq!(app.session.response.jq_text(), ".data.total");
+    assert_eq!(app.session.response.view().unwrap().view_text(), "2");
+    let sent = std::fs::read_to_string(&seen).unwrap();
+    assert!(sent.contains(r#"Structure: {"data": {"items": [{"id": number, "status": string}] /* 2 items */, "total": number}}"#), "{sent}");
+    assert!(sent.contains("Request: just the total"), "{sent}");
+    assert!(!sent.contains("active"), "values are never sent: {sent}");
+}
+
+#[tokio::test]
+async fn a_fenced_reply_is_unwrapped_and_a_bad_reply_lands_with_its_error() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    stub_ai(&mut app, "printf '```jq\\n.data.total\\n```\\n'");
+    app.update(Action::RunJqDescribe("x".into()));
+    let a = drain_ai(&mut app).await;
+    app.update(a);
+    assert_eq!(app.session.response.jq_text(), ".data.total");
+
+    stub_ai(&mut app, "echo 'this is not jq'");
+    app.update(Action::RunJqDescribe("x".into()));
+    let a = drain_ai(&mut app).await;
+    app.update(a);
+    assert_eq!(app.session.response.jq_text(), "this is not jq", "lands for hand repair");
+    assert!(app.session.response.jq_bar().error.is_some());
+    assert!(app.session.response.jq_focused());
+}
+
+#[tokio::test]
+async fn a_failing_command_toasts_its_stderr_and_leaves_the_bar_alone() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.update(Action::JqApply(".data".into()));
+    stub_ai(&mut app, "echo 'not logged in' >&2; exit 1");
+    app.update(Action::RunJqDescribe("x".into()));
+    let a = drain_ai(&mut app).await;
+    app.update(a);
+    assert_eq!(app.session.response.jq_text(), ".data");
+    assert!(!app.session.response.jq_bar().ai_pending);
+    let last = app.toasts.last_message().expect("a toast"); // use the existing toast accessor
+    assert!(last.contains("not logged in"), "{last}");
+}
+
+#[test]
+fn the_first_use_asks_for_confirmation_and_always_persists_the_flag() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.ui_settings.ai_cmd = "true".into();
+    app.update(Action::ConfirmJqDescribe("x".into()));
+    let Some(Modal::Confirm { choices, body, .. }) = app.modals.top() else { panic!("confirm modal") };
+    assert!(body.contains("key names and types"), "{body}");
+    let always = choices.iter().find(|(c, _, _)| *c == 'a').expect("an Always choice").2.clone();
+    assert_eq!(always, vec![Action::SetAiConfirmed, Action::RunJqDescribe("x".into())]);
+    app.update(Action::Close);
+    app.update(Action::SetAiConfirmed);
+    assert!(app.ui_settings.ai_confirmed);
+    app.update(Action::ConfirmJqDescribe("y".into()));
+    assert!(!matches!(app.modals.top(), Some(Modal::Confirm { .. })), "no second confirmation");
+}
+
+#[test]
+fn describe_is_disabled_when_the_program_is_missing() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.ui_settings.ai_cmd = "definitely-not-a-program-42 -p".into();
+    right_click_row(&mut app, "\"items\"");
+    assert_eq!(menu_action(&app, "Describe a filter\u{2026}  (definitely-not-a-program-42 not found)"), None);
+    app.update(Action::Close);
+    app.update(Action::OpenJqDescribe);
+    assert!(app.modals.top().is_none(), "no prompt");
+    assert!(app.toasts.last_message().unwrap().contains("not found"));
+}
+
+#[tokio::test]
+async fn esc_while_asking_cancels_and_a_late_reply_is_dropped() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    stub_ai(&mut app, "sleep 5; echo .x");
+    app.update(Action::RunJqDescribe("x".into()));
+    app.focus = PaneId::Response;
+    app.session.response.set_jq_focus(true);
+    app.handle_key(&Keymap::default_bindings(), KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(!app.session.response.jq_bar().ai_pending);
+    assert!(app.ai_task.is_none());
+    // A reply for the cancelled request is ignored.
+    let stale = Action::JqAiFinished { generation: app.session.send_generation, request: 1, result: Ok(".x".into()) };
+    app.update(stale);
+    assert_eq!(app.session.response.jq_text(), "");
 }
