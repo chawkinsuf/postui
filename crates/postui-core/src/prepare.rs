@@ -725,6 +725,7 @@ mod tests {
             url: url.into(),
             substitute_body: false,
             insecure: false,
+            jq: None,
             params: IndexMap::new(),
             headers: IndexMap::new(),
             variables: IndexMap::new(),

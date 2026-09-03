@@ -198,6 +198,11 @@ pub struct HttpRequest {
     /// the default and is omitted from the TOML.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub insecure: bool,
+    /// The response pane's jq filter for this request (spec: jq response
+    /// filter). View-only — never affects what is sent. `None`/empty is no
+    /// filter and is omitted from the TOML.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jq: Option<String>,
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
     pub params: IndexMap<String, Entry>,
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
@@ -229,6 +234,9 @@ impl HttpRequest {
         }
         if self.insecure {
             doc["insecure"] = value(true);
+        }
+        if let Some(jq) = self.jq.as_deref().filter(|s| !s.is_empty()) {
+            doc["jq"] = value(jq);
         }
         let kv_table = |map: &IndexMap<String, Entry>| {
             let mut t = Table::new();
@@ -298,6 +306,7 @@ mod tests {
             url: "https://api.example.com/users".into(),
             substitute_body: false,
             insecure: false,
+            jq: None,
             params,
             headers,
             variables: IndexMap::new(),
@@ -458,6 +467,30 @@ mod tests {
         let back = HttpRequest::from_toml_str(&out).unwrap();
         assert!(back.insecure);
         assert_eq!(back, req);
+    }
+
+    #[test]
+    fn jq_defaults_none_and_is_omitted_from_toml() {
+        let req = sample();
+        assert_eq!(req.jq, None);
+        let out = req.to_toml_string();
+        assert!(!out.contains("jq"), "no jq line:\n{out}");
+        assert_eq!(HttpRequest::from_toml_str(&out).unwrap().jq, None);
+    }
+
+    #[test]
+    fn jq_round_trips_after_insecure_and_before_the_tables() {
+        let mut req = sample();
+        req.insecure = true;
+        req.jq = Some(".data | length".into());
+        let out = req.to_toml_string();
+        let insecure_at = out.find("insecure = true").unwrap();
+        let jq_at = out
+            .find("jq = \".data | length\"")
+            .expect("jq line:\n{out}");
+        let params_at = out.find("[params]").unwrap_or(usize::MAX);
+        assert!(insecure_at < jq_at && jq_at < params_at, "{out}");
+        assert_eq!(HttpRequest::from_toml_str(&out).unwrap(), req);
     }
 
     #[test]

@@ -1724,6 +1724,7 @@ mod tests {
                     url: "https://x".into(),
                     substitute_body: false,
                     insecure: false,
+                    jq: None,
                     params: Default::default(),
                     headers: Default::default(),
                     variables: Default::default(),

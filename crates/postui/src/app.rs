@@ -2094,6 +2094,7 @@ impl App {
                     url: String::new(),
                     substitute_body: false,
                     insecure: false,
+                    jq: None,
                     params: Default::default(),
                     headers: Default::default(),
                     variables: Default::default(),

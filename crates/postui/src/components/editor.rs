@@ -115,6 +115,9 @@ pub struct Editor {
     /// Whether TLS certificate verification is skipped at send time
     /// (`insecure = true` in the request TOML).
     pub insecure: bool,
+    /// The jq filter bar's text, mirrored from the response pane; empty is
+    /// no filter.
+    pub jq: String,
     /// The active environment's TLS force, mirrored in before each draw
     /// (`ui.rs`) so the padlock can show the *effective* state: the force
     /// when there is one, else `insecure`. Not part of the request.
@@ -254,6 +257,7 @@ impl Default for Editor {
             url: LineInput::new(""),
             substitute_body: false,
             insecure: false,
+            jq: String::new(),
             env_tls: None,
             params: IndexMap::new(),
             headers: IndexMap::new(),
@@ -312,6 +316,7 @@ impl Editor {
         self.url = LineInput::new(&req.url);
         self.substitute_body = req.substitute_body;
         self.insecure = req.insecure;
+        self.jq = req.jq.clone().unwrap_or_default();
         self.params = req.params.clone();
         self.headers = req.headers.clone();
         self.variables = req.variables.clone();
@@ -337,6 +342,7 @@ impl Editor {
         self.url = LineInput::new(&req.url);
         self.substitute_body = req.substitute_body;
         self.insecure = req.insecure;
+        self.jq = req.jq.clone().unwrap_or_default();
         self.params = req.params.clone();
         self.headers = req.headers.clone();
         self.variables = req.variables.clone();
@@ -420,6 +426,7 @@ impl Editor {
             url: self.url.text().to_string(),
             substitute_body: self.substitute_body,
             insecure: self.insecure,
+            jq: (!self.jq.is_empty()).then(|| self.jq.clone()),
             params: self.params.clone(),
             headers: self.headers.clone(),
             variables: self.variables.clone(),
@@ -478,7 +485,8 @@ impl Editor {
                 && self.params.is_empty()
                 && self.headers.is_empty()
                 && self.variables.is_empty()
-                && self.body_text().is_empty())
+                && self.body_text().is_empty()
+                && self.jq.is_empty())
     }
 
     /// The name of the `{{token}}` the keyboard caret is currently sitting
@@ -4394,6 +4402,33 @@ mod tests {
         e.load(None, req);
         assert!(e.insecure);
         assert!(e.current_request().insecure);
+    }
+
+    #[test]
+    fn jq_round_trips_through_load_and_current_request_with_empty_meaning_none() {
+        let mut ed = Editor::default();
+        let mut req = HttpRequest {
+            jq: Some(".a".into()),
+            url: "https://self-signed.test".into(),
+            ..ed.current_request()
+        };
+        ed.load(Some("s".into()), req.clone());
+        assert_eq!(ed.jq, ".a");
+        assert_eq!(ed.current_request().jq, Some(".a".into()));
+        ed.jq.clear();
+        assert_eq!(ed.current_request().jq, None, "an empty bar is no filter");
+        assert!(ed.is_dirty(), "clearing the filter modifies the request");
+        req.jq = None;
+        ed.apply_snapshot(&req);
+        assert_eq!(ed.jq, "");
+    }
+
+    #[test]
+    fn a_scratch_request_with_only_a_jq_filter_counts_as_dirty() {
+        let mut ed = Editor::default();
+        assert!(!ed.is_scratch_dirty());
+        ed.jq = ".a".into();
+        assert!(ed.is_scratch_dirty());
     }
 
     #[test]

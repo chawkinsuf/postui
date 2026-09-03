@@ -60,6 +60,7 @@ fn seed(app: &mut App, slugs: &[&str]) {
         url: "https://example.test/x".into(),
         substitute_body: false,
         insecure: false,
+        jq: None,
         params: Default::default(),
         headers: Default::default(),
         variables: Default::default(),

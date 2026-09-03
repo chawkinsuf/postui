@@ -1793,6 +1793,7 @@ tier = "g-1"
             url: url.to_string(),
             substitute_body: false,
             insecure: false,
+            jq: None,
             params: params
                 .iter()
                 .map(|(k, v)| (k.to_string(), option(v)))

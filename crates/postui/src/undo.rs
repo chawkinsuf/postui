@@ -71,25 +71,28 @@ pub enum CoalesceKey {
     Url,
     Body,
     Name,
+    Jq,
 }
 
-/// `Some(key)` when exactly one of `url`/`body`/`name` differs between
+/// `Some(key)` when exactly one of `url`/`body`/`name`/`jq` differs between
 /// `before` and `after`; `None` otherwise (method, table maps,
 /// `substitute_body`, or multiple fields at once — those never coalesce).
 pub fn coalesce_key(before: &HttpRequest, after: &HttpRequest) -> Option<CoalesceKey> {
     let url = before.url != after.url;
     let body = before.body != after.body;
     let name = before.name != after.name;
+    let jq = before.jq != after.jq;
     let other = before.method != after.method
         || before.substitute_body != after.substitute_body
         || before.insecure != after.insecure
         || before.params != after.params
         || before.headers != after.headers
         || before.variables != after.variables;
-    match (url, body, name, other) {
-        (true, false, false, false) => Some(CoalesceKey::Url),
-        (false, true, false, false) => Some(CoalesceKey::Body),
-        (false, false, true, false) => Some(CoalesceKey::Name),
+    match (url, body, name, jq, other) {
+        (true, false, false, false, false) => Some(CoalesceKey::Url),
+        (false, true, false, false, false) => Some(CoalesceKey::Body),
+        (false, false, true, false, false) => Some(CoalesceKey::Name),
+        (false, false, false, true, false) => Some(CoalesceKey::Jq),
         _ => None,
     }
 }
@@ -276,6 +279,7 @@ mod tests {
             url: url.into(),
             substitute_body: false,
             insecure: false,
+            jq: None,
             params: Default::default(),
             headers: Default::default(),
             variables: Default::default(),
@@ -420,6 +424,20 @@ mod tests {
         let mut b = req("ab");
         b.insecure = true;
         assert_eq!(coalesce_key(&req("a"), &b), None);
+    }
+
+    #[test]
+    fn a_lone_jq_edit_coalesces_under_its_own_key() {
+        let before = req("a");
+        let mut after = before.clone();
+        after.jq = Some(".a".into());
+        assert_eq!(coalesce_key(&before, &after), Some(CoalesceKey::Jq));
+        after.url.push('x');
+        assert_eq!(
+            coalesce_key(&before, &after),
+            None,
+            "two fields at once never coalesce"
+        );
     }
 
     #[test]
