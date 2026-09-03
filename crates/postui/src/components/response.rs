@@ -97,6 +97,9 @@ pub struct JqBar {
     pub note: Option<&'static str>,
     /// A background run is outstanding (its per-view counter).
     pub pending: Option<u64>,
+    /// When `pending`'s run was started, so the bar can hold its spinner
+    /// back for `JQ_SPINNER_AFTER` and then animate it.
+    pending_since: Instant,
     pub ai_pending: bool,
     /// When the AI request started, for the spinner.
     pub ai_started: std::time::Instant,
@@ -123,6 +126,7 @@ impl Default for JqBar {
             stale: false,
             note: None,
             pending: None,
+            pending_since: Instant::now(),
             ai_pending: false,
             ai_started: Instant::now(),
         }
@@ -154,6 +158,34 @@ pub struct JqRunRequest {
     pub doc: Option<JqDocument>,
     pub body: Option<String>,
 }
+
+/// What a jq run hands back: the document it parsed (when it had to), the
+/// filter's outputs as jq would print them, and those outputs already
+/// flattened into a tree. The tree is built where the run ran — on the
+/// blocking pool for a big body — because flattening a multi-megabyte
+/// output takes several times longer than the filter itself, and doing it
+/// on the UI thread froze the app for exactly the stretch the bar's
+/// spinner is meant to cover.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JqRunOutput {
+    pub doc: Option<JqDocument>,
+    pub outputs: Vec<String>,
+    /// `None` when an output is not JSON (jq's `@text`-style strings) —
+    /// reported as an error on attach.
+    pub tree: Option<JsonTree>,
+}
+
+impl JqRunOutput {
+    /// Flattens `outputs` into the tree on the calling thread.
+    pub fn from_outputs(doc: Option<JqDocument>, outputs: Vec<String>) -> Self {
+        let tree = JsonTree::parse_many(&outputs);
+        Self { doc, outputs, tree }
+    }
+}
+
+/// How long a background run may take before the bar shows a spinner:
+/// a run that finishes inside this window never flickers one.
+pub const JQ_SPINNER_AFTER: Duration = Duration::from_millis(100);
 
 /// Everything about *how* a ready response is being looked at. Rebuilt from
 /// scratch whenever a new response lands, so no state leaks between requests.
@@ -1036,13 +1068,15 @@ impl Response {
             let doc = view.jq_doc.clone().expect("parsed above");
             // Already cached on `view.jq_doc` above: no document to hand
             // back, just the outputs.
-            let result = postui_core::jq::run(code_trim, &doc).map(|outputs| (None, outputs));
+            let result = postui_core::jq::run(code_trim, &doc)
+                .map(|outputs| JqRunOutput::from_outputs(None, outputs));
             self.jq.pending = None;
             let generation = view.generation;
             self.attach_jq_result(generation, run, result);
             return None;
         }
         self.jq.pending = Some(run);
+        self.jq.pending_since = Instant::now();
         let doc = view.jq_doc.clone();
         let body = doc.is_none().then(|| view.raw_lines.join("\n"));
         Some(JqRunRequest {
@@ -1062,7 +1096,7 @@ impl Response {
         &mut self,
         generation: u64,
         run: u64,
-        result: Result<(Option<JqDocument>, Vec<String>), JqError>,
+        result: Result<JqRunOutput, JqError>,
     ) -> bool {
         let Some(view) = self.view.as_mut() else {
             return false;
@@ -1074,7 +1108,7 @@ impl Response {
         // `run` counter): the parse itself is still good for this view, and
         // caching it here means the next `apply_jq` doesn't have to ask the
         // worker to re-parse a body that may be huge, on every keystroke.
-        if let Ok((Some(doc), _)) = &result
+        if let Ok(JqRunOutput { doc: Some(doc), .. }) = &result
             && view.jq_doc.is_none()
         {
             view.jq_doc = Some(doc.clone());
@@ -1084,11 +1118,11 @@ impl Response {
         }
         self.jq.pending = None;
         match result {
-            Ok((doc, outputs)) => {
+            Ok(JqRunOutput { doc, outputs, tree }) => {
                 if let Some(doc) = doc {
                     view.jq_doc = Some(doc);
                 }
-                match JsonTree::parse_many(&outputs) {
+                match tree {
                     Some(_) if outputs.is_empty() || all_null(&outputs) => {
                         // Nothing to show: keep the full body up with a
                         // note rather than replace it with `null`s.
@@ -2711,13 +2745,31 @@ fn draw_jq_bar(
             format!("{} asking…", SPINNER[frame_i]),
             Style::default().fg(t.text_muted),
         ));
+        frame.render_widget(Paragraph::new(Line::from(spans)), row);
     } else {
-        let line = bar
-            .input
-            .draw_line_windowed(bar.focused, t, text_w.saturating_sub(3));
+        // A background run past its grace period shows a spinner at the
+        // row's right end (the filter text's window gives up two columns
+        // for it); one that finishes sooner never flickers.
+        let spinning = bar.pending.is_some()
+            && ctx.now.saturating_duration_since(bar.pending_since) >= JQ_SPINNER_AFTER;
+        let spinner_w = if spinning { 2 } else { 0 };
+        let line =
+            bar.input
+                .draw_line_windowed(bar.focused, t, text_w.saturating_sub(3 + spinner_w));
         spans.extend(line.spans);
+        frame.render_widget(Paragraph::new(Line::from(spans)), row);
+        if spinning && text_w >= 5 {
+            let frame_i = (ctx
+                .now
+                .saturating_duration_since(bar.pending_since)
+                .as_millis()
+                / 80) as usize
+                % SPINNER.len();
+            frame.buffer_mut()[(row.right() - 2, row.y)]
+                .set_symbol(SPINNER[frame_i])
+                .set_fg(t.text_muted);
+        }
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)), row);
     hits.register(row, crate::hit::Hit::ResponseJqBar);
     if area.width > ai_w {
         let ai_area = Rect::new(area.right() - ai_w, area.y, ai_w, 1);
@@ -2933,6 +2985,12 @@ mod tests {
     }
 
     fn render_sized(resp: &mut Response, w: u16, h: u16) -> String {
+        render_sized_at(resp, w, h, std::time::Instant::now())
+    }
+
+    /// `render_sized` with the frame drawn as of `now`, for time-gated
+    /// affordances like the jq bar's spinner.
+    fn render_sized_at(resp: &mut Response, w: u16, h: u16, now: std::time::Instant) -> String {
         let theme = Theme::dark();
         let ctx = DrawCtx {
             theme: &theme,
@@ -2940,7 +2998,7 @@ mod tests {
             hovered: None,
             dragging: false,
             anims: test_anims(),
-            now: std::time::Instant::now(),
+            now,
         };
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
         let mut hits = crate::hit::HitMap::default();
@@ -4609,7 +4667,11 @@ mod tests {
         let _req2 = r.apply_jq(".data.items[0].id", 0).unwrap();
         let doc = JqDocument::parse(ITEMS).unwrap();
         assert!(
-            !r.attach_jq_result(req1.generation, req1.run, Ok((Some(doc), vec!["2".into()]))),
+            !r.attach_jq_result(
+                req1.generation,
+                req1.run,
+                Ok(JqRunOutput::from_outputs(Some(doc), vec!["2".into()]))
+            ),
             "superseded run is still dropped as a result"
         );
         let req3 = r
@@ -4689,15 +4751,60 @@ mod tests {
             "no cached document yet: the worker parses the body"
         );
         assert!(
-            !r.attach_jq_result(req.generation, req.run, Ok((None, vec!["2".into()]))),
+            !r.attach_jq_result(
+                req.generation,
+                req.run,
+                Ok(JqRunOutput::from_outputs(None, vec!["2".into()]))
+            ),
             "superseded run is dropped"
         );
-        assert!(r.attach_jq_result(req2.generation, req2.run, Ok((None, vec!["1".into()]))));
+        assert!(r.attach_jq_result(
+            req2.generation,
+            req2.run,
+            Ok(JqRunOutput::from_outputs(None, vec!["1".into()]))
+        ));
         assert_eq!(r.view().unwrap().view_text(), "1");
         assert!(r.jq_bar().pending.is_none());
         assert!(
-            !r.attach_jq_result(req2.generation + 1, req2.run, Ok((None, vec!["9".into()]))),
+            !r.attach_jq_result(
+                req2.generation + 1,
+                req2.run,
+                Ok(JqRunOutput::from_outputs(None, vec!["9".into()]))
+            ),
             "wrong generation is dropped"
+        );
+    }
+
+    #[test]
+    fn a_background_run_shows_a_spinner_only_past_the_grace_period() {
+        let mut r = ready(ITEMS);
+        r.open_jq();
+        r.set_jq_text(".data");
+        let req = r.apply_jq(".data", 0).expect("background run");
+        let since = r.jq.pending_since;
+        let spinner_at = |r: &mut Response, now| {
+            let out = render_sized_at(r, 60, 20, now);
+            SPINNER.iter().any(|g| out.contains(*g))
+        };
+        assert!(
+            !spinner_at(&mut r, since + Duration::from_millis(50)),
+            "inside the grace period the bar is unchanged"
+        );
+        assert!(
+            spinner_at(&mut r, since + JQ_SPINNER_AFTER),
+            "past it the bar spins"
+        );
+        assert!(
+            r.attach_jq_result(
+                req.generation,
+                req.run,
+                Ok(JqRunOutput::from_outputs(None, vec!["{}".into()]))
+            ),
+            "the run lands"
+        );
+        assert!(
+            !spinner_at(&mut r, since + Duration::from_secs(5)),
+            "and the spinner goes with it"
         );
     }
 

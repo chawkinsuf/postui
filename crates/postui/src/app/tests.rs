@@ -17379,13 +17379,54 @@ fn a_big_body_runs_the_filter_in_the_background_and_lands_via_an_action() {
         Some(big.clone()),
     );
     let Action::JqRunFinished {
-        result: Ok((Some(_), outputs)),
+        result:
+            Ok(crate::components::response::JqRunOutput {
+                doc: Some(_),
+                outputs,
+                tree: Some(tree),
+            }),
         ..
     } = &action
     else {
         panic!("the worker parses the body and hands the document back: {action:?}");
     };
     assert_eq!(outputs, &["7".to_string()]);
+    assert_eq!(
+        tree.line_count(),
+        1,
+        "the output tree is built by the worker, not on attach"
+    );
+}
+
+/// The bar's spinner is drawn on ticks, so ticks must keep redrawing while
+/// a background run is outstanding — the same way they do for a
+/// background pretty-print.
+#[test]
+fn ticks_keep_redrawing_while_a_background_jq_run_is_outstanding() {
+    let mut app = App::new_for_test();
+    let big = format!(
+        r#"{{"pad": "{}", "n": 7}}"#,
+        "x".repeat(crate::components::response::SYNC_PRETTY_BYTES)
+    );
+    ready_response(&mut app, &big);
+    app.update(Action::PrettyParsed {
+        generation: app.session.send_generation,
+        tree: crate::components::json_tree::JsonTree::parse(&big).map(Box::new),
+    });
+    assert!(
+        !app.update(Action::Tick),
+        "idle: a tick has nothing to redraw"
+    );
+    app.session
+        .response
+        .apply_jq(".n", crate::components::response::SYNC_PRETTY_BYTES)
+        .expect("big body → background");
+    app.editor.jq = ".n".into();
+    assert!(app.session.response.jq_bar().pending.is_some());
+    assert!(
+        app.update(Action::Tick),
+        "a pending run keeps ticks redrawing"
+    );
 }
 
 /// A background run outstanding when the open request changes must not

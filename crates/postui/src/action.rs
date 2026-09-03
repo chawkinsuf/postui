@@ -754,8 +754,7 @@ pub enum Action {
     JqRunFinished {
         generation: u64,
         run: u64,
-        result:
-            Result<(Option<postui_core::jq::JqDocument>, Vec<String>), postui_core::jq::JqError>,
+        result: Result<crate::components::response::JqRunOutput, postui_core::jq::JqError>,
     },
     /// Copies a tree line's jq path.
     CopyJqPath(String),

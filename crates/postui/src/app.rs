@@ -955,7 +955,8 @@ impl App {
 }
 
 /// The blocking-pool half of a background jq run: parse the body if the
-/// view has no cached document yet, then run. Free-standing so tests can
+/// view has no cached document yet, run, and flatten the outputs into
+/// their tree (the slow part on a big output). Free-standing so tests can
 /// call it without a runtime, and so `App::spawn_jq_run` can run it inline
 /// when there is no runtime to spawn onto.
 pub(crate) fn jq_worker(
@@ -979,7 +980,8 @@ pub(crate) fn jq_worker(
                 });
             }
         };
-        jq_run(&code, &doc).map(|out| (fresh, out))
+        jq_run(&code, &doc)
+            .map(|out| crate::components::response::JqRunOutput::from_outputs(fresh, out))
     })();
     Action::JqRunFinished {
         generation,
@@ -7377,8 +7379,10 @@ impl App {
     fn in_flight_ticking(&self) -> bool {
         !self.session.in_flight.is_empty()
             // A background pretty-print animates its own spinner, so ticks
-            // must keep coming while one is running.
+            // must keep coming while one is running — and so does the jq
+            // bar's, once a background run outlives its grace period.
             || self.session.response.view().is_some_and(|v| v.parsing)
+            || self.session.response.jq_bar().pending.is_some()
     }
 
     /// Whether any tracked animation is still easing toward its target right
