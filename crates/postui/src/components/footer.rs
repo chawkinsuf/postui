@@ -34,6 +34,10 @@ pub(crate) fn footer_chips(
     // edit live): advertise its toggle/delete keys. `(index, enabled)` —
     // the toggle chip names the state change it would make.
     table_row_selected: Option<(usize, bool)>,
+    // The response pane's jq bar has the caret: swaps its chip set for the
+    // bar's own (done/tree/describe) instead of the response pane's usual
+    // three.
+    jq_bar_focused: bool,
 ) -> Vec<(&'static str, &'static str, Option<Action>)> {
     let chips: Vec<(&'static str, &'static str, Option<Action>)> = match focus {
         PaneId::Sidebar => vec![
@@ -102,23 +106,34 @@ pub(crate) fn footer_chips(
             }
             chips
         }
-        PaneId::Response => vec![
-            (
-                "r",
-                "raw",
-                Some(Action::ResponseViewMode(
-                    crate::components::response::ViewMode::Raw,
-                )),
-            ),
-            (
-                "h",
-                "headers",
-                Some(Action::ResponseViewMode(
-                    crate::components::response::ViewMode::Headers,
-                )),
-            ),
-            ("/", "search", Some(Action::OpenResponseSearch)),
-        ],
+        PaneId::Response => {
+            if jq_bar_focused {
+                vec![
+                    ("esc", "done", None),
+                    ("alt+q", "tree", Some(Action::ToggleJqBar)),
+                    ("✦", "describe…", Some(Action::OpenJqDescribe)),
+                ]
+            } else {
+                vec![
+                    (
+                        "r",
+                        "raw",
+                        Some(Action::ResponseViewMode(
+                            crate::components::response::ViewMode::Raw,
+                        )),
+                    ),
+                    (
+                        "h",
+                        "headers",
+                        Some(Action::ResponseViewMode(
+                            crate::components::response::ViewMode::Headers,
+                        )),
+                    ),
+                    ("/", "search", Some(Action::OpenResponseSearch)),
+                    ("alt+q", "jq", Some(Action::ToggleJqBar)),
+                ]
+            }
+        }
     };
     chips
 }
@@ -157,6 +172,8 @@ pub fn draw_footer(
     url_focused: bool,
     // See `footer_chips`: a data row of the active table is selected.
     table_row_selected: Option<(usize, bool)>,
+    // See `footer_chips`: the response pane's jq bar has the caret.
+    jq_bar_focused: bool,
     // Replaces the per-pane chips wholesale when `Some` — a modal's own
     // chip set, or the Variable Manager screen's
     // (`VarManager::footer_chips`), whose actions target
@@ -242,6 +259,7 @@ pub fn draw_footer(
             add_row_label,
             url_focused,
             table_row_selected,
+            jq_bar_focused,
         ),
     };
     paint_chip_row(
@@ -369,6 +387,7 @@ mod tests {
                     Some("add header"),
                     false,
                     None,
+                    false,
                     None,
                     true,
                     true,
@@ -382,7 +401,15 @@ mod tests {
 
     #[test]
     fn send_chip_advertises_shift_enter_only_when_the_terminal_reports_it() {
-        let with = footer_chips(PaneId::Editor, true, false, Some("add header"), false, None);
+        let with = footer_chips(
+            PaneId::Editor,
+            true,
+            false,
+            Some("add header"),
+            false,
+            None,
+            false,
+        );
         assert!(with.iter().any(|(k, l, _)| *k == "⇧enter" && *l == "send"));
         let without = footer_chips(
             PaneId::Editor,
@@ -391,6 +418,7 @@ mod tests {
             Some("add header"),
             false,
             None,
+            false,
         );
         assert!(without.iter().any(|(k, l, _)| *k == "^R" && *l == "send"));
     }
@@ -400,7 +428,15 @@ mod tests {
     /// of a send key that would do nothing.
     #[test]
     fn send_chip_becomes_esc_cancel_while_the_open_request_is_in_flight() {
-        let sending = footer_chips(PaneId::Editor, false, true, Some("add header"), false, None);
+        let sending = footer_chips(
+            PaneId::Editor,
+            false,
+            true,
+            Some("add header"),
+            false,
+            None,
+            false,
+        );
         assert!(
             sending
                 .iter()
@@ -443,6 +479,7 @@ mod tests {
             Some("add header"),
             false,
             None,
+            false,
         );
         assert!(chips.iter().any(|(k, l, a)| *k == "alt+shift+v"
             && *l == "vars"
@@ -460,7 +497,15 @@ mod tests {
     /// resolved URL and toggle TLS verification.
     #[test]
     fn address_bar_focus_swaps_add_row_for_copy_url_and_tls_chips() {
-        let chips = footer_chips(PaneId::Editor, false, false, Some("add header"), true, None);
+        let chips = footer_chips(
+            PaneId::Editor,
+            false,
+            false,
+            Some("add header"),
+            true,
+            None,
+            false,
+        );
         assert!(
             !chips
                 .iter()
@@ -483,6 +528,7 @@ mod tests {
             Some("add header"),
             false,
             None,
+            false,
         );
         assert!(
             chips
@@ -505,7 +551,15 @@ mod tests {
     fn no_footer_list_carries_the_split_chip() {
         for pane in [PaneId::Sidebar, PaneId::Editor, PaneId::Response] {
             for url_focused in [false, true] {
-                let chips = footer_chips(pane, false, false, Some("add header"), url_focused, None);
+                let chips = footer_chips(
+                    pane,
+                    false,
+                    false,
+                    Some("add header"),
+                    url_focused,
+                    None,
+                    false,
+                );
                 assert!(
                     !chips.iter().any(|(_, _, a)| *a == Some(Action::CycleSplit)),
                     "{pane:?} url_focused={url_focused} still advertises split"
@@ -528,6 +582,7 @@ mod tests {
             Some("add header"),
             false,
             Some((2, true)),
+            false,
         );
         assert!(chips.iter().any(|(k, l, a)| *k == "␣"
             && *l == "disable"
@@ -545,6 +600,7 @@ mod tests {
             Some("add header"),
             false,
             Some((2, false)),
+            false,
         );
         assert!(
             chips
@@ -559,6 +615,7 @@ mod tests {
             Some("add header"),
             false,
             None,
+            false,
         );
         assert!(
             !chips
@@ -610,6 +667,7 @@ mod tests {
                     Some("add header"),
                     false,
                     None,
+                    false,
                     None,
                     true,
                     true,
@@ -653,6 +711,7 @@ mod tests {
                     Some("add header"),
                     false,
                     None,
+                    false,
                     None,
                     true,
                     true,
@@ -699,6 +758,7 @@ mod tests {
                     Some("add header"),
                     false,
                     None,
+                    false,
                     None,
                     true,
                     true,
@@ -734,6 +794,7 @@ mod tests {
                     Some("add header"),
                     false,
                     None,
+                    false,
                     None,
                     true,
                     true,
@@ -803,6 +864,7 @@ mod tests {
                     Some("add header"),
                     false,
                     None,
+                    false,
                     None,
                     true,
                     true,
@@ -858,6 +920,7 @@ mod tests {
                     Some("add header"),
                     false,
                     None,
+                    false,
                     None,
                     true,
                     true,
@@ -952,6 +1015,7 @@ mod tests {
                     Some("add header"),
                     false,
                     None,
+                    false,
                     None,
                     true,
                     true,

@@ -281,6 +281,7 @@ pub(crate) fn named_actions() -> Vec<(&'static str, Action)> {
         ("request_duplicate", Action::DuplicateRequest),
         ("undo", Action::Undo),
         ("redo", Action::Redo),
+        ("toggle_jq_bar", Action::ToggleJqBar),
     ]
 }
 
@@ -380,6 +381,7 @@ impl Keymap {
             ("ctrl+shift+d", Action::DuplicateRequest),
             ("ctrl+z", Action::Undo),
             ("ctrl+shift+z", Action::Redo),
+            ("alt+q", Action::ToggleJqBar),
         ];
         let mut map = Self {
             bindings: HashMap::new(),
@@ -788,6 +790,7 @@ mod tests {
         assert_eq!(get("ctrl+z"), Some(Action::Undo));
         assert_eq!(get("ctrl+shift+z"), Some(Action::Redo));
         assert_eq!(get("ctrl+y"), None, "ctrl+y is deliberately unbound");
+        assert_eq!(get("alt+q"), Some(Action::ToggleJqBar));
     }
 
     #[test]

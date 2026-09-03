@@ -252,6 +252,18 @@ pub fn all_commands() -> Vec<Command> {
             action: Action::OpenResponseSearch,
         },
         Command {
+            id: "response-jq",
+            name: "Response: jq filter",
+            description: "Filter the JSON response with a jq expression",
+            action: Action::OpenJqBar,
+        },
+        Command {
+            id: "response-jq-describe",
+            name: "Response: describe a filter (AI)…",
+            description: "Ask the configured AI command to write the jq filter from a sentence",
+            action: Action::OpenJqDescribe,
+        },
+        Command {
             id: "manage-variables",
             name: "Manage: variables",
             description: "Open the Manage screen's Variables tab",

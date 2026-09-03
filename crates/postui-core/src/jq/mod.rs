@@ -31,6 +31,16 @@ impl std::fmt::Debug for JqDocument {
     }
 }
 
+/// Identity, not structural, equality — `Action` derives `PartialEq`/`Eq`
+/// and a document is only ever compared as "the same parse or not".
+impl PartialEq for JqDocument {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for JqDocument {}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JqError {
     /// Lex/parse failure; `span` is a byte range into the filter text.

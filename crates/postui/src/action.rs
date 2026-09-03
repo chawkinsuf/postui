@@ -726,7 +726,29 @@ pub enum Action {
     Redo,
 
     // -- jq response filter (spec: docs/superpowers/sdd/2026-09-03-jq-response-filter) --
+    /// alt+q / the header 󰈲 button: focuses the response pane and its jq
+    /// bar; blurs when already focused.
+    ToggleJqBar,
+    /// Palette/footer: focus the bar (never blurs).
+    OpenJqBar,
+    /// Replaces the bar text and applies it (structural menu "apply" items).
+    JqApply(String),
+    /// Replaces the bar text, focuses it with the cursor at `cursor`, runs
+    /// nothing yet.
+    JqTeeUp { text: String, cursor: usize },
+    /// A background run finished for the response of `generation`, run
+    /// `run`.
+    JqRunFinished {
+        generation: u64,
+        run: u64,
+        result: Result<(Option<postui_core::jq::JqDocument>, Vec<String>), postui_core::jq::JqError>,
+    },
+    /// Copies a tree line's jq path.
+    CopyJqPath(String),
     /// Esc in the jq bar while an AI request is pending: cancels it.
     /// Implemented by the describe-a-filter task.
     CancelJqDescribe,
+    /// Palette/footer/AI button: asks the configured AI command to write a
+    /// jq filter from a sentence. Implemented by the describe-a-filter task.
+    OpenJqDescribe,
 }

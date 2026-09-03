@@ -13799,6 +13799,7 @@ fn every_named_action_is_mouse_reachable() {
                 Some("add header"),
                 false,
                 None,
+                false,
             )
             .into_iter()
             .filter_map(|(_, _, a)| a),
@@ -13813,6 +13814,22 @@ fn every_named_action_is_mouse_reachable() {
                 Some("add header"),
                 true,
                 None,
+                false,
+            )
+            .into_iter()
+            .filter_map(|(_, _, a)| a),
+        );
+        // The response pane's jq-bar-focused chip set swaps in its own
+        // actions (done/tree/describe) — enumerate those too.
+        mouse_reachable.extend(
+            crate::components::footer::footer_chips(
+                pane,
+                false,
+                false,
+                Some("add header"),
+                false,
+                None,
+                true,
             )
             .into_iter()
             .filter_map(|(_, _, a)| a),
@@ -16906,4 +16923,188 @@ fn row_menu_extract_value_to_selector_promotes_the_row_and_replaces_the_cell() {
         "the cell edit is committed"
     );
     assert_eq!(app.project.resolved.values["tenant"], "acme");
+}
+
+// --- jq filter bar ---
+
+const JQ_BODY: &str = r#"{"data":{"items":[{"id":1,"status":"active"},{"id":2,"status":"off"}],"total":2}}"#;
+
+fn type_str(app: &mut App, s: &str) {
+    for c in s.chars() {
+        app.handle_key(&Keymap::default_bindings(), plain(c));
+    }
+}
+
+#[test]
+fn alt_q_focuses_the_jq_bar_and_typing_filters_the_tree_live() {
+    let mut app = App::new_for_test();
+    postui_core::storage::save_request(&app.project.root, "main/r", &req("https://x/r")).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::ForceOpenRequest("main/r".into()));
+    ready_response(&mut app, JQ_BODY);
+    assert!(app.handle_key(&Keymap::default_bindings(), alt('q')));
+    assert_eq!(app.focus, PaneId::Response);
+    assert!(app.session.response.jq_focused());
+    type_str(&mut app, ".data.total");
+    assert_eq!(app.session.response.view().unwrap().view_text(), "2");
+    assert_eq!(app.editor.jq, ".data.total", "the bar mirrors into the request");
+    assert!(app.editor.is_dirty());
+    app.handle_key(&Keymap::default_bindings(), alt('q'));
+    assert!(!app.session.response.jq_focused(), "alt+q again blurs");
+}
+
+#[test]
+fn a_saved_filter_is_applied_when_the_request_opens_and_when_a_response_lands() {
+    let mut app = App::new_for_test();
+    app.editor.jq = ".data.total".into();
+    ready_response(&mut app, JQ_BODY);
+    app.update(Action::Render); // any update runs the reconcile
+    assert_eq!(app.session.response.jq_text(), ".data.total");
+    assert_eq!(app.session.response.view().unwrap().view_text(), "2");
+}
+
+#[test]
+fn undo_restores_the_previous_filter_text_in_the_bar() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.handle_key(&Keymap::default_bindings(), alt('q'));
+    type_str(&mut app, ".data");
+    app.capture_undo();
+    app.no_coalesce = true;
+    type_str(&mut app, ".total");
+    app.capture_undo();
+    app.update(Action::Undo);
+    assert_eq!(app.editor.jq, ".data");
+    assert_eq!(
+        app.session.response.jq_text(),
+        ".data",
+        "the bar follows the editor after undo"
+    );
+}
+
+#[test]
+fn jq_apply_and_tee_up_drive_the_bar() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.update(Action::JqApply(".data.items | length".into()));
+    assert_eq!(app.session.response.view().unwrap().view_text(), "2");
+    assert!(!app.session.response.jq_focused(), "apply does not focus the bar");
+    app.update(Action::JqTeeUp {
+        text: ".data.items | map(select(.status == ))".into(),
+        cursor: 37,
+    });
+    assert!(app.session.response.jq_focused());
+    assert_eq!(app.session.response.jq_bar().input.cursor(), 37);
+    assert!(
+        app.session.response.jq_bar().error.is_some(),
+        "an unfinished tee-up is a syntax error until typed into"
+    );
+    assert_eq!(
+        app.session.response.view().unwrap().view_text(),
+        "2",
+        "…and the previous tree stays"
+    );
+}
+
+#[test]
+fn paste_goes_to_the_focused_jq_bar() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.handle_key(&Keymap::default_bindings(), alt('q'));
+    assert!(app.paste_text(".data.total"));
+    assert_eq!(app.session.response.jq_text(), ".data.total");
+}
+
+#[test]
+fn a_big_body_runs_the_filter_in_the_background_and_lands_via_an_action() {
+    let mut app = App::new_for_test();
+    let big = format!(
+        r#"{{"pad": "{}", "n": 7}}"#,
+        "x".repeat(crate::components::response::SYNC_PRETTY_BYTES)
+    );
+    ready_response(&mut app, &big);
+    // Big bodies parse in the background; feed the tree in as the app would.
+    let tree = crate::components::json_tree::JsonTree::parse(&big);
+    app.update(Action::PrettyParsed {
+        generation: app.session.send_generation,
+        tree: tree.map(Box::new),
+    });
+    app.update(Action::ResponseViewMode(
+        crate::components::response::ViewMode::Pretty,
+    ));
+    // `App::new_for_test` builds its channel outside a tokio runtime, so
+    // the background run happens inline (`jq_worker`, dispatched
+    // immediately) rather than through `tokio::spawn` — the result lands
+    // within this one `update` call.
+    app.update(Action::JqApply(".n".into()));
+    assert_eq!(app.session.response.view().unwrap().view_text(), "7");
+    assert!(app.session.response.jq_bar().pending.is_none());
+
+    // The cached document (handed back by the first run) means the next
+    // run needs no body — checked directly against `apply_jq`, the
+    // interface `sync_jq` drives.
+    let req2 = app
+        .session
+        .response
+        .apply_jq(".pad | length", crate::components::response::SYNC_PRETTY_BYTES)
+        .expect("still a background-sized run");
+    assert!(req2.doc.is_some(), "the doc from the first run is cached");
+    assert!(req2.body.is_none(), "…so no body needs to be handed to the worker");
+
+    // Direct coverage of the worker itself: parses the body when handed no
+    // cached document, and runs the filter against it.
+    let action = crate::app::jq_worker(
+        app.session.send_generation,
+        req2.run,
+        ".n".into(),
+        None,
+        Some(big.clone()),
+    );
+    let Action::JqRunFinished {
+        result: Ok((Some(_), outputs)),
+        ..
+    } = &action
+    else {
+        panic!("the worker parses the body and hands the document back: {action:?}");
+    };
+    assert_eq!(outputs, &["7".to_string()]);
+}
+
+#[test]
+fn the_footer_and_palette_reach_the_jq_bar() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.focus = PaneId::Response;
+    let chips = crate::components::footer::footer_chips(
+        PaneId::Response,
+        false,
+        false,
+        None,
+        false,
+        None,
+        false,
+    );
+    assert!(
+        chips
+            .iter()
+            .any(|(k, l, a)| *k == "alt+q" && *l == "jq" && *a == Some(Action::ToggleJqBar)),
+        "{chips:?}"
+    );
+    app.update(Action::OpenPalette);
+    type_str(&mut app, "jq filter");
+    select_palette_command(&mut app, "response-jq");
+    app.handle_key(
+        &Keymap::default_bindings(),
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+    );
+    assert!(app.session.response.jq_focused());
+}
+
+#[test]
+fn jq_is_a_no_op_on_a_non_json_response() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, "plain");
+    assert!(app.handle_key(&Keymap::default_bindings(), alt('q')));
+    assert!(!app.session.response.jq_focused());
+    assert_eq!(app.toasts.messages().len(), 1, "a toast says the response is not JSON");
 }

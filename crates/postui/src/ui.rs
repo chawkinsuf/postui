@@ -285,6 +285,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             crate::components::editor::SubFocus::Method | crate::components::editor::SubFocus::Url
         ),
         table_row_selected,
+        app.session.response.jq_focused(),
         vm_chips,
         globals_live,
         plain_q_quits,

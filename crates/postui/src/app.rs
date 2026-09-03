@@ -935,11 +935,111 @@ impl App {
     }
 }
 
+/// The blocking-pool half of a background jq run: parse the body if the
+/// view has no cached document yet, then run. Free-standing so tests can
+/// call it without a runtime, and so `App::spawn_jq_run` can run it inline
+/// when there is no runtime to spawn onto.
+pub(crate) fn jq_worker(
+    generation: u64,
+    run: u64,
+    code: String,
+    doc: Option<postui_core::jq::JqDocument>,
+    body: Option<String>,
+) -> Action {
+    use postui_core::jq::{JqDocument, run as jq_run};
+    let result = (|| {
+        let (doc, fresh) = match (doc, body) {
+            (Some(d), _) => (d, None),
+            (None, Some(b)) => {
+                let d = JqDocument::parse(&b)?;
+                (d.clone(), Some(d))
+            }
+            (None, None) => {
+                return Err(postui_core::jq::JqError::Runtime {
+                    message: "no document".into(),
+                });
+            }
+        };
+        jq_run(&code, &doc).map(|out| (fresh, out))
+    })();
+    Action::JqRunFinished {
+        generation,
+        run,
+        result,
+    }
+}
+
 impl App {
+    /// Applies `action` to app state, then reconciles the jq filter bar
+    /// with the editor and view (see [`Self::sync_jq`]) — the one place
+    /// every action, key, mouse hit, and background result passes through,
+    /// so the reconcile runs exactly once per action regardless of route.
+    /// Returns `true` if state changed in a way that requires a redraw,
+    /// `false` if the caller can skip drawing this iteration.
+    pub fn update(&mut self, action: Action) -> bool {
+        let changed = self.dispatch(action);
+        self.sync_jq();
+        changed
+    }
+
+    /// Keeps the response pane's jq bar and the editor's `jq` field in
+    /// step, and the view in step with both — the one place the filter is
+    /// applied. Bar edits flow into the editor (they are request edits);
+    /// everything else (open request, undo, discard, a new response) flows
+    /// the editor into the bar. Blurs the bar whenever focus has moved off
+    /// the response pane. Cheap when nothing changed: a couple of string
+    /// compares.
+    pub(crate) fn sync_jq(&mut self) {
+        if self.focus != PaneId::Response {
+            self.session.response.set_jq_focus(false);
+        }
+        let response = &mut self.session.response;
+        if response.take_jq_edited() {
+            self.editor.jq = response.jq_text().to_string();
+        } else if response.jq_text() != self.editor.jq {
+            response.set_jq_text(&self.editor.jq);
+        }
+        let code = self.editor.jq.clone();
+        if let Some(req) = self
+            .session
+            .response
+            .apply_jq(&code, crate::components::response::SYNC_PRETTY_BYTES)
+        {
+            self.spawn_jq_run(req);
+        }
+    }
+
+    /// Hands a background-pool jq run to the runtime. `App::new_for_test`
+    /// builds its channel outside a tokio runtime, so tests run the worker
+    /// inline and dispatch its result immediately instead of spawning.
+    fn spawn_jq_run(&mut self, req: crate::components::response::JqRunRequest) {
+        if tokio::runtime::Handle::try_current().is_err() {
+            let action = jq_worker(req.generation, req.run, req.code, req.doc, req.body);
+            self.dispatch(action);
+            return;
+        }
+        let tx = self.tx.clone();
+        let (generation, run) = (req.generation, req.run);
+        tokio::spawn(async move {
+            let action = tokio::task::spawn_blocking(move || {
+                jq_worker(req.generation, req.run, req.code, req.doc, req.body)
+            })
+            .await
+            .unwrap_or_else(|_| Action::JqRunFinished {
+                generation,
+                run,
+                result: Err(postui_core::jq::JqError::Runtime {
+                    message: "filter worker panicked".into(),
+                }),
+            });
+            let _ = tx.send(action);
+        });
+    }
+
     /// Applies `action` to app state. Returns `true` if state changed in a
     /// way that requires a redraw, `false` if the caller can skip drawing
     /// this iteration.
-    pub fn update(&mut self, action: Action) -> bool {
+    fn dispatch(&mut self, action: Action) -> bool {
         let changed = self.apply(action);
         // Keeps the sidebar's dirty dot and its notion of "which slug is
         // open" in lockstep with the editor after every action, rather than
@@ -2913,8 +3013,52 @@ impl App {
                 }
                 true
             }
+            Action::ToggleJqBar => {
+                if !self.session.response.jq_available() {
+                    self.toasts.push("The response is not JSON", ToastKind::Info);
+                    return true;
+                }
+                if self.session.response.jq_focused() {
+                    self.session.response.set_jq_focus(false);
+                } else {
+                    self.dispatch(Action::FocusPane(PaneId::Response));
+                    self.session.response.set_jq_focus(true);
+                }
+                true
+            }
+            Action::OpenJqBar => {
+                if !self.session.response.jq_available() {
+                    self.toasts.push("The response is not JSON", ToastKind::Info);
+                    return true;
+                }
+                self.dispatch(Action::FocusPane(PaneId::Response));
+                self.session.response.set_jq_focus(true);
+                true
+            }
+            Action::JqApply(text) => {
+                let cursor = text.chars().count();
+                self.session.response.set_jq_text_with_cursor(&text, cursor);
+                true // sync_jq applies it
+            }
+            Action::JqTeeUp { text, cursor } => {
+                self.dispatch(Action::FocusPane(PaneId::Response));
+                self.session.response.set_jq_text_with_cursor(&text, cursor);
+                self.session.response.set_jq_focus(true);
+                true
+            }
+            Action::JqRunFinished {
+                generation,
+                run,
+                result,
+            } => self.session.response.attach_jq_result(generation, run, result),
+            Action::CopyJqPath(path) => {
+                self.copy_text_with_toast(&path, "Copied path".to_string());
+                true
+            }
             // Task 9 (describe-a-filter) implements cancellation.
             Action::CancelJqDescribe => true,
+            // Task 9 (describe-a-filter) implements the AI call.
+            Action::OpenJqDescribe => true,
             Action::ReloadProjectFiles => {
                 let (changed, warnings) = self.project.reload_if_changed();
                 if changed {
@@ -6708,8 +6852,12 @@ impl App {
         if self.screen != Screen::Main {
             return false;
         }
-        // The response pane's one text surface: its search input while live.
+        // The response pane's text surfaces: the jq bar while focused, else
+        // its search input while live.
         if self.focus == PaneId::Response {
+            if self.session.response.paste_into_jq(text) {
+                return self.update(Action::Render);
+            }
             return self.session.response.paste_into_search(text) && self.update(Action::Render);
         }
         if self.focus != PaneId::Editor {
