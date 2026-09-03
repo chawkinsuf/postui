@@ -17070,6 +17070,58 @@ fn a_big_body_runs_the_filter_in_the_background_and_lands_via_an_action() {
     assert_eq!(outputs, &["7".to_string()]);
 }
 
+/// A background run outstanding when the open request changes must not
+/// leave the response permanently unfiltered: `Session::sync_open` drops
+/// the abandoned run (whose `JqRunFinished` will never arrive at a
+/// `Response` that has moved into, then back out of, the cache), so
+/// `sync_jq`'s reconcile notices `jq_applied` is no longer set and starts
+/// a fresh run instead of no-oping on one that only ever *started*.
+#[test]
+fn a_pending_background_run_is_dropped_and_reapplied_across_a_request_switch() {
+    let mut app = App::new_for_test();
+    let big = format!(
+        r#"{{"pad": "{}", "n": 7}}"#,
+        "x".repeat(crate::components::response::SYNC_PRETTY_BYTES)
+    );
+    ready_response(&mut app, &big);
+    let tree = crate::components::json_tree::JsonTree::parse(&big);
+    app.update(Action::PrettyParsed {
+        generation: app.session.send_generation,
+        tree: tree.map(Box::new),
+    });
+    app.update(Action::ResponseViewMode(
+        crate::components::response::ViewMode::Pretty,
+    ));
+
+    // Start a background run directly against the response — bypassing
+    // `sync_jq`/`spawn_jq_run`, which in tests (no tokio runtime) would
+    // complete it inline — and leave it outstanding, the way a real run
+    // still on the blocking pool looks from here.
+    app.session
+        .response
+        .apply_jq(".n", crate::components::response::SYNC_PRETTY_BYTES)
+        .expect("big body → background");
+    app.editor.jq = ".n".into();
+    assert!(app.session.response.jq_bar().pending.is_some());
+
+    // Switch away and back through `Session::sync_open` directly — the
+    // mechanism `App::dispatch` drives on every request switch — without
+    // ever delivering the outstanding run's `JqRunFinished`.
+    assert!(app.session.sync_open(&Some("elsewhere".into())));
+    assert!(app.session.sync_open(&None));
+
+    // The reconcile step must not see `jq_applied == editor.jq` and
+    // no-op on the abandoned run: it starts a fresh one, which in this
+    // test environment completes inline, landing the filtered tree.
+    app.sync_jq();
+    assert_eq!(
+        app.session.response.view().unwrap().view_text(),
+        "7",
+        "the filter was re-applied, not left unfiltered under a stale bar"
+    );
+    assert!(app.session.response.jq_bar().pending.is_none());
+}
+
 #[test]
 fn the_footer_and_palette_reach_the_jq_bar() {
     let mut app = App::new_for_test();

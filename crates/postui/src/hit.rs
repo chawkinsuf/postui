@@ -247,8 +247,9 @@ pub enum Hit {
     /// the jq filter bar and focuses it, exactly as focusing it any other
     /// way does. Registered only while `Response::jq_available()`.
     ResponseJqButton,
-    /// The jq filter bar's text row: click focuses it and places the
-    /// caret at the clicked column, like `UrlBar`.
+    /// The jq filter bar's text row: click focuses it, unlike `UrlBar` the
+    /// caret is left where it was rather than placed at the clicked
+    /// column.
     ResponseJqBar,
     /// The jq bar's `✦` button: asks the AI to turn a plain-language
     /// description into a filter (the describe-a-filter task).

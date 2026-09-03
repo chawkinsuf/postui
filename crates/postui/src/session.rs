@@ -55,10 +55,19 @@ impl Session {
         if &self.open_slug == open {
             return false;
         }
-        let outgoing = std::mem::take(&mut self.response);
+        let mut outgoing = std::mem::take(&mut self.response);
         // The pane's collapse is a layout preference, not part of any one
         // request's response — it rides along instead of swapping.
         let collapsed = outgoing.collapsed;
+        // A background jq run outstanding on the response leaving screen
+        // has nowhere to deliver its result: the `JqRunFinished` it will
+        // eventually produce is matched by generation/run against whatever
+        // `Response` is on screen when it arrives, which by then is a
+        // different one (or this same one, restored, having moved on).
+        // Dropping it here resets `jq_applied` so the reconcile step
+        // re-applies the filter — as a fresh run — instead of trusting a
+        // filter that was only ever started, never finished.
+        outgoing.drop_pending_jq();
         // An Empty response carries nothing worth restoring; keeping the
         // cache to requests that actually have a result bounds its size to
         // the requests used this session.
@@ -66,6 +75,7 @@ impl Session {
             self.cache.insert(self.open_slug.clone(), outgoing);
         }
         self.response = self.cache.remove(open).unwrap_or_default();
+        self.response.drop_pending_jq();
         self.response.collapsed = collapsed;
         self.open_slug = open.clone();
         true

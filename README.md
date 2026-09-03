@@ -41,6 +41,8 @@ response live; the filter is saved with the request. Right-click any line of the
 verbs that write the jq for you (Filter to this, Count, Pluck field…, Where field…, Only
 items where…). "Describe a filter…" sends the response's *structure* (key names and types,
 never values) to the command in `ai_cmd` (default `claude -p`) and puts the reply in the bar.
+A filter the AI returns is applied immediately — safe because jaq (the embedded jq engine)
+runs in-process with no file or process access, and its output never leaves the app.
 
 ## Configuration
 

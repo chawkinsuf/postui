@@ -142,11 +142,14 @@ pub struct ReadyView {
     /// counterpart of `height`, used to clamp `h_scroll`.
     width: usize,
     /// Cached widest visible line in display columns, keyed by the (mode,
-    /// visible line count) it was measured for — a collapse/expand or a view
-    /// switch changes the visible set, so either invalidates it. Measuring
-    /// is O(all visible lines), too much to redo per wheel tick on a
-    /// megabyte body.
-    content_width: Option<(ViewMode, usize, usize)>,
+    /// visible line count, jq run) it was measured for — a collapse/expand
+    /// or a view switch changes the visible set, so either invalidates it,
+    /// and so does a new jq run: a filtered tree can have the same line
+    /// count as the body tree (or an earlier filtered tree) while its
+    /// content is entirely different, which the (mode, len) key alone
+    /// can't tell apart. Measuring is O(all visible lines), too much to
+    /// redo per wheel tick on a megabyte body.
+    content_width: Option<(ViewMode, usize, u64, usize)>,
     /// The body content rect as of the last draw — the coordinate frame
     /// mouse selection maps through. `None` before the first frame.
     pub last_area: Option<Rect>,
@@ -282,9 +285,9 @@ impl ReadyView {
     /// the cache when its (mode, visible count) key still matches.
     fn content_width(&mut self) -> usize {
         use unicode_width::UnicodeWidthStr;
-        let key = (self.mode, self.visible_len());
-        if let Some((mode, len, w)) = self.content_width
-            && (mode, len) == key
+        let key = (self.mode, self.visible_len(), self.jq_runs);
+        if let Some((mode, len, run, w)) = self.content_width
+            && (mode, len, run) == key
         {
             return w;
         }
@@ -311,7 +314,7 @@ impl ReadyView {
                 .max()
                 .unwrap_or(0),
         };
-        self.content_width = Some((key.0, key.1, w));
+        self.content_width = Some((key.0, key.1, key.2, w));
         w
     }
 
@@ -333,7 +336,7 @@ impl ReadyView {
     /// a draw has run, which is fine for the drag math that reads it: the
     /// horizontal bar it serves only exists on drawn frames.
     fn cached_content_width(&self) -> usize {
-        self.content_width.map(|(_, _, w)| w).unwrap_or(0)
+        self.content_width.map(|(_, _, _, w)| w).unwrap_or(0)
     }
 
     /// The current view's text with nothing hidden — the corpus search runs
@@ -712,6 +715,13 @@ impl Response {
     /// at the end. Not an edit — [`Response::take_jq_edited`] is unaffected.
     pub fn set_jq_text(&mut self, text: &str) {
         self.jq.input = LineInput::new(text);
+        // The text just changed underneath any previous error/stale span —
+        // `apply_jq` re-derives both against the new text right after this
+        // call, so a leftover from before must not linger if it bails
+        // early (e.g. the new response isn't JSON).
+        self.jq.error = None;
+        self.jq.stale = false;
+        self.jq.pending = None;
     }
 
     /// Sets the bar's text and cursor together (a tee-up from elsewhere —
@@ -751,6 +761,23 @@ impl Response {
         &mut self.jq
     }
 
+    /// Forgets an outstanding background jq run when this response is
+    /// being stashed or restored across a request switch: the run's
+    /// `JqRunFinished` is bound for a `Response` that has moved into (or
+    /// out of) the session cache and won't be looked up again by the
+    /// generation/run it was started for, so it would otherwise arrive to
+    /// nothing and leave `jq_applied` claiming a filter that was never
+    /// actually run. Resetting `jq_applied` to `None` makes `sync_jq`'s
+    /// next reconcile re-apply the filter (a fresh run) instead of no-oping
+    /// on a filter it only ever *started*.
+    pub fn drop_pending_jq(&mut self) {
+        if self.jq.pending.take().is_some()
+            && let Some(view) = self.view.as_mut()
+        {
+            view.jq_applied = None;
+        }
+    }
+
     /// Whether jq has anything to run against: a ready view with a parsed
     /// (or still-parsing) JSON body.
     pub fn jq_available(&self) -> bool {
@@ -787,8 +814,22 @@ impl Response {
     /// the run finished inline; `Some` is work the app must complete with
     /// [`Response::attach_jq_result`].
     pub fn apply_jq(&mut self, code: &str, sync_limit: usize) -> Option<JqRunRequest> {
-        let view = self.view.as_mut()?;
+        let Some(view) = self.view.as_mut() else {
+            // No ready view at all: jq is disabled, not merely stale —
+            // nothing left over from a previous response should linger.
+            self.jq.error = None;
+            self.jq.stale = false;
+            self.jq.pending = None;
+            return None;
+        };
         if !view.has_tree_view() {
+            // A non-JSON (or not-yet-parsed) body: same as above — jq has
+            // nothing to run against, so any error/staleness left behind
+            // by a filter typed against a previous, JSON response must not
+            // survive as a stale, undrawable leftover.
+            self.jq.error = None;
+            self.jq.stale = false;
+            self.jq.pending = None;
             return None;
         }
         if view.jq_applied.as_deref() == Some(code) {
@@ -869,7 +910,19 @@ impl Response {
         let Some(view) = self.view.as_mut() else {
             return false;
         };
-        if view.generation != generation || view.jq_runs != run {
+        if view.generation != generation {
+            return false;
+        }
+        // Adopt the parsed document even from a superseded run (a stale
+        // `run` counter): the parse itself is still good for this view, and
+        // caching it here means the next `apply_jq` doesn't have to ask the
+        // worker to re-parse a body that may be huge, on every keystroke.
+        if let Ok((Some(doc), _)) = &result
+            && view.jq_doc.is_none()
+        {
+            view.jq_doc = Some(doc.clone());
+        }
+        if view.jq_runs != run {
             return false;
         }
         self.jq.pending = None;
@@ -2385,17 +2438,33 @@ fn draw_jq_bar(
         );
         // Underline the span in the bar text when known. Ignores
         // horizontal windowing of a very long filter — acceptable.
+        //
+        // The span is a byte range into `code.trim()` (what was actually
+        // compiled), not the untrimmed bar text — offset it by the leading
+        // whitespace `trim()` stripped, and bail out defensively rather
+        // than index: a stale span from a filter compiled before the bar
+        // text last shrank can point past the end, or (once shifted) land
+        // off a char boundary.
         if let Some(span) = err.span() {
             let text = bar.input.text();
-            let start = text[..span.start.min(text.len())].chars().count() as u16;
-            let len = text[span.clone()].chars().count().max(1) as u16;
-            let x0 = row.x + 3 + start; // after "jq "
-            for x in x0..(x0 + len).min(row.right()) {
-                frame.buffer_mut()[(x, row.y)].set_style(
-                    Style::default()
-                        .add_modifier(Modifier::UNDERLINED)
-                        .fg(t.error),
-                );
+            let leading_ws = text.len() - text.trim_start().len();
+            let start_byte = span.start.saturating_add(leading_ws);
+            let end_byte = span.end.saturating_add(leading_ws);
+            if end_byte <= text.len()
+                && start_byte <= end_byte
+                && text.is_char_boundary(start_byte)
+                && text.is_char_boundary(end_byte)
+            {
+                let start = text[..start_byte].chars().count() as u16;
+                let len = text[start_byte..end_byte].chars().count().max(1) as u16;
+                let x0 = row.x + 3 + start; // after "jq "
+                for x in x0..(x0 + len).min(row.right()) {
+                    frame.buffer_mut()[(x, row.y)].set_style(
+                        Style::default()
+                            .add_modifier(Modifier::UNDERLINED)
+                            .fg(t.error),
+                    );
+                }
             }
         }
     }
@@ -4147,6 +4216,33 @@ mod tests {
         );
     }
 
+    /// The horizontal scrollbar's content width is cached per (mode,
+    /// visible line count) — but two different filtered trees can share
+    /// both while their actual content widths differ wildly. The jq run
+    /// counter in the cache key must tell them apart.
+    #[test]
+    fn a_new_jq_run_invalidates_the_content_width_cache_even_at_the_same_line_count() {
+        let mut r = ready(ITEMS);
+        r.apply_jq("\"short\"", SYNC_PRETTY_BYTES);
+        assert_eq!(r.view().unwrap().visible_len(), 1);
+        r.set_scroll_h(10_000);
+        let short_scroll = r.view().unwrap().h_scroll;
+
+        let long_literal = format!("\"{}\"", "x".repeat(200));
+        r.apply_jq(&long_literal, SYNC_PRETTY_BYTES);
+        assert_eq!(
+            r.view().unwrap().visible_len(),
+            1,
+            "same line count as the short filter's output"
+        );
+        r.set_scroll_h(10_000);
+        let long_scroll = r.view().unwrap().h_scroll;
+        assert!(
+            long_scroll > short_scroll,
+            "the wider content must widen the scrollable range: {long_scroll} vs {short_scroll}"
+        );
+    }
+
     #[test]
     fn multiple_outputs_render_as_separate_documents_and_are_counted() {
         let mut r = ready(ITEMS);
@@ -4168,6 +4264,30 @@ mod tests {
         assert!(!r.jq_bar().stale && r.jq_bar().error.is_none());
     }
 
+    /// A superseded background run (an older run counter than the view's
+    /// latest) still hands back a parsed document worth keeping: adopting
+    /// it means the next `apply_jq` for this view finds a cached doc and
+    /// doesn't ask the worker to re-parse the (possibly huge) body.
+    #[test]
+    fn a_superseded_runs_parsed_document_is_still_adopted() {
+        let mut r = ready(ITEMS);
+        let req1 = r
+            .apply_jq(".data.items | length", 0)
+            .expect("over the sync limit → background");
+        assert!(req1.doc.is_none() && req1.body.is_some());
+        let _req2 = r.apply_jq(".data.items[0].id", 0).unwrap();
+        let doc = JqDocument::parse(ITEMS).unwrap();
+        assert!(
+            !r.attach_jq_result(req1.generation, req1.run, Ok((Some(doc), vec!["2".into()]))),
+            "superseded run is still dropped as a result"
+        );
+        let req3 = r
+            .apply_jq(".data.items[1].id", 0)
+            .expect("still over the sync limit");
+        assert!(req3.doc.is_some(), "the superseded run's doc was adopted");
+        assert!(req3.body.is_none(), "no need to re-parse the body");
+    }
+
     #[test]
     fn a_runtime_error_is_reported_the_same_way_without_a_span() {
         let mut r = ready(ITEMS);
@@ -4178,6 +4298,50 @@ mod tests {
             r.view().unwrap().view_text().starts_with("{"),
             "no good output yet: the body stays"
         );
+    }
+
+    /// The error span jaq reports is a byte range into `code.trim()`, not
+    /// the untrimmed bar text — a leading space plus a multibyte char ahead
+    /// of the span must not land the underline mid-character and panic.
+    #[test]
+    fn a_leading_space_and_multibyte_char_before_an_error_span_render_without_panicking() {
+        let mut r = ready(ITEMS);
+        let code = " é";
+        r.set_jq_text(code);
+        r.apply_jq(code, SYNC_PRETTY_BYTES);
+        let err = r.jq_bar().error.clone().expect("syntax error recorded");
+        assert!(err.span().is_some(), "trimmed code still has a span");
+        // Must not panic despite the leading whitespace + multibyte char
+        // ahead of the span in the untrimmed bar text.
+        render(&mut r);
+    }
+
+    /// A stale error (and its span) from a filter typed against one
+    /// response must not survive into a re-sent, non-JSON response: jq
+    /// becomes unavailable, `apply_jq`'s early bail clears the error, and a
+    /// shortened bar text renders with no error row and no panic.
+    #[test]
+    fn a_stale_error_is_cleared_when_the_body_becomes_non_json_and_the_bar_shrinks() {
+        let mut r = ready(ITEMS);
+        r.apply_jq(".a | select(", SYNC_PRETTY_BYTES);
+        let err = r.jq_bar().error.clone().expect("syntax error recorded");
+        assert!(err.span().is_some());
+        // A re-send lands a non-JSON body: jq has nothing to run against.
+        r.set_state(ResponseState::Ready(Box::new(data("plain text"))), 1);
+        assert!(!r.jq_available());
+        r.apply_jq(".a | select(", SYNC_PRETTY_BYTES);
+        assert!(
+            r.jq_bar().error.is_none(),
+            "non-JSON response disables jq silently, no stale error"
+        );
+        assert!(!r.jq_bar().stale);
+        assert!(r.jq_bar().pending.is_none());
+        // Shorten the bar text directly (a backspace), bypassing focus and
+        // `apply_jq`'s reconcile, and render — must not panic and no error
+        // row should appear.
+        r.jq_bar_mut().input = LineInput::new(".a | select");
+        render(&mut r); // must not panic
+        assert!(r.jq_bar().error.is_none(), "still no error row");
     }
 
     #[test]
