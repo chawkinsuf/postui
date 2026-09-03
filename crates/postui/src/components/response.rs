@@ -148,12 +148,19 @@ fn all_null(outputs: &[String]) -> bool {
     if outputs.iter().all(|o| o == "null") {
         return true;
     }
+    // Outputs are jq's own serialisation, so a flat array of nulls is
+    // `[null,null,…]` — read off the text rather than parsed: the single
+    // output of `.` on a multi-megabyte body is the whole body, and a full
+    // parse of it here ran on the UI thread on every keystroke.
     let [only] = outputs else { return false };
-    let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(only)
+    let Some(inner) = only
+        .trim()
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
     else {
         return false;
     };
-    !items.is_empty() && items.iter().all(serde_json::Value::is_null)
+    !inner.trim().is_empty() && inner.split(',').all(|item| item.trim() == "null")
 }
 
 /// Work the app must hand to the blocking pool: a jq run too big to run
@@ -4703,6 +4710,20 @@ mod tests {
             r.view().unwrap().view_text().starts_with("{"),
             "an empty filter shows the body again"
         );
+    }
+
+    #[test]
+    fn all_null_reads_the_output_text_without_parsing_it() {
+        assert!(all_null(&["null".into()]));
+        assert!(all_null(&["null".into(), "null".into()]));
+        assert!(all_null(&["[null,null]".into()]));
+        assert!(all_null(&["[null, null]".into()]));
+        assert!(!all_null(&["[]".into()]));
+        assert!(!all_null(&["[null,1]".into()]));
+        assert!(!all_null(&["[\"null\"]".into()]));
+        assert!(!all_null(&["{\"a\":null}".into()]));
+        assert!(!all_null(&["null".into(), "1".into()]));
+        assert!(!all_null(&["[[null]]".into()]));
     }
 
     /// The horizontal scrollbar's content width is cached per (mode,
