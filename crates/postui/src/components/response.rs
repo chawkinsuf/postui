@@ -195,6 +195,11 @@ impl JqRunOutput {
 /// a run that finishes inside this window never flickers one.
 pub const JQ_SPINNER_AFTER: Duration = Duration::from_millis(100);
 
+/// How far the tree's colours blend toward the page while a run is past
+/// `JQ_SPINNER_AFTER`: half way keeps every hue recognisable at roughly
+/// half the contrast.
+const JQ_RUNNING_FADE: f32 = 0.5;
+
 /// Everything about *how* a ready response is being looked at. Rebuilt from
 /// scratch whenever a new response lands, so no state leaks between requests.
 pub struct ReadyView {
@@ -1910,13 +1915,17 @@ impl Component for Response {
         }
         let mut body = body_lines(view, t, ctx.focused, ctx.hovered, hits, body_area);
         // While a filter run outlives its grace period the tree on screen
-        // is about to be replaced: it dims (in step with the bar's
-        // spinner) rather than vanishing, so nothing flickers on a fast
-        // run and the reader keeps their place through a slow one.
+        // is about to be replaced: it drops contrast (in step with the
+        // bar's spinner) rather than vanishing, so nothing flickers on a
+        // fast run and the reader keeps their place through a slow one.
+        // Every span keeps its own hue, blended partway toward the page —
+        // keys still read as keys, just quieter.
         if view.mode == ViewMode::Pretty && self.jq.running_long(ctx.now) {
             for line in &mut body {
                 for span in &mut line.spans {
-                    span.style = span.style.fg(t.text_muted);
+                    if let Some(fg) = span.style.fg {
+                        span.style.fg = Some(crate::theme::mix(fg, t.page, JQ_RUNNING_FADE));
+                    }
                 }
             }
         }
@@ -4882,7 +4891,7 @@ mod tests {
     }
 
     #[test]
-    fn the_tree_dims_while_a_background_run_is_past_the_grace_period() {
+    fn the_tree_loses_contrast_while_a_background_run_is_past_the_grace_period() {
         let theme = Theme::dark();
         let mut r = ready(ITEMS);
         r.set_view_mode(ViewMode::Pretty);
@@ -4921,8 +4930,8 @@ mod tests {
         );
         assert_eq!(
             key_fg(&mut r, since + JQ_SPINNER_AFTER),
-            theme.text_muted,
-            "past it the whole tree dims"
+            crate::theme::mix(theme.accent, theme.page, JQ_RUNNING_FADE),
+            "past it the key keeps its hue at lower contrast"
         );
         r.attach_jq_result(
             req.generation,
