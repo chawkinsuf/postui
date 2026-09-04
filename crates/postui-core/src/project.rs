@@ -575,6 +575,44 @@ pub fn move_space(root: &Path, name: &str, delta: i32) -> Result<(), ProjectErro
     write_spaces(root, &spaces)
 }
 
+/// Writes `displayed` — the whole displayed space order, as a drag left
+/// it — over the list on disk. Unlike [`move_space`], which swaps two
+/// slots, a drop *shifts* every row between source and target by one
+/// (remove/insert), so the caller hands the finished order over rather
+/// than a delta.
+///
+/// The valid-name slots of the written list are collected exactly as
+/// [`move_space`] does and `displayed` is dealt back out over them in
+/// order; an invalid listed entry keeps the slot it was written in. The
+/// order must name exactly those slots, once each — anything else would
+/// drop or duplicate a space on disk, so it is refused with
+/// [`ProjectError::NotFound`] for the offending name. Nothing is written
+/// when the result equals the list already on disk.
+pub fn set_space_order(root: &Path, displayed: &[String]) -> Result<(), ProjectError> {
+    let mut spaces = write_list(root);
+    let slots: Vec<usize> = (0..spaces.len())
+        .filter(|i| valid_space_name(&spaces[*i]))
+        .collect();
+    let valid: Vec<String> = slots.iter().map(|i| spaces[*i].clone()).collect();
+    if let Some(extra) = displayed.iter().find(|n| !valid.contains(n)) {
+        return Err(ProjectError::NotFound(extra.clone()));
+    }
+    if let Some(missing) = valid.iter().find(|n| !displayed.contains(n)) {
+        return Err(ProjectError::NotFound(missing.clone()));
+    }
+    if displayed.len() != valid.len() {
+        // Same names, wrong count: a duplicate. Name the first one.
+        return Err(ProjectError::NotFound(displayed[0].clone()));
+    }
+    for (slot, name) in slots.iter().zip(displayed) {
+        spaces[*slot] = name.clone();
+    }
+    if valid == displayed {
+        return Ok(());
+    }
+    write_spaces(root, &spaces)
+}
+
 /// Creates an empty `root/environments/<slug>.toml` for a free-form
 /// display name (slug rules as [`create_space`]), making the directory if
 /// needed, and records the name under `[environment.<slug>]`. Returns the
@@ -1578,6 +1616,56 @@ mod tests {
         assert!(matches!(
             move_space(dir.path(), "nope", 1),
             Err(ProjectError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn set_space_order_hands_the_dragged_order_out_over_the_valid_slots() {
+        let dir = tempdir().unwrap();
+        // "Bad Name" is not a valid space name: it keeps its slot while
+        // the three real spaces are dealt back out around it.
+        write_spaces(
+            dir.path(),
+            &[
+                "main".into(),
+                "Bad Name".into(),
+                "auth".into(),
+                "billing".into(),
+            ],
+        )
+        .unwrap();
+        set_space_order(
+            dir.path(),
+            &["billing".into(), "main".into(), "auth".into()],
+        )
+        .unwrap();
+        assert_eq!(
+            load_meta(dir.path()).unwrap().spaces,
+            ["billing", "Bad Name", "main", "auth"]
+        );
+    }
+
+    #[test]
+    fn set_space_order_writes_nothing_when_the_order_is_unchanged() {
+        let dir = tempdir().unwrap();
+        write_spaces(dir.path(), &["main".into(), "auth".into()]).unwrap();
+        let path = dir.path().join("project.toml");
+        let before = std::fs::read(&path).unwrap();
+        set_space_order(dir.path(), &["main".into(), "auth".into()]).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), before, "byte identical");
+    }
+
+    #[test]
+    fn set_space_order_refuses_an_order_that_is_not_the_space_list() {
+        let dir = tempdir().unwrap();
+        write_spaces(dir.path(), &["main".into(), "auth".into()]).unwrap();
+        assert!(matches!(
+            set_space_order(dir.path(), &["main".into(), "nope".into()]),
+            Err(ProjectError::NotFound(n)) if n == "nope"
+        ));
+        assert!(matches!(
+            set_space_order(dir.path(), &["main".into()]),
+            Err(ProjectError::NotFound(n)) if n == "auth"
         ));
     }
 
