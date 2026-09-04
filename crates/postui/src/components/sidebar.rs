@@ -91,6 +91,22 @@ pub struct Sidebar {
     /// easing — once the anim settles the band paints solely on the open
     /// row and this goes stale harmlessly.
     pub band_fade_from: Option<usize>,
+    /// A live row drag (spec §Sidebar): while `Some`, `rebuild` shows
+    /// `working` for that one level instead of the order list.
+    pub drag: Option<RowDrag>,
+    /// Screen row of the first list line as of the last draw — with
+    /// `scroll`, maps a pointer row back to a row index (`row_at_y`).
+    last_list_top: u16,
+}
+
+/// A live drag of one sidebar request row: the working order the pointer
+/// has arranged so far, for the one level the dragged row belongs to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowDrag {
+    pub slug: String,          // full slug of the dragged request
+    pub level: String,         // level within the space ("" root, "auth", …)
+    pub original: Vec<String>, // sibling order at drag start (relative slugs)
+    pub working: Vec<String>,  // current on-screen order (relative slugs)
 }
 
 impl Sidebar {
@@ -131,8 +147,14 @@ impl Sidebar {
             .collect();
         sorted.sort_by(|a, b| a.slug.cmp(&b.slug));
 
+        let overlay = self
+            .drag
+            .as_ref()
+            .map(|d| (d.level.as_str(), d.working.as_slice()));
         let mut rows = Vec::new();
-        Self::build_rows(&sorted, &prefix, 0, expanded, space, order, &mut rows);
+        Self::build_rows(
+            &sorted, &prefix, 0, expanded, space, order, overlay, &mut rows,
+        );
         self.rows = rows;
 
         self.selected =
@@ -197,6 +219,7 @@ impl Sidebar {
         expanded: &BTreeSet<String>,
         space: &str,
         order: &[String],
+        overlay: Option<(&str, &[String])>,
         rows: &mut Vec<Row>,
     ) {
         let mut folder_children: std::collections::BTreeMap<String, Vec<RequestListing>> =
@@ -215,7 +238,15 @@ impl Sidebar {
                 requests.push(e);
             }
         }
-        let requests = postui_core::order::order_level(&requests, order, space);
+        let this_level = prefix
+            .strip_prefix(&format!("{space}/"))
+            .unwrap_or("")
+            .trim_end_matches('/');
+        let order_here: &[String] = match overlay {
+            Some((level, working)) if level == this_level => working,
+            _ => order,
+        };
+        let requests = postui_core::order::order_level(&requests, order_here, space);
         for e in requests {
             let leaf = e.slug.rsplit('/').next().unwrap_or(&e.slug);
             rows.push(Row::Request {
@@ -244,6 +275,7 @@ impl Sidebar {
                     expanded,
                     space,
                     order,
+                    overlay,
                     rows,
                 );
             }
@@ -414,6 +446,77 @@ impl Sidebar {
         }
         Some((first, last))
     }
+
+    /// The row index a screen row `y` maps to, given the last draw's scroll
+    /// offset and list top — clamped to the row list.
+    pub fn row_at_y(&self, y: u16) -> usize {
+        let rel = y.saturating_sub(self.last_list_top) as usize;
+        (self.scroll + rel).min(self.rows.len().saturating_sub(1))
+    }
+
+    /// Starts a drag of row `i`: records its level's sibling order as both
+    /// `original` and the starting `working` order. Refuses a folder row.
+    pub fn begin_drag(&mut self, i: usize, space: &str) -> bool {
+        let Some((first, last)) = self.group_bounds(i) else {
+            return false;
+        };
+        let rel = |slug: &str| {
+            postui_core::order::relative(slug, space)
+                .unwrap_or(slug)
+                .to_string()
+        };
+        let group: Vec<String> = self.rows[first..=last]
+            .iter()
+            .filter_map(|r| match r {
+                Row::Request { slug, .. } => Some(rel(slug)),
+                _ => None,
+            })
+            .collect();
+        let Some(Row::Request { slug, .. }) = self.rows.get(i) else {
+            return false;
+        };
+        let level = postui_core::order::level_of(&rel(slug)).to_string();
+        self.drag = Some(RowDrag {
+            slug: slug.clone(),
+            level,
+            original: group.clone(),
+            working: group,
+        });
+        true
+    }
+
+    /// Moves the dragged request so it sits at the group slot under row
+    /// `i` (clamped to the group). Returns whether the working order
+    /// changed; the caller then `rebuild`s. The rows mirror `working`
+    /// (the overlay is what built them), so the dragged row's offset
+    /// from the group's first row is its index in `working`.
+    pub fn drag_to_row(&mut self, i: usize) -> bool {
+        let Some(slug) = self.drag.as_ref().map(|d| d.slug.clone()) else {
+            return false;
+        };
+        let Some(cur_row) = self
+            .rows
+            .iter()
+            .position(|r| matches!(r, Row::Request { slug: s, .. } if *s == slug))
+        else {
+            return false;
+        };
+        let Some((first, last)) = self.group_bounds(cur_row) else {
+            return false;
+        };
+        let cur = cur_row - first;
+        let target = i.clamp(first, last) - first;
+        if cur == target {
+            return false;
+        }
+        let drag = self.drag.as_mut().expect("checked above");
+        if cur >= drag.working.len() || target >= drag.working.len() {
+            return false;
+        }
+        let moved = drag.working.remove(cur);
+        drag.working.insert(target, moved);
+        true
+    }
 }
 
 impl Component for Sidebar {
@@ -538,6 +641,7 @@ impl Component for Sidebar {
             height: (area.y + area.height) - list_top,
         };
         self.last_list_height = list_area.height as usize;
+        self.last_list_top = list_area.y;
 
         if self.rows.is_empty() {
             let empty = Paragraph::new(vec![Line::raw(""), Line::raw("No requests yet.")])
@@ -658,8 +762,14 @@ impl Component for Sidebar {
             });
             let is_cursor =
                 ctx.focused && self.selected == Some(i) && !is_band_row && band_alpha.is_none();
+            let is_dragged = matches!(
+                (row, self.drag.as_ref()),
+                (Row::Request { slug, .. }, Some(d)) if *slug == d.slug
+            );
 
-            let highlight = if is_band_row {
+            let highlight = if is_dragged {
+                RowHighlight::Selected
+            } else if is_band_row {
                 RowHighlight::Selected
             } else if is_cursor {
                 RowHighlight::Cursor
@@ -706,7 +816,9 @@ impl Component for Sidebar {
                 Self::resolve_fill(theme, highlight, theme.panel, hover_t)
             };
 
-            self.paint_row(buf, row, text_row, list_area, row_fill, is_open, theme);
+            self.paint_row(
+                buf, row, text_row, list_area, row_fill, is_open, is_dragged, theme,
+            );
 
             // Hit math is a direct `y - list_top` on the 1-line pitch now —
             // no half-pad rows to fold in.
@@ -818,6 +930,7 @@ impl Sidebar {
         list_area: Rect,
         row_fill: Color,
         open: bool,
+        dragged: bool,
         theme: &Theme,
     ) {
         let right = list_area.x + list_area.width;
@@ -825,6 +938,20 @@ impl Sidebar {
         // `ListRow` or the travel band), whether or not this row is
         // selected, so content never shifts when selection changes.
         let text_x = list_area.x + 1;
+
+        // A row being dragged paints its grip glyph in the reserved
+        // accent-bar column — nothing else shifts.
+        if dragged {
+            text(
+                buf,
+                list_area.x,
+                text_row,
+                "\u{22ee}",
+                theme.accent,
+                row_fill,
+                false,
+            );
+        }
 
         match row {
             Row::Folder {
@@ -1735,6 +1862,72 @@ mod tests {
         assert_eq!(s.group_bounds(2), None, "a folder row has no group");
         assert_eq!(s.group_bounds(3), Some((3, 4)));
         assert_eq!(s.group_bounds(6), Some((6, 6)));
+    }
+
+    #[test]
+    fn a_working_drag_order_overrides_exactly_one_level() {
+        let mut s = Sidebar::default();
+        s.refresh(
+            listing(&["a", "b", "c", "auth/x", "auth/y"]),
+            "main",
+            &expanded(&["auth"]),
+            &[],
+        );
+        assert!(s.begin_drag(2, "main")); // main/c
+        let d = s.drag.as_ref().unwrap();
+        assert_eq!(d.original, ["a", "b", "c"]);
+        assert_eq!(d.level, "");
+        assert!(s.drag_to_row(0));
+        s.rebuild("main", &expanded(&["auth"]), &[]);
+        assert_eq!(
+            row_slugs(&s),
+            ["main/c", "main/a", "main/b", "main/auth/", "main/auth/x", "main/auth/y"]
+        );
+        // Pointer past the group's end pins to the last slot.
+        assert!(s.drag_to_row(10));
+        s.rebuild("main", &expanded(&["auth"]), &[]);
+        assert_eq!(row_slugs(&s)[..3], ["main/a", "main/b", "main/c"]);
+        assert!(!s.drag_to_row(10), "no change reports false");
+        s.drag = None;
+        s.rebuild("main", &expanded(&["auth"]), &[]);
+        assert_eq!(row_slugs(&s)[..3], ["main/a", "main/b", "main/c"]);
+    }
+
+    #[test]
+    fn begin_drag_refuses_a_folder_row() {
+        let mut s = Sidebar::default();
+        s.refresh(listing(&["a", "auth/x"]), "main", &expanded(&[]), &[]);
+        assert!(!s.begin_drag(1, "main"));
+        assert!(s.drag.is_none());
+    }
+
+    #[test]
+    fn draw_paints_the_grip_glyph_only_on_the_dragged_row() {
+        let mut s = Sidebar::default();
+        s.refresh(listing(&["a", "b", "c"]), "main", &expanded(&[]), &[]);
+        assert!(s.begin_drag(0, "main")); // main/a
+        let theme = Theme::dark();
+        let ctx = draw_ctx(&theme, None);
+        let backend = ratatui::backend::TestBackend::new(30, 12);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut hits = HitMap::default();
+        terminal
+            .draw(|f| s.draw(f, f.area(), &ctx, &mut hits))
+            .unwrap();
+
+        let dragged_row = hits.rect_of(&Hit::SidebarRow(0)).expect("dragged row hit");
+        let other_row = hits.rect_of(&Hit::SidebarRow(1)).expect("other row hit");
+        let buf = terminal.backend().buffer();
+        assert_eq!(
+            buf[(dragged_row.x, dragged_row.y)].symbol(),
+            "\u{22ee}",
+            "dragged row's gutter shows the grip glyph"
+        );
+        assert_ne!(
+            buf[(other_row.x, other_row.y)].symbol(),
+            "\u{22ee}",
+            "non-dragged rows never show the grip glyph"
+        );
     }
 
     #[test]
