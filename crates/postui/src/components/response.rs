@@ -2,10 +2,10 @@ use super::json_tree::{JsonTree, TokenKind};
 use super::line_input::LineInput;
 use super::{Component, DrawCtx, pane_surface};
 use crate::action::{Action, CopyTarget};
+use crate::config::JqTab;
 use crate::hit::ScrollbarSpec;
 use crate::layout::PaneId;
 use crate::theme::Theme;
-use crate::config::JqTab;
 use postui_core::jq::complete::{self, Candidate, Context, Kind};
 use postui_core::jq::{JqDocument, JqError};
 use ratatui::Frame;
@@ -1303,14 +1303,15 @@ impl Response {
         let bar = &mut self.jq;
         let focused = bar.focused;
         let at_end = bar.caret_at_end();
-        let text = bar.input.text().to_string();
-        let c = &mut bar.completion;
         if !focused || !at_end {
+            let c = &mut bar.completion;
             c.ctx = None;
             c.candidates.clear();
             c.index = 0;
             return None;
         }
+        let text = bar.input.text().to_string();
+        let c = &mut bar.completion;
         let ctx = complete::context(&text);
         if ctx != c.ctx {
             c.index = 0;
@@ -5196,7 +5197,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn a_stale_sequence_attach_leaves_the_cache_alone() {
         let big = big_body("pad");
@@ -5236,6 +5236,7 @@ mod tests {
         );
         assert_eq!(r.jq_ghost(), Some("pad"));
     }
+
 
     fn shift(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::SHIFT)
