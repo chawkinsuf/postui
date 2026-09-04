@@ -144,7 +144,9 @@ pub fn order_rename(root: &Path, space: &str, from: &str, to: &str) -> Result<()
 }
 
 /// Puts `rel` directly after `anchor`; a no-op when `anchor` is unlisted
-/// (the level has no list, so the copy sorts next to its source anyway).
+/// (the level has no list, so the copy sorts next to its source anyway),
+/// and equally a no-op when `rel` is already listed at *any* level — an
+/// existing slot is never moved by a copy landing beside its source.
 pub fn order_insert_after(
     root: &Path,
     space: &str,
@@ -201,6 +203,10 @@ pub fn set_level_order(
     level: &str,
     slugs: &[String],
 ) -> Result<(), ProjectError> {
+    debug_assert!(
+        slugs.iter().all(|s| level_of(s) == level),
+        "set_level_order got slugs from another level: {slugs:?} is not all under {level:?}"
+    );
     let meta = load_meta(root)?;
     let merged = merge_level(space_order(&meta, space), level, slugs);
     edit_project_toml(root, |doc| write_order(doc, space, &merged))
@@ -235,6 +241,12 @@ pub fn move_request(root: &Path, slug: &str, delta: i32) -> Result<(), ProjectEr
         return Err(ProjectError::NotFound(slug.to_string()));
     };
     let target = (pos as i32 + delta).clamp(0, shown.len() as i32 - 1) as usize;
+    // Already at the end the move asks for: write nothing. Otherwise a
+    // no-op alt+↑ on the first row of a never-ordered level would
+    // materialise the whole level into `project.toml`.
+    if target == pos {
+        return Ok(());
+    }
     let moved = shown.remove(pos);
     shown.insert(target, moved);
     set_level_order(root, space, level, &shown)
@@ -399,6 +411,24 @@ mod tests {
             move_request(dir.path(), "main/nope", 1),
             Err(crate::project::ProjectError::NotFound(_))
         ));
+    }
+
+    #[test]
+    fn a_move_that_changes_nothing_writes_nothing() {
+        // alt+↑ on the first row of a never-ordered level must not
+        // materialise the whole level into `project.toml`.
+        let dir = project_with(&["main/a", "main/b", "main/c"]);
+        let path = dir.path().join("project.toml");
+        let before = std::fs::read(&path).ok();
+        move_request(dir.path(), "main/a", -1).unwrap(); // already first
+        move_request(dir.path(), "main/c", 3).unwrap(); // already last
+        move_request(dir.path(), "main/b", 0).unwrap(); // nowhere
+        assert_eq!(
+            std::fs::read(&path).ok(),
+            before,
+            "project.toml is byte identical (still absent, here)"
+        );
+        assert!(order_of(dir.path(), "main").is_empty());
     }
 
     #[test]
