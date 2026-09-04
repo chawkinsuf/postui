@@ -17683,6 +17683,52 @@ fn clicking_in_the_jq_bar_places_the_caret_and_dragging_selects() {
 }
 
 #[test]
+fn clicking_outside_the_jq_bar_blurs_it_like_enter() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.update(Action::JqApply(".data.total".into()));
+    render_once(&mut app);
+    let rect = app
+        .hits
+        .rect_of(&Hit::ResponseJqBar)
+        .expect("bar row registered");
+    app.handle_mouse(left_down(rect.x + 4, rect.y));
+    assert!(app.session.response.jq_focused());
+
+    // A click on the response body — the same pane — leaves the bar,
+    // keeping the filter on and its text: Enter, by mouse.
+    let row = app
+        .hits
+        .rect_of(&Hit::Pane(PaneId::Response))
+        .expect("response pane registered");
+    assert!(app.handle_mouse(left_down(row.x + 1, row.y + row.height / 2)));
+    assert!(!app.session.response.jq_focused(), "the click away blurs");
+    assert!(app.session.response.jq_open(), "…and the bar stays open");
+    assert_eq!(app.session.response.jq_text(), ".data.total");
+    assert_eq!(app.session.response.view().unwrap().view_text(), "2");
+
+    // A scroll never pulls the caret out: the thumb is exempt.
+    app.handle_mouse(left_down(rect.x + 4, rect.y));
+    assert!(app.session.response.jq_focused());
+    if let Some(thumb) = app.hits.rect_of(&Hit::ScrollbarThumb(PaneId::Response)) {
+        app.handle_mouse(left_down(thumb.x, thumb.y));
+        app.handle_mouse(left_up(thumb.x, thumb.y));
+        assert!(
+            app.session.response.jq_focused(),
+            "a scrollbar press keeps focus"
+        );
+    }
+
+    // A click on another pane blurs too (focus moved off the response).
+    let sidebar = app
+        .hits
+        .rect_of(&Hit::Pane(PaneId::Sidebar))
+        .expect("sidebar registered");
+    app.handle_mouse(left_down(sidebar.x + 1, sidebar.y + 1));
+    assert!(!app.session.response.jq_focused());
+}
+
+#[test]
 fn right_click_on_the_jq_bar_offers_copy_and_paste_only() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.txt");

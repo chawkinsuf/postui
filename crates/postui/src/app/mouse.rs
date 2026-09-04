@@ -87,7 +87,29 @@ impl App {
                 changed
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                let Some(hit) = self.hits.hit_at(m.column, m.row).cloned() else {
+                let hit = self.hits.hit_at(m.column, m.row).cloned();
+                // A click anywhere but the jq bar itself is Enter for a
+                // focused bar: the filter is already applied (every edit
+                // re-ran it), so all that is left to do is leave the bar.
+                // Modal and scrollbar hits are exempt, like every other
+                // click-away rule: a popup over the pane or a scroll must
+                // not pull the caret out from under what was being typed.
+                let jq_blurred = self.session.response.jq_focused()
+                    && self.modals.is_empty()
+                    && !matches!(
+                        hit,
+                        Some(
+                            Hit::ResponseJqBar
+                                | Hit::ScrollbarThumb(_)
+                                | Hit::ScrollbarTrack(..)
+                                | Hit::HScrollThumb(_)
+                                | Hit::HScrollTrack(..)
+                        )
+                    );
+                if jq_blurred {
+                    self.session.response.set_jq_focus(false);
+                }
+                let Some(hit) = hit else {
                     // Bare background is still a click *away* from an
                     // in-place edit. The Variable Manager has plenty of it
                     // — under the last grid row, beside the title buttons —
@@ -98,7 +120,7 @@ impl App {
                     let live = self.varmanager.form.editing.is_some()
                         || self.varmanager.grid.editing.is_some();
                     if !live {
-                        return false;
+                        return jq_blurred;
                     }
                     self.commit_var_form();
                     self.commit_grid_edit();
@@ -135,7 +157,7 @@ impl App {
                 };
                 let was_content =
                     self.editor.sub_focus == crate::components::editor::SubFocus::Content;
-                let changed = self.on_hit(hit, clicks, m);
+                let changed = self.on_hit(hit, clicks, m) | jq_blurred;
                 if !was_content
                     && self.editor.sub_focus == crate::components::editor::SubFocus::Content
                 {
