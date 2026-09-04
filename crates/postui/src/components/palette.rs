@@ -188,7 +188,7 @@ pub fn all_commands() -> Vec<Command> {
         Command {
             id: "project-open-path",
             name: "Project: open by path…",
-            description: "Open a project directory by typing its path",
+            description: "Browse to a project folder and open it",
             action: Action::PromptOpenProjectPath,
         },
         Command {

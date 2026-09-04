@@ -138,6 +138,20 @@ pub enum Hit {
     /// dark/light filter): click dispatches the toggle's action without
     /// closing the modal.
     ChooserToggle,
+    /// Row `i` of the file picker's list (the parent link or an entry):
+    /// click selects, a click on the selected row (or a double click)
+    /// acts on it exactly as Enter does.
+    PickerRow(usize),
+    /// The file picker's primary button (`Save` / `Open this folder`):
+    /// confirms the field's name or the folder being shown, never the
+    /// selected row.
+    PickerPrimary,
+    /// The file picker's title-row `hidden` toggle: relists with dotfiles
+    /// shown or hidden.
+    PickerHidden,
+    /// The New project modal's browse button beside its path field: opens
+    /// the folder picker, which fills the path on confirm.
+    NewProjectBrowse,
     PaletteRow(usize),
     VarPickerRow(usize),
     /// A visible row of the Variable Manager's left list (spec §3.4).

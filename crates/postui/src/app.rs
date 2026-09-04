@@ -1716,14 +1716,64 @@ impl App {
                 } else {
                     "txt"
                 };
-                let prefill = format!("~/Downloads/{slug}-response.{ext}");
-                self.push_modal(Modal::Prompt {
-                    title: "Save response body".into(),
-                    input: crate::components::line_input::LineInput::new(&prefill),
-                    kind: PromptKind::SaveBodyAs,
-                    revealed: false,
-                });
-                true
+                self.open_save_picker(
+                    "Save response body",
+                    crate::components::file_picker::PickerTarget::SaveBody,
+                    &format!("{slug}-response.{ext}"),
+                )
+            }
+            Action::PickerConfirm { target, path } => {
+                use crate::components::file_picker::PickerTarget;
+                match target {
+                    PickerTarget::SaveBody | PickerTarget::SaveView => {
+                        let text = path.to_string_lossy().into_owned();
+                        let write = if target == PickerTarget::SaveBody {
+                            Action::SaveBodyToFile(text)
+                        } else {
+                            Action::SaveViewToFile(text)
+                        };
+                        if path.is_file() {
+                            let name = path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| path.display().to_string());
+                            self.push_modal(Modal::Confirm {
+                                title: "File exists".into(),
+                                body: format!("overwrite {name}?"),
+                                choices: vec![
+                                    ('y', "Overwrite".into(), vec![write]),
+                                    ('n', "Cancel".into(), vec![]),
+                                ],
+                            });
+                            return true;
+                        }
+                        self.apply(write)
+                    }
+                    PickerTarget::OpenProject => self.apply(Action::OpenProjectByPath(
+                        path.to_string_lossy().into_owned(),
+                    )),
+                    PickerTarget::NewProjectDir => {
+                        let Some(Modal::NewProject {
+                            name,
+                            path: field,
+                            on_path,
+                            prefilled,
+                        }) = self.modals.top_mut()
+                        else {
+                            return false;
+                        };
+                        let slug = crate::components::modal::slugify(name.text());
+                        let full = if slug.is_empty() {
+                            format!("{}{}", path.display(), std::path::MAIN_SEPARATOR)
+                        } else {
+                            path.join(slug).display().to_string()
+                        };
+                        *field = crate::components::line_input::LineInput::new(&full);
+                        *on_path = true;
+                        *prefilled = true;
+                        true
+                    }
+                }
             }
             Action::SaveBodyToFile(path) => {
                 let ResponseState::Ready(data) = self.session.response.state() else {
@@ -1776,14 +1826,11 @@ impl App {
                 } else {
                     "txt"
                 };
-                let prefill = format!("~/Downloads/{slug}-response.{ext}");
-                self.push_modal(Modal::Prompt {
-                    title: "Save response view".into(),
-                    input: crate::components::line_input::LineInput::new(&prefill),
-                    kind: PromptKind::SaveViewAs,
-                    revealed: false,
-                });
-                true
+                self.open_save_picker(
+                    "Save response view",
+                    crate::components::file_picker::PickerTarget::SaveView,
+                    &format!("{slug}-response.{ext}"),
+                )
             }
             Action::SaveViewToFile(path) => {
                 let Some(view) = self.session.response.view() else {
@@ -2845,12 +2892,30 @@ impl App {
                 true
             }
             Action::PromptOpenProjectPath => {
-                self.push_modal(Modal::Prompt {
-                    title: "Open project at path".into(),
-                    input: crate::components::line_input::LineInput::new(""),
-                    kind: PromptKind::OpenProjectPath,
-                    revealed: false,
-                });
+                use crate::components::file_picker::{FilePickerState, PickerTarget};
+                let start = self.registry.default_root();
+                self.push_modal(Modal::FilePicker(FilePickerState::new(
+                    "Open project",
+                    PickerTarget::OpenProject,
+                    &start,
+                    "",
+                )));
+                true
+            }
+            Action::BrowseNewProjectDir => {
+                use crate::components::file_picker::{FilePickerState, PickerTarget};
+                let Some(Modal::NewProject { path, .. }) = self.modals.top() else {
+                    return false;
+                };
+                // Start where the path field points (its nearest existing
+                // folder), so browsing continues from the default root.
+                let start = crate::config::expand_tilde(path.text().trim());
+                self.push_modal(Modal::FilePicker(FilePickerState::new(
+                    "Choose project folder",
+                    PickerTarget::NewProjectDir,
+                    &start,
+                    "",
+                )));
                 true
             }
             Action::OpenProjectByPath(text) => {
@@ -7306,6 +7371,10 @@ impl App {
                     c.paste(text);
                     return self.update(Action::Render);
                 }
+                Some(crate::components::modal::Modal::FilePicker(p)) => {
+                    p.paste(text);
+                    return self.update(Action::Render);
+                }
                 Some(crate::components::modal::Modal::VarPicker(v)) => {
                     return v.paste(text) && self.update(Action::Render);
                 }
@@ -7573,6 +7642,24 @@ impl App {
     /// top of an existing modal stack, so touching `ModalOpen` for them
     /// would either double-animate or wrongly snap a panel modal's own
     /// baseline mid-flight.
+    /// Opens the save picker in the Downloads folder (else home) with a
+    /// suggested filename; confirming routes through `PickerConfirm`.
+    fn open_save_picker(
+        &mut self,
+        title: &str,
+        target: crate::components::file_picker::PickerTarget,
+        suggested: &str,
+    ) -> bool {
+        use crate::components::file_picker::{FilePickerState, default_save_dir};
+        self.push_modal(Modal::FilePicker(FilePickerState::new(
+            title,
+            target,
+            &default_save_dir(),
+            suggested,
+        )));
+        true
+    }
+
     pub(crate) fn push_modal(&mut self, modal: Modal) {
         if !matches!(modal, Modal::Dropdown(_)) {
             let now = Instant::now();

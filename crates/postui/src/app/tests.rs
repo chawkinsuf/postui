@@ -5285,6 +5285,179 @@ fn new_project_modal_prefills_path_from_name_and_creates() {
 }
 
 #[test]
+fn open_by_path_opens_the_folder_picker_and_a_non_project_offers_to_create() {
+    use crate::components::file_picker::PickerTarget;
+    let mut app = App::new_for_test();
+    let root = tempfile::tempdir().unwrap();
+    app.registry.root = Some(root.path().to_path_buf());
+
+    app.update(Action::PromptOpenProjectPath);
+
+    let Some(Modal::FilePicker(picker)) = app.modals.top() else {
+        panic!("expected the folder picker");
+    };
+    assert_eq!(picker.target(), PickerTarget::OpenProject);
+    assert_eq!(picker.dir(), root.path(), "starts at the projects root");
+
+    let bare = tempfile::tempdir().unwrap();
+    app.update(Action::PickerConfirm {
+        target: PickerTarget::OpenProject,
+        path: bare.path().to_path_buf(),
+    });
+    let Some(Modal::Confirm { title, .. }) = app.modals.top() else {
+        panic!("expected the create-project confirm");
+    };
+    assert_eq!(title, "Not a postui project");
+}
+
+#[test]
+fn picker_confirm_of_a_project_folder_switches_to_it() {
+    use crate::components::file_picker::PickerTarget;
+    let (mut app, _a, b) = two_projects();
+    app.update(Action::PickerConfirm {
+        target: PickerTarget::OpenProject,
+        path: b.path().to_path_buf(),
+    });
+    assert_eq!(app.project.root, b.path());
+}
+
+#[test]
+fn new_project_browse_button_fills_the_path_from_the_picked_folder() {
+    use crate::components::file_picker::PickerTarget;
+    let mut app = App::new_for_test();
+    let root = tempfile::tempdir().unwrap();
+    app.registry.root = Some(root.path().to_path_buf());
+    app.update(Action::PromptNewProject);
+    type_chars(&mut app, "My Svc");
+    app.anims.finish_all();
+
+    click_hit(&mut app, Hit::NewProjectBrowse);
+
+    let Some(Modal::FilePicker(picker)) = app.modals.top() else {
+        panic!("expected the folder picker on top of the new-project modal");
+    };
+    assert_eq!(picker.target(), PickerTarget::NewProjectDir);
+    assert_eq!(picker.dir(), root.path());
+
+    // Browse somewhere else and confirm the folder shown (alt+enter).
+    let elsewhere = tempfile::tempdir().unwrap();
+    app.paste_text(&elsewhere.path().to_string_lossy());
+    app.handle_key(
+        &Keymap::default_bindings(),
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT),
+    );
+    let Some(Modal::NewProject { path, on_path, .. }) = app.modals.top() else {
+        panic!("the picker pops back to the new-project modal");
+    };
+    assert_eq!(
+        std::path::Path::new(path.text()),
+        elsewhere.path().join("my-svc"),
+        "picked folder plus the slugified name: {}",
+        path.text()
+    );
+    assert!(on_path, "focus lands on the path field the browse filled");
+}
+
+#[test]
+fn picker_keys_paste_scroll_and_footer_route_through_the_modal_stack() {
+    use crate::components::file_picker::{FilePickerState, PickerTarget};
+    let mut app = App::new_for_test();
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join("one")).unwrap();
+    std::fs::create_dir(root.path().join("two")).unwrap();
+    app.push_modal(Modal::FilePicker(FilePickerState::new(
+        "Open project",
+        PickerTarget::OpenProject,
+        root.path(),
+        "",
+    )));
+    let keymap = Keymap::default_bindings();
+
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    let Some(Modal::FilePicker(p)) = app.modals.top() else {
+        panic!()
+    };
+    assert_eq!(p.selected(), 1);
+
+    let text = rendered_text(&mut app);
+    assert!(text.contains("Open project"), "picker drawn: {text}");
+    assert!(
+        text.contains("open this folder"),
+        "footer advertises: {text}"
+    );
+
+    app.paste_text(&root.path().join("two").to_string_lossy());
+    let Some(Modal::FilePicker(p)) = app.modals.top() else {
+        panic!()
+    };
+    assert_eq!(p.dir(), root.path().join("two"));
+
+    // Scrolling over the picker is a no-op that still counts as handled.
+    render_once(&mut app);
+    let r = app.hits.rect_of(&Hit::ModalBody).unwrap();
+    app.handle_mouse(scroll_down(r.x + 2, r.y + 2));
+    assert!(matches!(app.modals.top(), Some(Modal::FilePicker(_))));
+
+    // Esc closes it.
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(app.modals.is_empty());
+}
+
+#[test]
+fn picker_mouse_rows_primary_and_hidden_toggle() {
+    use crate::components::file_picker::{FilePickerState, PickerTarget};
+    let mut app = App::new_for_test();
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir(root.path().join(".dot")).unwrap();
+    std::fs::create_dir(root.path().join("one")).unwrap();
+    postui_core::project::init_project(&root.path().join("one"), Some("one")).unwrap();
+    app.push_modal(Modal::FilePicker(FilePickerState::new(
+        "Open project",
+        PickerTarget::OpenProject,
+        root.path(),
+        "",
+    )));
+
+    app.anims.finish_all();
+
+    // Rows: "..", "one". A click selects; a second click on the selected
+    // row acts on it (a project folder opens outright).
+    click_hit(&mut app, Hit::PickerRow(1));
+    let Some(Modal::FilePicker(p)) = app.modals.top() else {
+        panic!()
+    };
+    assert_eq!(p.selected(), 1);
+
+    click_hit(&mut app, Hit::PickerHidden);
+    let Some(Modal::FilePicker(p)) = app.modals.top() else {
+        panic!()
+    };
+    assert!(p.show_hidden());
+    assert_eq!(p.row_names(), vec!["..", ".dot", "one"]);
+
+    // The selection followed "one" through the relist, so one click on it
+    // is a click on the selected row: it acts, and a project opens.
+    click_hit(&mut app, Hit::PickerRow(2));
+    assert!(app.modals.is_empty(), "opening a project closes the picker");
+    assert_eq!(app.project.root, root.path().join("one"));
+
+    // The primary confirms the folder being shown, whatever row is lit.
+    let bare = tempfile::tempdir().unwrap();
+    app.push_modal(Modal::FilePicker(FilePickerState::new(
+        "Open project",
+        PickerTarget::OpenProject,
+        bare.path(),
+        "",
+    )));
+    app.anims.finish_all();
+    click_hit(&mut app, Hit::PickerPrimary);
+    let Some(Modal::Confirm { title, .. }) = app.modals.top() else {
+        panic!("a bare folder offers to create a project");
+    };
+    assert_eq!(title, "Not a postui project");
+}
+
+#[test]
 fn create_project_with_dirty_editor_defers_last_until_dirty_gate_resolves() {
     let (mut app, dir, _b) = two_projects();
     // Dirty the editor on the current (old) project.
@@ -7446,7 +7619,8 @@ fn copy_body_over_osc52_threshold_toasts_too_large() {
 }
 
 #[test]
-fn prompt_save_body_prefills_json_extension_and_enter_writes_the_file() {
+fn prompt_save_body_opens_the_picker_and_confirming_writes_the_file() {
+    use crate::components::file_picker::PickerTarget;
     let mut app = App::new_for_test();
     app.editor.slug = Some("pingpong".into());
     // Sync the session to the slug before seeding the response, or the
@@ -7456,26 +7630,54 @@ fn prompt_save_body_prefills_json_extension_and_enter_writes_the_file() {
 
     app.update(Action::PromptSaveBody);
 
-    let Some(Modal::Prompt {
-        kind: PromptKind::SaveBodyAs,
-        input,
-        ..
-    }) = app.modals.top()
-    else {
-        panic!("expected a SaveBodyAs prompt");
+    let Some(Modal::FilePicker(picker)) = app.modals.top() else {
+        panic!(
+            "expected the file picker, got {:?}",
+            app.modals.top().map(|_| ())
+        );
     };
+    assert_eq!(picker.target(), PickerTarget::SaveBody);
     assert!(
-        input.text().ends_with("-response.json"),
+        picker.input().text().ends_with("-response.json"),
         "prefill: {}",
-        input.text()
+        picker.input().text()
     );
+    assert!(picker.dir().is_dir(), "opens somewhere real");
 
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("body.json");
-    app.update(Action::SaveBodyToFile(out.to_string_lossy().to_string()));
+    app.update(Action::PickerConfirm {
+        target: PickerTarget::SaveBody,
+        path: out.clone(),
+    });
 
     assert_eq!(std::fs::read_to_string(&out).unwrap(), r#"{"a": 1}"#);
     assert!(rendered_text(&mut app).contains("Saved body to"));
+}
+
+/// Confirming a picker path that already exists asks first; `y` writes.
+#[test]
+fn picker_confirm_over_an_existing_file_asks_before_overwriting() {
+    use crate::components::file_picker::PickerTarget;
+    let mut app = App::new_for_test();
+    ready_response(&mut app, r#"{"a": 1}"#);
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("body.json");
+    std::fs::write(&out, "old").unwrap();
+
+    app.update(Action::PickerConfirm {
+        target: PickerTarget::SaveBody,
+        path: out.clone(),
+    });
+
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "old", "not yet");
+    let Some(Modal::Confirm { body, .. }) = app.modals.top() else {
+        panic!("expected an overwrite confirm");
+    };
+    assert!(body.contains("body.json"), "{body}");
+    app.handle_key(&Keymap::default_bindings(), plain('y'));
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), r#"{"a": 1}"#);
+    assert!(app.modals.is_empty());
 }
 
 /// The ✎ toolbar button parks `OpenResponseInEditor` for the main loop
@@ -7508,23 +7710,25 @@ fn toolbar_save_follows_the_headers_tab() {
 
     click_hit(&mut app, Hit::SaveBodyButton);
 
-    let Some(Modal::Prompt {
-        kind: PromptKind::SaveViewAs,
-        input,
-        ..
-    }) = app.modals.top()
-    else {
-        panic!("expected a SaveViewAs prompt");
+    let Some(Modal::FilePicker(picker)) = app.modals.top() else {
+        panic!("expected the file picker");
     };
+    assert_eq!(
+        picker.target(),
+        crate::components::file_picker::PickerTarget::SaveView
+    );
     assert!(
-        input.text().ends_with("-response.txt"),
+        picker.input().text().ends_with("-response.txt"),
         "headers prefill is .txt: {}",
-        input.text()
+        picker.input().text()
     );
 
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("view.txt");
-    app.update(Action::SaveViewToFile(out.to_string_lossy().to_string()));
+    app.update(Action::PickerConfirm {
+        target: crate::components::file_picker::PickerTarget::SaveView,
+        path: out.clone(),
+    });
 
     let saved = std::fs::read_to_string(&out).unwrap();
     assert!(

@@ -25,11 +25,6 @@ pub enum PromptKind {
     /// The never-saved-scratch gate's save path: a Save-as whose success
     /// chains the gate's deferred action (quit, open, switch…).
     SaveAsThen(Box<Action>),
-    OpenProjectPath,
-    SaveBodyAs,
-    /// The toolbar 💾 button's save: writes the active tab's text rather
-    /// than always the raw body.
-    SaveViewAs,
     /// The env chooser's "new environment…" row: the text is the new
     /// environment's name (slug rules).
     NewEnvironment,
@@ -490,6 +485,9 @@ pub enum Modal {
     },
     Palette(crate::components::palette::PaletteState),
     Chooser(crate::components::chooser::ChooserState),
+    /// The file / folder picker (save body, save view, open project by
+    /// path, new project's folder).
+    FilePicker(crate::components::file_picker::FilePickerState),
     VarPicker(crate::components::var_picker::VarPickerState),
     /// The "new project" prompt: a name field and a path field, tab/down
     /// (or shift-tab/up) switching focus between them. On the first hop
@@ -644,6 +642,7 @@ impl ModalStack {
                 .get(state.focus)
                 .filter(|r| !r.removed)
                 .map(|r| &r.input),
+            Modal::FilePicker(state) => Some(state.input()),
             _ => None,
         }
     }
@@ -653,7 +652,7 @@ impl ModalStack {
     /// mapping needs to know *before* `focus_input` moves the focus.
     pub fn focused_input_index(&self) -> Option<usize> {
         match self.stack.last()? {
-            Modal::Prompt { .. } => Some(0),
+            Modal::Prompt { .. } | Modal::FilePicker(_) => Some(0),
             Modal::NewProject { on_path, .. } => Some(usize::from(*on_path)),
             Modal::MultiPrompt { fields, focus, .. } => fields
                 .get(*focus)
@@ -681,6 +680,7 @@ impl ModalStack {
                 }
                 Some(input)
             }
+            Modal::FilePicker(state) if i == 0 => Some(state.input_mut()),
             Modal::NewProject { name, on_path, .. } if i == 0 => {
                 *on_path = false;
                 Some(name)
@@ -794,8 +794,25 @@ impl ModalStack {
                 chips.push(("esc", "cancel", None));
                 chips
             }
-            Modal::Prompt { .. } | Modal::NewProject { .. } => {
-                vec![("enter", "save", None), ("esc", "cancel", None)]
+            Modal::Prompt { .. } => vec![("enter", "save", None), ("esc", "cancel", None)],
+            Modal::NewProject { .. } => vec![
+                ("alt+b", "browse folder", None),
+                ("enter", "save", None),
+                ("esc", "cancel", None),
+            ],
+            Modal::FilePicker(state) => {
+                use crate::components::file_picker::PickerMode;
+                let mut chips = vec![("↑↓", "navigate", None)];
+                match state.mode() {
+                    PickerMode::SaveFile => chips.push(("enter", "save", None)),
+                    PickerMode::ChooseDir => {
+                        chips.push(("enter", "open", None));
+                        chips.push(("alt+enter", "open this folder", None));
+                    }
+                }
+                chips.push(("alt+h", "hidden files", None));
+                chips.push(("esc", "cancel", None));
+                chips
             }
             Modal::Chooser(_) => vec![
                 ("↑↓", "navigate", None),
@@ -947,15 +964,6 @@ impl ModalStack {
                             text.to_string(),
                             then.clone(),
                         )]),
-                        PromptKind::OpenProjectPath => {
-                            Some(vec![Action::OpenProjectByPath(text.to_string())])
-                        }
-                        PromptKind::SaveBodyAs => {
-                            Some(vec![Action::SaveBodyToFile(text.to_string())])
-                        }
-                        PromptKind::SaveViewAs => {
-                            Some(vec![Action::SaveViewToFile(text.to_string())])
-                        }
                         PromptKind::NewEnvironment => {
                             Some(vec![Action::CreateEnv(text.to_string())])
                         }
@@ -1050,6 +1058,7 @@ impl ModalStack {
             },
             Modal::Palette(state) => state.handle_key(key),
             Modal::Chooser(state) => state.handle_key(key),
+            Modal::FilePicker(state) => state.handle_key(key),
             Modal::VarPicker(state) => state.handle_key(key),
             Modal::NewProject {
                 name,
@@ -1076,6 +1085,13 @@ impl ModalStack {
                             ..Default::default()
                         })
                     }
+                }
+                KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
+                    Some(ModalResult {
+                        actions: vec![Action::BrowseNewProjectDir],
+                        close: false,
+                        ..Default::default()
+                    })
                 }
                 KeyCode::Tab | KeyCode::Down => {
                     if !*on_path && !*prefilled {
@@ -1357,6 +1373,10 @@ impl ModalStack {
                 true
             }
             Some(Modal::Chooser(state)) => {
+                state.scroll_by(delta);
+                true
+            }
+            Some(Modal::FilePicker(state)) => {
                 state.scroll_by(delta);
                 true
             }
@@ -1666,6 +1686,7 @@ impl ModalStack {
             }
             Modal::Palette(state) => state.draw(frame, screen, theme, hits, hovered, keymap, t),
             Modal::Chooser(state) => state.draw(frame, screen, theme, hits, hovered, t),
+            Modal::FilePicker(state) => state.draw(frame, screen, theme, hits, hovered, t),
             Modal::VarPicker(state) => state.draw(frame, screen, theme, hits, hovered, t),
             Modal::NewProject {
                 name,
@@ -1731,14 +1752,19 @@ impl ModalStack {
                     theme.panel,
                     false,
                 );
+                // The browse button shares the path row: the field gives
+                // up its width, the button opens the folder picker.
+                let browse_label = "Browse\u{2026}";
+                let browse_w = paint::button_min_width(browse_label);
+                let path_w = field_w.saturating_sub(browse_w + 1);
                 let path_area = Rect {
                     x: field_x,
                     y: path_label_y + 1,
-                    width: field_w,
+                    width: path_w,
                     height: FIELD_HEIGHT,
                 };
                 TextField {
-                    content: path.draw_line_windowed(*on_path, theme, field_w.saturating_sub(2)),
+                    content: path.draw_line_windowed(*on_path, theme, path_w.saturating_sub(2)),
                     state: if *on_path {
                         ControlState::Focused
                     } else {
@@ -1747,6 +1773,23 @@ impl ModalStack {
                 }
                 .paint(frame.buffer_mut(), path_area, theme);
                 hits.register(path_area, crate::hit::Hit::ModalInput(1));
+                let browse_area = Rect {
+                    x: field_x + path_w + 1,
+                    y: path_area.y,
+                    width: browse_w,
+                    height: BUTTON_HEIGHT,
+                };
+                Button {
+                    label: browse_label,
+                    kind: ButtonKind::Secondary,
+                    state: if hovered == Some(&crate::hit::Hit::NewProjectBrowse) {
+                        ControlState::Hover
+                    } else {
+                        ControlState::Normal
+                    },
+                }
+                .paint(frame.buffer_mut(), browse_area, theme);
+                hits.register(browse_area, crate::hit::Hit::NewProjectBrowse);
 
                 let buttons_y = area.y + area.height.saturating_sub(1 + BUTTON_HEIGHT);
                 draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered);
@@ -2533,6 +2576,48 @@ mod tests {
             body: "b".into(),
         });
         assert!(matches!(m.top(), Some(Modal::Message { .. })));
+    }
+
+    #[test]
+    fn new_project_modal_paints_a_browse_button_beside_the_path_field() {
+        let mut m = ModalStack::default();
+        m.push(Modal::NewProject {
+            name: LineInput::new(""),
+            path: LineInput::new("~/postui-projects/"),
+            on_path: false,
+            prefilled: false,
+        });
+        let theme = Theme::dark();
+        let keymap = crate::keys::Keymap::default_bindings();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = crate::hit::HitMap::default();
+        terminal
+            .draw(|f| {
+                m.draw(
+                    f,
+                    f.area(),
+                    &theme,
+                    &mut hits,
+                    None,
+                    &keymap,
+                    test_anims(),
+                    std::time::Instant::now(),
+                )
+            })
+            .unwrap();
+        let content = format!("{:?}", terminal.backend().buffer());
+        assert!(content.contains("Browse\u{2026}"), "{content}");
+        let browse = hits.rect_of(&crate::hit::Hit::NewProjectBrowse).unwrap();
+        let path = hits.rect_of(&crate::hit::Hit::ModalInput(1)).unwrap();
+        assert_eq!(browse.y, path.y, "shares the path row");
+        assert!(browse.x > path.x + path.width, "sits to the field's right");
+        // alt+b asks the app to open the folder picker without closing.
+        let res = m
+            .handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT))
+            .unwrap();
+        assert!(!res.close);
+        assert_eq!(res.actions, vec![Action::BrowseNewProjectDir]);
     }
 
     fn draw_modal(m: &mut ModalStack) -> String {

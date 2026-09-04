@@ -399,9 +399,13 @@ pub fn ui_file_path() -> Option<PathBuf> {
 /// Expands a leading `~/` to the home directory. Paths not starting with
 /// `~/` are returned unchanged.
 pub fn expand_tilde(s: &str) -> PathBuf {
+    let home = || directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf());
+    if s == "~" {
+        return home().unwrap_or_else(|| PathBuf::from(s));
+    }
     match s.strip_prefix("~/") {
-        Some(rest) => match directories::BaseDirs::new() {
-            Some(dirs) => dirs.home_dir().join(rest),
+        Some(rest) => match home() {
+            Some(h) => h.join(rest),
             None => PathBuf::from(s),
         },
         None => PathBuf::from(s),
@@ -843,6 +847,7 @@ mod tests {
             .home_dir()
             .to_path_buf();
         assert_eq!(expand_tilde("~/x/y"), home.join("x/y"));
+        assert_eq!(expand_tilde("~"), home);
         assert_eq!(expand_tilde("/abs/x"), PathBuf::from("/abs/x"));
         assert_eq!(expand_tilde("rel"), PathBuf::from("rel"));
     }

@@ -787,6 +787,10 @@ impl App {
                 | Hit::DropdownRow(_)
                 | Hit::ChooserRow(_)
                 | Hit::ChooserToggle
+                | Hit::PickerRow(_)
+                | Hit::PickerPrimary
+                | Hit::PickerHidden
+                | Hit::NewProjectBrowse
                 | Hit::PaletteRow(_)
                 | Hit::VarPickerRow(_)
                 | Hit::ScrollbarThumb(_)
@@ -1369,6 +1373,37 @@ impl App {
                 };
                 self.update(action)
             }
+            Hit::PickerRow(i) => {
+                let Some(Modal::FilePicker(state)) = self.modals.top_mut() else {
+                    return false;
+                };
+                if state.selected() == i || clicks == 2 {
+                    let Some(res) = state.activate() else {
+                        return self.update(Action::Render);
+                    };
+                    self.apply_modal_result(res)
+                } else {
+                    state.select(i);
+                    self.update(Action::Render)
+                }
+            }
+            Hit::PickerPrimary => {
+                let Some(Modal::FilePicker(state)) = self.modals.top_mut() else {
+                    return false;
+                };
+                let Some(res) = state.confirm_here() else {
+                    return self.update(Action::Render);
+                };
+                self.apply_modal_result(res)
+            }
+            Hit::PickerHidden => {
+                let Some(Modal::FilePicker(state)) = self.modals.top_mut() else {
+                    return false;
+                };
+                state.toggle_hidden();
+                self.update(Action::Render)
+            }
+            Hit::NewProjectBrowse => self.update(Action::BrowseNewProjectDir),
             Hit::ChooserRow(i) => {
                 let Some(Modal::Chooser(state)) = self.modals.top_mut() else {
                     return false;

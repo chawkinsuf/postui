@@ -1,5 +1,6 @@
 pub mod chooser;
 pub mod editor;
+pub mod file_picker;
 pub mod footer;
 pub mod header_bar;
 pub mod json_tree;

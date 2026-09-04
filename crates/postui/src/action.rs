@@ -285,8 +285,13 @@ pub enum Action {
     /// Actually switch to `root`, bypassing the dirty check (used directly,
     /// or as the tail action of a dirty-prompt choice).
     ForceSwitchProject(std::path::PathBuf),
-    /// Open the "open project by path" text prompt.
+    /// Open the folder picker for a project (the Projects chooser's
+    /// "open by path…" row and the palette entry); confirming dispatches
+    /// `OpenProjectByPath`.
     PromptOpenProjectPath,
+    /// The New project modal's Browse button / alt+b: opens the folder
+    /// picker on top of it; confirming fills the modal's path field.
+    BrowseNewProjectDir,
     /// User typed a path in the open-by-path prompt. An existing project
     /// switches to it directly; anything else asks to create one there.
     OpenProjectByPath(String),
@@ -508,6 +513,14 @@ pub enum Action {
     PromptSaveView,
     /// Write the active tab's text (`ReadyView::view_text`) to `path`.
     SaveViewToFile(String),
+    /// The file picker's confirmed choice: `target` says who asked (save
+    /// body / view, open project, new project's folder) and `path` is the
+    /// full file or folder chosen. Save targets ask before overwriting an
+    /// existing file.
+    PickerConfirm {
+        target: crate::components::file_picker::PickerTarget,
+        path: std::path::PathBuf,
+    },
     /// Open the Manage screen (spec §5): stores the current focus so
     /// `Action::CloseScreen` can restore it, then switches `App::screen`
     /// to `Screen::Manage` on `tab` — `None` meaning the last-used tab.
