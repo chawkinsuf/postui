@@ -300,7 +300,7 @@ impl ManageList {
         ];
         if tab == ManageTab::Spaces {
             chips.push(("m", "move all", selected.map(Self::move_all_action)));
-            chips.push(("alt+↑↓", "move", None));
+            chips.push(("alt+↑↓", "reorder", None));
         } else {
             chips.push(("t", "tls", selected.map(|n| Self::cycle_tls_action(ctx, n))));
         }

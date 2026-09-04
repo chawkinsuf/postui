@@ -15321,7 +15321,7 @@ fn manage_tabs_footer_chips_advertise_list_keys() {
         tab: Some(ManageTab::Spaces),
     });
     let text = rendered_text_wide_tall(&mut app);
-    for label in ["rename", "new", "delete", "move all", "move"] {
+    for label in ["rename", "new", "delete", "move all", "reorder"] {
         assert!(text.contains(label), "{label}: {text}");
     }
 }
