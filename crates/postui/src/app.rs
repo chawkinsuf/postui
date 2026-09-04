@@ -3141,7 +3141,8 @@ impl App {
                 }
                 // Open ⇄ closed, regardless of focus: an open bar closes
                 // (filter off, text kept) whether or not the caret is in
-                // it; a closed one opens switched on and focused.
+                // it; a closed one opens switched on and focused. The
+                // switch, not the way in — alt+q is `OpenJqBar`.
                 if self.session.response.jq_open() {
                     self.session.response.close_jq();
                 } else {

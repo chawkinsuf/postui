@@ -286,6 +286,10 @@ fn alt(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT)
 }
 
+fn alt_shift(c: char) -> KeyEvent {
+    KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT | KeyModifiers::SHIFT)
+}
+
 #[test]
 fn ctrl_c_quits_even_with_modal_open() {
     let mut app = App::new_for_test();
@@ -17009,7 +17013,50 @@ fn alt_q_focuses_the_jq_bar_and_typing_filters_the_tree_live() {
     );
     assert!(app.editor.is_dirty());
     app.handle_key(&Keymap::default_bindings(), alt('q'));
-    assert!(!app.session.response.jq_focused(), "alt+q again blurs");
+    assert!(
+        app.session.response.jq_focused(),
+        "alt+q again keeps the caret: it always means type a filter"
+    );
+    assert_eq!(app.editor.jq, ".data.total", "…and touches nothing");
+    assert!(app.editor.jq_enabled);
+}
+
+#[test]
+fn alt_q_focuses_an_on_filter_without_switching_it_and_esc_keeps_it() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.update(Action::JqApply(".data.total".into()));
+    assert!(app.session.response.jq_open() && !app.session.response.jq_focused());
+    app.handle_key(&Keymap::default_bindings(), alt('q'));
+    assert!(app.session.response.jq_focused());
+    assert!(app.editor.jq_enabled, "alt+q never switches a filter off");
+    app.handle_key(
+        &Keymap::default_bindings(),
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+    );
+    assert!(app.editor.jq_enabled, "it was on when editing started");
+    assert!(app.session.response.jq_open());
+    assert_eq!(app.editor.jq, ".data.total");
+    assert_eq!(app.session.response.view().unwrap().view_text(), "2");
+}
+
+#[test]
+fn alt_shift_q_is_the_switch() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    let full = app.session.response.view().unwrap().view_text();
+    app.update(Action::JqApply(".data.total".into()));
+    app.handle_key(&Keymap::default_bindings(), alt_shift('q'));
+    assert!(!app.editor.jq_enabled, "off, text kept");
+    assert_eq!(app.editor.jq, ".data.total");
+    assert!(!app.session.response.jq_open());
+    assert_eq!(app.session.response.view().unwrap().view_text(), full);
+    app.handle_key(&Keymap::default_bindings(), alt_shift('q'));
+    assert!(app.editor.jq_enabled, "on again + focused");
+    assert!(app.session.response.jq_focused());
+    assert_eq!(app.session.response.view().unwrap().view_text(), "2");
+    app.handle_key(&Keymap::default_bindings(), alt_shift('q'));
+    assert!(!app.session.response.jq_open(), "focused bar closes too");
 }
 
 #[test]
@@ -17065,7 +17112,7 @@ fn esc_puts_a_saved_filter_back_and_leaves_the_bar() {
     let mut app = App::new_for_test();
     ready_response(&mut app, JQ_BODY);
     app.update(Action::JqApply(".data.total".into()));
-    app.handle_key(&Keymap::default_bindings(), alt('q')); // closes (off)
+    app.handle_key(&Keymap::default_bindings(), alt_shift('q')); // closes (off)
     app.handle_key(&Keymap::default_bindings(), alt('q')); // on + focused
     assert!(app.session.response.jq_focused());
     type_str(&mut app, "s");
@@ -17155,7 +17202,7 @@ fn the_toggle_closes_an_open_bar_whether_or_not_it_is_focused() {
     let full = app.session.response.view().unwrap().view_text();
     app.update(Action::JqApply(".data.total".into()));
     assert!(app.session.response.jq_open() && !app.session.response.jq_focused());
-    // The header button (and alt+q, and the palette's toggle) all route here.
+    // The header button and alt+shift+q both route here.
     app.update(Action::ToggleJqBar);
     assert!(
         !app.session.response.jq_open(),
@@ -17283,7 +17330,7 @@ fn the_focused_bar_advertises_enter_apply_and_esc_cancel() {
         vec![
             ("enter", "apply"),
             ("esc", "cancel"),
-            ("alt+q", "close"),
+            ("alt+shift+q", "close"),
             ("✦", "describe…")
         ],
         "{chips:?}"
@@ -17608,7 +17655,7 @@ fn the_footer_and_palette_reach_the_jq_bar() {
     assert!(
         chips
             .iter()
-            .any(|(k, l, a)| *k == "alt+q" && *l == "filter" && *a == Some(Action::ToggleJqBar)),
+            .any(|(k, l, a)| *k == "alt+q" && *l == "filter" && *a == Some(Action::OpenJqBar)),
         "{chips:?}"
     );
     app.update(Action::OpenPalette);
@@ -17884,9 +17931,9 @@ fn right_click_on_the_jq_bar_offers_copy_and_paste_only() {
 }
 
 #[test]
-fn the_response_footer_names_the_jq_chip_after_what_alt_q_will_do() {
+fn the_response_footer_always_offers_alt_q_filter_and_close_only_while_open() {
     use crate::components::footer::JqBarState;
-    let chip = |state: JqBarState| {
+    let chips = |state: JqBarState| {
         crate::components::footer::footer_chips(
             PaneId::Response,
             false,
@@ -17896,20 +17943,29 @@ fn the_response_footer_names_the_jq_chip_after_what_alt_q_will_do() {
             None,
             state,
         )
-        .into_iter()
-        .find(|(k, _, _)| *k == "alt+q")
-        .map(|(_, l, a)| (l, a))
+    };
+    let find = |state: JqBarState, key: &str| {
+        chips(state)
+            .into_iter()
+            .find(|(k, _, _)| *k == key)
+            .map(|(_, l, a)| (l, a))
     };
     assert_eq!(
-        chip(JqBarState::Closed),
-        Some(("filter", Some(Action::ToggleJqBar)))
+        find(JqBarState::Closed, "alt+q"),
+        Some(("filter", Some(Action::OpenJqBar)))
     );
     assert_eq!(
-        chip(JqBarState::Open),
+        find(JqBarState::Open, "alt+q"),
+        Some(("filter", Some(Action::OpenJqBar))),
+        "alt+q reads the same whether or not a filter is on"
+    );
+    assert_eq!(find(JqBarState::Closed, "alt+shift+q"), None);
+    assert_eq!(
+        find(JqBarState::Open, "alt+shift+q"),
         Some(("close", Some(Action::ToggleJqBar)))
     );
     assert_eq!(
-        chip(JqBarState::Focused),
+        find(JqBarState::Focused, "alt+shift+q"),
         Some(("close", Some(Action::ToggleJqBar)))
     );
 }

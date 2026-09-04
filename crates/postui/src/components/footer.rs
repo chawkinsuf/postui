@@ -12,9 +12,9 @@ use ratatui::layout::Rect;
 /// the bottom — the same painted 3-row rhythm as the header app bar.
 pub const FOOTER_HEIGHT: u16 = 3;
 
-/// Where the response pane's jq bar is, for the chips that name what
-/// `alt+q` will do next: open a closed bar (`filter`), or close an open
-/// one (`close`) whether or not the caret is in it.
+/// Where the response pane's jq bar is, for the chips around it: `alt+q
+/// filter` always (it focuses the bar, switching it on if needed), and
+/// `alt+shift+q close` only while there is an open bar to switch off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JqBarState {
     Closed,
@@ -50,8 +50,7 @@ pub(crate) fn footer_chips(
     // the toggle chip names the state change it would make.
     table_row_selected: Option<(usize, bool)>,
     // The response pane's jq bar: focused swaps the chip set for the bar's
-    // own (apply/clear/close/describe); open vs closed names what alt+q
-    // does next.
+    // own (apply/cancel/close/describe); open adds the `close` chip.
     jq_bar: JqBarState,
 ) -> Vec<(&'static str, &'static str, Option<Action>)> {
     let chips: Vec<(&'static str, &'static str, Option<Action>)> = match focus {
@@ -126,8 +125,8 @@ pub(crate) fn footer_chips(
                 // Enter commits (the filter is live already; Enter just
                 // hands focus back to the tree with the filter on), Esc
                 // cancels the edit (the filter goes back to what it was),
-                // alt+q closes the bar — switching the filter off without
-                // losing it. While a completion ghost
+                // alt+shift+q closes the bar — switching the filter off
+                // without losing it. While a completion ghost
                 // shows, the Tab chip(s) lead: "tab next" + "→ accept" in
                 // cycle mode, or "tab accept" in accept mode.
                 let mut chips = Vec::new();
@@ -142,12 +141,12 @@ pub(crate) fn footer_chips(
                 chips.extend([
                     ("enter", "apply", None),
                     ("esc", "cancel", Some(Action::CancelJqEdit)),
-                    ("alt+q", "close", Some(Action::ToggleJqBar)),
+                    ("alt+shift+q", "close", Some(Action::ToggleJqBar)),
                     ("✦", "describe…", Some(Action::OpenJqDescribe)),
                 ]);
                 chips
             } else {
-                vec![
+                let mut chips = vec![
                     (
                         "r",
                         "raw",
@@ -163,16 +162,12 @@ pub(crate) fn footer_chips(
                         )),
                     ),
                     ("/", "search", Some(Action::OpenResponseSearch)),
-                    (
-                        "alt+q",
-                        if jq_bar == JqBarState::Open {
-                            "close"
-                        } else {
-                            "filter"
-                        },
-                        Some(Action::ToggleJqBar),
-                    ),
-                ]
+                    ("alt+q", "filter", Some(Action::OpenJqBar)),
+                ];
+                if jq_bar == JqBarState::Open {
+                    chips.push(("alt+shift+q", "close", Some(Action::ToggleJqBar)));
+                }
+                chips
             }
         }
     };

@@ -114,8 +114,8 @@ impl JqCompletion {
 pub struct JqBar {
     pub input: LineInput,
     pub focused: bool,
-    /// Whether the filter is switched on. Closing the bar (`Esc`, the
-    /// header button, `alt+q`) switches it off and keeps the text; the
+    /// Whether the filter is switched on. Closing the bar (the header
+    /// button, `alt+shift+q`) switches it off and keeps the text; the
     /// tree shows the full body until it is opened again. Mirrors
     /// `Editor::jq_enabled`, which is what persists.
     pub enabled: bool,
@@ -2054,7 +2054,7 @@ impl Response {
             }
             // Esc from the tree stops at the selection and the search: it
             // never touches the jq filter (that is saved with the request;
-            // the 󰈲 button/alt+q are its switch, and only the bar's own
+            // the 󰈲 button/alt+shift+q are its switch, and only the bar's own
             // Esc cancels an edit in it).
             _ => None,
         }

@@ -40,11 +40,12 @@ Shift while dragging — most terminals bypass capture for that.
 ### jq filter
 
 Press `alt+q` (or click 󰈲 in the response header) to open the jq bar and filter a JSON
-response live; the filter is saved with the request. `Enter` hands focus back to the
+response live; the filter is saved with the request. `alt+q` always puts the caret in the bar,
+switching the filter on if it was off. `Enter` hands focus back to the
 filtered tree with your edit kept; `Esc` cancels the edit — the filter goes back to what it was
 when you started typing (off again, if you had opened it from off), and a bar you opened onto
-no filter just closes. 󰈲 or `alt+q` on an open
-bar closes it instead, which switches the filter off without deleting it — the full body
+no filter just closes. `alt+shift+q` (or 󰈲) is the switch: on an open
+bar it closes it, which switches the filter off without deleting it — the full body
 shows until you open it again, and the off state is saved too. A filter that yields only `null` (or nothing) keeps the full body on screen and shows
 "invalid filter" under the bar, so a half-typed path doesn't blank the response you're reading. Multiple
 outputs run together, one after another, as `jq` prints them. Right-click any line of the tree for

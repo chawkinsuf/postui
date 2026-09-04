@@ -731,15 +731,19 @@ pub enum Action {
     Redo,
 
     // -- jq response filter (spec: docs/superpowers/sdd/2026-09-03-jq-response-filter) --
-    /// alt+q / the header 󰈲 button / the palette: opens a closed jq bar
-    /// (filter on, focused) or closes an open one (filter off, text kept).
+    /// alt+shift+q / the header 󰈲 button: the filter's switch — opens a
+    /// closed jq bar (filter on, focused) or closes an open one (filter
+    /// off, text kept) whether or not the caret is in it.
     ToggleJqBar,
     /// Esc in the bar (and the footer's `esc cancel` chip): puts the
     /// filter back to what it was when the bar took the caret — text and
     /// on/off switch — and blurs; a bar opened onto no filter closes. An
     /// edit whenever anything changed — undo brings the typed text back.
     CancelJqEdit,
-    /// Palette/footer: focus the bar (never blurs).
+    /// alt+q / the palette / the footer's `filter` chip: focus the bar,
+    /// switching it on if it was off. Never blurs and never switches off
+    /// — alt+q always means "type a filter", so the switch is a different
+    /// key.
     OpenJqBar,
     /// Replaces the bar text and applies it (structural menu "apply" items).
     JqApply(String),

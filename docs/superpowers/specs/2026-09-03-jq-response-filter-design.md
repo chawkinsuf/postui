@@ -212,7 +212,8 @@ completes the item; `Esc` cancels with the bar untouched.
 Keyboard: while the response pane is focused the footer advertises `alt+q
 jq`; with the bar focused it shows `esc close`, `enter apply` (applies
 live anyway, `enter` just blurs back to the tree), and `alt+q` toggles
-focus between bar and tree. Pluck/Where/Only-items are mouse-menu items in
+focus between bar and tree. (Superseded — see the usability round below:
+`alt+q` always focuses, `alt+shift+q` is the switch, `esc` cancels.) Pluck/Where/Only-items are mouse-menu items in
 this cut; the palette carries "Response: jq filter" and "Response:
 describe a filter (AI)…".
 
@@ -333,10 +334,14 @@ because they're easy to get wrong reading the code cold:
 - **Closing the bar is the filter's off switch** (2026-09-03 usability
   round). The design above said the bar hides only when its text is
   empty and "clearing the text is how the filter is removed". Shipped:
-  the header 󰈲 button, `alt+q` and the palette's toggle all *close* an
-  open bar whether or not it is focused — the text stays, the filter is
-  switched off, and the tree shows the full body. Opening it again (same
-  three routes) switches the filter back on and focuses the input.
+  the header 󰈲 button and `alt+shift+q` (`Action::ToggleJqBar`) *close*
+  an open bar whether or not it is focused — the text stays, the filter
+  is switched off, and the tree shows the full body. The same two routes
+  open a closed bar switched on and focused. `alt+q`, the palette entry
+  and the footer's `filter` chip are `Action::OpenJqBar` (2026-09-04):
+  they always put the caret in the bar, switching it on if it was off,
+  and never switch it off — alt+q is one gesture, "type a filter", so
+  the switch lives on its own key.
   `Esc` in the bar *cancels the edit* (`Action::CancelJqEdit`): the bar
   remembers the filter — text and on/off switch — as it stood when it
   took the caret (`JqBar::edit_origin`, taken on the unfocused → focused
@@ -355,9 +360,9 @@ because they're easy to get wrong reading the code cold:
   off); toggling dirties the request like a text edit. A structural verb
   or an AI reply landing a filter switches a closed bar back on.
 - The footer chips shown while the bar is focused are `enter apply /
-  esc cancel / alt+q close / ✦ describe…`; the response pane's own
-  `alt+q` chip reads `filter` while the bar is closed and `close` while
-  it is open. Clicking in the bar places the caret, dragging selects,
+  esc cancel / alt+shift+q close / ✦ describe…`; the response pane's own
+  chips always carry `alt+q filter`, plus `alt+shift+q close` while a
+  bar is open. Clicking in the bar places the caret, dragging selects,
   double-click selects the word, and right-click offers Copy / Paste
   (`TextSurface::Jq`; no extract-to-variable/selector items — the text is
   a filter, not a value). The same as the URL bar otherwise.
