@@ -7004,7 +7004,7 @@ impl App {
     /// list's own edge rows are inside the pane, so edge auto-scroll is
     /// untouched. Motion back onto a row maps it again as usual.
     pub fn sidebar_drag_to(&mut self, x: u16, y: u16) -> bool {
-        if self.hits.pane_at(x, y) != Some(PaneId::Sidebar) {
+        if !self.sidebar_drag_inside(x, y) {
             if self.sidebar.drag_reset() {
                 self.rebuild_sidebar();
                 return true;
@@ -7017,6 +7017,14 @@ impl App {
             return true;
         }
         false
+    }
+
+    /// Whether `(x, y)` is over the sidebar pane: where a row drag may be
+    /// dropped. Commit-on-release and the drag's outside preview share it
+    /// — the twin of `manage_drag_inside` — so a drop and the rows it
+    /// previewed can never disagree.
+    pub fn sidebar_drag_inside(&self, x: u16, y: u16) -> bool {
+        self.hits.pane_at(x, y) == Some(PaneId::Sidebar)
     }
 
     /// Ends a row drag. `commit` writes the working order when it differs

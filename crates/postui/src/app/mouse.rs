@@ -433,7 +433,7 @@ impl App {
                 // A row drag writes its new order only when it is dropped
                 // on the sidebar; a release anywhere else cancels it.
                 if self.sidebar.drag.is_some() {
-                    let inside = self.hits.pane_at(m.column, m.row) == Some(PaneId::Sidebar);
+                    let inside = self.sidebar_drag_inside(m.column, m.row);
                     return self.finish_sidebar_drag(inside);
                 }
                 // The Manage list has no `Hit::Pane` of its own, so the
