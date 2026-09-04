@@ -7,6 +7,8 @@
 use super::{Data, JqDocument, with_compiled};
 use jaq_core::{Ctx, Vars};
 use jaq_json::Val;
+use std::collections::BTreeMap;
+use std::sync::OnceLock;
 
 /// How many outputs of the context expression are looked at for keys.
 /// `.users[]` over a huge array stops here; a completion run can never
@@ -359,6 +361,116 @@ fn path_chain(tail: &str) -> &str {
     &t[i..]
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Builtin {
+    pub name: &'static str,
+    pub arity: usize,
+}
+
+const KEYWORDS: [&str; 15] = [
+    "if", "then", "elif", "else", "end", "and", "or", "not", "reduce", "foreach", "try", "catch",
+    "as", "def", "label",
+];
+
+/// Every definition and native function jaq loads, deduplicated by name
+/// (lowest arity kept), names starting with `_` dropped, plus jq's
+/// keywords. Sorted. Built once.
+pub fn builtins() -> &'static [Builtin] {
+    static ALL: OnceLock<Vec<Builtin>> = OnceLock::new();
+    ALL.get_or_init(|| {
+        let mut by_name: BTreeMap<&'static str, usize> = BTreeMap::new();
+        let mut note = |name: &'static str, arity: usize| {
+            let e = by_name.entry(name).or_insert(arity);
+            *e = (*e).min(arity);
+        };
+        for def in super::defs() {
+            note(def.name, def.args.len());
+        }
+        for (name, binds, _) in super::funs() {
+            note(name, binds.len());
+        }
+        for kw in KEYWORDS {
+            note(kw, 0);
+        }
+        by_name
+            .into_iter()
+            .filter(|(name, _)| !name.starts_with('_'))
+            .map(|(name, arity)| Builtin { name, arity })
+            .collect()
+    })
+}
+
+/// One thing the ghost can show.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Candidate {
+    /// What is drawn after the caret.
+    pub ghost: String,
+    /// What accepting inserts. Equal to `ghost` unless the token is
+    /// rewritten (`replace_from`).
+    pub insert: String,
+    /// When `Some`, accepting first deletes from this byte offset of the
+    /// bar text to the caret, then inserts `insert`: `.my` becomes
+    /// `."my key"`.
+    pub replace_from: Option<usize>,
+}
+
+fn is_identifier(s: &str) -> bool {
+    let b = s.as_bytes();
+    !b.is_empty() && is_ident_start(b[0]) && b.iter().all(|&c| is_ident_byte(c))
+}
+
+fn quote(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// The candidates for `ctx`: keys (for `Kind::Key`) or builtins (for
+/// `Kind::Word`) that start with the partial and are longer than it —
+/// a ghost is always a continuation — in body order for keys and
+/// alphabetical for builtins.
+pub fn candidates(ctx: &Context, keys: &[String]) -> Vec<Candidate> {
+    let p = ctx.partial.as_str();
+    let extends = |s: &str| s.starts_with(p) && s.len() > p.len();
+    let plain = |rest: String| Candidate {
+        ghost: rest.clone(),
+        insert: rest,
+        replace_from: None,
+    };
+    match ctx.kind {
+        Kind::Word => builtins()
+            .iter()
+            .filter(|b| extends(b.name))
+            .map(|b| {
+                let mut rest = b.name[p.len()..].to_string();
+                if b.arity > 0 {
+                    rest.push('(');
+                }
+                plain(rest)
+            })
+            .collect(),
+        Kind::Key { quoted: true } => keys
+            .iter()
+            .filter(|k| extends(k))
+            .map(|k| plain(format!("{}\"", &k[p.len()..])))
+            .collect(),
+        Kind::Key { quoted: false } => keys
+            .iter()
+            .filter(|k| extends(k))
+            .map(|k| {
+                if is_identifier(k) {
+                    plain(k[p.len()..].to_string())
+                } else {
+                    let q = quote(k);
+                    Candidate {
+                        insert: format!(".{q}"),
+                        ghost: q,
+                        replace_from: Some(ctx.token_start),
+                    }
+                }
+            })
+            .collect(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -515,5 +627,78 @@ mod tests {
         }
         let _ = context("é.ü");
         let _ = context(".\"é");
+    }
+
+    fn builtin(name: &str) -> Option<&'static Builtin> {
+        builtins().iter().find(|b| b.name == name)
+    }
+
+    #[test]
+    fn builtins_come_from_jaq_plus_keywords_sorted_without_internals() {
+        assert_eq!(builtin("select").map(|b| b.arity), Some(1));
+        assert_eq!(builtin("length").map(|b| b.arity), Some(0));
+        assert_eq!(builtin("map").map(|b| b.arity), Some(1));
+        assert_eq!(builtin("range").map(|b| b.arity), Some(1), "lowest arity wins");
+        assert_eq!(builtin("if").map(|b| b.arity), Some(0));
+        assert!(builtin("reduce").is_some());
+        assert!(builtins().iter().all(|b| !b.name.starts_with('_')));
+        let names: Vec<&str> = builtins().iter().map(|b| b.name).collect();
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(names, sorted, "sorted and unique");
+    }
+
+    fn ghosts(text: &str, keys: &[&str]) -> Vec<String> {
+        let keys: Vec<String> = keys.iter().map(|k| k.to_string()).collect();
+        candidates(&context(text).unwrap(), &keys)
+            .into_iter()
+            .map(|c| c.ghost)
+            .collect()
+    }
+
+    #[test]
+    fn key_candidates_strictly_extend_the_partial_in_body_order() {
+        assert_eq!(ghosts(".", &["id", "name"]), vec!["id", "name"]);
+        assert_eq!(ghosts(".i", &["name", "ids", "id", "identity"]), vec!["ds", "d", "dentity"]);
+        assert_eq!(ghosts(".id", &["id", "ids"]), vec!["s"], "an exact match adds nothing");
+        assert!(ghosts(".zz", &["id"]).is_empty());
+        assert!(ghosts(".I", &["id"]).is_empty(), "case-sensitive");
+    }
+
+    #[test]
+    fn keys_that_are_not_identifiers_are_offered_quoted() {
+        let keys = vec!["my key".to_string(), "a-b".to_string(), "ok".to_string()];
+        let cs = candidates(&context(".").unwrap(), &keys);
+        assert_eq!(cs[0].ghost, "\"my key\"");
+        assert_eq!(cs[0].insert, ".\"my key\"");
+        assert_eq!(cs[0].replace_from, Some(0), "replaces from the '.'");
+        assert_eq!(cs[1].ghost, "\"a-b\"");
+        assert_eq!((cs[2].ghost.as_str(), cs[2].replace_from), ("ok", None));
+
+        let cs = candidates(&context(".data.my").unwrap(), &keys);
+        assert_eq!(cs.len(), 1);
+        assert_eq!(cs[0].insert, ".\"my key\"");
+        assert_eq!(cs[0].replace_from, Some(5));
+
+        let cs = candidates(&context(".\"my k").unwrap(), &keys);
+        assert_eq!(cs.len(), 1);
+        assert_eq!((cs[0].ghost.as_str(), cs[0].replace_from), ("ey\"", None));
+
+        let keys = vec!["say \"hi\"".to_string()];
+        let cs = candidates(&context(".").unwrap(), &keys);
+        assert_eq!(cs[0].insert, ".\"say \\\"hi\\\"\"");
+    }
+
+    #[test]
+    fn word_candidates_are_builtins_with_a_paren_when_they_take_arguments() {
+        let g = ghosts("sel", &[]);
+        assert_eq!(g[0], "ect(");
+        let g = ghosts("leng", &[]);
+        assert_eq!(g, vec!["th"]);
+        assert!(ghosts("length", &[]).is_empty(), "exact match adds nothing");
+        let g = ghosts("ma", &[]);
+        assert!(g.contains(&"p(".to_string()));
+        assert!(g.contains(&"p_values(".to_string()));
     }
 }
