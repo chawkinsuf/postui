@@ -10,6 +10,7 @@ use jaq_core::{Compiler, Ctx, Vars, data};
 use jaq_json::Val;
 
 pub mod ai;
+pub mod complete;
 pub mod path;
 pub mod shape;
 pub use path::{PathSeg, compose, render_path};
