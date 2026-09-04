@@ -5,7 +5,9 @@
 //! ignored for display and preserved on write.
 
 use crate::project::ProjectMeta;
+use crate::project::{ProjectError, edit_project_toml, load_meta};
 use crate::storage::RequestListing;
+use std::path::Path;
 
 /// The order list of `space`, empty when none is written.
 pub fn space_order<'a>(meta: &'a ProjectMeta, space: &str) -> &'a [String] {
@@ -60,6 +62,109 @@ pub fn order_level<'a>(
         .map(|(_, e)| e)
         .chain(unlisted)
         .collect()
+}
+
+/// Writes `[space.<space>] order = [...]`, creating the table if needed
+/// and dropping the key when the list is empty. Keeps the table's other
+/// keys and the file's comments.
+fn write_order(doc: &mut toml_edit::DocumentMut, space: &str, order: &[String]) {
+    let table = doc
+        .entry("space")
+        .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
+    let Some(t) = table.as_table_mut() else { return };
+    t.set_implicit(true);
+    let item = t
+        .entry(space)
+        .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
+    let Some(it) = item.as_table_mut() else { return };
+    if order.is_empty() {
+        it.remove("order");
+        return;
+    }
+    let mut arr = toml_edit::Array::new();
+    for s in order {
+        arr.push(s.as_str());
+    }
+    it["order"] = toml_edit::value(arr);
+}
+
+/// The list after one level is rewritten to `slugs`: entries of `level`
+/// that appear in `slugs` are replaced in place, first slot first; slugs
+/// with no slot to take are appended; every other entry (other levels,
+/// entries of this level not named in `slugs` — stale ones) keeps its
+/// slot. Duplicates in `existing` collapse to their first occurrence.
+fn merge_level(existing: &[String], level: &str, slugs: &[String]) -> Vec<String> {
+    let mut deduped: Vec<&String> = Vec::new();
+    for e in existing {
+        if !deduped.contains(&e) {
+            deduped.push(e);
+        }
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut next = slugs.iter();
+    for e in deduped {
+        if level_of(e) == level && slugs.contains(e) {
+            if let Some(s) = next.next() {
+                out.push(s.clone());
+            }
+        } else {
+            out.push(e.clone());
+        }
+    }
+    for s in next {
+        if !out.contains(s) {
+            out.push(s.clone());
+        }
+    }
+    out
+}
+
+/// Rewrites one level of `space`'s order to exactly `slugs` (relative
+/// slugs, all of the same `level`). See [`merge_level`] for what happens
+/// to everything else in the list.
+pub fn set_level_order(
+    root: &Path,
+    space: &str,
+    level: &str,
+    slugs: &[String],
+) -> Result<(), ProjectError> {
+    let meta = load_meta(root)?;
+    let merged = merge_level(space_order(&meta, space), level, slugs);
+    edit_project_toml(root, |doc| write_order(doc, space, &merged))
+}
+
+/// The level's requests in display order, as relative slugs — what the
+/// sidebar shows for that level right now.
+fn displayed_level(root: &Path, space: &str, level: &str) -> Result<Vec<String>, ProjectError> {
+    let meta = load_meta(root)?;
+    let (listing, _) = crate::storage::list_requests(root);
+    let entries: Vec<&RequestListing> = listing
+        .iter()
+        .filter(|e| relative(&e.slug, space).is_some_and(|r| level_of(r) == level))
+        .collect();
+    Ok(order_level(&entries, space_order(&meta, space), space)
+        .into_iter()
+        .filter_map(|e| relative(&e.slug, space).map(str::to_string))
+        .collect())
+}
+
+/// Moves `slug` (a full slug, `space/…`) by `delta` positions among its
+/// siblings, clamped to the level's ends. The level's displayed order is
+/// materialised into the list first, so what is on disk afterwards is
+/// exactly what was on screen.
+pub fn move_request(root: &Path, slug: &str, delta: i32) -> Result<(), ProjectError> {
+    let space = crate::storage::space_of(slug)
+        .ok_or_else(|| ProjectError::NotFound(slug.to_string()))?;
+    let rel = relative(slug, space).ok_or_else(|| ProjectError::NotFound(slug.to_string()))?;
+    let level = level_of(rel);
+    let mut shown = displayed_level(root, space, level)?;
+    let Some(pos) = shown.iter().position(|s| s == rel) else {
+        return Err(ProjectError::NotFound(slug.to_string()));
+    };
+    let target = (pos as i32 + delta).clamp(0, shown.len() as i32 - 1) as usize;
+    let moved = shown.remove(pos);
+    shown.insert(target, moved);
+    set_level_order(root, space, level, &shown)
 }
 
 #[cfg(test)]
@@ -141,5 +246,101 @@ mod tests {
             toml::from_str("[space.main]\norder = [\"b\", \"a\"]\n").unwrap();
         assert_eq!(space_order(&meta, "main"), ["b", "a"]);
         assert!(space_order(&meta, "other").is_empty());
+    }
+
+    use crate::model::HttpRequest;
+    use crate::project::load_meta;
+    use tempfile::tempdir;
+
+    fn req() -> HttpRequest {
+        HttpRequest::from_toml_str("url = \"https://x\"").unwrap()
+    }
+
+    fn project_with(slugs: &[&str]) -> tempfile::TempDir {
+        let dir = tempdir().unwrap();
+        crate::storage::ensure_project(dir.path()).unwrap();
+        for s in slugs {
+            crate::storage::save_request(dir.path(), s, &req()).unwrap();
+        }
+        dir
+    }
+
+    fn order_of(root: &std::path::Path, space: &str) -> Vec<String> {
+        space_order(&load_meta(root).unwrap(), space).to_vec()
+    }
+
+    #[test]
+    fn merge_level_replaces_slots_in_place_then_appends_and_keeps_others() {
+        let existing = v(&["a", "auth/x", "stale", "b"]);
+        let out = merge_level(&existing, "", &v(&["b", "c", "a"]));
+        // Slots are handed out in list order: a's slot takes b, b's slot
+        // takes c, and a (left over) is appended; the other level's entry
+        // and the stale root entry keep their slots. Displayed root order
+        // is then b, c, a — exactly `slugs`.
+        assert_eq!(out, v(&["b", "auth/x", "stale", "c", "a"]));
+    }
+
+    #[test]
+    fn merge_level_dedupes_existing_entries() {
+        let out = merge_level(&v(&["a", "a", "b"]), "", &v(&["b", "a"]));
+        assert_eq!(out, v(&["b", "a"]));
+    }
+
+    fn v(s: &[&str]) -> Vec<String> {
+        s.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn set_level_order_writes_only_that_level_and_keeps_comments() {
+        let dir = project_with(&["main/a", "main/b", "main/auth/x"]);
+        std::fs::write(
+            dir.path().join("project.toml"),
+            "# keep me\nspaces = [\"main\"]\n\n[space.main]\nname = \"Main\"\norder = [\"auth/x\"]\n",
+        )
+        .unwrap();
+        set_level_order(dir.path(), "main", "", &v(&["b", "a"])).unwrap();
+        assert_eq!(order_of(dir.path(), "main"), v(&["auth/x", "b", "a"]));
+        let text = std::fs::read_to_string(dir.path().join("project.toml")).unwrap();
+        assert!(text.starts_with("# keep me\n"), "{text}");
+        assert!(text.contains("name = \"Main\""), "{text}");
+    }
+
+    #[test]
+    fn set_level_order_creates_the_space_table_when_missing() {
+        let dir = project_with(&["main/a", "main/b"]);
+        set_level_order(dir.path(), "main", "", &v(&["b", "a"])).unwrap();
+        assert_eq!(order_of(dir.path(), "main"), v(&["b", "a"]));
+    }
+
+    #[test]
+    fn move_request_materialises_the_level_on_first_use_and_clamps() {
+        let dir = project_with(&["main/a", "main/b", "main/c", "main/auth/x"]);
+        move_request(dir.path(), "main/c", -1).unwrap();
+        // Display order was a, b, c (alphabetical); c moved up one.
+        assert_eq!(order_of(dir.path(), "main"), v(&["a", "c", "b"]));
+        move_request(dir.path(), "main/a", -1).unwrap(); // already first
+        assert_eq!(order_of(dir.path(), "main"), v(&["a", "c", "b"]));
+        move_request(dir.path(), "main/a", 5).unwrap(); // clamps to last
+        assert_eq!(order_of(dir.path(), "main"), v(&["c", "b", "a"]));
+        assert!(matches!(
+            move_request(dir.path(), "main/nope", 1),
+            Err(crate::project::ProjectError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn move_request_in_a_folder_touches_only_that_level() {
+        let dir = project_with(&["main/a", "main/auth/x", "main/auth/y"]);
+        set_level_order(dir.path(), "main", "", &v(&["a"])).unwrap();
+        move_request(dir.path(), "main/auth/y", -1).unwrap();
+        assert_eq!(order_of(dir.path(), "main"), v(&["a", "auth/y", "auth/x"]));
+    }
+
+    #[test]
+    fn move_request_keeps_a_stale_entry_in_its_slot() {
+        let dir = project_with(&["main/a", "main/b"]);
+        set_level_order(dir.path(), "main", "", &v(&["gone", "a", "b"])).unwrap();
+        move_request(dir.path(), "main/b", -1).unwrap();
+        assert_eq!(order_of(dir.path(), "main"), v(&["gone", "b", "a"]));
     }
 }
