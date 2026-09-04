@@ -459,8 +459,10 @@ impl ManageList {
             let y = list.y + row as u16;
             // The dragged row keeps the selected fill while it travels
             // (the cursor rides with it, so this only matters if the two
-            // ever part company).
-            let dragged = self.drag.as_ref().is_some_and(|d| d.name == items[i]);
+            // ever part company). Tab-gated exactly like `items` above:
+            // only the Spaces tab lists the names a drag holds.
+            let dragged =
+                tab == ManageTab::Spaces && self.drag.as_ref().is_some_and(|d| d.name == items[i]);
             let highlight = if dragged || i == self.cursor {
                 RowHighlight::Selected
             } else if hovered == Some(&Hit::ManageRow(i)) {

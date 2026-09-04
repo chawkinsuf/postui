@@ -3760,6 +3760,10 @@ impl App {
                 true
             }
             Action::OpenManage { tab } => {
+                // A tab switch here `reset`s the list, which would drop a
+                // live space drag on the floor with its press still
+                // armed: cancel it first, as `SelectManageTab` does.
+                self.finish_manage_drag(false);
                 // A toggle: alt+v (and the header Manage chip) close the
                 // screen they opened. A request for the tab that's already
                 // up toggles too; a request for a different tab switches.
@@ -7063,7 +7067,10 @@ impl App {
                 Ok(()) => {
                     // `ReloadProjectFiles` is mtime-gated (see
                     // `Action::MoveSpace`), so read the file just written
-                    // rather than waiting for the stamp to move.
+                    // rather than waiting for the stamp to move. Skipping
+                    // it entirely (unlike `MoveSpace`, which runs it
+                    // first) is deliberate: these two reloads cover
+                    // everything a `spaces`-key rewrite can change.
                     self.project.reload_meta();
                     self.project.reload_spaces();
                 }

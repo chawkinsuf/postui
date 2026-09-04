@@ -19519,6 +19519,28 @@ fn a_press_on_an_environments_row_never_arms_a_drag() {
 }
 
 #[test]
+fn reopening_the_manage_screen_on_another_tab_mid_drag_cancels_it() {
+    // `OpenManage { tab: Some(other) }` while the screen is already up
+    // (the palette, or a second alt+v with a tab) resets the list — the
+    // drag has to be cancelled first, or it is dropped on the floor with
+    // `manage_press` still armed.
+    let (mut app, dir) = manage_spaces_app();
+    let r0 = manage_row(&mut app, 0);
+    let r2 = manage_row(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    assert!(app.manage.list.drag.is_some());
+
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Environments),
+    });
+
+    assert!(app.manage.list.drag.is_none());
+    assert!(app.manage_press.is_none());
+    assert_eq!(listed_spaces(&dir), ["main", "auth", "billing"]);
+}
+
+#[test]
 fn switching_the_manage_tab_mid_drag_cancels_it() {
     let (mut app, dir) = manage_spaces_app();
     let r0 = manage_row(&mut app, 0);
