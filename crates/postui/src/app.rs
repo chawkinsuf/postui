@@ -2353,22 +2353,8 @@ impl App {
                             &[from_path, to_path],
                             None,
                         );
-                        if let Some((from_space, from_rel)) = Self::split_rel(&slug) {
-                            let r = postui_core::order::order_remove(
-                                &self.project.root,
-                                from_space,
-                                from_rel,
-                            );
-                            self.order_cascade("move", r);
-                        }
-                        if let Some((to_space, to_rel)) = Self::split_rel(&new_slug) {
-                            let r = postui_core::order::order_arrive(
-                                &self.project.root,
-                                to_space,
-                                to_rel,
-                            );
-                            self.order_cascade("move", r);
-                        }
+                        self.cascade_slug("move", &slug, postui_core::order::order_remove);
+                        self.cascade_slug("move", &new_slug, postui_core::order::order_arrive);
                         // The move doesn't follow the request into its
                         // new space (user feedback: that made moving
                         // several in a row a chore). From this space's
@@ -2498,11 +2484,7 @@ impl App {
                         // reorder state: context.slug must still name the
                         // deleted request while self.editor.slug matches it.
                         self.record_trashed_step(vec![trashed], Vec::new(), &[], None);
-                        if let Some((space, rel)) = Self::split_rel(&slug) {
-                            let r =
-                                postui_core::order::order_remove(&self.project.root, space, rel);
-                            self.order_cascade("delete", r);
-                        }
+                        self.cascade_slug("delete", &slug, postui_core::order::order_remove);
                         self.refresh_sidebar();
                         if self.editor.slug.as_deref() == Some(slug.as_str()) {
                             self.editor = Editor::default();
@@ -4953,12 +4935,34 @@ impl App {
                 true
             }
             Action::MoveRequest { slug, delta } => {
-                match postui_core::order::move_request(&self.project.root, &slug, delta) {
+                // The sidebar already holds the level's displayed order
+                // (the rows it painted), so a visible row moves without
+                // re-walking the request tree: one read-modify-write of
+                // `project.toml`, then the rows are rebuilt from the
+                // listing in hand. A row that isn't visible falls back to
+                // reading the displayed order from disk.
+                let space = self.project.active_space.clone();
+                let shown = postui_core::storage::space_of(&slug)
+                    .filter(|s| *s == space)
+                    .and_then(|_| self.sidebar.row_of(&slug))
+                    .and_then(|i| self.sidebar.level_group(i, &space));
+                let r = match (shown, postui_core::order::relative(&slug, &space)) {
+                    (Some((level, shown)), Some(rel)) => postui_core::order::move_shown(
+                        &self.project.root,
+                        &space,
+                        &level,
+                        &shown,
+                        rel,
+                        delta,
+                    ),
+                    _ => postui_core::order::move_request(&self.project.root, &slug, delta),
+                };
+                match r {
                     Ok(()) => {
                         // Same mtime hazard as `MoveSpace`: read the file
                         // we just wrote rather than waiting for the stamp.
                         self.project.reload_meta();
-                        self.refresh_sidebar();
+                        self.rebuild_sidebar();
                         self.sidebar.select_slug(&slug);
                     }
                     Err(e) => {
@@ -5024,21 +5028,29 @@ impl App {
                 // source's order list and arrives unlisted in the
                 // destination — entries the app itself made stale, so they
                 // are cascaded, exactly as the single-request move does.
-                for (old, new) in &moved {
-                    if let Some((from_space, from_rel)) = Self::split_rel(old) {
-                        let r = postui_core::order::order_remove(
-                            &self.project.root,
-                            from_space,
-                            from_rel,
-                        );
-                        self.order_cascade("move", r);
-                    }
-                    if let Some((to_space, to_rel)) = Self::split_rel(new) {
-                        let r =
-                            postui_core::order::order_arrive(&self.project.root, to_space, to_rel);
-                        self.order_cascade("move", r);
-                    }
-                }
+                // They arrive in the order the source displayed them (the
+                // listing and list in hand are both still pre-move), so a
+                // listed destination keeps the user's arrangement rather
+                // than the alphabetical order the walk returned them in.
+                let shown = postui_core::order::displayed_slugs(
+                    self.sidebar.listing(),
+                    postui_core::order::space_order(&self.project.meta, &from),
+                    &from,
+                );
+                let mut moves: Vec<(String, String)> = moved
+                    .iter()
+                    .filter_map(|(old, new)| {
+                        let (_, from_rel) = Self::split_rel(old)?;
+                        let (_, to_rel) = Self::split_rel(new)?;
+                        Some((from_rel.to_string(), to_rel.to_string()))
+                    })
+                    .collect();
+                moves.sort_by_key(|(from_rel, _)| {
+                    let slug = format!("{from}/{from_rel}");
+                    shown.iter().position(|s| *s == slug).unwrap_or(usize::MAX)
+                });
+                let r = postui_core::order::order_move_all(&self.project.root, &from, &to, &moves);
+                self.order_cascade("move", r);
                 self.project.forget_space(&from);
                 self.refresh_sidebar();
                 if let Some(open) = open
@@ -6912,6 +6924,22 @@ impl App {
         Some((space, rel))
     }
 
+    /// Runs one single-slug order cascade (`order_remove`, `order_arrive`)
+    /// for `slug` after a request file op named `what` succeeded, and
+    /// reports it through [`Self::order_cascade`]. A slug outside any
+    /// space has no list to cascade into.
+    fn cascade_slug(
+        &mut self,
+        what: &str,
+        slug: &str,
+        op: fn(&std::path::Path, &str, &str) -> Result<(), postui_core::project::ProjectError>,
+    ) {
+        if let Some((space, rel)) = Self::split_rel(slug) {
+            let r = op(&self.project.root, space, rel);
+            self.order_cascade(what, r);
+        }
+    }
+
     /// Re-reads the project directory and rebuilds the sidebar tree,
     /// merging any ancestor folders `select_slug` needs opened into
     /// `project.expanded` first. Replaces every previous
@@ -7642,10 +7670,7 @@ impl App {
                 // `before` is simply absent — no pre-read needed.
                 let path = storage::request_path(&self.project.root, &slug);
                 self.record_file_step(vec![(path.clone(), None)], &[path], None);
-                if let Some((space, rel)) = Self::split_rel(&slug) {
-                    let r = postui_core::order::order_arrive(&self.project.root, space, rel);
-                    self.order_cascade("create", r);
-                }
+                self.cascade_slug("create", &slug, postui_core::order::order_arrive);
                 self.toasts
                     .push(format!("Saved {leaf}"), ToastKind::Success);
                 // Queue the slug's ancestor folders open, rebuild the tree

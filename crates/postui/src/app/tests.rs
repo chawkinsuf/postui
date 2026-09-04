@@ -3793,6 +3793,36 @@ fn move_all_requests_cascades_the_order_lists() {
 }
 
 #[test]
+fn move_all_requests_keeps_the_source_arrangement_in_a_listed_destination() {
+    // The walk hands the moved requests back alphabetically; the cascade
+    // must arrive them in the order the source displayed them, or the
+    // user's arrangement is silently re-materialised as alphabetical.
+    let (mut app, dir) = spaced_app();
+    postui_core::storage::save_request(dir.path(), "main/gamma", &req("https://x/3")).unwrap();
+    postui_core::order::set_level_order(
+        dir.path(),
+        "main",
+        "",
+        &["gamma".to_string(), "alpha".to_string()],
+    )
+    .unwrap();
+    postui_core::order::set_level_order(dir.path(), "auth", "", &["login".to_string()]).unwrap();
+    app.project.reload_meta();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::MoveAllRequests {
+        from: "main".into(),
+        to: "auth".into(),
+    });
+    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    assert_eq!(
+        postui_core::order::space_order(&meta, "auth"),
+        ["login", "gamma", "alpha", "beta"],
+        "listed entries in list order, then the unlisted one"
+    );
+    assert!(postui_core::order::space_order(&meta, "main").is_empty());
+}
+
+#[test]
 fn move_all_requests_holding_a_dirty_open_request_gates_first() {
     let (mut app, dir) = spaced_app();
     app.update(Action::ForceOpenRequest("main/alpha".into()));
@@ -19171,7 +19201,10 @@ fn a_left_press_during_a_live_drag_also_ends_a_thumb_drag_and_a_stale_press() {
 
     // A press on bare editor background: no row to arm.
     let editor = app.hits.rect_of(&Hit::Pane(PaneId::Editor)).unwrap();
-    app.handle_mouse(left_down(editor.x + editor.width - 2, editor.y + editor.height - 2));
+    app.handle_mouse(left_down(
+        editor.x + editor.width - 2,
+        editor.y + editor.height - 2,
+    ));
 
     assert!(app.drag.is_none(), "the thumb drag ended");
     assert!(app.text_drag.is_none(), "the text sweep ended");
@@ -19259,7 +19292,11 @@ fn a_left_press_during_a_live_space_drag_selects_the_painted_row() {
         Some((1, "auth"))
     );
     app.handle_mouse(left_up(r0.x + 2, r0.y));
-    assert_eq!(listed_spaces(&dir), ["main", "auth", "billing"], "nothing written");
+    assert_eq!(
+        listed_spaces(&dir),
+        ["main", "auth", "billing"],
+        "nothing written"
+    );
 }
 
 #[test]
@@ -19289,7 +19326,10 @@ fn losing_terminal_focus_cancels_a_live_drag() {
     // The keyboard is the user's again.
     app.focus = PaneId::Sidebar;
     app.sidebar.selected = Some(0);
-    app.handle_key(&Keymap::default_bindings(), KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.handle_key(
+        &Keymap::default_bindings(),
+        KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+    );
     assert_eq!(app.sidebar.selected, Some(1));
 }
 
@@ -19313,7 +19353,10 @@ fn switching_projects_disarms_an_armed_press() {
     assert!(app.sidebar_press.is_none());
     render_once(&mut app);
     app.handle_mouse(moved(r0.x + 2, r2.y));
-    assert!(app.sidebar.drag.is_none(), "nothing promotes in the new project");
+    assert!(
+        app.sidebar.drag.is_none(),
+        "nothing promotes in the new project"
+    );
 }
 
 #[test]
@@ -19332,9 +19375,15 @@ fn a_reload_that_changes_the_tree_cancels_a_live_drag() {
     // stamp move without waiting on the filesystem's clock.
     let toml = dir.path().join("project.toml");
     let text = std::fs::read_to_string(&toml).unwrap();
-    std::fs::write(&toml, format!("{text}
+    std::fs::write(
+        &toml,
+        format!(
+            "{text}
 # touched
-")).unwrap();
+"
+        ),
+    )
+    .unwrap();
     let old = filetime_of(&toml);
     std::fs::File::options()
         .write(true)

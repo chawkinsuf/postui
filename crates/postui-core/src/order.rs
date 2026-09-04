@@ -105,20 +105,49 @@ fn edit_order(
     edit_project_toml(root, |doc| write_order(doc, space, &after))
 }
 
-fn level_is_listed(order: &[String], level: &str) -> bool {
-    order.iter().any(|e| level_of(e) == level)
+/// Whether `level` has a *displayed* listed entry: one naming a file that
+/// exists. Stale entries are ignored for display, so a level whose only
+/// entries are stale is an unlisted level as far as the screen goes.
+fn level_is_listed(root: &Path, space: &str, order: &[String], level: &str) -> bool {
+    order.iter().any(|e| {
+        level_of(e) == level
+            && crate::storage::request_path(root, &format!("{space}/{e}")).is_file()
+    })
+}
+
+/// [`order_arrive`]'s edit, on a list already in hand.
+fn arrive(root: &Path, space: &str, order: &mut Vec<String>, rel: &str) {
+    if order.iter().any(|e| e == rel) || !level_is_listed(root, space, order, level_of(rel)) {
+        return;
+    }
+    order.push(rel.to_string());
 }
 
 /// A request newly appearing in a level (created, renamed in, moved in):
 /// appended after the level's listed entries so it shows last; nothing
-/// at all when the level has no entries (it then sorts alphabetically
-/// with its unlisted siblings).
+/// at all when the level has no displayed entries (it then sorts
+/// alphabetically with its unlisted siblings).
 pub fn order_arrive(root: &Path, space: &str, rel: &str) -> Result<(), ProjectError> {
-    edit_order(root, space, |order| {
-        if order.iter().any(|e| e == rel) || !level_is_listed(order, level_of(rel)) {
-            return;
+    edit_order(root, space, |order| arrive(root, space, order, rel))
+}
+
+/// Every request of `moves` (`(from_rel, to_rel)` pairs) leaves `from`'s
+/// list and arrives in `to`'s, in the order given — the source's displayed
+/// order, so the arrangement survives the move when the destination is
+/// listed. One read-modify-write per space, however many requests moved.
+pub fn order_move_all(
+    root: &Path,
+    from: &str,
+    to: &str,
+    moves: &[(String, String)],
+) -> Result<(), ProjectError> {
+    edit_order(root, from, |order| {
+        order.retain(|e| !moves.iter().any(|(f, _)| f == e));
+    })?;
+    edit_order(root, to, |order| {
+        for (_, t) in moves {
+            arrive(root, to, order, t);
         }
-        order.push(rel.to_string());
     })
 }
 
@@ -207,13 +236,36 @@ pub fn set_level_order(
         slugs.iter().all(|s| level_of(s) == level),
         "set_level_order got slugs from another level: {slugs:?} is not all under {level:?}"
     );
-    let meta = load_meta(root)?;
-    let merged = merge_level(space_order(&meta, space), level, slugs);
-    edit_project_toml(root, |doc| write_order(doc, space, &merged))
+    edit_order(root, space, |order| {
+        *order = merge_level(order, level, slugs)
+    })
+}
+
+/// Every request of `space` in `listing`, as full slugs, in display
+/// order: level by level (levels in slug order), each level under the
+/// display rule of [`order_level`].
+pub fn displayed_slugs(listing: &[RequestListing], order: &[String], space: &str) -> Vec<String> {
+    let mut by_level: std::collections::BTreeMap<&str, Vec<&RequestListing>> =
+        std::collections::BTreeMap::new();
+    for e in listing {
+        if let Some(rel) = relative(&e.slug, space) {
+            by_level.entry(level_of(rel)).or_default().push(e);
+        }
+    }
+    by_level
+        .into_values()
+        .flat_map(|entries| {
+            order_level(&entries, order, space)
+                .into_iter()
+                .map(|e| e.slug.clone())
+        })
+        .collect()
 }
 
 /// The level's requests in display order, as relative slugs — what the
-/// sidebar shows for that level right now.
+/// sidebar shows for that level right now. Walks the whole request tree;
+/// a caller that already holds the displayed order (the sidebar does)
+/// passes it to [`move_shown`] instead.
 fn displayed_level(root: &Path, space: &str, level: &str) -> Result<Vec<String>, ProjectError> {
     let meta = load_meta(root)?;
     let (listing, _) = crate::storage::list_requests(root);
@@ -227,29 +279,44 @@ fn displayed_level(root: &Path, space: &str, level: &str) -> Result<Vec<String>,
         .collect())
 }
 
+/// Moves `rel` by `delta` positions among `shown` — its level's requests
+/// (relative slugs) in the order they are displayed right now — clamped
+/// to the level's ends, and writes the result as that level's order, so
+/// what is on disk afterwards is exactly what was on screen. A move to
+/// where `rel` already is touches nothing: a no-op alt+↑ on the first
+/// row of a never-ordered level must not materialise the whole level
+/// into `project.toml`.
+pub fn move_shown(
+    root: &Path,
+    space: &str,
+    level: &str,
+    shown: &[String],
+    rel: &str,
+    delta: i32,
+) -> Result<(), ProjectError> {
+    let Some(pos) = shown.iter().position(|s| s == rel) else {
+        return Err(ProjectError::NotFound(format!("{space}/{rel}")));
+    };
+    let target = (pos as i32 + delta).clamp(0, shown.len() as i32 - 1) as usize;
+    if target == pos {
+        return Ok(());
+    }
+    let mut shown = shown.to_vec();
+    let moved = shown.remove(pos);
+    shown.insert(target, moved);
+    set_level_order(root, space, level, &shown)
+}
+
 /// Moves `slug` (a full slug, `space/…`) by `delta` positions among its
-/// siblings, clamped to the level's ends. The level's displayed order is
-/// materialised into the list first, so what is on disk afterwards is
-/// exactly what was on screen.
+/// siblings: [`move_shown`] over the level's displayed order read from
+/// disk.
 pub fn move_request(root: &Path, slug: &str, delta: i32) -> Result<(), ProjectError> {
     let space =
         crate::storage::space_of(slug).ok_or_else(|| ProjectError::NotFound(slug.to_string()))?;
     let rel = relative(slug, space).ok_or_else(|| ProjectError::NotFound(slug.to_string()))?;
     let level = level_of(rel);
-    let mut shown = displayed_level(root, space, level)?;
-    let Some(pos) = shown.iter().position(|s| s == rel) else {
-        return Err(ProjectError::NotFound(slug.to_string()));
-    };
-    let target = (pos as i32 + delta).clamp(0, shown.len() as i32 - 1) as usize;
-    // Already at the end the move asks for: write nothing. Otherwise a
-    // no-op alt+↑ on the first row of a never-ordered level would
-    // materialise the whole level into `project.toml`.
-    if target == pos {
-        return Ok(());
-    }
-    let moved = shown.remove(pos);
-    shown.insert(target, moved);
-    set_level_order(root, space, level, &shown)
+    let shown = displayed_level(root, space, level)?;
+    move_shown(root, space, level, &shown, rel, delta)
 }
 
 #[cfg(test)]
@@ -445,6 +512,83 @@ mod tests {
         set_level_order(dir.path(), "main", "", &v(&["gone", "a", "b"])).unwrap();
         move_request(dir.path(), "main/b", -1).unwrap();
         assert_eq!(order_of(dir.path(), "main"), v(&["gone", "b", "a"]));
+    }
+
+    #[test]
+    fn set_level_order_writes_nothing_when_the_level_is_already_that_order() {
+        let dir = project_with(&["main/a", "main/b"]);
+        set_level_order(dir.path(), "main", "", &v(&["b", "a"])).unwrap();
+        let path = dir.path().join("project.toml");
+        let before = std::fs::read(&path).unwrap();
+        set_level_order(dir.path(), "main", "", &v(&["b", "a"])).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), before, "byte identical");
+    }
+
+    #[test]
+    fn move_shown_writes_the_given_order_shifted() {
+        // The caller's displayed order is the truth, whatever the disk
+        // list says — the sidebar hands over what it painted.
+        let dir = project_with(&["main/a", "main/b", "main/c"]);
+        move_shown(dir.path(), "main", "", &v(&["c", "b", "a"]), "a", -1).unwrap();
+        assert_eq!(order_of(dir.path(), "main"), v(&["c", "a", "b"]));
+        assert!(matches!(
+            move_shown(dir.path(), "main", "", &v(&["c", "a", "b"]), "zz", 1),
+            Err(crate::project::ProjectError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn arrive_on_a_level_whose_only_entries_are_stale_writes_nothing() {
+        // Appending would make the newcomer the level's only *displayed*
+        // listed entry — and so show it first, not last. A level with no
+        // live entry is unlisted as far as the screen goes: the newcomer
+        // sorts alphabetically with everything else.
+        let dir = project_with(&["main/a"]);
+        set_level_order(dir.path(), "main", "", &v(&["gone"])).unwrap();
+        crate::storage::save_request(dir.path(), "main/c", &req()).unwrap();
+        order_arrive(dir.path(), "main", "c").unwrap();
+        assert_eq!(order_of(dir.path(), "main"), v(&["gone"]));
+        // With one live entry, arrivals append after it as before.
+        set_level_order(dir.path(), "main", "", &v(&["gone", "c"])).unwrap();
+        crate::storage::save_request(dir.path(), "main/d", &req()).unwrap();
+        order_arrive(dir.path(), "main", "d").unwrap();
+        assert_eq!(order_of(dir.path(), "main"), v(&["gone", "c", "d"]));
+    }
+
+    #[test]
+    fn order_move_all_keeps_the_given_order_in_a_listed_destination() {
+        let dir = project_with(&["main/z", "main/a", "main/m", "auth/login"]);
+        set_level_order(dir.path(), "main", "", &v(&["z", "a"])).unwrap();
+        set_level_order(dir.path(), "auth", "", &v(&["login"])).unwrap();
+        let moves: Vec<(String, String)> = ["z", "a", "m"]
+            .iter()
+            .map(|s| (s.to_string(), s.to_string()))
+            .collect();
+        for (_, s) in &moves {
+            crate::storage::save_request(dir.path(), &format!("auth/{s}"), &req()).unwrap();
+        }
+        order_move_all(dir.path(), "main", "auth", &moves).unwrap();
+        assert!(
+            order_of(dir.path(), "main").is_empty(),
+            "no stale entry left"
+        );
+        assert_eq!(order_of(dir.path(), "auth"), v(&["login", "z", "a", "m"]));
+    }
+
+    #[test]
+    fn displayed_slugs_lists_every_level_under_the_display_rule() {
+        let listing = vec![
+            entry("main/b", None),
+            entry("main/a", None),
+            entry("main/auth/y", None),
+            entry("main/auth/x", None),
+            entry("other/q", None),
+        ];
+        let order = v(&["b", "auth/y"]);
+        assert_eq!(
+            displayed_slugs(&listing, &order, "main"),
+            v(&["main/b", "main/a", "main/auth/y", "main/auth/x"])
+        );
     }
 
     #[test]

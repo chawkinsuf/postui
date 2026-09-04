@@ -502,12 +502,12 @@ impl Sidebar {
         }
     }
 
-    /// Starts a drag of row `i`: records its level's sibling order as both
-    /// `original` and the starting `working` order. Refuses a folder row.
-    pub fn begin_drag(&mut self, i: usize, space: &str) -> bool {
-        let Some((first, last)) = self.group_bounds(i) else {
-            return false;
-        };
+    /// The level row `i` belongs to and that level's requests as the rows
+    /// show them right now — relative slugs, in display order. This is
+    /// what a drag rearranges and what a keyboard move shifts. `None` for
+    /// a folder row.
+    pub fn level_group(&self, i: usize, space: &str) -> Option<(String, Vec<String>)> {
+        let (first, last) = self.group_bounds(i)?;
         let rel = |slug: &str| {
             postui_core::order::relative(slug, space)
                 .unwrap_or(slug)
@@ -520,10 +520,35 @@ impl Sidebar {
                 _ => None,
             })
             .collect();
+        let Row::Request { slug, .. } = self.rows.get(i)? else {
+            return None;
+        };
+        let level = postui_core::order::level_of(&rel(slug)).to_string();
+        Some((level, group))
+    }
+
+    /// The request row for `slug`, if it is visible.
+    pub fn row_of(&self, slug: &str) -> Option<usize> {
+        self.rows
+            .iter()
+            .position(|r| matches!(r, Row::Request { slug: s, .. } if s == slug))
+    }
+
+    /// The listing the rows were last built from: every space, not just
+    /// the visible one.
+    pub fn listing(&self) -> &[RequestListing] {
+        &self.listing
+    }
+
+    /// Starts a drag of row `i`: records its level's sibling order as both
+    /// `original` and the starting `working` order. Refuses a folder row.
+    pub fn begin_drag(&mut self, i: usize, space: &str) -> bool {
+        let Some((level, group)) = self.level_group(i, space) else {
+            return false;
+        };
         let Some(Row::Request { slug, .. }) = self.rows.get(i) else {
             return false;
         };
-        let level = postui_core::order::level_of(&rel(slug)).to_string();
         self.drag = Some(RowDrag {
             slug: slug.clone(),
             space: space.to_string(),
