@@ -92,23 +92,25 @@ removing the key when the list is empty.
   directly under `prefix`) with `slugs` in the given order, using the
   same in-place-then-append rule. Other levels' entries and unmatched
   entries are untouched.
-- `order_rename(root, space, from, to)` — rewrites the entry `from` to
-  `to` in place (no-op if absent). Called after `rename_request`
-  when the slug changed *within* the space (a rename that changes
-  the folder part moves the entry to a new level; that's fine — it
-  keeps its list slot, which is meaningless across levels, and shows
-  first in its new level, which is a reasonable "you just put it
-  here").
+- `order_rename(root, space, from, to)` — a rename that stays in the
+  same level rewrites the entry `from` to `to` in place (no-op if
+  absent), so the request keeps its slot. A rename that changes the
+  level (the folder part of the slug) is a removal from the old level
+  plus an *arrival* in the new one (below).
+- `order_arrive(root, space, slug)` — the one rule for every way a
+  request can newly appear in a level: **if the level already has
+  entries in the list, append `slug` after the last of them, so it
+  lands last on screen; if the level has none, do nothing**, and the
+  request sorts alphabetically with its unlisted siblings as today.
+  Called after `create_request`, after a level-changing rename, and
+  for the destination side of `move_request_to_space`.
 - `order_remove(root, space, slug)` — removes the entry. Called after
-  `delete_request`, and for the source side of `move_request_to_space`.
+  `delete_request`, for the source side of `move_request_to_space`,
+  and for the old level of a level-changing rename.
 - `order_insert_after(root, space, anchor, slug)` — inserts `slug`
-  directly after `anchor` (appends if `anchor` is unlisted, which
-  means the level has no list yet and the copy will sort
-  alphabetically next to its source anyway). Called after
-  `duplicate_request`.
-- `move_request_to_space` cascades: remove from the old space; append
-  to the new space's list only if that level already has one (else it
-  sorts alphabetically like any unlisted request).
+  directly after `anchor`; if `anchor` is unlisted the level has no
+  list, so this is a no-op and the copy sorts alphabetically next to
+  its source. Called after `duplicate_request`.
 
 All cascades are applied by the app after the file operation
 succeeded; a failed cascade toasts a warning and leaves the file op in
@@ -230,9 +232,12 @@ sidebar_press: Option<(usize, String)>, // row index + slug of the armed press
   ends; other levels' entries untouched; a stale entry keeps its slot;
   comments and other keys in `project.toml` survive.
 - `set_level_order`: replaces only the level; in-place-then-append.
-- Cascades: rename rewrites in place; delete removes; duplicate lands
-  after source (and appends/no-ops when the level is unlisted);
-  move-to-space removes from old, appends to new only if listed.
+- Cascades: same-level rename rewrites in place; level-changing rename
+  removes from the old level and arrives in the new; create, and the
+  destination of move-to-space, arrive; arrival appends when the level
+  is listed and no-ops when it isn't; delete and the source of
+  move-to-space remove; duplicate lands after source (no-op when the
+  level is unlisted).
 
 **Sidebar:**
 - Rows honour the order per level, folders still alphabetical below.
