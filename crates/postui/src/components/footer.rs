@@ -22,7 +22,9 @@ pub enum JqBarState {
     Focused,
     /// Focused with a completion ghost showing; `cycle` is the `jq_tab`
     /// mode (Tab steps) versus accept (Tab accepts).
-    Completing { cycle: bool },
+    Completing {
+        cycle: bool,
+    },
 }
 
 /// The context-sensitive chips for the focused pane. Each entry is `(key,
@@ -414,7 +416,10 @@ mod tests {
         let focused = chips(JqBarState::Focused);
         assert!(!focused.iter().any(|c| c.starts_with("tab")), "{focused:?}");
         let cycle = chips(JqBarState::Completing { cycle: true });
-        assert_eq!(&cycle[..2], &["tab next".to_string(), "→ accept".to_string()]);
+        assert_eq!(
+            &cycle[..2],
+            &["tab next".to_string(), "→ accept".to_string()]
+        );
         assert_eq!(&cycle[2..], &focused[..], "the usual chips follow");
         let accept = chips(JqBarState::Completing { cycle: false });
         assert_eq!(accept[0], "tab accept");

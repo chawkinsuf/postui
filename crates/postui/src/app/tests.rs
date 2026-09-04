@@ -17412,7 +17412,10 @@ fn typing_in_the_jq_bar_ghosts_a_key_and_right_accepts_it() {
     assert_eq!(app.session.response.jq_ghost(), Some("data"));
     app.handle_key(&km, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
     assert_eq!(app.session.response.jq_text(), ".data");
-    assert_eq!(app.editor.jq, ".data", "an accepted completion is a request edit");
+    assert_eq!(
+        app.editor.jq, ".data",
+        "an accepted completion is a request edit"
+    );
     app.handle_key(&km, KeyEvent::new(KeyCode::Char('.'), KeyModifiers::NONE));
     assert_eq!(app.session.response.jq_ghost(), Some("items"));
 }

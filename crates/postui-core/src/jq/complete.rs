@@ -24,7 +24,11 @@ pub fn keys_at(input_expr: &str, doc: &JqDocument) -> Vec<String> {
     let mut keys: Vec<String> = Vec::new();
     let _ = with_compiled(input_expr, |filter| {
         let ctx = Ctx::<Data>::new(&filter.lut, Vars::new([]));
-        for item in filter.id.run((ctx, (*doc.0).clone())).take(COMPLETE_OUTPUTS) {
+        for item in filter
+            .id
+            .run((ctx, (*doc.0).clone()))
+            .take(COMPLETE_OUTPUTS)
+        {
             let Ok(val) = item else {
                 break;
             };
@@ -175,7 +179,15 @@ pub fn context(text: &str) -> Option<Context> {
 /// Builtins whose argument runs once per element of the input, so inside
 /// `map(` the `.` is an element, not the array.
 const PER_ELEMENT: [&str; 9] = [
-    "map", "map_values", "sort_by", "group_by", "unique_by", "min_by", "max_by", "any", "all",
+    "map",
+    "map_values",
+    "sort_by",
+    "group_by",
+    "unique_by",
+    "min_by",
+    "max_by",
+    "any",
+    "all",
 ];
 
 /// One forward pass over `s`: which bytes sit inside a string literal,
@@ -490,14 +502,23 @@ mod tests {
             vec!["id", "name", "status", "extra"],
             "keys of every output, deduplicated, in order"
         );
-        assert_eq!(keys_at(".data.items | .[]", &doc()), vec!["id", "name", "status", "extra"]);
+        assert_eq!(
+            keys_at(".data.items | .[]", &doc()),
+            vec!["id", "name", "status", "extra"]
+        );
     }
 
     #[test]
     fn keys_at_is_empty_for_non_objects_errors_and_bad_filters() {
-        assert!(keys_at(".data.items", &doc()).is_empty(), "an array has no keys");
+        assert!(
+            keys_at(".data.items", &doc()).is_empty(),
+            "an array has no keys"
+        );
         assert!(keys_at(".data.total", &doc()).is_empty());
-        assert!(keys_at(".data.items[] | .id | .x", &doc()).is_empty(), "runtime error");
+        assert!(
+            keys_at(".data.items[] | .id | .x", &doc()).is_empty(),
+            "runtime error"
+        );
         assert!(keys_at("select(", &doc()).is_empty(), "does not compile");
         assert!(keys_at("$x", &doc()).is_empty(), "unbound variable");
     }
@@ -543,7 +564,10 @@ mod tests {
         assert_eq!(c.token_start, 14);
         assert!(c.input_expr.is_none());
         let c = context("sel").unwrap();
-        assert_eq!((c.kind, c.partial.as_str(), c.token_start), (Kind::Word, "sel", 0));
+        assert_eq!(
+            (c.kind, c.partial.as_str(), c.token_start),
+            (Kind::Word, "sel", 0)
+        );
     }
 
     #[test]
@@ -590,7 +614,10 @@ mod tests {
             (".data.\"my k", ".data"),
             (".data.\"my key\".na", ".data.\"my key\""),
             (".a.b?.c", ".a.b?"),
-            (".a | if .x then .b else .c end | .d", ".a | if .x then .b else .c end"),
+            (
+                ".a | if .x then .b else .c end | .d",
+                ".a | if .x then .b else .c end",
+            ),
             ("limit(3; .data.items[] | .na", ".data.items[]"),
             (".a |= .b", "."),
             (".a as $x | $x.na", ".a as $x | $x"),
@@ -599,7 +626,10 @@ mod tests {
             (".. | .na", ".."),
             (".a | .b | .c | .na", ".a | .b | .c"),
             ("(.a | .b).na", "(.a | .b)"),
-            (".data.items | sort_by(.id) | .[0].na", ".data.items | sort_by(.id) | .[0]"),
+            (
+                ".data.items | sort_by(.id) | .[0].na",
+                ".data.items | sort_by(.id) | .[0]",
+            ),
             (".data | (.items[] | .na", ".data | .items[]"),
             ("select(.a == 1).na", "select(.a == 1)"),
         ];
@@ -611,8 +641,7 @@ mod tests {
     #[test]
     fn context_never_panics() {
         // A tiny deterministic generator over the characters jq uses.
-        let alphabet: Vec<char> =
-            ".[]{}()|\"\\$@?;:,=<>+-*/ abz_09".chars().collect();
+        let alphabet: Vec<char> = ".[]{}()|\"\\$@?;:,=<>+-*/ abz_09".chars().collect();
         let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
         for _ in 0..20_000 {
             let mut s = String::new();
@@ -638,7 +667,11 @@ mod tests {
         assert_eq!(builtin("select").map(|b| b.arity), Some(1));
         assert_eq!(builtin("length").map(|b| b.arity), Some(0));
         assert_eq!(builtin("map").map(|b| b.arity), Some(1));
-        assert_eq!(builtin("range").map(|b| b.arity), Some(1), "lowest arity wins");
+        assert_eq!(
+            builtin("range").map(|b| b.arity),
+            Some(1),
+            "lowest arity wins"
+        );
         assert_eq!(builtin("if").map(|b| b.arity), Some(0));
         assert!(builtin("reduce").is_some());
         assert!(builtins().iter().all(|b| !b.name.starts_with('_')));
@@ -660,8 +693,15 @@ mod tests {
     #[test]
     fn key_candidates_strictly_extend_the_partial_in_body_order() {
         assert_eq!(ghosts(".", &["id", "name"]), vec!["id", "name"]);
-        assert_eq!(ghosts(".i", &["name", "ids", "id", "identity"]), vec!["ds", "d", "dentity"]);
-        assert_eq!(ghosts(".id", &["id", "ids"]), vec!["s"], "an exact match adds nothing");
+        assert_eq!(
+            ghosts(".i", &["name", "ids", "id", "identity"]),
+            vec!["ds", "d", "dentity"]
+        );
+        assert_eq!(
+            ghosts(".id", &["id", "ids"]),
+            vec!["s"],
+            "an exact match adds nothing"
+        );
         assert!(ghosts(".zz", &["id"]).is_empty());
         assert!(ghosts(".I", &["id"]).is_empty(), "case-sensitive");
     }

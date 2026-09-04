@@ -168,8 +168,7 @@ impl JqBar {
     /// Whether the caret is at the end of the text with nothing selected —
     /// the only place a ghost is drawn.
     fn caret_at_end(&self) -> bool {
-        self.input.selection().is_none()
-            && self.input.cursor() == self.input.text().chars().count()
+        self.input.selection().is_none() && self.input.cursor() == self.input.text().chars().count()
     }
 
     /// The candidate the ghost shows, when one is showing.
@@ -1377,7 +1376,11 @@ impl Response {
         if c.pending() != Some(seq) {
             return false;
         }
-        if self.view.as_ref().is_none_or(|v| v.generation != generation) {
+        if self
+            .view
+            .as_ref()
+            .is_none_or(|v| v.generation != generation)
+        {
             self.jq.completion.pending = None;
             return false;
         }
@@ -5003,7 +5006,11 @@ mod tests {
         type_jq(&mut r, ".data.items[] | .s");
         assert_eq!(r.jq_ghost(), Some("tatus"));
         type_jq(&mut r, ".data.items[] | select(.st");
-        assert_eq!(r.jq_ghost(), Some("atus"), "inside select the dot is the item");
+        assert_eq!(
+            r.jq_ghost(),
+            Some("atus"),
+            "inside select the dot is the item"
+        );
         type_jq(&mut r, ".data.items[] | .zz");
         assert_eq!(r.jq_ghost(), None);
     }
@@ -5067,10 +5074,7 @@ mod tests {
 
     #[test]
     fn a_big_body_fetches_keys_on_the_pool_and_attaches_by_sequence() {
-        let big = format!(
-            r#"{{"pad": "{}", "n": 7}}"#,
-            "x".repeat(SYNC_PRETTY_BYTES)
-        );
+        let big = format!(r#"{{"pad": "{}", "n": 7}}"#, "x".repeat(SYNC_PRETTY_BYTES));
         let mut r = ready_gen(&big, 3);
         r.attach_tree(3, crate::components::json_tree::JsonTree::parse(&big));
         r.set_jq_focus(true);
@@ -5092,7 +5096,10 @@ mod tests {
         );
         // (A stale generation is `an_attach_for_a_gone_generation_still_
         // clears_its_pending_fetch`: it drops the keys *and* the fetch.)
-        assert!(!r.attach_jq_completion(3, creq.seq + 9, ".".into(), vec!["pad".into()]), "stale sequence");
+        assert!(
+            !r.attach_jq_completion(3, creq.seq + 9, ".".into(), vec!["pad".into()]),
+            "stale sequence"
+        );
         assert!(r.attach_jq_completion(3, creq.seq, ".".into(), vec!["pad".into(), "n".into()]));
         assert_eq!(r.jq_ghost(), Some("pad"));
     }
@@ -5117,7 +5124,10 @@ mod tests {
 
     /// A big body over the sync limit whose root keys are `first` and `n`.
     fn big_body(first: &str) -> String {
-        format!(r#"{{"{first}": "{}", "n": 7}}"#, "x".repeat(SYNC_PRETTY_BYTES))
+        format!(
+            r#"{{"{first}": "{}", "n": 7}}"#,
+            "x".repeat(SYNC_PRETTY_BYTES)
+        )
     }
 
     #[test]
@@ -5237,7 +5247,6 @@ mod tests {
         assert_eq!(r.jq_ghost(), Some("pad"));
     }
 
-
     fn shift(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::SHIFT)
     }
@@ -5276,7 +5285,11 @@ mod tests {
         bar_key(&mut r, key(KeyCode::Tab));
         assert_eq!(r.jq_ghost(), Some("status"));
         bar_key(&mut r, ch('i'));
-        assert_eq!(r.jq_ghost(), Some("d"), "a new partial starts at the first candidate");
+        assert_eq!(
+            r.jq_ghost(),
+            Some("d"),
+            "a new partial starts at the first candidate"
+        );
         bar_key(&mut r, key(KeyCode::End));
         assert_eq!(r.jq_text(), ".data.items[] | .id");
     }
@@ -5304,7 +5317,11 @@ mod tests {
         bar_key(&mut r, key(KeyCode::Right));
         assert_eq!(r.jq_text(), ".\"my key\"");
         assert_eq!(r.view().unwrap().view_text(), "1");
-        assert_eq!(r.jq_bar().input.cursor(), 9, "caret after the closing quote");
+        assert_eq!(
+            r.jq_bar().input.cursor(),
+            9,
+            "caret after the closing quote"
+        );
     }
 
     #[test]
@@ -5314,7 +5331,10 @@ mod tests {
         assert_eq!(r.jq_ghost(), Some("ect("));
         bar_key(&mut r, key(KeyCode::Right));
         assert_eq!(r.jq_text(), ".data.items[] | select(");
-        assert!(r.jq_bar().error.is_some(), "an unfinished filter is an error, as when typed");
+        assert!(
+            r.jq_bar().error.is_some(),
+            "an unfinished filter is an error, as when typed"
+        );
     }
 
     #[test]
@@ -5326,9 +5346,16 @@ mod tests {
         assert_eq!(r.jq_text(), ".data.zz");
         r.jq_bar_mut().input.set_cursor(2);
         bar_key(&mut r, key(KeyCode::Right));
-        assert_eq!(r.jq_bar().input.cursor(), 3, "Right moves the caret mid-text");
+        assert_eq!(
+            r.jq_bar().input.cursor(),
+            3,
+            "Right moves the caret mid-text"
+        );
         bar_key(&mut r, shift(KeyCode::Right));
-        assert!(r.jq_bar().input.selection().is_some(), "shift+Right still selects");
+        assert!(
+            r.jq_bar().input.selection().is_some(),
+            "shift+Right still selects"
+        );
     }
 
     /// Every keystroke in the bar is a new jq run, but most of them leave
