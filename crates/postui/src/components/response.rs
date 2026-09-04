@@ -884,6 +884,16 @@ impl Response {
             _ => None,
         };
         self.state = state;
+        // The bar's text survives a new response, but nothing derived from
+        // the old document does: the cached keys are for a body that is
+        // gone, and an in-flight pool fetch will be dropped on arrival, so
+        // forget it here or `refresh_jq_completion` would never re-issue
+        // it. The sequence counter is kept so that stale fetch can't
+        // collide with a fresh one's `seq` (as in `shed_derived`).
+        self.jq.completion = JqCompletion {
+            seq: self.jq.completion.seq,
+            ..JqCompletion::default()
+        };
     }
 
     /// Delivers the result of a background pretty-print started for
@@ -1347,10 +1357,14 @@ impl Response {
         })
     }
 
-    /// Lands a pool key fetch. Dropped unless `generation` is the view on
-    /// screen and `seq` is the newest fetch. The keys are cached either
-    /// way; the ghost updates only if the caret's context still asks for
-    /// that expression. Returns whether the ghost changed.
+    /// Lands a pool key fetch. Keys for a view that is no longer on
+    /// screen (a stale `generation`), or from a fetch a newer one has
+    /// superseded (a stale `seq`), are dropped without being cached — but
+    /// a stale generation whose `seq` is still the outstanding fetch
+    /// clears it, so the expression can be fetched again. A valid attach
+    /// caches the keys even when the caret's context has moved on; the
+    /// ghost updates only if that context still asks for this expression.
+    /// Returns whether the ghost changed.
     pub fn attach_jq_completion(
         &mut self,
         generation: u64,
@@ -1358,13 +1372,15 @@ impl Response {
         input_expr: String,
         keys: Vec<String>,
     ) -> bool {
-        if self.view.as_ref().is_none_or(|v| v.generation != generation) {
-            return false;
-        }
         let c = &mut self.jq.completion;
         if c.pending() != Some(seq) {
             return false;
         }
+        if self.view.as_ref().is_none_or(|v| v.generation != generation) {
+            self.jq.completion.pending = None;
+            return false;
+        }
+        let c = &mut self.jq.completion;
         c.pending = None;
         c.cached_keys = keys;
         c.cached_expr = Some(input_expr);
@@ -5073,11 +5089,113 @@ mod tests {
             r.refresh_jq_completion(SYNC_PRETTY_BYTES).is_none(),
             "the same context is not fetched twice while pending"
         );
-        assert!(!r.attach_jq_completion(2, creq.seq, ".".into(), vec!["pad".into()]), "stale generation");
+        // (A stale generation is `an_attach_for_a_gone_generation_still_
+        // clears_its_pending_fetch`: it drops the keys *and* the fetch.)
         assert!(!r.attach_jq_completion(3, creq.seq + 9, ".".into(), vec!["pad".into()]), "stale sequence");
         assert!(r.attach_jq_completion(3, creq.seq, ".".into(), vec!["pad".into(), "n".into()]));
         assert_eq!(r.jq_ghost(), Some("pad"));
     }
+
+    /// The big-body setup `a_big_body_fetches_keys_on_the_pool` uses: a
+    /// response over the sync limit with its tree and document attached,
+    /// the bar focused with `text` typed and applied.
+    fn big_body_bar(body: &str, generation: u64, text: &str) -> Response {
+        let mut r = ready_gen(body, generation);
+        r.attach_tree(
+            generation,
+            crate::components::json_tree::JsonTree::parse(body),
+        );
+        r.set_jq_focus(true);
+        r.jq_bar_mut().input = LineInput::new(text);
+        let req = r.apply_jq(text, SYNC_PRETTY_BYTES).expect("background run");
+        let doc = postui_core::jq::JqDocument::parse(body).unwrap();
+        let out = JqRunOutput::from_outputs(Some(doc), vec![body.to_string()]);
+        r.attach_jq_result(generation, req.run, Ok(out));
+        r
+    }
+
+    /// A big body over the sync limit whose root keys are `first` and `n`.
+    fn big_body(first: &str) -> String {
+        format!(r#"{{"{first}": "{}", "n": 7}}"#, "x".repeat(SYNC_PRETTY_BYTES))
+    }
+
+    #[test]
+    fn a_new_response_re_derives_the_completion_from_the_new_body() {
+        let mut r = ready(ITEMS);
+        type_jq(&mut r, ".");
+        assert_eq!(r.jq_ghost(), Some("data"));
+        r.set_state(
+            ResponseState::Ready(Box::new(data(r#"{"other":{"x":1}}"#))),
+            1,
+        );
+        r.set_jq_focus(true);
+        assert!(
+            r.refresh_jq_completion(SYNC_PRETTY_BYTES).is_none(),
+            "small bodies fetch inline"
+        );
+        assert_eq!(
+            r.jq_ghost(),
+            Some("other"),
+            "the ghost is the new body's key, not the old one's"
+        );
+    }
+
+    #[test]
+    fn a_new_response_clears_a_pending_key_fetch_so_the_next_one_is_issued() {
+        let big = big_body("pad");
+        let mut r = big_body_bar(&big, 3, ".");
+        let creq = r
+            .refresh_jq_completion(SYNC_PRETTY_BYTES)
+            .expect("a big body fetches keys on the pool");
+        assert!(r.jq_bar().completion.pending().is_some());
+
+        let next = big_body("other");
+        r.set_state(ResponseState::Ready(Box::new(data(&next))), 4);
+        assert!(
+            r.jq_bar().completion.pending().is_none(),
+            "the in-flight fetch goes with the body it was for"
+        );
+        r.attach_tree(4, crate::components::json_tree::JsonTree::parse(&next));
+        r.set_jq_focus(true);
+        let req = r.apply_jq(".", SYNC_PRETTY_BYTES).expect("background run");
+        let doc = postui_core::jq::JqDocument::parse(&next).unwrap();
+        let out = JqRunOutput::from_outputs(Some(doc), vec![next.clone()]);
+        r.attach_jq_result(4, req.run, Ok(out));
+        let creq2 = r
+            .refresh_jq_completion(SYNC_PRETTY_BYTES)
+            .expect("the new body's keys are fetched afresh");
+        assert_eq!(creq2.generation, 4);
+        assert!(creq2.seq > creq.seq, "a new sequence number");
+        assert!(r.attach_jq_completion(4, creq2.seq, ".".into(), vec!["other".into()]));
+        assert_eq!(r.jq_ghost(), Some("other"));
+    }
+
+    #[test]
+    fn an_attach_for_a_gone_generation_still_clears_its_pending_fetch() {
+        let big = big_body("pad");
+        let mut r = big_body_bar(&big, 3, ".");
+        let creq = r
+            .refresh_jq_completion(SYNC_PRETTY_BYTES)
+            .expect("a big body fetches keys on the pool");
+        // The view moved on under the in-flight fetch. (A new response
+        // landing clears `pending` itself; this pins the attach side of
+        // the rule on its own.)
+        r.view.as_mut().unwrap().generation = 4;
+        assert!(
+            !r.attach_jq_completion(3, creq.seq, ".".into(), vec!["pad".into()]),
+            "keys for a view that is gone are dropped"
+        );
+        assert_eq!(r.jq_ghost(), None);
+        assert!(
+            r.jq_bar().completion.pending().is_none(),
+            "and the fetch is not left pending forever"
+        );
+        assert!(
+            r.refresh_jq_completion(SYNC_PRETTY_BYTES).is_some(),
+            "so the expression can be fetched again"
+        );
+    }
+
 
     fn shift(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::SHIFT)
