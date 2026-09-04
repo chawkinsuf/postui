@@ -266,3 +266,85 @@ shows; drag feels right at the edges.
 - A "sort alphabetically" reset.
 - Reorder as an undo step.
 - Ordering on the Manage screen.
+
+## Implementation notes (2026-09-04)
+
+What the shipped code does differently from the text above. The
+behaviour is as designed; these are placement and signature details a
+later reader would otherwise have to rediscover.
+
+**Module placement.** The order helpers live in their own module,
+`crates/postui-core/src/order.rs` (`postui_core::order`), not in
+`project.rs`. `project.rs` keeps only `ProjectMeta` and the space/
+environment machinery; `order.rs` owns `space_order`, `order_level`,
+`order_arrive` / `order_remove` / `order_rename`, `set_level_order` and
+`move_request`, together with the `toml_edit` writer that creates
+`[space.<slug>] order` and removes the key when the list empties.
+
+**`order_level` takes no prefix.** Its signature is
+`order_level(entries: &[&RequestListing], order: &[String], space: &str)`.
+The sidebar has already partitioned the listing by folder level before
+it calls in, so the function only applies the display rule (listed
+entries in list order, then the rest by display name with the slug as
+tiebreak) to the slice it is handed.
+
+**App-side helpers.** Two private helpers on `App` carry the cascades:
+
+- `App::split_rel(slug) -> Option<(space, rel)>` — splits a full slug
+  into the space and the path relative to it, which is the shape every
+  order-list call wants.
+- `App::order_cascade(what, result)` — applied after a request file op
+  has already succeeded. The file on disk is the truth and a stale
+  order entry is ignored for display, so a failed cascade pushes a
+  warning toast and reloads the meta; it never fails the file op.
+
+**Sidebar rendering.** `Sidebar::build_rows` outgrew clippy's argument
+limit once the space, order list and drag overlay joined it, so the
+per-level constants travel as a `LevelCtx<'_>` (`expanded`, `space`,
+`order`, `overlay`) instead of four positional arguments.
+
+**`Sidebar::drag_edge` is inclusive.** It compares `y <= list_top` and
+`y >= list_bottom` rather than testing strict equality, so a pointer
+dragged past the list rather than exactly onto its last row still
+auto-scrolls.
+
+**`App.sidebar_press` is `(row index, slug)`.** Only the row index is
+read today (to tell a click apart from the start of a drag); the slug
+half is carried for a future press-target check and is currently
+unused.
+
+**Cancel disarms the press.** `finish_sidebar_drag` clears
+`sidebar_press` on *every* drag end, commit or cancel. Review found
+that Escape alone left the press armed, so the next stray motion
+event — with no button held — restarted the drag. Confirmed fixed in
+the manual pass.
+
+**Tick auto-scroll casts.** The `Tick` handler calls
+`self.sidebar.handle_scroll(delta as i16)`; `drag_edge` returns an
+`i32` and `handle_scroll` takes an `i16`.
+
+### Manual pass (tmux, 160x45, `animations = false`)
+
+Six requests (`main/a`…`main/e` plus `main/grp/f`) against a scratch
+project. All checks passed:
+
+1. Press row 1, drag to row 4, release — rows reorder live and
+   `project.toml` gains `[space.main] order = [...]`.
+2. Dragging a request onto the `grp/` folder row, and onto `grp/f`
+   inside the expanded folder, clamps it to the last slot of its own
+   level. No file moves.
+3. Press, drag, Escape — rows snap back and `project.toml` is byte
+   identical. A following stray motion event does not restart the drag.
+4. `alt+↓` twice walks the row down two slots and the selection follows
+   it; the sidebar footer carries the `alt+↑↓ reorder` chip.
+5. Right-clicking the first request row renders "Move up" in the muted
+   foreground and inert (clicking it leaves the menu open and the order
+   unchanged) while "Move down" reorders.
+6. The `⋮` grip occupies exactly one cell on the dragged row, taking
+   the place of the leading space, so the method and name columns stay
+   aligned with the rows around it.
+
+The OSC 22 `grabbing` pointer shape is **unverified through tmux** —
+`capture-pane -e` reproduces SGR attributes but not OSC sequences.
+The app-level test asserts the `Grabbing` shape is set during a drag
+and restored after.
