@@ -1377,13 +1377,17 @@ impl App {
                 let Some(Modal::FilePicker(state)) = self.modals.top_mut() else {
                     return false;
                 };
-                if state.selected() == i || clicks == 2 {
+                // A click is a choice even when the row was already lit
+                // (row 0 opens selected): `select` records it, so Enter
+                // semantics act on the row rather than the save prefill.
+                let was_selected = state.selected() == i;
+                state.select(i);
+                if was_selected || clicks == 2 {
                     let Some(res) = state.activate() else {
                         return self.update(Action::Render);
                     };
                     self.apply_modal_result(res)
                 } else {
-                    state.select(i);
                     self.update(Action::Render)
                 }
             }

@@ -5404,6 +5404,33 @@ fn picker_keys_paste_scroll_and_footer_route_through_the_modal_stack() {
 }
 
 #[test]
+fn clicking_the_parent_row_of_a_fresh_save_picker_climbs_instead_of_saving() {
+    use crate::components::file_picker::{FilePickerState, PickerTarget};
+    let mut app = App::new_for_test();
+    ready_response(&mut app, r#"{"a": 1}"#);
+    let root = tempfile::tempdir().unwrap();
+    let start = root.path().join("inner");
+    std::fs::create_dir(&start).unwrap();
+    app.push_modal(Modal::FilePicker(FilePickerState::new(
+        "Save response body",
+        PickerTarget::SaveBody,
+        &start,
+        "out.json",
+    )));
+    app.anims.finish_all();
+
+    // ".." is row 0 and already selected; one click on it is a choice.
+    click_hit(&mut app, Hit::PickerRow(0));
+
+    let Some(Modal::FilePicker(p)) = app.modals.top() else {
+        panic!("the picker stays open; nothing was saved");
+    };
+    assert_eq!(p.dir(), root.path());
+    assert!(!start.join("out.json").exists());
+    assert!(!root.path().join("out.json").exists());
+}
+
+#[test]
 fn picker_mouse_rows_primary_and_hidden_toggle() {
     use crate::components::file_picker::{FilePickerState, PickerTarget};
     let mut app = App::new_for_test();
