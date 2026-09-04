@@ -37,12 +37,13 @@ pub trait TerminalPalette {
 pub struct OscQuery;
 
 /// How long we wait for the terminal to answer before giving up and
-/// treating it as silent. The read loop exits early on the DA1 fence, so a
+/// treating it as silent — at startup and, via `drain_until_da1_fence`, at
+/// teardown. The read loop exits early on the DA1 fence, so a
 /// responsive terminal never waits this long — the deadline only bites for
 /// terminals that stay silent. 150ms proved too tight in practice: a
 /// terminal answering late (observed on macOS under load) caused a
 /// nondeterministic fallback to the built-in dark seeds between launches.
-const QUERY_DEADLINE: Duration = Duration::from_millis(600);
+pub const QUERY_DEADLINE: Duration = Duration::from_millis(600);
 
 impl TerminalPalette for OscQuery {
     fn query(&mut self) -> QueriedColors {
@@ -68,6 +69,56 @@ fn query_via_stdio() -> std::io::Result<QueriedColors> {
     let deadline = Instant::now() + QUERY_DEADLINE;
     let buf = read_until_da1_or_deadline(&mut stdin, deadline);
     Ok(parse_osc_response(&buf))
+}
+
+/// Unbuffered stdin: each `read` is one `read(2)` on fd 0. `std::io::Stdin`
+/// goes through a shared 8 KiB `BufReader`, which on the first byte would
+/// slurp everything the tty holds into a buffer `poll(2)` can't see — the
+/// fence loop below would then wait on a fd that looks idle while the DA1
+/// reply sits in userspace, and whatever followed the reply would vanish
+/// with the process instead of reaching the shell.
+pub struct RawStdin;
+
+impl Read for RawStdin {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        rustix::io::read(std::io::stdin(), buf).map_err(std::io::Error::from)
+    }
+}
+
+impl AsFd for RawStdin {
+    fn as_fd(&self) -> rustix::fd::BorrowedFd<'_> {
+        // SAFETY: fd 0 is open for the life of the process (std owns it and
+        // never closes it), so a borrow bounded by `&self` cannot dangle.
+        unsafe { rustix::fd::BorrowedFd::borrow_raw(0) }
+    }
+}
+
+/// Writes a DA1 query (`\x1b[c`) to `out` and then consumes `input` up to
+/// and including the terminal's reply, or until `deadline` if none comes.
+/// Returns the consumed bytes.
+///
+/// This is the teardown counterpart of the startup query above, used after
+/// the mouse-disable sequence has been written: a terminal answers DA1 only
+/// once it has processed everything written before the query, so any mouse
+/// reports it emitted before honouring the disable necessarily land in
+/// `input` ahead of the reply. Consuming through the reply therefore
+/// swallows exactly the reports that would otherwise be typed at the shell,
+/// however slowly the terminal gets to the disable — where a fixed "wait
+/// for N ms of quiet" guess fails as soon as the terminal is slower than
+/// N. Bytes after the reply are left alone: the terminal emitted them with
+/// mouse reporting already off, so they are real input for whoever reads
+/// the tty next. Raw mode must still be on when this runs, and the caller
+/// must have stopped crossterm's own reader (dropped the `EventStream`)
+/// first, or the two would race over the same fd.
+pub fn drain_until_da1_fence<W: Write, S: Read + AsFd>(
+    out: &mut W,
+    input: &mut S,
+    deadline: Instant,
+) -> Vec<u8> {
+    if out.write_all(b"\x1b[c").and_then(|()| out.flush()).is_err() {
+        return Vec::new();
+    }
+    read_until_da1_or_deadline(input, deadline)
 }
 
 /// Reads raw bytes from `source` until a DA1 reply (`\x1b[?...c`) is seen or
@@ -305,6 +356,33 @@ mod tests {
         assert_eq!(buf, reply);
         let q = parse_osc_response(&buf);
         assert_eq!(q.ansi[4], Some((0x01, 0x78, 0xd4)));
+    }
+
+    #[test]
+    fn fence_drain_swallows_bytes_ahead_of_the_da1_and_leaves_later_ones() {
+        // Models teardown on a terminal that honours the mouse-disable late:
+        // two SGR motion reports emitted before it got there, then its DA1
+        // answer to our fence, then a keystroke typed after. Everything up
+        // to and including the fence must be consumed (those bytes would
+        // otherwise be typed at the shell); what follows is left for it.
+        let (mut reader, mut writer) = std::io::pipe().unwrap();
+        writer
+            .write_all(b"\x1b[<35;57;31M\x1b[<35;58;28M\x1b[?62;22c")
+            .unwrap();
+        let mut out = Vec::new();
+
+        let drained = drain_until_da1_fence(
+            &mut out,
+            &mut reader,
+            Instant::now() + Duration::from_secs(2),
+        );
+
+        assert_eq!(out, b"\x1b[c", "the fence query is what gets written");
+        assert_eq!(drained, b"\x1b[<35;57;31M\x1b[<35;58;28M\x1b[?62;22c");
+        writer.write_all(b"x").unwrap();
+        let mut rest = [0u8; 8];
+        let n = reader.read(&mut rest).unwrap();
+        assert_eq!(&rest[..n], b"x", "bytes after the fence are not touched");
     }
 
     #[test]

@@ -63,34 +63,32 @@ async fn main() -> anyhow::Result<()> {
     result
 }
 
-/// Swallows input the terminal emitted between the app's last read and its
-/// processing of `DisableMouseCapture` — mostly mouse-motion reports, since
-/// the pointer is usually moving right as the user quits. Left in the tty
-/// buffer, those bytes would be typed at whatever reads stdin next (the
-/// shell after exit, `$EDITOR` during a round-trip) as `35;196;23M` garbage.
-/// Must run while raw mode is still on, i.e. before `ratatui::restore()`.
-/// The short poll gives the terminal time to process the disable; the
-/// deadline caps the wait in case reports keep streaming in.
+/// Swallows the mouse reports the terminal emits between the app's last
+/// read and its processing of `DisableMouseCapture` — the pointer is
+/// usually moving right as the user quits. Left in the tty buffer, those
+/// bytes would be typed at whatever reads stdin next (the shell after exit,
+/// `$EDITOR` during a round-trip) as `35;196;23M` garbage. Must run while
+/// raw mode is still on, i.e. before `ratatui::restore()`, and after the
+/// `EventStream` is gone (it is, once `run` has returned): this reads the
+/// tty directly, and crossterm's reader must not be competing for it.
 ///
-/// `poll` returning `Ok(false)` before its timeout elapsed is not "quiet":
-/// crossterm maps a waker interrupt to `Ok(false)`, and `EventStream::drop`
-/// (as `run` returns) fires that waker with no reader waiting, so the stale
-/// wake surfaces here as an instant empty poll. Only a timeout that actually
-/// ran its full course means the buffer has gone quiet.
+/// Uses a DA1 fence rather than waiting for the input to go quiet: the
+/// terminal answers the query only after it has processed the disable
+/// written just before it, so everything it emitted with reporting still on
+/// is guaranteed to arrive ahead of the answer, however long it took. The
+/// previous "25 ms of silence" heuristic leaked whenever the pointer paused
+/// for that long and then moved again before the terminal had caught up —
+/// a click on a quit control followed by a flick away is exactly that shape.
+/// The deadline only bites on a terminal that never answers DA1; it is the
+/// same one the startup colour query already waits on, so a terminal slow
+/// enough to need it there gets the same allowance here.
 fn drain_pending_input() {
-    use ratatui::crossterm::event::{poll, read};
-    const QUIET: Duration = Duration::from_millis(25);
-    let deadline = std::time::Instant::now() + Duration::from_millis(250);
-    while std::time::Instant::now() < deadline {
-        let started = std::time::Instant::now();
-        match poll(QUIET) {
-            Ok(true) => {
-                let _ = read();
-            }
-            Ok(false) if started.elapsed() < QUIET => continue,
-            _ => break,
-        }
-    }
+    let deadline = std::time::Instant::now() + postui::theme::osc::QUERY_DEADLINE;
+    let _ = postui::theme::osc::drain_until_da1_fence(
+        &mut std::io::stdout(),
+        &mut postui::theme::osc::RawStdin,
+        deadline,
+    );
 }
 
 /// Writes a Kitty pointer-shape hint (OSC 22, task 8d): `\x1b]22;{shape}\x07`,
