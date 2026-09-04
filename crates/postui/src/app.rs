@@ -6927,8 +6927,12 @@ impl App {
 
     /// Ends a row drag. `commit` writes the working order when it differs
     /// from the original; otherwise (release outside, Escape) the rows
-    /// snap back. Either way the sidebar is rebuilt from disk truth.
+    /// snap back. Either way the sidebar is rebuilt from disk truth and
+    /// the armed press is disarmed — Escape ends the drag with the button
+    /// still held, and a press left armed would let the next motion event
+    /// promote straight back into a drag the user just cancelled.
     pub fn finish_sidebar_drag(&mut self, commit: bool) -> bool {
+        self.sidebar_press = None;
         let Some(drag) = self.sidebar.drag.take() else {
             return false;
         };

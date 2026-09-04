@@ -18972,3 +18972,31 @@ fn hover_is_suppressed_while_dragging_rows() {
     assert!(!app.resync_hover());
     assert_ne!(app.hovered, Some(Hit::SidebarRow(2)));
 }
+
+#[test]
+fn escape_disarms_the_press_so_motion_cannot_restart_the_drag() {
+    // Escape can only land mid-drag with the button still held, so the
+    // next motion event must not find an armed press waiting to promote
+    // into a second drag — the cancel would otherwise be undone by the
+    // release that follows it.
+    let (mut app, dir) = three_row_app();
+    let r0 = row_rect(&mut app, 0);
+    let r1 = row_rect(&mut app, 1);
+    let r2 = row_rect(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    assert!(app.sidebar.drag.is_some());
+    app.handle_key(
+        &Keymap::default_bindings(),
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+    );
+    app.handle_mouse(moved(r0.x + 2, r1.y));
+    assert!(app.sidebar.drag.is_none(), "the cancel stays cancelled");
+    app.handle_mouse(left_up(r0.x + 2, r1.y));
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
+    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    assert!(
+        postui_core::order::space_order(&meta, "main").is_empty(),
+        "nothing written"
+    );
+}
