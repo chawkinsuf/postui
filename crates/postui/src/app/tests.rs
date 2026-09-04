@@ -17553,10 +17553,10 @@ fn the_jq_tab_setting_reaches_the_bar() {
     let mut app = App::new_for_test();
     assert_eq!(app.session.response.jq_tab(), crate::config::JqTab::Cycle);
     let mut settings = app.ui_settings.clone();
-    settings.jq_tab = crate::config::JqTab::Accept;
+    settings.jq_tab = crate::config::JqTab::Menu;
     let name = app.theme_name.clone();
     app.apply_ui_settings(settings, name, crate::theme::Theme::dark());
-    assert_eq!(app.session.response.jq_tab(), crate::config::JqTab::Accept);
+    assert_eq!(app.session.response.jq_tab(), crate::config::JqTab::Menu);
 }
 
 /// The bar's spinner is drawn on ticks, so ticks must keep redrawing while

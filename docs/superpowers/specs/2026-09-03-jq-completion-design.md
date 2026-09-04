@@ -30,10 +30,24 @@ rides along because jaq already exposes its definitions.
   is reading. Several candidates are reached by cycling, not by a list.
 - **Two Tab behaviours, chosen in config.** `jq_tab = "cycle"` (default):
   Tab shows the next candidate, shift+Tab the previous, Right/End accept.
-  `jq_tab = "accept"`: Tab accepts, and the way to reach a later
-  candidate is to type more. Right/End accept in both modes. A top-level
+  `jq_tab = "menu"` (2026-09-04; it replaced `"accept"`, which is kept as
+  an alias): Tab completes the first candidate and, when there are
+  others, opens a row of chips under the bar — one per candidate, the
+  whole token each, the selected one filled — and further Tab/shift+Tab
+  step through it, rewriting the bar text from the pre-completion base
+  each step so a rewrite never compounds. Shift+Tab on the ghost opens
+  the row at the last candidate. Any other key closes the row, keeps the
+  selection, and is handled as usual (Esc cancels back to before the
+  first completion; Enter keeps it). A lone candidate is just accepted.
+  The row lives in the bar's second row (the error/note row, which it
+  takes over while open) and is a window that slides only as far as it
+  must to keep the selected chip whole, snapping home on wrap. No ghost
+  shows while the row is up. Right/End accept in both modes. A top-level
   `config.toml` key, loaded like `theme` and `ai_cmd`; a bad value warns
   and falls back to `cycle`. Not settable from the UI in this round.
+  The original `"accept"` (Tab accepts, type more to reach a later
+  candidate) shipped first and was replaced the next day: it was thinner
+  than users expect from Tab.
 - **Only at the end of the text.** The ghost is offered only when the
   caret is at the end of the filter with no selection. Mid-text
   completion would have to draw the ghost inside existing text and shift
@@ -291,12 +305,12 @@ fallback used by tests.
 In `ready_key`'s jq-focused branch, before the event reaches the
 `LineInput`, when `ghost()` is `Some`:
 
-| key             | cycle mode                    | accept mode |
-|-----------------|-------------------------------|-------------|
-| Tab             | next candidate (wraps)        | accept      |
-| shift+Tab       | previous candidate (wraps)    | ignored     |
-| Right, End      | accept                        | accept      |
-| anything else   | falls through to the input; index resets to 0 |
+| key             | cycle mode                    | menu mode                          |
+|-----------------|-------------------------------|------------------------------------|
+| Tab             | next candidate (wraps)        | complete + open the row (row open: next, wraps) |
+| shift+Tab       | previous candidate (wraps)    | open the row at the last (row open: previous)   |
+| Right, End      | accept                        | accept (row open: closes it, then moves)        |
+| anything else   | falls through to the input; index resets to 0 (menu mode: the row closes first) |
 
 When `ghost()` is `None`, Tab and shift+Tab are ignored by the bar
 (today they fall to `LineInput`, which ignores them too), and Right/End
@@ -330,10 +344,11 @@ and `ui::draw` places the cursor (`Frame::set_cursor_position`) only
 while no modal covers the pane. Everywhere else the cursor stays hidden.
 
 Footer, jq-bar-focused chip set: when a ghost is up, `("tab", "next")`
-plus `("→", "accept")` in cycle mode, or `("tab", "accept")` in accept
-mode, are inserted before the existing chips. `JqBarState` grows a
-`Completing { cycle: bool }` variant (or the footer reads the mode and a
-flag; whichever keeps `footer_chips` a pure function of its inputs).
+plus `("→", "accept")` in cycle mode, or `("tab", "complete")` in menu
+mode, are inserted before the existing chips; with the menu row open,
+`("tab", "next")` plus `("shift+tab", "prev")`. `JqBarState` has a
+`Completing { cycle: bool }` variant and a `Menu` variant, so
+`footer_chips` stays a pure function of its inputs.
 
 ### Mouse
 

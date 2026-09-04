@@ -69,6 +69,33 @@ pub struct SearchState {
     pub current: usize,
 }
 
+/// Menu mode's candidate row: the text the completion was applied to,
+/// the candidates as they stood, and which one is in. Each step rebuilds
+/// the bar text from `base` so stepping never compounds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JqMenu {
+    base: String,
+    items: Vec<Candidate>,
+    /// The chip text per item: the whole token the completion yields
+    /// (partial + ghost, or the rewritten token), not just the ghost.
+    labels: Vec<String>,
+    index: usize,
+}
+
+impl JqMenu {
+    /// The chips, with the selected one flagged.
+    pub fn chips(&self) -> impl Iterator<Item = (&str, bool)> {
+        self.labels
+            .iter()
+            .enumerate()
+            .map(move |(i, l)| (l.as_str(), i == self.index))
+    }
+
+    pub fn index(&self) -> usize {
+        self.index
+    }
+}
+
 /// The bar's completion state: the candidates for the caret's position
 /// and the keys they were built from. See the completion spec.
 #[derive(Default)]
@@ -146,6 +173,12 @@ pub struct JqBar {
     pub completion: JqCompletion,
     /// What Tab does on a ghost (`config.toml` `jq_tab`).
     pub tab: JqTab,
+    /// Menu mode's open candidate row (`jq_tab = "menu"`): Tab completed
+    /// the first candidate and the rest are on show under the bar, Tab
+    /// and shift+Tab stepping through them. Any other key closes it and
+    /// keeps whatever is selected. `None` in cycle mode, and in menu mode
+    /// until a Tab.
+    menu: Option<JqMenu>,
     /// The filter text as it stood when the current edit began — what
     /// Esc puts back. Taken just before the first change to a focused
     /// bar's text (`begin_edit`), not when it took the caret: merely
@@ -175,6 +208,7 @@ impl JqBar {
     fn blur(&mut self) {
         self.focused = false;
         self.edit_origin = None;
+        self.menu = None;
     }
 
     /// Called before every change to the focused bar's text — a key, a
@@ -205,10 +239,84 @@ impl JqBar {
 
     /// The candidate the ghost shows, when one is showing.
     fn candidate(&self) -> Option<&Candidate> {
-        if !self.focused || self.ai_pending || !self.caret_at_end() {
+        if !self.focused || self.ai_pending || !self.caret_at_end() || self.menu.is_some() {
             return None;
         }
         self.completion.candidates.get(self.completion.index)
+    }
+
+    /// Menu mode's open candidate row, when one is showing.
+    pub fn menu(&self) -> Option<&JqMenu> {
+        self.menu.as_ref()
+    }
+
+    /// Writes `cand` into `input` as accepting it does: the token is
+    /// rewritten from `replace_from` when set, else the insert is typed
+    /// at the caret.
+    fn apply_candidate(input: &mut LineInput, cand: &Candidate) {
+        if let Some(from) = cand.replace_from {
+            let from_chars = input.text()[..from].chars().count();
+            input.set_cursor(from_chars);
+            input.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::SHIFT));
+            input.paste(&cand.insert);
+        } else {
+            input.insert_str(&cand.insert);
+        }
+    }
+
+    /// Menu mode's Tab on a ghost: completes the candidate at `index` and,
+    /// with more than one on offer, opens the row so Tab/shift+Tab can
+    /// step through the rest. A lone candidate is simply accepted.
+    fn open_menu(&mut self, index: usize) {
+        let Some(partial) = self.completion.ctx.as_ref().map(|c| c.partial.clone()) else {
+            return;
+        };
+        let items = self.completion.candidates.clone();
+        if items.is_empty() {
+            return;
+        }
+        let index = index.min(items.len() - 1);
+        let base = self.input.text().to_string();
+        self.begin_edit();
+        Self::apply_candidate(&mut self.input, &items[index]);
+        self.edited = true;
+        if items.len() < 2 {
+            return;
+        }
+        let labels = items
+            .iter()
+            .map(|c| {
+                if c.replace_from.is_some() {
+                    c.ghost.clone()
+                } else {
+                    format!("{partial}{}", c.ghost)
+                }
+            })
+            .collect();
+        self.menu = Some(JqMenu {
+            base,
+            items,
+            labels,
+            index,
+        });
+    }
+
+    /// Steps the open row (wrapping) and rewrites the bar text from the
+    /// row's base with the newly selected candidate.
+    fn step_menu(&mut self, forward: bool) {
+        let Some(menu) = self.menu.as_mut() else {
+            return;
+        };
+        let n = menu.items.len();
+        menu.index = if forward {
+            (menu.index + 1) % n
+        } else {
+            (menu.index + n - 1) % n
+        };
+        let mut input = LineInput::new(&menu.base);
+        Self::apply_candidate(&mut input, &menu.items[menu.index]);
+        self.input = input;
+        self.edited = true;
     }
 
     /// The ghost text after the caret, when there is one.
@@ -233,6 +341,7 @@ impl Default for JqBar {
             ai_started: Instant::now(),
             completion: JqCompletion::default(),
             tab: JqTab::Cycle,
+            menu: None,
             edit_origin: None,
         }
     }
@@ -1000,6 +1109,7 @@ impl Response {
     /// Sets the bar's text programmatically (the editor ↔ bar sync), cursor
     /// at the end. Not an edit — [`Response::take_jq_edited`] is unaffected.
     pub fn set_jq_text(&mut self, text: &str) {
+        self.jq.menu = None;
         self.jq.input = LineInput::new(text);
         // The text just changed underneath any previous error/stale span —
         // `apply_jq` re-derives both against the new text right after this
@@ -1042,6 +1152,7 @@ impl Response {
     /// means "show me this".
     pub fn set_jq_text_with_cursor(&mut self, text: &str, cursor: usize) {
         self.jq.begin_edit();
+        self.jq.menu = None;
         self.jq.input = LineInput::new(text);
         self.jq.input.set_cursor(cursor);
         self.jq.enabled = true;
@@ -1221,6 +1332,7 @@ impl Response {
             return false;
         }
         self.jq.begin_edit();
+        self.jq.menu = None;
         self.jq.input.paste(text);
         self.jq.edited = true;
         true
@@ -1352,6 +1464,11 @@ impl Response {
         self.jq.tab
     }
 
+    /// Whether menu mode's candidate row is open under the bar.
+    pub fn jq_menu_open(&self) -> bool {
+        self.jq.menu.is_some()
+    }
+
     pub fn jq_ghost(&self) -> Option<&str> {
         self.jq.ghost()
     }
@@ -1469,15 +1586,7 @@ impl Response {
             return;
         };
         self.jq.begin_edit();
-        let input = &mut self.jq.input;
-        if let Some(from) = cand.replace_from {
-            let from_chars = input.text()[..from].chars().count();
-            input.set_cursor(from_chars);
-            input.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::SHIFT));
-            input.paste(&cand.insert);
-        } else {
-            input.insert_str(&cand.insert);
-        }
+        JqBar::apply_candidate(&mut self.jq.input, &cand);
         self.jq.edited = true;
     }
 
@@ -1865,8 +1974,25 @@ impl Response {
         // with no ready view (it never should, in practice: the bar can't
         // focus without one).
         if self.jq.focused {
-            // A completion ghost is showing: Tab steps or accepts per
-            // `jq_tab`, Right/End accept, everything else falls through
+            // Menu mode's candidate row is open: Tab and shift+Tab step
+            // through it; any other key closes it, keeping the selected
+            // completion, and is then handled as usual.
+            if self.jq.menu.is_some() {
+                match ev.code {
+                    KeyCode::Tab if ev.modifiers.is_empty() => {
+                        self.jq.step_menu(true);
+                        return Some(Action::Render);
+                    }
+                    KeyCode::BackTab => {
+                        self.jq.step_menu(false);
+                        return Some(Action::Render);
+                    }
+                    _ => self.jq.menu = None,
+                }
+            }
+            // A completion ghost is showing: Tab steps (cycle mode) or
+            // completes and opens the row (menu mode), shift+Tab the same
+            // backwards, Right/End accept, everything else falls through
             // to the input (and re-derives the ghost in the reconcile).
             if self.jq.ghost().is_some() {
                 let plain = ev.modifiers.is_empty();
@@ -1876,13 +2002,19 @@ impl Response {
                         self.jq.completion.step(true);
                         return Some(Action::Render);
                     }
+                    KeyCode::Tab if plain => {
+                        self.jq.open_menu(0);
+                        return Some(Action::Render);
+                    }
                     KeyCode::BackTab => {
                         if cycle {
                             self.jq.completion.step(false);
+                        } else {
+                            self.jq.open_menu(usize::MAX);
                         }
                         return Some(Action::Render);
                     }
-                    KeyCode::Tab | KeyCode::Right | KeyCode::End if plain => {
+                    KeyCode::Right | KeyCode::End if plain => {
                         self.accept_jq_completion();
                         return Some(Action::Render);
                     }
@@ -2176,7 +2308,9 @@ impl Component for Response {
         // stays visible after the bar itself loses focus.
         let jq_open = self.jq.is_open();
         let jq_rows = if jq_open {
-            1 + u16::from(self.jq.error.is_some() || self.jq.note.is_some())
+            1 + u16::from(
+                self.jq.error.is_some() || self.jq.note.is_some() || self.jq.menu.is_some(),
+            )
         } else {
             0
         };
@@ -2184,7 +2318,7 @@ impl Component for Response {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(HEADER_STRIP_HEIGHT), // status chip / chips+tabs / underline
-                Constraint::Length(jq_rows),             // jq bar (+ error row)
+                Constraint::Length(jq_rows),             // jq bar (+ error/menu row)
                 Constraint::Min(0),                      // body
                 Constraint::Length(if footer { 1 } else { 0 }), // search footer
             ])
@@ -3224,6 +3358,20 @@ fn draw_jq_bar(
         );
         hits.register(ai_area, crate::hit::Hit::ResponseJqAiButton);
     }
+    // Menu mode's candidate row owns the second row while it is open: the
+    // user is choosing, and the completed text is a whole token (an
+    // error under it is stale at best).
+    if let Some(menu) = bar.menu()
+        && area.height >= 2
+    {
+        let menu_row = Rect {
+            y: area.y + 1,
+            height: 1,
+            ..area
+        };
+        draw_jq_menu(frame, menu_row, menu, t);
+        return caret;
+    }
     // A filter with nothing to show reads as an error to the user — the
     // tree they're looking at isn't its output — so it's drawn like one.
     if bar.note.is_some() && bar.error.is_none() && area.height >= 2 {
@@ -3288,6 +3436,56 @@ fn draw_jq_bar(
         }
     }
     caret
+}
+
+/// One chip per candidate, aligned under the bar text (past the `jq `
+/// chip), the selected one filled. The row is a window that slides only
+/// as far as it must to keep the selected chip whole: it stays put while
+/// that chip fits, and once Tab selects one past the right edge it
+/// scrolls just enough to show it — wrapping back to the first snaps it
+/// home. Returns the window's first column, for tests.
+fn draw_jq_menu(frame: &mut Frame, row: Rect, menu: &JqMenu, t: &Theme) -> u16 {
+    let x0 = row.x + 3;
+    let width = row.width.saturating_sub(3);
+    if width == 0 {
+        return 0;
+    }
+    // Lay the chips out on an unbounded line: (start col, label).
+    let mut cells: Vec<(u16, String, bool)> = Vec::new();
+    let mut col: u16 = 0;
+    let mut selected = (0u16, 0u16);
+    for (label, is_selected) in menu.chips() {
+        let chip = format!(" {label} ");
+        let w = chip.chars().count() as u16;
+        if is_selected {
+            selected = (col, col + w);
+        }
+        cells.push((col, chip, is_selected));
+        col = col.saturating_add(w).saturating_add(1);
+    }
+    let scroll = selected.1.saturating_sub(width);
+    let buf = frame.buffer_mut();
+    for (start, chip, is_selected) in cells {
+        let style = if is_selected {
+            Style::default().bg(t.selection).fg(t.text)
+        } else {
+            Style::default().fg(t.text_muted)
+        };
+        for (i, ch) in chip.chars().enumerate() {
+            let c = start + i as u16;
+            if c < scroll {
+                continue;
+            }
+            let x = c - scroll;
+            if x >= width {
+                break;
+            }
+            let cell = &mut buf[(x0 + x, row.y)];
+            cell.set_char(ch);
+            cell.set_style(style);
+        }
+    }
+    scroll
 }
 
 /// The search row: the query/match counter (or the live input) on the left,
@@ -5368,15 +5566,172 @@ mod tests {
     }
 
     #[test]
-    fn tab_accepts_in_accept_mode_and_shift_tab_does_nothing() {
+    fn tab_in_menu_mode_completes_and_opens_a_row_that_tab_steps_through() {
         let mut r = ready(ITEMS);
-        r.set_jq_tab(JqTab::Accept);
+        r.set_jq_tab(JqTab::Menu);
+        type_jq(&mut r, ".data.items[] | .");
+        assert!(!r.jq_menu_open());
+        bar_key(&mut r, key(KeyCode::Tab));
+        assert_eq!(
+            r.jq_text(),
+            ".data.items[] | .id",
+            "the first candidate lands"
+        );
+        assert!(r.jq_menu_open(), "…and the others are on show");
+        assert_eq!(r.jq_ghost(), None, "no ghost while the row is up");
+        let chips = |r: &Response| {
+            r.jq_bar()
+                .menu()
+                .unwrap()
+                .chips()
+                .map(|(l, sel)| (l.to_string(), sel))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            chips(&r),
+            vec![("id".to_string(), true), ("status".to_string(), false)],
+            "chips carry the whole token, not the ghost"
+        );
+        bar_key(&mut r, key(KeyCode::Tab));
+        assert_eq!(
+            r.jq_text(),
+            ".data.items[] | .status",
+            "rebuilt from the base"
+        );
+        assert_eq!(r.view().unwrap().view_text(), "\"active\"\n\"off\"");
+        assert!(chips(&r)[1].1);
+        bar_key(&mut r, key(KeyCode::Tab));
+        assert_eq!(r.jq_text(), ".data.items[] | .id", "wraps");
+        bar_key(&mut r, shift(KeyCode::BackTab));
+        assert_eq!(
+            r.jq_text(),
+            ".data.items[] | .status",
+            "shift+tab goes back"
+        );
+        // Any other key keeps the selection, closes the row, and is typed.
+        bar_key(&mut r, ch(' '));
+        assert!(!r.jq_menu_open());
+        assert_eq!(r.jq_text(), ".data.items[] | .status ");
+    }
+
+    #[test]
+    fn menu_mode_with_a_lone_candidate_just_accepts() {
+        let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Menu);
+        type_jq(&mut r, ".data.i");
+        assert_eq!(r.jq_ghost(), Some("tems"));
+        bar_key(&mut r, key(KeyCode::Tab));
+        assert_eq!(r.jq_text(), ".data.items");
+        assert!(!r.jq_menu_open(), "nothing else to choose from");
+    }
+
+    #[test]
+    fn shift_tab_on_a_ghost_in_menu_mode_opens_the_row_at_the_last_candidate() {
+        let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Menu);
         type_jq(&mut r, ".data.items[] | .");
         bar_key(&mut r, shift(KeyCode::BackTab));
-        assert_eq!(r.jq_text(), ".data.items[] | .");
-        assert_eq!(r.jq_ghost(), Some("id"));
-        bar_key(&mut r, key(KeyCode::Tab));
+        assert_eq!(r.jq_text(), ".data.items[] | .status");
+        assert_eq!(r.jq_bar().menu().unwrap().index(), 1);
+    }
+
+    #[test]
+    fn right_still_accepts_in_menu_mode_without_opening_the_row() {
+        let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Menu);
+        type_jq(&mut r, ".data.items[] | .");
+        bar_key(&mut r, key(KeyCode::Right));
         assert_eq!(r.jq_text(), ".data.items[] | .id");
+        assert!(!r.jq_menu_open());
+    }
+
+    #[test]
+    fn esc_with_the_row_open_cancels_back_to_before_the_completion() {
+        let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Menu);
+        type_jq(&mut r, ".data.items[] | .");
+        bar_key(&mut r, key(KeyCode::Tab));
+        bar_key(&mut r, key(KeyCode::Tab));
+        assert_eq!(r.jq_text(), ".data.items[] | .status");
+        bar_key(&mut r, key(KeyCode::Esc));
+        assert_eq!(r.jq_text(), ".data.items[] | .");
+        assert!(!r.jq_menu_open());
+        assert!(!r.jq_focused());
+    }
+
+    #[test]
+    fn enter_with_the_row_open_keeps_the_selection_and_leaves() {
+        let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Menu);
+        type_jq(&mut r, ".data.items[] | .");
+        bar_key(&mut r, key(KeyCode::Tab));
+        bar_key(&mut r, key(KeyCode::Tab));
+        bar_key(&mut r, key(KeyCode::Enter));
+        assert_eq!(r.jq_text(), ".data.items[] | .status");
+        assert!(!r.jq_menu_open() && !r.jq_focused());
+    }
+
+    #[test]
+    fn the_row_rewrites_a_quoted_key_from_the_base_each_step() {
+        let mut r = ready(r#"{"my key": 1, "myth": 2}"#);
+        r.set_jq_tab(JqTab::Menu);
+        type_jq(&mut r, ".my");
+        bar_key(&mut r, key(KeyCode::Tab));
+        assert_eq!(r.jq_text(), ".\"my key\"");
+        bar_key(&mut r, key(KeyCode::Tab));
+        assert_eq!(r.jq_text(), ".myth", "the rewrite does not compound");
+        bar_key(&mut r, key(KeyCode::Tab));
+        assert_eq!(r.jq_text(), ".\"my key\"");
+    }
+
+    #[test]
+    fn the_menu_row_draws_chips_under_the_bar_and_slides_to_show_the_selected_one() {
+        let body = r#"{"alpha":1,"bravo":2,"charlie":3,"delta":4,"echo":5}"#;
+        let mut r = ready(body);
+        r.set_jq_tab(JqTab::Menu);
+        type_jq(&mut r, ".");
+        bar_key(&mut r, key(KeyCode::Tab));
+        // 24 columns: the pane inset takes 2 and the row's `jq ` indent
+        // 3, leaving 19 cells. Chips are ` alpha `, ` bravo `, ` charlie `…
+        // one column apart (15 cells for the first two, 25 with the
+        // third), so the first two fit and `charlie` does not.
+        // Chips are padded (` alpha `), which tells them apart from the
+        // bar's own `.alpha`.
+        let text = render_sized(&mut r, 24, 20);
+        let row = text
+            .lines()
+            .find(|l| l.contains(" alpha "))
+            .unwrap_or_else(|| panic!("no menu row: {text}"));
+        assert!(row.contains(" bravo "), "{row}");
+        assert!(!row.contains("charlie"), "clipped at the edge: {row}");
+        bar_key(&mut r, key(KeyCode::Tab));
+        bar_key(&mut r, key(KeyCode::Tab));
+        assert_eq!(r.jq_text(), ".charlie");
+        let text = render_sized(&mut r, 24, 20);
+        let row = text
+            .lines()
+            .find(|l| l.contains(" charlie "))
+            .unwrap_or_else(|| panic!("selected chip not whole in view: {text}"));
+        assert!(!row.contains("alpha"), "slid past the first chip: {row}");
+        // Back to the first: the row snaps home.
+        bar_key(&mut r, key(KeyCode::Tab));
+        bar_key(&mut r, key(KeyCode::Tab));
+        bar_key(&mut r, key(KeyCode::Tab));
+        assert_eq!(r.jq_text(), ".alpha");
+        let text = render_sized(&mut r, 24, 20);
+        assert!(
+            text.lines()
+                .any(|l| l.contains(" alpha ") && l.contains(" bravo ")),
+            "{text}"
+        );
+        // The selected chip is filled with the selection color.
+        let (_, buf) = render_buf(&mut r);
+        let theme = Theme::dark();
+        let filled = (0..buf.area.height).any(|y| {
+            (0..buf.area.width)
+                .any(|x| buf[(x, y)].symbol() == "a" && buf[(x, y)].bg == theme.selection)
+        });
+        assert!(filled, "selected chip uses the selection fill");
     }
 
     #[test]

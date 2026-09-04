@@ -195,13 +195,15 @@ impl Default for AnimDurations {
 }
 
 /// What Tab does in the response pane's jq bar while a completion ghost
-/// is showing (`jq_tab` in `config.toml`): step to the next candidate,
-/// or accept the one showing. Right and End accept in both modes.
+/// is showing (`jq_tab` in `config.toml`): step to the next candidate
+/// (`cycle`), or complete the one showing and open a row of the others
+/// under the bar for Tab to step through, shell-style (`menu`; `accept`
+/// is accepted as an older name for it). Right and End accept in both.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum JqTab {
     #[default]
     Cycle,
-    Accept,
+    Menu,
 }
 
 /// Mouse-first-GUI UI settings stored at the top level of `config.toml`:
@@ -290,10 +292,10 @@ pub fn load_ui_settings(path: &Path) -> (UiSettings, Vec<String>) {
     if let Some(raw) = value.get("jq_tab").and_then(|v| v.as_str()) {
         match raw {
             "cycle" => settings.jq_tab = JqTab::Cycle,
-            "accept" => settings.jq_tab = JqTab::Accept,
+            "menu" | "accept" => settings.jq_tab = JqTab::Menu,
             other => warnings.push(format!(
                 "invalid value {other:?} for jq_tab in config.toml \
-                 (expected \"cycle\" or \"accept\"); using \"cycle\""
+                 (expected \"cycle\" or \"menu\"); using \"cycle\""
             )),
         }
     }
@@ -624,14 +626,18 @@ mod tests {
     }
 
     #[test]
-    fn jq_tab_defaults_to_cycle_and_parses_accept() {
+    fn jq_tab_defaults_to_cycle_and_parses_menu() {
         let dir = tempdir().unwrap();
         let p = dir.path().join("config.toml");
         let (s, _) = load_ui_settings(&p);
         assert_eq!(s.jq_tab, JqTab::Cycle);
+        std::fs::write(&p, "jq_tab = \"menu\"\n").unwrap();
+        let (s, warnings) = load_ui_settings(&p);
+        assert_eq!(s.jq_tab, JqTab::Menu);
+        assert!(warnings.is_empty());
         std::fs::write(&p, "jq_tab = \"accept\"\n").unwrap();
         let (s, warnings) = load_ui_settings(&p);
-        assert_eq!(s.jq_tab, JqTab::Accept);
+        assert_eq!(s.jq_tab, JqTab::Menu, "the older name still works");
         assert!(warnings.is_empty());
         std::fs::write(&p, "jq_tab = \"cycle\"\n").unwrap();
         assert_eq!(load_ui_settings(&p).0.jq_tab, JqTab::Cycle);

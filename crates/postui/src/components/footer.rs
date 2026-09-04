@@ -21,10 +21,12 @@ pub enum JqBarState {
     Open,
     Focused,
     /// Focused with a completion ghost showing; `cycle` is the `jq_tab`
-    /// mode (Tab steps) versus accept (Tab accepts).
+    /// mode (Tab steps) versus menu (Tab completes and opens the row).
     Completing {
         cycle: bool,
     },
+    /// Focused with menu mode's candidate row open: Tab/shift+Tab step it.
+    Menu,
 }
 
 /// The context-sensitive chips for the focused pane. Each entry is `(key,
@@ -121,21 +123,28 @@ pub(crate) fn footer_chips(
             chips
         }
         PaneId::Response => {
-            if let JqBarState::Focused | JqBarState::Completing { .. } = jq_bar {
+            if let JqBarState::Focused | JqBarState::Completing { .. } | JqBarState::Menu = jq_bar {
                 // Enter commits (the filter is live already; Enter just
                 // hands focus back to the tree with the filter on), Esc
                 // cancels the edit (the filter goes back to what it was),
                 // alt+shift+q closes the bar — switching the filter off
                 // without losing it. While a completion ghost
                 // shows, the Tab chip(s) lead: "tab next" + "→ accept" in
-                // cycle mode, or "tab accept" in accept mode.
+                // cycle mode, or "tab complete" in menu mode; with the
+                // menu row open, "tab next" + "shift+tab prev".
                 let mut chips = Vec::new();
                 match jq_bar {
                     JqBarState::Completing { cycle: true } => {
                         chips.push(("tab", "next", None));
                         chips.push(("→", "accept", None));
                     }
-                    JqBarState::Completing { cycle: false } => chips.push(("tab", "accept", None)),
+                    JqBarState::Completing { cycle: false } => {
+                        chips.push(("tab", "complete", None))
+                    }
+                    JqBarState::Menu => {
+                        chips.push(("tab", "next", None));
+                        chips.push(("shift+tab", "prev", None));
+                    }
                     _ => {}
                 }
                 chips.extend([
@@ -417,9 +426,15 @@ mod tests {
             &["tab next".to_string(), "→ accept".to_string()]
         );
         assert_eq!(&cycle[2..], &focused[..], "the usual chips follow");
-        let accept = chips(JqBarState::Completing { cycle: false });
-        assert_eq!(accept[0], "tab accept");
-        assert_eq!(&accept[1..], &focused[..]);
+        let menu_ghost = chips(JqBarState::Completing { cycle: false });
+        assert_eq!(menu_ghost[0], "tab complete");
+        assert_eq!(&menu_ghost[1..], &focused[..]);
+        let menu = chips(JqBarState::Menu);
+        assert_eq!(
+            &menu[..2],
+            &["tab next".to_string(), "shift+tab prev".to_string()]
+        );
+        assert_eq!(&menu[2..], &focused[..]);
     }
 
     fn render(focus: PaneId) -> String {
