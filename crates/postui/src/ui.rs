@@ -288,7 +288,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         if app.session.response.jq_focused() {
             if app.session.response.jq_ghost().is_some() {
                 crate::components::footer::JqBarState::Completing {
-                    cycle: app.ui_settings.jq_tab == crate::config::JqTab::Cycle,
+                    cycle: app.session.response.jq_tab() == crate::config::JqTab::Cycle,
                 }
             } else {
                 crate::components::footer::JqBarState::Focused
