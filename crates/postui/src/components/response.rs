@@ -94,8 +94,6 @@ impl JqCompletion {
         self.pending.as_ref().map(|(s, _)| *s)
     }
 
-    // Wired up by Tab handling in a later task.
-    #[allow(dead_code)]
     fn step(&mut self, forward: bool) {
         let n = self.candidates.len();
         if n == 0 {
@@ -1384,6 +1382,25 @@ impl Response {
         false
     }
 
+    /// Inserts the showing candidate as if typed: a plain insert at the
+    /// caret, or — for a key that needs quoting — a replacement of the
+    /// token from its `.` (selected, then pasted over).
+    fn accept_jq_completion(&mut self) {
+        let Some(cand) = self.jq.candidate().cloned() else {
+            return;
+        };
+        let input = &mut self.jq.input;
+        if let Some(from) = cand.replace_from {
+            let from_chars = input.text()[..from].chars().count();
+            input.set_cursor(from_chars);
+            input.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::SHIFT));
+            input.paste(&cand.insert);
+        } else {
+            input.insert_str(&cand.insert);
+        }
+        self.jq.edited = true;
+    }
+
     /// Accepts (or drops) the result of a background jq run. Dropped when
     /// the view it was started for is gone, or a later run for the same
     /// view has since started (superseded). Returns whether it was
@@ -1767,6 +1784,30 @@ impl Response {
         // view is borrowed, so it works even with no ready view (it never
         // should, in practice: the bar can't focus without one).
         if self.jq.focused {
+            // A completion ghost is showing: Tab steps or accepts per
+            // `jq_tab`, Right/End accept, everything else falls through
+            // to the input (and re-derives the ghost in the reconcile).
+            if self.jq.ghost().is_some() {
+                let plain = ev.modifiers.is_empty();
+                let cycle = self.jq.tab == JqTab::Cycle;
+                match ev.code {
+                    KeyCode::Tab if plain && cycle => {
+                        self.jq.completion.step(true);
+                        return Some(Action::Render);
+                    }
+                    KeyCode::BackTab => {
+                        if cycle {
+                            self.jq.completion.step(false);
+                        }
+                        return Some(Action::Render);
+                    }
+                    KeyCode::Tab | KeyCode::Right | KeyCode::End if plain => {
+                        self.accept_jq_completion();
+                        return Some(Action::Render);
+                    }
+                    _ => {}
+                }
+            }
             match ev.code {
                 KeyCode::Enter => self.jq.focused = false,
                 KeyCode::Esc => {
@@ -5031,6 +5072,99 @@ mod tests {
         assert!(!r.attach_jq_completion(3, creq.seq + 9, ".".into(), vec!["pad".into()]), "stale sequence");
         assert!(r.attach_jq_completion(3, creq.seq, ".".into(), vec!["pad".into(), "n".into()]));
         assert_eq!(r.jq_ghost(), Some("pad"));
+    }
+
+    fn shift(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::SHIFT)
+    }
+
+    /// One keystroke in the focused bar, followed by the app's reconcile
+    /// (filter re-applied, completion refreshed).
+    fn bar_key(r: &mut Response, ev: KeyEvent) {
+        r.handle_key(ev);
+        let text = r.jq_text().to_string();
+        r.apply_jq(&text, SYNC_PRETTY_BYTES);
+        r.refresh_jq_completion(SYNC_PRETTY_BYTES);
+    }
+
+    #[test]
+    fn tab_cycles_and_right_accepts_in_cycle_mode() {
+        let mut r = ready(ITEMS);
+        type_jq(&mut r, ".data.items[] | .");
+        assert_eq!(r.jq_ghost(), Some("id"));
+        bar_key(&mut r, key(KeyCode::Tab));
+        assert_eq!(r.jq_ghost(), Some("status"));
+        assert_eq!(r.jq_text(), ".data.items[] | .", "Tab does not edit");
+        bar_key(&mut r, key(KeyCode::Tab));
+        assert_eq!(r.jq_ghost(), Some("id"), "wraps");
+        bar_key(&mut r, shift(KeyCode::BackTab));
+        assert_eq!(r.jq_ghost(), Some("status"), "shift+Tab goes back");
+        bar_key(&mut r, key(KeyCode::Right));
+        assert_eq!(r.jq_text(), ".data.items[] | .status");
+        assert_eq!(r.jq_ghost(), None, "accepted: nothing more to add");
+        assert_eq!(r.jq_output_count(), 2, "the filter ran");
+    }
+
+    #[test]
+    fn end_accepts_too_and_typing_resets_the_cycle() {
+        let mut r = ready(ITEMS);
+        type_jq(&mut r, ".data.items[] | .");
+        bar_key(&mut r, key(KeyCode::Tab));
+        assert_eq!(r.jq_ghost(), Some("status"));
+        bar_key(&mut r, ch('i'));
+        assert_eq!(r.jq_ghost(), Some("d"), "a new partial starts at the first candidate");
+        bar_key(&mut r, key(KeyCode::End));
+        assert_eq!(r.jq_text(), ".data.items[] | .id");
+    }
+
+    #[test]
+    fn tab_accepts_in_accept_mode_and_shift_tab_does_nothing() {
+        let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Accept);
+        type_jq(&mut r, ".data.items[] | .");
+        bar_key(&mut r, shift(KeyCode::BackTab));
+        assert_eq!(r.jq_text(), ".data.items[] | .");
+        assert_eq!(r.jq_ghost(), Some("id"));
+        bar_key(&mut r, key(KeyCode::Tab));
+        assert_eq!(r.jq_text(), ".data.items[] | .id");
+    }
+
+    #[test]
+    fn accepting_a_quoted_key_rewrites_the_token() {
+        let mut r = ready(r#"{"my key": 1, "myth": 2}"#);
+        type_jq(&mut r, ".my");
+        assert_eq!(r.jq_ghost(), Some("\"my key\""));
+        bar_key(&mut r, key(KeyCode::Tab));
+        assert_eq!(r.jq_ghost(), Some("th"));
+        bar_key(&mut r, shift(KeyCode::BackTab));
+        bar_key(&mut r, key(KeyCode::Right));
+        assert_eq!(r.jq_text(), ".\"my key\"");
+        assert_eq!(r.view().unwrap().view_text(), "1");
+        assert_eq!(r.jq_bar().input.cursor(), 9, "caret after the closing quote");
+    }
+
+    #[test]
+    fn accepting_a_builtin_leaves_the_caret_inside_its_parens() {
+        let mut r = ready(ITEMS);
+        type_jq(&mut r, ".data.items[] | sel");
+        assert_eq!(r.jq_ghost(), Some("ect("));
+        bar_key(&mut r, key(KeyCode::Right));
+        assert_eq!(r.jq_text(), ".data.items[] | select(");
+        assert!(r.jq_bar().error.is_some(), "an unfinished filter is an error, as when typed");
+    }
+
+    #[test]
+    fn without_a_ghost_tab_and_right_behave_as_before() {
+        let mut r = ready(ITEMS);
+        type_jq(&mut r, ".data.zz");
+        assert_eq!(r.jq_ghost(), None);
+        bar_key(&mut r, key(KeyCode::Tab));
+        assert_eq!(r.jq_text(), ".data.zz");
+        r.jq_bar_mut().input.set_cursor(2);
+        bar_key(&mut r, key(KeyCode::Right));
+        assert_eq!(r.jq_bar().input.cursor(), 3, "Right moves the caret mid-text");
+        bar_key(&mut r, shift(KeyCode::Right));
+        assert!(r.jq_bar().input.selection().is_some(), "shift+Right still selects");
     }
 
     /// Every keystroke in the bar is a new jq run, but most of them leave
