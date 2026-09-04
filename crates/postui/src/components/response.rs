@@ -69,11 +69,6 @@ pub struct SearchState {
     pub current: usize,
 }
 
-/// The jq filter bar's own state: the input, focus, and the outcome of the
-/// last filter applied. Lives on [`Response`], not [`ReadyView`] — the bar
-/// (and whatever filter the user typed) survives a new response landing in
-/// the same slot, exactly like the address bar survives a send.
-
 /// The bar's completion state: the candidates for the caret's position
 /// and the keys they were built from. See the completion spec.
 #[derive(Default)]
@@ -114,6 +109,10 @@ impl JqCompletion {
     }
 }
 
+/// The jq filter bar's own state: the input, focus, and the outcome of the
+/// last filter applied. Lives on [`Response`], not [`ReadyView`] — the bar
+/// (and whatever filter the user typed) survives a new response landing in
+/// the same slot, exactly like the address bar survives a send.
 pub struct JqBar {
     pub input: LineInput,
     pub focused: bool,
