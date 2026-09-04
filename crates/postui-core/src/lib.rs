@@ -28,6 +28,7 @@ pub mod jq;
 pub mod json;
 pub mod migrate;
 pub mod model;
+pub mod order;
 pub mod prepare;
 pub mod project;
 pub mod storage;

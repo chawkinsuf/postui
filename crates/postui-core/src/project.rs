@@ -44,6 +44,11 @@ pub struct ItemSettings {
     /// request's own `insecure` flag. Absent = per request.
     #[serde(default)]
     pub tls: Option<TlsPolicy>,
+    /// Spaces only: request order, slugs relative to the space
+    /// (`"login"`, `"auth/refresh"`). Only the relative order among
+    /// siblings of one level carries meaning — see `order::order_level`.
+    #[serde(default)]
+    pub order: Vec<String>,
 }
 
 /// An environment's certificate-verification force
@@ -139,7 +144,7 @@ impl Kind {
 
 /// Rewrites `project.toml` through `f` (created if missing), preserving
 /// everything `f` doesn't touch, comments included.
-fn edit_project_toml(
+pub(crate) fn edit_project_toml(
     root: &Path,
     f: impl FnOnce(&mut toml_edit::DocumentMut),
 ) -> Result<(), ProjectError> {
