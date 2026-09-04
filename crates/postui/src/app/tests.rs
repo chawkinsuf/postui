@@ -17108,7 +17108,7 @@ fn esc_cancels_the_edit_and_a_bar_opened_onto_no_filter_closes() {
 }
 
 #[test]
-fn esc_puts_a_saved_filter_back_and_leaves_the_bar() {
+fn esc_puts_a_saved_filter_back_and_leaves_it_on() {
     let mut app = App::new_for_test();
     ready_response(&mut app, JQ_BODY);
     app.update(Action::JqApply(".data.total".into()));
@@ -17124,10 +17124,14 @@ fn esc_puts_a_saved_filter_back_and_leaves_the_bar() {
     assert_eq!(app.editor.jq, ".data.total", "the edit is reverted");
     assert!(!app.session.response.jq_focused());
     assert!(
-        !app.editor.jq_enabled,
-        "opened from off, the bar cancels back to off"
+        app.editor.jq_enabled,
+        "opened from off, the filter stays on: Esc never touches the switch"
     );
-    assert!(!app.session.response.jq_open(), "…so it is hidden again");
+    assert!(
+        app.session.response.jq_open(),
+        "…so the bar stays, unfocused"
+    );
+    assert_eq!(app.session.response.view().unwrap().view_text(), "2");
 }
 
 #[test]

@@ -146,19 +146,13 @@ pub struct JqBar {
     pub completion: JqCompletion,
     /// What Tab does on a ghost (`config.toml` `jq_tab`).
     pub tab: JqTab,
-    /// The filter as it stood when the bar last took the caret — what Esc
-    /// puts back. Taken on the unfocused → focused edge (before `open_jq`
-    /// flips the switch, so a bar opened from off cancels back to off)
-    /// and dropped on blur. `None` while unfocused.
-    edit_origin: Option<JqEditOrigin>,
-}
-
-/// The filter a bar edit started from: its text and whether it was
-/// switched on. See [`JqBar::edit_origin`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct JqEditOrigin {
-    text: String,
-    enabled: bool,
+    /// The filter text as it stood when the current edit began — what
+    /// Esc puts back. Taken just before the first change to a focused
+    /// bar's text (`begin_edit`), not when it took the caret: merely
+    /// landing in the bar and leaving again changes nothing, and the
+    /// on/off switch is never part of it. Dropped on blur; `None` while
+    /// unfocused or until something is typed.
+    edit_origin: Option<String>,
 }
 
 impl JqBar {
@@ -170,18 +164,10 @@ impl JqBar {
             && now.saturating_duration_since(self.pending_since) >= JQ_SPINNER_AFTER
     }
 
-    /// Gives the bar the caret, remembering the filter it started from
-    /// for a later cancel. A no-op on an already focused bar, so the
-    /// origin is never overwritten mid-edit (a tee-up or an AI reply
-    /// landing text into a focused bar still cancels back to before it).
+    /// Gives the bar the caret. No edit has begun yet: the origin is
+    /// taken by the first change (`begin_edit`).
     fn focus(&mut self) {
-        if !self.focused {
-            self.edit_origin = Some(JqEditOrigin {
-                text: self.input.text().to_string(),
-                enabled: self.enabled,
-            });
-            self.focused = true;
-        }
+        self.focused = true;
     }
 
     /// Takes the caret away; whatever was typed stands (the filter is
@@ -189,6 +175,18 @@ impl JqBar {
     fn blur(&mut self) {
         self.focused = false;
         self.edit_origin = None;
+    }
+
+    /// Called before every change to the focused bar's text — a key, a
+    /// paste, an accepted completion, a tee-up or an AI reply landing —
+    /// so the first of them remembers the text it started from. Later
+    /// changes in the same session leave that origin alone, and text
+    /// landed into an unfocused bar (a saved filter applied, a verb from
+    /// the tree) starts no session at all.
+    fn begin_edit(&mut self) {
+        if self.focused && self.edit_origin.is_none() {
+            self.edit_origin = Some(self.input.text().to_string());
+        }
     }
 
     /// See [`Response::jq_open`].
@@ -1013,28 +1011,27 @@ impl Response {
         self.jq.pending = None;
     }
 
-    /// Cancels the edit in progress: puts the filter back to what it was
-    /// when the bar took the caret (text and on/off switch alike — a bar
-    /// opened from off goes back to off with its text kept) and blurs.
-    /// Started from no filter, the bar simply closes: the text is empty
-    /// again and, unfocused, the bar is hidden. The switch is left on in
-    /// that case — there is nothing left to be off — so the request never
+    /// Cancels the edit in progress: puts the text back to what it was
+    /// when the typing started and blurs. Nothing typed yet — the bar was
+    /// only entered — and it just blurs, the filter left exactly as it
+    /// was, on. The on/off switch is never touched: a filter opened from
+    /// off stays on (opening it was the user's doing, not the edit's).
+    /// Started from no filter, the bar is empty again and, unfocused,
+    /// hidden; the switch is left on then too, so the request never
     /// persists `jq_enabled = false` without a filter. An edit whenever
-    /// anything actually changes, so undo brings the typed filter back.
-    /// A bar focused without an origin (never through `focus`) just blurs.
+    /// the text actually changes, so undo brings the typed filter back.
     pub fn cancel_jq_edit(&mut self) {
         let origin = self.jq.edit_origin.take();
         self.jq.blur();
         let Some(origin) = origin else {
             return;
         };
-        if self.jq.input.text() != origin.text {
-            self.set_jq_text(&origin.text);
+        if self.jq.input.text() != origin {
+            self.set_jq_text(&origin);
             self.jq.edited = true;
         }
-        let enabled = origin.enabled || origin.text.is_empty();
-        if self.jq.enabled != enabled {
-            self.jq.enabled = enabled;
+        if self.jq.input.text().is_empty() && !self.jq.enabled {
+            self.jq.enabled = true;
             self.jq.edited = true;
         }
     }
@@ -1044,6 +1041,7 @@ impl Response {
     /// switches a closed bar back on: a verb or the AI landing a filter
     /// means "show me this".
     pub fn set_jq_text_with_cursor(&mut self, text: &str, cursor: usize) {
+        self.jq.begin_edit();
         self.jq.input = LineInput::new(text);
         self.jq.input.set_cursor(cursor);
         self.jq.enabled = true;
@@ -1073,8 +1071,6 @@ impl Response {
         if !self.jq_available() {
             return false;
         }
-        // Focus first: the origin must record the switch as it was, so a
-        // cancel puts an opened-from-off bar back to off.
         self.jq.focus();
         if !self.jq.enabled {
             self.jq.enabled = true;
@@ -1224,6 +1220,7 @@ impl Response {
         if !self.jq.focused {
             return false;
         }
+        self.jq.begin_edit();
         self.jq.input.paste(text);
         self.jq.edited = true;
         true
@@ -1471,6 +1468,7 @@ impl Response {
         let Some(cand) = self.jq.candidate().cloned() else {
             return;
         };
+        self.jq.begin_edit();
         let input = &mut self.jq.input;
         if let Some(from) = cand.replace_from {
             let from_chars = input.text()[..from].chars().count();
@@ -1860,8 +1858,8 @@ impl Response {
         // The jq bar swallows everything while focused: chars and editing
         // keys go to its LineInput, Enter blurs (committing is implicit —
         // every edit re-runs the filter — so the filter stays on), Esc
-        // cancels the edit — the filter goes back to what it was when the
-        // bar took the caret, and a bar opened onto no filter closes —
+        // cancels the edit — the text goes back to what it was when the
+        // typing started, and a bar opened onto no filter closes —
         // unless an AI request is pending, in which case it cancels that
         // instead. Runs before the view is borrowed, so it works even
         // with no ready view (it never should, in practice: the bar can't
@@ -1900,6 +1898,7 @@ impl Response {
                     self.cancel_jq_edit();
                 }
                 _ => {
+                    self.jq.begin_edit();
                     self.jq.input.handle_key(ev);
                     self.jq.edited = true;
                 }
@@ -5791,7 +5790,7 @@ mod tests {
     }
 
     #[test]
-    fn esc_on_a_bar_opened_from_off_puts_it_back_to_off_with_its_text() {
+    fn esc_on_a_bar_opened_from_off_reverts_the_text_but_leaves_it_on() {
         let mut r = ready(ITEMS);
         r.set_jq_text(".a");
         assert!(r.open_jq());
@@ -5803,9 +5802,31 @@ mod tests {
         r.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
         r.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(r.jq_text(), ".a", "the typed char is gone");
-        assert!(!r.jq_enabled(), "the switch is back off");
-        assert!(!r.jq_open());
+        assert!(r.jq_enabled(), "the switch is never part of the edit");
+        assert!(r.jq_open() && !r.jq_focused());
         assert!(r.take_jq_edited());
+    }
+
+    #[test]
+    fn esc_with_nothing_typed_only_blurs_even_when_opened_from_off() {
+        let mut r = ready(ITEMS);
+        r.set_jq_text(".a");
+        assert!(r.open_jq());
+        r.close_jq();
+        r.take_jq_edited();
+        assert!(r.open_jq());
+        // Moving around is not typing (it still flags a reconcile, for
+        // the completion ghost that follows the caret).
+        r.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        r.take_jq_edited();
+        r.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(r.jq_text(), ".a");
+        assert!(
+            r.jq_enabled(),
+            "opening it was the user's doing; it stays on"
+        );
+        assert!(r.jq_open() && !r.jq_focused());
+        assert!(!r.take_jq_edited(), "nothing to revert");
     }
 
     #[test]

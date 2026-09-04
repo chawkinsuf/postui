@@ -343,16 +343,17 @@ because they're easy to get wrong reading the code cold:
   and never switch it off — alt+q is one gesture, "type a filter", so
   the switch lives on its own key.
   `Esc` in the bar *cancels the edit* (`Action::CancelJqEdit`): the bar
-  remembers the filter — text and on/off switch — as it stood when it
-  took the caret (`JqBar::edit_origin`, taken on the unfocused → focused
-  edge, before `open_jq` flips the switch, and forgotten on blur), puts
-  that back, and blurs. A bar opened from off cancels back to off with
-  its text kept; one opened onto no filter is empty again and, unfocused,
-  hidden (the switch is left on — nothing left to be off). Text landing
-  in an already focused bar (a tee-up, an AI reply) does not move the
-  origin, so Esc cancels back to before it; `JqTeeUp` focuses before it
-  sets the text for the same reason. The revert is an undoable edit
-  whenever anything changed. From the tree, Esc stops at the selection
+  remembers the text as it stood when the typing started
+  (`JqBar::edit_origin`, taken by `begin_edit` just before the first
+  change to a focused bar — a key, a paste, an accepted completion, a
+  tee-up or an AI reply landing — and forgotten on blur), puts that
+  back, and blurs. Nothing typed yet, and Esc only blurs. The on/off
+  switch is never part of the edit: a bar opened from off stays on
+  (opening it was the user's doing). One opened onto no filter is empty
+  again and, unfocused, hidden (the switch is left on — nothing left to
+  be off). `JqTeeUp` focuses before it sets the text so Esc cancels the
+  tee-up back to the filter before it. The revert is an undoable edit
+  whenever the text changed. From the tree, Esc stops at the selection
   and the search: it never touches the saved filter. `Enter` blurs to
   the tree with the edit kept and the filter on and the bar still
   showing. The off state persists as `jq_enabled = false` in the request

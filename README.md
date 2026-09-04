@@ -43,7 +43,7 @@ Press `alt+q` (or click 󰈲 in the response header) to open the jq bar and filt
 response live; the filter is saved with the request. `alt+q` always puts the caret in the bar,
 switching the filter on if it was off. `Enter` hands focus back to the
 filtered tree with your edit kept; `Esc` cancels the edit — the filter goes back to what it was
-when you started typing (off again, if you had opened it from off), and a bar you opened onto
+when you started typing (and stays on), and a bar you opened onto
 no filter just closes. `alt+shift+q` (or 󰈲) is the switch: on an open
 bar it closes it, which switches the filter off without deleting it — the full body
 shows until you open it again, and the off state is saved too. A filter that yields only `null` (or nothing) keeps the full body on screen and shows
