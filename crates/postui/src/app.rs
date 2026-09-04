@@ -489,24 +489,6 @@ impl App {
             use crate::theme::TerminalPalette;
             crate::theme::OscQuery.query()
         };
-        // A successful query refreshes the per-terminal color cache; a
-        // lost race (no bg answered in time) replays the cache instead of
-        // degrading to the built-in dark seeds, so the same terminal
-        // renders the same palette on every launch. The cache is keyed by
-        // terminal identity — another terminal's colors never leak in.
-        let cache_path = crate::config::terminal_colors_path();
-        let term_id = crate::theme::cache::term_identity();
-        let terminal_colors = if terminal_colors.bg.is_some() {
-            if let Some(p) = &cache_path {
-                let _ = crate::theme::cache::save(p, &term_id, &terminal_colors);
-            }
-            terminal_colors
-        } else {
-            cache_path
-                .as_deref()
-                .and_then(|p| crate::theme::cache::load(p, &term_id))
-                .unwrap_or(terminal_colors)
-        };
         let (theme_name, theme) = match themes.resolve(&ui_settings.theme, &terminal_colors) {
             Some(t) => (ui_settings.theme.clone(), t),
             None => (
