@@ -88,6 +88,79 @@ fn write_order(doc: &mut toml_edit::DocumentMut, space: &str, order: &[String]) 
     it["order"] = toml_edit::value(arr);
 }
 
+/// Reads the list, hands it to `f`, and writes back only if `f` changed
+/// it — so every cascade is a no-op write when there is nothing to do.
+fn edit_order(
+    root: &Path,
+    space: &str,
+    f: impl FnOnce(&mut Vec<String>),
+) -> Result<(), ProjectError> {
+    let meta = load_meta(root)?;
+    let before = space_order(&meta, space).to_vec();
+    let mut after = before.clone();
+    f(&mut after);
+    if after == before {
+        return Ok(());
+    }
+    edit_project_toml(root, |doc| write_order(doc, space, &after))
+}
+
+fn level_is_listed(order: &[String], level: &str) -> bool {
+    order.iter().any(|e| level_of(e) == level)
+}
+
+/// A request newly appearing in a level (created, renamed in, moved in):
+/// appended after the level's listed entries so it shows last; nothing
+/// at all when the level has no entries (it then sorts alphabetically
+/// with its unlisted siblings).
+pub fn order_arrive(root: &Path, space: &str, rel: &str) -> Result<(), ProjectError> {
+    edit_order(root, space, |order| {
+        if order.iter().any(|e| e == rel) || !level_is_listed(order, level_of(rel)) {
+            return;
+        }
+        order.push(rel.to_string());
+    })
+}
+
+/// Drops `rel`'s entry (every occurrence).
+pub fn order_remove(root: &Path, space: &str, rel: &str) -> Result<(), ProjectError> {
+    edit_order(root, space, |order| order.retain(|e| e != rel))
+}
+
+/// A rename inside one level keeps the slot; one that changes level is a
+/// remove from the old level plus an arrival in the new one.
+pub fn order_rename(root: &Path, space: &str, from: &str, to: &str) -> Result<(), ProjectError> {
+    if level_of(from) == level_of(to) {
+        return edit_order(root, space, |order| {
+            for e in order.iter_mut() {
+                if e == from {
+                    *e = to.to_string();
+                }
+            }
+        });
+    }
+    order_remove(root, space, from)?;
+    order_arrive(root, space, to)
+}
+
+/// Puts `rel` directly after `anchor`; a no-op when `anchor` is unlisted
+/// (the level has no list, so the copy sorts next to its source anyway).
+pub fn order_insert_after(
+    root: &Path,
+    space: &str,
+    anchor: &str,
+    rel: &str,
+) -> Result<(), ProjectError> {
+    edit_order(root, space, |order| {
+        if order.iter().any(|e| e == rel) {
+            return;
+        }
+        if let Some(i) = order.iter().position(|e| e == anchor) {
+            order.insert(i + 1, rel.to_string());
+        }
+    })
+}
+
 /// The list after one level is rewritten to `slugs`: entries of `level`
 /// that appear in `slugs` are replaced in place, first slot first; slugs
 /// with no slot to take are appended; every other entry (other levels,
@@ -342,5 +415,63 @@ mod tests {
         set_level_order(dir.path(), "main", "", &v(&["gone", "a", "b"])).unwrap();
         move_request(dir.path(), "main/b", -1).unwrap();
         assert_eq!(order_of(dir.path(), "main"), v(&["gone", "b", "a"]));
+    }
+
+    #[test]
+    fn rename_within_a_level_keeps_the_slot() {
+        let dir = project_with(&["main/a", "main/b"]);
+        set_level_order(dir.path(), "main", "", &v(&["b", "a"])).unwrap();
+        order_rename(dir.path(), "main", "b", "bee").unwrap();
+        assert_eq!(order_of(dir.path(), "main"), v(&["bee", "a"]));
+        // Unlisted: nothing to do, nothing written.
+        order_rename(dir.path(), "main", "zzz", "yyy").unwrap();
+        assert_eq!(order_of(dir.path(), "main"), v(&["bee", "a"]));
+    }
+
+    #[test]
+    fn rename_across_levels_removes_then_arrives() {
+        let dir = project_with(&["main/a", "main/b", "main/auth/x"]);
+        set_level_order(dir.path(), "main", "", &v(&["b", "a"])).unwrap();
+        set_level_order(dir.path(), "main", "auth", &v(&["auth/x"])).unwrap();
+        order_rename(dir.path(), "main", "b", "auth/b").unwrap();
+        assert_eq!(order_of(dir.path(), "main"), v(&["a", "auth/x", "auth/b"]));
+    }
+
+    #[test]
+    fn arrive_appends_only_when_the_level_is_listed() {
+        let dir = project_with(&["main/a", "main/auth/x"]);
+        order_arrive(dir.path(), "main", "new").unwrap();
+        assert!(order_of(dir.path(), "main").is_empty(), "unlisted level: no write");
+        set_level_order(dir.path(), "main", "", &v(&["a"])).unwrap();
+        order_arrive(dir.path(), "main", "new").unwrap();
+        assert_eq!(order_of(dir.path(), "main"), v(&["a", "new"]));
+        order_arrive(dir.path(), "main", "new").unwrap(); // already there
+        assert_eq!(order_of(dir.path(), "main"), v(&["a", "new"]));
+        // A folder level with no entries stays unlisted even though the
+        // root is listed.
+        order_arrive(dir.path(), "main", "auth/y").unwrap();
+        assert_eq!(order_of(dir.path(), "main"), v(&["a", "new"]));
+    }
+
+    #[test]
+    fn remove_drops_the_entry_and_the_key_when_empty() {
+        let dir = project_with(&["main/a"]);
+        set_level_order(dir.path(), "main", "", &v(&["a"])).unwrap();
+        order_remove(dir.path(), "main", "a").unwrap();
+        assert!(order_of(dir.path(), "main").is_empty());
+        let text = std::fs::read_to_string(dir.path().join("project.toml")).unwrap();
+        assert!(!text.contains("order"), "{text}");
+        order_remove(dir.path(), "main", "a").unwrap(); // absent: no-op
+    }
+
+    #[test]
+    fn insert_after_lands_the_copy_next_to_its_source() {
+        let dir = project_with(&["main/a", "main/b"]);
+        set_level_order(dir.path(), "main", "", &v(&["b", "a"])).unwrap();
+        order_insert_after(dir.path(), "main", "b", "b-copy").unwrap();
+        assert_eq!(order_of(dir.path(), "main"), v(&["b", "b-copy", "a"]));
+        // Unlisted anchor: the level has no list, nothing written.
+        order_insert_after(dir.path(), "main", "zzz", "zzz-copy").unwrap();
+        assert_eq!(order_of(dir.path(), "main"), v(&["b", "b-copy", "a"]));
     }
 }
