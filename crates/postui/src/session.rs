@@ -231,8 +231,13 @@ impl Session {
         self.warm.clear();
         // The collapse layout preference survives even a project switch.
         let collapsed = self.response.collapsed;
+        // So does the jq Tab-key mode: it is a config-level UI setting
+        // (`UiSettings::jq_tab`), not part of any one response, so a
+        // project switch must not silently revert it to the default.
+        let jq_tab = self.response.jq_tab();
         self.response = Response::default();
         self.response.collapsed = collapsed;
+        self.response.set_jq_tab(jq_tab);
         self.open_slug = None;
     }
 }
@@ -550,5 +555,19 @@ mod tests {
         s.reset();
         open(&mut s, "a");
         assert!(matches!(s.response.state(), ResponseState::Empty));
+    }
+
+    #[test]
+    fn jq_tab_is_a_config_setting_that_survives_a_project_switch() {
+        let mut s = Session::default();
+        s.response.set_jq_tab(crate::config::JqTab::Accept);
+
+        s.reset();
+
+        assert_eq!(
+            s.response.jq_tab(),
+            crate::config::JqTab::Accept,
+            "jq_tab is a UI setting, not part of the response being reset"
+        );
     }
 }
