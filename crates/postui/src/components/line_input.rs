@@ -490,7 +490,11 @@ impl LineInput {
                 Some(w) => chars.iter().take(w).collect(),
                 None => chars.iter().collect(),
             };
-            return Line::styled(visible, base);
+            // The color rides on the span, not the `Line`: callers that
+            // lift `line.spans` into their own row (the jq bar) would
+            // otherwise draw the text in the terminal's default
+            // foreground.
+            return Line::from(Span::styled(visible, base));
         }
         // Smallest window start that keeps the cursor visible; 0 when the
         // whole text is drawn.
@@ -687,6 +691,25 @@ mod tests {
         assert_eq!(rendered.chars().count(), 20);
         let expected_before: String = text.chars().skip(181).collect(); // chars[181..200]
         assert!(rendered.starts_with(&expected_before));
+    }
+
+    #[test]
+    fn unfocused_text_carries_the_theme_color_on_its_span() {
+        // Callers that lift a drawn line's spans into their own row (the
+        // jq bar) never see the `Line`'s own style, so the color must
+        // ride on the span itself or the terminal's default foreground
+        // shows through — invisible on a dark page, washed out on a light
+        // one.
+        let input = LineInput::new(".data.items");
+        let theme = Theme::light();
+        for line in [
+            input.draw_line(false, &theme),
+            input.draw_line_windowed(false, &theme, 40),
+            input.draw_line_windowed_no_caret(false, &theme, 40),
+        ] {
+            assert_eq!(line.spans.len(), 1);
+            assert_eq!(line.spans[0].style.fg, Some(theme.text));
+        }
     }
 
     #[test]
