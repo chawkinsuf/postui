@@ -4,6 +4,44 @@
 //! (`candidates`). Pure apart from `keys_at`; jaq's types never leave the
 //! module.
 
+use super::{Data, JqDocument, with_compiled};
+use jaq_core::{Ctx, Vars};
+use jaq_json::Val;
+
+/// How many outputs of the context expression are looked at for keys.
+/// `.users[]` over a huge array stops here; a completion run can never
+/// reach `OUTPUT_CAP`.
+pub const COMPLETE_OUTPUTS: usize = 64;
+
+/// Runs `input_expr` against `doc`, takes at most `COMPLETE_OUTPUTS`
+/// outputs, and returns the keys of those that are objects in order of
+/// first appearance, deduplicated. Any error — a prefix that does not
+/// compile, a runtime error part-way — yields what was collected so far,
+/// never an error: a half-typed filter is normal here.
+pub fn keys_at(input_expr: &str, doc: &JqDocument) -> Vec<String> {
+    let mut keys: Vec<String> = Vec::new();
+    let _ = with_compiled(input_expr, |filter| {
+        let ctx = Ctx::<Data>::new(&filter.lut, Vars::new([]));
+        for item in filter.id.run((ctx, (*doc.0).clone())).take(COMPLETE_OUTPUTS) {
+            let Ok(val) = item else {
+                break;
+            };
+            if let Val::Obj(map) = &val {
+                for (k, _) in map.iter() {
+                    if let Val::TStr(s) = k {
+                        let key = String::from_utf8_lossy(s).into_owned();
+                        if !keys.contains(&key) {
+                            keys.push(key);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    });
+    keys
+}
+
 /// What is being completed at the end of the bar text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Kind {
@@ -324,6 +362,40 @@ fn path_chain(tail: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const DOC: &str = r#"{"data":{"items":[{"id":1,"name":"a","status":"active"},{"id":2,"name":"b","status":"off","extra":true}],"total":2,"my key":0}}"#;
+
+    fn doc() -> super::super::JqDocument {
+        super::super::JqDocument::parse(DOC).expect("fixture is JSON")
+    }
+
+    #[test]
+    fn keys_at_collects_object_keys_in_first_appearance_order() {
+        assert_eq!(keys_at(".", &doc()), vec!["data"]);
+        assert_eq!(keys_at(".data", &doc()), vec!["items", "total", "my key"]);
+        assert_eq!(
+            keys_at(".data.items[]", &doc()),
+            vec!["id", "name", "status", "extra"],
+            "keys of every output, deduplicated, in order"
+        );
+        assert_eq!(keys_at(".data.items | .[]", &doc()), vec!["id", "name", "status", "extra"]);
+    }
+
+    #[test]
+    fn keys_at_is_empty_for_non_objects_errors_and_bad_filters() {
+        assert!(keys_at(".data.items", &doc()).is_empty(), "an array has no keys");
+        assert!(keys_at(".data.total", &doc()).is_empty());
+        assert!(keys_at(".data.items[] | .id | .x", &doc()).is_empty(), "runtime error");
+        assert!(keys_at("select(", &doc()).is_empty(), "does not compile");
+        assert!(keys_at("$x", &doc()).is_empty(), "unbound variable");
+    }
+
+    #[test]
+    fn keys_at_stops_at_the_output_cap() {
+        // Unbounded outputs — the cap makes this return, not hang.
+        let keys = keys_at("range(1e9) | {k: .}", &doc());
+        assert_eq!(keys, vec!["k"]);
+    }
 
     fn key(text: &str) -> (String, usize, bool) {
         let c = context(text).unwrap_or_else(|| panic!("{text:?} should complete a key"));
