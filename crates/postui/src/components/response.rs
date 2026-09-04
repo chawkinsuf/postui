@@ -359,30 +359,53 @@ impl JqBar {
     /// last `.` before the caret — `.data.items` → `.data.`, and a
     /// trailing dot goes with the segment before it, `.data.` → `.` →
     /// nothing — so repeated presses climb the path one segment at a
-    /// time and each stop is a place the completion has keys for.
+    /// time and each stop is a place the completion has keys for. A
+    /// quoted key is one segment whatever it holds (`."a.b c"` → `.`),
+    /// and a subscript belongs to its segment (`.items[0]` → `.`).
     /// `None` outside a path token (a builtin, a pipe): the input's own
     /// word rule applies. Tokens are cut at whitespace and at jq's
-    /// own separators.
+    /// own separators, none of which count inside quotes.
     fn segment_delete_target(&self) -> Option<usize> {
         let chars: Vec<char> = self.input.text().chars().collect();
-        let end = self.input.cursor().min(chars.len());
+        // Whitespace right behind the caret goes with the delete, as the
+        // input's own word rule has it; the segment rule looks past it.
+        let mut end = self.input.cursor().min(chars.len());
+        while end > 0 && chars[end - 1].is_whitespace() {
+            end -= 1;
+        }
         if end == 0 {
             return None;
         }
-        let is_boundary =
-            |c: char| c.is_whitespace() || matches!(c, '|' | '(' | ')' | '[' | ']' | ',' | ';');
+        let is_boundary = |c: char| c.is_whitespace() || matches!(c, '|' | '(' | ')' | ',' | ';');
+        // Nothing inside a quoted key (`."my key"`, `."a|b.c"`) is a cut
+        // or a segment: track the quote state up to each char (a `\"`
+        // inside the quotes does not close them).
+        let mut quoted = Vec::with_capacity(end);
+        let mut inside = false;
+        let mut escaped = false;
+        for &c in &chars[..end] {
+            quoted.push(inside);
+            if escaped {
+                escaped = false;
+            } else if inside && c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                inside = !inside;
+            }
+        }
         let start = (0..end)
             .rev()
-            .find(|&i| is_boundary(chars[i]))
+            .find(|&i| !quoted[i] && is_boundary(chars[i]))
             .map_or(0, |i| i + 1);
-        if !chars[start..end].contains(&'.') {
+        let is_dot = |i: usize| !quoted[i] && chars[i] == '.';
+        if !(start..end).any(is_dot) {
             return None;
         }
-        let e = if chars[end - 1] == '.' { end - 1 } else { end };
+        let e = if is_dot(end - 1) { end - 1 } else { end };
         Some(
             (start..e)
                 .rev()
-                .find(|&i| chars[i] == '.')
+                .find(|&i| is_dot(i))
                 .map_or(start, |i| i + 1),
         )
     }
@@ -5968,9 +5991,11 @@ mod tests {
             "outside a path: the input's own word rule, one run (`| `) at a time"
         );
         bar_key(&mut r, ctrl_bs);
-        assert_eq!(r.jq_text(), ".data.items", "…then the `[] ` run");
-        bar_key(&mut r, ctrl_bs);
-        assert_eq!(r.jq_text(), ".data.", "back to the dot, which stays");
+        assert_eq!(
+            r.jq_text(),
+            ".data.",
+            "the space is skipped, and `items[]` is one segment — back to the dot, which stays"
+        );
         bar_key(&mut r, ctrl_bs);
         assert_eq!(r.jq_text(), ".", "the trailing dot goes with `data`");
         bar_key(&mut r, ctrl_bs);
@@ -5996,6 +6021,45 @@ mod tests {
         type_jq(&mut r, ".data.items | length");
         bar_key(&mut r, KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT));
         assert_eq!(r.jq_text(), ".data.items | ");
+    }
+
+    #[test]
+    fn ctrl_backspace_treats_a_quoted_key_as_one_segment() {
+        let mut r = ready(r#"{"my key.v2": 1}"#);
+        let ctrl_bs = KeyEvent::new(KeyCode::Backspace, KeyModifiers::CONTROL);
+        type_jq(&mut r, r#".data."my key.v2" | length"#);
+        bar_key(&mut r, ctrl_bs);
+        assert_eq!(r.jq_text(), r#".data."my key.v2" | "#, "a plain word first");
+        bar_key(&mut r, ctrl_bs);
+        assert_eq!(r.jq_text(), r#".data."my key.v2" "#, "then the `| ` run");
+        bar_key(&mut r, ctrl_bs);
+        assert_eq!(
+            r.jq_text(),
+            ".data.",
+            "the quoted key is one segment: its space and its dot are not cuts"
+        );
+        // A matrix of quoted shapes, each from the caret at the end.
+        let climb = |text: &str| -> Vec<String> {
+            let mut r = ready(ITEMS);
+            type_jq(&mut r, text);
+            let mut steps = Vec::new();
+            for _ in 0..3 {
+                bar_key(&mut r, ctrl_bs);
+                steps.push(r.jq_text().to_string());
+            }
+            steps
+        };
+        assert_eq!(climb(r#"."a.b""#), [".", "", ""]);
+        assert_eq!(climb(r#".x."a.b""#), [".x.", ".", ""]);
+        assert_eq!(climb(r#".x."a b""#), [".x.", ".", ""]);
+        assert_eq!(climb(r#".x."a|b.c""#), [".x.", ".", ""]);
+        assert_eq!(
+            climb(r#".x[0]."a.b""#),
+            [".x[0].", ".", ""],
+            "a subscript stays with its segment"
+        );
+        assert_eq!(climb(r#".x."a.b"[0]"#), [".x.", ".", ""]);
+        assert_eq!(climb(".a.b[0].c[]"), [".a.b[0].", ".a.", "."]);
     }
 
     #[test]

@@ -330,7 +330,7 @@ In `ready_key`'s jq-focused branch, before the event reaches the
 | Enter           | leave the bar, typed text kept | leave the bar (entered: confirm the chip, stay)   |
 | Esc             | cancel the edit               | cancel the edit (entered: un-pick, stay)          |
 | Down            | leave the bar                 | leave the bar                                    |
-| ctrl/alt+backspace, ctrl+h | in a path token, delete back to the previous `.` (a trailing `.` goes with its segment: `.data.items` → `.data.` → `.` → ``; quotes are not special, `."a.b` → `."a.`); elsewhere the input's own word rule |
+| ctrl/alt+backspace, ctrl+h | in a path token, delete back to the previous `.` (a trailing `.` goes with its segment: `.data.items` → `.data.` → `.` → ``); a quoted key is one segment whatever it holds (`."a.b c"` → `.`) and a subscript stays with its segment (`.items[0]` → `.`); elsewhere the input's own word rule |
 | anything else   | falls through to the input; index resets to 0 (menu mode: an entered row is left first) |
 
 When `ghost()` is `None`, Tab and shift+Tab are ignored by the bar

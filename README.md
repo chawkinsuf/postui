@@ -63,8 +63,8 @@ anything else you type keeps the selection. With `jq_tab = "cycle"` the bar inst
 best candidate after the caret: `Tab` cycles through the candidates in place, `shift+Tab` goes
 back, and `Right` or `End` accepts the one showing. The bar takes the usual editing keys
 (`ctrl+←/→`, `ctrl+a`, `ctrl+backspace` / `alt+backspace`), and inside a path `ctrl+backspace`
-deletes back to the previous `.` — `.data.items` → `.data.` → `.` — so each press lands where
-the completion has keys to offer.
+deletes back to the previous `.` — `.data.items[0]` → `.data.` → `.` — so each press lands where
+the completion has keys to offer (a quoted key counts as one segment, dots and all).
 
 ## Configuration
 
