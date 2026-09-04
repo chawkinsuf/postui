@@ -57,11 +57,7 @@ pub fn order_level<'a>(
         let display = e.name.as_deref().unwrap_or(leaf);
         (display.to_lowercase(), e.slug.clone())
     });
-    listed
-        .into_iter()
-        .map(|(_, e)| e)
-        .chain(unlisted)
-        .collect()
+    listed.into_iter().map(|(_, e)| e).chain(unlisted).collect()
 }
 
 /// Writes `[space.<space>] order = [...]`, creating the table if needed
@@ -71,12 +67,16 @@ fn write_order(doc: &mut toml_edit::DocumentMut, space: &str, order: &[String]) 
     let table = doc
         .entry("space")
         .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
-    let Some(t) = table.as_table_mut() else { return };
+    let Some(t) = table.as_table_mut() else {
+        return;
+    };
     t.set_implicit(true);
     let item = t
         .entry(space)
         .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
-    let Some(it) = item.as_table_mut() else { return };
+    let Some(it) = item.as_table_mut() else {
+        return;
+    };
     if order.is_empty() {
         it.remove("order");
         return;
@@ -232,8 +232,8 @@ fn displayed_level(root: &Path, space: &str, level: &str) -> Result<Vec<String>,
 /// materialised into the list first, so what is on disk afterwards is
 /// exactly what was on screen.
 pub fn move_request(root: &Path, slug: &str, delta: i32) -> Result<(), ProjectError> {
-    let space = crate::storage::space_of(slug)
-        .ok_or_else(|| ProjectError::NotFound(slug.to_string()))?;
+    let space =
+        crate::storage::space_of(slug).ok_or_else(|| ProjectError::NotFound(slug.to_string()))?;
     let rel = relative(slug, space).ok_or_else(|| ProjectError::NotFound(slug.to_string()))?;
     let level = level_of(rel);
     let mut shown = displayed_level(root, space, level)?;
@@ -471,7 +471,10 @@ mod tests {
     fn arrive_appends_only_when_the_level_is_listed() {
         let dir = project_with(&["main/a", "main/auth/x"]);
         order_arrive(dir.path(), "main", "new").unwrap();
-        assert!(order_of(dir.path(), "main").is_empty(), "unlisted level: no write");
+        assert!(
+            order_of(dir.path(), "main").is_empty(),
+            "unlisted level: no write"
+        );
         set_level_order(dir.path(), "main", "", &v(&["a"])).unwrap();
         order_arrive(dir.path(), "main", "new").unwrap();
         assert_eq!(order_of(dir.path(), "main"), v(&["a", "new"]));

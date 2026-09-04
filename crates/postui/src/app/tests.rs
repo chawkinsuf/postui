@@ -18880,7 +18880,10 @@ fn three_row_app() -> (App, tempfile::TempDir) {
     postui_core::storage::save_request(dir.path(), "main/gamma", &req("https://x/3")).unwrap();
     app.update(Action::RefreshSidebar);
     render_once(&mut app);
-    assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
+    assert_eq!(
+        request_rows(&app),
+        ["main/alpha", "main/beta", "main/gamma"]
+    );
     (app, dir)
 }
 
@@ -18897,7 +18900,10 @@ fn press_move_release_reorders_and_persists() {
         app.sidebar.drag.is_some(),
         "motion onto another row promotes"
     );
-    assert_eq!(request_rows(&app), ["main/beta", "main/gamma", "main/alpha"]);
+    assert_eq!(
+        request_rows(&app),
+        ["main/beta", "main/gamma", "main/alpha"]
+    );
     assert_eq!(app.pointer_shape_update(), Some(PointerShape::Grabbing));
     app.handle_mouse(left_up(r0.x + 2, r2.y));
     assert!(app.sidebar.drag.is_none());
@@ -18913,7 +18919,10 @@ fn press_move_release_reorders_and_persists() {
         ["beta", "gamma", "alpha"]
     );
     render_once(&mut app);
-    assert_eq!(request_rows(&app), ["main/beta", "main/gamma", "main/alpha"]);
+    assert_eq!(
+        request_rows(&app),
+        ["main/beta", "main/gamma", "main/alpha"]
+    );
     assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/alpha"));
 }
 
@@ -18939,7 +18948,10 @@ fn release_outside_the_sidebar_and_escape_both_cancel() {
         let r2 = row_rect(&mut app, 2);
         app.handle_mouse(left_down(r0.x + 2, r0.y));
         app.handle_mouse(moved(r0.x + 2, r2.y));
-        assert_eq!(request_rows(&app), ["main/beta", "main/gamma", "main/alpha"]);
+        assert_eq!(
+            request_rows(&app),
+            ["main/beta", "main/gamma", "main/alpha"]
+        );
         if cancel_with_esc {
             app.handle_key(
                 &Keymap::default_bindings(),
@@ -18949,7 +18961,10 @@ fn release_outside_the_sidebar_and_escape_both_cancel() {
             app.handle_mouse(left_up(110, 30)); // over the response pane
         }
         assert!(app.sidebar.drag.is_none());
-        assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
+        assert_eq!(
+            request_rows(&app),
+            ["main/alpha", "main/beta", "main/gamma"]
+        );
         let meta = postui_core::project::load_meta(dir.path()).unwrap();
         assert!(
             postui_core::order::space_order(&meta, "main").is_empty(),
@@ -19027,7 +19042,10 @@ fn escape_disarms_the_press_so_motion_cannot_restart_the_drag() {
     app.handle_mouse(moved(r0.x + 2, r1.y));
     assert!(app.sidebar.drag.is_none(), "the cancel stays cancelled");
     app.handle_mouse(left_up(r0.x + 2, r1.y));
-    assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
+    assert_eq!(
+        request_rows(&app),
+        ["main/alpha", "main/beta", "main/gamma"]
+    );
     let meta = postui_core::project::load_meta(dir.path()).unwrap();
     assert!(
         postui_core::order::space_order(&meta, "main").is_empty(),
@@ -19039,7 +19057,8 @@ fn escape_disarms_the_press_so_motion_cannot_restart_the_drag() {
 fn dragging_at_the_list_edge_scrolls_on_tick() {
     let (mut app, dir) = spaced_app();
     for i in 0..60 {
-        postui_core::storage::save_request(dir.path(), &format!("main/r{i:02}"), &req("https://x")).unwrap();
+        postui_core::storage::save_request(dir.path(), &format!("main/r{i:02}"), &req("https://x"))
+            .unwrap();
     }
     app.update(Action::RefreshSidebar);
     let r0 = row_rect(&mut app, 0);
@@ -19050,7 +19069,11 @@ fn dragging_at_the_list_edge_scrolls_on_tick() {
     assert!(app.sidebar.drag.is_some());
     let before = app.sidebar.scroll;
     app.update(Action::Tick);
-    assert_eq!(app.sidebar.scroll, before + 1, "bottom edge scrolls one row per tick");
+    assert_eq!(
+        app.sidebar.scroll,
+        before + 1,
+        "bottom edge scrolls one row per tick"
+    );
     // The response pane shares that y; a pointer parked over it must not
     // scroll the list it is not over.
     let held = app.sidebar.scroll;
@@ -19081,7 +19104,10 @@ fn a_rebuild_between_press_and_motion_drags_the_pressed_request() {
     app.project.reload_meta();
     app.update(Action::RefreshSidebar);
     render_once(&mut app);
-    assert_eq!(request_rows(&app), ["main/beta", "main/gamma", "main/alpha"]);
+    assert_eq!(
+        request_rows(&app),
+        ["main/beta", "main/gamma", "main/alpha"]
+    );
     app.handle_mouse(moved(r0.x + 2, r0.y)); // now row 0 is main/beta
     assert_eq!(
         app.sidebar.drag.as_ref().map(|d| d.slug.as_str()),
@@ -19163,5 +19189,8 @@ fn switching_space_mid_drag_cancels_it_and_writes_nothing() {
     );
     app.update(Action::SwitchSpace("main".into()));
     render_once(&mut app);
-    assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
+    assert_eq!(
+        request_rows(&app),
+        ["main/alpha", "main/beta", "main/gamma"]
+    );
 }

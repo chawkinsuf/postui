@@ -138,7 +138,14 @@ fn right_click_sidebar_row_opens_menu_and_duplicate_creates_copy() {
     assert!(matches!(app.modals.top(), Some(Modal::Dropdown(_))));
     assert_eq!(
         menu_labels(&app),
-        vec!["Open", "Duplicate", "Move up", "Move down", "Rename…", "Delete"],
+        vec![
+            "Open",
+            "Duplicate",
+            "Move up",
+            "Move down",
+            "Rename…",
+            "Delete"
+        ],
     );
 
     press(&mut app, Hit::DropdownRow(1), left_down);
