@@ -40,9 +40,13 @@ rides along because jaq already exposes its definitions.
   fills), and further Tab/shift+Tab step through it, rewriting the bar
   text from the pre-completion base each step so a rewrite never
   compounds. Shift+Tab on the offered row enters it at the last
-  candidate. Any other key leaves the row, keeps the selection, and is
-  handled as usual (Esc cancels back to before the first completion;
-  Enter keeps it) — the row then simply tracks what is typed next. A lone
+  candidate. Enter on the entered row confirms the selected chip and
+  leaves the row, staying in the bar (Enter again leaves the bar). Any
+  other key leaves the row, keeps the selection, and is handled as
+  usual (Esc cancels back to before the first completion) — the row
+  then simply tracks what is typed next. Enter on the unentered row,
+  or on a cycle-mode ghost, leaves the bar with what was typed: a
+  ghost is an offer, never text. Down leaves the bar in both modes. A lone
   candidate is previewed like any other and just accepted by Tab. The
   row lives in the bar's second row (the error/note row, which it takes
   over while showing) and is a window that slides only as far as it must
@@ -316,6 +320,8 @@ In `ready_key`'s jq-focused branch, before the event reaches the
 | Tab             | next candidate (wraps)        | enter the row at the first (entered: next, wraps) |
 | shift+Tab       | previous candidate (wraps)    | enter the row at the last (entered: previous)     |
 | Right, End      | accept                        | a plain caret move (entered: leaves the row first) |
+| Enter           | leave the bar, typed text kept | leave the bar (entered: confirm the chip, stay)   |
+| Down            | leave the bar                 | leave the bar                                    |
 | anything else   | falls through to the input; index resets to 0 (menu mode: an entered row is left first) |
 
 When `ghost()` is `None`, Tab and shift+Tab are ignored by the bar

@@ -2018,8 +2018,9 @@ impl Response {
     /// a readable state dispatch.
     fn ready_key(&mut self, ev: KeyEvent) -> Option<Action> {
         // The jq bar swallows everything while focused: chars and editing
-        // keys go to its LineInput, Enter blurs (committing is implicit —
-        // every edit re-runs the filter — so the filter stays on), Esc
+        // keys go to its LineInput, Enter/Down blur (committing is
+        // implicit — every edit re-runs the filter — so the filter
+        // stays on; Enter on an entered menu row first confirms it), Esc
         // cancels the edit — the text goes back to what it was when the
         // typing started, and a bar opened onto no filter closes —
         // unless an AI request is pending, in which case it cancels that
@@ -2027,9 +2028,11 @@ impl Response {
         // with no ready view (it never should, in practice: the bar can't
         // focus without one).
         if self.jq.focused {
-            // Menu mode's candidate row is open: Tab and shift+Tab step
-            // through it; any other key closes it, keeping the selected
-            // completion, and is then handled as usual.
+            // Menu mode's candidate row is entered: Tab and shift+Tab step
+            // through it, Enter confirms the selected chip and leaves the
+            // row (staying in the bar — its text is already the chip's,
+            // so there is nothing more to take), and any other key leaves
+            // the row keeping the selection and is then handled as usual.
             if self.jq.menu.is_some() {
                 match ev.code {
                     KeyCode::Tab if ev.modifiers.is_empty() => {
@@ -2038,6 +2041,10 @@ impl Response {
                     }
                     KeyCode::BackTab => {
                         self.jq.step_menu(false);
+                        return Some(Action::Render);
+                    }
+                    KeyCode::Enter => {
+                        self.jq.menu = None;
                         return Some(Action::Render);
                     }
                     _ => self.jq.menu = None,
@@ -2076,7 +2083,11 @@ impl Response {
                 }
             }
             match ev.code {
-                KeyCode::Enter => self.jq.blur(),
+                // Enter and Down both leave the bar with the edit kept:
+                // Enter commits what was typed (a ghost is an offer, not
+                // text — fish's rule, so `.id` can be the filter when
+                // `.identifier` exists), Down is the URL field's leave key.
+                KeyCode::Enter | KeyCode::Down => self.jq.blur(),
                 KeyCode::Esc => {
                     if self.jq.ai_pending {
                         return Some(Action::CancelJqDescribe);
@@ -5745,7 +5756,7 @@ mod tests {
     }
 
     #[test]
-    fn enter_with_the_row_open_keeps_the_selection_and_leaves() {
+    fn enter_on_an_entered_row_confirms_the_chip_and_a_second_enter_leaves() {
         let mut r = ready(ITEMS);
         r.set_jq_tab(JqTab::Menu);
         type_jq(&mut r, ".data.items[] | .");
@@ -5753,7 +5764,48 @@ mod tests {
         bar_key(&mut r, key(KeyCode::Tab));
         bar_key(&mut r, key(KeyCode::Enter));
         assert_eq!(r.jq_text(), ".data.items[] | .status");
-        assert!(!r.jq_menu_open() && !r.jq_focused());
+        assert!(!r.jq_menu_open(), "the row is left…");
+        assert!(r.jq_focused(), "…but the caret stays in the bar");
+        bar_key(&mut r, key(KeyCode::Enter));
+        assert!(!r.jq_focused(), "nothing selected: Enter leaves");
+        assert_eq!(r.jq_text(), ".data.items[] | .status");
+    }
+
+    #[test]
+    fn enter_on_the_unentered_row_leaves_with_what_was_typed() {
+        let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Menu);
+        type_jq(&mut r, ".data.items[] | .");
+        assert!(r.jq_menu_offered() && !r.jq_menu_open());
+        bar_key(&mut r, key(KeyCode::Enter));
+        assert_eq!(r.jq_text(), ".data.items[] | .", "nothing was picked");
+        assert!(!r.jq_focused());
+    }
+
+    #[test]
+    fn enter_on_a_ghost_commits_the_typed_text_not_the_ghost() {
+        let mut r = ready(r#"{"id": 1, "identifier": 2}"#);
+        type_jq(&mut r, ".id");
+        assert_eq!(r.jq_ghost(), Some("entifier"));
+        bar_key(&mut r, key(KeyCode::Enter));
+        assert_eq!(r.jq_text(), ".id", "a ghost is an offer, not text");
+        assert!(!r.jq_focused());
+        assert_eq!(r.view().unwrap().view_text(), "1");
+    }
+
+    #[test]
+    fn down_leaves_the_bar_like_the_url_field() {
+        let mut r = ready(ITEMS);
+        type_jq(&mut r, ".data");
+        bar_key(&mut r, key(KeyCode::Down));
+        assert!(!r.jq_focused());
+        assert_eq!(r.jq_text(), ".data");
+        r.set_jq_tab(JqTab::Menu);
+        type_jq(&mut r, ".data.items[] | .");
+        bar_key(&mut r, key(KeyCode::Tab));
+        bar_key(&mut r, key(KeyCode::Down));
+        assert!(!r.jq_focused() && !r.jq_menu_open());
+        assert_eq!(r.jq_text(), ".data.items[] | .id", "the chip is kept");
     }
 
     #[test]

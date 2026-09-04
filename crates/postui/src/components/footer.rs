@@ -147,8 +147,18 @@ pub(crate) fn footer_chips(
                     }
                     _ => {}
                 }
+                // Enter confirms an entered row's chip (and stays in the
+                // bar); otherwise it applies — leaves with the edit kept.
                 chips.extend([
-                    ("enter", "apply", None),
+                    (
+                        "enter",
+                        if jq_bar == JqBarState::Menu {
+                            "select"
+                        } else {
+                            "apply"
+                        },
+                        None,
+                    ),
                     ("esc", "cancel", Some(Action::CancelJqEdit)),
                     ("alt+shift+q", "unfilter", Some(Action::ToggleJqBar)),
                     ("✦", "describe…", Some(Action::OpenJqDescribe)),
@@ -431,10 +441,14 @@ mod tests {
         assert_eq!(&menu_ghost[1..], &focused[..]);
         let menu = chips(JqBarState::Menu);
         assert_eq!(
-            &menu[..2],
-            &["tab next".to_string(), "shift+tab prev".to_string()]
+            &menu[..3],
+            &[
+                "tab next".to_string(),
+                "shift+tab prev".to_string(),
+                "enter select".to_string()
+            ]
         );
-        assert_eq!(&menu[2..], &focused[..]);
+        assert_eq!(&menu[3..], &focused[1..], "enter reads select, not apply");
     }
 
     fn render(focus: PaneId) -> String {

@@ -354,9 +354,14 @@ because they're easy to get wrong reading the code cold:
   be off). `JqTeeUp` focuses before it sets the text so Esc cancels the
   tee-up back to the filter before it. The revert is an undoable edit
   whenever the text changed. From the tree, Esc stops at the selection
-  and the search: it never touches the saved filter. `Enter` blurs to
-  the tree with the edit kept and the filter on and the bar still
-  showing. The off state persists as `jq_enabled = false` in the request
+  and the search: it never touches the saved filter. `Enter` (and
+  `Down`, the URL field's leave key) blurs to the tree with the edit
+  kept and the filter on and the bar still showing — with what was
+  typed, never a ghost (fish's rule: a ghost is an offer, and `.id`
+  must be reachable when `.identifier` exists). The one exception is
+  menu mode's entered row, where Enter first confirms the selected chip
+  and stays in the bar (the footer reads `enter select`); Enter again
+  leaves. The off state persists as `jq_enabled = false` in the request
   TOML (omitted when on, and never written without a filter to switch
   off); toggling dirties the request like a text edit. A structural verb
   or an AI reply landing a filter switches a closed bar back on.

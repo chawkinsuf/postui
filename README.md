@@ -41,8 +41,8 @@ Shift while dragging — most terminals bypass capture for that.
 
 Press `alt+q` (or click 󰈲 in the response header) to open the jq bar and filter a JSON
 response live; the filter is saved with the request. `alt+q` always puts the caret in the bar,
-switching the filter on if it was off. `Enter` hands focus back to the
-filtered tree with your edit kept; `Esc` cancels the edit — the filter goes back to what it was
+switching the filter on if it was off. `Enter` (or `Down`) hands focus back to the
+filtered tree with your edit kept — what you typed, never a ghost; `Esc` cancels the edit — the filter goes back to what it was
 when you started typing (and stays on), and a bar you opened onto
 no filter just closes. `alt+shift+q` (footer chip `unfilter`, or 󰈲) is the switch: on an open
 bar it closes it, which switches the filter off without deleting it — the full body
@@ -60,7 +60,7 @@ the filter has reached at that point in the response, or the start of a builtin'
 accepts the one showing. With `jq_tab = "menu"` there is no ghost: the candidates are listed
 under the bar as you type, narrowing with each character, and `Tab` picks the first, further
 `Tab`s step through them (the row slides to keep the selected one in view), `shift+Tab` goes
-back, and anything else you type keeps the selection.
+back, `Enter` confirms the selected one, and anything else you type keeps the selection.
 
 ## Configuration
 
