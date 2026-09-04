@@ -376,7 +376,6 @@ impl Keymap {
             ("ctrl+enter", Action::Send),
             ("shift+enter", Action::Send),
             ("ctrl+o", Action::OpenProjectChooser),
-            ("alt+n", Action::PromptNewProject),
             ("alt+e", Action::OpenBodyInEditor),
             ("ctrl+v", Action::Paste),
             ("alt+shift+v", Action::OpenVarPicker { completing: false }),
@@ -793,7 +792,11 @@ mod tests {
         assert_eq!(get("ctrl+enter"), Some(Action::Send));
         assert_eq!(get("shift+enter"), Some(Action::Send));
         assert_eq!(get("ctrl+o"), Some(Action::OpenProjectChooser));
-        assert_eq!(get("alt+n"), Some(Action::PromptNewProject));
+        assert_eq!(
+            get("alt+n"),
+            None,
+            "new project is reached from the Projects chooser, not a chord"
+        );
         assert_eq!(get("ctrl+v"), Some(Action::Paste), "ctrl+v pastes now");
         assert_eq!(
             get("alt+shift+v"),

@@ -2754,6 +2754,15 @@ impl App {
                     actions: vec![Action::PromptOpenProjectPath],
                     ..Default::default()
                 });
+                // New project lives here rather than on a chord: it is
+                // rare enough that a row in the place you look for
+                // projects beats a key to remember.
+                items.push(ChooserItem {
+                    label: "new project…".into(),
+                    detail: None,
+                    actions: vec![Action::PromptNewProject],
+                    ..Default::default()
+                });
                 let mut state = ChooserState::new("Projects", items);
                 // Open on the current project, not row 0.
                 state.select_id(&self.project.root.display().to_string());

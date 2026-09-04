@@ -5231,6 +5231,33 @@ fn switch_restores_target_projects_open_request_and_saves_state() {
     assert_eq!(old.open_request, None);
 }
 
+/// The Projects chooser ends with the two "elsewhere" rows: browse to a
+/// project, or make a new one. Choosing the latter opens the New project
+/// modal, which is how it is reached now that alt+n is unbound.
+#[test]
+fn project_chooser_offers_a_new_project_row() {
+    let (mut app, _a, _b) = two_projects();
+    app.update(Action::OpenProjectChooser);
+    let Some(Modal::Chooser(c)) = app.modals.top() else {
+        panic!("expected chooser")
+    };
+    let labels: Vec<&str> = c.items.iter().map(|i| i.label.as_str()).collect();
+    let n = labels.len();
+    assert_eq!(
+        &labels[n - 2..],
+        ["open by path\u{2026}", "new project\u{2026}"],
+        "{labels:?}"
+    );
+    assert_eq!(c.items[n - 1].actions, vec![Action::PromptNewProject]);
+
+    type_chars(&mut app, "new project");
+    app.handle_key(
+        &Keymap::default_bindings(),
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+    );
+    assert!(matches!(app.modals.top(), Some(Modal::NewProject { .. })));
+}
+
 #[test]
 fn project_chooser_lists_known_and_open_by_path_creates() {
     let (mut app, _a, _b) = two_projects();
