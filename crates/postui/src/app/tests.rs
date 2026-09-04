@@ -17398,6 +17398,80 @@ fn a_big_body_runs_the_filter_in_the_background_and_lands_via_an_action() {
     );
 }
 
+#[test]
+fn typing_in_the_jq_bar_ghosts_a_key_and_right_accepts_it() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, r#"{"data":{"items":[{"id":1,"status":"a"}]}}"#);
+    app.update(Action::ResponseViewMode(
+        crate::components::response::ViewMode::Pretty,
+    ));
+    app.update(Action::OpenJqBar);
+    assert!(app.session.response.jq_focused());
+    let km = Keymap::default_bindings();
+    app.handle_key(&km, KeyEvent::new(KeyCode::Char('.'), KeyModifiers::NONE));
+    assert_eq!(app.session.response.jq_ghost(), Some("data"));
+    app.handle_key(&km, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    assert_eq!(app.session.response.jq_text(), ".data");
+    assert_eq!(app.editor.jq, ".data", "an accepted completion is a request edit");
+    app.handle_key(&km, KeyEvent::new(KeyCode::Char('.'), KeyModifiers::NONE));
+    assert_eq!(app.session.response.jq_ghost(), Some("items"));
+}
+
+#[test]
+fn a_big_body_fetches_completion_keys_in_the_background_and_lands_via_an_action() {
+    let mut app = App::new_for_test();
+    let big = format!(
+        r#"{{"pad": "{}", "n": 7}}"#,
+        "x".repeat(crate::components::response::SYNC_PRETTY_BYTES)
+    );
+    ready_response(&mut app, &big);
+    let tree = crate::components::json_tree::JsonTree::parse(&big);
+    app.update(Action::PrettyParsed {
+        generation: app.session.send_generation,
+        tree: tree.map(Box::new),
+    });
+    app.update(Action::ResponseViewMode(
+        crate::components::response::ViewMode::Pretty,
+    ));
+    app.update(Action::OpenJqBar);
+    let km = Keymap::default_bindings();
+    // Outside a tokio runtime the pool work runs inline: the filter run
+    // (which parses the document) and then the key fetch both land within
+    // the keystroke's reconcile.
+    app.handle_key(&km, KeyEvent::new(KeyCode::Char('.'), KeyModifiers::NONE));
+    assert!(app.session.response.jq_bar().completion.pending().is_none());
+    assert_eq!(app.session.response.jq_ghost(), Some("pad"));
+
+    // A late result for another response is dropped.
+    let generation = app.session.send_generation;
+    assert!(!app.update(Action::JqCompleteFinished {
+        generation: generation + 1,
+        seq: 1,
+        input_expr: ".".into(),
+        keys: vec!["zzz".into()],
+    }));
+    assert_eq!(app.session.response.jq_ghost(), Some("pad"));
+
+    // The worker itself.
+    let doc = postui_core::jq::JqDocument::parse(&big).unwrap();
+    let action = crate::app::jq_complete_worker(generation, 5, ".".into(), doc);
+    let Action::JqCompleteFinished { seq: 5, keys, .. } = &action else {
+        panic!("{action:?}");
+    };
+    assert_eq!(keys, &["pad".to_string(), "n".to_string()]);
+}
+
+#[test]
+fn the_jq_tab_setting_reaches_the_bar() {
+    let mut app = App::new_for_test();
+    assert_eq!(app.session.response.jq_tab(), crate::config::JqTab::Cycle);
+    let mut settings = app.ui_settings.clone();
+    settings.jq_tab = crate::config::JqTab::Accept;
+    let name = app.theme_name.clone();
+    app.apply_ui_settings(settings, name, crate::theme::Theme::dark());
+    assert_eq!(app.session.response.jq_tab(), crate::config::JqTab::Accept);
+}
+
 /// The bar's spinner is drawn on ticks, so ticks must keep redrawing while
 /// a background run is outstanding — the same way they do for a
 /// background pretty-print.

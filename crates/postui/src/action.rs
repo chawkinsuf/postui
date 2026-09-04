@@ -756,6 +756,14 @@ pub enum Action {
         run: u64,
         result: Result<crate::components::response::JqRunOutput, postui_core::jq::JqError>,
     },
+    /// A background completion key fetch finished for the response of
+    /// `generation`, fetch `seq` (`Response::attach_jq_completion`).
+    JqCompleteFinished {
+        generation: u64,
+        seq: u64,
+        input_expr: String,
+        keys: Vec<String>,
+    },
     /// Copies a tree line's jq path.
     CopyJqPath(String),
     /// Esc in the jq bar while an AI request is pending, or a new send:

@@ -749,6 +749,7 @@ impl App {
         self.anims = Anims::new(ui_settings.animations);
         self.theme = theme;
         self.theme_name = theme_name;
+        self.session.response.set_jq_tab(ui_settings.jq_tab);
         self.ui_settings = ui_settings;
     }
 
@@ -990,6 +991,23 @@ pub(crate) fn jq_worker(
     }
 }
 
+/// The blocking-pool half of a completion key fetch. Free-standing for
+/// the same reasons as [`jq_worker`].
+pub(crate) fn jq_complete_worker(
+    generation: u64,
+    seq: u64,
+    input_expr: String,
+    doc: postui_core::jq::JqDocument,
+) -> Action {
+    let keys = postui_core::jq::complete::keys_at(&input_expr, &doc);
+    Action::JqCompleteFinished {
+        generation,
+        seq,
+        input_expr,
+        keys,
+    }
+}
+
 impl App {
     /// Applies `action` to app state, then reconciles the jq filter bar
     /// with the editor and view (see [`Self::sync_jq`]) — the one place
@@ -1039,6 +1057,13 @@ impl App {
             .apply_jq(&code, crate::components::response::SYNC_PRETTY_BYTES)
         {
             self.spawn_jq_run(req);
+        }
+        if let Some(req) = self
+            .session
+            .response
+            .refresh_jq_completion(crate::components::response::SYNC_PRETTY_BYTES)
+        {
+            self.spawn_jq_complete(req);
         }
     }
 
@@ -1091,6 +1116,32 @@ impl App {
                 result: Err(postui_core::jq::JqError::Runtime {
                     message: "filter worker panicked".into(),
                 }),
+            });
+            let _ = tx.send(action);
+        });
+    }
+
+    /// Hands a completion key fetch to the runtime; inline (result
+    /// dispatched immediately) outside one, like [`Self::spawn_jq_run`].
+    fn spawn_jq_complete(&mut self, req: crate::components::response::JqCompleteRequest) {
+        if tokio::runtime::Handle::try_current().is_err() {
+            let action = jq_complete_worker(req.generation, req.seq, req.input_expr, req.doc);
+            self.dispatch(action);
+            return;
+        }
+        let tx = self.tx.clone();
+        let (generation, seq) = (req.generation, req.seq);
+        let expr = req.input_expr.clone();
+        tokio::spawn(async move {
+            let action = tokio::task::spawn_blocking(move || {
+                jq_complete_worker(req.generation, req.seq, req.input_expr, req.doc)
+            })
+            .await
+            .unwrap_or_else(|_| Action::JqCompleteFinished {
+                generation,
+                seq,
+                input_expr: expr,
+                keys: Vec::new(),
             });
             let _ = tx.send(action);
         });
@@ -3132,6 +3183,15 @@ impl App {
                 .session
                 .response
                 .attach_jq_result(generation, run, result),
+            Action::JqCompleteFinished {
+                generation,
+                seq,
+                input_expr,
+                keys,
+            } => self
+                .session
+                .response
+                .attach_jq_completion(generation, seq, input_expr, keys),
             Action::CopyJqPath(path) => {
                 self.copy_text_with_toast(&path, "Copied path".to_string());
                 true
