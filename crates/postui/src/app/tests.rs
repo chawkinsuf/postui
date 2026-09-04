@@ -19631,3 +19631,142 @@ fn leaving_the_space_list_mid_drag_previews_the_cancel() {
     assert_eq!(listed_spaces(&dir), ["main", "auth", "billing"]);
     assert_eq!(app.project.spaces, ["main", "auth", "billing"]);
 }
+
+// ---- a live drag owns the keyboard and the footer ----------------------
+
+/// The footer's three rows as text, rendered at the same 120x40 the drag
+/// tests lay their rows out at.
+fn footer_text(app: &mut App) -> String {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    app.anims.finish_all();
+    let backend = TestBackend::new(120, 40);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let h = crate::components::footer::FOOTER_HEIGHT;
+    (buf.area.height - h..buf.area.height)
+        .map(|y| {
+            (0..buf.area.width)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn every_other_key_is_swallowed_during_a_sidebar_drag() {
+    for ev in [
+        KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Down, KeyModifiers::ALT),
+    ] {
+        let (mut app, dir) = three_row_app();
+        let r0 = row_rect(&mut app, 0);
+        let r2 = row_rect(&mut app, 2);
+        app.handle_mouse(left_down(r0.x + 2, r0.y));
+        app.handle_mouse(moved(r0.x + 2, r2.y));
+        let selected = app.sidebar.selected_slug();
+
+        app.handle_key(&Keymap::default_bindings(), ev);
+
+        assert!(app.sidebar.drag.is_some(), "{ev:?}: the drag survives");
+        assert_eq!(
+            request_rows(&app),
+            ["main/beta", "main/gamma", "main/alpha"],
+            "{ev:?}"
+        );
+        assert_eq!(app.sidebar.selected_slug(), selected, "{ev:?}");
+        assert!(app.modals.top().is_none(), "{ev:?}: nothing opened");
+        let meta = postui_core::project::load_meta(dir.path()).unwrap();
+        assert!(
+            postui_core::order::space_order(&meta, "main").is_empty(),
+            "{ev:?}: nothing written"
+        );
+    }
+}
+
+#[test]
+fn every_other_key_is_swallowed_during_a_space_drag() {
+    for ev in [
+        KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Down, KeyModifiers::ALT),
+    ] {
+        let (mut app, dir) = manage_spaces_app();
+        let r0 = manage_row(&mut app, 0);
+        let r2 = manage_row(&mut app, 2);
+        app.handle_mouse(left_down(r0.x + 2, r0.y));
+        app.handle_mouse(moved(r0.x + 2, r2.y));
+
+        app.handle_key(&Keymap::default_bindings(), ev);
+
+        assert!(app.manage.list.drag.is_some(), "{ev:?}: the drag survives");
+        assert_eq!(
+            app.manage.list.drag.as_ref().unwrap().working,
+            ["auth", "billing", "main"],
+            "{ev:?}"
+        );
+        assert!(app.modals.top().is_none(), "{ev:?}: nothing opened");
+        assert_eq!(listed_spaces(&dir), ["main", "auth", "billing"], "{ev:?}");
+    }
+}
+
+#[test]
+fn the_modified_quit_combo_still_quits_during_a_drag() {
+    let (mut app, _dir) = three_row_app();
+    let r0 = row_rect(&mut app, 0);
+    let r2 = row_rect(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    app.handle_key(
+        &Keymap::default_bindings(),
+        KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+    );
+    assert!(app.should_quit, "ctrl+c is the escape hatch");
+}
+
+#[test]
+fn the_footer_advertises_only_the_cancel_keys_during_a_drag() {
+    let (mut app, _dir) = three_row_app();
+    let r0 = row_rect(&mut app, 0);
+    let r2 = row_rect(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+
+    let text = footer_text(&mut app);
+    assert!(text.contains("cancel drag"), "{text}");
+    assert!(text.contains("esc"), "{text}");
+    assert!(text.contains("right-click"), "{text}");
+    for gone in ["reorder", "commands", "rename"] {
+        assert!(!text.contains(gone), "{gone} is gone: {text}");
+    }
+
+    app.handle_mouse(left_up(110, 30)); // cancel
+    let text = footer_text(&mut app);
+    assert!(!text.contains("cancel drag"), "{text}");
+    assert!(text.contains("reorder"), "{text}");
+    assert!(text.contains("commands"), "{text}");
+}
+
+#[test]
+fn the_footer_advertises_only_the_cancel_keys_during_a_space_drag() {
+    let (mut app, _dir) = manage_spaces_app();
+    let r0 = manage_row(&mut app, 0);
+    let r2 = manage_row(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+
+    let text = footer_text(&mut app);
+    assert!(text.contains("cancel drag"), "{text}");
+    for gone in ["reorder", "commands", "rename", "move all"] {
+        assert!(!text.contains(gone), "{gone} is gone: {text}");
+    }
+
+    app.handle_mouse(left_up(110, 30)); // cancel
+    let text = footer_text(&mut app);
+    assert!(!text.contains("cancel drag"), "{text}");
+    assert!(text.contains("rename"), "{text}");
+}

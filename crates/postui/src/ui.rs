@@ -226,13 +226,21 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // open modal with chips of its own wins over both: while it captures
     // the keyboard, its quick actions are the only ones that work.
     let modal_chips = app.modals.footer_chips();
-    let globals_live = modal_chips.is_none();
+    // A live row drag takes the footer over completely: it swallows every
+    // key but Escape (see `App::handle_key`), so the only chips that mean
+    // anything are the two ways to cancel it. The palette chip hides for
+    // the same reason it does under a modal — its key is dead — and the
+    // quit chip advertises the modified combo, the one key that still
+    // pre-empts the drag.
+    let drag_live = app.sidebar.drag.is_some() || app.manage.list.drag.is_some();
+    let globals_live = modal_chips.is_none() && !drag_live;
     // A plain `q` reaches the quit binding only where nothing consumes it
     // first: no modal (they capture all input), the Main screen (other
     // screens swallow unbound plain keys), and a focus stop that doesn't
     // route typing into a text input — in the editor pane that is only
     // the URL line, the body, and a live cell edit.
     let plain_q_quits = app.modals.is_empty()
+        && !drag_live
         && (app.screen == Screen::Main
             && (matches!(focus, PaneId::Sidebar | PaneId::Response)
                 || focus == PaneId::Editor && !app.editor.plain_keys_type())
@@ -265,6 +273,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 .collect()
         })
     });
+    let vm_chips = if drag_live {
+        Some(vec![
+            ("esc".to_string(), "cancel drag".to_string(), None),
+            ("right-click".to_string(), "cancel drag".to_string(), None),
+        ])
+    } else {
+        vm_chips
+    };
     // A selected data row (content focus, no cell edit — space/d would
     // type into one) advertises its toggle/delete keys.
     let table_row_selected = (focus == PaneId::Editor

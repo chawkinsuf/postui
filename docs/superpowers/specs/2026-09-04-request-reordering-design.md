@@ -168,11 +168,17 @@ sidebar_press: Option<(usize, String)>, // row index + slug of the armed press
     scrollbar drag's handling of terminals that report either): promote
     to an active drag. `original`/`working` are the level's current
     on-screen sibling order.
-  - if active: map the pointer's y to a row index; clamp to the first
-    and last row of the sibling group (so a pointer over a folder row,
-    another level, the header, or outside the pane pins to the nearest
+  - if active and the pointer is *inside* the sidebar pane (the same
+    test the release commits on): map the pointer's y to a row index;
+    clamp to the first and last row of the sibling group (so a pointer
+    over a folder row, another level or the header pins to the nearest
     end); compute the target index within the group; if it differs,
-    move the slug in `working` and `refresh`. Hover is suppressed as
+    move the slug in `working` and `refresh`.
+  - if active and the pointer is *outside* the pane: `working` snaps
+    back to `original` (`Sidebar::drag_reset`) without ending the drag,
+    so the rows always preview what letting go right now would leave
+    behind. Motion back onto a row maps it again as usual. The list's
+    own edge rows are inside the pane, so auto-scroll is unaffected. Hover is suppressed as
     for the existing drags (`resync_hover`). Pointer shape:
     `PointerShape::Grabbing` (OSC 22 `grabbing`), two-line addition to
     `hit.rs`.
@@ -188,9 +194,17 @@ sidebar_press: Option<(usize, String)>, // row index + slug of the armed press
   `MoveSpace`). Otherwise discard `working` and refresh. Either way
   clear `sidebar.drag`, restore the pointer shape, resync hover.
 - **Escape** while active: cancel exactly as a release-outside does.
-  Any other key during a drag is handled normally (the drag survives).
   A right click while active cancels the same way — see "Implementation
   notes" below for why that alternative exists.
+- **A live drag owns the keyboard.** Escape cancels and the modified
+  quit combo (ctrl+c, or whatever `Action::Quit` is bound to with a
+  modifier) still quits; *every other key is swallowed* — before
+  modals, before the per-screen routes — so nothing opens a dialog,
+  moves the selection or reorders by keyboard under a row in flight.
+  The footer says the same: while a drag is live its chips are exactly
+  `esc cancel drag` and `right-click cancel drag`, the palette chip
+  hides (its key is dead, as under a modal) and the quit chip shows the
+  modified combo.
 - A write error toasts `cannot reorder: <e>` and the sidebar refreshes
   to the on-disk order.
 
@@ -288,7 +302,12 @@ the moment the pointer reaches a *different* row of that list the press
 becomes a live drag, and from there every motion event belongs to the
 drag until the button comes up, whichever pane the pointer wanders
 over. Release on the list commits; release anywhere else, Escape, or a
-right click cancels and the rows snap back. The Environments tab never
+right click cancels and the rows snap back. While the pointer is
+outside the list — the same containment test the release commits on —
+the working order snaps back to the order the drag started from
+(`ManageList::drag_reset`, the cursor riding back with it) without
+ending the drag, so the rows preview the cancel a release there would
+be; motion back onto a row rearranges them again. The Environments tab never
 arms a press — environments have no order to rearrange.
 
 While the drag is live the list paints the working order the pointer
@@ -299,6 +318,10 @@ shifts), and the list cursor rides along with the dragged row so the
 detail pane keeps showing the space being moved. Hover is frozen for
 the length of the drag and the pointer shape is `grabbing`, exactly as
 in the sidebar.
+
+A live space drag owns the keyboard exactly as the sidebar's does:
+Escape cancels, the modified quit combo quits, every other key is
+swallowed, and the footer carries only the two cancel chips.
 
 A drop *shifts* the rows between source and target rather than swapping
 two of them, so the writer takes the finished order rather than a

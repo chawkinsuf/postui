@@ -8318,6 +8318,17 @@ impl App {
             return self.finish_manage_drag(false);
         }
 
+        // …and a live row drag owns the rest of the keyboard: with a row
+        // in flight there is no sane meaning for a key that opens a
+        // modal, moves the selection or reorders by keyboard underneath
+        // it, so everything but the two escape hatches above (the
+        // modified quit combo, Escape) is swallowed here — before modals
+        // and before the per-screen routes. The footer says as much: while
+        // a drag is live its chips are the cancel keys and nothing else.
+        if self.sidebar.drag.is_some() || self.manage.list.drag.is_some() {
+            return false;
+        }
+
         // 1b. A bound paste combo digs past the layers below: modals and
         // non-Main screens capture all remaining input, but ctrl+v means
         // "insert at the live caret" wherever that caret is —
