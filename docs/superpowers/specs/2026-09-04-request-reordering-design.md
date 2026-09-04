@@ -189,6 +189,8 @@ sidebar_press: Option<(usize, String)>, // row index + slug of the armed press
   clear `sidebar.drag`, restore the pointer shape, resync hover.
 - **Escape** while active: cancel exactly as a release-outside does.
   Any other key during a drag is handled normally (the drag survives).
+  A right click while active cancels the same way — see "Implementation
+  notes" below for why that alternative exists.
 - A write error toasts `cannot reorder: <e>` and the sidebar refreshes
   to the on-disk order.
 
@@ -361,6 +363,19 @@ cascaded.
 **Tick auto-scroll casts.** The `Tick` handler calls
 `self.sidebar.handle_scroll(delta as i16)`; `drag_edge` returns an
 `i32` and `handle_scroll` takes an `i16`.
+
+**A right click during a drag cancels it instead of opening the row
+menu.** `Down(Right)` checks `sidebar.drag.is_some()` first and, if so,
+calls `finish_sidebar_drag(false)` and returns — no menu, no selection
+move, nothing written. This exists because Ghostty (on Linux, verified
+with `--keydump` and mouse reporting off) delivers no key event for the
+first Escape pressed while a mouse button is held — the second arrives;
+the cause is unconfirmed and is Escape-specific. The app cannot recover
+a key it never receives, so a right click is the in-band cancel. A
+right click while a press is
+armed but hasn't promoted yet just disarms the press (so the motion
+that follows can't restart a drag out from under the menu) and falls
+through to open that row's context menu as usual.
 
 **`rebuild_sidebar` snaps `AnimKey::ListTravel(Sidebar)` too.** The
 per-motion drag path (`App::rebuild_sidebar`) originally omitted the

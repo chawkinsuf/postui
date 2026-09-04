@@ -212,6 +212,25 @@ impl App {
             // without choosing anything restores the previous selection
             // (see `App::sidebar_menu_revert`).
             MouseEventKind::Down(MouseButton::Right) => {
+                // A right click during a live row drag cancels it, exactly
+                // like a release outside the sidebar or Escape: no context
+                // menu, no selection change, nothing written. This exists
+                // because Ghostty (on Linux, verified with `--keydump` and
+                // mouse reporting off) delivers no key event for the first
+                // Escape pressed while a mouse button is held — the second
+                // arrives; the cause is unconfirmed and is Escape-specific.
+                // The app cannot recover a key it never receives, so a
+                // right click is the in-band cancel.
+                if self.sidebar.drag.is_some() {
+                    return self.finish_sidebar_drag(false);
+                }
+                // A left button is down on a row but hasn't moved onto
+                // another one yet: disarm the press so the motion that
+                // follows this right click cannot promote it into a drag
+                // out from under the menu this click is about to open.
+                if self.sidebar_press.is_some() {
+                    self.sidebar_press = None;
+                }
                 // Tokens are a left-click affordance only: a right click
                 // belongs to the row/cell under them and its context menu.
                 let Some(mut hit) = self

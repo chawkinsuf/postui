@@ -19031,6 +19031,79 @@ fn release_outside_the_sidebar_and_escape_both_cancel() {
 }
 
 #[test]
+fn a_right_click_during_a_drag_cancels_it_without_a_menu() {
+    let (mut app, dir) = three_row_app();
+    let r0 = row_rect(&mut app, 0);
+    let r1 = row_rect(&mut app, 1);
+    let r2 = row_rect(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    assert!(app.sidebar.drag.is_some());
+    assert_eq!(
+        request_rows(&app),
+        ["main/beta", "main/gamma", "main/alpha"]
+    );
+
+    app.handle_mouse(right_down(r1.x + 2, r1.y));
+
+    assert!(app.sidebar.drag.is_none());
+    assert!(app.sidebar_press.is_none());
+    assert!(app.modals.top().is_none(), "no context menu opened");
+    assert_eq!(
+        request_rows(&app),
+        ["main/alpha", "main/beta", "main/gamma"]
+    );
+    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    assert!(
+        postui_core::order::space_order(&meta, "main").is_empty(),
+        "nothing written"
+    );
+
+    // The button that started the drag is still physically down; its
+    // eventual release inside the sidebar must not resurrect the drag
+    // or write anything either.
+    app.handle_mouse(left_up(r1.x + 2, r1.y));
+    assert!(app.sidebar.drag.is_none());
+    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    assert!(
+        postui_core::order::space_order(&meta, "main").is_empty(),
+        "still nothing written"
+    );
+}
+
+#[test]
+fn a_right_click_on_an_armed_press_disarms_it() {
+    let (mut app, _dir) = three_row_app();
+    let r0 = row_rect(&mut app, 0);
+    let r2 = row_rect(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    assert!(app.sidebar_press.is_some());
+    assert!(app.sidebar.drag.is_none());
+
+    app.handle_mouse(right_down(r0.x + 2, r0.y));
+    assert!(app.sidebar_press.is_none());
+
+    // The right click still opens today's context menu (unrelated to the
+    // disarmed press); close it before the left-button motion, or the
+    // modal would swallow the mouse event before it ever reaches the
+    // drag logic.
+    app.handle_key(
+        &Keymap::default_bindings(),
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+    );
+
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    assert!(
+        app.sidebar.drag.is_none(),
+        "the disarmed press cannot promote"
+    );
+    assert_eq!(
+        request_rows(&app),
+        ["main/alpha", "main/beta", "main/gamma"]
+    );
+}
+
+#[test]
 fn a_drag_never_leaves_its_sibling_group() {
     let (mut app, dir) = spaced_app();
     postui_core::storage::save_request(dir.path(), "main/auth/x", &req("https://x/3")).unwrap();
