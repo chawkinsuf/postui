@@ -30,6 +30,27 @@ pub struct ManageList {
     pub scroll: usize,
     visible_rows: usize,
     ensure_visible: bool,
+    /// A live row drag of the Spaces tab (spec §Space drag): while
+    /// `Some`, `draw` lists `working` instead of the project's spaces.
+    pub drag: Option<ListDrag>,
+    /// The row list's rect as of the last draw — with `scroll` it maps a
+    /// pointer row back to a row index (`row_at_y`), and it is what the
+    /// release handler tests a drop against.
+    last_list: Rect,
+    /// How many items the last draw listed, for `row_at_y`'s clamp.
+    last_len: usize,
+}
+
+/// A live drag of one Spaces-tab row: the working order the pointer has
+/// arranged so far, over the displayed space names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListDrag {
+    /// The space being dragged.
+    pub name: String,
+    /// Displayed order at drag start.
+    pub original: Vec<String>,
+    /// Current on-screen order.
+    pub working: Vec<String>,
 }
 
 impl ManageList {
@@ -58,6 +79,64 @@ impl ManageList {
     /// entirely).
     pub fn reset(&mut self) {
         *self = Self::default();
+    }
+
+    /// The row index a screen row `y` maps to, given the last draw's
+    /// scroll offset and list top — clamped to the drawn rows.
+    pub fn row_at_y(&self, y: u16) -> usize {
+        let rel = y.saturating_sub(self.last_list.y) as usize;
+        (self.scroll + rel).min(self.last_len.saturating_sub(1))
+    }
+
+    /// The row list's rect as of the last draw — the area a row drag may
+    /// be dropped on.
+    pub fn list_rect(&self) -> Rect {
+        self.last_list
+    }
+
+    /// Starts a drag of row `i`: records the displayed order as both
+    /// `original` and the starting `working` order, and lands the cursor
+    /// on the dragged row. Only the Spaces tab reorders, so every other
+    /// tab (and a row past the end) refuses.
+    pub fn begin_drag(&mut self, i: usize, tab: ManageTab, ctx: &ProjectContext) -> bool {
+        if tab != ManageTab::Spaces {
+            return false;
+        }
+        let items = Self::items(tab, ctx);
+        let Some(name) = items.get(i).cloned() else {
+            return false;
+        };
+        let order = items.to_vec();
+        self.drag = Some(ListDrag {
+            name,
+            original: order.clone(),
+            working: order,
+        });
+        self.cursor = i;
+        true
+    }
+
+    /// Moves the dragged space to the slot under row `i` (clamped to the
+    /// list) and takes the cursor with it. Returns whether the working
+    /// order changed; the caller then repaints.
+    pub fn drag_to_row(&mut self, i: usize) -> bool {
+        let Some(drag) = self.drag.as_mut() else {
+            return false;
+        };
+        if drag.working.is_empty() {
+            return false;
+        }
+        let Some(cur) = drag.working.iter().position(|n| *n == drag.name) else {
+            return false;
+        };
+        let target = i.min(drag.working.len() - 1);
+        if cur == target {
+            return false;
+        }
+        let moved = drag.working.remove(cur);
+        drag.working.insert(target, moved);
+        self.cursor = target;
+        true
     }
 
     fn new_action(tab: ManageTab) -> Action {
@@ -228,7 +307,13 @@ impl ManageList {
         hits: &mut HitMap,
         hovered: Option<&Hit>,
     ) {
-        let items = Self::items(tab, ctx).to_vec();
+        // A live drag paints the order the pointer has arranged so far;
+        // disk truth only comes back once the drag is committed or
+        // cancelled.
+        let items = match self.drag.as_ref() {
+            Some(d) if tab == ManageTab::Spaces => d.working.clone(),
+            _ => Self::items(tab, ctx).to_vec(),
+        };
         if self.cursor >= items.len() {
             self.cursor = items.len().saturating_sub(1);
         }
@@ -354,6 +439,8 @@ impl ManageList {
             height: left.height.saturating_sub(BUTTON_HEIGHT + 2),
         };
         self.visible_rows = list.height as usize;
+        self.last_list = list;
+        self.last_len = items.len();
         if self.ensure_visible && self.visible_rows > 0 {
             if self.cursor < self.scroll {
                 self.scroll = self.cursor;
@@ -370,7 +457,11 @@ impl ManageList {
             .take(self.visible_rows)
         {
             let y = list.y + row as u16;
-            let highlight = if i == self.cursor {
+            // The dragged row keeps the selected fill while it travels
+            // (the cursor rides with it, so this only matters if the two
+            // ever part company).
+            let dragged = self.drag.as_ref().is_some_and(|d| d.name == items[i]);
+            let highlight = if dragged || i == self.cursor {
                 RowHighlight::Selected
             } else if hovered == Some(&Hit::ManageRow(i)) {
                 RowHighlight::Hover
@@ -383,6 +474,11 @@ impl ManageList {
             }
             .paint(buf, y, list.x, list.width, theme.panel, 1.0, theme);
             let bg = ListRow::resolve_fill(theme, highlight, theme.panel, 1.0);
+            // A row being dragged paints its grip glyph in the row's
+            // first cell, which the label never uses — nothing shifts.
+            if dragged {
+                text(buf, list.x, y, "\u{22ee}", theme.accent, bg, false);
+            }
             // Spaces carry their `alt+<n>` jump number; the active item
             // is not marked here — the header chip already says which one
             // is active, and the list is for editing, not switching.
@@ -560,5 +656,119 @@ impl ManageList {
                 self.draw_tls_control(buf, x0, y, bottom, right, theme, ctx, name, hits, hovered);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A project with three spaces (`main`, `auth`, `billing`) and the
+    /// context that lists them.
+    fn ctx() -> (ProjectContext, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        postui_core::storage::ensure_project(dir.path()).unwrap();
+        postui_core::project::create_space(dir.path(), "auth").unwrap();
+        postui_core::project::create_space(dir.path(), "billing").unwrap();
+        let (ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        assert_eq!(ctx.spaces, ["main", "auth", "billing"]);
+        (ctx, dir)
+    }
+
+    #[test]
+    fn a_drag_rearranges_the_displayed_order_and_the_cursor_rides_along() {
+        let (ctx, _dir) = ctx();
+        let mut l = ManageList::default();
+        assert!(l.begin_drag(0, ManageTab::Spaces, &ctx));
+        let d = l.drag.as_ref().unwrap();
+        assert_eq!(d.name, "main");
+        assert_eq!(d.original, ["main", "auth", "billing"]);
+        assert_eq!(d.working, ["main", "auth", "billing"]);
+
+        assert!(l.drag_to_row(2));
+        assert_eq!(
+            l.drag.as_ref().unwrap().working,
+            ["auth", "billing", "main"]
+        );
+        assert_eq!(l.cursor, 2, "the cursor follows the dragged row");
+        assert!(!l.drag_to_row(2), "no change reports false");
+        assert!(l.drag_to_row(0));
+        assert_eq!(
+            l.drag.as_ref().unwrap().working,
+            ["main", "auth", "billing"]
+        );
+        assert!(l.drag_to_row(9), "past the end clamps to the last slot");
+        assert_eq!(
+            l.drag.as_ref().unwrap().working,
+            ["auth", "billing", "main"]
+        );
+        assert_eq!(l.cursor, 2);
+    }
+
+    #[test]
+    fn begin_drag_refuses_the_environments_tab_and_a_row_past_the_end() {
+        let (ctx, _dir) = ctx();
+        let mut l = ManageList::default();
+        assert!(!l.begin_drag(0, ManageTab::Environments, &ctx));
+        assert!(!l.begin_drag(3, ManageTab::Spaces, &ctx));
+        assert!(l.drag.is_none());
+    }
+
+    #[test]
+    fn draw_lists_the_working_order_with_a_grip_on_the_dragged_row() {
+        let (ctx, _dir) = ctx();
+        let mut l = ManageList::default();
+        assert!(l.begin_drag(0, ManageTab::Spaces, &ctx));
+        assert!(l.drag_to_row(1));
+
+        let theme = Theme::dark();
+        let backend = ratatui::backend::TestBackend::new(80, 20);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut hits = HitMap::default();
+        let requests = BTreeMap::new();
+        terminal
+            .draw(|f| {
+                l.draw(
+                    f,
+                    f.area(),
+                    &theme,
+                    ManageTab::Spaces,
+                    &ctx,
+                    &requests,
+                    &mut hits,
+                    None,
+                )
+            })
+            .unwrap();
+
+        let dragged = hits.rect_of(&Hit::ManageRow(1)).expect("dragged row hit");
+        let other = hits.rect_of(&Hit::ManageRow(0)).expect("other row hit");
+        let buf = terminal.backend().buffer();
+        let line = |r: Rect| {
+            (r.x..r.x + r.width)
+                .map(|x| buf[(x, r.y)].symbol())
+                .collect::<String>()
+        };
+        assert!(
+            line(other).contains("auth"),
+            "the working order is what is drawn: {}",
+            line(other)
+        );
+        assert!(line(dragged).contains("main"), "{}", line(dragged));
+        assert_eq!(
+            buf[(dragged.x, dragged.y)].symbol(),
+            "\u{22ee}",
+            "the dragged row shows the grip glyph"
+        );
+        assert_ne!(
+            buf[(other.x, other.y)].symbol(),
+            "\u{22ee}",
+            "other rows never show the grip glyph"
+        );
+        assert_eq!(l.row_at_y(dragged.y), 1, "row_at_y maps the drawn rows");
+        assert!(l.list_rect().contains(ratatui::layout::Position {
+            x: dragged.x,
+            y: dragged.y
+        }));
     }
 }
