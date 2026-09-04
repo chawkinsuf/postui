@@ -65,18 +65,23 @@ fn query_via_stdio() -> std::io::Result<QueriedColors> {
     stdout.write_all(query.as_bytes())?;
     stdout.flush()?;
 
-    let mut stdin = std::io::stdin();
+    // `RawStdin`, not `std::io::stdin()`: see its doc. Through the buffered
+    // handle, the first 1-byte read pulled the whole reply burst into
+    // userspace, `poll(2)` then reported the fd idle, and the loop ran out
+    // the full deadline having parsed exactly one byte — a startup that
+    // both stalled for 600 ms and "lost" the colours it had been given.
     let deadline = Instant::now() + QUERY_DEADLINE;
-    let buf = read_until_da1_or_deadline(&mut stdin, deadline);
+    let buf = read_until_da1_or_deadline(&mut RawStdin, deadline);
     Ok(parse_osc_response(&buf))
 }
 
 /// Unbuffered stdin: each `read` is one `read(2)` on fd 0. `std::io::Stdin`
 /// goes through a shared 8 KiB `BufReader`, which on the first byte would
 /// slurp everything the tty holds into a buffer `poll(2)` can't see — the
-/// fence loop below would then wait on a fd that looks idle while the DA1
-/// reply sits in userspace, and whatever followed the reply would vanish
-/// with the process instead of reaching the shell.
+/// byte-at-a-time fence loops here would then wait on a fd that looks idle
+/// while the replies sit in userspace: at startup the colour query timed
+/// out with one byte parsed, and at teardown whatever followed the fence
+/// reply would vanish with the process instead of reaching the shell.
 pub struct RawStdin;
 
 impl Read for RawStdin {
