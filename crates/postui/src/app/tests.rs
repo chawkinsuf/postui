@@ -19108,32 +19108,250 @@ fn a_left_press_during_a_live_drag_cancels_it() {
     // the release was lost. Treat it as an in-band cancel, then handle
     // the press normally — it arms (and, on its matching release, opens)
     // the row under it.
+    //
+    // The row it opens is the one the user saw: the frame under the
+    // pointer was painted in the drag's preview order, and the cancel
+    // snaps the rows back without a redraw, so the click is resolved
+    // against what was painted, not against the restored index.
     let (mut app, dir) = three_row_app();
     let r0 = row_rect(&mut app, 0);
-    let r1 = row_rect(&mut app, 1);
     let r2 = row_rect(&mut app, 2);
     app.handle_mouse(left_down(r0.x + 2, r0.y));
     app.handle_mouse(moved(r0.x + 2, r2.y));
     assert!(app.sidebar.drag.is_some());
+    render_once(&mut app);
     assert_eq!(
         request_rows(&app),
         ["main/beta", "main/gamma", "main/alpha"]
     );
 
-    app.handle_mouse(left_down(r1.x + 2, r1.y));
-    app.handle_mouse(left_up(r1.x + 2, r1.y));
+    // Screen row 0 is painted "beta".
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
 
     assert!(app.sidebar.drag.is_none());
     assert_eq!(
         request_rows(&app),
         ["main/alpha", "main/beta", "main/gamma"]
     );
+    assert_eq!(app.editor.slug.as_deref(), Some("main/beta"));
+    assert_eq!(
+        app.sidebar_press.as_ref().map(|(i, s)| (*i, s.as_str())),
+        Some((1, "main/beta")),
+        "the press re-arms on the row it opened, at its restored index"
+    );
+
+    app.handle_mouse(left_up(r0.x + 2, r0.y));
+    assert!(app.sidebar.drag.is_none());
     let meta = postui_core::project::load_meta(dir.path()).unwrap();
     assert!(
         postui_core::order::space_order(&meta, "main").is_empty(),
         "nothing written"
     );
-    assert_eq!(app.editor.slug.as_deref(), Some("main/beta"));
+}
+
+#[test]
+fn a_left_press_during_a_live_drag_also_ends_a_thumb_drag_and_a_stale_press() {
+    // The same lost release leaves every other drag kind live too. A real
+    // press proves the button is up: the thumb drag and the text sweep
+    // end, and a press armed on some other row is disarmed before this
+    // click arms its own.
+    let (mut app, _dir) = three_row_app();
+    let r0 = row_rect(&mut app, 0);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    assert_eq!(
+        app.sidebar_press.as_ref().map(|(_, s)| s.as_str()),
+        Some("main/alpha")
+    );
+    app.drag = Some(Drag {
+        pane: PaneId::Sidebar,
+        grab_offset: 0,
+        horizontal: false,
+    });
+    app.text_drag = Some(TextDrag::Body);
+
+    // A press on bare editor background: no row to arm.
+    let editor = app.hits.rect_of(&Hit::Pane(PaneId::Editor)).unwrap();
+    app.handle_mouse(left_down(editor.x + editor.width - 2, editor.y + editor.height - 2));
+
+    assert!(app.drag.is_none(), "the thumb drag ended");
+    assert!(app.text_drag.is_none(), "the text sweep ended");
+    assert!(app.sidebar_press.is_none(), "the stale press is disarmed");
+}
+
+#[test]
+fn a_stale_press_never_promotes_over_a_live_thumb_drag() {
+    // Press a row, lose the release, then grab the scrollbar thumb: the
+    // pointer drifting off the thumb onto another row must not start a
+    // row drag on top of the thumb drag — and the release that ends the
+    // row drag would otherwise leave the thumb drag orphaned.
+    let (mut app, dir) = three_row_app();
+    let r0 = row_rect(&mut app, 0);
+    let r2 = row_rect(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.drag = Some(Drag {
+        pane: PaneId::Sidebar,
+        grab_offset: 0,
+        horizontal: false,
+    });
+
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    assert!(app.sidebar.drag.is_none(), "no row drag over a thumb drag");
+    assert_eq!(
+        request_rows(&app),
+        ["main/alpha", "main/beta", "main/gamma"]
+    );
+
+    app.handle_mouse(left_up(r0.x + 2, r2.y));
+    assert!(app.drag.is_none(), "the release ends the thumb drag");
+    assert!(app.sidebar_press.is_none());
+    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    assert!(postui_core::order::space_order(&meta, "main").is_empty());
+}
+
+#[test]
+fn a_release_ending_a_row_drag_ends_a_thumb_drag_too() {
+    let (mut app, _dir) = three_row_app();
+    let r0 = row_rect(&mut app, 0);
+    let r2 = row_rect(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    assert!(app.sidebar.drag.is_some());
+    // However it got there, a thumb drag live alongside the row drag
+    // must not outlive the release.
+    app.drag = Some(Drag {
+        pane: PaneId::Response,
+        grab_offset: 0,
+        horizontal: false,
+    });
+
+    app.handle_mouse(left_up(r0.x + 2, r2.y));
+    assert!(app.sidebar.drag.is_none());
+    assert!(app.drag.is_none());
+}
+
+#[test]
+fn a_left_press_during_a_live_space_drag_selects_the_painted_row() {
+    let (mut app, dir) = manage_spaces_app();
+    let r0 = manage_row(&mut app, 0);
+    let r2 = manage_row(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    assert_eq!(
+        app.manage.list.drag.as_ref().unwrap().working,
+        ["auth", "billing", "main"]
+    );
+    render_once(&mut app);
+
+    // Screen row 0 is painted "auth".
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    assert!(app.manage.list.drag.is_none());
+    assert_eq!(
+        app.manage
+            .list
+            .selected(ManageTab::Spaces, &app.project)
+            .map(str::to_string)
+            .as_deref(),
+        Some("auth"),
+        "the click selects the space that was painted under it"
+    );
+    assert_eq!(
+        app.manage_press.as_ref().map(|(i, n)| (*i, n.as_str())),
+        Some((1, "auth"))
+    );
+    app.handle_mouse(left_up(r0.x + 2, r0.y));
+    assert_eq!(listed_spaces(&dir), ["main", "auth", "billing"], "nothing written");
+}
+
+#[test]
+fn losing_terminal_focus_cancels_a_live_drag() {
+    // The release lands in another window and never arrives here; without
+    // this the rows stay displaced and the keyboard stays swallowed until
+    // the next click.
+    let (mut app, dir) = three_row_app();
+    let r0 = row_rect(&mut app, 0);
+    let r2 = row_rect(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    assert!(app.sidebar.drag.is_some());
+
+    assert!(app.on_focus_lost(), "a repaint is due");
+    assert!(app.sidebar.drag.is_none());
+    assert!(app.sidebar_press.is_none());
+    assert_eq!(
+        request_rows(&app),
+        ["main/alpha", "main/beta", "main/gamma"]
+    );
+    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    assert!(postui_core::order::space_order(&meta, "main").is_empty());
+    assert_ne!(app.pointer_shape_update(), Some(PointerShape::Grabbing));
+    assert!(!app.on_focus_lost(), "nothing left to cancel");
+
+    // The keyboard is the user's again.
+    app.focus = PaneId::Sidebar;
+    app.sidebar.selected = Some(0);
+    app.handle_key(&Keymap::default_bindings(), KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(app.sidebar.selected, Some(1));
+}
+
+#[test]
+fn switching_projects_disarms_an_armed_press() {
+    // alt+z cycles projects with the button possibly still held: a press
+    // armed on this project's row must not promote into a drag of a
+    // same-named row in the next one.
+    let (mut app, _dir) = three_row_app();
+    let other = tempfile::tempdir().unwrap();
+    postui_core::storage::ensure_project(other.path()).unwrap();
+    for slug in ["main/alpha", "main/beta", "main/gamma"] {
+        postui_core::storage::save_request(other.path(), slug, &req("https://y")).unwrap();
+    }
+    let r0 = row_rect(&mut app, 0);
+    let r2 = row_rect(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    assert!(app.sidebar_press.is_some());
+
+    app.update(Action::ForceSwitchProject(other.path().to_path_buf()));
+    assert!(app.sidebar_press.is_none());
+    render_once(&mut app);
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    assert!(app.sidebar.drag.is_none(), "nothing promotes in the new project");
+}
+
+#[test]
+fn a_reload_that_changes_the_tree_cancels_a_live_drag() {
+    // The rows a drag is rearranging are rebuilt from disk under it; the
+    // working order may name siblings that are gone, so it cancels.
+    let (mut app, dir) = three_row_app();
+    let r0 = row_rect(&mut app, 0);
+    let r2 = row_rect(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    assert!(app.sidebar.drag.is_some());
+
+    std::fs::remove_file(dir.path().join("requests/main/beta.toml")).unwrap();
+    // The reload is mtime-gated on `project.toml` among others; make the
+    // stamp move without waiting on the filesystem's clock.
+    let toml = dir.path().join("project.toml");
+    let text = std::fs::read_to_string(&toml).unwrap();
+    std::fs::write(&toml, format!("{text}
+# touched
+")).unwrap();
+    let old = filetime_of(&toml);
+    std::fs::File::options()
+        .write(true)
+        .open(&toml)
+        .unwrap()
+        .set_modified(old + std::time::Duration::from_secs(2))
+        .unwrap();
+
+    app.update(Action::ReloadProjectFiles);
+    assert!(app.sidebar.drag.is_none());
+    assert_eq!(request_rows(&app), ["main/alpha", "main/gamma"]);
+    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    assert!(postui_core::order::space_order(&meta, "main").is_empty());
+}
+
+fn filetime_of(p: &std::path::Path) -> std::time::SystemTime {
+    std::fs::metadata(p).unwrap().modified().unwrap()
 }
 
 #[test]

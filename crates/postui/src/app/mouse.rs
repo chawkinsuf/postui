@@ -53,8 +53,13 @@ impl App {
                 // press whose request is gone promotes nothing. A modal
                 // opened by the press itself (a broken row's error) owns
                 // the pointer, so nothing promotes under one either.
+                // A live thumb drag or text sweep owns the button as well:
+                // a press left armed by a lost release never promotes over
+                // one of those.
+                let other_drag = self.drag.is_some() || self.text_drag.is_some();
                 if let Some((_, pressed)) = self.sidebar_press.clone()
                     && self.modals.is_empty()
+                    && !other_drag
                     && matches!(self.hits.hit_at(m.column, m.row), Some(Hit::SidebarRow(_)))
                 {
                     match self
@@ -86,6 +91,7 @@ impl App {
                 }
                 if let Some((_, pressed)) = self.manage_press.clone()
                     && self.modals.is_empty()
+                    && !other_drag
                     && matches!(self.hits.hit_at(m.column, m.row), Some(Hit::ManageRow(_)))
                 {
                     let tab = self.manage.tab;
@@ -170,14 +176,19 @@ impl App {
                 // sending `Drag(Left)` motion, then eventually a fresh
                 // `Down(Left)`/`Up(Left)` pair with no release in between).
                 // Cancel the stale drag first, then handle this press
-                // normally.
-                if self.sidebar.drag.is_some() {
-                    self.finish_sidebar_drag(false);
-                }
-                if self.manage.list.drag.is_some() {
-                    self.finish_manage_drag(false);
-                }
+                // normally. The hit map still describes the frame that
+                // painted the drag's *preview* order, and cancelling snaps
+                // the rows back without a redraw, so a row hit is resolved
+                // through what was painted under the pointer — the row the
+                // user clicked — and re-found in the restored rows.
+                // Every other drag kind the same lost release can leave
+                // live is cleared too: the scrollbar thumb would otherwise
+                // keep tracking bare pointer motion, and a stale press
+                // (its release lost the same way) would promote a row drag
+                // out from under whatever this press starts. `on_hit`
+                // re-arms the press when this click lands on a row.
                 let hit = self.hits.hit_at(m.column, m.row).cloned();
+                let hit = self.cancel_stale_drags(hit);
                 // A click anywhere but the jq bar itself is Enter for a
                 // focused bar: the filter is already applied (every edit
                 // re-ran it), so all that is left to do is leave the bar.
@@ -273,22 +284,18 @@ impl App {
                 // arrives; the cause is unconfirmed and is Escape-specific.
                 // The app cannot recover a key it never receives, so a
                 // right click is the in-band cancel.
+                // The same lost release then leaves every other drag kind
+                // live too (a thumb drag, a text sweep) and would leave an
+                // armed press ready to promote into a drag out from under
+                // the menu this click is about to open: all of it ends
+                // here, exactly as a `Down(Left)` ends it.
                 if self.sidebar.drag.is_some() {
                     return self.finish_sidebar_drag(false);
                 }
                 if self.manage.list.drag.is_some() {
                     return self.finish_manage_drag(false);
                 }
-                // A left button is down on a row but hasn't moved onto
-                // another one yet: disarm the press so the motion that
-                // follows this right click cannot promote it into a drag
-                // out from under the menu this click is about to open.
-                if self.sidebar_press.is_some() {
-                    self.sidebar_press = None;
-                }
-                if self.manage_press.is_some() {
-                    self.manage_press = None;
-                }
+                self.cancel_stale_drags(None);
                 // Tokens are a left-click affordance only: a right click
                 // belongs to the row/cell under them and its context menu.
                 let Some(mut hit) = self
@@ -427,14 +434,20 @@ impl App {
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => {
-                // The press is disarmed by any release, drag or not.
+                // The press is disarmed by any release, drag or not, and
+                // every drag kind ends: a finished text sweep keeps its
+                // selection, only the sweep state ends. All of them are
+                // taken before the row drags are settled so that none can
+                // outlive the release, whichever kind ends it.
                 self.sidebar_press = None;
                 self.manage_press = None;
+                let had_text = self.text_drag.take().is_some();
+                let ended = self.drag.take().is_some() || had_text;
                 // A row drag writes its new order only when it is dropped
                 // on the sidebar; a release anywhere else cancels it.
                 if self.sidebar.drag.is_some() {
                     let inside = self.sidebar_drag_inside(m.column, m.row);
-                    return self.finish_sidebar_drag(inside);
+                    return self.finish_sidebar_drag(inside) | ended;
                 }
                 // The Manage list has no `Hit::Pane` of its own, so the
                 // drop test is the list rect the last draw recorded (the
@@ -442,12 +455,9 @@ impl App {
                 // themselves.
                 if self.manage.list.drag.is_some() {
                     let inside = self.manage_drag_inside(m.column, m.row);
-                    return self.finish_manage_drag(inside);
+                    return self.finish_manage_drag(inside) | ended;
                 }
-                // Releasing the button ends both drag kinds; a finished
-                // text sweep keeps its selection, only the sweep state ends.
-                let had_text = self.text_drag.take().is_some();
-                self.drag.take().is_some() || had_text
+                ended
             }
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 if !self.modals.is_empty() {
@@ -507,6 +517,68 @@ impl App {
             }
             _ => false,
         }
+    }
+
+    /// Ends every drag a lost button release can leave live — the two row
+    /// drags, a scrollbar thumb drag, a text sweep — and disarms both row
+    /// presses, because a fresh button press (or a focus loss) proves the
+    /// button that started them is no longer held. Nothing is written.
+    ///
+    /// `hit` is the click being handled, resolved against the last frame.
+    /// A live row drag painted that frame in its *preview* order and the
+    /// cancel snaps the rows back without a redraw, so a row hit is
+    /// mapped to the row that was painted there and re-found in the
+    /// restored list; every other hit passes through unchanged. Returns
+    /// the hit to dispatch.
+    pub fn cancel_stale_drags(&mut self, hit: Option<Hit>) -> Option<Hit> {
+        let mut hit = hit;
+        if self.sidebar.drag.is_some() {
+            let painted = match &hit {
+                Some(Hit::SidebarRow(i)) => self.sidebar.rows.get(*i).cloned(),
+                _ => None,
+            };
+            self.finish_sidebar_drag(false);
+            if let Some(row) = painted {
+                hit = self
+                    .sidebar
+                    .rows
+                    .iter()
+                    .position(|r| Sidebar::same_row(r, &row))
+                    .map(Hit::SidebarRow);
+            }
+        }
+        if self.manage.list.drag.is_some() {
+            let tab = self.manage.tab;
+            let painted = match (&hit, self.manage.list.drag.as_ref()) {
+                (Some(Hit::ManageRow(i)), Some(drag)) => drag.working.get(*i).cloned(),
+                _ => None,
+            };
+            self.finish_manage_drag(false);
+            if let Some(name) = painted {
+                hit = crate::components::manage_list::ManageList::items(tab, &self.project)
+                    .iter()
+                    .position(|n| *n == name)
+                    .map(Hit::ManageRow);
+            }
+        }
+        self.sidebar_press = None;
+        self.manage_press = None;
+        self.drag = None;
+        self.text_drag = None;
+        hit
+    }
+
+    /// Terminal focus left the window. A button held at that moment is
+    /// released elsewhere, so every drag ends here as a cancel; the rows
+    /// snap back and the keyboard is the user's again. Returns whether a
+    /// repaint is needed.
+    pub fn on_focus_lost(&mut self) -> bool {
+        let live = self.sidebar.drag.is_some()
+            || self.manage.list.drag.is_some()
+            || self.drag.is_some()
+            || self.text_drag.is_some();
+        self.cancel_stale_drags(None);
+        live
     }
 
     /// Re-resolves `hovered`/`hovered_token` from the last known pointer

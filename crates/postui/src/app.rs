@@ -2913,6 +2913,11 @@ impl App {
                 true
             }
             Action::ForceSwitchProject(target) => {
+                // A switch can land with the mouse button still held (alt+z
+                // cycles projects): every drag and armed press belongs to
+                // the project being left — a press left armed would promote
+                // into a drag of a same-named row in the next project.
+                self.cancel_stale_drags(None);
                 self.history.clear();
                 self.shadow = None;
                 self.project
@@ -3541,6 +3546,12 @@ impl App {
             Action::ReloadProjectFiles => {
                 let (changed, warnings) = self.project.reload_if_changed();
                 if changed {
+                    // The rows a live drag is rearranging are about to be
+                    // rebuilt from a tree that changed on disk under it:
+                    // its working order names siblings that may be gone,
+                    // so it cancels rather than write an order nobody saw.
+                    self.finish_sidebar_drag(false);
+                    self.finish_manage_drag(false);
                     self.refresh_sidebar();
                 }
                 for w in warnings {

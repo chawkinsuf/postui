@@ -254,6 +254,14 @@ async fn run(
                             Event::FocusGained => {
                                 redraw |= app.update(Action::ReloadProjectFiles);
                             }
+                            // The window lost focus with a button possibly
+                            // still held: the release will land somewhere
+                            // else and never arrive here, which would leave
+                            // a live drag stuck (rows displaced, keyboard
+                            // swallowed) until the next click.
+                            Event::FocusLost => {
+                                redraw |= app.on_focus_lost();
+                            }
                             // A terminal-level paste (bracketed): the whole
                             // text in one event, routed to the live caret.
                             Event::Paste(text) => {

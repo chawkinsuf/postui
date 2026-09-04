@@ -305,6 +305,16 @@ impl Sidebar {
         }
     }
 
+    /// Whether two rows name the same thing (the same folder path or the
+    /// same request slug), whatever their index or paint state.
+    pub fn same_row(a: &Row, b: &Row) -> bool {
+        match (a, b) {
+            (Row::Folder { path: p, .. }, Row::Folder { path: q, .. }) => p == q,
+            (Row::Request { slug: s, .. }, Row::Request { slug: t, .. }) => s == t,
+            _ => false,
+        }
+    }
+
     fn row_matches(row: &Row, id: &RowId) -> bool {
         match (row, id) {
             (Row::Folder { path, .. }, RowId::Folder(p)) => path == p,
@@ -527,10 +537,16 @@ impl Sidebar {
     /// Moves the dragged request so it sits at the group slot under row
     /// `i` (clamped to the group). Returns whether the working order
     /// changed; the caller then `rebuild`s. The rows mirror `working`
-    /// (the overlay is what built them), so the dragged row's offset
-    /// from the group's first row is its index in `working`.
+    /// (the overlay is what built them), so the target row's offset from
+    /// the group's first row is its index in `working`; the dragged
+    /// request itself is found in `working` by slug, so a listing that
+    /// changed under the drag can never make it move the wrong sibling.
     pub fn drag_to_row(&mut self, i: usize) -> bool {
-        let Some(slug) = self.drag.as_ref().map(|d| d.slug.clone()) else {
+        let Some((slug, space)) = self
+            .drag
+            .as_ref()
+            .map(|d| (d.slug.clone(), d.space.clone()))
+        else {
             return false;
         };
         let Some(cur_row) = self
@@ -543,13 +559,13 @@ impl Sidebar {
         let Some((first, last)) = self.group_bounds(cur_row) else {
             return false;
         };
-        let cur = cur_row - first;
-        let target = i.clamp(first, last) - first;
-        if cur == target {
-            return false;
-        }
+        let rel = postui_core::order::relative(&slug, &space).unwrap_or(&slug);
         let drag = self.drag.as_mut().expect("checked above");
-        if cur >= drag.working.len() || target >= drag.working.len() {
+        let Some(cur) = drag.working.iter().position(|s| s == rel) else {
+            return false;
+        };
+        let target = i.clamp(first, last) - first;
+        if cur == target || target >= drag.working.len() {
             return false;
         }
         let moved = drag.working.remove(cur);
@@ -1986,6 +2002,22 @@ mod tests {
         s.drag = None;
         s.rebuild("main", &expanded(&["auth"]), &[]);
         assert_eq!(row_slugs(&s)[..3], ["main/a", "main/b", "main/c"]);
+    }
+
+    #[test]
+    fn drag_to_row_finds_the_dragged_request_by_slug_not_row_offset() {
+        // The listing changes under a live drag (a reload rebuilt the rows
+        // with one sibling gone): the dragged request is still the one
+        // that moves, and the working order is never touched by offset.
+        let mut s = Sidebar::default();
+        s.refresh(listing(&["a", "b", "c", "d"]), "main", &expanded(&[]), &[]);
+        assert!(s.begin_drag(3, "main"));
+        s.refresh(listing(&["a", "c", "d"]), "main", &expanded(&[]), &[]);
+        assert!(s.drag_to_row(0));
+        assert_eq!(
+            s.drag.as_ref().unwrap().working,
+            order(&["d", "a", "b", "c"])
+        );
     }
 
     #[test]
