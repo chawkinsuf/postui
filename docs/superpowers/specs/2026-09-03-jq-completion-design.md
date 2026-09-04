@@ -167,8 +167,9 @@ pub const COMPLETE_OUTPUTS: usize = 64;
 
 /// Runs `input_expr` against `doc`, takes at most `COMPLETE_OUTPUTS`
 /// outputs, and returns the keys of those that are objects, in order of
-/// first appearance, deduplicated. Any error → empty (a half-typed prefix
-/// that does not compile is normal, not a failure to report).
+/// first appearance, deduplicated. An error yields whatever was collected
+/// before it (a half-typed prefix that does not compile is normal, not a
+/// failure to report).
 pub fn keys_at(input_expr: &str, doc: &JqDocument) -> Vec<String>;
 ```
 

@@ -52,6 +52,10 @@ items where…). "Describe a filter…" sends the response's *structure* (key na
 never values) to the command in `ai_cmd` (default `claude -p`) and puts the reply in the bar.
 A filter the AI returns is applied immediately — safe because jaq (the embedded jq engine)
 runs in-process with no file or process access, and its output never leaves the app.
+As you type, the bar ghosts the rest of what you're most likely writing: type `.` for the keys
+the filter has reached at that point in the response, or the start of a builtin's name (`leng`
+→ `length`). `Tab` cycles through the candidates, `shift+Tab` goes back, and `Right` or `End`
+accepts the one showing.
 
 ## Configuration
 
@@ -70,3 +74,6 @@ e.g. `~/.config/postui/config.toml` on Linux):
   writes the jq filter it suggests to stdout. Default: `"claude -p"`.
 - `ai_confirmed` — whether the one-time confirmation to send response
   structure to `ai_cmd` has been accepted.
+- `jq_tab` — what `Tab` does on a completion ghost in the jq bar:
+  `"cycle"` (the default) steps through the candidates, `"accept"` accepts
+  the one showing. `Right` and `End` accept in both.
