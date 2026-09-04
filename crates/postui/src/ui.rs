@@ -298,7 +298,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         if app.session.response.jq_focused() {
             if app.session.response.jq_menu_open() {
                 crate::components::footer::JqBarState::Menu
-            } else if app.session.response.jq_ghost().is_some() {
+            } else if app.session.response.jq_ghost().is_some()
+                || app.session.response.jq_menu_offered()
+            {
                 crate::components::footer::JqBarState::Completing {
                     cycle: app.session.response.jq_tab() == crate::config::JqTab::Cycle,
                 }

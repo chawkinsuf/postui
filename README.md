@@ -57,9 +57,10 @@ runs in-process with no file or process access, and its output never leaves the 
 As you type, the bar ghosts the rest of what you're most likely writing: type `.` for the keys
 the filter has reached at that point in the response, or the start of a builtin's name (`leng`
 → `length`). `Tab` cycles through the candidates, `shift+Tab` goes back, and `Right` or `End`
-accepts the one showing. With `jq_tab = "menu"` it works like a shell instead: `Tab` completes
-the first candidate and lists the others under the bar, further `Tab`s step through them (the
-row slides to keep the selected one in view), and anything else you type keeps the selection.
+accepts the one showing. With `jq_tab = "menu"` there is no ghost: the candidates are listed
+under the bar as you type, narrowing with each character, and `Tab` picks the first, further
+`Tab`s step through them (the row slides to keep the selected one in view), `shift+Tab` goes
+back, and anything else you type keeps the selection.
 
 ## Configuration
 
@@ -79,7 +80,7 @@ e.g. `~/.config/postui/config.toml` on Linux):
 - `ai_confirmed` — whether the one-time confirmation to send response
   structure to `ai_cmd` has been accepted.
 - `jq_tab` — what `Tab` does on a completion ghost in the jq bar:
-  `"cycle"` (the default) steps through the candidates in place, `"menu"`
-  completes the first and opens a row of the others under the bar for
-  `Tab`/`shift+Tab` to step through (`"accept"` is an older name for it).
-  `Right` and `End` accept in both.
+  `"cycle"` (the default) ghosts the best candidate and steps through the
+  rest in place; `"menu"` lists the candidates under the bar as you type,
+  with `Tab`/`shift+Tab` picking and stepping through them (`"accept"` is
+  an older name for it). `Right` and `End` accept a ghost in cycle mode.
