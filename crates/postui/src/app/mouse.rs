@@ -39,7 +39,7 @@ impl App {
                 // A live sidebar row drag owns every motion event until the
                 // button comes up, whichever pane the pointer wanders over.
                 if self.sidebar.drag.is_some() {
-                    return self.sidebar_drag_to(m.row);
+                    return self.sidebar_drag_to(m.column, m.row);
                 }
                 // A press armed on a row becomes a drag the moment the
                 // pointer reaches a *different* row. The `hit_at` check
@@ -68,7 +68,8 @@ impl App {
                             let space = self.project.active_space.clone();
                             if self.sidebar.begin_drag(i, &space) {
                                 self.hovered = None;
-                                return self.sidebar_drag_to(m.row) | self.update(Action::Render);
+                                return self.sidebar_drag_to(m.column, m.row)
+                                    | self.update(Action::Render);
                             }
                         }
                         Some(_) => {}
@@ -81,7 +82,7 @@ impl App {
                 // the spaces), so the drag target is re-resolved by name;
                 // a press whose space is gone promotes nothing.
                 if self.manage.list.drag.is_some() {
-                    return self.manage_drag_to(m.row);
+                    return self.manage_drag_to(m.column, m.row);
                 }
                 if let Some((_, pressed)) = self.manage_press.clone()
                     && self.modals.is_empty()
@@ -96,7 +97,8 @@ impl App {
                         Some(i) if self.manage.list.row_at_y(m.row) != i => {
                             if self.manage.list.begin_drag(i, tab, &self.project) {
                                 self.hovered = None;
-                                return self.manage_drag_to(m.row) | self.update(Action::Render);
+                                return self.manage_drag_to(m.column, m.row)
+                                    | self.update(Action::Render);
                             }
                         }
                         Some(_) => {}
@@ -439,12 +441,7 @@ impl App {
                 // rect containment `pane_at` would do), plus the row hits
                 // themselves.
                 if self.manage.list.drag.is_some() {
-                    let pos = ratatui::layout::Position {
-                        x: m.column,
-                        y: m.row,
-                    };
-                    let inside = self.manage.list.list_rect().contains(pos)
-                        || matches!(self.hits.hit_at(m.column, m.row), Some(Hit::ManageRow(_)));
+                    let inside = self.manage_drag_inside(m.column, m.row);
                     return self.finish_manage_drag(inside);
                 }
                 // Releasing the button ends both drag kinds; a finished

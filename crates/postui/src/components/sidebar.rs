@@ -556,6 +556,21 @@ impl Sidebar {
         drag.working.insert(target, moved);
         true
     }
+
+    /// Puts the working order back to the order the drag started from,
+    /// without ending the drag: the preview of a cancel, shown while the
+    /// pointer is outside the pane (where a release would cancel).
+    /// Returns whether anything changed; the caller then `rebuild`s.
+    pub fn drag_reset(&mut self) -> bool {
+        let Some(drag) = self.drag.as_mut() else {
+            return false;
+        };
+        if drag.working == drag.original {
+            return false;
+        }
+        drag.working = drag.original.clone();
+        true
+    }
 }
 
 impl Component for Sidebar {

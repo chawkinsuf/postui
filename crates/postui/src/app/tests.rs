@@ -19555,3 +19555,79 @@ fn switching_the_manage_tab_mid_drag_cancels_it() {
     assert!(app.manage_press.is_none());
     assert_eq!(listed_spaces(&dir), ["main", "auth", "billing"]);
 }
+
+// ---- pointer outside the list previews the cancel ----------------------
+
+#[test]
+fn leaving_the_sidebar_mid_drag_previews_the_cancel() {
+    let (mut app, dir) = three_row_app();
+    let r0 = row_rect(&mut app, 0);
+    let r2 = row_rect(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    assert_eq!(
+        request_rows(&app),
+        ["main/beta", "main/gamma", "main/alpha"]
+    );
+
+    // Over the response pane: a release here would cancel, so the rows
+    // show the order that release would leave behind.
+    app.handle_mouse(moved(110, 30));
+    assert!(app.sidebar.drag.is_some(), "the drag is still live");
+    assert_eq!(
+        request_rows(&app),
+        ["main/alpha", "main/beta", "main/gamma"],
+        "the working order snapped back to the original"
+    );
+
+    // Back over a row: the drag picks up where it left off.
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    assert_eq!(
+        request_rows(&app),
+        ["main/beta", "main/gamma", "main/alpha"]
+    );
+
+    app.handle_mouse(left_up(110, 30));
+    assert!(app.sidebar.drag.is_none());
+    assert_eq!(
+        request_rows(&app),
+        ["main/alpha", "main/beta", "main/gamma"]
+    );
+    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    assert!(
+        postui_core::order::space_order(&meta, "main").is_empty(),
+        "nothing written"
+    );
+}
+
+#[test]
+fn leaving_the_space_list_mid_drag_previews_the_cancel() {
+    let (mut app, dir) = manage_spaces_app();
+    let r0 = manage_row(&mut app, 0);
+    let r2 = manage_row(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    assert_eq!(
+        app.manage.list.drag.as_ref().unwrap().working,
+        ["auth", "billing", "main"]
+    );
+
+    app.handle_mouse(moved(110, 30)); // the detail pane
+    assert!(app.manage.list.drag.is_some(), "the drag is still live");
+    assert_eq!(
+        app.manage.list.drag.as_ref().unwrap().working,
+        ["main", "auth", "billing"],
+        "the working order snapped back to the original"
+    );
+
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    assert_eq!(
+        app.manage.list.drag.as_ref().unwrap().working,
+        ["auth", "billing", "main"]
+    );
+
+    app.handle_mouse(left_up(110, 30));
+    assert!(app.manage.list.drag.is_none());
+    assert_eq!(listed_spaces(&dir), ["main", "auth", "billing"]);
+    assert_eq!(app.project.spaces, ["main", "auth", "billing"]);
+}

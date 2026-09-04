@@ -139,6 +139,26 @@ impl ManageList {
         true
     }
 
+    /// Puts the working order back to the order the drag started from,
+    /// without ending the drag: the preview of a cancel, shown while the
+    /// pointer is outside the list (where a release would cancel). The
+    /// cursor rides back with the dragged row, as it does on every other
+    /// move. Returns whether anything changed.
+    pub fn drag_reset(&mut self) -> bool {
+        let Some(drag) = self.drag.as_mut() else {
+            return false;
+        };
+        if drag.working == drag.original {
+            return false;
+        }
+        drag.working = drag.original.clone();
+        let at = drag.working.iter().position(|n| *n == drag.name);
+        if let Some(i) = at {
+            self.cursor = i;
+        }
+        true
+    }
+
     fn new_action(tab: ManageTab) -> Action {
         match tab {
             ManageTab::Spaces => Action::OpenNewSpacePrompt,

@@ -1538,12 +1538,12 @@ impl App {
                 // drag parked there must not scroll a pane it is not over.
                 let edge_scrolled = match self.pointer.and_then(|(x, y)| {
                     (self.hits.pane_at(x, y) == Some(PaneId::Sidebar))
-                        .then(|| self.sidebar.drag_edge(y).map(|d| (d, y)))
+                        .then(|| self.sidebar.drag_edge(y).map(|d| (d, x, y)))
                         .flatten()
                 }) {
-                    Some((delta, y)) => {
+                    Some((delta, x, y)) => {
                         self.sidebar.handle_scroll(delta as i16);
-                        self.sidebar_drag_to(y);
+                        self.sidebar_drag_to(x, y);
                         true
                     }
                     None => false,
@@ -6996,7 +6996,21 @@ impl App {
     /// Pointer motion during a row drag: maps the pointer's screen row to
     /// a row index (pinned to the dragged row's sibling group) and shows
     /// the resulting order live.
-    pub fn sidebar_drag_to(&mut self, y: u16) -> bool {
+    ///
+    /// A pointer *outside* the sidebar pane previews the cancel a release
+    /// there would be: the working order snaps back to the order the drag
+    /// started from, so the rows always show what letting go right now
+    /// would leave behind. The test is the one `Up(Left)` commits on. The
+    /// list's own edge rows are inside the pane, so edge auto-scroll is
+    /// untouched. Motion back onto a row maps it again as usual.
+    pub fn sidebar_drag_to(&mut self, x: u16, y: u16) -> bool {
+        if self.hits.pane_at(x, y) != Some(PaneId::Sidebar) {
+            if self.sidebar.drag_reset() {
+                self.rebuild_sidebar();
+                return true;
+            }
+            return false;
+        }
         let i = self.sidebar.row_at_y(y);
         if self.sidebar.drag_to_row(i) {
             self.rebuild_sidebar();
@@ -7045,9 +7059,28 @@ impl App {
     /// Pointer motion during a Manage screen space-row drag: maps the
     /// pointer's screen row to a row index and shows the resulting order
     /// live.
-    pub fn manage_drag_to(&mut self, y: u16) -> bool {
+    ///
+    /// Outside the list the working order snaps back to the order the
+    /// drag started from — the preview of the cancel a release there
+    /// would be — using the same containment test `finish_manage_drag`
+    /// commits on. See `sidebar_drag_to`, which does the same.
+    pub fn manage_drag_to(&mut self, x: u16, y: u16) -> bool {
+        if !self.manage_drag_inside(x, y) {
+            return self.manage.list.drag_reset();
+        }
         let i = self.manage.list.row_at_y(y);
         self.manage.list.drag_to_row(i)
+    }
+
+    /// Whether `(x, y)` is over the Manage screen's row list: the list
+    /// rect the last draw recorded (the rect containment `pane_at` would
+    /// do, which the list has no `Hit::Pane` for), plus the row hits
+    /// themselves. Commit-on-release and the drag's outside preview share
+    /// it, so a drop and the rows it previewed can never disagree.
+    pub fn manage_drag_inside(&self, x: u16, y: u16) -> bool {
+        let pos = ratatui::layout::Position { x, y };
+        self.manage.list.list_rect().contains(pos)
+            || matches!(self.hits.hit_at(x, y), Some(Hit::ManageRow(_)))
     }
 
     /// Ends a space-row drag. `commit` writes the working order when it
