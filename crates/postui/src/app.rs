@@ -1732,20 +1732,36 @@ impl App {
                         } else {
                             Action::SaveViewToFile(text)
                         };
+                        // The save picker is still open beneath (it does
+                        // not close itself in save mode): the overwrite
+                        // question stacks on it, so `n` returns to the
+                        // picker, and `y` closes the picker before writing.
+                        let picker_open = matches!(self.modals.top(), Some(Modal::FilePicker(_)));
+                        let close_picker = || {
+                            picker_open
+                                .then_some(Action::Close)
+                                .into_iter()
+                                .collect::<Vec<_>>()
+                        };
                         if path.is_file() {
                             let name = path
                                 .file_name()
                                 .map(|n| n.to_string_lossy().into_owned())
                                 .unwrap_or_else(|| path.display().to_string());
+                            let mut on_yes = close_picker();
+                            on_yes.push(write);
                             self.push_modal(Modal::Confirm {
                                 title: "File exists".into(),
                                 body: format!("overwrite {name}?"),
                                 choices: vec![
-                                    ('y', "Overwrite".into(), vec![write]),
+                                    ('y', "Overwrite".into(), on_yes),
                                     ('n', "Cancel".into(), vec![]),
                                 ],
                             });
                             return true;
+                        }
+                        for a in close_picker() {
+                            self.apply(a);
                         }
                         self.apply(write)
                     }

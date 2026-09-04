@@ -504,13 +504,16 @@ impl FilePickerState {
         }
     }
 
+    /// A folder choice closes the picker outright. A save leaves it open:
+    /// the app closes it once the write goes ahead, so a declined
+    /// overwrite question lands back on the picker with nothing lost.
     fn confirm(&self, path: PathBuf) -> Option<ModalResult> {
         Some(ModalResult {
             actions: vec![Action::PickerConfirm {
                 target: self.target,
                 path,
             }],
-            close: true,
+            close: self.mode() == PickerMode::ChooseDir,
             ..Default::default()
         })
     }
@@ -954,7 +957,17 @@ mod tests {
 
     fn confirmed_path(res: Option<ModalResult>) -> (PickerTarget, PathBuf) {
         let res = res.expect("a result");
-        assert!(res.close, "confirming closes the picker");
+        // A folder choice closes the picker; a save leaves it open for the
+        // app to close once the write goes ahead (an overwrite may still
+        // be declined).
+        let save = matches!(
+            res.actions.first(),
+            Some(Action::PickerConfirm {
+                target: PickerTarget::SaveBody | PickerTarget::SaveView,
+                ..
+            })
+        );
+        assert_eq!(res.close, !save, "close flag follows the mode");
         match res.actions.as_slice() {
             [Action::PickerConfirm { target, path }] => (*target, path.clone()),
             other => panic!("expected PickerConfirm, got {other:?}"),

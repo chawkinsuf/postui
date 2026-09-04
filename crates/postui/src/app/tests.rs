@@ -7682,29 +7682,71 @@ fn prompt_save_body_opens_the_picker_and_confirming_writes_the_file() {
     assert!(rendered_text(&mut app).contains("Saved body to"));
 }
 
-/// Confirming a picker path that already exists asks first; `y` writes.
+/// Confirming a picker path that already exists asks first, on top of
+/// the still-open picker: `n` returns to the picker, `y` closes it and
+/// writes.
 #[test]
 fn picker_confirm_over_an_existing_file_asks_before_overwriting() {
-    use crate::components::file_picker::PickerTarget;
+    use crate::components::file_picker::{FilePickerState, PickerTarget};
     let mut app = App::new_for_test();
     ready_response(&mut app, r#"{"a": 1}"#);
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("body.json");
     std::fs::write(&out, "old").unwrap();
+    app.push_modal(Modal::FilePicker(FilePickerState::new(
+        "Save response body",
+        PickerTarget::SaveBody,
+        dir.path(),
+        "body.json",
+    )));
+    let keymap = Keymap::default_bindings();
 
-    app.update(Action::PickerConfirm {
-        target: PickerTarget::SaveBody,
-        path: out.clone(),
-    });
-
+    // Enter with the prefill = save body.json here → it exists → ask.
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(std::fs::read_to_string(&out).unwrap(), "old", "not yet");
     let Some(Modal::Confirm { body, .. }) = app.modals.top() else {
         panic!("expected an overwrite confirm");
     };
     assert!(body.contains("body.json"), "{body}");
-    app.handle_key(&Keymap::default_bindings(), plain('y'));
+
+    // Declining lands back on the picker, folder and name intact.
+    app.handle_key(&keymap, plain('n'));
+    let Some(Modal::FilePicker(p)) = app.modals.top() else {
+        panic!("cancelling the overwrite keeps the picker open");
+    };
+    assert_eq!(p.dir(), dir.path());
+    assert_eq!(p.input().text(), "body.json");
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "old");
+
+    // Accepting writes and closes everything.
+    app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    app.handle_key(&keymap, plain('y'));
     assert_eq!(std::fs::read_to_string(&out).unwrap(), r#"{"a": 1}"#);
     assert!(app.modals.is_empty());
+}
+
+/// A save that needs no question closes the picker on its own.
+#[test]
+fn picker_save_of_a_new_file_closes_the_picker_and_writes() {
+    use crate::components::file_picker::{FilePickerState, PickerTarget};
+    let mut app = App::new_for_test();
+    ready_response(&mut app, r#"{"a": 1}"#);
+    let dir = tempfile::tempdir().unwrap();
+    app.push_modal(Modal::FilePicker(FilePickerState::new(
+        "Save response body",
+        PickerTarget::SaveBody,
+        dir.path(),
+        "fresh.json",
+    )));
+    app.handle_key(
+        &Keymap::default_bindings(),
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+    );
+    assert!(app.modals.is_empty());
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("fresh.json")).unwrap(),
+        r#"{"a": 1}"#
+    );
 }
 
 /// The ✎ toolbar button parks `OpenResponseInEditor` for the main loop
