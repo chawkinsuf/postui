@@ -371,11 +371,39 @@ move, nothing written. This exists because Ghostty (on Linux, verified
 with `--keydump` and mouse reporting off) delivers no key event for the
 first Escape pressed while a mouse button is held — the second arrives;
 the cause is unconfirmed and is Escape-specific. The app cannot recover
-a key it never receives, so a right click is the in-band cancel. A
-right click while a press is
+a key it never receives, so a right click is the in-band cancel. In
+Ghostty this right click itself needs two presses too, for the same
+underlying reason: with a left button held, `--keydump` shows Ghostty
+drops the *first* right press outright (`Down(Right)` never arrives),
+so the cancel only takes effect on the second right click. A right
+click while a press is
 armed but hasn't promoted yet just disarms the press (so the motion
 that follows can't restart a drag out from under the menu) and falls
 through to open that row's context menu as usual.
+
+**Two guards survive a lost left release.** Continuing the same
+Ghostty quirk: `--keydump` with a left button held shows the sequence
+`Down(Left) → Down(Right) → Up(Right) → Drag(Left) ×N (button already
+released) → Down(Left) → Up(Left)` — after the right click cancels the
+drag, the terminal never sends `Up(Left)` for the original press; it
+keeps reporting `Drag(Left)` motion until the next real press/release
+pair. Two guards in `handle_mouse` (`crates/postui/src/app/mouse.rs`)
+cope:
+- The `Moved | Drag(Left)` arm used to return early on any non-`Moved`
+  event with no `text_drag` armed, leaving `self.hovered` frozen. It
+  now falls through to hover tracking whenever `text_drag` is `None`
+  (the sidebar-drag and scrollbar-drag branches above it already
+  handle those cases) — a button-held motion with no armed sweep
+  carries no drag meaning, so hover is the right response, and it
+  heals the lost release since hover keeps working until the next
+  click.
+- The `Down(Left)` arm now checks `self.sidebar.drag.is_some()` first:
+  a real left press cannot arrive while a drag is genuinely live (the
+  button that started it would still be down), so if one is live here
+  the release was lost. It calls `finish_sidebar_drag(false)` to
+  cancel it, then handles the press normally — arming it against the
+  row underneath rather than letting its eventual release commit the
+  stale reorder.
 
 **`rebuild_sidebar` snaps `AnimKey::ListTravel(Sidebar)` too.** The
 per-motion drag path (`App::rebuild_sidebar`) originally omitted the

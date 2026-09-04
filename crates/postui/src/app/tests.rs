@@ -19072,6 +19072,71 @@ fn a_right_click_during_a_drag_cancels_it_without_a_menu() {
 }
 
 #[test]
+fn phantom_drag_motion_after_a_cancel_still_updates_hover() {
+    // Ghostty on Linux drops the left release after a right click cancels
+    // a drag: the terminal keeps sending `Drag(Left)` motion (button
+    // already released) until the next real `Down(Left)`/`Up(Left)`
+    // pair. That motion carries no drag meaning any more, so it must
+    // still drive hover — otherwise hover styling freezes until the next
+    // click.
+    let (mut app, _dir) = three_row_app();
+    let r0 = row_rect(&mut app, 0);
+    let r1 = row_rect(&mut app, 1);
+    let r2 = row_rect(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    assert!(app.sidebar.drag.is_some());
+
+    app.handle_mouse(right_down(r1.x + 2, r1.y));
+    assert!(app.sidebar.drag.is_none());
+
+    let mut ev = moved(r1.x + 2, r1.y);
+    ev.kind = ratatui::crossterm::event::MouseEventKind::Drag(
+        ratatui::crossterm::event::MouseButton::Left,
+    );
+    app.handle_mouse(ev);
+
+    assert_eq!(app.hovered, Some(Hit::SidebarRow(1)));
+    assert_ne!(app.pointer_shape_update(), Some(PointerShape::Grabbing));
+}
+
+#[test]
+fn a_left_press_during_a_live_drag_cancels_it() {
+    // If the terminal also lost the release entirely, a real `Down(Left)`
+    // eventually arrives (the physical click that follows). It cannot
+    // arrive while a drag is genuinely live, so it means the same thing:
+    // the release was lost. Treat it as an in-band cancel, then handle
+    // the press normally — it arms (and, on its matching release, opens)
+    // the row under it.
+    let (mut app, dir) = three_row_app();
+    let r0 = row_rect(&mut app, 0);
+    let r1 = row_rect(&mut app, 1);
+    let r2 = row_rect(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    assert!(app.sidebar.drag.is_some());
+    assert_eq!(
+        request_rows(&app),
+        ["main/beta", "main/gamma", "main/alpha"]
+    );
+
+    app.handle_mouse(left_down(r1.x + 2, r1.y));
+    app.handle_mouse(left_up(r1.x + 2, r1.y));
+
+    assert!(app.sidebar.drag.is_none());
+    assert_eq!(
+        request_rows(&app),
+        ["main/alpha", "main/beta", "main/gamma"]
+    );
+    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    assert!(
+        postui_core::order::space_order(&meta, "main").is_empty(),
+        "nothing written"
+    );
+    assert_eq!(app.editor.slug.as_deref(), Some("main/beta"));
+}
+
+#[test]
 fn a_right_click_on_an_armed_press_disarms_it() {
     let (mut app, _dir) = three_row_app();
     let r0 = row_rect(&mut app, 0);

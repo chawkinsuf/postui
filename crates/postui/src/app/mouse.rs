@@ -81,10 +81,9 @@ impl App {
                         self.drag_to(m.row)
                     };
                 }
-                if m.kind != MouseEventKind::Moved {
-                    // Button-held motion: a text-selection sweep if one was
-                    // armed by the press that started it, otherwise not a
-                    // hover update.
+                if m.kind != MouseEventKind::Moved && self.text_drag.is_some() {
+                    // Button-held motion with a sweep armed by the press
+                    // that started it: a text-selection drag.
                     return match self.text_drag {
                         Some(TextDrag::Body) => self.editor.body_drag_to(m.column, m.row),
                         Some(TextDrag::Response) => {
@@ -96,9 +95,17 @@ impl App {
                         Some(TextDrag::TableCell) => self.table_cell_drag_to(m.column),
                         Some(TextDrag::VmField) => self.vm_field_drag_to(m.column),
                         Some(TextDrag::VmCell) => self.vm_cell_drag_to(m.column),
-                        None => false,
+                        None => unreachable!(),
                     };
                 }
+                // Button-held motion with no sweep armed and no sidebar or
+                // scrollbar drag live (both checked above) carries no drag
+                // meaning: fall through to hover tracking. This also heals
+                // a terminal that lost the button release — Ghostty on
+                // Linux, after a right click cancels a sidebar drag, keeps
+                // sending `Drag(Left)` motion (button already released)
+                // until the next real `Down(Left)`/`Up(Left)` pair; without
+                // this, hover styling freezes until that next click.
                 // Two independent hover tracks: the control under the
                 // pointer (styling), and any `{{token}}` drawn on top of it
                 // (the value tooltip). A token must not steal its control's
@@ -125,6 +132,18 @@ impl App {
                 changed
             }
             MouseEventKind::Down(MouseButton::Left) => {
+                // A real left press cannot arrive while a sidebar drag is
+                // still live — the button that started it would have to
+                // still be down. If one is live here, the terminal lost
+                // the release (Ghostty on Linux, verified with
+                // `--keydump`: after a right click cancels a drag it keeps
+                // sending `Drag(Left)` motion, then eventually a fresh
+                // `Down(Left)`/`Up(Left)` pair with no release in between).
+                // Cancel the stale drag first, then handle this press
+                // normally.
+                if self.sidebar.drag.is_some() {
+                    self.finish_sidebar_drag(false);
+                }
                 let hit = self.hits.hit_at(m.column, m.row).cloned();
                 // A click anywhere but the jq bar itself is Enter for a
                 // focused bar: the filter is already applied (every edit
