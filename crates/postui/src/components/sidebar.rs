@@ -454,6 +454,28 @@ impl Sidebar {
         (self.scroll + rel).min(self.rows.len().saturating_sub(1))
     }
 
+    /// Height of the row list as of the last draw.
+    pub fn last_list_height(&self) -> usize {
+        self.last_list_height
+    }
+
+    /// While dragging, a pointer resting on the list's first or last
+    /// screen row asks for a one-row scroll in that direction (the tick
+    /// handler applies it), so a long list can be dragged through.
+    pub fn drag_edge(&self, y: u16) -> Option<i32> {
+        if self.drag.is_none() || self.last_list_height == 0 {
+            return None;
+        }
+        let bottom = self.last_list_top + self.last_list_height as u16 - 1;
+        if y <= self.last_list_top && self.scroll > 0 {
+            Some(-1)
+        } else if y >= bottom && self.scroll + self.last_list_height < self.rows.len() {
+            Some(1)
+        } else {
+            None
+        }
+    }
+
     /// Starts a drag of row `i`: records its level's sibling order as both
     /// `original` and the starting `working` order. Refuses a folder row.
     pub fn begin_drag(&mut self, i: usize, space: &str) -> bool {

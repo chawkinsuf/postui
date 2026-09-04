@@ -1527,6 +1527,16 @@ impl App {
                 true
             }
             Action::Tick => {
+                let edge_scrolled = match self.pointer.and_then(|(_, y)| {
+                    self.sidebar.drag_edge(y).map(|d| (d, y))
+                }) {
+                    Some((delta, y)) => {
+                        self.sidebar.handle_scroll(delta as i16);
+                        self.sidebar_drag_to(y);
+                        true
+                    }
+                    None => false,
+                };
                 let now = Instant::now();
                 let tip_changed = self.track_caret_token(now);
                 // The testbed's looping motion demos self-drive from here,
@@ -1560,6 +1570,7 @@ impl App {
                     || tip_changed
                     || now_animating
                     || was_animating
+                    || edge_scrolled
             }
             // No state change; forces a redraw. Background tasks use this
             // to wake the main loop when they've mutated state directly

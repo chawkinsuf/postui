@@ -19000,3 +19000,22 @@ fn escape_disarms_the_press_so_motion_cannot_restart_the_drag() {
         "nothing written"
     );
 }
+
+#[test]
+fn dragging_at_the_list_edge_scrolls_on_tick() {
+    let (mut app, dir) = spaced_app();
+    for i in 0..60 {
+        postui_core::storage::save_request(dir.path(), &format!("main/r{i:02}"), &req("https://x")).unwrap();
+    }
+    app.update(Action::RefreshSidebar);
+    let r0 = row_rect(&mut app, 0);
+    let list_h = app.sidebar.last_list_height() as u16;
+    let bottom = r0.y + list_h - 1;
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, bottom));
+    assert!(app.sidebar.drag.is_some());
+    let before = app.sidebar.scroll;
+    app.update(Action::Tick);
+    assert_eq!(app.sidebar.scroll, before + 1, "bottom edge scrolls one row per tick");
+    app.handle_mouse(left_up(110, 30)); // cancel
+}
