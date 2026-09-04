@@ -161,6 +161,22 @@ impl LineInput {
             .unwrap_or(self.text.len())
     }
 
+    /// Removes the chars from index `idx` up to the cursor (nothing when
+    /// `idx` is at or past it) and lands the cursor at `idx`, dropping any
+    /// selection. For a caller with its own idea of a "word" — the jq
+    /// bar's path segment — where the input's ctrl+backspace rule is the
+    /// wrong one.
+    pub fn delete_back_to(&mut self, idx: usize) {
+        let idx = idx.min(self.cursor);
+        if idx < self.cursor {
+            let start = self.byte_offset(idx);
+            let end = self.byte_offset(self.cursor);
+            self.text.replace_range(start..end, "");
+            self.cursor = idx;
+        }
+        self.anchor = None;
+    }
+
     /// Inserts `s` at the cursor and advances the cursor by `s`'s char
     /// count. Used to splice in multi-character text (e.g. a picked
     /// variable token) in one shot, rather than one `handle_key` per char.
@@ -908,6 +924,20 @@ mod tests {
             "the caret hides while a selection is live"
         );
         assert_eq!(reversed[3], ('d', false), "outside the selection");
+    }
+
+    #[test]
+    fn delete_back_to_removes_up_to_the_cursor_and_drops_the_selection() {
+        let mut input = LineInput::new("abcdef");
+        input.set_cursor(4);
+        input.delete_back_to(1);
+        assert_eq!(input.text(), "aef");
+        assert_eq!(input.cursor(), 1);
+        input.select_all();
+        input.set_cursor_extending(3);
+        input.delete_back_to(5);
+        assert_eq!(input.text(), "aef", "at or past the cursor: nothing");
+        assert_eq!(input.selection(), None, "…but the selection is dropped");
     }
 
     #[test]

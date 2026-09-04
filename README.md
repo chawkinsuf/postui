@@ -61,7 +61,10 @@ filter has reached at that point in the response, or the start of a builtin's na
 in view), `shift+Tab` goes back, `Enter` confirms the selected one, `Esc` un-picks it, and
 anything else you type keeps the selection. With `jq_tab = "cycle"` the bar instead ghosts the
 best candidate after the caret: `Tab` cycles through the candidates in place, `shift+Tab` goes
-back, and `Right` or `End` accepts the one showing.
+back, and `Right` or `End` accepts the one showing. The bar takes the usual editing keys
+(`ctrl+←/→`, `ctrl+a`, `ctrl+backspace` / `alt+backspace`), and inside a path `ctrl+backspace`
+deletes back to the previous `.` — `.data.items` → `.data.` → `.` — so each press lands where
+the completion has keys to offer.
 
 ## Configuration
 

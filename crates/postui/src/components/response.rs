@@ -181,6 +181,12 @@ pub struct JqBar {
     /// live from the completion with nothing selected — menu mode has no
     /// ghost, the row is its preview. `None` in cycle mode.
     menu: Option<JqMenu>,
+    /// The candidate row's first visible column as last drawn, so the
+    /// row scrolls like a list: it stays put while the selected chip is
+    /// in view and slides — either way — only when the selection reaches
+    /// an edge. Set by the draw (it needs the width), reset whenever the
+    /// row is entered or left.
+    menu_scroll: std::cell::Cell<u16>,
     /// The filter text as it stood when the current edit began — what
     /// Esc puts back. Taken just before the first change to a focused
     /// bar's text (`begin_edit`), not when it took the caret: merely
@@ -339,12 +345,46 @@ impl JqBar {
         if items.len() < 2 {
             return;
         }
+        self.menu_scroll.set(0);
         self.menu = Some(JqMenu {
             base,
             items,
             labels,
             index,
         });
+    }
+
+    /// The jq-aware word-delete target for ctrl/alt+backspace: inside a
+    /// path token (one holding a `.`), the char index just after the
+    /// last `.` before the caret — `.data.items` → `.data.`, and a
+    /// trailing dot goes with the segment before it, `.data.` → `.` →
+    /// nothing — so repeated presses climb the path one segment at a
+    /// time and each stop is a place the completion has keys for.
+    /// `None` outside a path token (a builtin, a pipe): the input's own
+    /// word rule applies. Tokens are cut at whitespace and at jq's
+    /// own separators.
+    fn segment_delete_target(&self) -> Option<usize> {
+        let chars: Vec<char> = self.input.text().chars().collect();
+        let end = self.input.cursor().min(chars.len());
+        if end == 0 {
+            return None;
+        }
+        let is_boundary =
+            |c: char| c.is_whitespace() || matches!(c, '|' | '(' | ')' | '[' | ']' | ',' | ';');
+        let start = (0..end)
+            .rev()
+            .find(|&i| is_boundary(chars[i]))
+            .map_or(0, |i| i + 1);
+        if !chars[start..end].contains(&'.') {
+            return None;
+        }
+        let e = if chars[end - 1] == '.' { end - 1 } else { end };
+        Some(
+            (start..e)
+                .rev()
+                .find(|&i| chars[i] == '.')
+                .map_or(start, |i| i + 1),
+        )
     }
 
     /// Leaves the entered row with nothing picked: the bar text goes back
@@ -354,6 +394,7 @@ impl JqBar {
         let Some(menu) = self.menu.take() else {
             return;
         };
+        self.menu_scroll.set(0);
         self.input = LineInput::new(&menu.base);
         self.edited = true;
     }
@@ -399,6 +440,7 @@ impl Default for JqBar {
             completion: JqCompletion::default(),
             tab: JqTab::Menu,
             menu: None,
+            menu_scroll: std::cell::Cell::new(0),
             edit_origin: None,
         }
     }
@@ -1654,6 +1696,22 @@ impl Response {
         self.jq.edited = true;
     }
 
+    /// The bar's ctrl/alt+backspace: a path segment when the caret is in
+    /// a path token and nothing is selected, else the input's own rule.
+    fn jq_segment_backspace(&mut self, ev: KeyEvent) {
+        self.jq.begin_edit();
+        self.jq.menu = None;
+        match self.jq.segment_delete_target() {
+            Some(target) if self.jq.input.selection().is_none() => {
+                self.jq.input.delete_back_to(target);
+            }
+            _ => {
+                self.jq.input.handle_key(ev);
+            }
+        }
+        self.jq.edited = true;
+    }
+
     /// Accepts (or drops) the result of a background jq run. Dropped when
     /// the view it was started for is gone, or a later run for the same
     /// view has since started (superseded). Returns whether it was
@@ -2106,6 +2164,20 @@ impl Response {
                 // text — fish's rule, so `.id` can be the filter when
                 // `.identifier` exists), Down is the URL field's leave key.
                 KeyCode::Enter | KeyCode::Down => self.jq.blur(),
+                // ctrl/alt+backspace (and the legacy ctrl+h byte) delete a
+                // path segment rather than the input's "word": see
+                // `segment_delete_target`. A live selection, or a plain
+                // word, is the input's business as usual.
+                KeyCode::Backspace
+                    if ev
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    self.jq_segment_backspace(ev);
+                }
+                KeyCode::Char('h') if ev.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.jq_segment_backspace(ev);
+                }
                 KeyCode::Esc => {
                     if self.jq.ai_pending {
                         return Some(Action::CancelJqDescribe);
@@ -2281,11 +2353,15 @@ impl Component for Response {
             ResponseState::InFlight { .. } if ev.code == KeyCode::Esc => Some(Action::CancelSend),
             // Modified combos belong to the global keymap, not the pane —
             // except ctrl+Home/ctrl+End, the standard document-top/bottom
-            // jumps, which nothing global binds.
+            // jumps, which nothing global binds — unless the jq bar has
+            // the caret: then, like the URL field, it gets every combo
+            // the keymap left unbound (ctrl+arrows, ctrl+a, ctrl/alt+
+            // backspace…), since those are text editing, not navigation.
             ResponseState::Ready(_)
-                if !ev
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                if self.jq.focused
+                    || !ev
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
                     || (ev.modifiers == KeyModifiers::CONTROL
                         && matches!(ev.code, KeyCode::Home | KeyCode::End)) =>
             {
@@ -3452,7 +3528,8 @@ fn draw_jq_bar(
             height: 1,
             ..area
         };
-        draw_jq_menu(frame, menu_row, &chips, t);
+        let scroll = draw_jq_menu(frame, menu_row, &chips, bar.menu_scroll.get(), t);
+        bar.menu_scroll.set(scroll);
         return caret;
     }
     // A filter with nothing to show reads as an error to the user — the
@@ -3522,13 +3599,21 @@ fn draw_jq_bar(
 }
 
 /// One chip per candidate, aligned under the bar text (past the `jq `
-/// chip), the selected one (if any) filled. The row is a window that
-/// slides only as far as it must to keep the selected chip whole: it
-/// stays put while that chip fits, and once Tab selects one past the
-/// right edge it scrolls just enough to show it — wrapping back to the
-/// first snaps it home. Nothing selected, it starts at the left. Returns
-/// the window's first column, for tests.
-fn draw_jq_menu(frame: &mut Frame, row: Rect, chips: &[(String, bool)], t: &Theme) -> u16 {
+/// chip), the selected one (if any) filled. The row is a window over
+/// the chips that scrolls like a list: from `prev` (its last offset) it
+/// moves only when the selected chip is out of view, and only as far as
+/// it must — right until the chip's end is in, left until its start is —
+/// so Tab walks the selection to the right edge before the row slides,
+/// and shift+Tab walks it back to the left edge before the row slides
+/// the other way. Nothing selected, it starts at the left. Returns the
+/// offset used, for the caller to remember.
+fn draw_jq_menu(
+    frame: &mut Frame,
+    row: Rect,
+    chips: &[(String, bool)],
+    prev: u16,
+    t: &Theme,
+) -> u16 {
     let x0 = row.x + 3;
     let width = row.width.saturating_sub(3);
     if width == 0 {
@@ -3547,7 +3632,11 @@ fn draw_jq_menu(frame: &mut Frame, row: Rect, chips: &[(String, bool)], t: &Them
         cells.push((col, chip, is_selected));
         col = col.saturating_add(w).saturating_add(1);
     }
-    let scroll = selected.1.saturating_sub(width);
+    let scroll = if chips.iter().any(|(_, sel)| *sel) {
+        prev.max(selected.1.saturating_sub(width)).min(selected.0)
+    } else {
+        0
+    };
     let buf = frame.buffer_mut();
     for (start, chip, is_selected) in cells {
         let style = if is_selected {
@@ -5837,6 +5926,91 @@ mod tests {
     }
 
     #[test]
+    fn the_focused_bar_gets_unbound_editing_combos_ctrl_arrows_and_select_all() {
+        let mut r = ready(ITEMS);
+        type_jq(&mut r, ".data.items | length");
+        bar_key(&mut r, KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
+        assert_eq!(
+            r.jq_bar().input.cursor(),
+            14,
+            "word-left lands before `length`"
+        );
+        bar_key(&mut r, KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
+        assert_eq!(r.jq_bar().input.cursor(), 12, "then before `|`");
+        bar_key(&mut r, KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
+        assert_eq!(r.jq_bar().input.cursor(), 13);
+        bar_key(
+            &mut r,
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(r.jq_bar().input.selection(), Some((0, 20)), "select-all");
+        // Unfocused, the pane keeps handing combos to the keymap.
+        r.set_jq_focus(false);
+        assert_eq!(
+            r.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL)),
+            None
+        );
+    }
+
+    #[test]
+    fn ctrl_backspace_climbs_the_path_one_segment_at_a_time() {
+        let mut r = ready(ITEMS);
+        let ctrl_bs = KeyEvent::new(KeyCode::Backspace, KeyModifiers::CONTROL);
+        type_jq(&mut r, ".data.items[] | .status");
+        bar_key(&mut r, ctrl_bs);
+        assert_eq!(r.jq_text(), ".data.items[] | .");
+        bar_key(&mut r, ctrl_bs);
+        assert_eq!(r.jq_text(), ".data.items[] | ", "a bare dot goes too");
+        bar_key(&mut r, ctrl_bs);
+        assert_eq!(
+            r.jq_text(),
+            ".data.items[] ",
+            "outside a path: the input's own word rule, one run (`| `) at a time"
+        );
+        bar_key(&mut r, ctrl_bs);
+        assert_eq!(r.jq_text(), ".data.items", "…then the `[] ` run");
+        bar_key(&mut r, ctrl_bs);
+        assert_eq!(r.jq_text(), ".data.", "back to the dot, which stays");
+        bar_key(&mut r, ctrl_bs);
+        assert_eq!(r.jq_text(), ".", "the trailing dot goes with `data`");
+        bar_key(&mut r, ctrl_bs);
+        assert_eq!(r.jq_text(), "");
+        bar_key(&mut r, ctrl_bs);
+        assert_eq!(r.jq_text(), "", "nothing left: no-op");
+        assert!(r.take_jq_edited());
+    }
+
+    #[test]
+    fn alt_backspace_and_the_legacy_ctrl_h_byte_delete_the_same_segment() {
+        let mut r = ready(ITEMS);
+        type_jq(&mut r, "map(select(.data.items))");
+        r.jq_bar_mut().input.set_cursor(22); // after `.items`
+        bar_key(&mut r, KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT));
+        assert_eq!(r.jq_text(), "map(select(.data.))");
+        bar_key(
+            &mut r,
+            KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(r.jq_text(), "map(select(.))", "`(` cuts the token");
+        // A builtin is a plain word: the input's own rule, whole word.
+        type_jq(&mut r, ".data.items | length");
+        bar_key(&mut r, KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT));
+        assert_eq!(r.jq_text(), ".data.items | ");
+    }
+
+    #[test]
+    fn ctrl_backspace_with_a_selection_deletes_the_selection() {
+        let mut r = ready(ITEMS);
+        type_jq(&mut r, ".data.items");
+        r.jq_bar_mut().input.select_all();
+        bar_key(
+            &mut r,
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::CONTROL),
+        );
+        assert_eq!(r.jq_text(), "");
+    }
+
+    #[test]
     fn down_leaves_the_bar_like_the_url_field() {
         let mut r = ready(ITEMS);
         type_jq(&mut r, ".data");
@@ -5893,7 +6067,32 @@ mod tests {
             .find(|l| l.contains(" charlie "))
             .unwrap_or_else(|| panic!("selected chip not whole in view: {text}"));
         assert!(!row.contains("alpha"), "slid past the first chip: {row}");
-        // Back to the first: the row snaps home.
+        // Stepping back: the row holds still while the selection walks
+        // left inside it, and slides left only once it reaches the edge.
+        bar_key(&mut r, shift(KeyCode::BackTab));
+        assert_eq!(r.jq_text(), ".bravo");
+        let text = render_sized(&mut r, 24, 20);
+        let row = text
+            .lines()
+            .find(|l| l.contains(" bravo "))
+            .unwrap_or_else(|| panic!("{text}"));
+        assert!(
+            row.contains(" charlie "),
+            "the row did not move for a chip still in view: {row}"
+        );
+        assert!(!row.contains(" alpha "), "{row}");
+        bar_key(&mut r, shift(KeyCode::BackTab));
+        assert_eq!(r.jq_text(), ".alpha");
+        let text = render_sized(&mut r, 24, 20);
+        let row = text
+            .lines()
+            .find(|l| l.contains(" alpha "))
+            .unwrap_or_else(|| panic!("slid left to show the chip: {text}"));
+        assert!(row.contains(" bravo "), "{row}");
+        assert!(!row.contains("charlie"), "just far enough: {row}");
+        // Back to the first by wrapping forward: the row snaps home.
+        bar_key(&mut r, key(KeyCode::Tab));
+        bar_key(&mut r, key(KeyCode::Tab));
         bar_key(&mut r, key(KeyCode::Tab));
         bar_key(&mut r, key(KeyCode::Tab));
         bar_key(&mut r, key(KeyCode::Tab));

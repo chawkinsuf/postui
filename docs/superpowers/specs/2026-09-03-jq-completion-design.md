@@ -52,9 +52,13 @@ rides along because jaq already exposes its definitions.
   ghost is an offer, never text. Down leaves the bar in both modes. A lone
   candidate is previewed like any other and just accepted by Tab. The
   row lives in the bar's second row (the error/note row, which it takes
-  over while showing) and is a window that slides only as far as it must
-  to keep the selected chip whole, snapping home on wrap; with nothing
-  selected it starts at the left. Right/End accept only a ghost, so in
+  over while showing) and is a window that scrolls like a list: it
+  remembers its offset (`JqBar::menu_scroll`, set by the draw since only
+  the draw knows the width) and moves only when the selected chip is out
+  of view, and only as far as it must — so Tab walks the selection to
+  the right edge before the row slides right, shift+Tab walks it back
+  to the left edge before the row slides left, and a wrap snaps it to
+  the chip; with nothing selected it starts at the left. Right/End accept only a ghost, so in
   menu mode they are plain caret moves. A top-level
   `config.toml` key, loaded like `theme` and `ai_cmd`; a bad value warns
   and falls back to `menu`. Not settable from the UI in this round.
@@ -326,6 +330,7 @@ In `ready_key`'s jq-focused branch, before the event reaches the
 | Enter           | leave the bar, typed text kept | leave the bar (entered: confirm the chip, stay)   |
 | Esc             | cancel the edit               | cancel the edit (entered: un-pick, stay)          |
 | Down            | leave the bar                 | leave the bar                                    |
+| ctrl/alt+backspace, ctrl+h | in a path token, delete back to the previous `.` (a trailing `.` goes with its segment: `.data.items` → `.data.` → `.` → ``; quotes are not special, `."a.b` → `."a.`); elsewhere the input's own word rule |
 | anything else   | falls through to the input; index resets to 0 (menu mode: an entered row is left first) |
 
 When `ghost()` is `None`, Tab and shift+Tab are ignored by the bar
@@ -339,6 +344,14 @@ result is indistinguishable from typing.
 
 Esc keeps its meaning (cancel the edit and blur); a ghost is dismissed by
 typing on, never by a key of its own.
+
+### Editing keys in the bar
+
+The response pane hands ctrl/alt combos to the global keymap, but not
+while the jq bar has the caret: then, like the URL field, the bar gets
+every combo the keymap left unbound — ctrl+arrows, ctrl+a, ctrl/alt+
+backspace — because those are text editing. Bound globals (alt+q, ctrl+s…)
+still win at the app's step 4 before the pane ever sees them.
 
 ### Drawing
 
