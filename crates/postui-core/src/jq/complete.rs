@@ -132,10 +132,193 @@ pub fn context(text: &str) -> Option<Context> {
     })
 }
 
+/// Builtins whose argument runs once per element of the input, so inside
+/// `map(` the `.` is an element, not the array.
+const PER_ELEMENT: [&str; 9] = [
+    "map", "map_values", "sort_by", "group_by", "unique_by", "min_by", "max_by", "any", "all",
+];
+
+/// One forward pass over `s`: which bytes sit inside a string literal,
+/// the bracket depth before each byte, where each closer (`)`, `]`, `}`
+/// or a closing `"`) opened, and the openers still unclosed at the end.
+/// Bytes are enough: every structural character is ASCII and UTF-8
+/// continuation bytes never collide with them.
+struct Scan {
+    in_string: Vec<bool>,
+    depth: Vec<usize>,
+    open_of: Vec<Option<usize>>,
+    unclosed: Vec<usize>,
+}
+
+fn scan(s: &str) -> Scan {
+    let b = s.as_bytes();
+    let n = b.len();
+    let mut sc = Scan {
+        in_string: vec![false; n],
+        depth: vec![0; n],
+        open_of: vec![None; n],
+        unclosed: Vec::new(),
+    };
+    let mut string_open: Option<usize> = None;
+    let mut i = 0;
+    while i < n {
+        sc.depth[i] = sc.unclosed.len();
+        match string_open {
+            Some(open) => {
+                sc.in_string[i] = true;
+                if b[i] == b'\\' {
+                    if i + 1 < n {
+                        sc.in_string[i + 1] = true;
+                        sc.depth[i + 1] = sc.unclosed.len();
+                    }
+                    i += 2;
+                    continue;
+                }
+                if b[i] == b'"' {
+                    sc.open_of[i] = Some(open);
+                    string_open = None;
+                }
+            }
+            None => match b[i] {
+                b'"' => {
+                    string_open = Some(i);
+                    sc.in_string[i] = true;
+                }
+                b'(' | b'[' | b'{' => sc.unclosed.push(i),
+                b')' | b']' | b'}' => {
+                    let want = match b[i] {
+                        b')' => b'(',
+                        b']' => b'[',
+                        _ => b'{',
+                    };
+                    if sc.unclosed.last().is_some_and(|&o| b[o] == want) {
+                        sc.open_of[i] = sc.unclosed.pop();
+                    }
+                }
+                _ => {}
+            },
+        }
+        i += 1;
+    }
+    sc
+}
+
 /// The jq expression whose outputs the `.` at the end of `head` refers
-/// to. Replaced by the real scanner in the next task.
-fn input_expr(_head: &str) -> String {
-    ".".into()
+/// to: the outer expression (through any unclosed brackets), the stage
+/// before the last top-level pipe, and the path chain right before the
+/// caret, joined with ` | `; `.` when all are empty.
+fn input_expr(head: &str) -> String {
+    let parts = resolve(head);
+    if parts.is_empty() {
+        ".".into()
+    } else {
+        parts.join(" | ")
+    }
+}
+
+/// The pieces of the input expression, outermost first.
+fn resolve(head: &str) -> Vec<String> {
+    let sc = scan(head);
+    let b = head.as_bytes();
+    let mut parts = Vec::new();
+    let segment = match sc.unclosed.last().copied() {
+        Some(pos) if b[pos] == b'(' => {
+            let before = &head[..pos];
+            let name_start = ident_run_start(before);
+            let name = &before[name_start..];
+            parts = resolve(&before[..name_start]);
+            if PER_ELEMENT.contains(&name) {
+                parts.push(".[]".into());
+            }
+            &head[pos + 1..]
+        }
+        Some(pos) => {
+            parts = resolve(&head[..pos]);
+            &head[pos + 1..]
+        }
+        None => head,
+    };
+    // `f(a; b)`: only the last argument is the caret's.
+    let segment = match last_top_level(segment, b';') {
+        Some(p) => &segment[p + 1..],
+        None => segment,
+    };
+    let (stage, tail) = match last_top_level(segment, b'|') {
+        Some(p) => (segment[..p].trim(), &segment[p + 1..]),
+        None => ("", segment),
+    };
+    if !stage.is_empty() {
+        parts.push(stage.to_string());
+    }
+    let chain = path_chain(tail);
+    if !chain.is_empty() {
+        parts.push(chain.to_string());
+    }
+    parts
+}
+
+/// Byte index of the last `what` in `s` outside strings and brackets. A
+/// `|` directly followed by `=` is the update operator, not a pipe.
+fn last_top_level(s: &str, what: u8) -> Option<usize> {
+    let sc = scan(s);
+    let b = s.as_bytes();
+    (0..b.len()).rev().find(|&i| {
+        b[i] == what
+            && !sc.in_string[i]
+            && sc.depth[i] == 0
+            && !(what == b'|' && b.get(i + 1) == Some(&b'='))
+    })
+}
+
+/// The path chain (`.a`, `."k"`, `[…]`, `?`, `$x`, a bare `.`) ending at
+/// the end of `tail`, or `""` when it ends in anything else.
+fn path_chain(tail: &str) -> &str {
+    let t = tail.trim_end();
+    let sc = scan(t);
+    let b = t.as_bytes();
+    let mut i = t.len();
+    while i > 0 {
+        let c = b[i - 1];
+        if sc.in_string[i - 1] && c != b'"' {
+            break;
+        }
+        let next = if c == b'?' {
+            Some(i - 1)
+        } else if c == b']' || c == b')' {
+            // `.a[0]`, `.[0]`, `(.a | .b)` — a bracket group, with its
+            // leading `.` when it has one; a function-call group like
+            // `select(.a == 1)` extends to the start of its name.
+            sc.open_of[i - 1].map(|o| {
+                if o > 0 && b[o - 1] == b'.' {
+                    o - 1
+                } else if b[o] == b'(' && o > 0 && is_ident_byte(b[o - 1]) {
+                    ident_run_start(&t[..o])
+                } else {
+                    o
+                }
+            })
+        } else if c == b'"' {
+            // `."my key"` — only a string right after `.` is a path step.
+            sc.open_of[i - 1]
+                .filter(|&o| o > 0 && b[o - 1] == b'.')
+                .map(|o| o - 1)
+        } else if is_ident_byte(c) {
+            let j = ident_run_start(&t[..i]);
+            match (j > 0).then(|| b[j - 1]) {
+                Some(b'.') | Some(b'$') => Some(j - 1),
+                _ => None,
+            }
+        } else if c == b'.' {
+            Some(i - 1)
+        } else {
+            None
+        };
+        match next {
+            Some(n) => i = n,
+            None => break,
+        }
+    }
+    &t[i..]
 }
 
 #[cfg(test)]
@@ -193,6 +376,52 @@ mod tests {
     fn key_context_carries_an_input_expression_and_word_context_does_not() {
         assert!(context(".x").unwrap().input_expr.is_some());
         assert!(context("x").unwrap().input_expr.is_none());
+    }
+
+    fn expr(text: &str) -> String {
+        context(text)
+            .unwrap_or_else(|| panic!("{text:?} should complete a key"))
+            .input_expr
+            .unwrap_or_else(|| panic!("{text:?} should be a key context"))
+    }
+
+    #[test]
+    fn the_input_expression_is_the_filter_up_to_the_caret_s_dot() {
+        let cases = [
+            (".us", "."),
+            (".", "."),
+            (".data.it", ".data"),
+            (".data.items[].na", ".data.items[]"),
+            (".data.items[0].", ".data.items[0]"),
+            (".data.items[] | .na", ".data.items[]"),
+            (".data.items[] | select(.st", ".data.items[]"),
+            (".data.items | map(.na", ".data.items | .[]"),
+            (
+                ".data.items[] | select(.status == \"a\") | .i",
+                ".data.items[] | select(.status == \"a\")",
+            ),
+            (".data.items[] | {name: .name, s: .st", ".data.items[]"),
+            ("[.data.items[] | .na", ".data.items[]"),
+            (".data.items[] | .id == .na", ".data.items[]"),
+            (".data.\"my k", ".data"),
+            (".data.\"my key\".na", ".data.\"my key\""),
+            (".a.b?.c", ".a.b?"),
+            (".a | if .x then .b else .c end | .d", ".a | if .x then .b else .c end"),
+            ("limit(3; .data.items[] | .na", ".data.items[]"),
+            (".a |= .b", "."),
+            (".a as $x | $x.na", ".a as $x | $x"),
+            ("$x.na", "$x"),
+            (".[] | .na", ".[]"),
+            (".. | .na", ".."),
+            (".a | .b | .c | .na", ".a | .b | .c"),
+            ("(.a | .b).na", "(.a | .b)"),
+            (".data.items | sort_by(.id) | .[0].na", ".data.items | sort_by(.id) | .[0]"),
+            (".data | (.items[] | .na", ".data | .items[]"),
+            ("select(.a == 1).na", "select(.a == 1)"),
+        ];
+        for (text, want) in cases {
+            assert_eq!(expr(text), want, "for {text:?}");
+        }
     }
 
     #[test]
