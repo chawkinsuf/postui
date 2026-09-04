@@ -276,7 +276,54 @@ shows; drag feels right at the edges.
 - Drag to reparent (into a folder) or across spaces.
 - A "sort alphabetically" reset.
 - Reorder as an undo step.
-- Ordering on the Manage screen.
+- Ordering on the Manage screen. *(Superseded — see §Space drag
+  (Manage screen) below, which brings the same gesture to the Spaces
+  tab. Environments still have no order to rearrange.)*
+
+## Space drag (Manage screen)
+
+The Manage screen's Spaces tab reorders with the same gesture the
+sidebar does. A left press on a space row selects it and arms a press;
+the moment the pointer reaches a *different* row of that list the press
+becomes a live drag, and from there every motion event belongs to the
+drag until the button comes up, whichever pane the pointer wanders
+over. Release on the list commits; release anywhere else, Escape, or a
+right click cancels and the rows snap back. The Environments tab never
+arms a press — environments have no order to rearrange.
+
+While the drag is live the list paints the working order the pointer
+has arranged rather than the project's spaces, the dragged row keeps
+the selected fill and shows the `⋮` grip in its first cell (one cell,
+no variation selector, in the column the label never uses, so nothing
+shifts), and the list cursor rides along with the dragged row so the
+detail pane keeps showing the space being moved. Hover is frozen for
+the length of the drag and the pointer shape is `grabbing`, exactly as
+in the sidebar.
+
+A drop *shifts* the rows between source and target rather than swapping
+two of them, so the writer takes the finished order rather than a
+delta: `postui_core::project::set_space_order(root, displayed)` deals
+the displayed names back out over the valid-name slots of the written
+list, leaving an invalid listed entry in the slot it was written in
+(the same slot arithmetic `move_space` does), and writes nothing when
+the result equals the list already on disk. An order that is not
+exactly the displayed set is refused with `NotFound`. On commit the app
+reloads `meta` and the space list directly rather than through the
+mtime-gated `ReloadProjectFiles`, for the same reason `Action::MoveSpace`
+does, then puts the cursor back on the dragged space.
+
+Like `Action::MoveSpace` and the sidebar's request drag, a space
+reorder is **not an undo step**: it rewrites `project.toml`'s `spaces`
+key and nothing else, and the alt+↑↓ keys and the row menu's
+Move up/Move down remain the keyboard route to the same change.
+
+The terminal quirks recorded for the sidebar drag apply here
+unchanged: a right click is the in-band cancel because Ghostty (Linux)
+swallows the first Escape pressed while a button is held; a `Down(Left)`
+arriving during a live drag means the release was lost, so it cancels
+the drag and then handles the press normally; and phantom `Drag(Left)`
+motion after a cancel carries no drag meaning but must still drive
+hover.
 
 ## Implementation notes (2026-09-04)
 
