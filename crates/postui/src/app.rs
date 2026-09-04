@@ -292,6 +292,10 @@ pub struct App {
     pub drag: Option<Drag>,
     /// A live text-selection sweep (which surface it is over), or `None`.
     pub text_drag: Option<TextDrag>,
+    /// A left press on a sidebar request row: `(row index, slug)`. Armed
+    /// by `on_hit`, cleared on release; becomes a live row drag the moment
+    /// the pointer moves onto another row (see `mouse.rs`).
+    pub sidebar_press: Option<(usize, String)>,
     /// Whether the active tab's params/headers table body is collapsed
     /// (tab strip + its count chip stay visible; only the table itself is
     /// hidden). Session-only — never persisted.
@@ -867,6 +871,7 @@ impl App {
             caret_tip_shown: false,
             drag: None,
             text_drag: None,
+            sidebar_press: None,
             table_collapsed: false,
             pane_collapsed_target: false,
             response_collapsed_target: false,
@@ -6899,6 +6904,53 @@ impl App {
         }
     }
 
+    /// Rebuilds the sidebar rows from the listing it already holds — the
+    /// per-motion path during a row drag, which must not re-read disk.
+    fn rebuild_sidebar(&mut self) {
+        let expanded = self.project.expanded.clone();
+        let space = self.project.active_space.clone();
+        let order = postui_core::order::space_order(&self.project.meta, &space).to_vec();
+        self.sidebar.rebuild(&space, &expanded, &order);
+    }
+
+    /// Pointer motion during a row drag: maps the pointer's screen row to
+    /// a row index (pinned to the dragged row's sibling group) and shows
+    /// the resulting order live.
+    pub fn sidebar_drag_to(&mut self, y: u16) -> bool {
+        let i = self.sidebar.row_at_y(y);
+        if self.sidebar.drag_to_row(i) {
+            self.rebuild_sidebar();
+            return true;
+        }
+        false
+    }
+
+    /// Ends a row drag. `commit` writes the working order when it differs
+    /// from the original; otherwise (release outside, Escape) the rows
+    /// snap back. Either way the sidebar is rebuilt from disk truth.
+    pub fn finish_sidebar_drag(&mut self, commit: bool) -> bool {
+        let Some(drag) = self.sidebar.drag.take() else {
+            return false;
+        };
+        if commit && drag.working != drag.original {
+            let space = self.project.active_space.clone();
+            match postui_core::order::set_level_order(
+                &self.project.root,
+                &space,
+                &drag.level,
+                &drag.working,
+            ) {
+                Ok(()) => self.project.reload_meta(),
+                Err(e) => self
+                    .toasts
+                    .push(format!("cannot reorder: {e}"), ToastKind::Warning),
+            }
+        }
+        self.refresh_sidebar();
+        self.sidebar.select_slug(&drag.slug);
+        true
+    }
+
     /// Pushes a context menu anchored at the pointer: a `Modal::Dropdown`
     /// over a 1x1 anchor at `(x, y)`, so `draw_dropdown`'s existing
     /// flip-near-the-bottom and clamp-to-screen logic places it. Returns
@@ -8088,6 +8140,11 @@ impl App {
                 return true;
             }
             return self.update(Action::Quit);
+        }
+
+        // A live row drag owns Escape: it cancels the drag, nothing else.
+        if ev.code == KeyCode::Esc && self.sidebar.drag.is_some() {
+            return self.finish_sidebar_drag(false);
         }
 
         // 1b. A bound paste combo digs past the layers below: modals and

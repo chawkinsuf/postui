@@ -18825,3 +18825,150 @@ fn returning_to_a_shed_response_reparses_it_and_reapplies_its_filter() {
         "the filter ran against the fresh tree"
     );
 }
+
+// --- sidebar row drags (press arms, motion promotes, release writes) ---
+
+fn row_rect(app: &mut App, i: usize) -> ratatui::layout::Rect {
+    render_once(app);
+    app.hits
+        .rect_of(&Hit::SidebarRow(i))
+        .expect("sidebar row rect")
+}
+
+fn request_rows(app: &App) -> Vec<String> {
+    app.sidebar
+        .rows
+        .iter()
+        .filter_map(|r| match r {
+            Row::Request { slug, .. } => Some(slug.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn three_row_app() -> (App, tempfile::TempDir) {
+    let (mut app, dir) = spaced_app();
+    postui_core::storage::save_request(dir.path(), "main/gamma", &req("https://x/3")).unwrap();
+    app.update(Action::RefreshSidebar);
+    render_once(&mut app);
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
+    (app, dir)
+}
+
+#[test]
+fn press_move_release_reorders_and_persists() {
+    let (mut app, dir) = three_row_app();
+    let r0 = row_rect(&mut app, 0);
+    let r2 = row_rect(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    assert!(app.sidebar.drag.is_none(), "a press alone is not a drag");
+    assert!(app.sidebar_press.is_some());
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    assert!(
+        app.sidebar.drag.is_some(),
+        "motion onto another row promotes"
+    );
+    assert_eq!(request_rows(&app), ["main/beta", "main/gamma", "main/alpha"]);
+    assert_eq!(app.pointer_shape_update(), Some(PointerShape::Grabbing));
+    app.handle_mouse(left_up(r0.x + 2, r2.y));
+    assert!(app.sidebar.drag.is_none());
+    assert!(app.sidebar_press.is_none());
+    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    assert_eq!(
+        postui_core::order::space_order(&meta, "main"),
+        ["beta", "gamma", "alpha"]
+    );
+    render_once(&mut app);
+    assert_eq!(request_rows(&app), ["main/beta", "main/gamma", "main/alpha"]);
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/alpha"));
+}
+
+#[test]
+fn drag_events_promote_the_same_as_moved() {
+    let (mut app, _dir) = three_row_app();
+    let r0 = row_rect(&mut app, 0);
+    let r1 = row_rect(&mut app, 1);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    let mut ev = moved(r0.x + 2, r1.y);
+    ev.kind = ratatui::crossterm::event::MouseEventKind::Drag(
+        ratatui::crossterm::event::MouseButton::Left,
+    );
+    app.handle_mouse(ev);
+    assert!(app.sidebar.drag.is_some());
+}
+
+#[test]
+fn release_outside_the_sidebar_and_escape_both_cancel() {
+    for cancel_with_esc in [false, true] {
+        let (mut app, dir) = three_row_app();
+        let r0 = row_rect(&mut app, 0);
+        let r2 = row_rect(&mut app, 2);
+        app.handle_mouse(left_down(r0.x + 2, r0.y));
+        app.handle_mouse(moved(r0.x + 2, r2.y));
+        assert_eq!(request_rows(&app), ["main/beta", "main/gamma", "main/alpha"]);
+        if cancel_with_esc {
+            app.handle_key(
+                &Keymap::default_bindings(),
+                KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            );
+        } else {
+            app.handle_mouse(left_up(110, 30)); // over the response pane
+        }
+        assert!(app.sidebar.drag.is_none());
+        assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
+        let meta = postui_core::project::load_meta(dir.path()).unwrap();
+        assert!(
+            postui_core::order::space_order(&meta, "main").is_empty(),
+            "nothing written"
+        );
+        assert!(!app.should_quit, "esc cancelled the drag, not the app");
+    }
+}
+
+#[test]
+fn a_drag_never_leaves_its_sibling_group() {
+    let (mut app, dir) = spaced_app();
+    postui_core::storage::save_request(dir.path(), "main/auth/x", &req("https://x/3")).unwrap();
+    app.project.expanded.insert("main/auth".into());
+    app.update(Action::RefreshSidebar);
+    render_once(&mut app);
+    // rows: alpha, beta, auth/, auth/x
+    let r0 = row_rect(&mut app, 0);
+    let r3 = row_rect(&mut app, 3);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r3.y)); // over the folder's child
+    assert_eq!(
+        request_rows(&app),
+        ["main/beta", "main/alpha", "main/auth/x"],
+        "pinned to the group's end"
+    );
+    app.handle_mouse(left_up(r0.x + 2, r3.y));
+    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    assert_eq!(
+        postui_core::order::space_order(&meta, "main"),
+        ["beta", "alpha"]
+    );
+}
+
+#[test]
+fn press_without_motion_still_just_opens_the_request() {
+    let (mut app, dir) = three_row_app();
+    let r1 = row_rect(&mut app, 1);
+    app.handle_mouse(left_down(r1.x + 2, r1.y));
+    app.handle_mouse(moved(r1.x + 4, r1.y)); // same row
+    app.handle_mouse(left_up(r1.x + 4, r1.y));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/beta"));
+    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    assert!(postui_core::order::space_order(&meta, "main").is_empty());
+}
+
+#[test]
+fn hover_is_suppressed_while_dragging_rows() {
+    let (mut app, _dir) = three_row_app();
+    let r0 = row_rect(&mut app, 0);
+    let r2 = row_rect(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    assert!(!app.resync_hover());
+    assert_ne!(app.hovered, Some(Hit::SidebarRow(2)));
+}

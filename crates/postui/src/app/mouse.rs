@@ -36,6 +36,26 @@ impl App {
             // not `Moved`, so a thumb drag arrives as either depending on
             // whether the terminal tracks button state; both drive the drag.
             MouseEventKind::Moved | MouseEventKind::Drag(MouseButton::Left) => {
+                // A live sidebar row drag owns every motion event until the
+                // button comes up, whichever pane the pointer wanders over.
+                if self.sidebar.drag.is_some() {
+                    return self.sidebar_drag_to(m.row);
+                }
+                // A press armed on a row becomes a drag the moment the
+                // pointer reaches a *different* row. The `hit_at` check
+                // keeps a press-then-wander over the header (or any other
+                // chrome) from starting one; once started, motion anywhere
+                // is mapped by `row_at_y`.
+                if let Some(i) = self.sidebar_press.as_ref().map(|(i, _)| *i)
+                    && self.sidebar.row_at_y(m.row) != i
+                    && matches!(self.hits.hit_at(m.column, m.row), Some(Hit::SidebarRow(_)))
+                {
+                    let space = self.project.active_space.clone();
+                    if self.sidebar.begin_drag(i, &space) {
+                        self.hovered = None;
+                        return self.sidebar_drag_to(m.row) | self.update(Action::Render);
+                    }
+                }
                 if let Some(drag) = self.drag.as_ref() {
                     return if drag.horizontal {
                         self.drag_to_h(m.column)
@@ -312,6 +332,14 @@ impl App {
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => {
+                // The press is disarmed by any release, drag or not.
+                self.sidebar_press = None;
+                // A row drag writes its new order only when it is dropped
+                // on the sidebar; a release anywhere else cancels it.
+                if self.sidebar.drag.is_some() {
+                    let inside = self.hits.pane_at(m.column, m.row) == Some(PaneId::Sidebar);
+                    return self.finish_sidebar_drag(inside);
+                }
                 // Releasing the button ends both drag kinds; a finished
                 // text sweep keeps its selection, only the sweep state ends.
                 let had_text = self.text_drag.take().is_some();
@@ -386,7 +414,7 @@ impl App {
     /// frame draw; returns whether anything changed (the caller schedules a
     /// repaint). Inert mid-drag, matching the move handler.
     pub fn resync_hover(&mut self) -> bool {
-        if self.drag.is_some() || self.text_drag.is_some() {
+        if self.drag.is_some() || self.text_drag.is_some() || self.sidebar.drag.is_some() {
             return false;
         }
         let Some((x, y)) = self.pointer else {
@@ -414,9 +442,15 @@ impl App {
     /// which the caller (main.rs's event loop) writes as a Kitty OSC 22
     /// escape after the frame draws; `None` means nothing to write this
     /// frame. Pure aside from updating `last_pointer_shape`, so it's
-    /// testable without a terminal.
+    /// testable without a terminal. A live sidebar row drag overrides the
+    /// hover shape with the closed hand, since hover is frozen for the
+    /// length of the drag.
     pub fn pointer_shape_update(&mut self) -> Option<PointerShape> {
-        let shape = PointerShape::for_hit(self.hovered.as_ref());
+        let shape = if self.sidebar.drag.is_some() {
+            PointerShape::Grabbing
+        } else {
+            PointerShape::for_hit(self.hovered.as_ref())
+        };
         if shape == self.last_pointer_shape {
             return None;
         }
@@ -983,14 +1017,23 @@ impl App {
                 self.update(Action::FocusPane(PaneId::Sidebar));
                 self.set_sidebar_selected(i);
                 match self.sidebar.rows.get(i).cloned() {
+                    // A press on a request row also arms a possible row
+                    // drag; the click itself still opens the request (the
+                    // drag only starts once the pointer leaves the row).
                     Some(Row::Request {
                         slug, broken: None, ..
-                    }) => self.update(Action::OpenRequest(slug)),
+                    }) => {
+                        self.sidebar_press = Some((i, slug.clone()));
+                        self.update(Action::OpenRequest(slug))
+                    }
                     Some(Row::Request {
                         slug,
                         broken: Some(_),
                         ..
-                    }) => self.update(Action::ShowRequestError(slug)),
+                    }) => {
+                        self.sidebar_press = Some((i, slug.clone()));
+                        self.update(Action::ShowRequestError(slug))
+                    }
                     Some(Row::Folder { .. }) => {
                         if clicks == 2 {
                             self.update(Action::ToggleSelectedFolder)

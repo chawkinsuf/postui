@@ -297,6 +297,9 @@ pub enum PointerShape {
     /// `VmEntryCell`) are first a *click* to select/open before any typing
     /// starts and so stay `Pointer`.
     Text,
+    /// The closed-hand cursor while a sidebar row is being dragged (set by
+    /// `App::pointer_shape_update`, not by a hit).
+    Grabbing,
 }
 
 impl PointerShape {
@@ -306,6 +309,7 @@ impl PointerShape {
             PointerShape::Default => "default",
             PointerShape::Pointer => "pointer",
             PointerShape::Text => "text",
+            PointerShape::Grabbing => "grabbing",
         }
     }
 
@@ -624,6 +628,11 @@ mod tests {
             "pane_at sees through overlays"
         );
         assert_eq!(m.rect_of(&Hit::SidebarRow(0)), Some(Rect::new(2, 2, 3, 1)));
+    }
+
+    #[test]
+    fn grabbing_shape_names_the_osc22_cursor() {
+        assert_eq!(PointerShape::Grabbing.as_str(), "grabbing");
     }
 
     fn spec(offset: usize) -> ScrollbarSpec {
