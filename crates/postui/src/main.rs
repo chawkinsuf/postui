@@ -23,7 +23,7 @@ async fn main() -> anyhow::Result<()> {
             println!("usage: postui [directory]");
             println!("       postui --setup    terminal keyboard setup (macOS opt/cmd keys)");
             println!(
-                "       postui --keydump[=BITS]  echo raw key events (kitty flag bits; 0=none)"
+                "       postui --keydump[=BITS]  echo raw key and mouse events (kitty flag bits; 0=none)"
             );
             return Ok(());
         }

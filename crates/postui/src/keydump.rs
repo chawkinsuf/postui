@@ -7,11 +7,13 @@
 //! ([`crate::keys::app_enhancement_flags`]); `--keydump=N` pushes the raw
 //! bitmask `N` (kitty protocol bits: 1 disambiguate, 2 event types,
 //! 4 alternate keys, 8 all keys as escape codes; `0` pushes nothing), which
-//! is how tier differences between terminals get isolated.
+//! is how tier differences between terminals get isolated. Mouse capture is
+//! also enabled, so clicks, drags, and scroll are echoed alongside keys.
 
 use ratatui::crossterm::event::{
-    DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyModifiers,
-    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
+    KeyCode, KeyModifiers, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode};
@@ -44,6 +46,10 @@ pub fn describe(ev: &Event) -> String {
         // The pasted text itself may be huge or sensitive; the length is
         // what matters for debugging delivery.
         Event::Paste(text) => format!("paste  {} chars (bracketed)", text.chars().count()),
+        Event::Mouse(m) => format!(
+            "mouse  kind={:?} col={} row={} mods={:?}",
+            m.kind, m.column, m.row, m.modifiers
+        ),
         other => format!("{other:?}"),
     }
 }
@@ -59,9 +65,8 @@ pub fn resolve_flags(flags: Option<u8>) -> KeyboardEnhancementFlags {
 }
 
 /// Runs the echo loop on the real terminal until ctrl+d. Raw mode plus
-/// bracketed paste, and the enhancement push when the resolved tier is
-/// non-empty — deliberately *no* mouse capture, so motion reports don't
-/// flood the dump and terminal-native selection still works while it runs.
+/// bracketed paste and mouse capture, and the enhancement push when the
+/// resolved tier is non-empty.
 pub fn run(flags: Option<u8>) -> anyhow::Result<()> {
     use std::io::Write;
     let resolved = resolve_flags(flags);
@@ -69,7 +74,7 @@ pub fn run(flags: Option<u8>) -> anyhow::Result<()> {
         ratatui::crossterm::terminal::supports_keyboard_enhancement(),
         Ok(true)
     );
-    println!("postui --keydump: raw key-event echo (ctrl+d exits)");
+    println!("postui --keydump: raw key-event echo (ctrl+d exits); mouse events are reported too");
     println!(
         "TERM={:?} TERM_PROGRAM={:?}",
         std::env::var("TERM").ok(),
@@ -85,6 +90,7 @@ pub fn run(flags: Option<u8>) -> anyhow::Result<()> {
     enable_raw_mode()?;
     let mut out = std::io::stdout();
     let _ = execute!(out, EnableBracketedPaste);
+    let _ = execute!(out, EnableMouseCapture);
     let pushed = !resolved.is_empty();
     if pushed {
         let _ = execute!(out, PushKeyboardEnhancementFlags(resolved));
@@ -108,6 +114,7 @@ pub fn run(flags: Option<u8>) -> anyhow::Result<()> {
     if pushed {
         let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
     }
+    let _ = execute!(std::io::stdout(), DisableMouseCapture);
     let _ = execute!(std::io::stdout(), DisableBracketedPaste);
     let _ = disable_raw_mode();
     result
@@ -116,7 +123,7 @@ pub fn run(flags: Option<u8>) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::crossterm::event::KeyEvent;
+    use ratatui::crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 
     #[test]
     fn resolve_flags_none_is_the_app_tier() {
@@ -161,6 +168,22 @@ mod tests {
         let line = describe(&ev);
         assert!(line.contains("super-fold"), "{line}");
         assert!(line.contains("Home"), "{line}");
+    }
+
+    #[test]
+    fn describe_mouse_shows_kind_col_row_mods() {
+        let ev = Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 12,
+            row: 34,
+            modifiers: KeyModifiers::SHIFT,
+        });
+        let line = describe(&ev);
+        assert!(line.starts_with("mouse  "), "{line}");
+        assert!(line.contains("kind=Down(Left)"), "{line}");
+        assert!(line.contains("col=12"), "{line}");
+        assert!(line.contains("row=34"), "{line}");
+        assert!(line.contains("mods=KeyModifiers(SHIFT)"), "{line}");
     }
 
     #[test]
