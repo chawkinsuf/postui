@@ -20,6 +20,9 @@ pub enum JqBarState {
     Closed,
     Open,
     Focused,
+    /// Focused with a completion ghost showing; `cycle` is the `jq_tab`
+    /// mode (Tab steps) versus accept (Tab accepts).
+    Completing { cycle: bool },
 }
 
 /// The context-sensitive chips for the focused pane. Each entry is `(key,
@@ -117,17 +120,29 @@ pub(crate) fn footer_chips(
             chips
         }
         PaneId::Response => {
-            if jq_bar == JqBarState::Focused {
+            if let JqBarState::Focused | JqBarState::Completing { .. } = jq_bar {
                 // Enter commits (the filter is live already; Enter just
                 // hands focus back to the tree with the filter on), Esc
                 // clears the filter, alt+q closes the bar — switching the
-                // filter off without losing it.
-                vec![
+                // filter off without losing it. While a completion ghost
+                // shows, the Tab chip(s) lead: "tab next" + "→ accept" in
+                // cycle mode, or "tab accept" in accept mode.
+                let mut chips = Vec::new();
+                match jq_bar {
+                    JqBarState::Completing { cycle: true } => {
+                        chips.push(("tab", "next", None));
+                        chips.push(("→", "accept", None));
+                    }
+                    JqBarState::Completing { cycle: false } => chips.push(("tab", "accept", None)),
+                    _ => {}
+                }
+                chips.extend([
                     ("enter", "apply", None),
                     ("esc", "clear", Some(Action::ClearJqBar)),
                     ("alt+q", "close", Some(Action::ToggleJqBar)),
                     ("✦", "describe…", Some(Action::OpenJqDescribe)),
-                ]
+                ]);
+                chips
             } else {
                 vec![
                     (
@@ -387,6 +402,24 @@ mod tests {
     use super::*;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+
+    #[test]
+    fn a_completion_ghost_advertises_tab_and_accept() {
+        let chips = |state: JqBarState| {
+            footer_chips(PaneId::Response, false, false, None, false, None, state)
+                .into_iter()
+                .map(|(k, l, _)| format!("{k} {l}"))
+                .collect::<Vec<_>>()
+        };
+        let focused = chips(JqBarState::Focused);
+        assert!(!focused.iter().any(|c| c.starts_with("tab")), "{focused:?}");
+        let cycle = chips(JqBarState::Completing { cycle: true });
+        assert_eq!(&cycle[..2], &["tab next".to_string(), "→ accept".to_string()]);
+        assert_eq!(&cycle[2..], &focused[..], "the usual chips follow");
+        let accept = chips(JqBarState::Completing { cycle: false });
+        assert_eq!(accept[0], "tab accept");
+        assert_eq!(&accept[1..], &focused[..]);
+    }
 
     fn render(focus: PaneId) -> String {
         let (content, _) = render_hits(focus);

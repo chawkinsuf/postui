@@ -286,7 +286,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         ),
         table_row_selected,
         if app.session.response.jq_focused() {
-            crate::components::footer::JqBarState::Focused
+            if app.session.response.jq_ghost().is_some() {
+                crate::components::footer::JqBarState::Completing {
+                    cycle: app.ui_settings.jq_tab == crate::config::JqTab::Cycle,
+                }
+            } else {
+                crate::components::footer::JqBarState::Focused
+            }
         } else if app.session.response.jq_open() {
             crate::components::footer::JqBarState::Open
         } else {
