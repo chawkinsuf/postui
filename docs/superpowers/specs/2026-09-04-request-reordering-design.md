@@ -122,7 +122,8 @@ ignored for display).
 - `refresh(listing, space, expanded, order: &[String])` passes `order`
   down; `build_rows` sorts each level's requests with `order_level`
   and takes the space slug so relative slugs line up. `space_requests()`
-  (the Manage screen's list) uses the same call.
+  (the Manage screen's list) is *not* changed: it stays name-sorted, as
+  Out of scope says.
 - New state: `drag: Option<RowDrag>`
 
   ```rust
@@ -220,6 +221,14 @@ sidebar_press: Option<(usize, String)>, // row index + slug of the armed press
 - Concurrent edit of `project.toml` by another process between read
   and write: last writer wins, as for every other project.toml write
   today.
+- **Undo restores the file, not the order slot.** Undoing a delete or a
+  rename brings the request file back, but the order-list cascade that
+  ran alongside it is not reversed — reordering is not an undo step, so
+  nothing in the undo stack touches `[space.<slug>] order`. The request
+  therefore reappears *unlisted*: it sorts alphabetically after its
+  listed siblings rather than returning to the slot it held. Accepted:
+  putting the cascade in the undo stack would make a reorder an undoable
+  step by the back door, and re-dragging one row is cheap.
 
 ## Testing
 
@@ -308,16 +317,46 @@ per-level constants travel as a `LevelCtx<'_>` (`expanded`, `space`,
 dragged past the list rather than exactly onto its last row still
 auto-scrolls.
 
-**`App.sidebar_press` is `(row index, slug)`.** Only the row index is
-read today (to tell a click apart from the start of a drag); the slug
-half is carried for a future press-target check and is currently
-unused.
+**`App.sidebar_press` is `(row index, slug)`, and the slug is the
+authority.** The index only says *that* a row was pressed; a rebuild
+between the press and the first motion event (a focus-gained
+`ReloadProjectFiles`, a folder toggle, a background refresh) can put a
+different request at that index. Promotion therefore re-resolves the row
+by the stored slug and, when that slug is no longer on screen, disarms
+the press rather than promoting.
+
+**`RowDrag` carries its `space`.** A drag belongs to the space it
+started in: `Sidebar::rebuild` applies the working-order overlay only
+when the space it is drawing matches, and `finish_sidebar_drag` treats a
+space mismatch as a cancel. `App::enter_space` also ends any live drag
+before the root changes, so a space switch with the button still held
+(ctrl+1..9, alt+z) cannot write the old space's slugs into the new
+space's order list.
+
+**Promotion yields to modals.** A press on a broken row opens its error
+modal; the modal owns the pointer from then on, so the promotion branch
+is gated on an empty modal stack.
+
+**Tick edge-scroll checks x too.** `drag_edge` only sees a y, and the
+response pane shares the sidebar list's bottom row, so the `Tick`
+handler first requires `hits.pane_at(x, y) == Some(PaneId::Sidebar)`.
+
+**`move_request` writes nothing when nothing moves.** The clamp can land
+the request where it already is (alt+↑ on the first row); it returns
+early there rather than materialising the level into `project.toml` for
+a move that had no effect.
 
 **Cancel disarms the press.** `finish_sidebar_drag` clears
 `sidebar_press` on *every* drag end, commit or cancel. Review found
 that Escape alone left the press armed, so the next stray motion
 event — with no button held — restarted the drag. Confirmed fixed in
 the manual pass.
+
+**"Move all requests…" cascades too.** `ForceMoveAllRequests` runs
+`order_remove` on the source and `order_arrive` on the destination for
+every request it moved, so emptying a space leaves no stale entries
+behind — the app made them stale, and entries the app makes stale are
+cascaded.
 
 **Tick auto-scroll casts.** The `Tick` handler calls
 `self.sidebar.handle_scroll(delta as i16)`; `drag_edge` returns an
