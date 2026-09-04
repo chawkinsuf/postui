@@ -1325,16 +1325,12 @@ impl Response {
         if c.pending.as_ref().is_some_and(|(_, e)| *e == expr) {
             return None;
         }
-        let Some(view) = self.view.as_mut() else {
-            return None;
-        };
+        let view = self.view.as_mut()?;
         let body_len = view.raw_lines.iter().map(|l| l.len() + 1).sum::<usize>();
         if view.jq_doc.is_none() && view.has_tree_view() && body_len <= sync_limit {
             view.jq_doc = JqDocument::parse(&view.raw_lines.join("\n")).ok();
         }
-        let Some(doc) = view.jq_doc.clone() else {
-            return None;
-        };
+        let doc = view.jq_doc.clone()?;
         if body_len <= sync_limit {
             c.cached_keys = complete::keys_at(&expr, &doc);
             c.cached_expr = Some(expr);
