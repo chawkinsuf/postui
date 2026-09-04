@@ -17252,6 +17252,9 @@ fn a_saved_off_filter_stays_off_when_the_request_opens() {
 #[test]
 fn a_null_or_empty_result_keeps_the_full_body_with_a_note() {
     let mut app = App::new_for_test();
+    // Cycle mode: menu mode's candidate row would take the note's row
+    // while `.dat` still has a candidate to offer.
+    app.session.response.set_jq_tab(crate::config::JqTab::Cycle);
     ready_response(&mut app, JQ_BODY);
     let full = app.session.response.view().unwrap().view_text();
     app.handle_key(&Keymap::default_bindings(), alt('q'));
@@ -17485,6 +17488,7 @@ fn a_big_body_runs_the_filter_in_the_background_and_lands_via_an_action() {
 #[test]
 fn typing_in_the_jq_bar_ghosts_a_key_and_right_accepts_it() {
     let mut app = App::new_for_test();
+    app.session.response.set_jq_tab(crate::config::JqTab::Cycle);
     ready_response(&mut app, r#"{"data":{"items":[{"id":1,"status":"a"}]}}"#);
     app.update(Action::ResponseViewMode(
         crate::components::response::ViewMode::Pretty,
@@ -17507,6 +17511,7 @@ fn typing_in_the_jq_bar_ghosts_a_key_and_right_accepts_it() {
 #[test]
 fn a_big_body_fetches_completion_keys_in_the_background_and_lands_via_an_action() {
     let mut app = App::new_for_test();
+    app.session.response.set_jq_tab(crate::config::JqTab::Cycle);
     let big = format!(
         r#"{{"pad": "{}", "n": 7}}"#,
         "x".repeat(crate::components::response::SYNC_PRETTY_BYTES)
@@ -17551,12 +17556,12 @@ fn a_big_body_fetches_completion_keys_in_the_background_and_lands_via_an_action(
 #[test]
 fn the_jq_tab_setting_reaches_the_bar() {
     let mut app = App::new_for_test();
-    assert_eq!(app.session.response.jq_tab(), crate::config::JqTab::Cycle);
+    assert_eq!(app.session.response.jq_tab(), crate::config::JqTab::Menu);
     let mut settings = app.ui_settings.clone();
-    settings.jq_tab = crate::config::JqTab::Menu;
+    settings.jq_tab = crate::config::JqTab::Cycle;
     let name = app.theme_name.clone();
     app.apply_ui_settings(settings, name, crate::theme::Theme::dark());
-    assert_eq!(app.session.response.jq_tab(), crate::config::JqTab::Menu);
+    assert_eq!(app.session.response.jq_tab(), crate::config::JqTab::Cycle);
 }
 
 /// The bar's spinner is drawn on ticks, so ticks must keep redrawing while

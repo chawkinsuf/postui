@@ -54,14 +54,14 @@ items where…). "Describe a filter…" sends the response's *structure* (key na
 never values) to the command in `ai_cmd` (default `claude -p`) and puts the reply in the bar.
 A filter the AI returns is applied immediately — safe because jaq (the embedded jq engine)
 runs in-process with no file or process access, and its output never leaves the app.
-As you type, the bar ghosts the rest of what you're most likely writing: type `.` for the keys
-the filter has reached at that point in the response, or the start of a builtin's name (`leng`
-→ `length`). `Tab` cycles through the candidates, `shift+Tab` goes back, and `Right` or `End`
-accepts the one showing. With `jq_tab = "menu"` there is no ghost: the candidates are listed
-under the bar as you type, narrowing with each character, and `Tab` picks the first, further
-`Tab`s step through them (the row slides to keep the selected one in view), `shift+Tab` goes
-back, `Enter` confirms the selected one, `Esc` un-picks it, and anything else you type keeps
-the selection.
+As you type, the bar completes what you're most likely writing: type `.` for the keys the
+filter has reached at that point in the response, or the start of a builtin's name (`leng` →
+`length`). The candidates are listed under the bar as you type, narrowing with each character;
+`Tab` picks the first, further `Tab`s step through them (the row slides to keep the selected one
+in view), `shift+Tab` goes back, `Enter` confirms the selected one, `Esc` un-picks it, and
+anything else you type keeps the selection. With `jq_tab = "cycle"` the bar instead ghosts the
+best candidate after the caret: `Tab` cycles through the candidates in place, `shift+Tab` goes
+back, and `Right` or `End` accepts the one showing.
 
 ## Configuration
 
@@ -80,8 +80,8 @@ e.g. `~/.config/postui/config.toml` on Linux):
   writes the jq filter it suggests to stdout. Default: `"claude -p"`.
 - `ai_confirmed` — whether the one-time confirmation to send response
   structure to `ai_cmd` has been accepted.
-- `jq_tab` — what `Tab` does on a completion ghost in the jq bar:
-  `"cycle"` (the default) ghosts the best candidate and steps through the
-  rest in place; `"menu"` lists the candidates under the bar as you type,
-  with `Tab`/`shift+Tab` picking and stepping through them (`"accept"` is
-  an older name for it). `Right` and `End` accept a ghost in cycle mode.
+- `jq_tab` — how the jq bar completes: `"menu"` (the default) lists the
+  candidates under the bar as you type, with `Tab`/`shift+Tab` picking
+  and stepping through them (`"accept"` is an older name for it);
+  `"cycle"` ghosts the best candidate after the caret and steps through
+  the rest in place, `Right` and `End` accepting it.

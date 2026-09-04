@@ -195,14 +195,14 @@ impl Default for AnimDurations {
 }
 
 /// What Tab does in the response pane's jq bar while a completion ghost
-/// is showing (`jq_tab` in `config.toml`): step to the next candidate
-/// (`cycle`), or complete the one showing and open a row of the others
-/// under the bar for Tab to step through, shell-style (`menu`; `accept`
-/// is accepted as an older name for it). Right and End accept in both.
+/// is showing (`jq_tab` in `config.toml`): list the candidates under the
+/// bar and step through them, shell-style (`menu`, the default; `accept`
+/// is accepted as an older name for it), or ghost the best one after the
+/// caret and step through the rest in place (`cycle`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum JqTab {
-    #[default]
     Cycle,
+    #[default]
     Menu,
 }
 
@@ -247,7 +247,7 @@ impl Default for UiSettings {
             anim_ms: AnimDurations::default(),
             ai_cmd: "claude -p".into(),
             ai_confirmed: false,
-            jq_tab: JqTab::Cycle,
+            jq_tab: JqTab::Menu,
         }
     }
 }
@@ -295,7 +295,7 @@ pub fn load_ui_settings(path: &Path) -> (UiSettings, Vec<String>) {
             "menu" | "accept" => settings.jq_tab = JqTab::Menu,
             other => warnings.push(format!(
                 "invalid value {other:?} for jq_tab in config.toml \
-                 (expected \"cycle\" or \"menu\"); using \"cycle\""
+                 (expected \"menu\" or \"cycle\"); using \"menu\""
             )),
         }
     }
@@ -626,24 +626,24 @@ mod tests {
     }
 
     #[test]
-    fn jq_tab_defaults_to_cycle_and_parses_menu() {
+    fn jq_tab_defaults_to_menu_and_parses_cycle() {
         let dir = tempdir().unwrap();
         let p = dir.path().join("config.toml");
         let (s, _) = load_ui_settings(&p);
-        assert_eq!(s.jq_tab, JqTab::Cycle);
-        std::fs::write(&p, "jq_tab = \"menu\"\n").unwrap();
-        let (s, warnings) = load_ui_settings(&p);
         assert_eq!(s.jq_tab, JqTab::Menu);
+        std::fs::write(&p, "jq_tab = \"cycle\"\n").unwrap();
+        let (s, warnings) = load_ui_settings(&p);
+        assert_eq!(s.jq_tab, JqTab::Cycle);
         assert!(warnings.is_empty());
         std::fs::write(&p, "jq_tab = \"accept\"\n").unwrap();
         let (s, warnings) = load_ui_settings(&p);
         assert_eq!(s.jq_tab, JqTab::Menu, "the older name still works");
         assert!(warnings.is_empty());
-        std::fs::write(&p, "jq_tab = \"cycle\"\n").unwrap();
-        assert_eq!(load_ui_settings(&p).0.jq_tab, JqTab::Cycle);
+        std::fs::write(&p, "jq_tab = \"menu\"\n").unwrap();
+        assert_eq!(load_ui_settings(&p).0.jq_tab, JqTab::Menu);
         std::fs::write(&p, "jq_tab = \"popup\"\n").unwrap();
         let (s, warnings) = load_ui_settings(&p);
-        assert_eq!(s.jq_tab, JqTab::Cycle, "a bad value falls back");
+        assert_eq!(s.jq_tab, JqTab::Menu, "a bad value falls back");
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("jq_tab"), "{warnings:?}");
     }

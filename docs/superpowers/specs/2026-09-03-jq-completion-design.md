@@ -28,10 +28,11 @@ rides along because jaq already exposes its definitions.
 - **Ghost text, not a dropdown.** The best candidate is drawn dimmed after
   the caret. It fits the one-row bar and never covers the tree the user
   is reading. Several candidates are reached by cycling, not by a list.
-- **Two Tab behaviours, chosen in config.** `jq_tab = "cycle"` (default):
-  Tab shows the next candidate, shift+Tab the previous, Right/End accept.
+- **Two Tab behaviours, chosen in config.** `jq_tab = "cycle"`: Tab
+  shows the next candidate, shift+Tab the previous, Right/End accept.
   `jq_tab = "menu"` (2026-09-04; it replaced `"accept"`, which is kept as
-  an alias): no ghost at all. The candidates are on show as a row of
+  an alias, and became the default the same day — the row's preview
+  beat the ghost in use): no ghost at all. The candidates are on show as a row of
   chips under the bar whenever there are any — one per candidate, the
   whole token each, nothing selected — narrowing live as the user types,
   so nothing is ever pushed at them as *the* guess (a wrong ghost made
@@ -56,7 +57,7 @@ rides along because jaq already exposes its definitions.
   selected it starts at the left. Right/End accept only a ghost, so in
   menu mode they are plain caret moves. A top-level
   `config.toml` key, loaded like `theme` and `ai_cmd`; a bad value warns
-  and falls back to `cycle`. Not settable from the UI in this round.
+  and falls back to `menu`. Not settable from the UI in this round.
   The original `"accept"` (Tab accepts, type more to reach a later
   candidate) shipped first and was replaced the next day: it was thinner
   than users expect from Tab.
@@ -372,8 +373,8 @@ ghost is not a hit target.
 
 ## Config
 
-`UiSettings` gains `jq_tab: JqTab` (`enum JqTab { Cycle, Accept }`,
-default `Cycle`), read from the top-level `jq_tab` string key by
+`UiSettings` gains `jq_tab: JqTab` (`enum JqTab { Cycle, Menu }`,
+default `Menu`), read from the top-level `jq_tab` string key by
 `load_ui_settings`, with an unrecognised value producing a warning in the
 returned list and the default. `App` hands the mode to the response
 component at construction (the same way other settings reach it).

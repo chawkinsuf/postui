@@ -397,7 +397,7 @@ impl Default for JqBar {
             ai_pending: false,
             ai_started: Instant::now(),
             completion: JqCompletion::default(),
-            tab: JqTab::Cycle,
+            tab: JqTab::Menu,
             menu: None,
             edit_origin: None,
         }
@@ -5354,6 +5354,7 @@ mod tests {
     #[test]
     fn a_dot_ghosts_the_first_key_of_what_the_caret_sees() {
         let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Cycle);
         type_jq(&mut r, ".");
         assert_eq!(r.jq_ghost(), Some("data"));
         type_jq(&mut r, ".data.");
@@ -5373,6 +5374,7 @@ mod tests {
     #[test]
     fn a_word_ghosts_a_builtin_even_with_no_document() {
         let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Cycle);
         type_jq(&mut r, ".data.items | leng");
         assert_eq!(r.jq_ghost(), Some("th"));
         // `set_jq_focus` refuses a non-JSON body (no tree to filter), so
@@ -5388,6 +5390,7 @@ mod tests {
             );
         };
         let mut r = ready("<html>");
+        r.set_jq_tab(JqTab::Cycle);
         type_jq_unfocusable(&mut r, "leng");
         assert_eq!(r.jq_ghost(), Some("th"), "builtins need no body");
         type_jq_unfocusable(&mut r, ".d");
@@ -5397,6 +5400,7 @@ mod tests {
     #[test]
     fn the_ghost_hides_off_the_end_of_the_text_and_when_unfocused() {
         let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Cycle);
         type_jq(&mut r, ".data.");
         assert!(r.jq_ghost().is_some());
         r.jq_bar_mut().input.set_cursor(3);
@@ -5417,6 +5421,7 @@ mod tests {
     #[test]
     fn typing_more_of_a_partial_reuses_the_fetched_keys() {
         let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Cycle);
         type_jq(&mut r, ".data.items[] | .");
         assert_eq!(r.jq_ghost(), Some("id"));
         // Same context, longer partial: no fetch would be needed even for
@@ -5431,6 +5436,7 @@ mod tests {
     fn a_big_body_fetches_keys_on_the_pool_and_attaches_by_sequence() {
         let big = format!(r#"{{"pad": "{}", "n": 7}}"#, "x".repeat(SYNC_PRETTY_BYTES));
         let mut r = ready_gen(&big, 3);
+        r.set_jq_tab(JqTab::Cycle);
         r.attach_tree(3, crate::components::json_tree::JsonTree::parse(&big));
         r.set_jq_focus(true);
         r.jq_bar_mut().input = LineInput::new(".");
@@ -5464,6 +5470,8 @@ mod tests {
     /// the bar focused with `text` typed and applied.
     fn big_body_bar(body: &str, generation: u64, text: &str) -> Response {
         let mut r = ready_gen(body, generation);
+        // These tests read the ghost, which only cycle mode draws.
+        r.set_jq_tab(JqTab::Cycle);
         r.attach_tree(
             generation,
             crate::components::json_tree::JsonTree::parse(body),
@@ -5488,6 +5496,7 @@ mod tests {
     #[test]
     fn a_new_response_re_derives_the_completion_from_the_new_body() {
         let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Cycle);
         type_jq(&mut r, ".");
         assert_eq!(r.jq_ghost(), Some("data"));
         r.set_state(
@@ -5618,6 +5627,7 @@ mod tests {
     #[test]
     fn tab_cycles_and_right_accepts_in_cycle_mode() {
         let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Cycle);
         type_jq(&mut r, ".data.items[] | .");
         assert_eq!(r.jq_ghost(), Some("id"));
         bar_key(&mut r, key(KeyCode::Tab));
@@ -5636,6 +5646,7 @@ mod tests {
     #[test]
     fn end_accepts_too_and_typing_resets_the_cycle() {
         let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Cycle);
         type_jq(&mut r, ".data.items[] | .");
         bar_key(&mut r, key(KeyCode::Tab));
         assert_eq!(r.jq_ghost(), Some("status"));
@@ -5816,6 +5827,7 @@ mod tests {
     #[test]
     fn enter_on_a_ghost_commits_the_typed_text_not_the_ghost() {
         let mut r = ready(r#"{"id": 1, "identifier": 2}"#);
+        r.set_jq_tab(JqTab::Cycle);
         type_jq(&mut r, ".id");
         assert_eq!(r.jq_ghost(), Some("entifier"));
         bar_key(&mut r, key(KeyCode::Enter));
@@ -5905,6 +5917,7 @@ mod tests {
     #[test]
     fn accepting_a_quoted_key_rewrites_the_token() {
         let mut r = ready(r#"{"my key": 1, "myth": 2}"#);
+        r.set_jq_tab(JqTab::Cycle);
         type_jq(&mut r, ".my");
         assert_eq!(r.jq_ghost(), Some("\"my key\""));
         bar_key(&mut r, key(KeyCode::Tab));
@@ -5923,6 +5936,7 @@ mod tests {
     #[test]
     fn accepting_a_builtin_leaves_the_caret_inside_its_parens() {
         let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Cycle);
         type_jq(&mut r, ".data.items[] | sel");
         assert_eq!(r.jq_ghost(), Some("ect("));
         bar_key(&mut r, key(KeyCode::Right));
@@ -5936,6 +5950,7 @@ mod tests {
     #[test]
     fn without_a_ghost_tab_and_right_behave_as_before() {
         let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Cycle);
         type_jq(&mut r, ".data.zz");
         assert_eq!(r.jq_ghost(), None);
         bar_key(&mut r, key(KeyCode::Tab));
@@ -6594,6 +6609,7 @@ mod tests {
     #[test]
     fn the_ghost_is_drawn_muted_in_the_caret_cell() {
         let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Cycle);
         type_jq(&mut r, ".data.");
         let text = render(&mut r);
         // The focused bar paints no caret cell of its own — the terminal
@@ -6648,6 +6664,7 @@ mod tests {
     #[test]
     fn the_ghost_is_clipped_to_the_bar_and_never_moves_the_caret() {
         let mut r = ready(ITEMS);
+        r.set_jq_tab(JqTab::Cycle);
         type_jq(&mut r, ".data.");
         // 18 columns: the pane's 1-column-each-side inset (pane_surface)
         // takes 2, the ` ✦ ` chip plus its gap take 4, and `jq ` takes 3,

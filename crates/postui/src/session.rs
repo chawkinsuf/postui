@@ -389,19 +389,19 @@ mod tests {
         open(&mut s, "a");
         s.response
             .set_state(ResponseState::Ready(data("from a")), 0);
-        s.response.set_jq_tab(crate::config::JqTab::Menu);
+        s.response.set_jq_tab(crate::config::JqTab::Cycle);
 
         open(&mut s, "b");
         assert_eq!(
             s.response.jq_tab(),
-            crate::config::JqTab::Menu,
+            crate::config::JqTab::Cycle,
             "jq_tab follows to a request opened for the first time this session"
         );
 
         open(&mut s, "a");
         assert_eq!(
             s.response.jq_tab(),
-            crate::config::JqTab::Menu,
+            crate::config::JqTab::Cycle,
             "…and back to a's cached response too"
         );
     }
@@ -587,13 +587,13 @@ mod tests {
     #[test]
     fn jq_tab_is_a_config_setting_that_survives_a_project_switch() {
         let mut s = Session::default();
-        s.response.set_jq_tab(crate::config::JqTab::Menu);
+        s.response.set_jq_tab(crate::config::JqTab::Cycle);
 
         s.reset();
 
         assert_eq!(
             s.response.jq_tab(),
-            crate::config::JqTab::Menu,
+            crate::config::JqTab::Cycle,
             "jq_tab is a UI setting, not part of the response being reset"
         );
     }
