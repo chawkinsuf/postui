@@ -6938,6 +6938,16 @@ impl App {
         // itself changing -- snap `ListTravel`'s value to match, or it
         // keeps easing toward the old index and paints a ghost selection
         // band there alongside the real one.
+        self.snap_sidebar_travel();
+    }
+
+    /// Snaps `AnimKey::ListTravel(Sidebar)` to the open row's current
+    /// index, if any request is open. Shared by `refresh_sidebar` and
+    /// `rebuild_sidebar`: both re-index rows in ways that can move the
+    /// open request to a different row without the open request itself
+    /// changing, and without this the anim keeps easing toward wherever
+    /// it used to be and `draw`'s crossfade paints a ghost band there.
+    fn snap_sidebar_travel(&mut self) {
         if let Some(i) = self.sidebar.open_row() {
             self.anims
                 .snap(AnimKey::ListTravel(ListId::Sidebar), i as f32);
@@ -6947,15 +6957,20 @@ impl App {
     /// Rebuilds the sidebar rows from the listing it already holds — the
     /// per-motion path during a row drag, which must not re-read disk.
     ///
-    /// Deliberately *not* `refresh_sidebar` minus the listing: it also
-    /// omits that function's `ListTravel` snap, so the selection band
-    /// stays where it is instead of chasing the dragged row from slot to
-    /// slot on every motion event.
+    /// The band tracks the open request, and the dragged row *is* the
+    /// open request (a press opens it before a drag can start), so this
+    /// snaps `ListTravel` exactly as `refresh_sidebar` does: without it
+    /// the anim keeps easing toward the pressed row's index while
+    /// `rebuild` moves that row from slot to slot, and the `draw`
+    /// crossfade paints a partial band on both the stale target and the
+    /// row the open request used to be on — a ghost that lingers for the
+    /// rest of the drag.
     fn rebuild_sidebar(&mut self) {
         let expanded = self.project.expanded.clone();
         let space = self.project.active_space.clone();
         let order = postui_core::order::space_order(&self.project.meta, &space).to_vec();
         self.sidebar.rebuild(&space, &expanded, &order);
+        self.snap_sidebar_travel();
     }
 
     /// Pointer motion during a row drag: maps the pointer's screen row to

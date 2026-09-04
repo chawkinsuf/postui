@@ -362,6 +362,18 @@ cascaded.
 `self.sidebar.handle_scroll(delta as i16)`; `drag_edge` returns an
 `i32` and `handle_scroll` takes an `i16`.
 
+**`rebuild_sidebar` snaps `AnimKey::ListTravel(Sidebar)` too.** The
+per-motion drag path (`App::rebuild_sidebar`) originally omitted the
+snap that `refresh_sidebar` does after every rebuild, on the theory
+that the band shouldn't chase the dragged row from slot to slot. But
+the dragged row *is* the open row (a press opens its request before a
+drag can start), so skipping the snap left the travel anim easing
+toward the pressed row's pre-drag index while `rebuild` moved it,
+and `draw`'s crossfade painted a ghost band on the row that used to be
+open. `rebuild_sidebar` now snaps on every motion event, exactly like
+`refresh_sidebar`; both call a shared `App::snap_sidebar_travel`
+helper.
+
 ### Manual pass (tmux, 160x45, `animations = false`)
 
 Six requests (`main/a`…`main/e` plus `main/grp/f`) against a scratch

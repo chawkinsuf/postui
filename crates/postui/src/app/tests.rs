@@ -18888,6 +18888,62 @@ fn three_row_app() -> (App, tempfile::TempDir) {
 }
 
 #[test]
+fn a_live_drag_paints_exactly_one_selection_band() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let (mut app, _dir) = three_row_app();
+    let r0 = row_rect(&mut app, 0);
+    let r1 = row_rect(&mut app, 1);
+    let r2 = row_rect(&mut app, 2);
+
+    // Open gamma first — the real repro's "delta" — so the travel anim
+    // has somewhere to fade out from.
+    app.handle_mouse(left_down(r2.x + 2, r2.y));
+    app.handle_mouse(left_up(r2.x + 2, r2.y));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/gamma"));
+
+    // Press beta (which itself opens beta and retargets the band toward
+    // it) and, before that animation has any chance to settle, drag it
+    // onto row 0.
+    app.handle_mouse(left_down(r1.x + 2, r1.y));
+    app.handle_mouse(moved(r1.x + 2, r0.y));
+    assert!(
+        app.sidebar.drag.is_some(),
+        "motion promoted the press to a drag"
+    );
+    assert_eq!(
+        request_rows(&app),
+        ["main/beta", "main/alpha", "main/gamma"],
+        "beta is now the top row"
+    );
+
+    let backend = TestBackend::new(120, 40);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+    let buf = terminal.backend().buffer();
+
+    let marked: Vec<usize> = (0..3)
+        .filter(|&i| {
+            let rect = app
+                .hits
+                .rect_of(&Hit::SidebarRow(i))
+                .expect("sidebar row rect");
+            let sym = buf[(rect.x, rect.y)].symbol();
+            sym == "\u{258c}" || sym == "\u{22ee}"
+        })
+        .collect();
+
+    assert_eq!(
+        marked,
+        vec![0],
+        "exactly one row is marked (band bar or drag grip), and it is \
+         the dragged row (beta, now at row 0) — not a ghost band left \
+         behind on the row that used to be open"
+    );
+}
+
+#[test]
 fn press_move_release_reorders_and_persists() {
     let (mut app, dir) = three_row_app();
     let r0 = row_rect(&mut app, 0);
