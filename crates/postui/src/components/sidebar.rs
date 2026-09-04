@@ -109,6 +109,18 @@ pub struct RowDrag {
     pub working: Vec<String>,  // current on-screen order (relative slugs)
 }
 
+/// The parts of a row rebuild that are the same at every folder level:
+/// which folders are open, the space being drawn, its saved order list,
+/// and the live-drag overlay (level, working order) that replaces the
+/// saved order for the one level a drag is rearranging.
+#[derive(Clone, Copy)]
+struct LevelCtx<'a> {
+    expanded: &'a BTreeSet<String>,
+    space: &'a str,
+    order: &'a [String],
+    overlay: Option<(&'a str, &'a [String])>,
+}
+
 impl Sidebar {
     /// Rebuilds `rows` as a tree from a fresh listing: at each level, this
     /// level's requests come first — the ones in `order` in list order,
@@ -152,9 +164,13 @@ impl Sidebar {
             .as_ref()
             .map(|d| (d.level.as_str(), d.working.as_slice()));
         let mut rows = Vec::new();
-        Self::build_rows(
-            &sorted, &prefix, 0, expanded, space, order, overlay, &mut rows,
-        );
+        let ctx = LevelCtx {
+            expanded,
+            space,
+            order,
+            overlay,
+        };
+        Self::build_rows(&sorted, &prefix, 0, &ctx, &mut rows);
         self.rows = rows;
 
         self.selected =
@@ -216,12 +232,15 @@ impl Sidebar {
         entries: &[RequestListing],
         prefix: &str,
         depth: usize,
-        expanded: &BTreeSet<String>,
-        space: &str,
-        order: &[String],
-        overlay: Option<(&str, &[String])>,
+        ctx: &LevelCtx<'_>,
         rows: &mut Vec<Row>,
     ) {
+        let LevelCtx {
+            expanded,
+            space,
+            order,
+            overlay,
+        } = *ctx;
         let mut folder_children: std::collections::BTreeMap<String, Vec<RequestListing>> =
             std::collections::BTreeMap::new();
         let mut requests: Vec<&RequestListing> = Vec::new();
@@ -268,16 +287,7 @@ impl Sidebar {
             });
             if is_expanded {
                 let child_prefix = format!("{path}/");
-                Self::build_rows(
-                    &children,
-                    &child_prefix,
-                    depth + 1,
-                    expanded,
-                    space,
-                    order,
-                    overlay,
-                    rows,
-                );
+                Self::build_rows(&children, &child_prefix, depth + 1, ctx, rows);
             }
         }
     }
@@ -789,9 +799,9 @@ impl Component for Sidebar {
                 (Row::Request { slug, .. }, Some(d)) if *slug == d.slug
             );
 
-            let highlight = if is_dragged {
-                RowHighlight::Selected
-            } else if is_band_row {
+            // The dragged row keeps the selected fill while it travels, so
+            // it reads the same as the settled selection band.
+            let highlight = if is_dragged || is_band_row {
                 RowHighlight::Selected
             } else if is_cursor {
                 RowHighlight::Cursor
@@ -1181,9 +1191,14 @@ mod tests {
         assert_eq!(
             row_slugs(&s),
             [
-                "main/c", "main/a", "main/b", // listed first, then b
-                "main/auth/", "main/auth/p", // folders alphabetical below
-                "main/zed/", "main/zed/y", "main/zed/x",
+                "main/c",
+                "main/a",
+                "main/b", // listed first, then b
+                "main/auth/",
+                "main/auth/p", // folders alphabetical below
+                "main/zed/",
+                "main/zed/y",
+                "main/zed/x",
             ]
         );
     }
@@ -1425,7 +1440,12 @@ mod tests {
     #[test]
     fn draw_registers_new_request_button_row_hits_and_folder_arrow() {
         let mut s = Sidebar::default();
-        s.refresh(listing(&["api/ping", "top"]), "main", &expanded(&["api"]), &[]);
+        s.refresh(
+            listing(&["api/ping", "top"]),
+            "main",
+            &expanded(&["api"]),
+            &[],
+        );
         let theme = Theme::dark();
         let ctx = draw_ctx(&theme, None);
         let backend = ratatui::backend::TestBackend::new(30, 12);
@@ -1903,7 +1923,14 @@ mod tests {
         s.rebuild("main", &expanded(&["auth"]), &[]);
         assert_eq!(
             row_slugs(&s),
-            ["main/c", "main/a", "main/b", "main/auth/", "main/auth/x", "main/auth/y"]
+            [
+                "main/c",
+                "main/a",
+                "main/b",
+                "main/auth/",
+                "main/auth/x",
+                "main/auth/y"
+            ]
         );
         // Pointer past the group's end pins to the last slot.
         assert!(s.drag_to_row(10));
