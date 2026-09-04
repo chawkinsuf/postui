@@ -19388,3 +19388,148 @@ fn switching_space_mid_drag_cancels_it_and_writes_nothing() {
         ["main/alpha", "main/beta", "main/gamma"]
     );
 }
+
+// ---- Manage screen: dragging a space row -------------------------------
+
+use crate::components::manage::ManageTab;
+
+/// The Manage screen on its Spaces tab, over a project with three spaces
+/// (`main`, `auth`, `billing`) drawn once so the rows have rects.
+fn manage_spaces_app() -> (App, tempfile::TempDir) {
+    let (mut app, dir) = spaced_app();
+    app.update(Action::CreateSpace("billing".into()));
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Spaces),
+    });
+    render_once(&mut app);
+    assert_eq!(app.project.spaces, ["main", "auth", "billing"]);
+    (app, dir)
+}
+
+fn manage_row(app: &mut App, i: usize) -> ratatui::layout::Rect {
+    render_once(app);
+    app.hits
+        .rect_of(&Hit::ManageRow(i))
+        .expect("manage row rect")
+}
+
+fn listed_spaces(dir: &tempfile::TempDir) -> Vec<String> {
+    postui_core::project::load_meta(dir.path()).unwrap().spaces
+}
+
+#[test]
+fn dragging_a_space_row_reorders_and_persists() {
+    let (mut app, dir) = manage_spaces_app();
+    let r0 = manage_row(&mut app, 0);
+    let r2 = manage_row(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    assert!(
+        app.manage.list.drag.is_none(),
+        "a press alone is not a drag"
+    );
+    assert!(app.manage_press.is_some());
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    assert!(
+        app.manage.list.drag.is_some(),
+        "motion onto another row promotes"
+    );
+    assert_eq!(
+        app.manage.list.drag.as_ref().unwrap().working,
+        ["auth", "billing", "main"]
+    );
+    assert_eq!(app.pointer_shape_update(), Some(PointerShape::Grabbing));
+
+    app.handle_mouse(left_up(r0.x + 2, r2.y));
+    assert!(app.manage.list.drag.is_none());
+    assert!(app.manage_press.is_none());
+    assert_ne!(
+        app.pointer_shape_update(),
+        Some(PointerShape::Grabbing),
+        "the grabbing cursor is released with the button"
+    );
+    assert_eq!(listed_spaces(&dir), ["auth", "billing", "main"]);
+    assert_eq!(app.project.spaces, ["auth", "billing", "main"]);
+    assert_eq!(
+        app.manage.list.selected(app.manage.tab, &app.project),
+        Some("main"),
+        "the cursor stays on the space that moved"
+    );
+}
+
+#[test]
+fn a_space_drag_snaps_back_on_a_release_outside_escape_or_a_right_click() {
+    for cancel in ["outside", "escape", "right-click"] {
+        let (mut app, dir) = manage_spaces_app();
+        let r0 = manage_row(&mut app, 0);
+        let r2 = manage_row(&mut app, 2);
+        app.handle_mouse(left_down(r0.x + 2, r0.y));
+        app.handle_mouse(moved(r0.x + 2, r2.y));
+        assert!(app.manage.list.drag.is_some(), "{cancel}");
+
+        match cancel {
+            "outside" => app.handle_mouse(left_up(110, 30)), // the detail pane
+            "escape" => app.handle_key(
+                &Keymap::default_bindings(),
+                KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            ),
+            _ => app.handle_mouse(right_down(r2.x + 2, r2.y)),
+        };
+
+        assert!(app.manage.list.drag.is_none(), "{cancel}");
+        assert!(app.manage_press.is_none(), "{cancel}");
+        assert_eq!(listed_spaces(&dir), ["main", "auth", "billing"], "{cancel}");
+        assert_eq!(app.project.spaces, ["main", "auth", "billing"], "{cancel}");
+        if cancel == "escape" {
+            assert_eq!(
+                app.screen,
+                Screen::Manage,
+                "escape cancelled the drag, not the screen"
+            );
+        }
+        if cancel == "right-click" {
+            assert!(app.modals.top().is_none(), "no context menu opened");
+        }
+    }
+}
+
+#[test]
+fn a_press_and_wiggle_on_one_space_row_is_not_a_drag() {
+    let (mut app, dir) = manage_spaces_app();
+    let r1 = manage_row(&mut app, 1);
+    app.handle_mouse(left_down(r1.x + 2, r1.y));
+    app.handle_mouse(moved(r1.x + 6, r1.y));
+    assert!(app.manage.list.drag.is_none(), "same row, no drag");
+    app.handle_mouse(left_up(r1.x + 6, r1.y));
+    assert_eq!(listed_spaces(&dir), ["main", "auth", "billing"]);
+    assert_eq!(app.manage.list.cursor, 1, "the press still selected it");
+}
+
+#[test]
+fn a_press_on_an_environments_row_never_arms_a_drag() {
+    let (mut app, _dir) = manage_spaces_app();
+    app.update(Action::CreateEnv("dev".into()));
+    app.update(Action::CreateEnv("prod".into()));
+    app.update(Action::SelectManageTab(ManageTab::Environments));
+    let r0 = manage_row(&mut app, 0);
+    let r1 = manage_row(&mut app, 1);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    assert!(app.manage_press.is_none(), "environments never arm");
+    app.handle_mouse(moved(r0.x + 2, r1.y));
+    assert!(app.manage.list.drag.is_none());
+}
+
+#[test]
+fn switching_the_manage_tab_mid_drag_cancels_it() {
+    let (mut app, dir) = manage_spaces_app();
+    let r0 = manage_row(&mut app, 0);
+    let r2 = manage_row(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    assert!(app.manage.list.drag.is_some());
+
+    app.update(Action::SelectManageTab(ManageTab::Environments));
+
+    assert!(app.manage.list.drag.is_none());
+    assert!(app.manage_press.is_none());
+    assert_eq!(listed_spaces(&dir), ["main", "auth", "billing"]);
+}

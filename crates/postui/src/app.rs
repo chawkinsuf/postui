@@ -296,6 +296,11 @@ pub struct App {
     /// by `on_hit`, cleared on release; becomes a live row drag the moment
     /// the pointer moves onto another row (see `mouse.rs`).
     pub sidebar_press: Option<(usize, String)>,
+    /// A left press on a Manage screen Spaces row: `(row index, space)`.
+    /// The Spaces-tab twin of `sidebar_press` — armed by `on_hit` (Spaces
+    /// tab only), cleared on release, promoted to a live row drag the
+    /// moment the pointer moves onto another row (see `mouse.rs`).
+    pub manage_press: Option<(usize, String)>,
     /// Whether the active tab's params/headers table body is collapsed
     /// (tab strip + its count chip stay visible; only the table itself is
     /// hidden). Session-only — never persisted.
@@ -872,6 +877,7 @@ impl App {
             drag: None,
             text_drag: None,
             sidebar_press: None,
+            manage_press: None,
             table_collapsed: false,
             pane_collapsed_target: false,
             response_collapsed_target: false,
@@ -3781,6 +3787,10 @@ impl App {
                 true
             }
             Action::SelectManageTab(tab) => {
+                // A live space drag belongs to the Spaces tab's list: the
+                // tab strip switching out from under it cancels it (and
+                // `reset` below would drop the drag on the floor anyway).
+                self.finish_manage_drag(false);
                 // Each tab lists something else: a cursor (and any name
                 // edit) carried across would point at the wrong item.
                 if self.manage.tab != tab {
@@ -3792,6 +3802,9 @@ impl App {
                 true
             }
             Action::CloseScreen => {
+                // Leaving the screen mid-drag cancels it — there is no
+                // list left to drop onto.
+                self.finish_manage_drag(false);
                 self.screen = Screen::Main;
                 self.focus = self.prior_focus;
                 true
@@ -6843,6 +6856,9 @@ impl App {
         // before the root changes, or its working order would be painted over
         // the new space's rows and written to the new space on release.
         self.finish_sidebar_drag(false);
+        // Same for a Manage screen space drag: the list it is rearranging
+        // is about to be re-read under it.
+        self.finish_manage_drag(false);
         if let SpaceExit::Remember(slug) = outgoing {
             self.project.record_space_open(slug);
         }
@@ -7019,6 +7035,47 @@ impl App {
         if drag.space == self.project.active_space {
             self.sidebar.select_slug(&drag.slug);
         }
+        true
+    }
+
+    /// Pointer motion during a Manage screen space-row drag: maps the
+    /// pointer's screen row to a row index and shows the resulting order
+    /// live.
+    pub fn manage_drag_to(&mut self, y: u16) -> bool {
+        let i = self.manage.list.row_at_y(y);
+        self.manage.list.drag_to_row(i)
+    }
+
+    /// Ends a space-row drag. `commit` writes the working order when it
+    /// differs from the original; otherwise (release outside, Escape, a
+    /// right click, a tab switch) the rows snap back to disk truth. The
+    /// armed press is disarmed either way — Escape ends the drag with the
+    /// button still held, and a press left armed would let the next
+    /// motion event promote straight back into the drag just cancelled.
+    /// Like `Action::MoveSpace`, this is not an undo step.
+    pub fn finish_manage_drag(&mut self, commit: bool) -> bool {
+        self.manage_press = None;
+        let Some(drag) = self.manage.list.drag.take() else {
+            return false;
+        };
+        if commit && drag.working != drag.original {
+            match postui_core::project::set_space_order(&self.project.root, &drag.working) {
+                Ok(()) => {
+                    // `ReloadProjectFiles` is mtime-gated (see
+                    // `Action::MoveSpace`), so read the file just written
+                    // rather than waiting for the stamp to move.
+                    self.project.reload_meta();
+                    self.project.reload_spaces();
+                }
+                Err(e) => self
+                    .toasts
+                    .push(format!("cannot reorder: {e}"), ToastKind::Warning),
+            }
+        }
+        // The list cursor follows the space that was dragged, wherever it
+        // ended up — committed or snapped back.
+        let tab = self.manage.tab;
+        self.manage.list.select_name(tab, &self.project, &drag.name);
         true
     }
 
@@ -8216,6 +8273,9 @@ impl App {
         // A live row drag owns Escape: it cancels the drag, nothing else.
         if ev.code == KeyCode::Esc && self.sidebar.drag.is_some() {
             return self.finish_sidebar_drag(false);
+        }
+        if ev.code == KeyCode::Esc && self.manage.list.drag.is_some() {
+            return self.finish_manage_drag(false);
         }
 
         // 1b. A bound paste combo digs past the layers below: modals and

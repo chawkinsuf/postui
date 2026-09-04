@@ -74,6 +74,34 @@ impl App {
                         Some(_) => {}
                     }
                 }
+                // The Manage screen's Spaces list runs the same two-step:
+                // a live drag owns every motion event, and an armed press
+                // promotes the moment the pointer reaches another row.
+                // The pressed row index can be stale (a reload relisted
+                // the spaces), so the drag target is re-resolved by name;
+                // a press whose space is gone promotes nothing.
+                if self.manage.list.drag.is_some() {
+                    return self.manage_drag_to(m.row);
+                }
+                if let Some((_, pressed)) = self.manage_press.clone()
+                    && self.modals.is_empty()
+                    && matches!(self.hits.hit_at(m.column, m.row), Some(Hit::ManageRow(_)))
+                {
+                    let tab = self.manage.tab;
+                    match crate::components::manage_list::ManageList::items(tab, &self.project)
+                        .iter()
+                        .position(|n| *n == pressed)
+                    {
+                        None => self.manage_press = None,
+                        Some(i) if self.manage.list.row_at_y(m.row) != i => {
+                            if self.manage.list.begin_drag(i, tab, &self.project) {
+                                self.hovered = None;
+                                return self.manage_drag_to(m.row) | self.update(Action::Render);
+                            }
+                        }
+                        Some(_) => {}
+                    }
+                }
                 if let Some(drag) = self.drag.as_ref() {
                     return if drag.horizontal {
                         self.drag_to_h(m.column)
@@ -143,6 +171,9 @@ impl App {
                 // normally.
                 if self.sidebar.drag.is_some() {
                     self.finish_sidebar_drag(false);
+                }
+                if self.manage.list.drag.is_some() {
+                    self.finish_manage_drag(false);
                 }
                 let hit = self.hits.hit_at(m.column, m.row).cloned();
                 // A click anywhere but the jq bar itself is Enter for a
@@ -243,12 +274,18 @@ impl App {
                 if self.sidebar.drag.is_some() {
                     return self.finish_sidebar_drag(false);
                 }
+                if self.manage.list.drag.is_some() {
+                    return self.finish_manage_drag(false);
+                }
                 // A left button is down on a row but hasn't moved onto
                 // another one yet: disarm the press so the motion that
                 // follows this right click cannot promote it into a drag
                 // out from under the menu this click is about to open.
                 if self.sidebar_press.is_some() {
                     self.sidebar_press = None;
+                }
+                if self.manage_press.is_some() {
+                    self.manage_press = None;
                 }
                 // Tokens are a left-click affordance only: a right click
                 // belongs to the row/cell under them and its context menu.
@@ -390,11 +427,25 @@ impl App {
             MouseEventKind::Up(MouseButton::Left) => {
                 // The press is disarmed by any release, drag or not.
                 self.sidebar_press = None;
+                self.manage_press = None;
                 // A row drag writes its new order only when it is dropped
                 // on the sidebar; a release anywhere else cancels it.
                 if self.sidebar.drag.is_some() {
                     let inside = self.hits.pane_at(m.column, m.row) == Some(PaneId::Sidebar);
                     return self.finish_sidebar_drag(inside);
+                }
+                // The Manage list has no `Hit::Pane` of its own, so the
+                // drop test is the list rect the last draw recorded (the
+                // rect containment `pane_at` would do), plus the row hits
+                // themselves.
+                if self.manage.list.drag.is_some() {
+                    let pos = ratatui::layout::Position {
+                        x: m.column,
+                        y: m.row,
+                    };
+                    let inside = self.manage.list.list_rect().contains(pos)
+                        || matches!(self.hits.hit_at(m.column, m.row), Some(Hit::ManageRow(_)));
+                    return self.finish_manage_drag(inside);
                 }
                 // Releasing the button ends both drag kinds; a finished
                 // text sweep keeps its selection, only the sweep state ends.
@@ -470,7 +521,11 @@ impl App {
     /// frame draw; returns whether anything changed (the caller schedules a
     /// repaint). Inert mid-drag, matching the move handler.
     pub fn resync_hover(&mut self) -> bool {
-        if self.drag.is_some() || self.text_drag.is_some() || self.sidebar.drag.is_some() {
+        if self.drag.is_some()
+            || self.text_drag.is_some()
+            || self.sidebar.drag.is_some()
+            || self.manage.list.drag.is_some()
+        {
             return false;
         }
         let Some((x, y)) = self.pointer else {
@@ -502,7 +557,7 @@ impl App {
     /// hover shape with the closed hand, since hover is frozen for the
     /// length of the drag.
     pub fn pointer_shape_update(&mut self) -> Option<PointerShape> {
-        let shape = if self.sidebar.drag.is_some() {
+        let shape = if self.sidebar.drag.is_some() || self.manage.list.drag.is_some() {
             PointerShape::Grabbing
         } else {
             PointerShape::for_hit(self.hovered.as_ref())
@@ -969,6 +1024,15 @@ impl App {
             )),
             Hit::ManageRow(i) => {
                 self.manage.list.cursor = i;
+                // A press on a Spaces row also arms a possible row drag;
+                // the click itself still just selects (the drag only
+                // starts once the pointer leaves the row). Environments
+                // have no order to rearrange, so they never arm.
+                if self.manage.tab == ManageTab::Spaces
+                    && let Some(name) = self.manage.list.selected(self.manage.tab, &self.project)
+                {
+                    self.manage_press = Some((i, name.to_string()));
+                }
                 self.update(Action::Render)
             }
             Hit::ManageNew => self.update(match self.manage.tab {
