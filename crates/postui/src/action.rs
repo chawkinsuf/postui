@@ -734,11 +734,11 @@ pub enum Action {
     /// alt+q / the header 󰈲 button / the palette: opens a closed jq bar
     /// (filter on, focused) or closes an open one (filter off, text kept).
     ToggleJqBar,
-    /// Esc in the bar or the tree (and the footer's `esc clear` chip):
-    /// wipes the filter text so the full body shows. The bar stays open
-    /// while it has the caret; Esc again on the empty bar leaves it. An
-    /// edit — undo brings the filter back.
-    ClearJqBar,
+    /// Esc in the bar (and the footer's `esc cancel` chip): puts the
+    /// filter back to what it was when the bar took the caret — text and
+    /// on/off switch — and blurs; a bar opened onto no filter closes. An
+    /// edit whenever anything changed — undo brings the typed text back.
+    CancelJqEdit,
     /// Palette/footer: focus the bar (never blurs).
     OpenJqBar,
     /// Replaces the bar text and applies it (structural menu "apply" items).

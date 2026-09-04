@@ -125,8 +125,9 @@ pub(crate) fn footer_chips(
             if let JqBarState::Focused | JqBarState::Completing { .. } = jq_bar {
                 // Enter commits (the filter is live already; Enter just
                 // hands focus back to the tree with the filter on), Esc
-                // clears the filter, alt+q closes the bar — switching the
-                // filter off without losing it. While a completion ghost
+                // cancels the edit (the filter goes back to what it was),
+                // alt+q closes the bar — switching the filter off without
+                // losing it. While a completion ghost
                 // shows, the Tab chip(s) lead: "tab next" + "→ accept" in
                 // cycle mode, or "tab accept" in accept mode.
                 let mut chips = Vec::new();
@@ -140,7 +141,7 @@ pub(crate) fn footer_chips(
                 }
                 chips.extend([
                     ("enter", "apply", None),
-                    ("esc", "clear", Some(Action::ClearJqBar)),
+                    ("esc", "cancel", Some(Action::CancelJqEdit)),
                     ("alt+q", "close", Some(Action::ToggleJqBar)),
                     ("✦", "describe…", Some(Action::OpenJqDescribe)),
                 ]);

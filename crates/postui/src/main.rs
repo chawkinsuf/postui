@@ -5,6 +5,7 @@ use postui::components::toast::ToastKind;
 use postui::keys::Keymap;
 use postui::ui;
 use ratatui::crossterm::SynchronizedUpdate;
+use ratatui::crossterm::cursor::SetCursorStyle;
 use ratatui::crossterm::event::{
     DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
     EnableFocusChange, EnableMouseCapture, Event, EventStream, KeyEventKind,
@@ -51,6 +52,7 @@ async fn main() -> anyhow::Result<()> {
     reset_pointer_shape();
     let _ = execute!(
         std::io::stdout(),
+        SetCursorStyle::DefaultUserShape,
         PopKeyboardEnhancementFlags,
         DisableMouseCapture,
         DisableFocusChange,
@@ -126,6 +128,11 @@ fn enable_mouse_and_wrap_panic_hook() {
         EnableFocusChange,
         EnableBracketedPaste
     );
+    // The terminal cursor is hidden everywhere but the focused jq filter
+    // bar (`ui::draw`), where it stands in for the painted caret so the
+    // completion ghost can trail a thin bar. Shaped once here — the shape
+    // persists — and put back to the user's own on every exit path below.
+    let _ = execute!(std::io::stdout(), SetCursorStyle::SteadyBar);
     // Ctrl+Shift+Z is only distinguishable from Ctrl+Z with the kitty
     // keyboard protocol; without it Ctrl+Y is the redo binding that works.
     // The tier pushed lives in `keys::app_enhancement_flags` (shared with
@@ -157,6 +164,7 @@ fn enable_mouse_and_wrap_panic_hook() {
         reset_pointer_shape();
         let _ = execute!(
             std::io::stdout(),
+            SetCursorStyle::DefaultUserShape,
             PopKeyboardEnhancementFlags,
             DisableMouseCapture,
             DisableFocusChange,
@@ -374,6 +382,7 @@ fn run_editor_and_restore(
 
     let _ = execute!(
         std::io::stdout(),
+        SetCursorStyle::DefaultUserShape,
         PopKeyboardEnhancementFlags,
         DisableMouseCapture,
         DisableFocusChange,

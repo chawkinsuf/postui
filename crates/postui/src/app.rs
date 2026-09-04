@@ -3150,9 +3150,9 @@ impl App {
                 }
                 true
             }
-            Action::ClearJqBar => {
-                self.session.response.clear_jq();
-                true // sync_jq lands the empty text in the editor
+            Action::CancelJqEdit => {
+                self.session.response.cancel_jq_edit();
+                true // sync_jq lands the restored filter in the editor
             }
             Action::OpenJqBar => {
                 if !self.session.response.jq_available() {
@@ -3170,9 +3170,11 @@ impl App {
                 true // sync_jq applies it
             }
             Action::JqTeeUp { text, cursor } => {
+                // Focus before the text lands, so Esc cancels the tee-up
+                // back to the filter that was there.
                 self.dispatch(Action::FocusPane(PaneId::Response));
-                self.session.response.set_jq_text_with_cursor(&text, cursor);
                 self.session.response.set_jq_focus(true);
+                self.session.response.set_jq_text_with_cursor(&text, cursor);
                 true
             }
             Action::JqRunFinished {

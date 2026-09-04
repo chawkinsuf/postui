@@ -105,6 +105,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             app.editor.env_tls = app.project.env_tls();
             let hovered = app.hovered.as_ref();
             let dragged_pane = app.drag.as_ref().map(|d| d.pane);
+            let modal_open = app.modals.top().is_some();
             // Destructured so each component can be borrowed mutably
             // alongside the shared theme reference its DrawCtx holds.
             let App {
@@ -127,6 +128,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             sidebar.draw(frame, layout.sidebar, &ctx(PaneId::Sidebar), &mut hits);
             editor.draw(frame, layout.editor, &ctx(PaneId::Editor), &mut hits);
             response.draw(frame, layout.response, &ctx(PaneId::Response), &mut hits);
+            // The focused jq bar is the one place the terminal's own
+            // cursor shows (a bar, so the completion ghost can trail it
+            // legibly); everywhere else the caret is painted and the
+            // cursor stays hidden. A modal drawn over the pane keeps
+            // keyboard focus on the bar underneath, so the cursor is only
+            // placed while nothing covers it.
+            if !modal_open && let Some(caret) = response.jq_caret_cell() {
+                frame.set_cursor_position(caret);
+            }
             let focused_rect = match focus {
                 PaneId::Sidebar => layout.sidebar,
                 PaneId::Editor => layout.editor,

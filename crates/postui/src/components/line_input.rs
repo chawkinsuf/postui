@@ -358,14 +358,14 @@ impl LineInput {
     /// character under the cursor (or a trailing blank cell at end-of-text)
     /// is rendered with a REVERSED style to represent the caret.
     pub fn draw_line(&self, focused: bool, theme: &Theme) -> Line<'static> {
-        self.render(focused, theme, None, false)
+        self.render(focused, theme, None, false, true)
     }
 
     /// Like [`Self::draw_line`], but every character renders as `●` — used
     /// for a secret cell's in-place edit (Variable Manager, spec §5), so
     /// the typed value never appears in plaintext on screen.
     pub fn draw_line_masked(&self, focused: bool, theme: &Theme) -> Line<'static> {
-        self.render(focused, theme, None, true)
+        self.render(focused, theme, None, true, true)
     }
 
     /// Like [`Self::draw_line`], but windowed to `width` columns: when
@@ -376,7 +376,31 @@ impl LineInput {
     /// Unfocused text is never scrolled; it always renders from char 0
     /// (matching `draw_line`, just clipped to `width`).
     pub fn draw_line_windowed(&self, focused: bool, theme: &Theme, width: u16) -> Line<'static> {
-        self.render_windowed(focused, theme, width, false)
+        self.render_windowed(focused, theme, width, false, true)
+    }
+
+    /// [`Self::draw_line_windowed`] without the painted caret: the window
+    /// still follows the cursor and a selection still renders REVERSED,
+    /// but the cursor cell itself is left plain, for a field that shows
+    /// the terminal's own cursor there instead (placed at
+    /// [`Self::caret_column`]). The trailing blank cell past end-of-text
+    /// is not emitted either; the terminal cursor stands in that cell.
+    pub fn draw_line_windowed_no_caret(
+        &self,
+        focused: bool,
+        theme: &Theme,
+        width: u16,
+    ) -> Line<'static> {
+        self.render_windowed(focused, theme, width, false, false)
+    }
+
+    /// The column, within a focused `width`-column window, the caret sits
+    /// in: `cursor - window_start`, always in `[0, width)` because the
+    /// window scrolls to keep the cursor visible. Where a caller places
+    /// the terminal's own cursor for a field drawn with
+    /// [`Self::draw_line_windowed_no_caret`].
+    pub fn caret_column(&self, width: u16) -> u16 {
+        (self.cursor - self.window_start(true, width)) as u16
     }
 
     /// [`Self::draw_line_windowed`] and [`Self::draw_line_masked`] combined
@@ -389,7 +413,7 @@ impl LineInput {
         theme: &Theme,
         width: u16,
     ) -> Line<'static> {
-        self.render_windowed(focused, theme, width, true)
+        self.render_windowed(focused, theme, width, true, true)
     }
 
     /// The first char index [`Self::draw_line_windowed`] would render at a
@@ -422,20 +446,22 @@ impl LineInput {
         theme: &Theme,
         width: u16,
         mask: bool,
+        caret: bool,
     ) -> Line<'static> {
-        self.render(focused, theme, Some(width.max(1) as usize), mask)
+        self.render(focused, theme, Some(width.max(1) as usize), mask, caret)
     }
 
     /// The single renderer behind all the `draw_line*` variants: optionally
     /// masked, optionally windowed to `width` columns (the window scrolls
-    /// with the cursor when focused), with the caret and any selected range
-    /// rendered REVERSED.
+    /// with the cursor when focused), with any selected range rendered
+    /// REVERSED and — unless `caret` is off — the cursor cell too.
     fn render(
         &self,
         focused: bool,
         theme: &Theme,
         width: Option<usize>,
         mask: bool,
+        caret: bool,
     ) -> Line<'static> {
         let base = Style::default().fg(theme.text);
         let chars: Vec<char> = if mask {
@@ -466,7 +492,7 @@ impl LineInput {
         // focus; the caret cell hides so it can't dangle outside the
         // selection's edge as a stray reversed cell.
         let style_at = |i: usize| {
-            if selection.is_none() && i == self.cursor {
+            if caret && selection.is_none() && i == self.cursor {
                 return reversed;
             }
             match selection {
@@ -491,7 +517,7 @@ impl LineInput {
         }
         // The trailing caret cell when the cursor sits past the drawn text
         // — suppressed like the in-text caret while a selection is live.
-        if selection.is_none() && self.cursor >= end {
+        if caret && selection.is_none() && self.cursor >= end {
             spans.push(Span::styled(" ", reversed));
         }
         Line::from(spans)
@@ -882,6 +908,50 @@ mod tests {
             "the caret hides while a selection is live"
         );
         assert_eq!(reversed[3], ('d', false), "outside the selection");
+    }
+
+    #[test]
+    fn no_caret_variant_paints_nothing_reversed_and_reports_the_column() {
+        let theme = Theme::dark();
+        let mut input = LineInput::new("hello");
+        let line = input.draw_line_windowed_no_caret(true, &theme, 20);
+        assert_eq!(line_text(&line), "hello", "no trailing caret cell");
+        assert!(
+            line.spans
+                .iter()
+                .all(|s| !s.style.add_modifier.contains(Modifier::REVERSED)),
+            "cursor past the end: nothing reversed"
+        );
+        assert_eq!(input.caret_column(20), 5);
+        input.set_cursor(2);
+        let line = input.draw_line_windowed_no_caret(true, &theme, 20);
+        assert_eq!(line_text(&line), "hello");
+        assert!(
+            line.spans
+                .iter()
+                .all(|s| !s.style.add_modifier.contains(Modifier::REVERSED)),
+            "cursor mid-text: the cell under it stays plain"
+        );
+        assert_eq!(input.caret_column(20), 2);
+    }
+
+    #[test]
+    fn no_caret_variant_still_follows_the_cursor_and_paints_a_selection() {
+        let theme = Theme::dark();
+        let mut input = LineInput::new("abcdefghijklmnop");
+        // Cursor at the end, 8 wide: the window ends at the cursor, whose
+        // cell (past the text) is the last column.
+        let line = input.draw_line_windowed_no_caret(true, &theme, 8);
+        assert_eq!(line_text(&line), "jklmnop");
+        assert_eq!(input.caret_column(8), 7);
+        input.select_all();
+        let line = input.draw_line_windowed_no_caret(true, &theme, 8);
+        assert!(
+            line.spans
+                .iter()
+                .all(|s| s.style.add_modifier.contains(Modifier::REVERSED)),
+            "the selection is still drawn reversed"
+        );
     }
 
     #[test]

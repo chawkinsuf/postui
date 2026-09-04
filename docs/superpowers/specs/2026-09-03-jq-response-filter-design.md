@@ -337,19 +337,25 @@ because they're easy to get wrong reading the code cold:
   open bar whether or not it is focused — the text stays, the filter is
   switched off, and the tree shows the full body. Opening it again (same
   three routes) switches the filter back on and focuses the input.
-  `Esc` is different: in the bar, or from the tree once a selection and
-  the search have been dismissed (innermost first), it *clears* the
-  filter text (`Action::ClearJqBar`, an undoable edit) so the full body
-  shows — Esc is "get rid of it", the button is the switch. In the bar
-  the caret stays for the next filter; Esc again on the empty bar leaves
-  it (and an empty, unfocused bar is hidden). From the tree the cleared
-  bar is unfocused, so it disappears. `Enter` blurs to the tree with the filter on and the bar
-  still showing. The off state persists as `jq_enabled = false` in the request
+  `Esc` in the bar *cancels the edit* (`Action::CancelJqEdit`): the bar
+  remembers the filter — text and on/off switch — as it stood when it
+  took the caret (`JqBar::edit_origin`, taken on the unfocused → focused
+  edge, before `open_jq` flips the switch, and forgotten on blur), puts
+  that back, and blurs. A bar opened from off cancels back to off with
+  its text kept; one opened onto no filter is empty again and, unfocused,
+  hidden (the switch is left on — nothing left to be off). Text landing
+  in an already focused bar (a tee-up, an AI reply) does not move the
+  origin, so Esc cancels back to before it; `JqTeeUp` focuses before it
+  sets the text for the same reason. The revert is an undoable edit
+  whenever anything changed. From the tree, Esc stops at the selection
+  and the search: it never touches the saved filter. `Enter` blurs to
+  the tree with the edit kept and the filter on and the bar still
+  showing. The off state persists as `jq_enabled = false` in the request
   TOML (omitted when on, and never written without a filter to switch
   off); toggling dirties the request like a text edit. A structural verb
   or an AI reply landing a filter switches a closed bar back on.
 - The footer chips shown while the bar is focused are `enter apply /
-  esc clear / alt+q close / ✦ describe…`; the response pane's own
+  esc cancel / alt+q close / ✦ describe…`; the response pane's own
   `alt+q` chip reads `filter` while the bar is closed and `close` while
   it is open. Clicking in the bar places the caret, dragging selects,
   double-click selects the word, and right-click offers Copy / Paste

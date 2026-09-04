@@ -17032,7 +17032,7 @@ fn enter_commits_the_filter_and_leaves_it_on() {
 }
 
 #[test]
-fn esc_clears_the_filter_and_keeps_the_bar_open_and_a_second_esc_leaves() {
+fn esc_cancels_the_edit_and_a_bar_opened_onto_no_filter_closes() {
     let mut app = App::new_for_test();
     ready_response(&mut app, JQ_BODY);
     let full = app.session.response.view().unwrap().view_text();
@@ -17045,27 +17045,15 @@ fn esc_clears_the_filter_and_keeps_the_bar_open_and_a_second_esc_leaves() {
         &Keymap::default_bindings(),
         KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
     );
-    assert_eq!(app.editor.jq, "", "esc clears the text");
+    assert_eq!(app.editor.jq, "", "esc drops what was typed");
     assert!(app.editor.jq_enabled, "…and leaves the switch on");
     assert!(
-        app.session.response.jq_focused(),
-        "…and the caret stays in the bar"
-    );
-    assert!(app.session.response.jq_open());
-    assert_eq!(app.session.response.view().unwrap().view_text(), full);
-    app.handle_key(
-        &Keymap::default_bindings(),
-        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
-    );
-    assert!(
         !app.session.response.jq_focused(),
-        "esc on an empty bar leaves it"
+        "…and the caret leaves the bar"
     );
-    assert!(
-        !app.session.response.jq_open(),
-        "…and an empty bar is hidden"
-    );
-    // The clear was an edit: undo brings the filter back.
+    assert!(!app.session.response.jq_open(), "…which, empty, is hidden");
+    assert_eq!(app.session.response.view().unwrap().view_text(), full);
+    // The cancel was an edit: undo brings the typed filter back.
     app.capture_undo();
     app.update(Action::Undo);
     assert_eq!(app.editor.jq, ".data.total");
@@ -17073,26 +17061,53 @@ fn esc_clears_the_filter_and_keeps_the_bar_open_and_a_second_esc_leaves() {
 }
 
 #[test]
-fn esc_clears_a_switched_off_filter_too() {
+fn esc_puts_a_saved_filter_back_and_leaves_the_bar() {
     let mut app = App::new_for_test();
     ready_response(&mut app, JQ_BODY);
     app.update(Action::JqApply(".data.total".into()));
-    app.update(Action::ToggleJqBar); // off, text kept, bar hidden
-    assert!(!app.editor.jq_enabled);
-    app.update(Action::ToggleJqBar); // on + focused
+    app.handle_key(&Keymap::default_bindings(), alt('q')); // closes (off)
+    app.handle_key(&Keymap::default_bindings(), alt('q')); // on + focused
+    assert!(app.session.response.jq_focused());
+    type_str(&mut app, "s");
+    assert_eq!(app.editor.jq, ".data.totals");
     app.handle_key(
         &Keymap::default_bindings(),
         KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
     );
-    assert_eq!(app.editor.jq, "");
-    assert!(app.editor.jq_enabled, "nothing left to be off");
+    assert_eq!(app.editor.jq, ".data.total", "the edit is reverted");
+    assert!(!app.session.response.jq_focused());
+    assert!(
+        !app.editor.jq_enabled,
+        "opened from off, the bar cancels back to off"
+    );
+    assert!(!app.session.response.jq_open(), "…so it is hidden again");
 }
 
 #[test]
-fn esc_in_the_tree_clears_an_open_bar_after_selection_and_search() {
+fn esc_on_an_open_filter_reverts_the_edit_and_keeps_it_on() {
     let mut app = App::new_for_test();
     ready_response(&mut app, JQ_BODY);
-    let full = app.session.response.view().unwrap().view_text();
+    app.update(Action::JqApply(".data.total".into()));
+    app.update(Action::OpenJqBar);
+    type_str(&mut app, "s");
+    app.handle_key(
+        &Keymap::default_bindings(),
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+    );
+    assert_eq!(app.editor.jq, ".data.total");
+    assert!(app.editor.jq_enabled, "it was on when editing started");
+    assert!(
+        app.session.response.jq_open(),
+        "…so the bar stays, unfocused"
+    );
+    assert!(!app.session.response.jq_focused());
+    assert_eq!(app.session.response.view().unwrap().view_text(), "2");
+}
+
+#[test]
+fn esc_in_the_tree_dismisses_selection_and_search_but_never_the_filter() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
     app.update(Action::JqApply(".data.total".into()));
     app.focus = PaneId::Response;
     app.update(Action::OpenResponseSearch);
@@ -17104,15 +17119,33 @@ fn esc_in_the_tree_clears_an_open_bar_after_selection_and_search() {
     assert!(app.session.response.view().unwrap().search.is_none());
     assert!(app.session.response.jq_open());
     assert_eq!(app.session.response.view().unwrap().view_text(), "2");
-    // Next Esc: the filter is cleared; unfocused and empty, the bar is gone.
+    // Another Esc from the tree leaves the saved filter alone.
     app.handle_key(
         &Keymap::default_bindings(),
         KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
     );
-    assert!(!app.session.response.jq_open());
-    assert!(!app.session.response.jq_focused());
-    assert_eq!(app.editor.jq, "");
-    assert_eq!(app.session.response.view().unwrap().view_text(), full);
+    assert!(app.session.response.jq_open());
+    assert_eq!(app.editor.jq, ".data.total");
+    assert_eq!(app.session.response.view().unwrap().view_text(), "2");
+}
+
+#[test]
+fn esc_after_a_tee_up_cancels_back_to_the_filter_before_it() {
+    let mut app = App::new_for_test();
+    ready_response(&mut app, JQ_BODY);
+    app.update(Action::JqApply(".data.total".into()));
+    app.update(Action::JqTeeUp {
+        text: "map(select(.x == ))".into(),
+        cursor: 17,
+    });
+    assert!(app.session.response.jq_focused());
+    assert_eq!(app.editor.jq, "map(select(.x == ))");
+    app.handle_key(
+        &Keymap::default_bindings(),
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+    );
+    assert_eq!(app.editor.jq, ".data.total");
+    assert_eq!(app.session.response.view().unwrap().view_text(), "2");
 }
 
 #[test]
@@ -17234,7 +17267,7 @@ fn multiple_outputs_run_together_without_a_blank_line() {
 }
 
 #[test]
-fn the_focused_bar_advertises_enter_apply_and_esc_clear() {
+fn the_focused_bar_advertises_enter_apply_and_esc_cancel() {
     let chips = crate::components::footer::footer_chips(
         PaneId::Response,
         false,
@@ -17249,7 +17282,7 @@ fn the_focused_bar_advertises_enter_apply_and_esc_clear() {
         keys,
         vec![
             ("enter", "apply"),
-            ("esc", "clear"),
+            ("esc", "cancel"),
             ("alt+q", "close"),
             ("✦", "describe…")
         ],
@@ -17257,7 +17290,7 @@ fn the_focused_bar_advertises_enter_apply_and_esc_clear() {
     );
     assert_eq!(
         chips[1].2,
-        Some(Action::ClearJqBar),
+        Some(Action::CancelJqEdit),
         "the esc chip is clickable"
     );
 }

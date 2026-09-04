@@ -307,7 +307,7 @@ caret first; then `insert_str(candidate.insert)`; mark `edited`. The
 reconcile then re-runs the filter and recomputes the completion, so the
 result is indistinguishable from typing.
 
-Esc keeps its meaning (clear the filter / blur); a ghost is dismissed by
+Esc keeps its meaning (cancel the edit and blur); a ghost is dismissed by
 typing on, never by a key of its own.
 
 ### Drawing
@@ -317,6 +317,17 @@ windowed line when `bar.ghost()` is `Some`, clipped to the row's
 remaining width (`text_w` minus the input's visible width). The window
 calculation is unchanged: the ghost never pushes the caret off screen;
 when the text already fills the row the ghost is simply not visible.
+
+The focused bar's caret is the terminal's own cursor, shaped as a steady
+bar once at startup (`SetCursorStyle::SteadyBar`, restored to the user's
+default on every exit path), not the painted REVERSED cell the other
+inputs use: the ghost starts in the caret's own cell, so a thin bar
+reads as "the text continues here" where a block would swallow the
+ghost's first letter. `LineInput::draw_line_windowed_no_caret` draws
+the text without that cell and `caret_column` says where the cursor
+goes; `draw_jq_bar` reports the cell through `Response::jq_caret_cell`,
+and `ui::draw` places the cursor (`Frame::set_cursor_position`) only
+while no modal covers the pane. Everywhere else the cursor stays hidden.
 
 Footer, jq-bar-focused chip set: when a ghost is up, `("tab", "next")`
 plus `("→", "accept")` in cycle mode, or `("tab", "accept")` in accept

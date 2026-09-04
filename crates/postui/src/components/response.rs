@@ -10,7 +10,7 @@ use postui_core::jq::complete::{self, Candidate, Context, Kind};
 use postui_core::jq::{JqDocument, JqError};
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -146,6 +146,19 @@ pub struct JqBar {
     pub completion: JqCompletion,
     /// What Tab does on a ghost (`config.toml` `jq_tab`).
     pub tab: JqTab,
+    /// The filter as it stood when the bar last took the caret — what Esc
+    /// puts back. Taken on the unfocused → focused edge (before `open_jq`
+    /// flips the switch, so a bar opened from off cancels back to off)
+    /// and dropped on blur. `None` while unfocused.
+    edit_origin: Option<JqEditOrigin>,
+}
+
+/// The filter a bar edit started from: its text and whether it was
+/// switched on. See [`JqBar::edit_origin`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct JqEditOrigin {
+    text: String,
+    enabled: bool,
 }
 
 impl JqBar {
@@ -155,6 +168,27 @@ impl JqBar {
     fn running_long(&self, now: Instant) -> bool {
         self.pending.is_some()
             && now.saturating_duration_since(self.pending_since) >= JQ_SPINNER_AFTER
+    }
+
+    /// Gives the bar the caret, remembering the filter it started from
+    /// for a later cancel. A no-op on an already focused bar, so the
+    /// origin is never overwritten mid-edit (a tee-up or an AI reply
+    /// landing text into a focused bar still cancels back to before it).
+    fn focus(&mut self) {
+        if !self.focused {
+            self.edit_origin = Some(JqEditOrigin {
+                text: self.input.text().to_string(),
+                enabled: self.enabled,
+            });
+            self.focused = true;
+        }
+    }
+
+    /// Takes the caret away; whatever was typed stands (the filter is
+    /// live already), so the origin is forgotten.
+    fn blur(&mut self) {
+        self.focused = false;
+        self.edit_origin = None;
     }
 
     /// See [`Response::jq_open`].
@@ -201,6 +235,7 @@ impl Default for JqBar {
             ai_started: Instant::now(),
             completion: JqCompletion::default(),
             tab: JqTab::Cycle,
+            edit_origin: None,
         }
     }
 }
@@ -865,6 +900,13 @@ pub struct Response {
     /// user typed keeps working (once reconciled) against the new body,
     /// exactly like the address bar survives a send.
     jq: JqBar,
+    /// Where the last frame drew the focused jq bar's caret — the cell
+    /// the terminal's own cursor belongs in — or `None` when the bar was
+    /// unfocused, closed, or not drawn. An output of `draw`, kept on the
+    /// pane like the hit map is kept on the app: the frame reads it after
+    /// the panes have drawn and places the cursor only when no modal
+    /// covers the bar.
+    jq_caret: Option<Position>,
 }
 
 impl Response {
@@ -971,18 +1013,30 @@ impl Response {
         self.jq.pending = None;
     }
 
-    /// Clears the filter: wipes the bar's text (an edit, when there was
-    /// any) so the full body shows. Focus is untouched — from the bar the
-    /// caret stays put for the next filter; from the tree the empty,
-    /// unfocused bar simply disappears. The on/off switch is left on —
-    /// there is nothing left to be off — so the request never persists
-    /// `jq_enabled = false` without a filter.
-    pub fn clear_jq(&mut self) {
-        if !self.jq.input.text().is_empty() {
-            self.jq.input = LineInput::new("");
+    /// Cancels the edit in progress: puts the filter back to what it was
+    /// when the bar took the caret (text and on/off switch alike — a bar
+    /// opened from off goes back to off with its text kept) and blurs.
+    /// Started from no filter, the bar simply closes: the text is empty
+    /// again and, unfocused, the bar is hidden. The switch is left on in
+    /// that case — there is nothing left to be off — so the request never
+    /// persists `jq_enabled = false` without a filter. An edit whenever
+    /// anything actually changes, so undo brings the typed filter back.
+    /// A bar focused without an origin (never through `focus`) just blurs.
+    pub fn cancel_jq_edit(&mut self) {
+        let origin = self.jq.edit_origin.take();
+        self.jq.blur();
+        let Some(origin) = origin else {
+            return;
+        };
+        if self.jq.input.text() != origin.text {
+            self.set_jq_text(&origin.text);
             self.jq.edited = true;
         }
-        self.jq.enabled = true;
+        let enabled = origin.enabled || origin.text.is_empty();
+        if self.jq.enabled != enabled {
+            self.jq.enabled = enabled;
+            self.jq.edited = true;
+        }
     }
 
     /// Sets the bar's text and cursor together (a tee-up from elsewhere —
@@ -1019,11 +1073,13 @@ impl Response {
         if !self.jq_available() {
             return false;
         }
+        // Focus first: the origin must record the switch as it was, so a
+        // cancel puts an opened-from-off bar back to off.
+        self.jq.focus();
         if !self.jq.enabled {
             self.jq.enabled = true;
             self.jq.edited = true;
         }
-        self.jq.focused = true;
         true
     }
 
@@ -1031,7 +1087,7 @@ impl Response {
     /// the filter off (an edit — the request remembers). An empty bar just
     /// goes away; there is nothing to switch off.
     pub fn close_jq(&mut self) {
-        self.jq.focused = false;
+        self.jq.blur();
         if self.jq.enabled && !self.jq.input.text().is_empty() {
             self.jq.enabled = false;
             self.jq.edited = true;
@@ -1055,7 +1111,11 @@ impl Response {
         if focused && !self.jq_available() {
             return false;
         }
-        self.jq.focused = focused;
+        if focused {
+            self.jq.focus();
+        } else {
+            self.jq.blur();
+        }
         true
     }
 
@@ -1065,6 +1125,12 @@ impl Response {
 
     pub fn jq_bar_mut(&mut self) -> &mut JqBar {
         &mut self.jq
+    }
+
+    /// The cell the last `draw` left the focused jq bar's caret in, for
+    /// the frame to place the terminal cursor on. See `jq_caret`.
+    pub fn jq_caret_cell(&self) -> Option<Position> {
+        self.jq_caret
     }
 
     /// Forgets an outstanding background jq run when this response is
@@ -1794,11 +1860,12 @@ impl Response {
         // The jq bar swallows everything while focused: chars and editing
         // keys go to its LineInput, Enter blurs (committing is implicit —
         // every edit re-runs the filter — so the filter stays on), Esc
-        // clears the filter and keeps the caret (a second Esc, on the
-        // now-empty bar, leaves it) unless an AI request is pending, in
-        // which case it cancels that instead. Runs before the
-        // view is borrowed, so it works even with no ready view (it never
-        // should, in practice: the bar can't focus without one).
+        // cancels the edit — the filter goes back to what it was when the
+        // bar took the caret, and a bar opened onto no filter closes —
+        // unless an AI request is pending, in which case it cancels that
+        // instead. Runs before the view is borrowed, so it works even
+        // with no ready view (it never should, in practice: the bar can't
+        // focus without one).
         if self.jq.focused {
             // A completion ghost is showing: Tab steps or accepts per
             // `jq_tab`, Right/End accept, everything else falls through
@@ -1825,16 +1892,12 @@ impl Response {
                 }
             }
             match ev.code {
-                KeyCode::Enter => self.jq.focused = false,
+                KeyCode::Enter => self.jq.blur(),
                 KeyCode::Esc => {
                     if self.jq.ai_pending {
                         return Some(Action::CancelJqDescribe);
                     }
-                    if self.jq.input.text().is_empty() {
-                        self.jq.focused = false;
-                    } else {
-                        self.clear_jq();
-                    }
+                    self.cancel_jq_edit();
                 }
                 _ => {
                     self.jq.input.handle_key(ev);
@@ -1989,14 +2052,10 @@ impl Response {
                 view.search = None;
                 Some(Action::Render)
             }
-            // Innermost thing first: selection, then search, then the jq
-            // filter — so Enter-to-browse, Esc-to-drop-the-filter reads as
-            // one gesture from the tree. Clears rather than switches off:
-            // Esc is "get rid of it", the 󰈲 button/alt+q are the switch.
-            KeyCode::Esc if self.jq.is_open() => {
-                self.clear_jq();
-                Some(Action::Render)
-            }
+            // Esc from the tree stops at the selection and the search: it
+            // never touches the jq filter (that is saved with the request;
+            // the 󰈲 button/alt+q are its switch, and only the bar's own
+            // Esc cancels an edit in it).
             _ => None,
         }
     }
@@ -2143,8 +2202,9 @@ impl Component for Response {
             self.split,
             ctx,
         );
+        self.jq_caret = None;
         if jq_open {
-            draw_jq_bar(frame, hits, rows[1], &self.jq, ctx);
+            self.jq_caret = draw_jq_bar(frame, hits, rows[1], &self.jq, ctx);
         }
 
         let mut body_area = rows[2];
@@ -3077,12 +3137,13 @@ fn draw_jq_bar(
     area: Rect,
     bar: &JqBar,
     ctx: &DrawCtx,
-) {
+) -> Option<Position> {
     let t = ctx.theme;
     crate::paint::fill(frame.buffer_mut(), area, t.page);
     if area.height == 0 {
-        return;
+        return None;
     }
+    let mut caret = None;
     const AI: &str = " ✦ ";
     let ai_w = AI.chars().count() as u16;
     let text_w = area.width.saturating_sub(ai_w + 1);
@@ -3124,12 +3185,24 @@ fn draw_jq_bar(
         frame.render_widget(Paragraph::new(Line::from(spans)), row);
     } else {
         let w = text_w.saturating_sub(3);
-        let line = bar.input.draw_line_windowed(bar.focused, t, w);
+        // The focused bar's caret is the terminal's own cursor (a bar, set
+        // once at startup) rather than the painted reversed cell every
+        // other input uses: a completion ghost trails the caret, and a
+        // thin bar reads as "the text continues here" where a block
+        // swallowing the ghost's first letter did not. The cell is
+        // reported to the caller, which places the cursor once the frame
+        // has decided nothing covers the bar.
+        let line = bar.input.draw_line_windowed_no_caret(bar.focused, t, w);
         spans.extend(line.spans);
+        if bar.focused && w > 0 {
+            let col = bar.input.caret_column(w);
+            caret = Some(Position::new(row.x + 3 + col, row.y));
+        }
         if let Some(ghost) = bar.ghost() {
-            // The input's window plus its caret cell; the ghost gets what
-            // is left of the row and is clipped, never the caret.
-            let used = bar.input.visible_window(true, w).chars().count() as u16 + 1;
+            // The ghost starts in the caret's own cell (the bar cursor sits
+            // on that cell's left edge) and gets what is left of the row;
+            // it is clipped, never the text.
+            let used = bar.input.visible_window(true, w).chars().count() as u16;
             let room = w.saturating_sub(used) as usize;
             if room > 0 {
                 let shown: String = ghost.chars().take(room).collect();
@@ -3215,6 +3288,7 @@ fn draw_jq_bar(
             }
         }
     }
+    caret
 }
 
 /// The search row: the query/match counter (or the live input) on the left,
@@ -5688,15 +5762,77 @@ mod tests {
         assert!(r.take_jq_edited());
         assert!(!r.take_jq_edited());
         r.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert_eq!(r.jq_text(), "", "Esc clears");
-        assert!(r.jq_focused(), "…and keeps the caret in the bar");
-        assert!(r.take_jq_edited(), "a clear is an edit");
+        assert_eq!(r.jq_text(), ".a", "Esc cancels the edit");
+        assert!(!r.jq_focused(), "…and leaves the bar");
+        assert!(r.take_jq_edited(), "a revert is an edit");
+        assert!(r.set_jq_focus(true));
         r.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert!(!r.jq_focused(), "Esc on an empty bar blurs");
+        assert!(!r.jq_focused(), "Esc with nothing typed blurs");
+        assert_eq!(r.jq_text(), ".a");
         assert!(!r.take_jq_edited(), "…which is not an edit");
         r.set_jq_text_with_cursor("map(select(.x == ))", 17);
         assert!(r.take_jq_edited(), "a tee-up counts as an edit");
         assert_eq!(r.jq_bar().input.cursor(), 17);
+    }
+
+    #[test]
+    fn esc_on_a_bar_opened_onto_no_filter_closes_it() {
+        let mut r = ready(ITEMS);
+        assert!(r.open_jq());
+        r.handle_key(KeyEvent::new(KeyCode::Char('.'), KeyModifiers::NONE));
+        r.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert!(r.take_jq_edited());
+        r.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(r.jq_text(), "");
+        assert!(!r.jq_focused());
+        assert!(!r.jq_open(), "empty and unfocused: the bar is gone");
+        assert!(r.jq_enabled(), "nothing left to switch off");
+        assert!(r.take_jq_edited(), "dropping the typed text is an edit");
+    }
+
+    #[test]
+    fn esc_on_a_bar_opened_from_off_puts_it_back_to_off_with_its_text() {
+        let mut r = ready(ITEMS);
+        r.set_jq_text(".a");
+        assert!(r.open_jq());
+        r.close_jq();
+        assert!(!r.jq_enabled() && !r.jq_open());
+        r.take_jq_edited();
+        assert!(r.open_jq(), "on + focused");
+        assert!(r.jq_enabled());
+        r.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
+        r.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(r.jq_text(), ".a", "the typed char is gone");
+        assert!(!r.jq_enabled(), "the switch is back off");
+        assert!(!r.jq_open());
+        assert!(r.take_jq_edited());
+    }
+
+    #[test]
+    fn enter_keeps_the_edit_and_forgets_the_origin() {
+        let mut r = ready(ITEMS);
+        r.set_jq_text(".a");
+        assert!(r.set_jq_focus(true));
+        r.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
+        r.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(r.jq_text(), ".ab");
+        assert!(!r.jq_focused());
+        // A fresh edit session starts from the committed text.
+        assert!(r.set_jq_focus(true));
+        r.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+        r.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(r.jq_text(), ".ab", "back to the last commit, not further");
+    }
+
+    #[test]
+    fn text_landing_in_a_focused_bar_cancels_back_to_before_it() {
+        let mut r = ready(ITEMS);
+        r.set_jq_text(".a");
+        assert!(r.set_jq_focus(true));
+        // The AI reply / a tee-up lands text into the focused bar.
+        r.set_jq_text_with_cursor(".data.items", 11);
+        r.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(r.jq_text(), ".a");
     }
 
     #[test]
@@ -5912,13 +6048,14 @@ mod tests {
     }
 
     #[test]
-    fn the_ghost_is_drawn_muted_after_the_caret() {
+    fn the_ghost_is_drawn_muted_in_the_caret_cell() {
         let mut r = ready(ITEMS);
         type_jq(&mut r, ".data.");
         let text = render(&mut r);
-        // The caret's own cell (a reversed blank) sits between the typed
-        // text and the ghost, so the row reads `.data.` + caret + `items`.
-        assert!(text.contains(".data. items"), "{text}");
+        // The focused bar paints no caret cell of its own — the terminal
+        // cursor (a bar) sits on the ghost's first cell — so the row reads
+        // `.data.items` with nothing between the typed text and the ghost.
+        assert!(text.contains(".data.items"), "{text}");
         let (_, buf) = render_buf(&mut r);
         let w = buf.area.width;
         let row = (0..buf.area.height)
@@ -5926,16 +6063,20 @@ mod tests {
                 (0..w)
                     .map(|x| buf[(x, y)].symbol())
                     .collect::<String>()
-                    .contains(".data. items")
+                    .contains(".data.items")
             })
             .expect("bar row");
         let line: String = (0..w).map(|x| buf[(x, row)].symbol()).collect();
         let ghost_x = line.find("items").unwrap() as u16;
+        assert_eq!(
+            r.jq_caret_cell(),
+            Some(Position::new(ghost_x, row)),
+            "the terminal cursor is placed on the ghost's first cell"
+        );
         assert!(
-            buf[(ghost_x - 1, row)]
-                .modifier
-                .contains(ratatui::style::Modifier::REVERSED),
-            "the caret cell sits right before the ghost"
+            (ghost_x - 6..=ghost_x + 4)
+                .all(|x| !buf[(x, row)].modifier.contains(Modifier::REVERSED)),
+            "no painted caret anywhere in the bar text"
         );
         let theme = Theme::dark();
         assert_eq!(buf[(ghost_x, row)].fg, theme.text_muted);
@@ -5947,17 +6088,32 @@ mod tests {
     }
 
     #[test]
+    fn the_caret_cell_is_reported_only_while_the_bar_is_focused() {
+        let mut r = ready(ITEMS);
+        type_jq(&mut r, ".data");
+        render_buf(&mut r);
+        assert!(
+            r.jq_caret_cell().is_some(),
+            "focused: the cursor has a cell"
+        );
+        r.set_jq_focus(false);
+        render_buf(&mut r);
+        assert_eq!(r.jq_caret_cell(), None, "blurred: the cursor stays hidden");
+    }
+
+    #[test]
     fn the_ghost_is_clipped_to_the_bar_and_never_moves_the_caret() {
         let mut r = ready(ITEMS);
         type_jq(&mut r, ".data.");
         // 18 columns: the pane's 1-column-each-side inset (pane_surface)
         // takes 2, the ` ✦ ` chip plus its gap take 4, and `jq ` takes 3,
-        // leaving the input 9 cells; `.data.` plus its caret cell use 7,
-        // so the ghost is cut to two characters.
+        // leaving the input 9 cells; `.data.` uses 6 (the caret is the
+        // terminal cursor, on the ghost's first cell, not a cell of its
+        // own), so the ghost is cut to three characters.
         let text = render_sized(&mut r, 18, 20);
         let bar_line = text
             .lines()
-            .find(|l| l.contains(".data. it"))
+            .find(|l| l.contains(".data.ite"))
             .unwrap_or_else(|| panic!("bar row not found: {text}"));
         assert!(
             !bar_line.contains("items"),
