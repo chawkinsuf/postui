@@ -38,10 +38,13 @@ rides along because jaq already exposes its definitions.
   caret is at the end of the filter with no selection. Mid-text
   completion would have to draw the ghost inside existing text and shift
   it, and the payoff is small: filters are written left to right.
-- **Body keys keep the body's order.** Candidates appear in the order
-  their keys first appear across the context's outputs (the order the
-  tree shows), except that a key exactly equal to what's typed sorts
-  first. Builtins are alphabetical.
+- **A ghost is always a continuation.** Only candidates that strictly
+  extend the typed partial are offered; a key equal to it is dropped
+  (nothing to add), so `.id` ghosts `s` when `ids` also exists, and the
+  user always sees when Tab has somewhere to go. This is how fish,
+  browser address bars and Copilot behave. Body keys keep the body's
+  order (the order the tree shows, first appearance across the context's
+  outputs); builtins are alphabetical.
 - **Accepting is a plain edit.** Accept inserts the missing characters
   through the bar's `LineInput`, so the filter re-runs live exactly as if
   they were typed, undo/redo sees an ordinary edit, and the completion
@@ -204,8 +207,8 @@ pub struct Candidate {
 }
 
 /// Filters `keys` (for `Kind::Key`) or `builtins()` (for `Kind::Word`)
-/// by `partial` (case-sensitive prefix), orders as decided above, and
-/// renders each into a candidate.
+/// to those that start with `partial` (case-sensitive) and are longer
+/// than it, orders as decided above, and renders each into a candidate.
 pub fn candidates(ctx: &Context, keys: &[String]) -> Vec<Candidate>;
 ```
 
