@@ -98,6 +98,49 @@ impl ManageList {
         }
     }
 
+    /// The right-click menu for row `i` of `tab`'s list — the same
+    /// actions the detail pane's buttons and the footer keys offer, so a
+    /// row can be worked on where it sits, like a Variables row can.
+    /// `None` past the end of the list.
+    pub fn context_menu(
+        tab: ManageTab,
+        ctx: &ProjectContext,
+        i: usize,
+    ) -> Option<Vec<crate::components::modal::MenuItem>> {
+        use crate::components::modal::MenuItem;
+        let items = Self::items(tab, ctx);
+        let name = items.get(i)?.as_str();
+        let mut menu = vec![MenuItem::new(
+            "Rename\u{2026}",
+            Self::rename_action(tab, name),
+        )];
+        if tab == ManageTab::Spaces {
+            // The edge rows keep their move item, disabled, so the menu
+            // holds its shape from row to row.
+            let mv = |label: &str, delta: i32, can: bool| {
+                if can {
+                    MenuItem::new(
+                        label,
+                        Action::MoveSpace {
+                            name: name.to_string(),
+                            delta,
+                        },
+                    )
+                } else {
+                    MenuItem::disabled(label)
+                }
+            };
+            menu.push(mv("Move up", -1, i > 0));
+            menu.push(mv("Move down", 1, i + 1 < items.len()));
+            menu.push(MenuItem::new(
+                "Move all requests\u{2026}",
+                Self::move_all_action(name),
+            ));
+        }
+        menu.push(MenuItem::new("Delete", Self::delete_action(tab, name)));
+        Some(menu)
+    }
+
     /// The list's own keys.
     pub fn handle_key(
         &mut self,

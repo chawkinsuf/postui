@@ -1628,9 +1628,10 @@ impl App {
                 }
                 // Closing the theme picker restores the pre-preview theme —
                 // same rule as `apply_modal_result`'s Chooser-revert branch,
-                // needed here too since a click outside the modal (Hit::
-                // ModalOutside) routes through `Action::Close`, not
-                // `apply_modal_result`.
+                // needed here too for a bare `Close` (the global esc
+                // binding) that never reaches `apply_modal_result`. A click
+                // outside the picker is an accept instead (see `on_hit`'s
+                // `ModalOutside` arm).
                 if matches!(popped_modal, Some(Modal::Chooser(_)))
                     && let Some(prior) = self.theme_preview.take()
                 {
@@ -7026,6 +7027,13 @@ impl App {
         let row = match hit {
             Hit::SidebarRow(i) | Hit::SidebarFolderArrow(i) => self.sidebar.rows.get(*i)?,
             Hit::VmLeftRow(i) => return self.varmanager.context_menu(*i),
+            Hit::ManageRow(i) => {
+                return crate::components::manage_list::ManageList::context_menu(
+                    self.manage.tab,
+                    &self.project,
+                    *i,
+                );
+            }
             // An option row (either half of it — the radio and the cells all
             // belong to the same record).
             Hit::VmEntryRadio(row) | Hit::VmEntryCell { row, .. } => {

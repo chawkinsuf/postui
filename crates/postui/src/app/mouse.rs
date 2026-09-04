@@ -259,6 +259,13 @@ impl App {
                         changed |= self.varmanager.left_cursor != *i;
                         self.varmanager.select_row(*i);
                     }
+                    // An Environments/Spaces row: the click lands the
+                    // list's cursor on it (the detail pane follows) before
+                    // its menu opens, like a left click would.
+                    Hit::ManageRow(i) => {
+                        changed |= self.manage.list.cursor != *i;
+                        self.manage.list.cursor = *i;
+                    }
                     // Same rule for a grid row: the click moves the grid's
                     // cursor onto it (and the keyboard with it) before its
                     // menu opens.
@@ -1181,13 +1188,25 @@ impl App {
                 // commit-on-click-away. Routed through the same path Enter
                 // takes so a refused commit keeps the prompt (and the typed
                 // text) exactly as the keyboard flow would.
-                if matches!(
-                    self.modals.top(),
-                    Some(crate::components::modal::Modal::MultiPrompt {
-                        kind: crate::components::modal::PromptKind::EditOption { .. },
-                        ..
-                    })
-                ) {
+                //
+                // The theme picker too: its highlight is already applied
+                // live, so the theme on screen when the user clicks away
+                // is the one they chose — clicking off keeps it (Enter),
+                // where Esc is the explicit "put it back".
+                let theme_picker = self.theme_preview.is_some()
+                    && matches!(
+                        self.modals.top(),
+                        Some(crate::components::modal::Modal::Chooser(_))
+                    );
+                if theme_picker
+                    || matches!(
+                        self.modals.top(),
+                        Some(crate::components::modal::Modal::MultiPrompt {
+                            kind: crate::components::modal::PromptKind::EditOption { .. },
+                            ..
+                        })
+                    )
+                {
                     let enter = ratatui::crossterm::event::KeyEvent::new(
                         ratatui::crossterm::event::KeyCode::Enter,
                         ratatui::crossterm::event::KeyModifiers::NONE,

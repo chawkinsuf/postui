@@ -14770,6 +14770,74 @@ fn clicking_new_delete_and_a_row_dispatch_the_right_actions() {
 }
 
 #[test]
+fn right_clicking_an_environment_row_selects_it_and_opens_its_menu() {
+    use crate::components::manage::ManageTab;
+    let (mut app, _dir) = app_with_envs();
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Environments),
+    });
+    rendered_text_tall(&mut app);
+    let r = app.hits.rect_of(&Hit::ManageRow(1)).unwrap();
+    app.handle_mouse(right_down(r.x + 1, r.y));
+    assert_eq!(app.manage.list.cursor, 1, "the right click selects the row");
+    let Some(Modal::Dropdown(menu)) = app.modals.top() else {
+        panic!("expected a context menu");
+    };
+    let labels: Vec<String> = menu.items.iter().map(|i| i.label.clone()).collect();
+    assert_eq!(labels, vec!["Rename\u{2026}", "Delete"]);
+    assert_eq!(
+        menu.items[0].action,
+        Some(Action::PromptRenameEnv("qa".into()))
+    );
+    assert_eq!(menu.items[1].action, Some(Action::DeleteEnv("qa".into())));
+}
+
+#[test]
+fn right_clicking_a_space_row_opens_its_menu_with_move_items() {
+    use crate::components::manage::ManageTab;
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::OpenManage {
+        tab: Some(ManageTab::Spaces),
+    });
+    rendered_text_tall(&mut app);
+    let r = app.hits.rect_of(&Hit::ManageRow(0)).unwrap();
+    app.handle_mouse(right_down(r.x + 1, r.y));
+    assert_eq!(app.manage.list.cursor, 0);
+    let Some(Modal::Dropdown(menu)) = app.modals.top() else {
+        panic!("expected a context menu");
+    };
+    let labels: Vec<String> = menu.items.iter().map(|i| i.label.clone()).collect();
+    assert_eq!(
+        labels,
+        vec![
+            "Rename\u{2026}",
+            "Move up",
+            "Move down",
+            "Move all requests\u{2026}",
+            "Delete"
+        ]
+    );
+    let first = app.project.spaces[0].clone();
+    assert_eq!(
+        menu.items[0].action,
+        Some(Action::PromptRenameSpace(first.clone()))
+    );
+    assert!(menu.items[1].action.is_none(), "top row cannot move up");
+    assert_eq!(
+        menu.items[2].action,
+        Some(Action::MoveSpace {
+            name: first.clone(),
+            delta: 1
+        })
+    );
+    assert_eq!(
+        menu.items[3].action,
+        Some(Action::PromptMoveAllRequests(first.clone()))
+    );
+    assert_eq!(menu.items[4].action, Some(Action::DeleteSpace(first)));
+}
+
+#[test]
 fn manage_tabs_footer_chips_advertise_list_keys() {
     use crate::components::manage::ManageTab;
     let (mut app, _dir) = spaced_app();
@@ -16035,7 +16103,7 @@ mod undo_tests {
     }
 
     #[test]
-    fn theme_picker_click_away_reverts_the_live_preview() {
+    fn theme_picker_close_action_reverts_the_live_preview() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = App::new_for_test();
         let keymap = crate::keys::Keymap::default_bindings();
@@ -16044,17 +16112,33 @@ mod undo_tests {
         app.update(Action::OpenThemeChooser);
         app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // "dark"
         assert_eq!(app.theme_name, "dark", "highlight applies live");
-        // Hit::ModalOutside routes here, not through apply_modal_result.
+        // A bare `Close` (the global esc binding) skips apply_modal_result.
         app.update(Action::Close);
         assert_eq!(
             app.theme_name, original_name,
-            "click-away reverts the prior theme"
+            "close reverts the prior theme"
         );
         assert_eq!(app.theme.page, original);
         assert!(
             app.theme_preview.is_none(),
             "preview state disarmed so a later project/env chooser is unaffected"
         );
+    }
+
+    #[test]
+    fn theme_picker_click_off_keeps_the_previewed_theme() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::new_for_test();
+        let keymap = crate::keys::Keymap::default_bindings();
+        app.update(Action::OpenThemeChooser);
+        app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // "dark"
+        // A click off the picker is an accept, not a cancel: the theme
+        // the user is looking at is the one they get.
+        click_hit(&mut app, Hit::ModalOutside);
+        assert_eq!(app.theme_name, "dark");
+        assert_eq!(app.ui_settings.theme, "dark");
+        assert!(app.modals.top().is_none());
+        assert!(app.theme_preview.is_none());
     }
 
     #[test]
