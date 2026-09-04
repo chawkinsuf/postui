@@ -1837,7 +1837,7 @@ fn dragging_the_sidebar_thumb_scrolls_and_release_ends_the_drag() {
             method: Some(postui_core::model::Method::Get),
         })
         .collect();
-    app.sidebar.refresh(slugs, "main", &Default::default());
+    app.sidebar.refresh(slugs, "main", &Default::default(), &[]);
     render_once(&mut app);
 
     let thumb = app
@@ -1890,7 +1890,7 @@ fn dragging_the_sidebar_thumb_with_drag_events_scrolls_the_same_as_moved() {
             method: Some(postui_core::model::Method::Get),
         })
         .collect();
-    app.sidebar.refresh(slugs, "main", &Default::default());
+    app.sidebar.refresh(slugs, "main", &Default::default(), &[]);
     render_once(&mut app);
 
     let thumb = app

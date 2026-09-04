@@ -6800,7 +6800,8 @@ impl App {
             .append(&mut self.sidebar.pending_expand);
         let expanded = self.project.expanded.clone();
         let space = self.project.active_space.clone();
-        self.sidebar.refresh(listing, &space, &expanded);
+        let order = postui_core::order::space_order(&self.project.meta, &space).to_vec();
+        self.sidebar.refresh(listing, &space, &expanded, &order);
         // `refresh` can re-map the open request's row to a different index
         // (rows added/removed/reordered above it) without the open request
         // itself changing -- snap `ListTravel`'s value to match, or it

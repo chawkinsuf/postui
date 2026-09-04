@@ -95,12 +95,12 @@ pub struct Sidebar {
 
 impl Sidebar {
     /// Rebuilds `rows` as a tree from a fresh listing: at each level, this
-    /// level's requests come first (sorted by display name), then its
-    /// subfolders (sorted by name); a folder's children are emitted only when
-    /// `expanded` contains its path. Preserves the current selection by row
-    /// identity (folder path or request slug) across the rebuild; a
-    /// selection whose row vanished clears rather than sliding onto an
-    /// arbitrary neighbor.
+    /// level's requests come first — the ones in `order` in list order,
+    /// then the rest by display name — then its subfolders (sorted by
+    /// name); a folder's children are emitted only when `expanded`
+    /// contains its path. Preserves the current selection by row identity
+    /// (folder path or request slug) across the rebuild; a selection whose
+    /// row vanished clears rather than sliding onto an arbitrary neighbor.
     ///
     /// Only `space`'s entries become rows: everything outside it is dropped
     /// (but kept in `listing` for `space_counts`), and the tree is rooted at
@@ -111,10 +111,17 @@ impl Sidebar {
         listing: Vec<RequestListing>,
         space: &str,
         expanded: &BTreeSet<String>,
+        order: &[String],
     ) {
-        let prev = self.selected_identity();
-
         self.listing = listing;
+        self.rebuild(space, expanded, order);
+    }
+
+    /// Rebuilds the rows from the listing already held — the cheap path
+    /// for a change that touched no file (a live drag, a folder toggle).
+    /// Same selection-preserving rules as `refresh`.
+    pub fn rebuild(&mut self, space: &str, expanded: &BTreeSet<String>, order: &[String]) {
+        let prev = self.selected_identity();
         let prefix = format!("{space}/");
         let mut sorted: Vec<RequestListing> = self
             .listing
@@ -125,7 +132,7 @@ impl Sidebar {
         sorted.sort_by(|a, b| a.slug.cmp(&b.slug));
 
         let mut rows = Vec::new();
-        Self::build_rows(&sorted, &prefix, 0, expanded, &mut rows);
+        Self::build_rows(&sorted, &prefix, 0, expanded, space, order, &mut rows);
         self.rows = rows;
 
         self.selected =
@@ -178,15 +185,18 @@ impl Sidebar {
     }
 
     /// Builds the rows for one folder level (`prefix`, possibly empty for
-    /// the root): direct requests first, in display-name order, then
-    /// subfolders in name order, recursing into each expanded one.
-    /// `entries` must already be sorted by slug (the folder grouping walks
-    /// slug paths) and every entry must start with `prefix`.
+    /// the root): direct requests first — the ones in `order` in list
+    /// order, then the rest by display name — then subfolders in name
+    /// order, recursing into each expanded one. `entries` must already be
+    /// sorted by slug (the folder grouping walks slug paths) and every
+    /// entry must start with `prefix`.
     fn build_rows(
         entries: &[RequestListing],
         prefix: &str,
         depth: usize,
         expanded: &BTreeSet<String>,
+        space: &str,
+        order: &[String],
         rows: &mut Vec<Row>,
     ) {
         let mut folder_children: std::collections::BTreeMap<String, Vec<RequestListing>> =
@@ -205,13 +215,7 @@ impl Sidebar {
                 requests.push(e);
             }
         }
-        // This level's requests order by what the user reads — the display
-        // name — with the slug as a stable tiebreak.
-        requests.sort_by_key(|e| {
-            let leaf = e.slug.rsplit('/').next().unwrap_or(&e.slug);
-            let display = e.name.as_deref().unwrap_or(leaf);
-            (display.to_lowercase(), e.slug.clone())
-        });
+        let requests = postui_core::order::order_level(&requests, order, space);
         for e in requests {
             let leaf = e.slug.rsplit('/').next().unwrap_or(&e.slug);
             rows.push(Row::Request {
@@ -233,7 +237,15 @@ impl Sidebar {
             });
             if is_expanded {
                 let child_prefix = format!("{path}/");
-                Self::build_rows(&children, &child_prefix, depth + 1, expanded, rows);
+                Self::build_rows(
+                    &children,
+                    &child_prefix,
+                    depth + 1,
+                    expanded,
+                    space,
+                    order,
+                    rows,
+                );
             }
         }
     }
@@ -944,7 +956,7 @@ mod tests {
         l[0].name = Some("Aardvark".into()); // zeta-slug
         l[1].name = Some("Zebra".into()); // alpha-slug
         // l[2] "legacy" stays nameless -> displays its slug leaf.
-        s.refresh(l, "main", &expanded(&[]));
+        s.refresh(l, "main", &expanded(&[]), &[]);
         let names: Vec<&str> = s
             .rows
             .iter()
@@ -960,6 +972,50 @@ mod tests {
         );
     }
 
+    fn order(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn row_slugs(s: &Sidebar) -> Vec<String> {
+        s.rows
+            .iter()
+            .map(|r| match r {
+                Row::Request { slug, .. } => slug.clone(),
+                Row::Folder { path, .. } => format!("{path}/"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn rows_honour_the_order_list_per_level_and_folders_stay_alphabetical() {
+        let mut s = Sidebar::default();
+        let l = listing(&["a", "b", "c", "zed/x", "zed/y", "auth/p"]);
+        s.refresh(
+            l,
+            "main",
+            &expanded(&["zed", "auth"]),
+            &order(&["c", "a", "zed/y"]),
+        );
+        assert_eq!(
+            row_slugs(&s),
+            [
+                "main/c", "main/a", "main/b", // listed first, then b
+                "main/auth/", "main/auth/p", // folders alphabetical below
+                "main/zed/", "main/zed/y", "main/zed/x",
+            ]
+        );
+    }
+
+    #[test]
+    fn selection_survives_a_reorder_rebuild_by_identity() {
+        let mut s = Sidebar::default();
+        s.refresh(listing(&["a", "b", "c"]), "main", &expanded(&[]), &[]);
+        s.selected = Some(2); // main/c
+        s.rebuild("main", &expanded(&[]), &order(&["c", "a", "b"]));
+        assert_eq!(s.selected, Some(0));
+        assert_eq!(s.selected_slug().as_deref(), Some("main/c"));
+    }
+
     #[test]
     fn tree_builds_nested_folders_and_hides_collapsed_children() {
         let mut s = Sidebar::default();
@@ -967,6 +1023,7 @@ mod tests {
             listing(&["api/users/list", "api/users/create", "api/ping", "top"]),
             "main",
             &expanded(&[]),
+            &[],
         );
         // collapsed: only top-level rows visible
         assert_eq!(
@@ -991,6 +1048,7 @@ mod tests {
             listing(&["api/users/list", "api/users/create", "api/ping", "top"]),
             "main",
             &expanded(&["api"]),
+            &[],
         );
         assert_eq!(
             s.rows,
@@ -1028,7 +1086,7 @@ mod tests {
     #[test]
     fn enter_and_arrows_toggle_folders_and_navigate_all_rows() {
         let mut s = Sidebar::default();
-        s.refresh(listing(&["api/ping", "top"]), "main", &expanded(&[]));
+        s.refresh(listing(&["api/ping", "top"]), "main", &expanded(&[]), &[]);
         s.handle_key(key(KeyCode::Char('j'))); // first press lands on row 0 ("top")
         s.handle_key(key(KeyCode::Char('j'))); // now on the "api" folder row
         assert!(matches!(
@@ -1048,7 +1106,7 @@ mod tests {
         let mut s = Sidebar::default();
         let slugs: Vec<String> = (0..30).map(|i| format!("r{i:02}")).collect();
         let refs: Vec<&str> = slugs.iter().map(|s| s.as_str()).collect();
-        s.refresh(listing(&refs), "main", &expanded(&[]));
+        s.refresh(listing(&refs), "main", &expanded(&[]), &[]);
         s.handle_scroll(10);
         assert_eq!(s.scroll, 10);
         // drawing must NOT snap back to the selection
@@ -1077,7 +1135,7 @@ mod tests {
     #[test]
     fn select_slug_expands_ancestor_folders() {
         let mut s = Sidebar::default();
-        s.refresh(listing(&["a/b/c"]), "main", &expanded(&[]));
+        s.refresh(listing(&["a/b/c"]), "main", &expanded(&[]), &[]);
         s.select_slug("main/a/b/c");
         assert!(s.pending_expand.contains("main/a") && s.pending_expand.contains("main/a/b"));
     }
@@ -1120,7 +1178,7 @@ mod tests {
         let slugs: Vec<String> = (0..30).map(|i| format!("r{i:02}")).collect();
         let refs: Vec<&str> = slugs.iter().map(String::as_str).collect();
         let mut s = Sidebar::default();
-        s.refresh(listing(&refs), "main", &expanded(&[]));
+        s.refresh(listing(&refs), "main", &expanded(&[]), &[]);
 
         let (content, hits) = render_hits(&mut s);
         assert!(content.contains('\u{2588}'), "thumb glyph is drawn");
@@ -1172,7 +1230,7 @@ mod tests {
     #[test]
     fn short_list_registers_no_scrollbar() {
         let mut s = Sidebar::default();
-        s.refresh(listing(&["a", "b", "c"]), "main", &expanded(&[]));
+        s.refresh(listing(&["a", "b", "c"]), "main", &expanded(&[]), &[]);
         let (_content, hits) = render_hits(&mut s);
         assert_eq!(hits.rect_of(&Hit::ScrollbarThumb(PaneId::Sidebar)), None);
         assert_eq!(hits.track_of(PaneId::Sidebar), None);
@@ -1185,7 +1243,7 @@ mod tests {
     #[test]
     fn draw_registers_new_request_button_row_hits_and_folder_arrow() {
         let mut s = Sidebar::default();
-        s.refresh(listing(&["api/ping", "top"]), "main", &expanded(&["api"]));
+        s.refresh(listing(&["api/ping", "top"]), "main", &expanded(&["api"]), &[]);
         let theme = Theme::dark();
         let ctx = draw_ctx(&theme, None);
         let backend = ratatui::backend::TestBackend::new(30, 12);
@@ -1254,7 +1312,7 @@ mod tests {
         let mut s = Sidebar::default();
         // Two rows so the hovered one (row 1) differs from the
         // default-selected one (row 0) — selection otherwise wins the fill.
-        s.refresh(listing(&["top", "next"]), "main", &expanded(&[]));
+        s.refresh(listing(&["top", "next"]), "main", &expanded(&[]), &[]);
         let theme = Theme::dark();
         let ctx = draw_ctx(&theme, Some(&Hit::SidebarRow(1)));
         let backend = ratatui::backend::TestBackend::new(30, 12);
@@ -1289,7 +1347,7 @@ mod tests {
     fn open_row_and_cursor_row_stay_visually_distinct() {
         let mut s = Sidebar::default();
         // Rows sort by slug: row 0 is "next", row 1 is "top".
-        s.refresh(listing(&["top", "next"]), "main", &expanded(&[]));
+        s.refresh(listing(&["top", "next"]), "main", &expanded(&[]), &[]);
         s.open_slug = Some("main/next".into());
         s.selected = Some(1); // cursor browsed onto "top"
         let theme = Theme::dark();
@@ -1353,7 +1411,7 @@ mod tests {
     #[test]
     fn open_row_keeps_its_band_when_the_pane_is_unfocused() {
         let mut s = Sidebar::default();
-        s.refresh(listing(&["top", "next"]), "main", &expanded(&[]));
+        s.refresh(listing(&["top", "next"]), "main", &expanded(&[]), &[]);
         s.open_slug = Some("main/next".into());
         s.selected = Some(1); // cursor elsewhere
         let theme = Theme::dark();
@@ -1390,7 +1448,7 @@ mod tests {
     #[test]
     fn cursor_on_the_open_row_shows_plain_selection_not_accent_name() {
         let mut s = Sidebar::default();
-        s.refresh(listing(&["only"]), "main", &expanded(&[]));
+        s.refresh(listing(&["only"]), "main", &expanded(&[]), &[]);
         s.open_slug = Some("main/only".into());
         s.selected = Some(0);
         let theme = Theme::dark();
@@ -1437,6 +1495,7 @@ mod tests {
             ],
             "main",
             &expanded(&[]),
+            &[],
         );
         let (_, hits) = render_hits(&mut s);
         let row1 = hits.rect_of(&Hit::SidebarRow(1)).unwrap();
@@ -1477,6 +1536,7 @@ mod tests {
             }],
             "main",
             &expanded(&[]),
+            &[],
         );
         s.in_flight.insert("main/ping".into());
         let (_, hits) = render_hits(&mut s);
@@ -1518,6 +1578,7 @@ mod tests {
             }],
             "main",
             &expanded(&[]),
+            &[],
         );
         let (content, _) = render_hits(&mut s);
         assert!(
@@ -1536,7 +1597,7 @@ mod tests {
     #[test]
     fn consecutive_rows_get_adjacent_1_line_hit_rects() {
         let mut s = Sidebar::default();
-        s.refresh(listing(&["a", "b", "c"]), "main", &expanded(&[]));
+        s.refresh(listing(&["a", "b", "c"]), "main", &expanded(&[]), &[]);
         let (_, hits) = render_hits(&mut s);
         let r0 = hits.rect_of(&Hit::SidebarRow(0)).unwrap();
         let r1 = hits.rect_of(&Hit::SidebarRow(1)).unwrap();
@@ -1554,7 +1615,7 @@ mod tests {
     #[test]
     fn mid_flight_band_crossfades_between_the_old_and_new_open_rows() {
         let mut s = Sidebar::default();
-        s.refresh(listing(&["a", "b", "c"]), "main", &expanded(&[]));
+        s.refresh(listing(&["a", "b", "c"]), "main", &expanded(&[]), &[]);
         // The band is moving from row 0 ("a", previously open) toward the
         // newly open row 1 ("b").
         s.open_slug = Some("main/b".into());
