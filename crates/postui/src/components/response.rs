@@ -5,6 +5,8 @@ use crate::action::{Action, CopyTarget};
 use crate::hit::ScrollbarSpec;
 use crate::layout::PaneId;
 use crate::theme::Theme;
+use crate::config::JqTab;
+use postui_core::jq::complete::{self, Candidate, Context, Kind};
 use postui_core::jq::{JqDocument, JqError};
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -71,6 +73,47 @@ pub struct SearchState {
 /// last filter applied. Lives on [`Response`], not [`ReadyView`] — the bar
 /// (and whatever filter the user typed) survives a new response landing in
 /// the same slot, exactly like the address bar survives a send.
+
+/// The bar's completion state: the candidates for the caret's position
+/// and the keys they were built from. See the completion spec.
+#[derive(Default)]
+pub struct JqCompletion {
+    /// The context expression `cached_keys` were fetched for.
+    cached_expr: Option<String>,
+    cached_keys: Vec<String>,
+    /// What the caret is typing; `None` when nothing is offered there.
+    ctx: Option<Context>,
+    candidates: Vec<Candidate>,
+    /// Which candidate the ghost shows; reset whenever the context
+    /// changes.
+    index: usize,
+    /// A key fetch outstanding on the blocking pool: its sequence number
+    /// and the expression it is for. Only the newest fetch's result is
+    /// kept.
+    pending: Option<(u64, String)>,
+    seq: u64,
+}
+
+impl JqCompletion {
+    pub fn pending(&self) -> Option<u64> {
+        self.pending.as_ref().map(|(s, _)| *s)
+    }
+
+    // Wired up by Tab handling in a later task.
+    #[allow(dead_code)]
+    fn step(&mut self, forward: bool) {
+        let n = self.candidates.len();
+        if n == 0 {
+            return;
+        }
+        self.index = if forward {
+            (self.index + 1) % n
+        } else {
+            (self.index + n - 1) % n
+        };
+    }
+}
+
 pub struct JqBar {
     pub input: LineInput,
     pub focused: bool,
@@ -103,6 +146,9 @@ pub struct JqBar {
     pub ai_pending: bool,
     /// When the AI request started, for the spinner.
     pub ai_started: std::time::Instant,
+    pub completion: JqCompletion,
+    /// What Tab does on a ghost (`config.toml` `jq_tab`).
+    pub tab: JqTab,
 }
 
 impl JqBar {
@@ -121,6 +167,26 @@ impl JqBar {
             || self.ai_pending
             || self.pending.is_some()
     }
+
+    /// Whether the caret is at the end of the text with nothing selected —
+    /// the only place a ghost is drawn.
+    fn caret_at_end(&self) -> bool {
+        self.input.selection().is_none()
+            && self.input.cursor() == self.input.text().chars().count()
+    }
+
+    /// The candidate the ghost shows, when one is showing.
+    fn candidate(&self) -> Option<&Candidate> {
+        if !self.focused || self.ai_pending || !self.caret_at_end() {
+            return None;
+        }
+        self.completion.candidates.get(self.completion.index)
+    }
+
+    /// The ghost text after the caret, when there is one.
+    pub fn ghost(&self) -> Option<&str> {
+        self.candidate().map(|c| c.ghost.as_str())
+    }
 }
 
 impl Default for JqBar {
@@ -137,6 +203,8 @@ impl Default for JqBar {
             pending_since: Instant::now(),
             ai_pending: false,
             ai_started: Instant::now(),
+            completion: JqCompletion::default(),
+            tab: JqTab::Cycle,
         }
     }
 }
@@ -172,6 +240,16 @@ pub struct JqRunRequest {
     pub code: String,
     pub doc: Option<JqDocument>,
     pub body: Option<String>,
+}
+
+/// A completion key fetch too big for the UI thread: run `input_expr`
+/// against `doc` on the blocking pool (`complete::keys_at`) and hand the
+/// keys back as `Action::JqCompleteFinished`.
+pub struct JqCompleteRequest {
+    pub generation: u64,
+    pub seq: u64,
+    pub input_expr: String,
+    pub doc: JqDocument,
 }
 
 /// What a jq run hands back: the document it parsed (when it had to), the
@@ -1028,6 +1106,12 @@ impl Response {
         view.parsing = true;
         view.shed = true;
         self.jq.pending = None;
+        // Keep the sequence counter so a stale in-flight pool fetch can't
+        // collide with a fresh fetch's `seq` after a shed.
+        self.jq.completion = JqCompletion {
+            seq: self.jq.completion.seq,
+            ..JqCompletion::default()
+        };
     }
 
     /// The parse a shed response needs now that it is back on screen: its
@@ -1053,6 +1137,7 @@ impl Response {
         {
             view.jq_applied = None;
         }
+        self.jq.completion.pending = None;
     }
 
     /// Whether jq has anything to run against: a ready view with a parsed
@@ -1188,6 +1273,116 @@ impl Response {
             doc,
             body,
         })
+    }
+
+    pub fn set_jq_tab(&mut self, tab: JqTab) {
+        self.jq.tab = tab;
+    }
+
+    pub fn jq_tab(&self) -> JqTab {
+        self.jq.tab
+    }
+
+    pub fn jq_ghost(&self) -> Option<&str> {
+        self.jq.ghost()
+    }
+
+    /// Recomputes the bar's completion for the caret's position. Runs
+    /// after every `apply_jq` in the app's reconcile. Keys for a new
+    /// context are fetched inline for a body under `sync_limit`, else
+    /// the returned request goes to the blocking pool and the ghost
+    /// stays empty until `attach_jq_completion` lands it.
+    pub fn refresh_jq_completion(&mut self, sync_limit: usize) -> Option<JqCompleteRequest> {
+        let bar = &mut self.jq;
+        let focused = bar.focused;
+        let at_end = bar.caret_at_end();
+        let text = bar.input.text().to_string();
+        let c = &mut bar.completion;
+        if !focused || !at_end {
+            c.ctx = None;
+            c.candidates.clear();
+            c.index = 0;
+            return None;
+        }
+        let ctx = complete::context(&text);
+        if ctx != c.ctx {
+            c.index = 0;
+        }
+        c.ctx = ctx;
+        let Some(ctx) = c.ctx.clone() else {
+            c.candidates.clear();
+            return None;
+        };
+        let expr = match ctx.kind {
+            Kind::Word => {
+                c.candidates = complete::candidates(&ctx, &[]);
+                return None;
+            }
+            Kind::Key { .. } => ctx.input_expr.clone().unwrap_or_else(|| ".".into()),
+        };
+        if c.cached_expr.as_deref() == Some(expr.as_str()) {
+            c.candidates = complete::candidates(&ctx, &c.cached_keys);
+            return None;
+        }
+        c.candidates.clear();
+        if c.pending.as_ref().is_some_and(|(_, e)| *e == expr) {
+            return None;
+        }
+        let Some(view) = self.view.as_mut() else {
+            return None;
+        };
+        let body_len = view.raw_lines.iter().map(|l| l.len() + 1).sum::<usize>();
+        if view.jq_doc.is_none() && view.has_tree_view() && body_len <= sync_limit {
+            view.jq_doc = JqDocument::parse(&view.raw_lines.join("\n")).ok();
+        }
+        let Some(doc) = view.jq_doc.clone() else {
+            return None;
+        };
+        if body_len <= sync_limit {
+            c.cached_keys = complete::keys_at(&expr, &doc);
+            c.cached_expr = Some(expr);
+            c.candidates = complete::candidates(&ctx, &c.cached_keys);
+            return None;
+        }
+        c.seq += 1;
+        c.pending = Some((c.seq, expr.clone()));
+        Some(JqCompleteRequest {
+            generation: view.generation,
+            seq: c.seq,
+            input_expr: expr,
+            doc,
+        })
+    }
+
+    /// Lands a pool key fetch. Dropped unless `generation` is the view on
+    /// screen and `seq` is the newest fetch. The keys are cached either
+    /// way; the ghost updates only if the caret's context still asks for
+    /// that expression. Returns whether the ghost changed.
+    pub fn attach_jq_completion(
+        &mut self,
+        generation: u64,
+        seq: u64,
+        input_expr: String,
+        keys: Vec<String>,
+    ) -> bool {
+        if self.view.as_ref().is_none_or(|v| v.generation != generation) {
+            return false;
+        }
+        let c = &mut self.jq.completion;
+        if c.pending() != Some(seq) {
+            return false;
+        }
+        c.pending = None;
+        c.cached_keys = keys;
+        c.cached_expr = Some(input_expr);
+        if let Some(ctx) = &c.ctx
+            && ctx.input_expr.as_deref() == c.cached_expr.as_deref()
+        {
+            c.candidates = complete::candidates(ctx, &c.cached_keys);
+            c.index = 0;
+            return true;
+        }
+        false
     }
 
     /// Accepts (or drops) the result of a background jq run. Dropped when
@@ -4722,6 +4917,121 @@ mod tests {
             r.view().unwrap().view_text().starts_with("{"),
             "an empty filter shows the body again"
         );
+    }
+
+    /// Types `text` into a focused bar the way `App::sync_jq` drives it:
+    /// apply the filter, then refresh the completion.
+    fn type_jq(r: &mut Response, text: &str) {
+        r.set_jq_focus(true);
+        r.jq_bar_mut().input = LineInput::new(text);
+        r.apply_jq(text, SYNC_PRETTY_BYTES);
+        assert!(
+            r.refresh_jq_completion(SYNC_PRETTY_BYTES).is_none(),
+            "small bodies fetch inline"
+        );
+    }
+
+    #[test]
+    fn a_dot_ghosts_the_first_key_of_what_the_caret_sees() {
+        let mut r = ready(ITEMS);
+        type_jq(&mut r, ".");
+        assert_eq!(r.jq_ghost(), Some("data"));
+        type_jq(&mut r, ".data.");
+        assert_eq!(r.jq_ghost(), Some("items"));
+        type_jq(&mut r, ".data.items[] | .s");
+        assert_eq!(r.jq_ghost(), Some("tatus"));
+        type_jq(&mut r, ".data.items[] | select(.st");
+        assert_eq!(r.jq_ghost(), Some("atus"), "inside select the dot is the item");
+        type_jq(&mut r, ".data.items[] | .zz");
+        assert_eq!(r.jq_ghost(), None);
+    }
+
+    #[test]
+    fn a_word_ghosts_a_builtin_even_with_no_document() {
+        let mut r = ready(ITEMS);
+        type_jq(&mut r, ".data.items | leng");
+        assert_eq!(r.jq_ghost(), Some("th"));
+        // `set_jq_focus` refuses a non-JSON body (no tree to filter), so
+        // this seeds focus directly instead — the reachable real case is
+        // a bar already focused when a non-JSON response lands.
+        let type_jq_unfocusable = |r: &mut Response, text: &str| {
+            r.jq_bar_mut().focused = true;
+            r.jq_bar_mut().input = LineInput::new(text);
+            r.apply_jq(text, SYNC_PRETTY_BYTES);
+            assert!(
+                r.refresh_jq_completion(SYNC_PRETTY_BYTES).is_none(),
+                "small bodies fetch inline"
+            );
+        };
+        let mut r = ready("<html>");
+        type_jq_unfocusable(&mut r, "leng");
+        assert_eq!(r.jq_ghost(), Some("th"), "builtins need no body");
+        type_jq_unfocusable(&mut r, ".d");
+        assert_eq!(r.jq_ghost(), None, "no document, no keys");
+    }
+
+    #[test]
+    fn the_ghost_hides_off_the_end_of_the_text_and_when_unfocused() {
+        let mut r = ready(ITEMS);
+        type_jq(&mut r, ".data.");
+        assert!(r.jq_ghost().is_some());
+        r.jq_bar_mut().input.set_cursor(3);
+        r.refresh_jq_completion(SYNC_PRETTY_BYTES);
+        assert_eq!(r.jq_ghost(), None, "caret mid-text");
+        r.jq_bar_mut().input.set_cursor(6);
+        r.refresh_jq_completion(SYNC_PRETTY_BYTES);
+        assert_eq!(r.jq_ghost(), Some("items"));
+        r.jq_bar_mut().input.select_all();
+        r.refresh_jq_completion(SYNC_PRETTY_BYTES);
+        assert_eq!(r.jq_ghost(), None, "a selection hides it");
+        r.jq_bar_mut().input.clear_selection();
+        r.set_jq_focus(false);
+        r.refresh_jq_completion(SYNC_PRETTY_BYTES);
+        assert_eq!(r.jq_ghost(), None, "unfocused");
+    }
+
+    #[test]
+    fn typing_more_of_a_partial_reuses_the_fetched_keys() {
+        let mut r = ready(ITEMS);
+        type_jq(&mut r, ".data.items[] | .");
+        assert_eq!(r.jq_ghost(), Some("id"));
+        // Same context, longer partial: no fetch would be needed even for
+        // a big body — the request path is exercised in the app tests;
+        // here the observable is the ghost narrowing.
+        r.jq_bar_mut().input = LineInput::new(".data.items[] | .st");
+        r.refresh_jq_completion(SYNC_PRETTY_BYTES);
+        assert_eq!(r.jq_ghost(), Some("atus"));
+    }
+
+    #[test]
+    fn a_big_body_fetches_keys_on_the_pool_and_attaches_by_sequence() {
+        let big = format!(
+            r#"{{"pad": "{}", "n": 7}}"#,
+            "x".repeat(SYNC_PRETTY_BYTES)
+        );
+        let mut r = ready_gen(&big, 3);
+        r.attach_tree(3, crate::components::json_tree::JsonTree::parse(&big));
+        r.set_jq_focus(true);
+        r.jq_bar_mut().input = LineInput::new(".");
+        // The first filter run parses the document on the pool; feed it
+        // back as the app would.
+        let req = r.apply_jq(".", SYNC_PRETTY_BYTES).expect("background run");
+        let doc = postui_core::jq::JqDocument::parse(&big).unwrap();
+        let out = JqRunOutput::from_outputs(Some(doc.clone()), vec![big.clone()]);
+        r.attach_jq_result(3, req.run, Ok(out));
+        let creq = r
+            .refresh_jq_completion(SYNC_PRETTY_BYTES)
+            .expect("a big body fetches keys on the pool");
+        assert_eq!((creq.generation, creq.input_expr.as_str()), (3, "."));
+        assert_eq!(r.jq_ghost(), None, "nothing until the fetch lands");
+        assert!(
+            r.refresh_jq_completion(SYNC_PRETTY_BYTES).is_none(),
+            "the same context is not fetched twice while pending"
+        );
+        assert!(!r.attach_jq_completion(2, creq.seq, ".".into(), vec!["pad".into()]), "stale generation");
+        assert!(!r.attach_jq_completion(3, creq.seq + 9, ".".into(), vec!["pad".into()]), "stale sequence");
+        assert!(r.attach_jq_completion(3, creq.seq, ".".into(), vec!["pad".into(), "n".into()]));
+        assert_eq!(r.jq_ghost(), Some("pad"));
     }
 
     /// Every keystroke in the bar is a new jq run, but most of them leave
