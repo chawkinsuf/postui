@@ -70,6 +70,9 @@ impl Session {
         // The pane's collapse is a layout preference, not part of any one
         // request's response — it rides along instead of swapping.
         let collapsed = outgoing.collapsed;
+        // So does the jq Tab-key mode: it is a config-level UI setting, not
+        // part of any one request's response, so it rides along too.
+        let jq_tab = outgoing.jq_tab();
         // A background jq run outstanding on the response leaving screen
         // has nowhere to deliver its result: the `JqRunFinished` it will
         // eventually produce is matched by generation/run against whatever
@@ -101,6 +104,7 @@ impl Session {
         self.response = self.cache.remove(open).unwrap_or_default();
         self.response.drop_pending_jq();
         self.response.collapsed = collapsed;
+        self.response.set_jq_tab(jq_tab);
         self.open_slug = open.clone();
         true
     }
@@ -376,6 +380,29 @@ mod tests {
         assert!(
             !s.response.collapsed,
             "re-expanding sticks too — a's cached response must not bring the old flag back"
+        );
+    }
+
+    #[test]
+    fn jq_tab_is_a_config_setting_that_sticks_across_request_switches() {
+        let mut s = Session::default();
+        open(&mut s, "a");
+        s.response
+            .set_state(ResponseState::Ready(data("from a")), 0);
+        s.response.set_jq_tab(crate::config::JqTab::Accept);
+
+        open(&mut s, "b");
+        assert_eq!(
+            s.response.jq_tab(),
+            crate::config::JqTab::Accept,
+            "jq_tab follows to a request opened for the first time this session"
+        );
+
+        open(&mut s, "a");
+        assert_eq!(
+            s.response.jq_tab(),
+            crate::config::JqTab::Accept,
+            "…and back to a's cached response too"
         );
     }
 
