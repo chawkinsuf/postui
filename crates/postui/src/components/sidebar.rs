@@ -104,6 +104,7 @@ pub struct Sidebar {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RowDrag {
     pub slug: String,          // full slug of the dragged request
+    pub space: String,         // the space the drag started in
     pub level: String,         // level within the space ("" root, "auth", …)
     pub original: Vec<String>, // sibling order at drag start (relative slugs)
     pub working: Vec<String>,  // current on-screen order (relative slugs)
@@ -159,9 +160,14 @@ impl Sidebar {
             .collect();
         sorted.sort_by(|a, b| a.slug.cmp(&b.slug));
 
+        // The overlay is a set of slugs relative to the space the drag
+        // started in; if the space changed under a live drag (a space
+        // switch with the button still held) it means nothing here, so the
+        // rows fall back to the new space's saved order.
         let overlay = self
             .drag
             .as_ref()
+            .filter(|d| d.space == space)
             .map(|d| (d.level.as_str(), d.working.as_slice()));
         let mut rows = Vec::new();
         let ctx = LevelCtx {
@@ -510,6 +516,7 @@ impl Sidebar {
         let level = postui_core::order::level_of(&rel(slug)).to_string();
         self.drag = Some(RowDrag {
             slug: slug.clone(),
+            space: space.to_string(),
             level,
             original: group.clone(),
             working: group,

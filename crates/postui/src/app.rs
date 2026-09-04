@@ -6814,6 +6814,11 @@ impl App {
     /// outgoing space's open request (see [`SpaceExit`]), roots the
     /// sidebar, toasts. `false` (with a toast) for an unknown space.
     fn enter_space(&mut self, space: &str, outgoing: SpaceExit<'_>) -> bool {
+        // A space switch can land with the mouse button still held (ctrl+1..9,
+        // alt+z): cancel any live row drag against the space it started in
+        // before the root changes, or its working order would be painted over
+        // the new space's rows and written to the new space on release.
+        self.finish_sidebar_drag(false);
         if let SpaceExit::Remember(slug) = outgoing {
             self.project.record_space_open(slug);
         }
@@ -6947,8 +6952,13 @@ impl App {
         let Some(drag) = self.sidebar.drag.take() else {
             return false;
         };
+        // A drag belongs to the space it started in. If the active space
+        // moved on underneath it, there is nothing sane to write — the
+        // working order names the *old* space's siblings — so this is a
+        // cancel however the drag ended.
+        let commit = commit && drag.space == self.project.active_space;
         if commit && drag.working != drag.original {
-            let space = self.project.active_space.clone();
+            let space = drag.space.clone();
             match postui_core::order::set_level_order(
                 &self.project.root,
                 &space,
@@ -6962,7 +6972,9 @@ impl App {
             }
         }
         self.refresh_sidebar();
-        self.sidebar.select_slug(&drag.slug);
+        if drag.space == self.project.active_space {
+            self.sidebar.select_slug(&drag.slug);
+        }
         true
     }
 

@@ -19019,3 +19019,34 @@ fn dragging_at_the_list_edge_scrolls_on_tick() {
     assert_eq!(app.sidebar.scroll, before + 1, "bottom edge scrolls one row per tick");
     app.handle_mouse(left_up(110, 30)); // cancel
 }
+
+#[test]
+fn switching_space_mid_drag_cancels_it_and_writes_nothing() {
+    // ctrl+1..9 / alt+z can land with the button still held: the drag's
+    // working order names `main`'s siblings, so it must not paint over
+    // `auth`'s rows nor be written to `auth` on release.
+    let (mut app, dir) = three_row_app();
+    let r0 = row_rect(&mut app, 0);
+    let r2 = row_rect(&mut app, 2);
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    assert!(app.sidebar.drag.is_some());
+    app.update(Action::SwitchSpace("auth".into()));
+    assert!(app.sidebar.drag.is_none(), "the switch cancelled the drag");
+    assert!(app.sidebar_press.is_none(), "…and disarmed the press");
+    render_once(&mut app);
+    assert_eq!(request_rows(&app), ["auth/login"]);
+    app.handle_mouse(left_up(r0.x + 2, r2.y));
+    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    assert!(
+        postui_core::order::space_order(&meta, "main").is_empty(),
+        "nothing written to the space the drag started in"
+    );
+    assert!(
+        postui_core::order::space_order(&meta, "auth").is_empty(),
+        "and nothing written to the space it landed in"
+    );
+    app.update(Action::SwitchSpace("main".into()));
+    render_once(&mut app);
+    assert_eq!(request_rows(&app), ["main/alpha", "main/beta", "main/gamma"]);
+}
