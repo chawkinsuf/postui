@@ -194,6 +194,16 @@ impl Default for AnimDurations {
     }
 }
 
+/// What Tab does in the response pane's jq bar while a completion ghost
+/// is showing (`jq_tab` in `config.toml`): step to the next candidate,
+/// or accept the one showing. Right and End accept in both modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum JqTab {
+    #[default]
+    Cycle,
+    Accept,
+}
+
 /// Mouse-first-GUI UI settings stored at the top level of `config.toml`:
 /// the tiered clipboard's optional external command and the OSC 52 size
 /// threshold.
@@ -220,6 +230,9 @@ pub struct UiSettings {
     /// to `ai_cmd` — set once via the "Always send" choice and persisted,
     /// so later requests skip the confirmation.
     pub ai_confirmed: bool,
+    /// Tab's job in the jq bar while a completion ghost shows; see
+    /// [`JqTab`].
+    pub jq_tab: JqTab,
 }
 
 impl Default for UiSettings {
@@ -232,17 +245,18 @@ impl Default for UiSettings {
             anim_ms: AnimDurations::default(),
             ai_cmd: "claude -p".into(),
             ai_confirmed: false,
+            jq_tab: JqTab::Cycle,
         }
     }
 }
 
 /// Reads the top-level `clipboard_cmd` (string), `osc52_limit` (integer),
-/// `theme` (string), and `animations` (bool) keys from `config.toml`. Never
-/// errors: a missing file, corrupt TOML, or a mistyped key degrades that
-/// piece to its default. `theme` is taken verbatim as a raw name string —
-/// whether it names a real registry entry is the registry's business at
-/// resolve time, not this loader's, so no warning is produced here for an
-/// unrecognized value.
+/// `theme` (string), `animations` (bool), `ai_cmd` (string), `ai_confirmed`
+/// (bool), and `jq_tab` (string) keys from `config.toml`. Never errors: a
+/// missing file, corrupt TOML, or a mistyped key degrades that piece to its
+/// default. `theme` is taken verbatim as a raw name string — whether it names
+/// a real registry entry is the registry's business at resolve time, not this
+/// loader's, so no warning is produced here for an unrecognized value.
 pub fn load_ui_settings(path: &Path) -> (UiSettings, Vec<String>) {
     let mut settings = UiSettings::default();
     let mut warnings = Vec::new();
@@ -272,6 +286,16 @@ pub fn load_ui_settings(path: &Path) -> (UiSettings, Vec<String>) {
     }
     if let Some(b) = value.get("ai_confirmed").and_then(|v| v.as_bool()) {
         settings.ai_confirmed = b;
+    }
+    if let Some(raw) = value.get("jq_tab").and_then(|v| v.as_str()) {
+        match raw {
+            "cycle" => settings.jq_tab = JqTab::Cycle,
+            "accept" => settings.jq_tab = JqTab::Accept,
+            other => warnings.push(format!(
+                "invalid value {other:?} for jq_tab in config.toml \
+                 (expected \"cycle\" or \"accept\"); using \"cycle\""
+            )),
+        }
     }
 
     if let Some(table) = value.get("animation_ms").and_then(|v| v.as_table()) {
@@ -597,6 +621,25 @@ mod tests {
         assert_eq!(s.ai_cmd, "my-llm --jq");
         assert!(s.ai_confirmed);
         assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn jq_tab_defaults_to_cycle_and_parses_accept() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        let (s, _) = load_ui_settings(&p);
+        assert_eq!(s.jq_tab, JqTab::Cycle);
+        std::fs::write(&p, "jq_tab = \"accept\"\n").unwrap();
+        let (s, warnings) = load_ui_settings(&p);
+        assert_eq!(s.jq_tab, JqTab::Accept);
+        assert!(warnings.is_empty());
+        std::fs::write(&p, "jq_tab = \"cycle\"\n").unwrap();
+        assert_eq!(load_ui_settings(&p).0.jq_tab, JqTab::Cycle);
+        std::fs::write(&p, "jq_tab = \"popup\"\n").unwrap();
+        let (s, warnings) = load_ui_settings(&p);
+        assert_eq!(s.jq_tab, JqTab::Cycle, "a bad value falls back");
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("jq_tab"), "{warnings:?}");
     }
 
     #[test]
