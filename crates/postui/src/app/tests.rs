@@ -18902,6 +18902,11 @@ fn press_move_release_reorders_and_persists() {
     app.handle_mouse(left_up(r0.x + 2, r2.y));
     assert!(app.sidebar.drag.is_none());
     assert!(app.sidebar_press.is_none());
+    assert_ne!(
+        app.pointer_shape_update(),
+        Some(PointerShape::Grabbing),
+        "the grabbing cursor is released with the button"
+    );
     let meta = postui_core::project::load_meta(dir.path()).unwrap();
     assert_eq!(
         postui_core::order::space_order(&meta, "main"),
@@ -19046,7 +19051,88 @@ fn dragging_at_the_list_edge_scrolls_on_tick() {
     let before = app.sidebar.scroll;
     app.update(Action::Tick);
     assert_eq!(app.sidebar.scroll, before + 1, "bottom edge scrolls one row per tick");
+    // The response pane shares that y; a pointer parked over it must not
+    // scroll the list it is not over.
+    let held = app.sidebar.scroll;
+    app.handle_mouse(moved(110, bottom));
+    app.update(Action::Tick);
+    assert_eq!(
+        app.sidebar.scroll, held,
+        "the same y outside the sidebar's columns does not scroll"
+    );
     app.handle_mouse(left_up(110, 30)); // cancel
+}
+
+#[test]
+fn a_rebuild_between_press_and_motion_drags_the_pressed_request() {
+    // The row index recorded at press time goes stale when anything
+    // rebuilds the rows (focus-gained reload, folder toggle, background
+    // refresh) — the drag must still grab the request that was pressed.
+    let (mut app, dir) = three_row_app();
+    let r0 = row_rect(&mut app, 0);
+    app.handle_mouse(left_down(r0.x + 2, r0.y)); // main/alpha, row 0
+    postui_core::order::set_level_order(
+        dir.path(),
+        "main",
+        "",
+        &["beta".to_string(), "gamma".to_string(), "alpha".to_string()],
+    )
+    .unwrap();
+    app.project.reload_meta();
+    app.update(Action::RefreshSidebar);
+    render_once(&mut app);
+    assert_eq!(request_rows(&app), ["main/beta", "main/gamma", "main/alpha"]);
+    app.handle_mouse(moved(r0.x + 2, r0.y)); // now row 0 is main/beta
+    assert_eq!(
+        app.sidebar.drag.as_ref().map(|d| d.slug.as_str()),
+        Some("main/alpha"),
+        "the pressed slug is dragged, not whatever now sits at the old index"
+    );
+    app.handle_mouse(left_up(110, 30)); // cancel
+}
+
+#[test]
+fn a_press_whose_request_vanished_promotes_nothing() {
+    let (mut app, dir) = three_row_app();
+    let r0 = row_rect(&mut app, 0);
+    app.handle_mouse(left_down(r0.x + 2, r0.y)); // main/alpha
+    postui_core::storage::delete_request(dir.path(), "main/alpha").unwrap();
+    app.update(Action::RefreshSidebar);
+    let r1 = row_rect(&mut app, 1);
+    app.handle_mouse(moved(r1.x + 2, r1.y));
+    assert!(app.sidebar.drag.is_none(), "nothing left to drag");
+    assert!(app.sidebar_press.is_none(), "and the press is disarmed");
+}
+
+#[test]
+fn a_press_that_opened_a_modal_promotes_no_drag() {
+    // Pressing a broken row opens its error modal; the modal owns the
+    // pointer from then on, so the motion that follows must not start a
+    // row drag underneath it.
+    let (mut app, dir) = three_row_app();
+    std::fs::write(dir.path().join("requests/main/broken.toml"), "url = [").unwrap();
+    app.update(Action::RefreshSidebar);
+    render_once(&mut app);
+    let broken = app
+        .sidebar
+        .rows
+        .iter()
+        .position(|r| matches!(r, Row::Request { slug, .. } if slug == "main/broken"))
+        .expect("the broken row");
+    let rb = row_rect(&mut app, broken);
+    let r0 = row_rect(&mut app, 0);
+    app.handle_mouse(left_down(rb.x + 2, rb.y));
+    assert!(!app.modals.is_empty(), "the error modal opened");
+    app.handle_mouse(moved(r0.x + 2, r0.y));
+    assert!(app.sidebar.drag.is_none(), "no drag under a modal");
+}
+
+#[test]
+fn a_right_click_on_a_request_row_arms_no_press() {
+    let (mut app, _dir) = three_row_app();
+    let r0 = row_rect(&mut app, 0);
+    app.handle_mouse(right_down(r0.x + 2, r0.y));
+    assert!(app.sidebar_press.is_none(), "only a left press arms a drag");
 }
 
 #[test]

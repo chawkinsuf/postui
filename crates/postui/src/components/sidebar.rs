@@ -1914,6 +1914,30 @@ mod tests {
     }
 
     #[test]
+    fn group_bounds_stops_at_a_folder_row_between_equal_depths() {
+        // Two sibling subtrees at the *same* depth under different
+        // folders: depth alone would run them together, so the folder row
+        // sitting between them has to break the run.
+        let mut s = Sidebar::default();
+        s.refresh(
+            listing(&["auth/x", "auth/y", "billing/z"]),
+            "main",
+            &expanded(&["auth", "billing"]),
+            &[],
+        );
+        // rows: auth/ x y billing/ z — x, y and z are all depth 1.
+        assert_eq!(row_slugs(&s).len(), 5);
+        assert_eq!(s.group_bounds(1), Some((1, 2)), "auth's two requests");
+        assert_eq!(s.group_bounds(2), Some((1, 2)));
+        assert_eq!(s.group_bounds(3), None, "billing's folder row");
+        assert_eq!(
+            s.group_bounds(4),
+            Some((4, 4)),
+            "billing's one request is its own group, not auth's"
+        );
+    }
+
+    #[test]
     fn a_working_drag_order_overrides_exactly_one_level() {
         let mut s = Sidebar::default();
         s.refresh(

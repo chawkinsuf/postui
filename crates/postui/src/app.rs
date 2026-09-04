@@ -1527,8 +1527,13 @@ impl App {
                 true
             }
             Action::Tick => {
-                let edge_scrolled = match self.pointer.and_then(|(_, y)| {
-                    self.sidebar.drag_edge(y).map(|d| (d, y))
+                // Only a pointer actually over the sidebar edge-scrolls it:
+                // the response pane shares the list's bottom row, and a
+                // drag parked there must not scroll a pane it is not over.
+                let edge_scrolled = match self.pointer.and_then(|(x, y)| {
+                    (self.hits.pane_at(x, y) == Some(PaneId::Sidebar))
+                        .then(|| self.sidebar.drag_edge(y).map(|d| (d, y)))
+                        .flatten()
                 }) {
                     Some((delta, y)) => {
                         self.sidebar.handle_scroll(delta as i16);
@@ -5000,7 +5005,7 @@ impl App {
                         );
                         self.order_cascade("move", r);
                     }
-                    if let Some((to_space, to_rel)) = Self::split_rel(&new) {
+                    if let Some((to_space, to_rel)) = Self::split_rel(new) {
                         let r =
                             postui_core::order::order_arrive(&self.project.root, to_space, to_rel);
                         self.order_cascade("move", r);
@@ -6941,6 +6946,11 @@ impl App {
 
     /// Rebuilds the sidebar rows from the listing it already holds — the
     /// per-motion path during a row drag, which must not re-read disk.
+    ///
+    /// Deliberately *not* `refresh_sidebar` minus the listing: it also
+    /// omits that function's `ListTravel` snap, so the selection band
+    /// stays where it is instead of chasing the dragged row from slot to
+    /// slot on every motion event.
     fn rebuild_sidebar(&mut self) {
         let expanded = self.project.expanded.clone();
         let space = self.project.active_space.clone();

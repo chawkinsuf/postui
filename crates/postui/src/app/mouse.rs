@@ -46,14 +46,32 @@ impl App {
                 // keeps a press-then-wander over the header (or any other
                 // chrome) from starting one; once started, motion anywhere
                 // is mapped by `row_at_y`.
-                if let Some(i) = self.sidebar_press.as_ref().map(|(i, _)| *i)
-                    && self.sidebar.row_at_y(m.row) != i
+                // The row index recorded at press time can be stale by now
+                // (a `ReloadProjectFiles` on focus-gained, a folder toggle
+                // or a background refresh can have rebuilt the rows), so
+                // the drag target is re-resolved by the pressed slug; a
+                // press whose request is gone promotes nothing. A modal
+                // opened by the press itself (a broken row's error) owns
+                // the pointer, so nothing promotes under one either.
+                if let Some((_, pressed)) = self.sidebar_press.clone()
+                    && self.modals.is_empty()
                     && matches!(self.hits.hit_at(m.column, m.row), Some(Hit::SidebarRow(_)))
                 {
-                    let space = self.project.active_space.clone();
-                    if self.sidebar.begin_drag(i, &space) {
-                        self.hovered = None;
-                        return self.sidebar_drag_to(m.row) | self.update(Action::Render);
+                    match self
+                        .sidebar
+                        .rows
+                        .iter()
+                        .position(|r| matches!(r, Row::Request { slug: s, .. } if *s == pressed))
+                    {
+                        None => self.sidebar_press = None,
+                        Some(i) if self.sidebar.row_at_y(m.row) != i => {
+                            let space = self.project.active_space.clone();
+                            if self.sidebar.begin_drag(i, &space) {
+                                self.hovered = None;
+                                return self.sidebar_drag_to(m.row) | self.update(Action::Render);
+                            }
+                        }
+                        Some(_) => {}
                     }
                 }
                 if let Some(drag) = self.drag.as_ref() {
