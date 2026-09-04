@@ -3107,10 +3107,19 @@ fn draw_jq_bar(
         ));
         frame.render_widget(Paragraph::new(Line::from(spans)), row);
     } else {
-        let line = bar
-            .input
-            .draw_line_windowed(bar.focused, t, text_w.saturating_sub(3));
+        let w = text_w.saturating_sub(3);
+        let line = bar.input.draw_line_windowed(bar.focused, t, w);
         spans.extend(line.spans);
+        if let Some(ghost) = bar.ghost() {
+            // The input's window plus its caret cell; the ghost gets what
+            // is left of the row and is clipped, never the caret.
+            let used = bar.input.visible_window(true, w).chars().count() as u16 + 1;
+            let room = w.saturating_sub(used) as usize;
+            if room > 0 {
+                let shown: String = ghost.chars().take(room).collect();
+                spans.push(Span::styled(shown, Style::default().fg(t.text_muted)));
+            }
+        }
         frame.render_widget(Paragraph::new(Line::from(spans)), row);
     }
     hits.register(row, crate::hit::Hit::ResponseJqBar);
@@ -5717,6 +5726,60 @@ mod tests {
             r.selected_text().as_deref(),
             Some("zzzzz"),
             "the copied text is the five selected cells"
+        );
+    }
+
+    #[test]
+    fn the_ghost_is_drawn_muted_after_the_caret() {
+        let mut r = ready(ITEMS);
+        type_jq(&mut r, ".data.");
+        let text = render(&mut r);
+        // The caret's own cell (a reversed blank) sits between the typed
+        // text and the ghost, so the row reads `.data.` + caret + `items`.
+        assert!(text.contains(".data. items"), "{text}");
+        let (_, buf) = render_buf(&mut r);
+        let w = buf.area.width;
+        let row = (0..buf.area.height)
+            .find(|&y| {
+                (0..w)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+                    .contains(".data. items")
+            })
+            .expect("bar row");
+        let line: String = (0..w).map(|x| buf[(x, row)].symbol()).collect();
+        let ghost_x = line.find("items").unwrap() as u16;
+        assert!(
+            buf[(ghost_x - 1, row)]
+                .modifier
+                .contains(ratatui::style::Modifier::REVERSED),
+            "the caret cell sits right before the ghost"
+        );
+        let theme = Theme::dark();
+        assert_eq!(buf[(ghost_x, row)].fg, theme.text_muted);
+        assert_eq!(
+            buf[(ghost_x - 3, row)].fg,
+            theme.text,
+            "typed text keeps its color"
+        );
+    }
+
+    #[test]
+    fn the_ghost_is_clipped_to_the_bar_and_never_moves_the_caret() {
+        let mut r = ready(ITEMS);
+        type_jq(&mut r, ".data.");
+        // 18 columns: the pane's 1-column-each-side inset (pane_surface)
+        // takes 2, the ` ✦ ` chip plus its gap take 4, and `jq ` takes 3,
+        // leaving the input 9 cells; `.data.` plus its caret cell use 7,
+        // so the ghost is cut to two characters.
+        let text = render_sized(&mut r, 18, 20);
+        let bar_line = text
+            .lines()
+            .find(|l| l.contains(".data. it"))
+            .unwrap_or_else(|| panic!("bar row not found: {text}"));
+        assert!(
+            !bar_line.contains("items"),
+            "clipped: {bar_line} (full buffer: {text})"
         );
     }
 }
