@@ -5197,6 +5197,46 @@ mod tests {
     }
 
 
+    #[test]
+    fn a_stale_sequence_attach_leaves_the_cache_alone() {
+        let big = big_body("pad");
+        let mut r = big_body_bar(&big, 3, ".");
+        let creq = r
+            .refresh_jq_completion(SYNC_PRETTY_BYTES)
+            .expect("a big body fetches keys on the pool");
+        assert!(!r.attach_jq_completion(3, creq.seq + 9, ".".into(), vec!["superseded".into()]));
+        assert_eq!(r.jq_ghost(), None, "a superseded fetch shows nothing");
+        assert!(
+            r.attach_jq_completion(3, creq.seq, ".".into(), vec!["pad".into(), "n".into()]),
+            "the fetch that is still wanted lands"
+        );
+        assert_eq!(r.jq_ghost(), Some("pad"), "not the superseded keys");
+    }
+
+    #[test]
+    fn an_attach_whose_context_moved_on_caches_without_showing() {
+        let big = big_body("pad");
+        let mut r = big_body_bar(&big, 3, ".");
+        let creq = r
+            .refresh_jq_completion(SYNC_PRETTY_BYTES)
+            .expect("a big body fetches keys on the pool");
+        // The caret leaves the end of the text while the fetch is in flight.
+        r.jq_bar_mut().input.set_cursor(0);
+        assert!(r.refresh_jq_completion(SYNC_PRETTY_BYTES).is_none());
+        assert!(
+            !r.attach_jq_completion(3, creq.seq, ".".into(), vec!["pad".into(), "n".into()]),
+            "nothing is offered at the caret, so the ghost does not change"
+        );
+        assert_eq!(r.jq_ghost(), None);
+        // Back at the end: the keys were cached, so no second fetch.
+        r.jq_bar_mut().input.set_cursor(1);
+        assert!(
+            r.refresh_jq_completion(SYNC_PRETTY_BYTES).is_none(),
+            "the fetched keys are cached, not fetched again"
+        );
+        assert_eq!(r.jq_ghost(), Some("pad"));
+    }
+
     fn shift(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::SHIFT)
     }
