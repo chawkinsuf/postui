@@ -17334,7 +17334,7 @@ fn the_focused_bar_advertises_enter_apply_and_esc_cancel() {
         vec![
             ("enter", "apply"),
             ("esc", "cancel"),
-            ("alt+shift+q", "close"),
+            ("alt+shift+q", "unfilter"),
             ("✦", "describe…")
         ],
         "{chips:?}"
@@ -17966,11 +17966,11 @@ fn the_response_footer_always_offers_alt_q_filter_and_close_only_while_open() {
     assert_eq!(find(JqBarState::Closed, "alt+shift+q"), None);
     assert_eq!(
         find(JqBarState::Open, "alt+shift+q"),
-        Some(("close", Some(Action::ToggleJqBar)))
+        Some(("unfilter", Some(Action::ToggleJqBar)))
     );
     assert_eq!(
         find(JqBarState::Focused, "alt+shift+q"),
-        Some(("close", Some(Action::ToggleJqBar)))
+        Some(("unfilter", Some(Action::ToggleJqBar)))
     );
 }
 

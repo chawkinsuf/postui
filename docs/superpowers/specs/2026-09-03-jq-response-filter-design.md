@@ -361,8 +361,8 @@ because they're easy to get wrong reading the code cold:
   off); toggling dirties the request like a text edit. A structural verb
   or an AI reply landing a filter switches a closed bar back on.
 - The footer chips shown while the bar is focused are `enter apply /
-  esc cancel / alt+shift+q close / ✦ describe…`; the response pane's own
-  chips always carry `alt+q filter`, plus `alt+shift+q close` while a
+  esc cancel / alt+shift+q unfilter / ✦ describe…`; the response pane's own
+  chips always carry `alt+q filter`, plus `alt+shift+q unfilter` while a
   bar is open. Clicking in the bar places the caret, dragging selects,
   double-click selects the word, and right-click offers Copy / Paste
   (`TextSurface::Jq`; no extract-to-variable/selector items — the text is

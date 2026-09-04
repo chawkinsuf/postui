@@ -14,7 +14,7 @@ pub const FOOTER_HEIGHT: u16 = 3;
 
 /// Where the response pane's jq bar is, for the chips around it: `alt+q
 /// filter` always (it focuses the bar, switching it on if needed), and
-/// `alt+shift+q close` only while there is an open bar to switch off.
+/// `alt+shift+q unfilter` only while there is an open bar to switch off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JqBarState {
     Closed,
@@ -50,7 +50,7 @@ pub(crate) fn footer_chips(
     // the toggle chip names the state change it would make.
     table_row_selected: Option<(usize, bool)>,
     // The response pane's jq bar: focused swaps the chip set for the bar's
-    // own (apply/cancel/close/describe); open adds the `close` chip.
+    // own (apply/cancel/unfilter/describe); open adds the `close` chip.
     jq_bar: JqBarState,
 ) -> Vec<(&'static str, &'static str, Option<Action>)> {
     let chips: Vec<(&'static str, &'static str, Option<Action>)> = match focus {
@@ -141,7 +141,7 @@ pub(crate) fn footer_chips(
                 chips.extend([
                     ("enter", "apply", None),
                     ("esc", "cancel", Some(Action::CancelJqEdit)),
-                    ("alt+shift+q", "close", Some(Action::ToggleJqBar)),
+                    ("alt+shift+q", "unfilter", Some(Action::ToggleJqBar)),
                     ("✦", "describe…", Some(Action::OpenJqDescribe)),
                 ]);
                 chips
@@ -165,7 +165,7 @@ pub(crate) fn footer_chips(
                     ("alt+q", "filter", Some(Action::OpenJqBar)),
                 ];
                 if jq_bar == JqBarState::Open {
-                    chips.push(("alt+shift+q", "close", Some(Action::ToggleJqBar)));
+                    chips.push(("alt+shift+q", "unfilter", Some(Action::ToggleJqBar)));
                 }
                 chips
             }
