@@ -2172,6 +2172,17 @@ impl App {
                         let new_path =
                             postui_core::storage::request_path(&self.project.root, &new_slug);
                         self.record_file_step(vec![(new_path.clone(), None)], &[new_path], None);
+                        if let (Some((space, anchor_rel)), Some((_, rel))) =
+                            (Self::split_rel(&slug), Self::split_rel(&new_slug))
+                        {
+                            let r = postui_core::order::order_insert_after(
+                                &self.project.root,
+                                space,
+                                anchor_rel,
+                                rel,
+                            );
+                            self.order_cascade("duplicate", r);
+                        }
                         self.refresh_sidebar();
                         let display = self.request_display(&new_slug);
                         self.toasts
@@ -2315,6 +2326,22 @@ impl App {
                             &[from_path, to_path],
                             None,
                         );
+                        if let Some((from_space, from_rel)) = Self::split_rel(&slug) {
+                            let r = postui_core::order::order_remove(
+                                &self.project.root,
+                                from_space,
+                                from_rel,
+                            );
+                            self.order_cascade("move", r);
+                        }
+                        if let Some((to_space, to_rel)) = Self::split_rel(&new_slug) {
+                            let r = postui_core::order::order_arrive(
+                                &self.project.root,
+                                to_space,
+                                to_rel,
+                            );
+                            self.order_cascade("move", r);
+                        }
                         // The move doesn't follow the request into its
                         // new space (user feedback: that made moving
                         // several in a row a chore). From this space's
@@ -2385,6 +2412,17 @@ impl App {
                             &[from_path, to_path],
                             None,
                         );
+                        if let (Some((space, from_rel)), Some((_, to_rel))) =
+                            (Self::split_rel(&from), Self::split_rel(&slug))
+                        {
+                            let r = postui_core::order::order_rename(
+                                &self.project.root,
+                                space,
+                                from_rel,
+                                to_rel,
+                            );
+                            self.order_cascade("rename", r);
+                        }
                         self.refresh_sidebar();
                         if self.editor.slug.as_deref() == Some(from.as_str()) {
                             self.editor.slug = Some(slug.clone());
@@ -2433,6 +2471,11 @@ impl App {
                         // reorder state: context.slug must still name the
                         // deleted request while self.editor.slug matches it.
                         self.record_trashed_step(vec![trashed], Vec::new(), &[], None);
+                        if let Some((space, rel)) = Self::split_rel(&slug) {
+                            let r =
+                                postui_core::order::order_remove(&self.project.root, space, rel);
+                            self.order_cascade("delete", r);
+                        }
                         self.refresh_sidebar();
                         if self.editor.slug.as_deref() == Some(slug.as_str()) {
                             self.editor = Editor::default();
@@ -6772,6 +6815,27 @@ impl App {
         true
     }
 
+    /// Applies an order-list cascade after a request file op succeeded.
+    /// The file is the truth; a failed cascade only leaves a stale entry
+    /// (ignored for display), so it warns rather than failing the op.
+    fn order_cascade(&mut self, what: &str, r: Result<(), postui_core::project::ProjectError>) {
+        if let Err(e) = r {
+            self.toasts.push(
+                format!("could not update request order after {what}: {e}"),
+                ToastKind::Warning,
+            );
+        }
+        self.project.reload_meta();
+    }
+
+    /// Splits a slug into its space and the path relative to that space,
+    /// for the order-list cascades below.
+    fn split_rel(slug: &str) -> Option<(&str, &str)> {
+        let space = postui_core::storage::space_of(slug)?;
+        let rel = postui_core::order::relative(slug, space)?;
+        Some((space, rel))
+    }
+
     /// Re-reads the project directory and rebuilds the sidebar tree,
     /// merging any ancestor folders `select_slug` needs opened into
     /// `project.expanded` first. Replaces every previous
@@ -7339,6 +7403,10 @@ impl App {
                 // `before` is simply absent — no pre-read needed.
                 let path = storage::request_path(&self.project.root, &slug);
                 self.record_file_step(vec![(path.clone(), None)], &[path], None);
+                if let Some((space, rel)) = Self::split_rel(&slug) {
+                    let r = postui_core::order::order_arrive(&self.project.root, space, rel);
+                    self.order_cascade("create", r);
+                }
                 self.toasts
                     .push(format!("Saved {leaf}"), ToastKind::Success);
                 // Queue the slug's ancestor folders open, rebuild the tree

@@ -3794,6 +3794,67 @@ fn move_all_requests_holding_a_dirty_open_request_gates_first() {
     assert_eq!(app.history.undo_len(), steps_before);
 }
 
+fn ordered_app() -> (App, tempfile::TempDir) {
+    // main: alpha, beta (listed as beta, alpha); auth: login
+    let (mut app, dir) = spaced_app();
+    postui_core::order::set_level_order(dir.path(), "main", "", &["beta".into(), "alpha".into()])
+        .unwrap();
+    app.project.reload_meta();
+    app.update(Action::RefreshSidebar);
+    (app, dir)
+}
+
+fn main_order(dir: &tempfile::TempDir) -> Vec<String> {
+    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    postui_core::order::space_order(&meta, "main").to_vec()
+}
+
+#[test]
+fn creating_a_request_in_a_listed_level_appends_it() {
+    let (mut app, dir) = ordered_app();
+    app.update(Action::CreateRequest("gamma".into()));
+    assert_eq!(main_order(&dir), ["beta", "alpha", "gamma"]);
+}
+
+#[test]
+fn duplicating_lands_the_copy_after_its_source() {
+    let (mut app, dir) = ordered_app();
+    app.sidebar.select_slug("main/beta");
+    app.update(Action::DuplicateRequest);
+    let order = main_order(&dir);
+    assert_eq!(order[0], "beta");
+    assert!(order[1].starts_with("beta"), "{order:?}");
+    assert_eq!(order[2], "alpha");
+}
+
+#[test]
+fn renaming_keeps_the_slot_and_deleting_removes_the_entry() {
+    let (mut app, dir) = ordered_app();
+    app.sidebar.select_slug("main/beta");
+    app.update(Action::RenameRequest {
+        from: "main/beta".into(),
+        to: "bee".into(),
+    });
+    assert_eq!(main_order(&dir), ["bee", "alpha"]);
+    app.update(Action::DeleteRequest("main/bee".into()));
+    assert_eq!(main_order(&dir), ["alpha"]);
+}
+
+#[test]
+fn moving_to_another_space_removes_here_and_arrives_there_only_if_listed() {
+    let (mut app, dir) = ordered_app();
+    app.update(Action::ForceMoveRequestToSpace {
+        slug: "main/beta".into(),
+        space: "auth".into(),
+    });
+    assert_eq!(main_order(&dir), ["alpha"]);
+    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    assert!(
+        postui_core::order::space_order(&meta, "auth").is_empty(),
+        "auth has no list yet"
+    );
+}
+
 #[test]
 fn request_context_menu_offers_one_move_row_that_opens_the_space_chooser() {
     let (mut app, _dir) = spaced_app();
