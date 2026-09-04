@@ -65,6 +65,7 @@ pub(crate) fn footer_chips(
             // cycle pill); the sidebar's own space action is moving the
             // selected request into another one.
             ("m", "move", Some(Action::PromptMoveSelectedRequestToSpace)),
+            ("alt+\u{2191}\u{2193}", "reorder", None),
         ],
         PaneId::Editor => {
             let mut chips = vec![

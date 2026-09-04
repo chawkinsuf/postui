@@ -3651,6 +3651,90 @@ fn two_move_space_steps_in_a_row_both_land_without_waiting_for_mtime() {
 }
 
 #[test]
+fn move_request_reorders_persists_and_keeps_the_selection_on_the_moved_row() {
+    let (mut app, dir) = spaced_app(); // main/alpha, main/beta
+    render_once(&mut app);
+    app.update(Action::MoveRequest {
+        slug: "main/beta".into(),
+        delta: -1,
+    });
+    let slugs: Vec<String> = app
+        .sidebar
+        .rows
+        .iter()
+        .filter_map(|r| match r {
+            Row::Request { slug, .. } => Some(slug.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(slugs, ["main/beta", "main/alpha"]);
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/beta"));
+    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    assert_eq!(
+        postui_core::order::space_order(&meta, "main"),
+        ["beta", "alpha"]
+    );
+}
+
+#[test]
+fn two_move_request_steps_in_a_row_both_land_without_waiting_for_mtime() {
+    let (mut app, _dir) = spaced_app();
+    postui_core::storage::save_request(_dir.path(), "main/gamma", &req("https://x/3")).unwrap();
+    app.update(Action::RefreshSidebar);
+    for _ in 0..2 {
+        app.update(Action::MoveRequest {
+            slug: "main/gamma".into(),
+            delta: -1,
+        });
+    }
+    assert_eq!(
+        app.sidebar.first_request_slug().as_deref(),
+        Some("main/gamma")
+    );
+}
+
+#[test]
+fn move_selected_request_resolves_the_selection() {
+    let (mut app, _dir) = spaced_app();
+    render_once(&mut app);
+    app.sidebar.select_slug("main/beta");
+    app.update(Action::MoveSelectedRequest(-1));
+    assert_eq!(
+        app.sidebar.first_request_slug().as_deref(),
+        Some("main/beta")
+    );
+}
+
+#[test]
+fn request_context_menu_offers_move_up_and_down_disabled_at_the_ends() {
+    let (mut app, _dir) = spaced_app(); // rows: alpha, beta
+    render_once(&mut app);
+    let r = app.hits.rect_of(&Hit::SidebarRow(0)).unwrap();
+    app.handle_mouse(right_down(r.x + 1, r.y));
+    let Some(Modal::Dropdown(menu)) = app.modals.top() else {
+        panic!("context menu")
+    };
+    let up = menu
+        .items
+        .iter()
+        .find(|i| i.label == "Move up")
+        .expect("Move up");
+    let down = menu
+        .items
+        .iter()
+        .find(|i| i.label == "Move down")
+        .expect("Move down");
+    assert!(up.action.is_none(), "first row: Move up is disabled");
+    assert_eq!(
+        down.action,
+        Some(Action::MoveRequest {
+            slug: "main/alpha".into(),
+            delta: 1
+        })
+    );
+}
+
+#[test]
 fn move_all_requests_empties_the_source_and_follows_the_open_request() {
     let (mut app, dir) = spaced_app();
     app.update(Action::ForceOpenRequest("main/alpha".into()));
@@ -3725,12 +3809,14 @@ fn request_context_menu_offers_one_move_row_that_opens_the_space_chooser() {
         [
             "Open",
             "Duplicate",
+            "Move up",
+            "Move down",
             "Rename\u{2026}",
             "Move to space\u{2026}",
             "Delete"
         ]
     );
-    let move_row = d.items[3].action.clone();
+    let move_row = d.items[5].action.clone();
     assert_eq!(
         move_row,
         Some(Action::PromptMoveRequestToSpace("main/alpha".into()))

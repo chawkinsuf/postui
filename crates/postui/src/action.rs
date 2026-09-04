@@ -189,6 +189,16 @@ pub enum Action {
     /// the selected sidebar request — resolves the selection, then runs
     /// `PromptMoveRequestToSpace`. A no-op when no request is selected.
     PromptMoveSelectedRequestToSpace,
+    /// Move the request `slug` `delta` positions among its siblings
+    /// (clamped) — alt+up/alt+down and the row menu's Move up/down. Writes
+    /// `[space.<slug>] order`. Not an undo step.
+    MoveRequest {
+        slug: String,
+        delta: i32,
+    },
+    /// `MoveRequest` for the selected sidebar row; a no-op when the
+    /// selection is not a request.
+    MoveSelectedRequest(i32),
     /// The Spaces tab's "Move all requests…" button: opens the chooser of
     /// the other spaces for the space `from`; picking one dispatches
     /// `MoveAllRequests`.

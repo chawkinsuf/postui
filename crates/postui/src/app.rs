@@ -4860,6 +4860,28 @@ impl App {
                 }
                 true
             }
+            Action::MoveRequest { slug, delta } => {
+                match postui_core::order::move_request(&self.project.root, &slug, delta) {
+                    Ok(()) => {
+                        // Same mtime hazard as `MoveSpace`: read the file
+                        // we just wrote rather than waiting for the stamp.
+                        self.project.reload_meta();
+                        self.refresh_sidebar();
+                        self.sidebar.select_slug(&slug);
+                    }
+                    Err(e) => {
+                        self.toasts
+                            .push(format!("cannot move request: {e}"), ToastKind::Warning);
+                    }
+                }
+                true
+            }
+            Action::MoveSelectedRequest(delta) => {
+                if let Some(slug) = self.sidebar.selected_slug() {
+                    self.apply(Action::MoveRequest { slug, delta });
+                }
+                true
+            }
             Action::MoveAllRequests { from, to } => {
                 if from == to {
                     self.toasts
@@ -7097,8 +7119,10 @@ impl App {
     /// handler has already moved onto the clicked row.
     fn context_menu_for(&mut self, hit: &Hit) -> Option<Vec<crate::components::modal::MenuItem>> {
         use crate::components::modal::MenuItem;
-        let row = match hit {
-            Hit::SidebarRow(i) | Hit::SidebarFolderArrow(i) => self.sidebar.rows.get(*i)?,
+        let (row_index, row) = match hit {
+            Hit::SidebarRow(i) | Hit::SidebarFolderArrow(i) => {
+                (Some(*i), self.sidebar.rows.get(*i)?)
+            }
             Hit::VmLeftRow(i) => return self.varmanager.context_menu(*i),
             Hit::ManageRow(i) => {
                 return crate::components::manage_list::ManageList::context_menu(
@@ -7139,9 +7163,34 @@ impl App {
                 slug, broken: None, ..
             } => {
                 let moves = move_rows(slug);
+                let (first, last) = row_index
+                    .and_then(|i| self.sidebar.group_bounds(i).map(|b| (b.0 == i, b.1 == i)))
+                    .unwrap_or((true, true));
                 let mut items = vec![
                     MenuItem::new("Open", Action::OpenRequest(slug.clone())),
                     MenuItem::new("Duplicate", Action::DuplicateRequest),
+                    if first {
+                        MenuItem::disabled("Move up")
+                    } else {
+                        MenuItem::new(
+                            "Move up",
+                            Action::MoveRequest {
+                                slug: slug.clone(),
+                                delta: -1,
+                            },
+                        )
+                    },
+                    if last {
+                        MenuItem::disabled("Move down")
+                    } else {
+                        MenuItem::new(
+                            "Move down",
+                            Action::MoveRequest {
+                                slug: slug.clone(),
+                                delta: 1,
+                            },
+                        )
+                    },
                     MenuItem::new("Rename…", Action::PromptRenameRequest),
                 ];
                 items.extend(moves);

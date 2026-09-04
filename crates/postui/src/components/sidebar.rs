@@ -11,7 +11,7 @@ use postui_core::model::Method;
 use postui_core::storage::RequestListing;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::Line;
@@ -392,10 +392,43 @@ impl Sidebar {
             self.ensure_visible = true;
         }
     }
+
+    /// The first and last row index of the level `i` belongs to: the
+    /// contiguous run of request rows at `i`'s depth. Requests of one
+    /// level are always contiguous (they precede that level's folders,
+    /// and a folder row separates them from the next level), so this run
+    /// is exactly the drag/move group. `None` for a folder row.
+    pub fn group_bounds(&self, i: usize) -> Option<(usize, usize)> {
+        let depth = match self.rows.get(i)? {
+            Row::Request { depth, .. } => *depth,
+            Row::Folder { .. } => return None,
+        };
+        let same = |r: &Row| matches!(r, Row::Request { depth: d, .. } if *d == depth);
+        let mut first = i;
+        while first > 0 && same(&self.rows[first - 1]) {
+            first -= 1;
+        }
+        let mut last = i;
+        while last + 1 < self.rows.len() && same(&self.rows[last + 1]) {
+            last += 1;
+        }
+        Some((first, last))
+    }
 }
 
 impl Component for Sidebar {
     fn handle_key(&mut self, ev: KeyEvent) -> Option<Action> {
+        if ev.modifiers.contains(KeyModifiers::ALT)
+            && let Some(delta) = match ev.code {
+                KeyCode::Up => Some(-1),
+                KeyCode::Down => Some(1),
+                _ => None,
+            }
+        {
+            return self
+                .selected_slug()
+                .map(|slug| Action::MoveRequest { slug, delta });
+        }
         match ev.code {
             KeyCode::Char('j') | KeyCode::Down => {
                 self.move_selection(1);
@@ -1685,5 +1718,51 @@ mod tests {
                 "bar column must hold only spaces or the half-width bar, got {sym:?} at y={y}"
             );
         }
+    }
+
+    #[test]
+    fn group_bounds_covers_one_levels_requests() {
+        let mut s = Sidebar::default();
+        s.refresh(
+            listing(&["a", "b", "auth/x", "auth/y", "auth/deep/z"]),
+            "main",
+            &expanded(&["auth", "auth/deep"]),
+            &[],
+        );
+        // rows: a b auth/ x y deep/ z
+        assert_eq!(s.group_bounds(0), Some((0, 1)));
+        assert_eq!(s.group_bounds(1), Some((0, 1)));
+        assert_eq!(s.group_bounds(2), None, "a folder row has no group");
+        assert_eq!(s.group_bounds(3), Some((3, 4)));
+        assert_eq!(s.group_bounds(6), Some((6, 6)));
+    }
+
+    #[test]
+    fn alt_up_and_down_dispatch_move_request_for_the_selected_row() {
+        let mut s = Sidebar::default();
+        s.refresh(listing(&["a", "b"]), "main", &expanded(&[]), &[]);
+        s.selected = Some(1);
+        let ev = KeyEvent::new(KeyCode::Up, KeyModifiers::ALT);
+        assert_eq!(
+            s.handle_key(ev),
+            Some(Action::MoveRequest {
+                slug: "main/b".into(),
+                delta: -1
+            })
+        );
+        let ev = KeyEvent::new(KeyCode::Down, KeyModifiers::ALT);
+        assert_eq!(
+            s.handle_key(ev),
+            Some(Action::MoveRequest {
+                slug: "main/b".into(),
+                delta: 1
+            })
+        );
+        // Plain Up still just moves the cursor.
+        assert_eq!(
+            s.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
+            Some(Action::Render)
+        );
+        assert_eq!(s.selected, Some(0));
     }
 }
