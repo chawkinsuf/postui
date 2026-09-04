@@ -347,6 +347,17 @@ impl JqBar {
         });
     }
 
+    /// Leaves the entered row with nothing picked: the bar text goes back
+    /// to the row's base (what was typed before Tab), the row closing and
+    /// then showing again, unentered, for that text.
+    fn unpick_menu(&mut self) {
+        let Some(menu) = self.menu.take() else {
+            return;
+        };
+        self.input = LineInput::new(&menu.base);
+        self.edited = true;
+    }
+
     /// Steps the open row (wrapping) and rewrites the bar text from the
     /// row's base with the newly selected candidate.
     fn step_menu(&mut self, forward: bool) {
@@ -2031,8 +2042,11 @@ impl Response {
             // Menu mode's candidate row is entered: Tab and shift+Tab step
             // through it, Enter confirms the selected chip and leaves the
             // row (staying in the bar — its text is already the chip's,
-            // so there is nothing more to take), and any other key leaves
-            // the row keeping the selection and is then handled as usual.
+            // so there is nothing more to take), Esc un-picks it — the
+            // text goes back to what was typed before Tab, the row closes,
+            // the caret stays (Esc again cancels the edit as usual) — and
+            // any other key leaves the row keeping the selection and is
+            // then handled as usual.
             if self.jq.menu.is_some() {
                 match ev.code {
                     KeyCode::Tab if ev.modifiers.is_empty() => {
@@ -2045,6 +2059,10 @@ impl Response {
                     }
                     KeyCode::Enter => {
                         self.jq.menu = None;
+                        return Some(Action::Render);
+                    }
+                    KeyCode::Esc => {
+                        self.jq.unpick_menu();
                         return Some(Action::Render);
                     }
                     _ => self.jq.menu = None,
@@ -5742,16 +5760,29 @@ mod tests {
     }
 
     #[test]
-    fn esc_with_the_row_open_cancels_back_to_before_the_completion() {
+    fn esc_on_an_entered_row_unpicks_it_and_stays_and_a_second_esc_cancels() {
         let mut r = ready(ITEMS);
         r.set_jq_tab(JqTab::Menu);
-        type_jq(&mut r, ".data.items[] | .");
+        r.set_jq_text(".data");
+        assert!(r.set_jq_focus(true));
+        // Typed this session: `.items[] | .` — the origin is `.data`.
+        for c in ".items[] | .".chars() {
+            bar_key(&mut r, ch(c));
+        }
         bar_key(&mut r, key(KeyCode::Tab));
         bar_key(&mut r, key(KeyCode::Tab));
         assert_eq!(r.jq_text(), ".data.items[] | .status");
         bar_key(&mut r, key(KeyCode::Esc));
-        assert_eq!(r.jq_text(), ".data.items[] | .");
-        assert!(!r.jq_menu_open());
+        assert_eq!(
+            r.jq_text(),
+            ".data.items[] | .",
+            "the pick is undone, the rest of the edit kept"
+        );
+        assert!(!r.jq_menu_open(), "the row is left…");
+        assert!(r.jq_menu_offered(), "…and shows again, unentered");
+        assert!(r.jq_focused(), "the caret stays");
+        bar_key(&mut r, key(KeyCode::Esc));
+        assert_eq!(r.jq_text(), ".data", "the second Esc cancels the edit");
         assert!(!r.jq_focused());
     }
 

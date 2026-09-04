@@ -41,10 +41,12 @@ rides along because jaq already exposes its definitions.
   text from the pre-completion base each step so a rewrite never
   compounds. Shift+Tab on the offered row enters it at the last
   candidate. Enter on the entered row confirms the selected chip and
-  leaves the row, staying in the bar (Enter again leaves the bar). Any
-  other key leaves the row, keeps the selection, and is handled as
-  usual (Esc cancels back to before the first completion) — the row
-  then simply tracks what is typed next. Enter on the unentered row,
+  leaves the row, staying in the bar (Enter again leaves the bar). Esc
+  on the entered row un-picks it: the text goes back to what was typed
+  before Tab, the row shows again unentered, the caret stays (Esc again
+  cancels the whole edit as usual). Any other key leaves the row, keeps
+  the selection, and is handled as usual — the row then simply tracks
+  what is typed next. Enter on the unentered row,
   or on a cycle-mode ghost, leaves the bar with what was typed: a
   ghost is an offer, never text. Down leaves the bar in both modes. A lone
   candidate is previewed like any other and just accepted by Tab. The
@@ -321,6 +323,7 @@ In `ready_key`'s jq-focused branch, before the event reaches the
 | shift+Tab       | previous candidate (wraps)    | enter the row at the last (entered: previous)     |
 | Right, End      | accept                        | a plain caret move (entered: leaves the row first) |
 | Enter           | leave the bar, typed text kept | leave the bar (entered: confirm the chip, stay)   |
+| Esc             | cancel the edit               | cancel the edit (entered: un-pick, stay)          |
 | Down            | leave the bar                 | leave the bar                                    |
 | anything else   | falls through to the input; index resets to 0 (menu mode: an entered row is left first) |
 

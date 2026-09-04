@@ -60,7 +60,8 @@ the filter has reached at that point in the response, or the start of a builtin'
 accepts the one showing. With `jq_tab = "menu"` there is no ghost: the candidates are listed
 under the bar as you type, narrowing with each character, and `Tab` picks the first, further
 `Tab`s step through them (the row slides to keep the selected one in view), `shift+Tab` goes
-back, `Enter` confirms the selected one, and anything else you type keeps the selection.
+back, `Enter` confirms the selected one, `Esc` un-picks it, and anything else you type keeps
+the selection.
 
 ## Configuration
 
