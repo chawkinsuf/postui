@@ -153,7 +153,8 @@ Examples the tests pin down (`text` → `input_expr`, partial):
 | `..`                                        | none                           |         |
 | `.data.items \| leng`                       | word                           | `leng`  |
 | `.data \| `                                 | none                           |         |
-| `$x.na`                                     | none                           |         |
+| `$x.na`                                     | `$x` (does not compile → no candidates) | `na` |
+| `.a as $x \| $x.na`                         | `.a as $x \| $x`               | `na`    |
 
 `context` is a pure function with a table test; it must never panic on
 any input (fuzz-style test over random ASCII and the existing test
