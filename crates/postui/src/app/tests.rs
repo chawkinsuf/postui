@@ -3764,6 +3764,35 @@ fn move_all_requests_empties_the_source_and_follows_the_open_request() {
 }
 
 #[test]
+fn move_all_requests_cascades_the_order_lists() {
+    // The app made every one of the source's entries stale, so it clears
+    // them; the destination is unlisted, so the arrivals sort
+    // alphabetically there rather than materialising a list.
+    let (mut app, dir) = spaced_app();
+    postui_core::order::set_level_order(
+        dir.path(),
+        "main",
+        "",
+        &["beta".to_string(), "alpha".to_string()],
+    )
+    .unwrap();
+    app.project.reload_meta();
+    app.update(Action::MoveAllRequests {
+        from: "main".into(),
+        to: "auth".into(),
+    });
+    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    assert!(
+        postui_core::order::space_order(&meta, "main").is_empty(),
+        "no stale entry left in the emptied space"
+    );
+    assert!(
+        postui_core::order::space_order(&meta, "auth").is_empty(),
+        "an unlisted destination stays unlisted"
+    );
+}
+
+#[test]
 fn move_all_requests_holding_a_dirty_open_request_gates_first() {
     let (mut app, dir) = spaced_app();
     app.update(Action::ForceOpenRequest("main/alpha".into()));

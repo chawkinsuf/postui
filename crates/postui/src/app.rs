@@ -4987,6 +4987,25 @@ impl App {
                         ToastKind::Success,
                     );
                 }
+                // Every moved request leaves a stale entry behind in the
+                // source's order list and arrives unlisted in the
+                // destination — entries the app itself made stale, so they
+                // are cascaded, exactly as the single-request move does.
+                for (old, new) in &moved {
+                    if let Some((from_space, from_rel)) = Self::split_rel(old) {
+                        let r = postui_core::order::order_remove(
+                            &self.project.root,
+                            from_space,
+                            from_rel,
+                        );
+                        self.order_cascade("move", r);
+                    }
+                    if let Some((to_space, to_rel)) = Self::split_rel(&new) {
+                        let r =
+                            postui_core::order::order_arrive(&self.project.root, to_space, to_rel);
+                        self.order_cascade("move", r);
+                    }
+                }
                 self.project.forget_space(&from);
                 self.refresh_sidebar();
                 if let Some(open) = open
