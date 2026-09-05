@@ -20663,13 +20663,25 @@ fn tooltip_reveal_shows_the_secret_until_the_tip_moves_on() {
     hover_token(&mut app, "api_key");
     let text = tooltip_text(&mut app);
     assert!(text.contains("\u{F06D0}"), "reveal control: {text}");
-    // Icons only: mask, a gap, two 3-cell pills, padding — no labels.
+    // Icons only: one mask dot per secret character, a gap, two 3-cell
+    // pills, padding — no labels.
     let panel = app.hits.rect_of(&Hit::TipPanel).unwrap();
-    let mask_w = crate::components::var_tokens::SECRET_MASK.chars().count();
-    assert_eq!(panel.width, (mask_w + 1 + 6 + 4) as u16);
+    assert_eq!(panel.width, ("sk-super-secret".len() + 1 + 6 + 4) as u16);
+    assert!(text.contains(&"\u{25cf}".repeat(15)), "{text}");
     click_hit(&mut app, Hit::TipReveal("api_key".into()));
     let text = tooltip_text(&mut app);
     assert!(text.contains("sk-super-secret"), "revealed: {text}");
+    // Same footprint, pills in the same cells: nothing moved.
+    assert_eq!(app.hits.rect_of(&Hit::TipPanel), Some(panel));
+    assert_eq!(
+        app.hits.rect_of(&Hit::TipReveal("api_key".into())),
+        Some(ratatui::layout::Rect::new(
+            panel.right() - 5,
+            panel.y + 1,
+            3,
+            1
+        ))
+    );
     assert!(text.contains("\u{F06D1}"), "hide control: {text}");
     // Clicking hide masks it again.
     click_hit(&mut app, Hit::TipReveal("api_key".into()));

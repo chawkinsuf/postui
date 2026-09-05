@@ -401,7 +401,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 const TOOLTIP_MAX_TEXT_W: usize = 56;
 
 /// Draws the hover/caret tooltip for one `{{token}}` (spec §7): first the
-/// value — `SECRET_MASK` for a secret unless `revealed` — wrapped onto
+/// value — one mask dot per character for a secret unless `revealed` — wrapped onto
 /// further rows rather than truncated so the whole value is readable —
 /// then a line naming the scope the value came from (`this request`,
 /// `env = qa`, `default`, `option = user 2`, `needs selection`, `missing
@@ -428,8 +428,12 @@ fn draw_var_tooltip(
     use crate::hit::Hit;
     use ratatui::layout::Rect;
     let info = vars.describe(&tip.name);
+    // A secret masks one dot per character (not the fixed
+    // `SECRET_MASK`): the panel and its pills then take exactly the
+    // space the revealed value needs, so reveal / hide moves nothing.
     let shown = match (&info.value, info.secret, revealed) {
         (Some(v), true, true) => v.clone(),
+        (Some(v), true, false) => "\u{25cf}".repeat(v.chars().count().max(1)),
         _ => info.display_value(),
     };
     let mut value_lines = wrap_chars(&shown, TOOLTIP_MAX_TEXT_W);
