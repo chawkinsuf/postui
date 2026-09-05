@@ -1799,22 +1799,18 @@ impl App {
             // filtered to that name (spec §7) — the shortest path from
             // "what is this?" to the variable itself.
             Hit::VarToken(name) => self.update(Action::OpenVarTokenPopup(name)),
-            // The tooltip's controls. A secret's *real* value is what gets
-            // copied, mask or no mask — the point of the button.
-            Hit::TipCopy(name) => {
-                let Some(value) = self.editor.vars.describe(&name).value else {
-                    return false;
-                };
-                self.copy_text_with_toast(&value, format!("Copied {{{{{name}}}}}"));
-                true
-            }
+            // The tooltip's controls, routed through `update` like every
+            // other toast-raising click so the toast's slide-in is armed
+            // before the first draw (a toast pushed straight from here
+            // paints settled, then slides in over itself on the next tick).
+            Hit::TipCopy(name) => self.update(Action::CopyVarValue(name)),
             Hit::TipReveal(name) => {
                 self.tip_revealed = if self.tip_revealed.as_deref() == Some(name.as_str()) {
                     None
                 } else {
                     Some(name)
                 };
-                true
+                self.update(Action::Render)
             }
             // A click on the panel between its controls: consumed, so it
             // never reaches whatever the tip floats over.

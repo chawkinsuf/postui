@@ -1711,6 +1711,12 @@ impl App {
                 }
                 true
             }
+            Action::CopyVarValue(name) => {
+                if let Some(value) = self.editor.vars.describe(&name).value {
+                    self.copy_text_with_toast(&value, format!("Copied {{{{{name}}}}}"));
+                }
+                true
+            }
             Action::CopyToClipboard(target) => {
                 let Some((text, success_msg)) = self.resolve_copy(&target) else {
                     self.toasts

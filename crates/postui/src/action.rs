@@ -505,6 +505,9 @@ pub enum Action {
     /// tiered copy. Toasts "nothing to copy — send a request first" when
     /// there's no ready response and `target` needs one.
     CopyToClipboard(CopyTarget),
+    /// The variable tooltip's copy pill: the token's *real* value (a
+    /// secret's included, mask or no mask) to the clipboard.
+    CopyVarValue(String),
     /// Open the "save response body to file" prompt, prefilled with a
     /// `~/Downloads/{slug}-response.{ext}` path. Toasts the same
     /// "nothing to copy" warning with no ready response.

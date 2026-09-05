@@ -20622,10 +20622,17 @@ fn tooltip_copy_puts_the_value_on_the_clipboard() {
     let (mut app, _dir, out) = tooltip_app("base_url");
     hover_token(&mut app, "base_url");
     let text = tooltip_text(&mut app);
-    assert!(text.contains("\u{F018F} copy"), "copy control: {text}");
+    assert!(text.contains("\u{F018F}"), "copy control: {text}");
     assert!(
-        !text.contains("reveal"),
+        !text.contains("\u{F06D0}"),
         "no reveal for a plain value: {text}"
+    );
+    // Icons only: the panel is the value, a gap, one 3-cell pill, and
+    // 2 columns of padding each side — no room for a label.
+    let panel = app.hits.rect_of(&Hit::TipPanel).unwrap();
+    assert_eq!(
+        panel.width,
+        ("https://qa.example.com".len() + 1 + 3 + 4) as u16
     );
     click_hit(&mut app, Hit::TipCopy("base_url".into()));
     assert_eq!(
@@ -20655,11 +20662,15 @@ fn tooltip_reveal_shows_the_secret_until_the_tip_moves_on() {
     let (mut app, _dir, _out) = tooltip_app("api_key");
     hover_token(&mut app, "api_key");
     let text = tooltip_text(&mut app);
-    assert!(text.contains("\u{F06D0} reveal"), "reveal control: {text}");
+    assert!(text.contains("\u{F06D0}"), "reveal control: {text}");
+    // Icons only: mask, a gap, two 3-cell pills, padding — no labels.
+    let panel = app.hits.rect_of(&Hit::TipPanel).unwrap();
+    let mask_w = crate::components::var_tokens::SECRET_MASK.chars().count();
+    assert_eq!(panel.width, (mask_w + 1 + 6 + 4) as u16);
     click_hit(&mut app, Hit::TipReveal("api_key".into()));
     let text = tooltip_text(&mut app);
     assert!(text.contains("sk-super-secret"), "revealed: {text}");
-    assert!(text.contains("\u{F06D1} hide"), "hide control: {text}");
+    assert!(text.contains("\u{F06D1}"), "hide control: {text}");
     // Clicking hide masks it again.
     click_hit(&mut app, Hit::TipReveal("api_key".into()));
     let text = tooltip_text(&mut app);
