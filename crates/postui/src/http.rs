@@ -97,15 +97,7 @@ pub async fn send(client: &reqwest::Client, req: &PreparedRequest) -> Result<Res
     let method = reqwest::Method::from_bytes(req.method.as_str().as_bytes())
         .map_err(|e| format!("invalid method: {e}"))?;
     let mut builder = client.request(method, &req.url);
-    let mut header_map = reqwest::header::HeaderMap::new();
-    for (k, v) in &req.headers {
-        let name = reqwest::header::HeaderName::from_bytes(k.as_bytes())
-            .map_err(|e| format!("invalid header name {k:?}: {e}"))?;
-        let value = reqwest::header::HeaderValue::from_str(v)
-            .map_err(|e| format!("invalid header value for {k:?}: {e}"))?;
-        header_map.insert(name, value);
-    }
-    builder = builder.headers(header_map);
+    builder = builder.headers(header_map(&req.headers)?);
     if let Some(body) = &req.body {
         builder = builder.body(body.clone());
     }
@@ -115,7 +107,7 @@ pub async fn send(client: &reqwest::Client, req: &PreparedRequest) -> Result<Res
     // `send` resolves once the response headers are in — the closest thing
     // reqwest exposes to "first byte".
     let ttfb = started.elapsed();
-    let response = result.map_err(|e| error_chain(&e))?;
+    let response = result.map_err(|e| error_chain(&e, req))?;
 
     let status = response.status().as_u16();
     let headers: Vec<(String, String)> = response
@@ -128,7 +120,7 @@ pub async fn send(client: &reqwest::Client, req: &PreparedRequest) -> Result<Res
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
-    let bytes = response.bytes().await.map_err(|e| error_chain(&e))?;
+    let bytes = response.bytes().await.map_err(|e| error_chain(&e, req))?;
     let elapsed = started.elapsed();
     let size = bytes.len();
     let body = String::from_utf8_lossy(&bytes).into_owned();
@@ -145,17 +137,55 @@ pub async fn send(client: &reqwest::Client, req: &PreparedRequest) -> Result<Res
     })
 }
 
+/// Every prepared header, in order. `append`, not `insert`: two headers
+/// that differ only in case (`Accept` / `accept`), or two `{{templates}}`
+/// that resolve to the same name, are both what the user wrote, so both
+/// go on the wire rather than the later one silently replacing the first.
+fn header_map(headers: &[(String, String)]) -> Result<reqwest::header::HeaderMap, String> {
+    let mut map = reqwest::header::HeaderMap::new();
+    for (k, v) in headers {
+        let name = reqwest::header::HeaderName::from_bytes(k.as_bytes())
+            .map_err(|e| format!("invalid header name {k:?}: {e}"))?;
+        let value = reqwest::header::HeaderValue::from_str(v)
+            .map_err(|e| format!("invalid header value for {k:?}: {e}"))?;
+        map.append(name, value);
+    }
+    Ok(map)
+}
+
 /// Joins a reqwest error and its `source()` chain with ": ", so e.g. a
 /// connection refused shows the useful underlying I/O message rather than
-/// just reqwest's generic wrapper text.
-fn error_chain(err: &reqwest::Error) -> String {
+/// just reqwest's generic wrapper text. reqwest's own text names the wire
+/// URL — secret values substituted — so the URL is stripped and the
+/// masked `display_url` shown instead, the same one the success path
+/// shows; any other mention of the wire URL in the chain is masked too.
+fn error_chain(err: &reqwest::Error, req: &PreparedRequest) -> String {
     let mut parts = vec![err.to_string()];
     let mut source = err.source();
     while let Some(e) = source {
         parts.push(e.to_string());
         source = e.source();
     }
-    parts.join(": ")
+    let joined = parts.join(": ");
+    let masked = if req.url.is_empty() || req.url == req.display_url {
+        joined
+    } else {
+        joined.replace(&req.url, &req.display_url)
+    };
+    // reqwest prints `... for url (<url>)`; the url it prints is its
+    // parsed (normalised) form, which may not be byte-identical to what
+    // was sent, so drop that clause outright and append the masked URL.
+    match (masked.find(" for url ("), masked.find(')')) {
+        (Some(start), Some(end)) if end > start => {
+            format!(
+                "{}{} for url ({})",
+                &masked[..start],
+                &masked[end + 1..],
+                req.display_url
+            )
+        }
+        _ => masked,
+    }
 }
 
 #[cfg(test)]
@@ -195,6 +225,41 @@ mod tests {
     /// A server that sends its headers immediately but stalls before the
     /// body separates the two measures: `ttfb` stops at the headers,
     /// `elapsed` keeps counting until the body completes.
+    #[test]
+    fn same_named_headers_are_all_sent() {
+        let map = header_map(&[
+            ("Accept".into(), "a".into()),
+            ("accept".into(), "b".into()),
+            ("X-One".into(), "1".into()),
+        ])
+        .unwrap();
+        let accepts: Vec<&str> = map
+            .get_all("accept")
+            .iter()
+            .map(|v| v.to_str().unwrap())
+            .collect();
+        assert_eq!(accepts, ["a", "b"], "neither case-variant is dropped");
+        assert_eq!(map.len(), 3);
+        assert!(header_map(&[("bad name".into(), "x".into())]).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_transport_error_shows_the_masked_url_never_the_secret() {
+        let req = PreparedRequest {
+            method: postui_core::model::Method::Get,
+            url: "http://127.0.0.1:1/v1/items?key=sk-live-REAL".into(),
+            display_url: "http://127.0.0.1:1/v1/items?key=•••••".into(),
+            headers: vec![],
+            body: None,
+            insecure: false,
+        };
+        let err = send(&client(), &req)
+            .await
+            .expect_err("nothing listens on port 1");
+        assert!(!err.contains("sk-live-REAL"), "{err}");
+        assert!(err.contains("key=•••••"), "{err}");
+    }
+
     #[tokio::test]
     async fn ttfb_stops_at_headers_while_elapsed_covers_the_body() {
         use std::io::{Read as _, Write as _};
