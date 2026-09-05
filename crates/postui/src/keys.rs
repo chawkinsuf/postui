@@ -444,15 +444,39 @@ impl Keymap {
     }
 
     pub fn load() -> Self {
-        let mut map = Self::default_bindings();
-        if let Some(dir) = postui_core::config_dir() {
-            let path = dir.join("keys.toml");
-            if let Ok(contents) = std::fs::read_to_string(path) {
-                // Bad override files are ignored; surfaced as a toast in a later stage.
-                let _ = map.apply_overrides(&contents);
-            }
+        Self::load_reporting().0
+    }
+
+    /// [`Self::load`] plus the reason `keys.toml` was ignored, if it was:
+    /// `apply_overrides` validates the whole file before binding anything,
+    /// so one bad entry leaves every default in place — a fact the user
+    /// has to hear, or every rebinding just silently stops working.
+    fn load_reporting() -> (Self, Option<String>) {
+        let Some(dir) = postui_core::config_dir() else {
+            return (Self::default_bindings(), None);
+        };
+        let path = dir.join("keys.toml");
+        match std::fs::read_to_string(&path) {
+            Ok(contents) => Self::from_overrides(&contents),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Self::default_bindings(), None),
+            Err(e) => (
+                Self::default_bindings(),
+                Some(format!("could not read {}: {e}", path.display())),
+            ),
         }
-        map
+    }
+
+    /// The defaults with `contents` (a `keys.toml`) applied; on a bad file
+    /// the untouched defaults and the error to show.
+    pub fn from_overrides(contents: &str) -> (Self, Option<String>) {
+        let mut map = Self::default_bindings();
+        match map.apply_overrides(contents) {
+            Ok(()) => (map, None),
+            Err(e) => (
+                Self::default_bindings(),
+                Some(format!("keys.toml ignored, using default keys: {e}")),
+            ),
+        }
     }
 
     /// [`load`] plus caret-conflict warnings for the startup toasts:
@@ -466,12 +490,11 @@ impl Keymap {
     /// friends are component behavior there, and an override shadowing
     /// them is an ordinary, deliberate rebind.
     pub fn load_with_warnings(macos: bool) -> (Self, Vec<String>) {
-        let map = Self::load();
-        let warnings = if macos {
-            map.caret_conflicts()
-        } else {
-            Vec::new()
-        };
+        let (map, ignored) = Self::load_reporting();
+        let mut warnings: Vec<String> = ignored.into_iter().collect();
+        if macos {
+            warnings.extend(map.caret_conflicts());
+        }
         (map, warnings)
     }
 
@@ -566,6 +589,21 @@ fn format_combo(combo: &KeyCombo) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_bad_keys_file_is_reported_and_leaves_the_defaults() {
+        let (map, warning) = super::Keymap::from_overrides("save = \"ctrl+s\"\nnope = \"ctrl+\"\n");
+        let warning = warning.expect("the bad entry is reported");
+        assert!(warning.contains("keys.toml ignored"), "{warning}");
+        let save = super::KeyCombo::parse("ctrl+s").unwrap();
+        assert_eq!(
+            map.lookup(&save),
+            super::Keymap::default_bindings().lookup(&save),
+            "nothing from the bad file was applied"
+        );
+        let (_, warning) = super::Keymap::from_overrides("");
+        assert!(warning.is_none(), "an empty file is fine");
+    }
+
     use super::*;
 
     #[test]
