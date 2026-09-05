@@ -20967,8 +20967,13 @@ fn startup_with_a_broken_project_file_runs_empty_and_leaves_the_file_alone() {
     );
 }
 
+/// Held by every test that changes or inspects the process's cwd: tests
+/// run in parallel threads, and the cwd is process-global.
+static CWD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn a_refused_open_in_the_process_cwd_still_runs_empty() {
+    let _cwd = CWD.lock().unwrap_or_else(|e| e.into_inner());
     // `postui .` in a project whose project.toml is broken: the fallback
     // context has an empty root, and an empty root joined with
     // "project.toml" is the cwd's broken file — the fallback must never
@@ -20986,6 +20991,66 @@ fn a_refused_open_in_the_process_cwd_still_runs_empty() {
     let app = outcome.expect("the empty fallback context reads nothing from disk");
     assert!(app.open_error.is_some());
     assert!(!app.project.can_persist());
+}
+
+#[test]
+fn a_refused_open_gates_every_way_of_writing_a_new_file() {
+    let _cwd = CWD.lock().unwrap_or_else(|e| e.into_inner());
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::storage::ensure_project(dir.path()).unwrap();
+    std::fs::write(dir.path().join("project.toml"), "spaces = [\"main\"\n").unwrap();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    assert!(app.open_error.is_some());
+    let cwd = std::env::current_dir().unwrap();
+    let stray = [
+        cwd.join("requests"),
+        cwd.join("project.toml"),
+        cwd.join("environments"),
+        cwd.join(".local"),
+    ];
+    for p in &stray {
+        assert!(!p.exists(), "precondition: {} does not exist", p.display());
+    }
+
+    for action in [
+        Action::PromptNewRequest,
+        Action::PromptNewRequestIn("main".into()),
+        Action::OpenNewSpacePrompt,
+        Action::OpenNewEnvPrompt,
+    ] {
+        app.toasts = Toasts::default();
+        app.update(action.clone());
+        assert!(
+            app.modals.top().is_none(),
+            "{action:?}: no prompt opens for a project that isn't open"
+        );
+        assert!(
+            app.toasts
+                .messages()
+                .iter()
+                .any(|m| m.contains("no project")),
+            "{action:?}: {:?}",
+            app.toasts.messages()
+        );
+    }
+    for action in [
+        Action::CreateRequest("foo".into()),
+        Action::SaveRequestAs("foo".into()),
+        Action::SaveRequest,
+        Action::CreateSpace("x".into()),
+        Action::CreateEnv("qa".into()),
+    ] {
+        app.update(action.clone());
+        for p in &stray {
+            assert!(!p.exists(), "{action:?} wrote {} in the cwd", p.display());
+        }
+    }
+    render_once(&mut app);
+    assert!(
+        app.hits.rect_of(&Hit::SidebarNewRequest).is_none(),
+        "the New request button is not offered"
+    );
 }
 
 #[test]

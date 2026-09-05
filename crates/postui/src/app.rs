@@ -879,6 +879,23 @@ impl App {
         ProjectContext::empty()
     }
 
+    /// The gate every arm that would create a file passes first: with no
+    /// project open (the startup fallback, or a refused open) the root is
+    /// empty, and a write relative to it lands in the process's cwd —
+    /// for `postui .` the very project that just refused. Toasts and
+    /// answers `true` when the arm must bail.
+    fn refuse_without_project(&mut self) -> bool {
+        if self.project.can_persist() {
+            return false;
+        }
+        self.toasts.push(
+            "no project is open — open or create one first",
+            ToastKind::Error,
+        );
+        self.last_action_failed = true;
+        true
+    }
+
     /// Shows `open_error` in place of the request list — the sidebar's
     /// empty state doubles as the "nothing is loaded" screen.
     fn show_open_error(&mut self) {
@@ -2215,6 +2232,9 @@ impl App {
                 true
             }
             Action::SaveRequest => {
+                if self.refuse_without_project() {
+                    return true;
+                }
                 // A cell still under the caret is part of the request the
                 // user means to save.
                 self.commit_table_edit();
@@ -2275,6 +2295,9 @@ impl App {
                 true
             }
             Action::PromptNewRequest => {
+                if self.refuse_without_project() {
+                    return true;
+                }
                 self.push_modal(Modal::Prompt {
                     title: "New request".into(),
                     input: crate::components::line_input::LineInput::new(""),
@@ -2284,6 +2307,9 @@ impl App {
                 true
             }
             Action::PromptNewRequestIn(folder) => {
+                if self.refuse_without_project() {
+                    return true;
+                }
                 // The prompt speaks folders *inside* the space, so the
                 // space segment never shows up in the prefill.
                 let folder = folder
@@ -2518,6 +2544,9 @@ impl App {
                 true
             }
             Action::CreateRequest(name) => {
+                if self.refuse_without_project() {
+                    return true;
+                }
                 self.create_or_save_as(&name, |_| postui_core::model::HttpRequest {
                     name: None,
                     method: postui_core::model::Method::Get,
@@ -2643,6 +2672,9 @@ impl App {
                 true
             }
             Action::SaveRequestAs(name) => {
+                if self.refuse_without_project() {
+                    return true;
+                }
                 self.commit_table_edit();
                 let req = self.editor.current_request();
                 self.create_or_save_as(&name, move |_| req.clone());
@@ -2659,6 +2691,9 @@ impl App {
                 true
             }
             Action::SaveRequestAsThen(name, then) => {
+                if self.refuse_without_project() {
+                    return true;
+                }
                 self.commit_table_edit();
                 let req = self.editor.current_request();
                 // The deferred step (quit, open another request, switch
@@ -3249,6 +3284,9 @@ impl App {
                 true
             }
             Action::OpenNewEnvPrompt => {
+                if self.refuse_without_project() {
+                    return true;
+                }
                 self.push_modal(Modal::Prompt {
                     title: "New environment".into(),
                     input: crate::components::line_input::LineInput::new(""),
@@ -3258,6 +3296,9 @@ impl App {
                 true
             }
             Action::CreateEnv(name) => {
+                if self.refuse_without_project() {
+                    return true;
+                }
                 let prev_active = self.project.active_env.clone();
                 // The name is free-form; the file is its slug, and
                 // project.toml records the name — so it is part of the
@@ -4711,6 +4752,9 @@ impl App {
                 true
             }
             Action::OpenNewSpacePrompt => {
+                if self.refuse_without_project() {
+                    return true;
+                }
                 self.push_modal(Modal::Prompt {
                     title: "New space".into(),
                     input: crate::components::line_input::LineInput::new(""),
@@ -4720,6 +4764,9 @@ impl App {
                 true
             }
             Action::CreateSpace(name) => {
+                if self.refuse_without_project() {
+                    return true;
+                }
                 match postui_core::project::create_space(&self.project.root, &name) {
                     Ok(slug) => {
                         self.apply(Action::ReloadProjectFiles);

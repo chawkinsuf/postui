@@ -702,7 +702,10 @@ impl Component for Sidebar {
         // panes' top padding (the old REQUESTS header row, kept as space).
         let button_top = (area.y + 1).min(area.y + area.height);
         let button_height = BUTTON_HEIGHT.min(area.y + area.height - button_top);
-        if button_height == BUTTON_HEIGHT {
+        // A notice means nothing is loaded (the open was refused): there
+        // is no project for a new request to land in, so the button is
+        // not offered.
+        if button_height == BUTTON_HEIGHT && self.notice.is_none() {
             // Inset one column each side, like the other panes' content:
             // the left padding column belongs to the pane focus bar, and an
             // accent-filled button drawn into it would swallow the bar
