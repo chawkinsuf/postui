@@ -603,17 +603,17 @@ impl VarPickerState {
                     );
                     x += ORIGIN_COL_W;
                     if entry.secret {
-                        const LOCK: &str = "\u{F033E} "; // 󰌾 nf-md-lock
+                        let lock = format!("{} ", crate::glyph::LOCK);
                         paint::text(
                             frame.buffer_mut(),
                             x,
                             text_row,
-                            LOCK,
+                            &lock,
                             theme.warning,
                             row_fill,
                             false,
                         );
-                        x += Span::raw(LOCK).width() as u16;
+                        x += Span::raw(&lock).width() as u16;
                     }
                     let name_w = (entry.name.chars().count() as u16).min(right.saturating_sub(x));
                     paint::text(

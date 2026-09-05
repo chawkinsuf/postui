@@ -852,7 +852,15 @@ impl TableEditorState {
         };
         // Nerd Font Material glyph (one cell everywhere), centred in a
         // three-cell zone like the toggle beside it.
-        text(buf, trash_x, y, " \u{F01B4} ", dfg, dbg, false); // 󰆴 nf-md-delete
+        text(
+            buf,
+            trash_x,
+            y,
+            &format!(" {} ", crate::glyph::DELETE),
+            dfg,
+            dbg,
+            false,
+        );
 
         hits.register(Rect::new(toggle_x, y, 3, 1), toggle_hit);
         hits.register(Rect::new(trash_x, y, 3, 1), trash_hit);

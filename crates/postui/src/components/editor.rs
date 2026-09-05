@@ -1988,11 +1988,12 @@ impl Editor {
             };
             fill(buf, lock_area, lock_bg);
             let glyph = if effective_insecure {
-                " \u{F0340} " // 󰍀 nf-md-lock_outline
+                crate::glyph::LOCK_OPEN
             } else {
-                " \u{F033E} " // 󰌾 nf-md-lock
+                crate::glyph::LOCK
             };
-            text(buf, lock_area.x, text_y, glyph, lock_fg, lock_bg, false);
+            let label = format!(" {glyph} ");
+            text(buf, lock_area.x, text_y, &label, lock_fg, lock_bg, false);
             hits.register(lock_area, lock_hit);
         }
 
@@ -2026,7 +2027,7 @@ impl Editor {
                 buf,
                 chip_area.x + chip_area.width / 2,
                 chip_area.y,
-                "\u{F018F}",
+                crate::glyph::COPY,
                 chip_fg,
                 chip_bg,
                 false,
@@ -2933,9 +2934,9 @@ impl Editor {
         // there's a secret to reveal.
         if y < max_y {
             let toggle_label = if self.computed.revealed {
-                "\u{F06D1} hide" // 󰈉 nf-md-eye_off
+                format!("{} hide", crate::glyph::EYE_OFF)
             } else {
-                "\u{F06D0} reveal" // 󰈈 nf-md-eye
+                format!("{} reveal", crate::glyph::EYE)
             };
             let show_toggle = self.computed.has_secret;
             let toggle_w = if show_toggle {
@@ -3006,7 +3007,7 @@ impl Editor {
             let line = Line::from(vec![
                 Span::styled(name_piece, name_style),
                 Span::styled(value_piece, value_style),
-                Span::styled(" \u{F018F} ", glyph_style),
+                Span::styled(format!(" {} ", crate::glyph::COPY), glyph_style),
             ]);
             frame.render_widget(Paragraph::new(line), Rect::new(area.x, y, area.width, 1));
             crate::components::var_tokens::paint_var_tokens(

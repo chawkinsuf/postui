@@ -221,10 +221,11 @@ pub enum Hit {
     /// hover styling and to right-click menus — see
     /// [`HitMap::hit_at_ignoring_var_tokens`].
     VarToken(String),
-    /// The variable tooltip's panel: a catch-all so a click on the tip
-    /// (between its controls) lands nowhere underneath, and so the tip
-    /// knows the pointer is still over it.
-    TipPanel,
+    /// The variable tooltip's panel for `{{name}}`: a catch-all so a left
+    /// click on the tip (between its controls) lands nowhere underneath,
+    /// and so the tip knows the pointer is still over it (see
+    /// [`Hit::tip_name`]).
+    TipPanel(String),
     /// The tooltip's `󰆏 copy` control: copies the token's *real* value
     /// (a secret's included, unmasked) to the clipboard.
     TipCopy(String),
@@ -347,6 +348,24 @@ impl PointerShape {
     }
 }
 
+impl Hit {
+    /// The token a variable-tooltip hit belongs to: the tip stays up while
+    /// the pointer rests on any of these (panel, copy pill, reveal pill).
+    pub fn tip_name(&self) -> Option<&str> {
+        match self {
+            Hit::TipPanel(n) | Hit::TipCopy(n) | Hit::TipReveal(n) => Some(n),
+            _ => None,
+        }
+    }
+
+    /// Overlays that float over the panes without owning a right click:
+    /// `{{token}}` spans and the variable tooltip. A right click belongs
+    /// to the row/cell under them and its context menu.
+    fn is_float_overlay(&self) -> bool {
+        matches!(self, Hit::VarToken(_)) || self.tip_name().is_some()
+    }
+}
+
 /// Rebuilt each frame during render; maps screen regions to typed [`Hit`]s.
 ///
 /// It also carries each frame's scrollbar *track* rects. Those are not
@@ -424,6 +443,18 @@ impl HitMap {
             .iter()
             .rev()
             .filter(|(_, hit)| !matches!(hit, Hit::VarToken(_)))
+            .find(|(rect, _)| rect.contains(ratatui::layout::Position { x, y }))
+            .map(|(_, hit)| hit)
+    }
+
+    /// Topmost hit containing the point, skipping every floating overlay
+    /// (`VarToken` spans and the variable tooltip's hits): what a right
+    /// click lands on, since the overlays are left-click affordances only.
+    pub fn hit_at_ignoring_overlays(&self, x: u16, y: u16) -> Option<&Hit> {
+        self.regions
+            .iter()
+            .rev()
+            .filter(|(_, hit)| !hit.is_float_overlay())
             .find(|(rect, _)| rect.contains(ratatui::layout::Position { x, y }))
             .map(|(_, hit)| hit)
     }

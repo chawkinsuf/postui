@@ -252,6 +252,11 @@ pub struct App {
     /// against the *current* frame's hit map, so a token that scrolled or
     /// tabbed out from under a resting pointer takes its tooltip with it.
     hovered_token: Option<String>,
+    /// The tooltip whose panel or pill the pointer is over, resolved
+    /// against the last drawn frame's hit map on every mouse event (a
+    /// press included, so a click with no preceding motion event counts).
+    /// The tip holds while this is set and its token is still drawn.
+    pub(crate) held_tip: Option<String>,
     /// Set when a sidebar right-click moved `sidebar.selected` onto the
     /// clicked row to open its context menu: the selection to restore
     /// (`Some(prev)`, itself possibly `None`) if that menu is dismissed
@@ -275,7 +280,7 @@ pub struct App {
     last_pointer_shape: PointerShape,
     /// Where the pointer last was, so the tooltip can be re-resolved every
     /// frame rather than trusting a rect captured at motion time.
-    pointer: Option<(u16, u16)>,
+    pub(crate) pointer: Option<(u16, u16)>,
     /// The token the keyboard caret is resting in, and when it started
     /// resting there. The tooltip appears once it's been resting
     /// [`CARET_TIP_DWELL`], so a caret merely passing through a token on
@@ -288,15 +293,12 @@ pub struct App {
     /// the dwell threshold is crossed (for the redraw) without re-reporting
     /// it on every later tick while still resting in the same token.
     caret_tip_shown: bool,
-    /// The tooltip the last frame painted, and the panel rect it took:
-    /// the tip holds while the pointer rests inside that rect, so its
-    /// controls can be reached. Cleared by the draw pass when no tip
-    /// shows.
-    pub(crate) last_tip: Option<(TokenTip, ratatui::layout::Rect)>,
-    /// The token whose secret the tooltip is currently showing unmasked
-    /// (its `reveal` toggle). Reset whenever the tip closes or moves to
-    /// another token, so a secret never stays revealed by accident.
-    pub(crate) tip_revealed: Option<String>,
+    /// The secret the tooltip is showing unmasked (its `reveal` toggle):
+    /// the token's name *and* the value revealed, so a different secret
+    /// under the same name (another environment's, after a cycle) comes
+    /// up masked. Reset whenever the tip closes, so a secret never stays
+    /// revealed by accident.
+    pub(crate) tip_revealed: Option<(String, String)>,
     /// An in-progress drag (e.g. a scrollbar thumb), if any.
     pub drag: Option<Drag>,
     /// A live text-selection sweep (which surface it is over), or `None`.
@@ -876,6 +878,7 @@ impl App {
             hovered: None,
             shift_enter_send: false,
             hovered_token: None,
+            held_tip: None,
             sidebar_menu_revert: None,
             modal_handoff: false,
             last_pointer_shape: PointerShape::Default,
@@ -883,7 +886,6 @@ impl App {
             caret_token: None,
             caret_token_since: None,
             caret_tip_shown: false,
-            last_tip: None,
             tip_revealed: None,
             drag: None,
             text_drag: None,
@@ -1213,11 +1215,7 @@ impl App {
         // started here rather than inside `Toasts::push` itself — `push`
         // is called from ~100 sites across this file, none of which
         // otherwise need `&mut self.anims`/`ui_settings` in scope.
-        self.toasts.start_pending_anims(
-            &mut self.anims,
-            Instant::now(),
-            self.ui_settings.anim_ms.toast,
-        );
+        self.arm_pending_toasts();
         changed || swapped
     }
 
@@ -1419,30 +1417,33 @@ impl App {
         false
     }
 
-    /// The variable tooltip to draw this frame, if any: the token under the
-    /// pointer, or — with no hover — the one the caret has been resting in
-    /// for [`CARET_TIP_DWELL`], anchored at the span the last frame drew
-    /// for it. Suppressed while a modal is up: the tooltip draws above
-    /// everything else, and must not float over a dialog.
+    /// The variable tooltip to draw this frame, if any: the tip the
+    /// pointer is resting on (`held_tip`, anchored at wherever its token
+    /// is drawn *this* frame, so the tip closes by itself once the token
+    /// is no longer on screen), else the token under the pointer, or —
+    /// with no hover — the one the caret has been resting in for
+    /// [`CARET_TIP_DWELL`].
+    /// Suppressed while a modal is up: the tooltip draws above everything
+    /// else, and must not float over a dialog.
     pub fn var_token_tip(&self) -> Option<TokenTip> {
         if !self.modals.is_empty() {
             return None;
         }
-        if let Some((x, y)) = self.pointer {
-            // Over the tip the last frame drew: keep that tip (checked
-            // before tokens, since the panel floats over any token that
-            // happens to be drawn beneath it).
-            if let Some((tip, rect)) = &self.last_tip
-                && rect.contains(ratatui::layout::Position { x, y })
-            {
-                return Some(tip.clone());
-            }
-            if let Some((name, anchor)) = self.hits.var_token_at(x, y) {
-                return Some(TokenTip {
-                    name: name.to_string(),
-                    anchor,
-                });
-            }
+        if let Some(name) = self.held_tip.as_deref()
+            && let Some(anchor) = self.hits.rect_of(&Hit::VarToken(name.to_string()))
+        {
+            return Some(TokenTip {
+                name: name.to_string(),
+                anchor,
+            });
+        }
+        if let Some((x, y)) = self.pointer
+            && let Some((name, anchor)) = self.hits.var_token_at(x, y)
+        {
+            return Some(TokenTip {
+                name: name.to_string(),
+                anchor,
+            });
         }
         if !self.caret_tip_shown {
             return None;
@@ -1708,12 +1709,6 @@ impl App {
             Action::CopySelection(surface) => {
                 if let Some(text) = self.selection_text_of(surface) {
                     self.copy_text_with_toast(&text, "Copied selection".to_string());
-                }
-                true
-            }
-            Action::CopyVarValue(name) => {
-                if let Some(value) = self.editor.vars.describe(&name).value {
-                    self.copy_text_with_toast(&value, format!("Copied {{{{{name}}}}}"));
                 }
                 true
             }
@@ -8539,7 +8534,25 @@ impl App {
     /// (i.e. whether the caller should redraw): the OR of every
     /// `self.update(..)` call's result along the branch taken, plus any
     /// modal state change (close/typing) that bypasses `update`.
+    /// Starts the slide-in of any toast pushed since the last call. Run at
+    /// the tail of every input path (`update`, `handle_key`, `handle_mouse`)
+    /// so a toast never reaches its first draw settled and then slides in
+    /// over itself on the next tick — whichever code path pushed it.
+    pub(crate) fn arm_pending_toasts(&mut self) {
+        self.toasts.start_pending_anims(
+            &mut self.anims,
+            Instant::now(),
+            self.ui_settings.anim_ms.toast,
+        );
+    }
+
     pub fn handle_key(&mut self, keymap: &Keymap, ev: KeyEvent) -> bool {
+        let changed = self.handle_key_inner(keymap, ev);
+        self.arm_pending_toasts();
+        changed
+    }
+
+    fn handle_key_inner(&mut self, keymap: &Keymap, ev: KeyEvent) -> bool {
         let ev = crate::keys::normalize_super_keys(ev);
         // cmd+c — SUPER+c, from terminals that report it — is copy-only:
         // copy the live selection, otherwise nothing. It is deliberately

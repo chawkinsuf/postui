@@ -16,7 +16,7 @@ use crate::hit::{Hit, HitMap};
 use crate::theme::Theme;
 use indexmap::IndexMap;
 use postui_core::model::Entry;
-pub use postui_core::prepare::SECRET_MASK;
+use postui_core::prepare::SECRET_MASK;
 use postui_core::varmodel::{Resolved, VarMeta};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -63,9 +63,11 @@ pub struct TokenInfo {
     /// `None` when nothing would substitute — the token would be sent
     /// verbatim (or refused).
     pub value: Option<String>,
-    /// A secret's value is masked by [`TokenInfo::display_value`]; the
-    /// tooltip's `reveal` control is the one place it can be shown, and
-    /// its `copy` control always takes the real value.
+    /// A secret's value is masked by [`TokenInfo::display_value`] (the
+    /// fixed [`SECRET_MASK`]) and by [`TokenInfo::tooltip_value`] (one dot
+    /// per cell, unless revealed). The tooltip's `reveal` control is the
+    /// one place it can be shown, and its `copy` control always takes
+    /// the real value.
     pub secret: bool,
     pub source: TokenSource,
     /// The declaration's description (a selector field carries its
@@ -86,6 +88,19 @@ impl TokenInfo {
             (Some(_), true) => SECRET_MASK.to_string(),
             (Some(v), false) => v.clone(),
             (None, _) => "\u{2014}".to_string(),
+        }
+    }
+
+    /// The value as the tooltip shows it: a secret masks one dot per
+    /// display cell (not the fixed mask) so the tooltip's footprint is
+    /// the revealed value's and its `reveal`/`hide` moves nothing;
+    /// `revealed` shows it in clear.
+    pub fn tooltip_value(&self, revealed: bool) -> String {
+        use unicode_width::UnicodeWidthStr;
+        match (&self.value, self.secret, revealed) {
+            (Some(v), true, false) => "\u{25cf}".repeat(v.width().max(1)),
+            (Some(v), _, _) => v.clone(),
+            (None, ..) => self.display_value(),
         }
     }
 }

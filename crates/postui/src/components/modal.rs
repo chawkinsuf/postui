@@ -2056,7 +2056,11 @@ impl ModalStack {
                     };
                     let toggle_hit = crate::hit::Hit::ModalRowToggle(i);
                     let toggle_hovered = hovered == Some(&toggle_hit);
-                    let glyph = if row.removed { "\u{21a9}" } else { "\u{F0156}" };
+                    let glyph = if row.removed {
+                        "\u{21a9}"
+                    } else {
+                        crate::glyph::CLOSE
+                    };
                     let fg = if toggle_hovered {
                         theme.text
                     } else {

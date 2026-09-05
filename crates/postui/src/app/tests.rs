@@ -5842,10 +5842,16 @@ fn two_projects() -> (App, tempfile::TempDir, tempfile::TempDir) {
 /// animation the action under test happened to also start (e.g. a
 /// freshly pushed toast's own slide-in, off in its first frame).
 fn rendered_text(app: &mut App) -> String {
+    rendered_text_at(app, 80, 24)
+}
+
+/// Finishes every animation, renders once at `w`×`h`, and returns the
+/// screen's debug text.
+fn rendered_text_at(app: &mut App, w: u16, h: u16) -> String {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     app.anims.finish_all();
-    let backend = TestBackend::new(80, 24);
+    let backend = TestBackend::new(w, h);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
     format!("{:?}", terminal.backend().buffer())
@@ -12993,33 +12999,15 @@ use crate::components::varmanager::VmField;
 /// 120 columns and tall: the Manage screen's Spaces pane needs the width
 /// for its five title-row buttons and the height for its request list.
 fn rendered_text_wide_tall(app: &mut App) -> String {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-    app.anims.finish_all();
-    let backend = TestBackend::new(120, 46);
-    let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
-    format!("{:?}", terminal.backend().buffer())
+    rendered_text_at(app, 120, 46)
 }
 
 fn rendered_text_wide(app: &mut App) -> String {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-    app.anims.finish_all();
-    let backend = TestBackend::new(120, 24);
-    let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
-    format!("{:?}", terminal.backend().buffer())
+    rendered_text_at(app, 120, 24)
 }
 
 fn rendered_text_tall(app: &mut App) -> String {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-    app.anims.finish_all();
-    let backend = TestBackend::new(100, 46);
-    let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
-    format!("{:?}", terminal.backend().buffer())
+    rendered_text_at(app, 100, 46)
 }
 
 fn field_rect(app: &mut App, field: VmField) -> ratatui::layout::Rect {
@@ -20570,12 +20558,7 @@ fn tooltip_app(token: &str) -> (App, tempfile::TempDir, std::path::PathBuf) {
 /// Renders at the 120×40 size `render_once` uses (so hit rects line up)
 /// and returns the screen text.
 fn tooltip_text(app: &mut App) -> String {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-    let backend = TestBackend::new(120, 40);
-    let mut terminal = Terminal::new(backend).unwrap();
-    terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
-    format!("{:?}", terminal.backend().buffer())
+    rendered_text_at(app, 120, 40)
 }
 
 /// Moves the pointer onto the drawn `{{name}}` token and re-renders so
@@ -20600,7 +20583,7 @@ fn tooltip_stays_while_the_pointer_is_over_it_and_drops_when_it_leaves() {
     );
     let panel = app
         .hits
-        .rect_of(&Hit::TipPanel)
+        .rect_of(&Hit::TipPanel("base_url".into()))
         .expect("the tooltip registers its panel");
     let token = app.hits.rect_of(&Hit::VarToken("base_url".into())).unwrap();
     // Onto the panel's last row — well clear of the token itself.
@@ -20629,7 +20612,7 @@ fn tooltip_copy_puts_the_value_on_the_clipboard() {
     );
     // Icons only: the panel is the value, a gap, one 3-cell pill, and
     // 2 columns of padding each side — no room for a label.
-    let panel = app.hits.rect_of(&Hit::TipPanel).unwrap();
+    let panel = app.hits.rect_of(&Hit::TipPanel("base_url".into())).unwrap();
     assert_eq!(
         panel.width,
         ("https://qa.example.com".len() + 1 + 3 + 4) as u16
@@ -20647,8 +20630,8 @@ fn tooltip_copy_of_a_secret_copies_the_real_value_without_revealing_it() {
     hover_token(&mut app, "api_key");
     let text = tooltip_text(&mut app);
     assert!(
-        text.contains(crate::components::var_tokens::SECRET_MASK),
-        "{text}"
+        text.contains(&"\u{25cf}".repeat(15)),
+        "one dot per char: {text}"
     );
     assert!(!text.contains("sk-super-secret"), "{text}");
     click_hit(&mut app, Hit::TipCopy("api_key".into()));
@@ -20665,14 +20648,17 @@ fn tooltip_reveal_shows_the_secret_until_the_tip_moves_on() {
     assert!(text.contains("\u{F06D0}"), "reveal control: {text}");
     // Icons only: one mask dot per secret character, a gap, two 3-cell
     // pills, padding — no labels.
-    let panel = app.hits.rect_of(&Hit::TipPanel).unwrap();
+    let panel = app.hits.rect_of(&Hit::TipPanel("api_key".into())).unwrap();
     assert_eq!(panel.width, ("sk-super-secret".len() + 1 + 6 + 4) as u16);
     assert!(text.contains(&"\u{25cf}".repeat(15)), "{text}");
     click_hit(&mut app, Hit::TipReveal("api_key".into()));
     let text = tooltip_text(&mut app);
     assert!(text.contains("sk-super-secret"), "revealed: {text}");
     // Same footprint, pills in the same cells: nothing moved.
-    assert_eq!(app.hits.rect_of(&Hit::TipPanel), Some(panel));
+    assert_eq!(
+        app.hits.rect_of(&Hit::TipPanel("api_key".into())),
+        Some(panel)
+    );
     assert_eq!(
         app.hits.rect_of(&Hit::TipReveal("api_key".into())),
         Some(ratatui::layout::Rect::new(
@@ -20696,4 +20682,86 @@ fn tooltip_reveal_shows_the_secret_until_the_tip_moves_on() {
     hover_token(&mut app, "api_key");
     let text = tooltip_text(&mut app);
     assert!(!text.contains("sk-super-secret"), "reveal resets: {text}");
+}
+
+/// The tip closes by itself once its token is no longer drawn — even with
+/// the pointer parked on the panel and no motion event to say so. A
+/// revealed secret must not survive onto the Manage screen.
+#[test]
+fn tooltip_closes_when_its_token_leaves_the_screen_under_a_resting_pointer() {
+    let (mut app, _dir, _out) = tooltip_app("api_key");
+    hover_token(&mut app, "api_key");
+    click_hit(&mut app, Hit::TipReveal("api_key".into()));
+    assert!(tooltip_text(&mut app).contains("sk-super-secret"));
+    app.update(Action::OpenManage { tab: None });
+    let text = tooltip_text(&mut app);
+    assert!(app.var_token_tip().is_none(), "no token on Manage, no tip");
+    assert!(!text.contains("sk-super-secret"), "{text}");
+}
+
+/// A reveal is for one secret: after the environment cycles, the same
+/// name resolves to a different (or no) value and comes up masked.
+#[test]
+fn tooltip_reveal_does_not_carry_over_to_another_environments_secret() {
+    let (mut app, _dir, _out) = tooltip_app("api_key");
+    hover_token(&mut app, "api_key");
+    click_hit(&mut app, Hit::TipReveal("api_key".into()));
+    assert!(tooltip_text(&mut app).contains("sk-super-secret"));
+    // qa → the next env (no secret there) → back to qa: the reveal must
+    // be gone, not waiting for the same name to resolve again.
+    app.update(Action::CycleEnv(1));
+    let text = tooltip_text(&mut app);
+    assert!(!text.contains("sk-super-secret"), "{text}");
+    assert!(app.tip_revealed.is_none(), "reset on the value change");
+    app.update(Action::CycleEnv(-1));
+    hover_token(&mut app, "api_key");
+    let text = tooltip_text(&mut app);
+    assert!(
+        text.contains(&"\u{25cf}".repeat(15)),
+        "masked again: {text}"
+    );
+    assert!(!text.contains("sk-super-secret"), "{text}");
+}
+
+/// Clicking a tooltip pill is not a click away from the table: the cell
+/// under edit keeps its text and the row stays selected, exactly as a
+/// click on the token itself behaves.
+#[test]
+fn tooltip_pill_click_keeps_the_table_edit_and_selection() {
+    let (mut app, _dir, out) = tooltip_app("base_url");
+    app.editor.active_tab = EditorTab::Params;
+    render_once(&mut app);
+    click_hit(&mut app, Hit::TableCell { row: 0, col: 0 });
+    type_chars(&mut app, "k");
+    assert!(app.editor.table.editing.is_some(), "a live cell edit");
+    hover_token(&mut app, "base_url");
+    click_hit(&mut app, Hit::TipCopy("base_url".into()));
+    assert_eq!(
+        std::fs::read_to_string(&out).unwrap(),
+        "https://qa.example.com"
+    );
+    assert!(
+        app.editor.table.editing.is_some(),
+        "the edit survives the copy"
+    );
+    assert_eq!(app.editor.table.selected, Some(0), "so does the selection");
+}
+
+/// A right click on a row the tooltip floats over reaches the row: the
+/// tip is a left-click affordance only, like the token it belongs to.
+#[test]
+fn right_click_under_the_tooltip_reaches_the_row_beneath() {
+    let (mut app, _dir, _out) = tooltip_app("base_url");
+    hover_token(&mut app, "base_url");
+    let panel = app.hits.rect_of(&Hit::TipPanel("base_url".into())).unwrap();
+    // Whatever the panel covers, a right click there must not resolve to
+    // the panel — it resolves to what lies under it.
+    let under = app
+        .hits
+        .hit_at_ignoring_overlays(panel.x + 1, panel.bottom() - 1)
+        .cloned();
+    assert!(
+        under.as_ref().is_none_or(|h| h.tip_name().is_none()),
+        "{under:?}"
+    );
 }

@@ -820,6 +820,8 @@ impl FilePickerState {
                 theme,
             );
             let fill = ListRow::resolve_fill(theme, highlight, theme.panel, hover_t);
+            // The directory row's leading icon: the Material folder plus a gap.
+            let folder_icon = format!("{} ", crate::glyph::FOLDER);
             let (icon, label, tag): (&str, String, Option<(&str, ratatui::style::Color)>) =
                 match row {
                     Row::Parent => ("  ", "..".to_string(), None),
@@ -832,7 +834,7 @@ impl FilePickerState {
                             } else {
                                 format!("{}{}", entry.name, std::path::MAIN_SEPARATOR)
                             };
-                            ("\u{F024B} ", label, tag)
+                            (folder_icon.as_str(), label, tag)
                         } else {
                             let tag = self
                                 .row_will_overwrite(i)

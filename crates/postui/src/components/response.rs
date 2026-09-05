@@ -2834,7 +2834,7 @@ pub fn response_tab_defs(
     let mut modes: Vec<ViewMode> = Vec::new();
     if view.has_tree_view() {
         let badge = view.jq_tree.is_some().then_some((
-            '\u{F0232}',
+            crate::glyph::FILTER.chars().next().unwrap(),
             if bar.stale { theme.error } else { theme.accent },
         ));
         tabs.push(("Tree".to_string(), badge));
@@ -2867,11 +2867,11 @@ fn tabstrip_width(tabs: &[(String, Option<(char, ratatui::style::Color)>)]) -> u
 /// emoji font's fixed colours — so all four sit level, at one size.
 /// All of them act on the *active tab's* text, following it like search.
 const HEADER_ACTIONS: [(&str, crate::hit::Hit); 5] = [
-    (" \u{F0349} ", crate::hit::Hit::ResponseSearchButton), // 󰍉 nf-md-magnify
-    (" \u{F03EB} ", crate::hit::Hit::ResponseEditorButton), // 󰏫 nf-md-pencil
-    (" \u{F0193} ", crate::hit::Hit::SaveBodyButton),       // 󰆓 nf-md-content_save
-    (" \u{F018F} ", crate::hit::Hit::CopyBodyButton),       // 󰆏 nf-md-content_copy
-    (" \u{F0232} ", crate::hit::Hit::ResponseJqButton),     // 󰈲 nf-md-filter
+    (crate::glyph::SEARCH, crate::hit::Hit::ResponseSearchButton),
+    (crate::glyph::PENCIL, crate::hit::Hit::ResponseEditorButton),
+    (crate::glyph::SAVE, crate::hit::Hit::SaveBodyButton),
+    (crate::glyph::COPY, crate::hit::Hit::CopyBodyButton),
+    (crate::glyph::FILTER, crate::hit::Hit::ResponseJqButton),
 ];
 
 /// The header strip's icon actions, left-aligned on the underline row
@@ -2894,15 +2894,17 @@ fn draw_header_actions(
     let mut x = area.x + 1;
     let buf = frame.buffer_mut();
     let mut rects = Vec::new();
-    for (label, hit) in HEADER_ACTIONS {
+    for (glyph, hit) in HEADER_ACTIONS {
         if !jq_available && hit == crate::hit::Hit::ResponseJqButton {
             continue;
         }
+        // Each icon in a three-cell pill so its hover fill surrounds it.
+        let label = &format!(" {glyph} ");
         // Display width, not char count, so the labels' padding is honoured.
         let w = label.width() as u16;
         let rect = Rect::new(x, y, w, 1);
         let pressed = jq_on && hit == crate::hit::Hit::ResponseJqButton;
-        draw_pane_action(
+        crate::paint::action(
             buf,
             rect,
             label,
@@ -2916,34 +2918,6 @@ fn draw_header_actions(
     }
     for (rect, hit) in rects {
         hits.register(rect, hit);
-    }
-}
-
-/// A plain (unbracketed) clickable text action painted on `surface`: accent
-/// fg at rest; inverted (accent fill, `on_accent` fg, bold) while
-/// `hovered == Some(&hit)`.
-fn draw_pane_action(
-    buf: &mut ratatui::buffer::Buffer,
-    area: Rect,
-    label: &str,
-    hit: crate::hit::Hit,
-    hovered: Option<&crate::hit::Hit>,
-    surface: Color,
-    theme: &Theme,
-) {
-    if hovered == Some(&hit) {
-        crate::paint::fill(buf, area, theme.accent);
-        crate::paint::text(
-            buf,
-            area.x,
-            area.y,
-            label,
-            theme.on_accent,
-            theme.accent,
-            true,
-        );
-    } else {
-        crate::paint::text(buf, area.x, area.y, label, theme.accent, surface, false);
     }
 }
 
@@ -3128,7 +3102,7 @@ fn body_lines(
                 let pieces = vec![
                     (name_piece, Style::default().fg(t.accent)),
                     (value_piece, text),
-                    (" \u{F018F} ".to_string(), glyph_style),
+                    (format!(" {} ", crate::glyph::COPY), glyph_style),
                 ];
                 push(i, i, pieces, true, (0, view.h_scroll));
 
@@ -3459,8 +3433,8 @@ fn draw_jq_bar(
         return None;
     }
     let mut caret = None;
-    const AI: &str = " \u{F0674} ";
-    let ai_w = AI.chars().count() as u16;
+    let ai = format!(" {} ", crate::glyph::CREATION);
+    let ai_w = ai.chars().count() as u16;
     let text_w = area.width.saturating_sub(ai_w + 1);
     let row = Rect {
         height: 1,
@@ -3529,10 +3503,10 @@ fn draw_jq_bar(
     hits.register(row, crate::hit::Hit::ResponseJqBar);
     if area.width > ai_w {
         let ai_area = Rect::new(area.right() - ai_w, area.y, ai_w, 1);
-        draw_pane_action(
+        crate::paint::action(
             frame.buffer_mut(),
             ai_area,
-            AI,
+            &ai,
             crate::hit::Hit::ResponseJqAiButton,
             ctx.hovered,
             t.page,
@@ -3721,7 +3695,7 @@ fn draw_search_footer(
         (prev_area, PREV, crate::hit::Hit::ResponseSearchPrev),
         (next_area, NEXT, crate::hit::Hit::ResponseSearchNext),
     ] {
-        draw_pane_action(buf, rect, label, hit.clone(), ctx.hovered, t.page, t);
+        crate::paint::action(buf, rect, label, hit.clone(), ctx.hovered, t.page, t);
         hits.register(rect, hit);
     }
 }

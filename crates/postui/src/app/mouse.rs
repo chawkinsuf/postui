@@ -21,6 +21,12 @@ impl App {
     ///   pane under the pointer. While a modal is open, wheel is a no-op
     ///   here — modal-list scrolling is a later task.
     pub fn handle_mouse(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
+        let changed = self.handle_mouse_inner(m);
+        self.arm_pending_toasts();
+        changed
+    }
+
+    fn handle_mouse_inner(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
         use ratatui::crossterm::event::{MouseButton, MouseEventKind};
 
         // Every event carries the pointer's position, motion reports or
@@ -30,6 +36,15 @@ impl App {
         // a tip opened by one hover would otherwise hang over the UI
         // through every later click — including the clicks it covers.
         self.pointer = Some((m.column, m.row));
+        // Likewise the tooltip under it: resolved against the last drawn
+        // frame (the only map that has the tip's own hits), so the tip
+        // holds through a click on its pills and drops on the first event
+        // that lands elsewhere.
+        self.held_tip = self
+            .hits
+            .hit_at_ignoring_var_tokens(m.column, m.row)
+            .and_then(Hit::tip_name)
+            .map(str::to_string);
 
         match m.kind {
             // Terminals report pointer motion with a button held as `Drag`,
@@ -298,10 +313,7 @@ impl App {
                 self.cancel_stale_drags(None);
                 // Tokens are a left-click affordance only: a right click
                 // belongs to the row/cell under them and its context menu.
-                let Some(mut hit) = self
-                    .hits
-                    .hit_at_ignoring_var_tokens(m.column, m.row)
-                    .cloned()
+                let Some(mut hit) = self.hits.hit_at_ignoring_overlays(m.column, m.row).cloned()
                 else {
                     return false;
                 };
@@ -1013,7 +1025,11 @@ impl App {
                 | Hit::HScrollTrack(..)
                 // A token sits *on* a cell: hovering or clicking one must
                 // neither commit the cell under edit nor drop the selection.
+                // Its tooltip (and the tooltip's pills) float the same way.
                 | Hit::VarToken(_)
+                | Hit::TipPanel(_)
+                | Hit::TipCopy(_)
+                | Hit::TipReveal(_)
                 // The `{{ }} vars` chip inserts into whatever text field is
                 // live, so it must not be treated as a click away: blurring
                 // the URL line (or committing the cell) first would leave
@@ -1056,7 +1072,7 @@ impl App {
                     | Hit::BodyEditor
                     | Hit::VarToken(_)
                     | Hit::CopyUrl
-                    | Hit::TipPanel
+                    | Hit::TipPanel(_)
                     | Hit::TipCopy(_)
                     | Hit::TipReveal(_)
             );
@@ -1799,22 +1815,29 @@ impl App {
             // filtered to that name (spec §7) — the shortest path from
             // "what is this?" to the variable itself.
             Hit::VarToken(name) => self.update(Action::OpenVarTokenPopup(name)),
-            // The tooltip's controls, routed through `update` like every
-            // other toast-raising click so the toast's slide-in is armed
-            // before the first draw (a toast pushed straight from here
-            // paints settled, then slides in over itself on the next tick).
-            Hit::TipCopy(name) => self.update(Action::CopyVarValue(name)),
-            Hit::TipReveal(name) => {
-                self.tip_revealed = if self.tip_revealed.as_deref() == Some(name.as_str()) {
-                    None
-                } else {
-                    Some(name)
+            // The tooltip's controls. A secret's *real* value is what gets
+            // copied, mask or no mask — the point of the button.
+            Hit::TipCopy(name) => {
+                let Some(value) = self.editor.vars.describe(&name).value else {
+                    return false;
                 };
-                self.update(Action::Render)
+                self.copy_text_with_toast(&value, format!("Copied {{{{{name}}}}}"));
+                true
+            }
+            Hit::TipReveal(name) => {
+                let Some(value) = self.editor.vars.describe(&name).value else {
+                    return false;
+                };
+                let already = self
+                    .tip_revealed
+                    .as_ref()
+                    .is_some_and(|(n, v)| *n == name && *v == value);
+                self.tip_revealed = (!already).then_some((name, value));
+                true
             }
             // A click on the panel between its controls: consumed, so it
             // never reaches whatever the tip floats over.
-            Hit::TipPanel => true,
+            Hit::TipPanel(_) => true,
             // Like `VmFormField`/`VmEntryCell` above: the commit attempts at
             // the top of this function just ran, and a write failure
             // restores the original edit (still live) with its typed text.

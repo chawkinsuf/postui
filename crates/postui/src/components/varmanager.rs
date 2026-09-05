@@ -466,7 +466,7 @@ pub struct VarManager {
 /// The left list's fixed width (spec §3.4's mock).
 pub const LEFT_W: u16 = 31;
 
-const GLYPH_LOCK: &str = "\u{F033E}"; // 󰌾 nf-md-lock
+const GLYPH_LOCK: &str = crate::glyph::LOCK;
 const GLYPH_UNRESOLVED: &str = "\u{25cf}"; // ●
 const GLYPH_RADIO_ON: &str = "\u{25c9}"; // ◉
 const GLYPH_RADIO_OFF: &str = "\u{25cb}"; // ○
@@ -1782,7 +1782,15 @@ impl VarManager {
                 };
                 // Nerd Font Material glyph (one cell everywhere), centred in
                 // the three-cell zone.
-                text(buf, trash_x, ry, " \u{F01B4} ", dfg, dbg, false); // 󰆴 nf-md-delete
+                text(
+                    buf,
+                    trash_x,
+                    ry,
+                    &format!(" {} ", crate::glyph::DELETE),
+                    dfg,
+                    dbg,
+                    false,
+                );
                 hits.register(Rect::new(trash_x, ry, TRASH_W, 1), trash_hit);
             }
         }
@@ -1961,11 +1969,11 @@ impl VarManager {
                 };
             if secret {
                 let reveal_label = if self.form.revealed {
-                    "\u{F06D1} hide" // 󰈉 nf-md-eye_off
+                    format!("{} hide", crate::glyph::EYE_OFF)
                 } else {
-                    "\u{F06D0} reveal" // 󰈈 nf-md-eye
+                    format!("{} reveal", crate::glyph::EYE)
                 };
-                inline_control(buf, hits, reveal_label, Hit::VmRevealToggle);
+                inline_control(buf, hits, &reveal_label, Hit::VmRevealToggle);
             }
             // The explicit way to un-set the stored value (the value
             // popup's Remove button's twin) — only offered while the

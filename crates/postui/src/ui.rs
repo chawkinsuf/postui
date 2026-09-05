@@ -365,35 +365,29 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // dialog: `var_token_tip` yields nothing while a modal is up.
     match app.var_token_tip() {
         Some(tip) => {
-            if app.tip_revealed.as_deref().is_some_and(|n| n != tip.name) {
+            let info = app.editor.vars.describe(&tip.name);
+            // Revealed only for the exact secret the reveal was clicked
+            // for: same token *and* same value, so another environment's
+            // secret under the same name comes up masked.
+            let revealed = matches!(
+                (&app.tip_revealed, &info.value),
+                (Some((n, v)), Some(value)) if *n == tip.name && v == value
+            );
+            if !revealed {
                 app.tip_revealed = None;
             }
-            let revealed = app.tip_revealed.is_some();
-            // The panel never narrows while one tip lives: hiding a
-            // revealed secret would otherwise shrink it out from under
-            // the pointer (closing the tip mid-click), and the pills
-            // would jump.
-            let min_width = match &app.last_tip {
-                Some((last, rect)) if last.name == tip.name => rect.width,
-                _ => 0,
-            };
-            let rect = draw_var_tooltip(
+            draw_var_tooltip(
                 frame,
                 frame.area(),
                 &app.theme,
                 &tip,
-                &app.editor.vars,
+                &info,
                 revealed,
-                min_width,
                 app.hovered.as_ref(),
                 &mut app.hits,
             );
-            app.last_tip = rect.map(|r| (tip, r));
         }
-        None => {
-            app.last_tip = None;
-            app.tip_revealed = None;
-        }
+        None => app.tip_revealed = None,
     }
 }
 
@@ -401,68 +395,56 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 const TOOLTIP_MAX_TEXT_W: usize = 56;
 
 /// Draws the hover/caret tooltip for one `{{token}}` (spec §7): first the
-/// value — one mask dot per character for a secret unless `revealed` — wrapped onto
-/// further rows rather than truncated so the whole value is readable —
-/// then a line naming the scope the value came from (`this request`,
-/// `env = qa`, `default`, `option = user 2`, `needs selection`, `missing
-/// secret`). When there is a value, icon pills sit at the right of its
-/// first row: `󰆏` copy (the real value, a secret's included) and, for a
-/// secret, `󰈈` reveal / `󰈉` hide. The panel is at least `min_width`
-/// wide (the width it had last frame, so it never shrinks under the
-/// pointer while the same tip lives). It sits under the token it belongs to,
-/// flipping above when there is no room below, and is clamped to stay
-/// inside `screen`. Registers the controls and the panel itself in
-/// `hits` and returns the panel rect, or `None` when nothing fit.
+/// value — one mask dot per cell for a secret unless `revealed` — wrapped
+/// onto further rows rather than truncated so the whole value is
+/// readable — then a line naming the scope the value came from (`this
+/// request`, `env = qa`, `default`, `option = user 2`, `needs selection`,
+/// `missing secret`). When there is a value, icon pills sit at the right
+/// of its first row: `󰆏` copy (the real value, a secret's included) and,
+/// for a secret, `󰈈` reveal / `󰈉` hide. It sits under the token it
+/// belongs to, flipping above when there is no room below, and is
+/// clamped to stay inside `screen`; nothing is drawn when even the pills
+/// would not fit. Registers the panel and its pills in `hits`.
 #[allow(clippy::too_many_arguments)]
 fn draw_var_tooltip(
     frame: &mut Frame,
     screen: ratatui::layout::Rect,
     theme: &crate::theme::Theme,
     tip: &crate::app::TokenTip,
-    vars: &crate::components::var_tokens::VarView,
+    info: &crate::components::var_tokens::TokenInfo,
     revealed: bool,
-    min_width: u16,
     hovered: Option<&crate::hit::Hit>,
     hits: &mut crate::hit::HitMap,
-) -> Option<ratatui::layout::Rect> {
+) {
     use crate::hit::Hit;
     use ratatui::layout::Rect;
-    let info = vars.describe(&tip.name);
-    // A secret masks one dot per character (not the fixed
-    // `SECRET_MASK`): the panel and its pills then take exactly the
-    // space the revealed value needs, so reveal / hide moves nothing.
-    let shown = match (&info.value, info.secret, revealed) {
-        (Some(v), true, true) => v.clone(),
-        (Some(v), true, false) => "\u{25cf}".repeat(v.chars().count().max(1)),
-        _ => info.display_value(),
-    };
-    let mut value_lines = wrap_chars(&shown, TOOLTIP_MAX_TEXT_W);
+    use unicode_width::UnicodeWidthStr;
+    let mut value_lines = wrap_chars(&info.tooltip_value(revealed), TOOLTIP_MAX_TEXT_W);
     let line2 = info.source.label();
     let line3 = info
         .description
         .as_ref()
         .map(|d| ellipsize(d, TOOLTIP_MAX_TEXT_W));
-    // The icon controls, only when there is a value to act on. Each is a
-    // three-cell pill (` 󰆏 `) so its hover fill surrounds the glyph, the
-    // response pane's copy-pill treatment.
-    let mut controls: Vec<(&str, Hit)> = Vec::new();
+    // The icon pills, only when there is a value to act on: three cells
+    // each (` 󰆏 `) so the hover fill surrounds the glyph.
+    let mut pills: Vec<(String, Hit)> = Vec::new();
     if info.value.is_some() {
-        controls.push((" \u{F018F} ", Hit::TipCopy(tip.name.clone()))); // 󰆏 nf-md-content_copy
+        pills.push((
+            format!(" {} ", crate::glyph::COPY),
+            Hit::TipCopy(tip.name.clone()),
+        ));
         if info.secret {
-            let glyph = if revealed {
-                " \u{F06D1} " // 󰈉 nf-md-eye_off
+            let eye = if revealed {
+                crate::glyph::EYE_OFF
             } else {
-                " \u{F06D0} " // 󰈈 nf-md-eye
+                crate::glyph::EYE
             };
-            controls.push((glyph, Hit::TipReveal(tip.name.clone())));
+            pills.push((format!(" {eye} "), Hit::TipReveal(tip.name.clone())));
         }
     }
     // Trailing the first value row: a gap, then the pills.
-    let controls_w = if controls.is_empty() {
-        0
-    } else {
-        1 + 3 * controls.len()
-    };
+    let pills_w = 3 * pills.len();
+    let controls_w = if pills.is_empty() { 0 } else { 1 + pills_w };
     // Padding rows top and bottom, the value rows, the source line, and an
     // optional description line. A value taller than the terminal is cut
     // to fit, the last surviving row ellipsized to say so.
@@ -478,21 +460,23 @@ fn draw_var_tooltip(
             .collect();
     }
     let height = fixed + value_lines.len() as u16;
-    let first_value_w = value_lines.first().map_or(0, |l| l.chars().count());
+    // Display cells throughout (a wide glyph is one char but two cells),
+    // so the pills land after the text rather than on top of its tail.
+    let first_value_w = value_lines.first().map_or(0, |l| l.width());
     let text_w = value_lines
         .iter()
-        .map(|l| l.chars().count())
+        .map(|l| l.width())
         .max()
         .unwrap_or(0)
         .max(first_value_w + controls_w)
-        .max(line2.chars().count())
-        .max(line3.as_ref().map_or(0, |l| l.chars().count())) as u16;
+        .max(line2.width())
+        .max(line3.as_ref().map_or(0, |l| l.width())) as u16;
     // 2 columns of padding each side, plus a column for the drop shadow.
-    let width = (text_w + 4)
-        .max(min_width)
-        .min(screen.width.saturating_sub(1));
-    if width < 5 || screen.height < height {
-        return None;
+    let width = (text_w + 4).min(screen.width.saturating_sub(1));
+    // Too narrow for the padding and the pills: no tip at all, rather
+    // than pills painted over the border (or placed off a u16 underflow).
+    if width < 5 || (width as usize) < 4 + controls_w || screen.height < height {
+        return;
     }
     let below = tip.anchor.bottom();
     let y = if below + height <= screen.bottom() {
@@ -550,22 +534,16 @@ fn draw_var_tooltip(
         );
     }
     // The panel first: later registrations win a hit lookup, so the
-    // controls painted next sit on top of it.
-    hits.register(area, Hit::TipPanel);
-    // The pills, flush with the panel's right padding so they hold still
-    // when the value changes length (reveal / hide).
-    let mut cx = x + width - 2 - 3 * controls.len() as u16;
-    for (glyph, hit) in controls {
-        let (fg, bg) = if hovered == Some(&hit) {
-            (theme.on_accent, theme.accent)
-        } else {
-            (theme.accent, theme.panel)
-        };
-        crate::paint::text(buf, cx, y + 1, glyph, fg, bg, false);
-        hits.register(Rect::new(cx, y + 1, 3, 1), hit);
+    // pills painted next sit on top of it.
+    hits.register(area, Hit::TipPanel(tip.name.clone()));
+    // The pills, flush with the panel's right padding.
+    let mut cx = x + width - 2 - pills_w as u16;
+    for (label, hit) in pills {
+        let rect = Rect::new(cx, y + 1, 3, 1);
+        crate::paint::action(buf, rect, &label, hit.clone(), hovered, theme.panel, theme);
+        hits.register(rect, hit);
         cx += 3;
     }
-    Some(area)
 }
 
 /// `s` hard-wrapped into chunks of at most `max` characters — values are

@@ -104,6 +104,35 @@ pub fn face_edges(face: Color, _theme: &Theme) -> (Color, Color) {
     )
 }
 
+/// A plain (unbracketed) clickable text action painted on `surface`:
+/// accent fg at rest; inverted (accent fill, `on_accent` fg, bold) while
+/// `hovered == Some(&hit)`. The response toolbar's icons, its search
+/// arrows, and the variable tooltip's pills all share this treatment.
+pub fn action(
+    buf: &mut Buffer,
+    area: Rect,
+    label: &str,
+    hit: crate::hit::Hit,
+    hovered: Option<&crate::hit::Hit>,
+    surface: Color,
+    theme: &Theme,
+) {
+    if hovered == Some(&hit) {
+        fill(buf, area, theme.accent);
+        text(
+            buf,
+            area.x,
+            area.y,
+            label,
+            theme.on_accent,
+            theme.accent,
+            true,
+        );
+    } else {
+        text(buf, area.x, area.y, label, theme.accent, surface, false);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

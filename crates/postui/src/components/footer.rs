@@ -162,7 +162,11 @@ pub(crate) fn footer_chips(
                     ),
                     ("esc", "cancel", Some(Action::CancelJqEdit)),
                     ("alt+shift+q", "unfilter", Some(Action::ToggleJqBar)),
-                    ("\u{F0674}", "describe…", Some(Action::OpenJqDescribe)),
+                    (
+                        crate::glyph::CREATION,
+                        "describe…",
+                        Some(Action::OpenJqDescribe),
+                    ),
                 ]);
                 chips
             } else {
