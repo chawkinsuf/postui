@@ -145,7 +145,18 @@ fn enable_mouse_and_wrap_panic_hook() {
         );
     }
     let prev_hook = std::panic::take_hook();
+    let main_thread = std::thread::current().id();
     std::panic::set_hook(Box::new(move |info| {
+        // Only the main thread — the one drawing — owns the terminal. A
+        // panic on a tokio worker (a jq run, a body parse) is caught as a
+        // `JoinError` and reported through the UI; restoring the terminal
+        // for it would leave the still-running main loop drawing into a
+        // cooked-mode primary screen. Print the report and leave the
+        // terminal alone.
+        if std::thread::current().id() != main_thread {
+            eprintln!("{info}");
+            return;
+        }
         // `stdout().sync_update(...)` around `terminal.draw` (main.rs's
         // event loop) sends EndSynchronizedUpdate only when its closure
         // *returns* — a panic inside `terminal.draw` unwinds straight past
