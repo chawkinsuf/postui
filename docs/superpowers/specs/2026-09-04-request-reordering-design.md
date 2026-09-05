@@ -51,9 +51,10 @@ brainstorm"; this is that brainstorm.
   while the button is held.
 - **An undo step** *(revised 2026-09-04; originally "not an undo step,
   matching space reorder")*: a dropped drag, an alt+↑/↓ press and the
-  row menu's Move up/down each record one `StepKind::Reorder` carrying
-  the `OrderEdit::Replaced` that `set_level_order` reports (the level's
-  list before and after). Quick successive keyboard moves of the same
+  row menu's Move up/down each record one `StepKind::Reorder` (target
+  `Requests`) carrying the `ListChange` that `set_level_order` reports
+  (the space's whole list before and after; undo writes it back through
+  `order::set_order`). Quick successive keyboard moves of the same
   request roll up into one step (the history's usual 2 s burst window,
   the same one typing uses), and a burst that ends where it started
   records nothing; a drag is always its own step. Undo/redo rewrites
@@ -354,10 +355,15 @@ does, then puts the cursor back on the dragged space.
 Like `Action::MoveSpace` and the sidebar's request drag, a space
 reorder **is an undo step** *(revised 2026-09-04)*: `move_space` and
 `set_space_order` report the displayed order before and after as a
-`SpaceReorder`, recorded as `StepKind::SpaceReorder`; undo writes
-`before` back through `set_space_order`, redo `after`, then reloads
-`meta` and the space list and puts the Manage cursor on the space that
-moved. Keyboard moves of the same space roll up inside the coalesce
+`ListChange`, recorded as `StepKind::Reorder` with target `Spaces`;
+undo writes `before` back through `set_space_order` (applied as a
+permutation of the spaces present now, so a space created since — not
+an undo step — keeps its place), redo `after`, then reloads `meta` and
+the space list and puts the Manage cursor on the space that moved. A
+space rename (not an undo step either) re-keys every recorded step to
+the new slug (`History::rename_space`), and `order::edit_order` refuses
+a space that does not exist, so no undo can plant an orphan
+`[space.<old>]` table. Keyboard moves of the same space roll up inside the coalesce
 window and a burst that ends where it started records nothing; a drag
 is always its own step. The alt+↑↓ keys and the row menu's Move up/Move
 down remain the keyboard route to the same change.

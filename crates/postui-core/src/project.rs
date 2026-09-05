@@ -557,10 +557,11 @@ pub fn delete_space(root: &Path, name: &str) -> Result<Option<Trashed>, ProjectE
 /// Moves `name` by `delta` positions (clamped to the ends). Unlisted
 /// directories are materialised into the written list so the order on
 /// disk is exactly the order displayed.
-/// What a space reorder did: the displayed space order before and after.
-/// Undo writes `before` back through [`set_space_order`], redo `after`.
+/// What a reorder did to a list in `project.toml` — the displayed space
+/// order, or a space's `[space.<slug>] order` — before and after. Undo
+/// writes `before` back, redo `after`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SpaceReorder {
+pub struct ListChange {
     pub before: Vec<String>,
     pub after: Vec<String>,
 }
@@ -576,11 +577,7 @@ fn displayed_spaces(spaces: &[String]) -> Vec<String> {
 
 /// Moves `name` by `delta` among the displayed spaces (a swap of two
 /// slots). `None` when the move changes nothing.
-pub fn move_space(
-    root: &Path,
-    name: &str,
-    delta: i32,
-) -> Result<Option<SpaceReorder>, ProjectError> {
+pub fn move_space(root: &Path, name: &str, delta: i32) -> Result<Option<ListChange>, ProjectError> {
     let mut spaces = write_list(root);
     // Reorder among the *displayed* spaces only: an invalid listed entry
     // isn't a row the user can see, so it must not absorb a step — and it
@@ -598,7 +595,7 @@ pub fn move_space(
     let before = displayed_spaces(&spaces);
     spaces.swap(slots[pos], slots[target]);
     write_spaces(root, &spaces)?;
-    Ok(Some(SpaceReorder {
+    Ok(Some(ListChange {
         before,
         after: displayed_spaces(&spaces),
     }))
@@ -621,7 +618,7 @@ pub fn move_space(
 pub fn set_space_order(
     root: &Path,
     displayed: &[String],
-) -> Result<Option<SpaceReorder>, ProjectError> {
+) -> Result<Option<ListChange>, ProjectError> {
     let mut spaces = write_list(root);
     let slots: Vec<usize> = (0..spaces.len())
         .filter(|i| valid_space_name(&spaces[*i]))
@@ -644,7 +641,7 @@ pub fn set_space_order(
         return Ok(None);
     }
     write_spaces(root, &spaces)?;
-    Ok(Some(SpaceReorder {
+    Ok(Some(ListChange {
         before: valid,
         after: displayed.to_vec(),
     }))

@@ -4160,6 +4160,109 @@ fn a_dropped_space_drag_is_its_own_undo_step_and_undo_follows_the_cursor() {
 }
 
 #[test]
+fn undo_of_a_space_reorder_survives_a_space_created_since() {
+    let (mut app, dir) = spaced_app();
+    app.update(Action::MoveSpace {
+        name: "main".into(),
+        delta: 1,
+    });
+    assert_eq!(listed_spaces(&dir), ["auth", "main"]);
+    app.update(Action::CreateSpace("billing".into()));
+    assert_eq!(listed_spaces(&dir), ["auth", "main", "billing"]);
+
+    app.update(Action::Undo);
+    assert_eq!(
+        listed_spaces(&dir),
+        ["main", "auth", "billing"],
+        "the recorded order is applied to the spaces still present; the new one stays"
+    );
+    app.update(Action::Redo);
+    assert_eq!(listed_spaces(&dir), ["auth", "main", "billing"]);
+}
+
+#[test]
+fn undo_of_a_reorder_follows_a_space_renamed_since() {
+    let (mut app, dir) = slotted_app(&["alpha", "beta", "gamma"]);
+    app.update(Action::MoveRequest {
+        slug: "main/gamma".into(),
+        delta: -2,
+    });
+    assert_eq!(slot_order(&dir), ["gamma", "alpha", "beta"]);
+    app.update(Action::RenameSpace {
+        from: "main".into(),
+        to: "Primary".into(),
+    });
+    assert_eq!(app.project.active_space, "primary");
+
+    app.update(Action::Undo);
+    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    assert_eq!(
+        postui_core::order::space_order(&meta, "primary"),
+        ["alpha", "beta", "gamma"],
+        "the undo lands on the space under its new name"
+    );
+    assert!(
+        !meta.space.contains_key("main"),
+        "no orphan table under the old name"
+    );
+    assert_eq!(
+        request_rows(&app),
+        ["primary/alpha", "primary/beta", "primary/gamma"]
+    );
+    assert_eq!(
+        app.sidebar.selected_slug().as_deref(),
+        Some("primary/gamma")
+    );
+}
+
+#[test]
+fn undo_of_a_delete_follows_a_space_renamed_since() {
+    let (mut app, dir) = slotted_app(&["gamma", "alpha", "beta"]);
+    app.update(Action::DeleteRequest("main/alpha".into()));
+    app.update(Action::RenameSpace {
+        from: "main".into(),
+        to: "Primary".into(),
+    });
+    app.update(Action::Undo);
+    assert!(dir.path().join("requests/primary/alpha.toml").is_file());
+    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    assert_eq!(
+        postui_core::order::space_order(&meta, "primary"),
+        ["gamma", "alpha", "beta"]
+    );
+    assert!(!meta.space.contains_key("main"));
+}
+
+#[test]
+fn undo_of_a_move_all_follows_the_open_request_even_when_it_collided() {
+    let (mut app, dir) = spaced_app();
+    // `auth` already has an `alpha`, so main's lands as `alpha-2`.
+    postui_core::storage::save_request(dir.path(), "auth/alpha", &req("https://x/a")).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.update(Action::MoveAllRequests {
+        from: "main".into(),
+        to: "auth".into(),
+    });
+    assert_eq!(app.editor.slug.as_deref(), Some("auth/alpha-2"));
+
+    app.update(Action::Undo);
+    assert_eq!(
+        app.editor.slug.as_deref(),
+        Some("main/alpha"),
+        "the step's own pairing finds the way back"
+    );
+    assert!(dir.path().join("requests/main/alpha.toml").is_file());
+    assert!(
+        dir.path().join("requests/auth/alpha.toml").is_file(),
+        "auth's own alpha untouched"
+    );
+    assert!(!dir.path().join("requests/auth/alpha-2.toml").exists());
+    app.update(Action::Redo);
+    assert_eq!(app.editor.slug.as_deref(), Some("auth/alpha-2"));
+}
+
+#[test]
 fn undo_of_a_delete_keeps_a_reorder_made_since() {
     // A reorder written between the delete and its undo (here straight
     // to disk, as one undone out of order would be) is not undone with
@@ -16343,6 +16446,7 @@ mod undo_tests {
                 ],
                 active_env: None,
                 orders: Vec::new(),
+                moves: Vec::new(),
             },
             context: crate::undo::Context {
                 slug: None,

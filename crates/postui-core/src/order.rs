@@ -5,7 +5,7 @@
 //! ignored for display and preserved on write.
 
 use crate::project::ProjectMeta;
-use crate::project::{ProjectError, edit_project_toml, load_meta};
+use crate::project::{ListChange, ProjectError, edit_project_toml, load_meta};
 use crate::storage::RequestListing;
 use std::path::Path;
 
@@ -113,13 +113,6 @@ pub enum OrderEdit {
         from: String,
         to: String,
     },
-    /// The whole list went from `before` to `after` (a reorder: one
-    /// level rewritten through [`set_level_order`]).
-    Replaced {
-        space: String,
-        before: Vec<String>,
-        after: Vec<String>,
-    },
 }
 
 impl OrderEdit {
@@ -127,8 +120,20 @@ impl OrderEdit {
         match self {
             OrderEdit::Inserted { space, .. }
             | OrderEdit::Removed { space, .. }
-            | OrderEdit::Renamed { space, .. }
-            | OrderEdit::Replaced { space, .. } => space,
+            | OrderEdit::Renamed { space, .. } => space,
+        }
+    }
+
+    /// Re-keys the edit after its space was renamed `from` -> `to`, so a
+    /// recorded undo step keeps pointing at the space it was made in.
+    pub fn rename_space(&mut self, from: &str, to: &str) {
+        let space = match self {
+            OrderEdit::Inserted { space, .. }
+            | OrderEdit::Removed { space, .. }
+            | OrderEdit::Renamed { space, .. } => space,
+        };
+        if space == from {
+            *space = to.to_string();
         }
     }
 
@@ -141,15 +146,6 @@ impl OrderEdit {
                 space,
                 from: to,
                 to: from,
-            },
-            OrderEdit::Replaced {
-                space,
-                before,
-                after,
-            } => OrderEdit::Replaced {
-                space,
-                before: after,
-                after: before,
             },
         }
     }
@@ -182,7 +178,6 @@ impl OrderEdit {
                     }
                 }
             }
-            OrderEdit::Replaced { after, .. } => *order = after.clone(),
         }
     }
 }
@@ -216,6 +211,13 @@ fn edit_order(
     space: &str,
     f: impl FnOnce(&mut Vec<String>) -> Vec<OrderEdit>,
 ) -> Result<Vec<OrderEdit>, ProjectError> {
+    // A list belongs to a space that exists. Writing one for a space
+    // that does not (an undo step recorded before the space was renamed
+    // or deleted, say) would plant an orphan `[space.<slug>]` table that
+    // nothing displays and a future space of that slug would inherit.
+    if !crate::project::space_dir(root, space).is_dir() {
+        return Err(ProjectError::NotFound(space.to_string()));
+    }
     let meta = load_meta(root)?;
     let before = space_order(&meta, space).to_vec();
     let mut after = before.clone();
@@ -232,8 +234,7 @@ fn edit_order(
 /// entries are stale is an unlisted level as far as the screen goes.
 fn level_is_listed(root: &Path, space: &str, order: &[String], level: &str) -> bool {
     order.iter().any(|e| {
-        level_of(e) == level
-            && crate::storage::request_path(root, &format!("{space}/{e}")).is_file()
+        level_of(e) == level && crate::storage::request_exists(root, &format!("{space}/{e}"))
     })
 }
 
@@ -393,27 +394,39 @@ fn merge_level(existing: &[String], level: &str, slugs: &[String]) -> Vec<String
 
 /// Rewrites one level of `space`'s order to exactly `slugs` (relative
 /// slugs, all of the same `level`). See [`merge_level`] for what happens
-/// to everything else in the list. Reports the rewrite as one
-/// [`OrderEdit::Replaced`] (nothing when the list already read that way).
+/// to everything else in the list. Reports the whole list before and
+/// after (`None` when it already read that way).
 pub fn set_level_order(
     root: &Path,
     space: &str,
     level: &str,
     slugs: &[String],
-) -> Result<Vec<OrderEdit>, ProjectError> {
+) -> Result<Option<ListChange>, ProjectError> {
     debug_assert!(
         slugs.iter().all(|s| level_of(s) == level),
         "set_level_order got slugs from another level: {slugs:?} is not all under {level:?}"
     );
+    let mut change = None;
     edit_order(root, space, |order| {
         let before = order.clone();
         *order = merge_level(order, level, slugs);
-        vec![OrderEdit::Replaced {
-            space: space.to_string(),
+        change = Some(ListChange {
             before,
             after: order.clone(),
-        }]
+        });
+        Vec::new()
+    })?;
+    Ok(change.filter(|c| c.before != c.after))
+}
+
+/// Writes `space`'s whole list as given: the undo/redo of a reorder,
+/// putting back a list [`set_level_order`] reported.
+pub fn set_order(root: &Path, space: &str, order: &[String]) -> Result<(), ProjectError> {
+    edit_order(root, space, |o| {
+        *o = order.to_vec();
+        Vec::new()
     })
+    .map(|_| ())
 }
 
 /// Every request of `space` in `listing`, as full slugs, in display
@@ -437,23 +450,6 @@ pub fn displayed_slugs(listing: &[RequestListing], order: &[String], space: &str
         .collect()
 }
 
-/// The level's requests in display order, as relative slugs — what the
-/// sidebar shows for that level right now. Walks the whole request tree;
-/// a caller that already holds the displayed order (the sidebar does)
-/// passes it to [`move_shown`] instead.
-fn displayed_level(root: &Path, space: &str, level: &str) -> Result<Vec<String>, ProjectError> {
-    let meta = load_meta(root)?;
-    let (listing, _) = crate::storage::list_requests(root);
-    let entries: Vec<&RequestListing> = listing
-        .iter()
-        .filter(|e| relative(&e.slug, space).is_some_and(|r| level_of(r) == level))
-        .collect();
-    Ok(order_level(&entries, space_order(&meta, space), space)
-        .into_iter()
-        .filter_map(|e| relative(&e.slug, space).map(str::to_string))
-        .collect())
-}
-
 /// Moves `rel` by `delta` positions among `shown` — its level's requests
 /// (relative slugs) in the order they are displayed right now — clamped
 /// to the level's ends, and writes the result as that level's order, so
@@ -468,30 +464,18 @@ pub fn move_shown(
     shown: &[String],
     rel: &str,
     delta: i32,
-) -> Result<Vec<OrderEdit>, ProjectError> {
+) -> Result<Option<ListChange>, ProjectError> {
     let Some(pos) = shown.iter().position(|s| s == rel) else {
         return Err(ProjectError::NotFound(format!("{space}/{rel}")));
     };
     let target = (pos as i32 + delta).clamp(0, shown.len() as i32 - 1) as usize;
     if target == pos {
-        return Ok(Vec::new());
+        return Ok(None);
     }
     let mut shown = shown.to_vec();
     let moved = shown.remove(pos);
     shown.insert(target, moved);
     set_level_order(root, space, level, &shown)
-}
-
-/// Moves `slug` (a full slug, `space/…`) by `delta` positions among its
-/// siblings: [`move_shown`] over the level's displayed order read from
-/// disk.
-pub fn move_request(root: &Path, slug: &str, delta: i32) -> Result<Vec<OrderEdit>, ProjectError> {
-    let space =
-        crate::storage::space_of(slug).ok_or_else(|| ProjectError::NotFound(slug.to_string()))?;
-    let rel = relative(slug, space).ok_or_else(|| ProjectError::NotFound(slug.to_string()))?;
-    let level = level_of(rel);
-    let shown = displayed_level(root, space, level)?;
-    move_shown(root, space, level, &shown, rel, delta)
 }
 
 #[cfg(test)]
@@ -640,19 +624,21 @@ mod tests {
     }
 
     #[test]
-    fn move_request_materialises_the_level_on_first_use_and_clamps() {
+    fn move_shown_materialises_the_level_on_first_use_and_clamps() {
         let dir = project_with(&["main/a", "main/b", "main/c", "main/auth/x"]);
-        move_request(dir.path(), "main/c", -1).unwrap();
         // Display order was a, b, c (alphabetical); c moved up one.
+        move_shown(dir.path(), "main", "", &v(&["a", "b", "c"]), "c", -1).unwrap();
         assert_eq!(order_of(dir.path(), "main"), v(&["a", "c", "b"]));
-        move_request(dir.path(), "main/a", -1).unwrap(); // already first
+        // already first
+        assert!(
+            move_shown(dir.path(), "main", "", &v(&["a", "c", "b"]), "a", -1)
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(order_of(dir.path(), "main"), v(&["a", "c", "b"]));
-        move_request(dir.path(), "main/a", 5).unwrap(); // clamps to last
+        // clamps to last
+        move_shown(dir.path(), "main", "", &v(&["a", "c", "b"]), "a", 5).unwrap();
         assert_eq!(order_of(dir.path(), "main"), v(&["c", "b", "a"]));
-        assert!(matches!(
-            move_request(dir.path(), "main/nope", 1),
-            Err(crate::project::ProjectError::NotFound(_))
-        ));
     }
 
     #[test]
@@ -662,9 +648,10 @@ mod tests {
         let dir = project_with(&["main/a", "main/b", "main/c"]);
         let path = dir.path().join("project.toml");
         let before = std::fs::read(&path).ok();
-        move_request(dir.path(), "main/a", -1).unwrap(); // already first
-        move_request(dir.path(), "main/c", 3).unwrap(); // already last
-        move_request(dir.path(), "main/b", 0).unwrap(); // nowhere
+        let shown = v(&["a", "b", "c"]);
+        move_shown(dir.path(), "main", "", &shown, "a", -1).unwrap(); // already first
+        move_shown(dir.path(), "main", "", &shown, "c", 3).unwrap(); // already last
+        move_shown(dir.path(), "main", "", &shown, "b", 0).unwrap(); // nowhere
         assert_eq!(
             std::fs::read(&path).ok(),
             before,
@@ -674,19 +661,44 @@ mod tests {
     }
 
     #[test]
-    fn move_request_in_a_folder_touches_only_that_level() {
+    fn move_shown_in_a_folder_touches_only_that_level() {
         let dir = project_with(&["main/a", "main/auth/x", "main/auth/y"]);
         set_level_order(dir.path(), "main", "", &v(&["a"])).unwrap();
-        move_request(dir.path(), "main/auth/y", -1).unwrap();
+        move_shown(
+            dir.path(),
+            "main",
+            "auth",
+            &v(&["auth/x", "auth/y"]),
+            "auth/y",
+            -1,
+        )
+        .unwrap();
         assert_eq!(order_of(dir.path(), "main"), v(&["a", "auth/y", "auth/x"]));
     }
 
     #[test]
-    fn move_request_keeps_a_stale_entry_in_its_slot() {
+    fn move_shown_keeps_a_stale_entry_in_its_slot() {
         let dir = project_with(&["main/a", "main/b"]);
         set_level_order(dir.path(), "main", "", &v(&["gone", "a", "b"])).unwrap();
-        move_request(dir.path(), "main/b", -1).unwrap();
+        move_shown(dir.path(), "main", "", &v(&["a", "b"]), "b", -1).unwrap();
         assert_eq!(order_of(dir.path(), "main"), v(&["gone", "b", "a"]));
+    }
+
+    #[test]
+    fn a_cascade_into_a_space_that_does_not_exist_is_refused() {
+        // No orphan `[space.<slug>]` table for a space that was renamed or
+        // deleted after the edit was recorded.
+        let dir = project_with(&["main/a"]);
+        assert!(matches!(
+            set_order(dir.path(), "gone", &v(&["a"])),
+            Err(crate::project::ProjectError::NotFound(_))
+        ));
+        assert!(matches!(
+            order_arrive(dir.path(), "gone", "a"),
+            Err(crate::project::ProjectError::NotFound(_))
+        ));
+        let text = std::fs::read_to_string(dir.path().join("project.toml")).unwrap_or_default();
+        assert!(!text.contains("[space.gone]"), "{text}");
     }
 
     #[test]
@@ -808,27 +820,23 @@ mod tests {
     }
 
     #[test]
-    fn a_reorder_reports_a_replaced_edit_that_undoes_to_the_previous_list() {
+    fn a_reorder_reports_the_list_before_and_after_and_set_order_puts_it_back() {
         let dir = project_with(&["main/a", "main/b", "main/c"]);
         set_level_order(dir.path(), "main", "", &v(&["a", "b", "c"])).unwrap();
-        let edits = move_shown(dir.path(), "main", "", &v(&["a", "b", "c"]), "c", -2).unwrap();
-        assert_eq!(
-            edits,
-            [OrderEdit::Replaced {
-                space: "main".into(),
-                before: v(&["a", "b", "c"]),
-                after: v(&["c", "a", "b"]),
-            }]
-        );
-        apply_edits(dir.path(), &edits, true).unwrap();
+        let change = move_shown(dir.path(), "main", "", &v(&["a", "b", "c"]), "c", -2)
+            .unwrap()
+            .expect("a change");
+        assert_eq!(change.before, v(&["a", "b", "c"]));
+        assert_eq!(change.after, v(&["c", "a", "b"]));
+        set_order(dir.path(), "main", &change.before).unwrap();
         assert_eq!(order_of(dir.path(), "main"), v(&["a", "b", "c"]));
-        apply_edits(dir.path(), &edits, false).unwrap();
+        set_order(dir.path(), "main", &change.after).unwrap();
         assert_eq!(order_of(dir.path(), "main"), v(&["c", "a", "b"]));
         // A move to where the row already is reports nothing.
         assert!(
             move_shown(dir.path(), "main", "", &v(&["c", "a", "b"]), "c", -1)
                 .unwrap()
-                .is_empty()
+                .is_none()
         );
     }
 

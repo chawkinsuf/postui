@@ -1473,11 +1473,8 @@ impl App {
                             cursor_after: cursor.clone(),
                         },
                     };
-                    if std::mem::take(&mut self.no_coalesce) {
-                        self.history.record_no_coalesce(step);
-                    } else {
-                        self.history.record(step, std::time::Instant::now());
-                    }
+                    let coalesce = !std::mem::take(&mut self.no_coalesce);
+                    self.history.record_maybe_coalesce(step, coalesce);
                     self.shadow = Some((current_slug, current));
                     self.shadow_cursor = cursor;
                     return true;
@@ -2215,6 +2212,7 @@ impl App {
                             &[new_path],
                             None,
                             orders,
+                            Vec::new(),
                         );
                         self.refresh_sidebar();
                         let display = self.request_display(&new_slug);
@@ -2366,6 +2364,7 @@ impl App {
                             &[from_path, to_path],
                             None,
                             orders,
+                            vec![(slug.clone(), new_slug.clone())],
                         );
                         // The move doesn't follow the request into its
                         // new space (user feedback: that made moving
@@ -2449,6 +2448,7 @@ impl App {
                             &[from_path, to_path],
                             None,
                             orders,
+                            vec![(from.clone(), slug.clone())],
                         );
                         self.refresh_sidebar();
                         if self.editor.slug.as_deref() == Some(from.as_str()) {
@@ -4813,6 +4813,11 @@ impl App {
                         // active space they no longer find on disk, and
                         // the old name is gone by now.
                         self.project.rename_space_state(&from, &to);
+                        // A space rename is not an undo step, so the steps
+                        // already recorded must follow the space to its
+                        // new name or their undo would write to a space
+                        // that no longer exists.
+                        self.history.rename_space(&self.project.root, &from, &to);
                         self.apply(Action::ReloadProjectFiles);
                         self.project.reload_meta();
                         self.project.reload_spaces();
@@ -4931,7 +4936,8 @@ impl App {
             Action::MoveSpace { name, delta } => {
                 match postui_core::project::move_space(&self.project.root, &name, delta) {
                     Ok(change) => {
-                        self.record_space_reorder_step(change, &name, true);
+                        let target = crate::undo::ReorderTarget::Spaces { name: name.clone() };
+                        self.record_reorder_step(change, target, true);
                         self.apply(Action::ReloadProjectFiles);
                         // `ReloadProjectFiles` is mtime-gated, so a second
                         // reorder in the same clock tick would re-list from
@@ -4968,25 +4974,37 @@ impl App {
                     .filter(|s| *s == space)
                     .and_then(|_| self.sidebar.row_of(&slug))
                     .and_then(|i| self.sidebar.level_group(i, &space));
-                let r = match (shown, postui_core::order::relative(&slug, &space)) {
-                    (Some((level, shown)), Some(rel)) => postui_core::order::move_shown(
-                        &self.project.root,
-                        &space,
-                        &level,
-                        &shown,
-                        rel,
-                        delta,
-                    ),
-                    _ => postui_core::order::move_request(&self.project.root, &slug, delta),
+                let (Some((level, shown)), Some(rel)) =
+                    (shown, postui_core::order::relative(&slug, &space))
+                else {
+                    // Every route here (alt+↑/↓ on the selection, the row
+                    // menu) names a visible row of the active space.
+                    self.toasts.push(
+                        format!("cannot move request: {slug} is not shown"),
+                        ToastKind::Warning,
+                    );
+                    return true;
                 };
+                let r = postui_core::order::move_shown(
+                    &self.project.root,
+                    &space,
+                    &level,
+                    &shown,
+                    rel,
+                    delta,
+                );
                 match r {
-                    Ok(edits) => {
+                    Ok(change) => {
                         // Same mtime hazard as `MoveSpace`: read the file
                         // we just wrote rather than waiting for the stamp.
                         self.project.reload_meta();
                         self.rebuild_sidebar();
                         self.sidebar.select_slug(&slug);
-                        self.record_reorder_step(edits, &slug, true);
+                        let target = crate::undo::ReorderTarget::Requests {
+                            space,
+                            slug: slug.clone(),
+                        };
+                        self.record_reorder_step(change, target, true);
                     }
                     Err(e) => {
                         self.toasts
@@ -5094,7 +5112,13 @@ impl App {
                     after_paths.push(from_path);
                     after_paths.push(to_path);
                 }
-                self.record_file_step_with_orders(before, &after_paths, None, orders);
+                self.record_file_step_with_orders(
+                    before,
+                    &after_paths,
+                    None,
+                    orders,
+                    moved.clone(),
+                );
                 self.refresh_sidebar();
                 if let Some(open) = open
                     && let Some((_, new_slug)) = moved.iter().find(|(old, _)| *old == open)
@@ -6781,18 +6805,20 @@ impl App {
         after_paths: &[PathBuf],
         active_env: Option<(Option<String>, Option<String>)>,
     ) {
-        self.record_file_step_with_orders(before, after_paths, active_env, Vec::new());
+        self.record_file_step_with_orders(before, after_paths, active_env, Vec::new(), Vec::new());
     }
 
     /// [`Self::record_file_step`] for a request file op that also
     /// cascaded the order lists: `orders` is what the cascade did, so
-    /// undo and redo can replay it.
+    /// undo and redo can replay it, and `moves` pairs every request the
+    /// op moved with where it went, so they can follow the open request.
     fn record_file_step_with_orders(
         &mut self,
         before: Vec<(PathBuf, Option<String>)>,
         after_paths: &[PathBuf],
         active_env: Option<(Option<String>, Option<String>)>,
         orders: Vec<postui_core::order::OrderEdit>,
+        moves: Vec<(String, String)>,
     ) {
         let after = self.read_file_states(after_paths);
         debug_assert_eq!(before.len(), after.len(), "before/after paths must line up");
@@ -6813,6 +6839,7 @@ impl App {
                 after: kept_after,
                 active_env,
                 orders,
+                moves,
             },
             context: crate::undo::Context {
                 slug: self.editor.slug.clone(),
@@ -7003,70 +7030,38 @@ impl App {
         edits
     }
 
-    /// Records a request reorder as an undo step; nothing when the
-    /// reorder wrote nothing. A keyboard move (`burst`) merges into a
-    /// keyboard move of the same request made within the history's
-    /// coalesce window, so holding alt+↓ is one step; a drag is always
-    /// its own step and merges with nothing.
+    /// Records a reorder as an undo step; nothing when the reorder wrote
+    /// nothing. A keyboard move (`burst`) merges into a keyboard move of
+    /// the same target made within the history's coalesce window, so
+    /// holding alt+↓ is one step; a drag is always its own step and
+    /// merges with nothing.
     fn record_reorder_step(
         &mut self,
-        edits: Vec<postui_core::order::OrderEdit>,
-        slug: &str,
-        burst: bool,
-    ) {
-        if edits.is_empty() {
-            return;
-        }
-        let step = crate::undo::Step {
-            kind: crate::undo::StepKind::Reorder {
-                edits,
-                slug: slug.to_string(),
-                burst,
-            },
-            context: crate::undo::Context {
-                slug: Some(slug.to_string()),
-                cursor_before: crate::undo::CursorPos::None,
-                cursor_after: crate::undo::CursorPos::None,
-            },
-        };
-        if burst {
-            self.history.record(step, std::time::Instant::now());
-        } else {
-            self.history.record_no_coalesce(step);
-        }
-    }
-
-    /// The space-list twin of [`Self::record_reorder_step`]: nothing when
-    /// the reorder wrote nothing; a keyboard move (`burst`) rolls up with
-    /// a keyboard move of the same space inside the coalesce window; a
-    /// drag is always its own step.
-    fn record_space_reorder_step(
-        &mut self,
-        change: Option<postui_core::project::SpaceReorder>,
-        name: &str,
+        change: Option<postui_core::project::ListChange>,
+        target: crate::undo::ReorderTarget,
         burst: bool,
     ) {
         let Some(change) = change else {
             return;
         };
+        let slug = match &target {
+            crate::undo::ReorderTarget::Requests { slug, .. } => Some(slug.clone()),
+            crate::undo::ReorderTarget::Spaces { .. } => self.editor.slug.clone(),
+        };
         let step = crate::undo::Step {
-            kind: crate::undo::StepKind::SpaceReorder {
+            kind: crate::undo::StepKind::Reorder {
+                target,
                 before: change.before,
                 after: change.after,
-                name: name.to_string(),
                 burst,
             },
             context: crate::undo::Context {
-                slug: self.editor.slug.clone(),
+                slug,
                 cursor_before: crate::undo::CursorPos::None,
                 cursor_after: crate::undo::CursorPos::None,
             },
         };
-        if burst {
-            self.history.record(step, std::time::Instant::now());
-        } else {
-            self.history.record_no_coalesce(step);
-        }
+        self.history.record_maybe_coalesce(step, burst);
     }
 
     /// Puts a step's order-list cascade back (undo) or forward again
@@ -7269,9 +7264,13 @@ impl App {
                 &drag.level,
                 &drag.working,
             ) {
-                Ok(edits) => {
+                Ok(change) => {
                     self.project.reload_meta();
-                    self.record_reorder_step(edits, &drag.slug, false);
+                    let target = crate::undo::ReorderTarget::Requests {
+                        space: drag.space.clone(),
+                        slug: drag.slug.clone(),
+                    };
+                    self.record_reorder_step(change, target, false);
                 }
                 Err(e) => self
                     .toasts
@@ -7327,7 +7326,10 @@ impl App {
         if commit && drag.working != drag.original {
             match postui_core::project::set_space_order(&self.project.root, &drag.working) {
                 Ok(change) => {
-                    self.record_space_reorder_step(change, &drag.name, false);
+                    let target = crate::undo::ReorderTarget::Spaces {
+                        name: drag.name.clone(),
+                    };
+                    self.record_reorder_step(change, target, false);
                     // `ReloadProjectFiles` is mtime-gated (see
                     // `Action::MoveSpace`), so read the file just written
                     // rather than waiting for the stamp to move. Skipping
@@ -7858,6 +7860,7 @@ impl App {
                     &[path],
                     None,
                     orders,
+                    Vec::new(),
                 );
                 self.toasts
                     .push(format!("Saved {leaf}"), ToastKind::Success);
@@ -9291,6 +9294,7 @@ impl App {
                 after,
                 active_env,
                 orders,
+                moves,
             } => {
                 let target = if redo { after } else { before };
                 if let Err(msg) = self.write_file_states(target, if redo { "redo" } else { "undo" })
@@ -9342,26 +9346,18 @@ impl App {
                     let open_path = postui_core::storage::request_path(&self.project.root, &open);
                     let went_absent = target.iter().any(|(p, c)| *p == open_path && c.is_none());
                     if went_absent {
-                        // A step can move many files at once (move-all):
-                        // the open request's own destination is the one
-                        // with the same space-relative path, and only a
-                        // single-file step falls back to the one other
-                        // path that gained content.
-                        let open_rel = Self::split_rel(&open).map(|(_, rel)| rel.to_string());
-                        let gained: Vec<String> = target
-                            .iter()
-                            .filter(|(p, c)| *p != open_path && c.is_some())
-                            .filter_map(|(p, _)| {
-                                postui_core::storage::slug_for_path(&self.project.root, p)
-                            })
-                            .collect();
-                        let moved_to = gained
-                            .iter()
-                            .find(|s| {
-                                Self::split_rel(s).map(|(_, rel)| rel.to_string()) == open_rel
-                            })
-                            .cloned()
-                            .or_else(|| (gained.len() == 1).then(|| gained[0].clone()));
+                        // The step's own pairing says where the open
+                        // request went (a rename, a move to space, or
+                        // any one file of a move-all, collisions and
+                        // their `-2` suffixes included); a step that
+                        // moved nothing is a true delete.
+                        let moved_to = moves.iter().find_map(|(old, new)| {
+                            if redo {
+                                (*old == open).then(|| new.clone())
+                            } else {
+                                (*new == open).then(|| old.clone())
+                            }
+                        });
                         match moved_to {
                             Some(new_slug) => {
                                 self.editor.slug = Some(new_slug.clone());
@@ -9410,64 +9406,69 @@ impl App {
                 }
                 true
             }
-            StepKind::Reorder { edits, slug, .. } => {
-                if let Err(e) = postui_core::order::apply_edits(&self.project.root, edits, !redo) {
-                    self.toasts.push(
-                        format!(
-                            "could not {} the reorder: {e}",
-                            if redo { "redo" } else { "undo" }
-                        ),
-                        ToastKind::Error,
-                    );
-                    return false;
-                }
-                // Same mtime hazard as the forward reorder: read the list
-                // just written rather than waiting for the stamp.
-                self.project.reload_meta();
-                self.refresh_sidebar();
-                if postui_core::storage::space_of(slug) == Some(self.project.active_space.as_str())
-                {
-                    self.sidebar.select_slug(slug);
-                }
-                let verb = if redo { "Redid" } else { "Undid" };
-                let msg = format!("{verb} reorder of {}", self.request_display(slug));
-                self.toasts.push(msg, ToastKind::Info);
-                if redo {
-                    self.history.push_undo_no_coalesce(step.clone());
-                } else {
-                    self.history.push_redo(step.clone());
-                }
-                true
-            }
-            StepKind::SpaceReorder {
+            StepKind::Reorder {
+                target,
                 before,
                 after,
-                name,
                 ..
             } => {
-                let target = if redo { after } else { before };
-                if let Err(e) = postui_core::project::set_space_order(&self.project.root, target) {
+                use crate::undo::ReorderTarget;
+                let list = if redo { after } else { before };
+                let written = match target {
+                    ReorderTarget::Requests { space, .. } => {
+                        postui_core::order::set_order(&self.project.root, space, list)
+                    }
+                    ReorderTarget::Spaces { .. } => {
+                        // A space created since (not an undo step) is not
+                        // in the recorded list, so the list is applied as
+                        // a permutation of the spaces present now: the
+                        // recorded names still present, in recorded
+                        // order, then the rest in their current order.
+                        let current = self.project.spaces.clone();
+                        let mut perm: Vec<String> = list
+                            .iter()
+                            .filter(|n| current.contains(n))
+                            .cloned()
+                            .collect();
+                        perm.extend(current.iter().filter(|n| !list.contains(n)).cloned());
+                        postui_core::project::set_space_order(&self.project.root, &perm).map(|_| ())
+                    }
+                };
+                let verb = if redo { "redo" } else { "undo" };
+                if let Err(e) = written {
                     self.toasts.push(
-                        format!(
-                            "could not {} the space reorder: {e}",
-                            if redo { "redo" } else { "undo" }
-                        ),
+                        format!("could not {verb} the reorder: {e}"),
                         ToastKind::Error,
                     );
                     return false;
                 }
-                // As in `Action::MoveSpace`: read the list just written
-                // rather than waiting for the mtime stamp.
+                // Same mtime hazard as the forward reorders: read the list
+                // just written rather than waiting for the stamp.
                 self.project.reload_meta();
-                self.project.reload_spaces();
-                if self.screen == Screen::Manage {
-                    self.manage
-                        .list
-                        .select_name(self.manage.tab, &self.project, name);
-                }
-                let verb = if redo { "Redid" } else { "Undid" };
-                let msg = format!("{verb} reorder of space {}", self.project.space_name(name));
-                self.toasts.push(msg, ToastKind::Info);
+                let what = match target {
+                    ReorderTarget::Requests { space, slug } => {
+                        // Only `project.toml` changed: the listing in hand
+                        // is still right, so no tree walk (as the forward
+                        // path).
+                        self.rebuild_sidebar();
+                        if *space == self.project.active_space {
+                            self.sidebar.select_slug(slug);
+                        }
+                        self.request_display(slug)
+                    }
+                    ReorderTarget::Spaces { name } => {
+                        self.project.reload_spaces();
+                        if self.screen == Screen::Manage {
+                            self.manage
+                                .list
+                                .select_name(self.manage.tab, &self.project, name);
+                        }
+                        format!("space {}", self.project.space_name(name))
+                    }
+                };
+                let done = if redo { "Redid" } else { "Undid" };
+                self.toasts
+                    .push(format!("{done} reorder of {what}"), ToastKind::Info);
                 if redo {
                     self.history.push_undo_no_coalesce(step.clone());
                 } else {
