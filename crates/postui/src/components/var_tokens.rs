@@ -207,11 +207,11 @@ impl VarView {
     }
 }
 
-/// The color a token's braces and name are tinted: a dim accent when it
+/// The color a token's braces and name are tinted: the accent when it
 /// resolves, `theme.error` when sending it would leave it verbatim.
 pub fn token_color(theme: &Theme, info: &TokenInfo) -> Color {
     if info.resolved() {
-        theme.accent_edge_dark
+        theme.accent
     } else {
         theme.error
     }
@@ -380,7 +380,7 @@ mod tests {
             &mut hits,
         );
 
-        assert_eq!(buf[(0, 0)].fg, theme.accent_edge_dark, "resolved token");
+        assert_eq!(buf[(0, 0)].fg, theme.accent, "resolved token");
         assert_eq!(buf[(12, 0)].fg, theme.text, "the literal `/` is untouched");
         assert_eq!(buf[(13, 0)].fg, theme.error, "needs-selection token");
 

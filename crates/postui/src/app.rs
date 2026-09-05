@@ -3378,7 +3378,7 @@ impl App {
                     return true;
                 }
                 self.push_modal(Modal::Prompt {
-                    title: "Describe a filter \u{2014} what do you want to see?".into(),
+                    title: "Create a filter with AI".into(),
                     input: LineInput::new(""),
                     kind: PromptKind::JqDescribe,
                     revealed: false,
