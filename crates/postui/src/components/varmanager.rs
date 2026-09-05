@@ -2430,7 +2430,7 @@ fields = ["user_id", "customer_id"]
         )
         .unwrap();
 
-        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf());
+        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         assert!(warns.is_empty(), "{warns:?}");
         (dir, ctx)
     }
@@ -2449,7 +2449,7 @@ fields = ["user_id", "customer_id"]
             "\n[selectors.region]\nshared = true\nfields = [\"host\"]\n\n[options.region.us]\nhost = \"us.example\"\n",
         );
         std::fs::write(&path, text).unwrap();
-        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf());
+        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         assert!(warns.is_empty(), "{warns:?}");
         (dir, ctx)
     }
@@ -2843,7 +2843,7 @@ fields = ["user_id", "customer_id"]
             decls.push_str(&format!("[v{i:02}]\ndefault = \"x\"\n\n"));
         }
         std::fs::write(dir.path().join("variables.toml"), decls).unwrap();
-        let (ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        let (ctx, _) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
 
         let mut vm = VarManager::default();
         let (content, hits) = render(&mut vm, &ctx);
@@ -2926,7 +2926,7 @@ fields = ["user_id", "customer_id"]
         qa_secrets.insert("api_key".to_string(), "sk-live-secret".to_string());
         secrets.insert("qa".to_string(), qa_secrets);
         project::save_secrets(dir.path(), &secrets).unwrap();
-        let (ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        let (ctx, _) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
 
         let mut vm = VarManager::default();
         select_var(&mut vm, &ctx, "api_key");
@@ -3153,7 +3153,7 @@ fields = ["user_id", "customer_id"]
             },
         )
         .unwrap();
-        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf());
+        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         assert!(warns.is_empty(), "{warns:?}");
         (dir, ctx)
     }
@@ -3468,7 +3468,7 @@ fields = ["user_id", "customer_id"]
             "[options.creds.alice]\ndescription = \"the admin\"\nuser_id = \"1001\"\ncustomer_id = \"c-77\"\n\n[options.creds.bob]\nuser_id = \"2002\"\ncustomer_id = \"c-91\"\n",
         )
         .unwrap();
-        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf());
+        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         assert!(warns.is_empty(), "{warns:?}");
         (dir, ctx)
     }

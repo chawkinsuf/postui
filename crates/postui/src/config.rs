@@ -14,20 +14,67 @@ pub struct ProjectsRegistry {
     pub last: Option<PathBuf>,
 }
 
+/// Reads and parses `config.toml`. `Ok(None)` when the file doesn't exist
+/// (every setting is then its default, silently); `Err` when it exists but
+/// can't be read or isn't valid TOML — the user's file, which they need to
+/// hear about rather than have quietly ignored.
+fn read_config(path: &Path) -> Result<Option<toml::Value>, String> {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("could not read {}: {e}", path.display())),
+    };
+    toml::from_str::<toml::Value>(&contents)
+        .map(Some)
+        .map_err(|e| format!("could not parse {}: {e}", path.display()))
+}
+
+/// Loads `path` as a `toml_edit` document for an in-place edit. A missing
+/// file is an empty document; one that doesn't parse is an error, so the
+/// edit never replaces the user's whole file with the one key being
+/// written.
+fn read_config_doc(path: &Path) -> anyhow::Result<toml_edit::DocumentMut> {
+    let existing = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => anyhow::bail!("could not read {}: {e}", path.display()),
+    };
+    existing.parse().map_err(|e: toml_edit::TomlError| {
+        anyhow::anyhow!(
+            "{} has a syntax error and was left unchanged: {e}",
+            path.display()
+        )
+    })
+}
+
+/// Writes `doc` to `path` through a sibling temp file and a rename, so a
+/// crash mid-write can't leave a truncated config. Creates the parent
+/// directory if needed.
+fn write_config_doc(path: &Path, doc: &toml_edit::DocumentMut) -> anyhow::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+    std::io::Write::write_all(&mut tmp, doc.to_string().as_bytes())?;
+    tmp.persist(path).map_err(|e| e.error)?;
+    Ok(())
+}
+
 impl ProjectsRegistry {
-    /// Loads the registry from `path`. Never errors: a missing or corrupt
-    /// file, or a mistyped piece of the `[projects]` table, degrades to the
-    /// default for that piece.
-    pub fn load_from(path: &Path) -> Self {
+    /// Loads the registry from `path`. A missing file is the empty
+    /// registry; a mistyped piece of the `[projects]` table degrades to the
+    /// default for that piece. A file that exists but can't be parsed also
+    /// yields the empty registry — there is nothing else to run on — but
+    /// with a warning saying so, and every save then refuses to touch the
+    /// file (see [`Self::save_to`]).
+    pub fn load_from(path: &Path) -> (Self, Vec<String>) {
         let mut registry = Self::default();
-        let Ok(contents) = std::fs::read_to_string(path) else {
-            return registry;
-        };
-        let Ok(value) = toml::from_str::<toml::Value>(&contents) else {
-            return registry;
+        let value = match read_config(path) {
+            Ok(Some(v)) => v,
+            Ok(None) => return (registry, Vec::new()),
+            Err(e) => return (registry, vec![e]),
         };
         let Some(projects) = value.get("projects").and_then(|v| v.as_table()) else {
-            return registry;
+            return (registry, Vec::new());
         };
 
         if let Some(known) = projects.get("known").and_then(|v| v.as_array()) {
@@ -46,16 +93,16 @@ impl ProjectsRegistry {
             .and_then(|v| v.as_str())
             .map(expand_tilde);
 
-        registry
+        (registry, Vec::new())
     }
 
     /// Writes the registry to `path`, round-tripping through
     /// `toml_edit::DocumentMut` so only the `[projects]` table is touched;
     /// unrelated keys are preserved byte-for-byte. Creates the parent
-    /// directory if needed.
+    /// directory if needed. Refuses (leaving the file untouched) when the
+    /// existing file doesn't parse.
     pub fn save_to(&self, path: &Path) -> anyhow::Result<()> {
-        let existing = std::fs::read_to_string(path).unwrap_or_default();
-        let mut doc: toml_edit::DocumentMut = existing.parse().unwrap_or_default();
+        let mut doc = read_config_doc(path)?;
 
         let mut table = toml_edit::Table::new();
 
@@ -79,12 +126,7 @@ impl ProjectsRegistry {
         }
 
         doc["projects"] = toml_edit::Item::Table(table);
-
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(path, doc.to_string())?;
-        Ok(())
+        write_config_doc(path, &doc)
     }
 
     /// Registers `path` as known and as the last-used project. Dedups on
@@ -255,18 +297,23 @@ impl Default for UiSettings {
 /// Reads the top-level `clipboard_cmd` (string), `osc52_limit` (integer),
 /// `theme` (string), `animations` (bool), `ai_cmd` (string), `ai_confirmed`
 /// (bool), and `jq_tab` (string) keys from `config.toml`. Never errors: a
-/// missing file, corrupt TOML, or a mistyped key degrades that piece to its
-/// default. `theme` is taken verbatim as a raw name string — whether it names
-/// a real registry entry is the registry's business at resolve time, not this
-/// loader's, so no warning is produced here for an unrecognized value.
+/// missing file or a mistyped key degrades that piece to its default. A
+/// file that can't be parsed leaves everything at its default too, but
+/// says so in the returned warnings — the user's settings didn't apply and
+/// they need to know why. `theme` is taken verbatim as a raw name string —
+/// whether it names a real registry entry is the registry's business at
+/// resolve time, not this loader's, so no warning is produced here for an
+/// unrecognized value.
 pub fn load_ui_settings(path: &Path) -> (UiSettings, Vec<String>) {
     let mut settings = UiSettings::default();
     let mut warnings = Vec::new();
-    let Ok(contents) = std::fs::read_to_string(path) else {
-        return (settings, warnings);
-    };
-    let Ok(value) = toml::from_str::<toml::Value>(&contents) else {
-        return (settings, warnings);
+    let value = match read_config(path) {
+        Ok(Some(v)) => v,
+        Ok(None) => return (settings, warnings),
+        Err(e) => {
+            warnings.push(format!("{e}; using default settings"));
+            return (settings, warnings);
+        }
     };
 
     if let Some(cmd) = value.get("clipboard_cmd").and_then(|v| v.as_str()) {
@@ -356,27 +403,17 @@ pub fn config_file_path() -> Option<PathBuf> {
 /// key is preserved byte-for-byte (same posture as
 /// `ProjectsRegistry::save_to`). Creates the parent directory if needed.
 pub fn save_ui_theme(path: &Path, name: &str) -> anyhow::Result<()> {
-    let existing = std::fs::read_to_string(path).unwrap_or_default();
-    let mut doc: toml_edit::DocumentMut = existing.parse().unwrap_or_default();
+    let mut doc = read_config_doc(path)?;
     doc["theme"] = toml_edit::value(name);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(path, doc.to_string())?;
-    Ok(())
+    write_config_doc(path, &doc)
 }
 
 /// Sets one top-level boolean in `config.toml`, keeping everything else
 /// byte-for-byte (the `ai_confirmed` "don't ask again" flag).
 pub fn save_ui_flag(path: &Path, key: &str, value: bool) -> anyhow::Result<()> {
-    let existing = std::fs::read_to_string(path).unwrap_or_default();
-    let mut doc: toml_edit::DocumentMut = existing.parse().unwrap_or_default();
+    let mut doc = read_config_doc(path)?;
     doc[key] = toml_edit::value(value);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(path, doc.to_string())?;
-    Ok(())
+    write_config_doc(path, &doc)
 }
 
 /// The directory custom theme files live in: `<config dir>/themes`.
@@ -447,14 +484,46 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn load_missing_or_corrupt_is_default() {
+    fn load_missing_is_default_and_a_mistyped_table_degrades_silently() {
         let dir = tempdir().unwrap();
         let p = dir.path().join("config.toml");
-        let r = ProjectsRegistry::load_from(&p);
+        let (r, warnings) = ProjectsRegistry::load_from(&p);
         assert!(r.known.is_empty() && r.last.is_none());
+        assert!(warnings.is_empty(), "a missing file is nothing to report");
         std::fs::write(&p, "projects = 5\n").unwrap();
-        let r = ProjectsRegistry::load_from(&p);
-        assert!(r.known.is_empty(), "corrupt config degrades to default");
+        let (r, warnings) = ProjectsRegistry::load_from(&p);
+        assert!(r.known.is_empty(), "mistyped table degrades to default");
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn a_config_that_does_not_parse_is_reported_and_never_overwritten() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("config.toml");
+        let broken = "theme = \"dark\"\nclipboard_cmd = \"xclip\nai_cmd = \"claude -p\"\n\n[projects]\nknown = [\"/tmp/a\"]\n";
+        std::fs::write(&p, broken).unwrap();
+
+        let (r, warnings) = ProjectsRegistry::load_from(&p);
+        assert!(r.known.is_empty());
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("could not parse"), "{warnings:?}");
+        let (s, warnings) = load_ui_settings(&p);
+        assert_eq!(s, UiSettings::default());
+        assert!(
+            warnings.iter().any(|w| w.contains("could not parse")),
+            "{warnings:?}"
+        );
+
+        let mut r = r;
+        r.register(PathBuf::from("/tmp/b"));
+        assert!(r.save_to(&p).is_err(), "the registry save refuses");
+        assert!(save_ui_theme(&p, "light").is_err());
+        assert!(save_ui_flag(&p, "ai_confirmed", true).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            broken,
+            "every refused save leaves the user's file byte-for-byte"
+        );
     }
 
     #[test]
@@ -462,7 +531,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let p = dir.path().join("config.toml");
         std::fs::write(&p, "theme = \"dark\"\n").unwrap();
-        let mut r = ProjectsRegistry::load_from(&p);
+        let (mut r, _) = ProjectsRegistry::load_from(&p);
         r.register(PathBuf::from("/tmp/a"));
         r.register(PathBuf::from("/tmp/b"));
         r.register(PathBuf::from("/tmp/a")); // dedup, but last updates
@@ -474,7 +543,7 @@ mod tests {
             text.contains("theme = \"dark\""),
             "unrelated key preserved: {text}"
         );
-        let r2 = ProjectsRegistry::load_from(&p);
+        let (r2, _) = ProjectsRegistry::load_from(&p);
         assert_eq!(
             r2.known,
             vec![PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")]
@@ -485,7 +554,7 @@ mod tests {
 
     #[test]
     fn next_after_cycles_and_wraps() {
-        let mut r = ProjectsRegistry::load_from(&PathBuf::from("/nonexistent"));
+        let (mut r, _) = ProjectsRegistry::load_from(&PathBuf::from("/nonexistent"));
         assert!(
             r.next_after(&PathBuf::from("/tmp/a")).is_none(),
             "fewer than two projects"
@@ -562,12 +631,13 @@ mod tests {
     }
 
     #[test]
-    fn load_ui_settings_corrupt_file_is_default() {
+    fn load_ui_settings_corrupt_file_is_default_with_a_warning() {
         let dir = tempdir().unwrap();
         let p = dir.path().join("config.toml");
         std::fs::write(&p, "not valid toml [[[").unwrap();
-        let (s, _warnings) = load_ui_settings(&p);
+        let (s, warnings) = load_ui_settings(&p);
         assert_eq!(s, UiSettings::default());
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
     }
 
     #[test]

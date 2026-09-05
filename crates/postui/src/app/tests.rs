@@ -20902,3 +20902,71 @@ fn a_held_tip_closes_when_its_token_moves_instead_of_swapping_to_a_covered_one()
     render_once(&mut app);
     assert!(app.var_token_tip().is_none(), "the hold died with the tip");
 }
+// --- a project that refuses to open ---------------------------------------
+
+#[test]
+fn startup_with_a_broken_project_file_runs_empty_and_leaves_the_file_alone() {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::storage::ensure_project(dir.path()).unwrap();
+    postui_core::storage::save_request(dir.path(), "main/ping", &req("https://x/ping")).unwrap();
+    let broken = "spaces = [\"main\"\n";
+    std::fs::write(dir.path().join("project.toml"), broken).unwrap();
+
+    let app = App::with_root(tx, dir.path().to_path_buf());
+    let err = app.open_error.as_ref().expect("the open is refused");
+    assert_eq!(err.root, dir.path());
+    assert_eq!(err.file, "project.toml");
+    assert!(
+        app.project.root.as_os_str().is_empty(),
+        "nothing is loaded: the app runs on an empty root"
+    );
+    assert!(!app.project.can_persist());
+    assert!(app.sidebar.rows.is_empty());
+    let notice = app.sidebar.notice.as_deref().expect("the sidebar explains");
+    assert!(notice.contains("project.toml"), "{notice}");
+    assert!(
+        app.toasts
+            .entries()
+            .iter()
+            .any(|(m, k)| m.contains("project.toml") && matches!(k, ToastKind::Error)),
+        "{:?}",
+        app.toasts.messages()
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("project.toml")).unwrap(),
+        broken,
+        "the broken file is the user's to fix, never rewritten"
+    );
+}
+
+#[test]
+fn switching_to_a_project_that_refuses_to_open_stays_put() {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let good = tempfile::tempdir().unwrap();
+    postui_core::storage::ensure_project(good.path()).unwrap();
+    postui_core::storage::save_request(good.path(), "main/ping", &req("https://x/ping")).unwrap();
+    let bad = tempfile::tempdir().unwrap();
+    postui_core::storage::ensure_project(bad.path()).unwrap();
+    std::fs::write(bad.path().join("variables.toml"), "[\"bad name\"]\n").unwrap();
+
+    let mut app = App::with_root(tx, good.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("main/ping".into()));
+    app.update(Action::ForceSwitchProject(bad.path().to_path_buf()));
+    assert_eq!(
+        app.project.root,
+        good.path(),
+        "the current project stays open"
+    );
+    assert_eq!(app.editor.slug.as_deref(), Some("main/ping"));
+    assert!(app.open_error.is_none());
+    assert!(
+        app.toasts
+            .entries()
+            .iter()
+            .any(|(m, k)| m.contains("variables.toml") && matches!(k, ToastKind::Error)),
+        "{:?}",
+        app.toasts.messages()
+    );
+}
+

@@ -52,6 +52,10 @@ enum RowId {
 #[derive(Default)]
 pub struct Sidebar {
     pub rows: Vec<Row>,
+    /// Replaces the "No requests yet." empty state while set: the app's
+    /// explanation of why nothing is loaded (a project that refused to
+    /// open). Paragraphs are separated by blank lines.
+    pub notice: Option<String>,
     /// Index of the cursor/selected row, or `None` when no row is selected
     /// (a fresh sidebar with nothing open yet, or the previously selected
     /// row disappeared in a rebuild). The selected fill is honest: it only
@@ -739,9 +743,19 @@ impl Component for Sidebar {
         self.last_list_top = list_area.y;
 
         if self.rows.is_empty() {
-            let empty = Paragraph::new(vec![Line::raw(""), Line::raw("No requests yet.")])
-                .style(Style::default().fg(theme.text_muted).bg(theme.panel));
-            frame.render_widget(empty.centered(), list_area);
+            let empty = match &self.notice {
+                Some(notice) => {
+                    let mut lines = vec![Line::raw("")];
+                    lines.extend(notice.lines().map(|l| Line::raw(l.to_string())));
+                    Paragraph::new(lines)
+                        .wrap(ratatui::widgets::Wrap { trim: false })
+                        .style(Style::default().fg(theme.text).bg(theme.panel))
+                }
+                None => Paragraph::new(vec![Line::raw(""), Line::raw("No requests yet.")])
+                    .style(Style::default().fg(theme.text_muted).bg(theme.panel))
+                    .centered(),
+            };
+            frame.render_widget(empty, list_area);
             return;
         }
 

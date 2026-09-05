@@ -154,7 +154,19 @@ pub(crate) fn edit_project_toml(
         .parse()
         .map_err(|e: toml_edit::TomlError| ProjectError::Parse(e.to_string()))?;
     f(&mut doc);
-    std::fs::write(&path, doc.to_string())?;
+    write_atomic(&path, doc.to_string().as_bytes())?;
+    Ok(())
+}
+
+/// Writes `contents` to `path` through a sibling temp file and a rename,
+/// so a crash mid-write leaves the old file intact rather than a
+/// truncated one (an empty `project.toml` parses as a valid, empty meta —
+/// order, display names and tls policy silently gone).
+pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+    std::io::Write::write_all(&mut tmp, contents)?;
+    tmp.persist(path).map_err(|e| e.error)?;
     Ok(())
 }
 
@@ -249,7 +261,9 @@ fn display_taken(
 /// (`exclude` = the slug being renamed, which is not a collision with
 /// itself).
 pub fn space_slug_for(root: &Path, display: &str, exclude: Option<&str>) -> String {
-    let listed = write_list(root);
+    // Only a collision probe: with an unreadable meta the directories on
+    // disk are the best available answer (the op itself refuses earlier).
+    let listed = write_list(root).unwrap_or_default();
     unique_slug_among(
         Kind::Space,
         display,
@@ -435,7 +449,7 @@ pub fn write_spaces(root: &Path, spaces: &[String]) -> Result<(), ProjectError> 
         .parse()
         .map_err(|e: toml_edit::TomlError| ProjectError::Parse(e.to_string()))?;
     doc["spaces"] = toml_edit::value(spaces_array(spaces));
-    std::fs::write(&path, doc.to_string())?;
+    write_atomic(&path, doc.to_string().as_bytes())?;
     Ok(())
 }
 
@@ -446,8 +460,12 @@ pub fn write_spaces(root: &Path, spaces: &[String]) -> Result<(), ProjectError> 
 /// unlisted directory under `requests/`, alphabetically. Filtering the
 /// display list back onto disk would silently erase those entries, which
 /// the spec forbids.
-fn write_list(root: &Path) -> Vec<String> {
-    let meta = load_meta(root).unwrap_or_default();
+///
+/// A `project.toml` that doesn't parse is an error, never an empty list:
+/// rebuilding the list from directories alone and writing it back would
+/// destroy the user's order and every list-only space.
+fn write_list(root: &Path) -> Result<Vec<String>, ProjectError> {
+    let meta = load_meta(root)?;
     let mut out: Vec<String> = Vec::new();
     for name in &meta.spaces {
         if !out.contains(name) {
@@ -459,7 +477,7 @@ fn write_list(root: &Path) -> Vec<String> {
             out.push(name);
         }
     }
-    out
+    Ok(out)
 }
 
 /// How many entries of a [`write_list`] are real, displayable spaces.
@@ -473,8 +491,8 @@ fn valid_count(spaces: &[String]) -> usize {
 /// display name another space already answers to is refused.
 pub fn create_space(root: &Path, display: &str) -> Result<String, ProjectError> {
     let display = display_name_of(display)?;
-    let meta = load_meta(root).unwrap_or_default();
-    let mut spaces = write_list(root);
+    let meta = load_meta(root)?;
+    let mut spaces = write_list(root)?;
     if display_taken(&display, &spaces, |s| space_display(&meta, s), None) {
         return Err(ProjectError::AlreadyExists(display));
     }
@@ -496,8 +514,8 @@ pub fn create_space(root: &Path, display: &str) -> Result<String, ProjectError> 
 /// caller's job.
 pub fn rename_space(root: &Path, from: &str, display: &str) -> Result<String, ProjectError> {
     let display = display_name_of(display)?;
-    let meta = load_meta(root).unwrap_or_default();
-    let mut spaces = write_list(root);
+    let meta = load_meta(root)?;
+    let mut spaces = write_list(root)?;
     let Some(idx) = spaces.iter().position(|s| s == from) else {
         return Err(ProjectError::NotFound(from.to_string()));
     };
@@ -533,25 +551,56 @@ fn spaces_array(spaces: &[String]) -> toml_edit::Array {
 /// list entry. Refuses the only remaining space. Confirmation is the
 /// caller's job.
 pub fn delete_space(root: &Path, name: &str) -> Result<Option<Trashed>, ProjectError> {
-    let mut spaces = write_list(root);
+    let mut spaces = write_list(root)?;
     let Some(idx) = spaces.iter().position(|s| s == name) else {
         return Err(ProjectError::NotFound(name.to_string()));
     };
     if valid_count(&spaces) == 1 {
         return Err(ProjectError::LastSpace);
     }
-    let dir = space_dir(root, name);
-    let trashed = if dir.is_dir() {
-        Some(crate::trash::trash(root, &dir)?)
-    } else {
-        None
-    };
     spaces.remove(idx);
-    edit_project_toml(root, |doc| {
+    // The list edit goes first: it is the step that can fail on a broken
+    // or read-only project.toml, and a directory trashed ahead of a failed
+    // edit would be emptied at the next open with no undo step recorded.
+    let saved = edit_project_toml_saving(root, |doc| {
         doc["spaces"] = toml_edit::value(spaces_array(&spaces));
         remove_item_table(doc, Kind::Space, name);
     })?;
-    Ok(trashed)
+    let dir = space_dir(root, name);
+    if !dir.is_dir() {
+        return Ok(None);
+    }
+    match crate::trash::trash(root, &dir) {
+        Ok(t) => Ok(Some(t)),
+        Err(e) => {
+            saved.restore(root);
+            Err(e.into())
+        }
+    }
+}
+
+/// The text of `project.toml` before an [`edit_project_toml`] call, so a
+/// later step of the same op that fails can put the file back.
+struct SavedToml(Option<String>);
+
+impl SavedToml {
+    fn restore(self, root: &Path) {
+        let path = root.join("project.toml");
+        let _ = match self.0 {
+            Some(text) => write_atomic(&path, text.as_bytes()),
+            None => std::fs::remove_file(&path),
+        };
+    }
+}
+
+/// [`edit_project_toml`], handing back the prior text for a rollback.
+fn edit_project_toml_saving(
+    root: &Path,
+    f: impl FnOnce(&mut toml_edit::DocumentMut),
+) -> Result<SavedToml, ProjectError> {
+    let before = read_optional(&root.join("project.toml"))?;
+    edit_project_toml(root, f)?;
+    Ok(SavedToml(before))
 }
 
 /// Moves `name` by `delta` positions (clamped to the ends). Unlisted
@@ -578,7 +627,7 @@ fn displayed_spaces(spaces: &[String]) -> Vec<String> {
 /// Moves `name` by `delta` among the displayed spaces (a swap of two
 /// slots). `None` when the move changes nothing.
 pub fn move_space(root: &Path, name: &str, delta: i32) -> Result<Option<ListChange>, ProjectError> {
-    let mut spaces = write_list(root);
+    let mut spaces = write_list(root)?;
     // Reorder among the *displayed* spaces only: an invalid listed entry
     // isn't a row the user can see, so it must not absorb a step — and it
     // keeps the slot it was written in.
@@ -619,7 +668,7 @@ pub fn set_space_order(
     root: &Path,
     displayed: &[String],
 ) -> Result<Option<ListChange>, ProjectError> {
-    let mut spaces = write_list(root);
+    let mut spaces = write_list(root)?;
     let slots: Vec<usize> = (0..spaces.len())
         .filter(|i| valid_space_name(&spaces[*i]))
         .collect();
@@ -654,7 +703,7 @@ pub fn set_space_order(
 /// are one atomic step, so a concurrent writer can't be clobbered.
 pub fn create_environment(root: &Path, display: &str) -> Result<String, ProjectError> {
     let display = display_name_of(display)?;
-    let meta = load_meta(root).unwrap_or_default();
+    let meta = load_meta(root)?;
     let existing = list_environments(root);
     if display_taken(&display, &existing, |s| env_display(&meta, s), None) {
         return Err(ProjectError::AlreadyExists(display));
@@ -687,7 +736,7 @@ pub fn rename_environment(root: &Path, from: &str, display: &str) -> Result<Stri
     if !from_path.is_file() {
         return Err(ProjectError::NotFound(from.to_string()));
     }
-    let meta = load_meta(root).unwrap_or_default();
+    let meta = load_meta(root)?;
     let existing = list_environments(root);
     if display_taken(&display, &existing, |s| env_display(&meta, s), Some(from)) {
         return Err(ProjectError::AlreadyExists(display));
@@ -710,11 +759,18 @@ pub fn delete_environment(root: &Path, name: &str) -> Result<Trashed, ProjectErr
     if !path.is_file() {
         return Err(ProjectError::NotFound(name.to_string()));
     }
-    let trashed = crate::trash::trash(root, &path)?;
-    edit_project_toml(root, |doc| {
+    // Same order as `delete_space`: the fallible toml edit first, the
+    // trash rename second, rolled back if the rename fails.
+    let saved = edit_project_toml_saving(root, |doc| {
         remove_item_table(doc, Kind::Environment, name);
     })?;
-    Ok(trashed)
+    match crate::trash::trash(root, &path) {
+        Ok(t) => Ok(t),
+        Err(e) => {
+            saved.restore(root);
+            Err(e.into())
+        }
+    }
 }
 
 pub fn load_environment(root: &Path, name: &str) -> Result<varmodel::EnvData, ProjectError> {
@@ -737,7 +793,7 @@ pub fn save_local_state(root: &Path, state: &LocalState) -> std::io::Result<()> 
     let dir = root.join(".local");
     std::fs::create_dir_all(&dir)?;
     let contents = toml::to_string(state).expect("LocalState always serializes");
-    std::fs::write(dir.join("state.toml"), contents)
+    write_atomic(&dir.join("state.toml"), contents.as_bytes())
 }
 
 /// Loads `.local/secrets.toml`: env → name → value. Missing file yields an
@@ -760,9 +816,7 @@ pub fn save_secrets(
     let dir = root.join(".local");
     std::fs::create_dir_all(&dir)?;
     let contents = toml::to_string(secrets).expect("secrets always serialize");
-    let tmp_path = dir.join(".secrets.toml.tmp");
-    std::fs::write(&tmp_path, contents)?;
-    std::fs::rename(&tmp_path, dir.join("secrets.toml"))
+    write_atomic(&dir.join("secrets.toml"), contents.as_bytes())
 }
 
 /// Writes `path` with `contents` only if it does not already exist.
@@ -1617,6 +1671,63 @@ mod tests {
             delete_space(dir.path(), "auth"),
             Err(ProjectError::NotFound(_))
         ));
+    }
+
+    #[test]
+    fn delete_space_refuses_a_broken_project_toml_without_touching_the_dir() {
+        let dir = tempdir().unwrap();
+        create_space(dir.path(), "main").unwrap();
+        create_space(dir.path(), "auth").unwrap();
+        std::fs::write(
+            space_dir(dir.path(), "auth").join("login.toml"),
+            "url = \"x\"\n",
+        )
+        .unwrap();
+        // Syntactically broken (hand edit) …
+        let broken = "spaces = [\"main\", \"auth\"\n";
+        std::fs::write(dir.path().join("project.toml"), broken).unwrap();
+        assert!(matches!(
+            delete_space(dir.path(), "auth"),
+            Err(ProjectError::Parse(_))
+        ));
+        assert!(space_dir(dir.path(), "auth").join("login.toml").is_file());
+        assert!(!crate::trash::trash_dir(dir.path()).exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("project.toml")).unwrap(),
+            broken
+        );
+        // … and valid TOML that fails deserialisation (a newer build's key).
+        let unknown = "spaces = [\"zeta\", \"main\", \"auth\"]\nversion = 2\n";
+        std::fs::write(dir.path().join("project.toml"), unknown).unwrap();
+        for result in [
+            delete_space(dir.path(), "auth").map(|_| ()),
+            move_space(dir.path(), "auth", -1).map(|_| ()),
+            create_space(dir.path(), "billing").map(|_| ()),
+            rename_space(dir.path(), "auth", "Auth 2").map(|_| ()),
+            set_space_order(dir.path(), &["auth".into(), "main".into()]).map(|_| ()),
+            create_environment(dir.path(), "qa").map(|_| ()),
+        ] {
+            assert!(matches!(result, Err(ProjectError::Parse(_))), "{result:?}");
+        }
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("project.toml")).unwrap(),
+            unknown,
+            "the user's list (order, list-only zeta) survives every refused op"
+        );
+        assert!(space_dir(dir.path(), "auth").join("login.toml").is_file());
+    }
+
+    #[test]
+    fn delete_environment_refuses_a_broken_project_toml_without_trashing() {
+        let dir = tempdir().unwrap();
+        create_environment(dir.path(), "qa").unwrap();
+        std::fs::write(dir.path().join("project.toml"), "[environment.qa\n").unwrap();
+        assert!(matches!(
+            delete_environment(dir.path(), "qa"),
+            Err(ProjectError::Parse(_))
+        ));
+        assert!(environment_path(dir.path(), "qa").is_file());
+        assert!(!crate::trash::trash_dir(dir.path()).exists());
     }
 
     #[test]

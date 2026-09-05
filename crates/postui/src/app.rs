@@ -360,6 +360,12 @@ pub struct App {
     /// never rewritten away (the user's file stays the user's), so they
     /// too are a chronic state that must not re-toast on every refresh.
     last_spaces_warning: Option<String>,
+    /// Set when the project the app was asked to open refused (a file it
+    /// would write back is unreadable — see `ProjectContext::open`). The
+    /// app then runs on an empty root with nothing loaded; the message is
+    /// shown where the request list would be, and only opening another
+    /// project (or fixing the file and relaunching) leaves this state.
+    pub open_error: Option<crate::project_ctx::OpenError>,
     /// Keeps the test-only channel's receiver alive so `tx` doesn't become
     /// a dangling sender in `App::new_for_test()`. Always `None` outside
     /// of tests.
@@ -502,14 +508,18 @@ impl App {
     /// self-initializing or prompting to create as its disposition says.
     pub fn new(tx: UnboundedSender<Action>, cli_root: Option<PathBuf>) -> Self {
         let registry_path = crate::config::config_file_path();
-        let registry = registry_path
+        let (registry, registry_warnings) = registry_path
             .as_deref()
             .map(crate::config::ProjectsRegistry::load_from)
             .unwrap_or_default();
-        let (ui_settings, ui_warnings) = registry_path
+        let (ui_settings, mut ui_warnings) = registry_path
             .as_deref()
             .map(crate::config::load_ui_settings)
             .unwrap_or_default();
+        // Both loaders parse the same file: one parse failure, one toast.
+        if !registry_warnings.is_empty() && ui_warnings.is_empty() {
+            ui_warnings.extend(registry_warnings);
+        }
         let themes_dir = crate::config::themes_dir_path();
         let (themes, theme_warnings) = crate::theme::ThemeRegistry::load(themes_dir.as_deref());
         let terminal_colors = {
@@ -525,7 +535,6 @@ impl App {
                     .expect("terminal is always registered"),
             ),
         };
-        let mut ui_warnings = ui_warnings;
         ui_warnings.extend(theme_warnings); // malformed custom theme files surface as startup toasts
         if theme_name != ui_settings.theme {
             ui_warnings.push(format!(
@@ -599,6 +608,15 @@ impl App {
             );
         }
 
+        if app.open_error.is_some() {
+            // The project refused to open: the app runs empty until the
+            // user opens another one, so none of the dispositions apply.
+            if testbed {
+                app.screen = Screen::Testbed;
+            }
+            return app;
+        }
+
         match disposition {
             StartupDisposition::InitDefault => {
                 app.init_default_project();
@@ -629,9 +647,7 @@ impl App {
                     );
                 } else if register {
                     app.registry.register(app.project.root.clone());
-                    if let Some(path) = &app.registry_path {
-                        let _ = app.registry.save_to(path);
-                    }
+                    app.save_registry();
                 }
             }
         }
@@ -641,6 +657,19 @@ impl App {
         }
 
         app
+    }
+
+    /// Persists the registry to `config.toml`, telling the user when it
+    /// couldn't be (a config that doesn't parse is refused, not replaced).
+    fn save_registry(&mut self) {
+        if let Some(path) = &self.registry_path
+            && let Err(e) = self.registry.save_to(path)
+        {
+            self.toasts.push(
+                format!("could not save project list: {e}"),
+                ToastKind::Error,
+            );
+        }
     }
 
     /// The `StartupDisposition::InitDefault` tail: writes `project.toml`
@@ -660,9 +689,7 @@ impl App {
         self.project.reload_meta();
         self.project.reload_spaces();
         self.registry.register(self.project.root.clone());
-        if let Some(path) = &self.registry_path {
-            let _ = self.registry.save_to(path);
-        }
+        self.save_registry();
     }
 
     /// Opens `root` as the project directory: ensures `root/requests/`
@@ -672,6 +699,12 @@ impl App {
     /// app).
     pub fn with_root(tx: UnboundedSender<Action>, root: PathBuf) -> Self {
         let mut app = Self::bare(tx, root);
+        if app.open_error.is_some() {
+            // Nothing is loaded: seeding `requests/main` would land in the
+            // process's cwd, and there is no saved request to restore.
+            app.show_open_error();
+            return app;
+        }
         match postui_core::storage::ensure_project(&app.project.root) {
             Ok(()) => {
                 // The context was opened before `ensure_project` seeded
@@ -840,12 +873,43 @@ impl App {
         }
     }
 
+    /// The context the app runs on when it has no project: an empty root,
+    /// which has no files to read (so this can't fail) and can't persist.
+    fn empty_project() -> ProjectContext {
+        ProjectContext::open(PathBuf::new())
+            .expect("an empty root has no files to fail on")
+            .0
+    }
+
+    /// Shows `open_error` in place of the request list — the sidebar's
+    /// empty state doubles as the "nothing is loaded" screen.
+    fn show_open_error(&mut self) {
+        self.sidebar.notice = self.open_error.as_ref().map(|e| {
+            format!(
+                "Could not open {}.\n\n{}\n\nFix the file and relaunch, or open another project.",
+                e.root.display(),
+                e
+            )
+        });
+    }
+
     fn bare(tx: UnboundedSender<Action>, root: PathBuf) -> Self {
-        let (project, warnings) = ProjectContext::open(root);
         let mut toasts = Toasts::default();
-        for w in warnings {
-            toasts.push(w, ToastKind::Warning);
-        }
+        let (project, open_error) = match ProjectContext::open(root) {
+            Ok((project, warnings)) => {
+                for w in warnings {
+                    toasts.push(w, ToastKind::Warning);
+                }
+                (project, None)
+            }
+            Err(e) => {
+                toasts.push(
+                    format!("could not open {}: {e}", e.root.display()),
+                    ToastKind::Error,
+                );
+                (Self::empty_project(), Some(e))
+            }
+        };
         let mut app = Self {
             should_quit: false,
             focus: PaneId::Sidebar,
@@ -908,6 +972,7 @@ impl App {
             last_action_failed: false,
             last_loose_warning: None,
             last_spaces_warning: None,
+            open_error,
             _test_rx: None,
             _test_dir: None,
             history: crate::undo::History::new(),
@@ -2760,9 +2825,7 @@ impl App {
                 match postui_core::project::init_project(&self.project.root, None) {
                     Ok(()) => {
                         self.registry.register(self.project.root.clone());
-                        if let Some(path) = &self.registry_path {
-                            let _ = self.registry.save_to(path);
-                        }
+                        self.save_registry();
                         if let Err(e) = postui_core::storage::ensure_project(&self.project.root) {
                             self.toasts
                                 .push(format!("could not open project: {e}"), ToastKind::Error);
@@ -2945,6 +3008,21 @@ impl App {
                 true
             }
             Action::ForceSwitchProject(target) => {
+                // Open the incoming project before touching the current
+                // one: a project that refuses to open (a broken file it
+                // would write back) leaves the current project exactly as
+                // it was.
+                let (project, warnings) = match ProjectContext::open(target.clone()) {
+                    Ok(opened) => opened,
+                    Err(e) => {
+                        self.toasts.push(
+                            format!("could not open {}: {e}", e.root.display()),
+                            ToastKind::Error,
+                        );
+                        self.last_action_failed = true;
+                        return true;
+                    }
+                };
                 // A switch can land with the mouse button still held (alt+z
                 // cycles projects): every drag and armed press belongs to
                 // the project being left — a press left armed would promote
@@ -2966,8 +3044,9 @@ impl App {
                             &postui_core::project::ProjectMeta::default(),
                         )
                     });
-                let (project, warnings) = ProjectContext::open(target.clone());
                 self.project = project;
+                self.open_error = None;
+                self.sidebar.notice = None;
                 // A different tree has a different set of loose files.
                 self.last_loose_warning = None;
                 self.last_spaces_warning = None;
@@ -2998,9 +3077,7 @@ impl App {
                     }
                 }
                 self.registry.register(target);
-                if let Some(path) = &self.registry_path {
-                    let _ = self.registry.save_to(path);
-                }
+                self.save_registry();
                 self.toasts
                     .push(format!("Switched to {name}"), ToastKind::Success);
                 true
@@ -3084,9 +3161,7 @@ impl App {
                     return true;
                 }
                 self.registry.add_known(path.clone());
-                if let Some(p) = &self.registry_path {
-                    let _ = self.registry.save_to(p);
-                }
+                self.save_registry();
                 if self.editor_holds_unsaved() {
                     self.dirty_gate("create", Action::ForceSwitchProject(path));
                 } else {

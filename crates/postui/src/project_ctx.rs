@@ -239,18 +239,42 @@ fn stamp(root: &Path, active_env: &Option<String>) -> Vec<(PathBuf, Option<Syste
     ]
 }
 
+/// Why a project refused to open: a file the app would later write back
+/// (`project.toml`, `variables.toml`, an environment file, the local
+/// state or secrets) exists but could not be read or parsed. Opening it
+/// anyway would mean running on defaults and, at the first save, writing
+/// those defaults over the user's file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenError {
+    pub root: PathBuf,
+    /// The offending file, relative to `root`.
+    pub file: String,
+    pub error: String,
+}
+
+impl std::fmt::Display for OpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.file, self.error)
+    }
+}
+
 impl ProjectContext {
     /// Opens `root` as a project: loads meta/variables/environments/local
-    /// state/secrets and the active environment's data. Never fails
-    /// outright — any individual piece that can't be read degrades to a
-    /// sane default and its problem is appended to the returned warnings.
-    pub fn open(root: PathBuf) -> (Self, Vec<String>) {
+    /// state/secrets and the active environment's data. A *missing* file
+    /// is its default; a file that exists but can't be read or parsed
+    /// refuses the open with an [`OpenError`] naming it, so a broken file
+    /// is never silently replaced by defaults. Anything else that's off
+    /// (a stale saved space, a selection that no longer resolves) degrades
+    /// and is appended to the returned warnings.
+    pub fn open(root: PathBuf) -> Result<(Self, Vec<String>), OpenError> {
         let mut warnings = Vec::new();
+        let fatal = |file: &str, e: &dyn std::fmt::Display| OpenError {
+            root: root.clone(),
+            file: file.to_string(),
+            error: e.to_string(),
+        };
 
-        let meta = postui_core::project::load_meta(&root).unwrap_or_else(|e| {
-            warnings.push(format!("could not read project.toml: {e}"));
-            ProjectMeta::default()
-        });
+        let meta = postui_core::project::load_meta(&root).map_err(|e| fatal("project.toml", &e))?;
         // The trash only backs this session's undo; a fresh open starts clean.
         if !root.as_os_str().is_empty()
             && let Err(e) = postui_core::trash::empty(&root)
@@ -266,10 +290,7 @@ impl ProjectContext {
             // applies or declines the migration.
             VarModel::default()
         } else {
-            postui_core::project::load_variables(&root).unwrap_or_else(|e| {
-                warnings.push(format!("could not read variables.toml: {e}"));
-                VarModel::default()
-            })
+            postui_core::project::load_variables(&root).map_err(|e| fatal("variables.toml", &e))?
         };
         let mut environments = postui_core::project::list_environments(&root);
         // A project always has an environment to be in: one opened with
@@ -291,10 +312,8 @@ impl ProjectContext {
             }
         }
 
-        let local_state = postui_core::project::load_local_state(&root).unwrap_or_else(|e| {
-            warnings.push(format!("could not read local state: {e}"));
-            postui_core::project::LocalState::default()
-        });
+        let local_state = postui_core::project::load_local_state(&root)
+            .map_err(|e| fatal(".local/state.toml", &e))?;
 
         let first_space = spaces
             .first()
@@ -325,10 +344,8 @@ impl ProjectContext {
             _ => local_state.space_open.get(&active_space).cloned(),
         };
 
-        let secrets = postui_core::project::load_secrets(&root).unwrap_or_else(|e| {
-            warnings.push(format!("could not read secrets: {e}"));
-            IndexMap::new()
-        });
+        let secrets = postui_core::project::load_secrets(&root)
+            .map_err(|e| fatal(".local/secrets.toml", &e))?;
 
         let mut active_env = None;
         let mut env_data = varmodel::EnvData::default();
@@ -349,8 +366,14 @@ impl ProjectContext {
                 // the active one, so applying the migration loads it.
                 active_env = Some(env);
             } else {
-                match load_and_validate_env(&root, &env, &model) {
-                    Ok(data) => {
+                // The file itself failing is fatal (it's one the app writes
+                // back); a value the variables don't declare is only a
+                // warning — the environment stays unloaded, nothing is
+                // written, and the user fixes it from the Manage screen.
+                let data = postui_core::project::load_environment(&root, &env)
+                    .map_err(|e| fatal(&format!("environments/{env}.toml"), &e))?;
+                match varmodel::validate_env(&model, &data) {
+                    Ok(()) => {
                         env_data = data;
                         active_env = Some(env);
                     }
@@ -414,7 +437,7 @@ impl ProjectContext {
         }
 
         ctx.refresh_resolved();
-        (ctx, warnings)
+        Ok((ctx, warnings))
     }
 
     /// The project's display name: `meta.name`, falling back to the root
@@ -1139,7 +1162,7 @@ mod tests {
     #[test]
     fn open_bare_dir_defaults_and_open_project_restores_state() {
         let dir = tempfile::tempdir().unwrap();
-        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf());
+        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         assert!(warns.is_empty());
         assert_eq!(ctx.env_label(), "no env");
         assert!(ctx.environments.is_empty());
@@ -1157,7 +1180,7 @@ mod tests {
             },
         )
         .unwrap();
-        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf());
+        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         assert!(warns.is_empty());
         assert_eq!(ctx.display_name(), "svc");
         assert_eq!(ctx.env_label(), "qa");
@@ -1174,7 +1197,7 @@ mod tests {
         std::fs::write(dir.path().join("environments/prod.toml"), "").unwrap();
         std::fs::write(dir.path().join("environments/qa.toml"), "").unwrap();
         postui_core::project::set_env_tls(dir.path(), "prod", Some(TlsPolicy::Verify)).unwrap();
-        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         assert_eq!(ctx.env_tls(), None, "no env: per request");
         assert_eq!(ctx.prepare_context().tls_override, None);
         ctx.set_env(Some("prod".into()));
@@ -1196,7 +1219,7 @@ mod tests {
             },
         )
         .unwrap();
-        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf());
+        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         assert_eq!(
             ctx.env_label(),
             "default",
@@ -1213,12 +1236,12 @@ mod tests {
     fn open_lands_in_the_first_env_and_recreates_default_when_none_are_left() {
         let dir = tempfile::tempdir().unwrap();
         postui_core::project::init_project(dir.path(), None).unwrap();
-        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf());
+        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         assert!(warns.is_empty(), "{warns:?}");
         assert_eq!(ctx.active_env.as_deref(), Some("default"));
 
         std::fs::remove_file(dir.path().join("environments/default.toml")).unwrap();
-        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf());
+        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         assert_eq!(ctx.environments, vec!["default".to_string()]);
         assert_eq!(ctx.active_env.as_deref(), Some("default"));
         assert!(
@@ -1230,14 +1253,14 @@ mod tests {
         assert!(dir.path().join("environments/default.toml").is_file());
 
         let bare = tempfile::tempdir().unwrap();
-        let (ctx, _) = ProjectContext::open(bare.path().to_path_buf());
+        let (ctx, _) = ProjectContext::open(bare.path().to_path_buf()).unwrap();
         assert!(ctx.environments.is_empty());
         assert!(!bare.path().join("environments").exists());
     }
 
     #[test]
     fn bare_root_context_cannot_persist_local_state() {
-        let (ctx, _warns) = ProjectContext::open(PathBuf::new());
+        let (ctx, _warns) = ProjectContext::open(PathBuf::new()).unwrap();
         assert!(
             !ctx.can_persist(),
             "a bare (empty) root must not be persistable"
@@ -1262,7 +1285,7 @@ mod tests {
         postui_core::project::init_project(dir.path(), None).unwrap();
         postui_core::storage::ensure_project(dir.path()).unwrap();
         std::fs::write(dir.path().join("environments/qa.toml"), "tok = \"1\"\n").unwrap();
-        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         ctx.set_env(Some("qa".into()));
         let (changed, _) = ctx.reload_if_changed();
         assert!(!changed, "nothing changed yet");
@@ -1279,7 +1302,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         postui_core::project::init_project(dir.path(), None).unwrap();
         std::fs::write(dir.path().join("variables.toml"), "[a]\ndefault = \"1\"\n").unwrap();
-        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         assert_eq!(ctx.model.vars["a"].default.as_deref(), Some("1"));
         std::fs::write(dir.path().join("variables.toml"), "not toml [").unwrap();
         bump_mtime(&dir.path().join("variables.toml"));
@@ -1297,7 +1320,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         postui_core::project::init_project(dir.path(), None).unwrap();
         std::fs::write(dir.path().join("environments/qa.toml"), "tok = \"1\"\n").unwrap();
-        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         ctx.set_env(Some("qa".into()));
         std::fs::remove_file(dir.path().join("environments/qa.toml")).unwrap();
         // no mtime bump needed: the active env file's stamp goes Some -> None,
@@ -1346,7 +1369,7 @@ mod tests {
         secrets.insert("qa".to_string(), qa_secrets);
         postui_core::project::save_secrets(dir.path(), &secrets).unwrap();
 
-        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf());
+        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         assert!(warns.is_empty(), "{warns:?}");
         assert_eq!(ctx.resolved.values["user"], "2002");
         assert_eq!(ctx.resolved.values["api_key"], "sk-test");
@@ -1383,7 +1406,7 @@ mod tests {
         )
         .unwrap();
 
-        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf());
+        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         assert!(
             warns
                 .iter()
@@ -1420,7 +1443,7 @@ mod tests {
             "[options.user.alice]\nuser = \"1001\"\n",
         )
         .unwrap();
-        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         ctx.set_env(Some("qa".into()));
         ctx.set_selection("user", "alice");
         assert_eq!(ctx.resolved.values["user"], "1001");
@@ -1457,7 +1480,7 @@ mod tests {
             "[options.user.alice]\nuser = \"1001\"\n",
         )
         .unwrap();
-        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         ctx.set_env(Some("qa".into()));
         ctx.set_selection("user", "alice");
         assert_eq!(ctx.resolved.values["user"], "1001");
@@ -1482,7 +1505,7 @@ mod tests {
         let options = "[options.user.alice]\nuser = \"1001\"\n";
         std::fs::write(dir.path().join("environments/qa.toml"), options).unwrap();
         std::fs::write(dir.path().join("environments/dev.toml"), options).unwrap();
-        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         ctx.set_env(Some("qa".into()));
         ctx.set_selection("user", "alice");
         ctx.set_selection_for("dev", "user", "alice");
@@ -1511,7 +1534,7 @@ mod tests {
             "[options.user.alice]\nuser = \"1001\"\n[options.user.bob]\nuser = \"2002\"\n",
         )
         .unwrap();
-        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         ctx.set_env(Some("qa".into()));
         assert!(!ctx.resolved.values.contains_key("user"));
 
@@ -1537,7 +1560,7 @@ mod tests {
     fn shared_selection_persists_globally_and_survives_env_switch() {
         let dir = tempfile::tempdir().unwrap();
         write_shared_locale_project(dir.path());
-        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         ctx.set_env(Some("qa".into()));
 
         ctx.set_selection("locale", "fr");
@@ -1574,7 +1597,7 @@ mod tests {
         )
         .unwrap();
 
-        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf());
+        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         assert!(warns.is_empty(), "{warns:?}");
         assert_eq!(ctx.resolved.values["lang"], "en");
     }
@@ -1595,7 +1618,7 @@ mod tests {
         )
         .unwrap();
 
-        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf());
+        let (ctx, warns) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         assert!(
             warns
                 .iter()
@@ -1611,7 +1634,7 @@ mod tests {
     fn clear_selection_for_a_shared_selector_clears_the_global_pick() {
         let dir = tempfile::tempdir().unwrap();
         write_shared_locale_project(dir.path());
-        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         ctx.set_env(Some("qa".into()));
         ctx.set_selection("locale", "fr");
         assert_eq!(ctx.resolved.values["lang"], "fr");
@@ -1631,7 +1654,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(dir.path().join("environments/qa.toml"), "").unwrap();
-        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         ctx.set_env(Some("qa".into()));
         assert!(!ctx.resolved.values.contains_key("api_key"));
 
@@ -1651,7 +1674,7 @@ mod tests {
     fn set_secret_resolves_immediately_with_no_active_environment() {
         let dir = tempfile::tempdir().unwrap();
         postui_core::project::init_project(dir.path(), None).unwrap();
-        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         // The no-env state is only reachable by an env file going missing.
         ctx.set_env(None);
         std::fs::write(
@@ -1679,7 +1702,7 @@ mod tests {
             "# variables.toml\n\n[base_url]\ndescription = \"API root\"\ndefault = \"http://localhost:8080\"\n",
         )
         .unwrap();
-        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
 
         ctx.edit_variables(|doc| {
             postui_core::varedit::upsert_var(doc, "base_url", None, Some("http://localhost:9090"))
@@ -1708,7 +1731,7 @@ mod tests {
         // write fails after `variables.toml` has already been rewritten.
         std::fs::create_dir(dir.path().join("environments/qa.toml")).unwrap();
 
-        let (mut ctx, _warns) = ProjectContext::open(dir.path().to_path_buf());
+        let (mut ctx, _warns) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         assert!(ctx.pending_migration().is_some());
         assert!(ctx.apply_migration().is_err(), "the env write must fail");
 
@@ -1750,7 +1773,7 @@ mod tests {
             "[options.user.alice]\nuser = \"9001\"\n",
         )
         .unwrap();
-        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         ctx.set_env(Some("qa".into()));
         assert_eq!(ctx.env_data.options["user"]["alice"].values["user"], "9001");
 
@@ -1803,7 +1826,7 @@ mod tests {
     fn open_lists_spaces_and_defaults_to_the_first() {
         let dir = tempfile::tempdir().unwrap();
         spaced_project(dir.path());
-        let (ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        let (ctx, _) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         assert_eq!(ctx.spaces, ["main", "auth"]);
         assert_eq!(ctx.active_space, "main");
     }
@@ -1820,7 +1843,7 @@ mod tests {
         };
         st.space_open.insert("auth".into(), "auth/login".into());
         postui_core::project::save_local_state(dir.path(), &st).unwrap();
-        let (ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        let (ctx, _) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         assert_eq!(ctx.active_space, "auth");
         assert_eq!(ctx.local_open_request().as_deref(), Some("auth/login"));
     }
@@ -1835,7 +1858,7 @@ mod tests {
             ..Default::default()
         };
         postui_core::project::save_local_state(dir.path(), &st).unwrap();
-        let (ctx, warnings) = ProjectContext::open(dir.path().to_path_buf());
+        let (ctx, warnings) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         assert_eq!(ctx.active_space, "auth");
         assert_eq!(ctx.local_open_request().as_deref(), Some("auth/login"));
         assert!(warnings.iter().any(|w| w.contains("gone")), "{warnings:?}");
@@ -1846,7 +1869,7 @@ mod tests {
             ..Default::default()
         };
         postui_core::project::save_local_state(dir.path(), &st).unwrap();
-        let (ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        let (ctx, _) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         assert_eq!(ctx.active_space, "main");
     }
 
@@ -1856,7 +1879,7 @@ mod tests {
         spaced_project(dir.path());
         let t = postui_core::storage::delete_request(dir.path(), "auth/login").unwrap();
         assert!(t.trashed.is_file());
-        let _ = ProjectContext::open(dir.path().to_path_buf());
+        let _ = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         assert!(!postui_core::trash::trash_dir(dir.path()).exists());
     }
 
@@ -1864,7 +1887,7 @@ mod tests {
     fn persist_writes_space_and_space_open() {
         let dir = tempfile::tempdir().unwrap();
         spaced_project(dir.path());
-        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         ctx.record_space_open(Some("main/health"));
         assert!(ctx.set_active_space("auth"));
         ctx.record_space_open(Some("auth/login"));
@@ -1887,7 +1910,7 @@ mod tests {
     fn reload_meta_sees_a_write_the_stamp_cannot() {
         let dir = tempfile::tempdir().unwrap();
         spaced_project(dir.path());
-        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         assert_eq!(ctx.spaces, ["main", "auth"]);
 
         let toml = dir.path().join("project.toml");
@@ -1916,7 +1939,7 @@ mod tests {
     fn reload_picks_up_a_new_space_dir_and_repairs_a_vanished_active_space() {
         let dir = tempfile::tempdir().unwrap();
         spaced_project(dir.path());
-        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         ctx.set_active_space("auth");
         std::fs::create_dir_all(dir.path().join("requests/billing")).unwrap();
         bump_mtime(&dir.path().join("requests"));
@@ -1935,7 +1958,7 @@ mod tests {
     fn rename_and_forget_cascade_local_state() {
         let dir = tempfile::tempdir().unwrap();
         spaced_project(dir.path());
-        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        let (mut ctx, _) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         ctx.set_active_space("auth");
         ctx.record_space_open(Some("auth/login"));
         ctx.expanded.insert("auth/tokens".into());

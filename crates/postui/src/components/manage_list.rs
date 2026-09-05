@@ -692,7 +692,7 @@ mod tests {
         postui_core::storage::ensure_project(dir.path()).unwrap();
         postui_core::project::create_space(dir.path(), "auth").unwrap();
         postui_core::project::create_space(dir.path(), "billing").unwrap();
-        let (ctx, _) = ProjectContext::open(dir.path().to_path_buf());
+        let (ctx, _) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
         assert_eq!(ctx.spaces, ["main", "auth", "billing"]);
         (ctx, dir)
     }
