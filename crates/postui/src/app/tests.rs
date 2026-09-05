@@ -20970,3 +20970,28 @@ fn switching_to_a_project_that_refuses_to_open_stays_put() {
     );
 }
 
+#[test]
+fn save_and_quit_stays_open_when_the_save_fails() {
+    let mut app = dirty_app();
+    // Make the request file unwritable: the save must fail, and the quit
+    // queued behind it must not run with the edit unsaved.
+    let space_dir = app.project.root.join("requests/main");
+    let mut perms = std::fs::metadata(&space_dir).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o555);
+    std::fs::set_permissions(&space_dir, perms.clone()).unwrap();
+    app.update(Action::Quit);
+    app.handle_key(&Keymap::default_bindings(), plain('s'));
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+    std::fs::set_permissions(&space_dir, perms).unwrap();
+    assert!(!app.should_quit, "a failed save must not quit");
+    assert!(app.editor.is_dirty(), "the edit is still there to save");
+    assert!(
+        app.toasts
+            .messages()
+            .iter()
+            .any(|m| m.contains("could not save")),
+        "{:?}",
+        app.toasts.messages()
+    );
+}
+

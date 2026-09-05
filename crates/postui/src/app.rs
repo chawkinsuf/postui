@@ -2215,6 +2215,11 @@ impl App {
                             Err(e) => {
                                 self.toasts
                                     .push(format!("could not save {slug}: {e}"), ToastKind::Error);
+                                // A "Save & quit/switch/open" gate queues
+                                // its follow-on behind this save; a save
+                                // that failed must stop it, or the edits
+                                // it was meant to keep are discarded.
+                                self.last_action_failed = true;
                             }
                         }
                     }
