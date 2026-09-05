@@ -44,13 +44,10 @@ impl App {
             .hit_at_ignoring_var_tokens(m.column, m.row)
             .cloned();
         // The tooltip hold: the pointer on the last-drawn tip's panel or a
-        // pill captures that tip (name + anchor), so it holds through a
-        // click on its pills and drops on the first event landing
-        // elsewhere.
-        self.held_tip = match (under.as_ref().and_then(Hit::tip_name), &self.drawn_tip) {
-            (Some(name), Some(drawn)) if drawn.name == name => Some(drawn.clone()),
-            _ => None,
-        };
+        // pill holds that tip, so it survives a click on its pills and
+        // drops on the first event landing elsewhere. (The tip hits in
+        // the map all belong to `drawn_tip` — one tip per frame.)
+        self.tip_held = under.as_ref().and_then(Hit::tip_name).is_some();
 
         match m.kind {
             // Terminals report pointer motion with a button held as `Drag`,

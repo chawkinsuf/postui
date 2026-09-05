@@ -442,14 +442,18 @@ impl HitMap {
             .map(|(_, hit)| hit)
     }
 
-    /// Whether `hit` was registered over exactly `rect` this frame — the
-    /// tooltip's hold uses it to confirm its token is still drawn where
-    /// the tip was anchored (a token can be drawn more than once).
-    pub fn contains_region(&self, rect: Rect, hit: &Hit) -> bool {
-        self.regions.iter().any(|(r, h)| *r == rect && h == hit)
+    /// Whether `{{name}}` was drawn over exactly `rect` this frame — the
+    /// tooltip's hold uses it to confirm its token is still where the tip
+    /// was anchored (a token can be drawn more than once). Borrows, so
+    /// the per-frame check allocates nothing.
+    pub fn var_token_drawn_at(&self, rect: Rect, name: &str) -> bool {
+        self.regions
+            .iter()
+            .any(|(r, h)| *r == rect && matches!(h, Hit::VarToken(n) if n == name))
     }
 
     /// Every rect `hit` was registered over this frame, in draw order.
+    #[cfg(test)]
     pub fn rects_of(&self, hit: &Hit) -> Vec<Rect> {
         self.regions
             .iter()

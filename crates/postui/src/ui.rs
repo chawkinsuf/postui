@@ -394,7 +394,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             // resting pointer) would otherwise re-raise it, secret and
             // all, the moment the token came back.
             app.drawn_tip = None;
-            app.held_tip = None;
+            app.tip_held = false;
             app.tip_revealed = None;
         }
     }
@@ -428,7 +428,22 @@ fn draw_var_tooltip(
     use crate::hit::Hit;
     use ratatui::layout::Rect;
     use unicode_width::UnicodeWidthStr;
-    let mut value_lines = wrap_cells(&info.tooltip_value(revealed), TOOLTIP_MAX_TEXT_W);
+    // Wrap the real value, then mask row by row (one dot per cell of
+    // that row): the masked and revealed tips then have the same row
+    // structure and widths whatever mix of narrow, wide, or control
+    // characters the secret holds, so reveal / hide moves nothing.
+    let masked = info.secret && !revealed;
+    let mut value_lines: Vec<String> =
+        wrap_cells(&info.display_value_unmasked(), TOOLTIP_MAX_TEXT_W)
+            .into_iter()
+            .map(|row| {
+                if masked {
+                    "\u{25cf}".repeat(row.width().max(1))
+                } else {
+                    row
+                }
+            })
+            .collect();
     let line2 = info.source.label();
     let line3 = info
         .description
@@ -459,7 +474,7 @@ fn draw_var_tooltip(
     if value_lines.len() > max_value_rows {
         value_lines.truncate(max_value_rows);
         let last = value_lines.last_mut().unwrap();
-        *last = ellipsize(&format!("{last}\u{2026}\u{2026}"), TOOLTIP_MAX_TEXT_W);
+        *last = take_cells(last, TOOLTIP_MAX_TEXT_W - 1) + "\u{2026}";
     }
     let height = fixed + value_lines.len() as u16;
     // Display cells throughout (a wide glyph is one char but two cells),
@@ -475,9 +490,10 @@ fn draw_var_tooltip(
         .max(line3.as_ref().map_or(0, |l| l.width())) as u16;
     // 2 columns of padding each side, plus a column for the drop shadow.
     let width = (text_w + 4).min(screen.width.saturating_sub(1));
-    // Too narrow for the padding and the pills: no tip at all, rather
-    // than pills painted over the border (or placed off a u16 underflow).
-    if width < 5 || (width as usize) < 4 + controls_w || screen.height < height {
+    // Too narrow for the padding, the pills, and at least one cell of
+    // value before them: no tip at all, rather than pills painted over
+    // the border (or placed off a u16 underflow).
+    if width < 5 || (width as usize) < 5 + controls_w || screen.height < height {
         return;
     }
     let below = tip.anchor.bottom();
@@ -572,22 +588,26 @@ fn wrap_cells(s: &str, max: usize) -> Vec<String> {
 
 /// `s` cut to at most `max` display cells, the last of which becomes `…`.
 fn ellipsize(s: &str, max: usize) -> String {
-    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    use unicode_width::UnicodeWidthStr;
     if s.width() <= max {
         return s.to_string();
     }
-    let budget = max.saturating_sub(1);
+    take_cells(s, max.saturating_sub(1)) + "\u{2026}"
+}
+
+/// The longest prefix of `s` that fits in `max` display cells.
+fn take_cells(s: &str, max: usize) -> String {
+    use unicode_width::UnicodeWidthChar;
     let mut out = String::new();
     let mut w = 0;
     for c in s.chars() {
         let cw = c.width().unwrap_or(0);
-        if w + cw > budget {
+        if w + cw > max {
             break;
         }
         out.push(c);
         w += cw;
     }
-    out.push('\u{2026}');
     out
 }
 

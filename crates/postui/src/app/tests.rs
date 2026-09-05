@@ -20818,36 +20818,87 @@ fn tooltip_does_not_reopen_when_its_screen_comes_back_under_a_resting_pointer() 
     assert!(app.tip_revealed.is_none());
 }
 
-/// A wide-character secret keeps the same panel masked and revealed: the
-/// mask is one dot per *cell* and the wrap is by cells, so nothing
-/// moves under the pointer on reveal.
+/// A secret keeps the same panel masked and revealed whatever it is
+/// made of — uniformly wide, a narrow char before wide ones (a wide
+/// glyph that would straddle the wrap moves to the next row), or a
+/// multi-line value: the real value is wrapped by cells and each row
+/// masked to its own width, so nothing moves under the pointer.
 #[test]
-fn wide_char_secret_keeps_its_panel_footprint_on_reveal() {
-    let (mut app, dir, _out) = tooltip_app("api_key");
-    postui_core::project::save_secrets(dir.path(), &{
-        let mut secrets = indexmap::IndexMap::new();
-        let mut qa = indexmap::IndexMap::new();
-        qa.insert("api_key".to_string(), "日".repeat(40));
-        secrets.insert("qa".to_string(), qa);
-        secrets
-    })
-    .unwrap();
-    app.update(Action::ReloadProjectFiles);
-    hover_token(&mut app, "api_key");
-    let masked = app.hits.rect_of(&Hit::TipPanel("api_key".into())).unwrap();
-    let pill = app.hits.rect_of(&Hit::TipReveal("api_key".into())).unwrap();
-    click_hit(&mut app, Hit::TipReveal("api_key".into()));
-    let text = tooltip_text(&mut app);
+fn any_secret_keeps_its_panel_footprint_on_reveal() {
+    for secret in [
+        "日".repeat(40),
+        format!("a{}", "日".repeat(28)),
+        format!("a{}b", "日".repeat(55)),
+        "abcde\n".repeat(10),
+    ] {
+        let (mut app, dir, _out) = tooltip_app("api_key");
+        postui_core::project::save_secrets(dir.path(), &{
+            let mut secrets = indexmap::IndexMap::new();
+            let mut qa = indexmap::IndexMap::new();
+            qa.insert("api_key".to_string(), secret.clone());
+            secrets.insert("qa".to_string(), qa);
+            secrets
+        })
+        .unwrap();
+        app.update(Action::ReloadProjectFiles);
+        hover_token(&mut app, "api_key");
+        let masked = app.hits.rect_of(&Hit::TipPanel("api_key".into())).unwrap();
+        let pill = app.hits.rect_of(&Hit::TipReveal("api_key".into())).unwrap();
+        click_hit(&mut app, Hit::TipReveal("api_key".into()));
+        let text = tooltip_text(&mut app);
+        // The first few characters read in clear (the computed Host row
+        // still shows the fixed six-dot mask, so "no dots" is too broad).
+        let head: String = secret.chars().take(5).collect();
+        assert!(text.contains(&head), "{secret:?} revealed: {text}");
+        assert_eq!(
+            app.hits.rect_of(&Hit::TipPanel("api_key".into())),
+            Some(masked),
+            "{secret:?}: panel"
+        );
+        assert_eq!(
+            app.hits.rect_of(&Hit::TipReveal("api_key".into())),
+            Some(pill),
+            "{secret:?}: pill"
+        );
+    }
+}
+
+/// A hold is authoritative: when the held token moves (typing before it
+/// in the URL), the tip closes rather than swapping to whatever token
+/// lies under the pointer where the panel was — and it does not come
+/// back when the token returns.
+#[test]
+fn a_held_tip_closes_when_its_token_moves_instead_of_swapping_to_a_covered_one() {
+    let (mut app, _dir, _out) = tooltip_app("base_url");
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor.headers.insert(
+        "x-origin".into(),
+        postui_core::model::Entry {
+            value: "{{base_url}}".into(),
+            enabled: true,
+        },
+    );
+    app.update(Action::Render);
+    render_once(&mut app);
+    // Hover the URL bar's instance (the first drawn), then hold its panel.
+    let url_token = app.hits.rects_of(&Hit::VarToken("base_url".into()))[0];
+    app.handle_mouse(moved(url_token.x + 1, url_token.y));
+    render_once(&mut app);
+    let panel = app.hits.rect_of(&Hit::TipPanel("base_url".into())).unwrap();
+    app.handle_mouse(moved(panel.x + 2, panel.bottom() - 1));
+    render_once(&mut app);
+    assert_eq!(app.var_token_tip().map(|t| t.anchor), Some(url_token));
+    // Shift the URL token one column right.
+    app.editor.url = crate::components::line_input::LineInput::new("x{{base_url}}/x");
+    app.update(Action::Render);
+    render_once(&mut app);
     assert!(
-        text.contains(&"日".repeat(28)),
-        "revealed and wrapped by cells: {text}"
+        app.var_token_tip().is_none(),
+        "moved token: no tip, and no swap to the header's instance"
     );
-    assert_eq!(
-        app.hits.rect_of(&Hit::TipPanel("api_key".into())),
-        Some(masked)
-    );
-    assert_eq!(
-        app.hits.rect_of(&Hit::TipReveal("api_key".into())),
-        Some(pill)
-    );
+    // And back: the hold died with the tip, so nothing re-raises.
+    app.editor.url = crate::components::line_input::LineInput::new("{{base_url}}/x");
+    app.update(Action::Render);
+    render_once(&mut app);
+    assert!(app.var_token_tip().is_none(), "the hold died with the tip");
 }

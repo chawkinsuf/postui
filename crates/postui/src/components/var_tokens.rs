@@ -64,8 +64,8 @@ pub struct TokenInfo {
     /// verbatim (or refused).
     pub value: Option<String>,
     /// A secret's value is masked by [`TokenInfo::display_value`] (the
-    /// fixed [`SECRET_MASK`]) and by [`TokenInfo::tooltip_value`] (one dot
-    /// per cell, unless revealed). The tooltip's `reveal` control is the
+    /// fixed [`SECRET_MASK`]); the variable tooltip masks it one dot per
+    /// cell instead (`ui::draw_var_tooltip`), its `reveal` control is the
     /// one place it can be shown, and its `copy` control always takes
     /// the real value.
     pub secret: bool,
@@ -91,16 +91,14 @@ impl TokenInfo {
         }
     }
 
-    /// The value as the tooltip shows it: a secret masks one dot per
-    /// display cell (not the fixed mask) so the tooltip's footprint is
-    /// the revealed value's and its `reveal`/`hide` moves nothing;
-    /// `revealed` shows it in clear.
-    pub fn tooltip_value(&self, revealed: bool) -> String {
-        use unicode_width::UnicodeWidthStr;
-        match (&self.value, self.secret, revealed) {
-            (Some(v), true, false) => "\u{25cf}".repeat(v.width().max(1)),
-            (Some(v), _, _) => v.clone(),
-            (None, ..) => self.display_value(),
+    /// [`display_value`](Self::display_value) with a secret in clear: the
+    /// tooltip wraps this and then masks each row itself (one dot per
+    /// cell, unless revealed), so the masked and revealed tips share one
+    /// footprint.
+    pub fn display_value_unmasked(&self) -> String {
+        match &self.value {
+            Some(v) => v.clone(),
+            None => self.display_value(),
         }
     }
 }

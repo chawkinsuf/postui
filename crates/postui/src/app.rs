@@ -252,15 +252,18 @@ pub struct App {
     /// against the *current* frame's hit map, so a token that scrolled or
     /// tabbed out from under a resting pointer takes its tooltip with it.
     hovered_token: Option<String>,
-    /// The tooltip the pointer is holding open by resting on its panel or
-    /// a pill: name *and* anchor, so a token drawn more than once (the URL
-    /// and a header value, say) holds the instance the tip was raised
-    /// for. Resolved against the last drawn frame's hit map on every mouse
-    /// event (a press included, so a click with no preceding motion event
-    /// counts); cleared by any frame that draws no tip.
-    pub(crate) held_tip: Option<TokenTip>,
-    /// The tip the last frame painted, if any — what a hold captures.
+    /// The tip the last frame painted, if any: name *and* anchor, so a
+    /// token drawn more than once (the URL and a header value, say) is
+    /// pinned to the instance the tip was raised for.
     pub(crate) drawn_tip: Option<TokenTip>,
+    /// Whether the pointer is holding `drawn_tip` open by resting on its
+    /// panel or a pill. Resolved against the last drawn frame's hit map on
+    /// every mouse event (a press included, so a click with no preceding
+    /// motion event counts). A hold is authoritative: while set, the tip
+    /// shows only if its token is still drawn at that exact anchor, and
+    /// otherwise nothing shows — never a different token that happens to
+    /// lie under the pointer — and the tipless frame clears the hold.
+    pub(crate) tip_held: bool,
     /// Set when a sidebar right-click moved `sidebar.selected` onto the
     /// clicked row to open its context menu: the selection to restore
     /// (`Some(prev)`, itself possibly `None`) if that menu is dismissed
@@ -882,8 +885,8 @@ impl App {
             hovered: None,
             shift_enter_send: false,
             hovered_token: None,
-            held_tip: None,
             drawn_tip: None,
+            tip_held: false,
             sidebar_menu_revert: None,
             modal_handoff: false,
             last_pointer_shape: PointerShape::Default,
@@ -1423,7 +1426,7 @@ impl App {
     }
 
     /// The variable tooltip to draw this frame, if any: the tip the
-    /// pointer is resting on (`held_tip`, kept only while its token is
+    /// pointer is resting on (`tip_held`, shown only while its token is
     /// still drawn at the very anchor the tip was raised at, so the tip
     /// closes by itself once the token leaves the screen or moves), else
     /// the token under the pointer, or —
@@ -1435,12 +1438,13 @@ impl App {
         if !self.modals.is_empty() {
             return None;
         }
-        if let Some(held) = &self.held_tip
-            && self
-                .hits
-                .contains_region(held.anchor, &Hit::VarToken(held.name.clone()))
+        if self.tip_held
+            && let Some(held) = &self.drawn_tip
         {
-            return Some(held.clone());
+            return self
+                .hits
+                .var_token_drawn_at(held.anchor, &held.name)
+                .then(|| held.clone());
         }
         if let Some((x, y)) = self.pointer
             && let Some((name, anchor)) = self.hits.var_token_at(x, y)
