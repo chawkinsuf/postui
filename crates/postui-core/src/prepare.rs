@@ -171,9 +171,16 @@ fn assemble_url(
     if enabled.is_empty() {
         return subbed_url;
     }
-    let (base, query) = match subbed_url.split_once('?') {
+    // A fragment is never part of the query: split it off first, or `?`
+    // inside it would be taken for the query and the whole `#…` would be
+    // percent-encoded into the last parameter's value.
+    let (without_fragment, fragment) = match subbed_url.split_once('#') {
+        Some((u, f)) => (u.to_string(), Some(f.to_string())),
+        None => (subbed_url.clone(), None),
+    };
+    let (base, query) = match without_fragment.split_once('?') {
         Some((b, q)) => (b.to_string(), q.to_string()),
-        None => (subbed_url.clone(), String::new()),
+        None => (without_fragment.clone(), String::new()),
     };
     // (key, value) pairs; URL pairs first, in order, before the
     // `[params]` table's entries are merged in below.
@@ -193,7 +200,10 @@ fn assemble_url(
     let qs = form_urlencoded::Serializer::new(String::new())
         .extend_pairs(pairs)
         .finish();
-    format!("{base}?{qs}")
+    match fragment {
+        Some(f) => format!("{base}?{qs}#{f}"),
+        None => format!("{base}?{qs}"),
+    }
 }
 
 pub fn prepare(
@@ -793,6 +803,19 @@ mod tests {
         let (p, warns) = prepare(&r, &PrepareContext::default()).unwrap();
         assert_eq!(p.url, "https://x.test/path?q=a+b%26c");
         assert!(warns.is_empty());
+    }
+
+    #[test]
+    fn a_fragment_stays_a_fragment_when_params_are_merged() {
+        let mut r = base("https://x.test/p?id=1#sec?tion");
+        r.params.insert("q".into(), on("v"));
+        let (p, warns) = prepare(&r, &PrepareContext::default()).unwrap();
+        assert_eq!(p.url, "https://x.test/p?id=1&q=v#sec?tion");
+        assert!(warns.is_empty());
+        let mut r = base("https://x.test/p#top");
+        r.params.insert("q".into(), on("v"));
+        let (p, _) = prepare(&r, &PrepareContext::default()).unwrap();
+        assert_eq!(p.url, "https://x.test/p?q=v#top");
     }
 
     #[test]
