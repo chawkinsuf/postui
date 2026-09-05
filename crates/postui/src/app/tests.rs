@@ -11028,9 +11028,9 @@ fn the_value_popup_offers_remove_only_where_a_value_is_stored() {
         .rect_of(&crate::hit::Hit::ModalRemove)
         .expect("the env stores a value, so it can be removed");
     // Same affordance as the variable form's inline control: the
-    // one-row "󰅖 remove" beside the value field's label, not a boxed
+    // one-row "✕ remove" beside the value field's label, not a boxed
     // button in the confirm row.
-    assert!(content.contains("\u{F0156} remove"), "{content}");
+    assert!(content.contains("\u{2715} remove"), "{content}");
     assert_eq!(r.height, 1, "inline control, not a boxed button");
 
     // Cycle to "This request", which stores nothing — nothing to remove.
@@ -11048,7 +11048,7 @@ fn the_value_popup_offers_remove_only_where_a_value_is_stored() {
     );
 }
 
-/// The keyboard mirror of the popup's "󰅖 remove": `alt+d` marks the
+/// The keyboard mirror of the popup's "✕ remove": `alt+d` marks the
 /// chosen Write-to scope's stored value for removal and re-lands the
 /// popup on the next supplier, exactly like the click. Where the chosen scope stores
 /// nothing (no 󰅖 painted), the chord is inert.
@@ -14052,7 +14052,7 @@ fn keyboard_enters_the_variable_form_and_edits_its_fields() {
 /// With the form focused, the footer advertises the form's own quick
 /// actions and the keys work: `s` flips the secret flag, and — with the
 /// cursor on the env-value field, while the env stores one — `x` clears
-/// the stored value, the inline "󰅖 remove" control's keyboard twin.
+/// the stored value, the inline "✕ remove" control's keyboard twin.
 #[test]
 fn form_focus_advertises_and_handles_the_field_verbs() {
     let dir = tempfile::tempdir().unwrap();
@@ -16609,7 +16609,7 @@ mod undo_tests {
     }
 
     /// User finding: there was no way to remove an env value from the
-    /// variable form. It gets an explicit `󰅖 remove` control beside the
+    /// variable form. It gets an explicit `✕ remove` control beside the
     /// "Value in <env>" label (mirroring the value popup's Remove button)
     /// — an emptied field commit stays a verbatim write (`name = ""`),
     /// deliberately not overloaded to mean removal.

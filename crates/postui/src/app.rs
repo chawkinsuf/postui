@@ -5605,7 +5605,7 @@ impl App {
         }
     }
 
-    /// The value popup's remove — shared by the clicked "󰅖 remove"
+    /// The value popup's remove — shared by the clicked "✕ remove"
     /// (`Hit::ModalRemove`) and its keyboard chord (`alt+d`): marks the
     /// chosen Write-to scope's stored value for removal on Confirm, then
     /// re-lands the popup on the next supplier with its value ready to

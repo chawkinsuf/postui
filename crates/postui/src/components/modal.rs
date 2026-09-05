@@ -360,7 +360,7 @@ fn value_placeholder_line(focused: bool, theme: &Theme) -> Line<'static> {
 }
 
 /// The value popup's chosen Write-to label and whether that scope stores
-/// a value — the predicate behind the "󰅖 remove" affordance, shared by
+/// a value — the predicate behind the "✕ remove" affordance, shared by
 /// its painter, its footer chip, and the remove itself (click or alt+d).
 pub(crate) fn chosen_scope(
     fields: &[PromptField],
@@ -1950,13 +1950,13 @@ impl ModalStack {
                 draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered);
                 // The value popup's remove: only when the chosen Write-to
                 // scope actually stores a value to delete. Painted as the
-                // same one-row "󰅖 remove" accent control the variable
+                // same one-row "✕ remove" accent control the variable
                 // form uses, right-aligned on the value field's label row
                 // (registered after `ModalField(0)`, so it wins the hit).
                 if let PromptKind::EditVarValue { scope_values, .. } = kind {
                     let (_, stored) = chosen_scope(fields, scope_values);
                     if stored {
-                        let label = "\u{F0156} remove";
+                        let label = "\u{2715} remove";
                         let remove_hit = crate::hit::Hit::ModalRemove;
                         let style = if hovered == Some(&remove_hit) {
                             Style::default().bg(theme.accent).fg(theme.on_accent)

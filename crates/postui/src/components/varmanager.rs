@@ -370,7 +370,7 @@ pub fn promote_action(
 }
 
 /// Whether the active environment stores a value (a secret for secret
-/// variables) for `name` — gates the env row's "󰅖 remove" control and
+/// variables) for `name` — gates the env row's "✕ remove" control and
 /// its keyboard twin (`x` with the form's cursor on the env field).
 fn env_stores(ctx: &ProjectContext, name: &str) -> bool {
     let secret = ctx.model.vars.get(name).is_some_and(|d| d.secret);
@@ -775,7 +775,7 @@ impl VarManager {
         }
         // Form focus advertises the form's own quick actions — the
         // keyboard twins of its inline controls (secret toggle, the
-        // env row's "󰅖 remove", the Promote button).
+        // env row's "✕ remove", the Promote button).
         if let (VmDetail::Var(name), VmFocus::Form) = (&self.detail, self.focus) {
             let mut chips: Vec<(&'static str, &'static str, Option<Action>)> = Vec::new();
             if ctx.model.vars.contains_key(name) {
@@ -1972,7 +1972,7 @@ impl VarManager {
             // environment actually stores one; a bare default shows
             // "(not set)" and has nothing here to remove.
             if env_stores(ctx, name) {
-                inline_control(buf, hits, "\u{F0156} remove", Hit::VmRemoveEnvValue);
+                inline_control(buf, hits, "\u{2715} remove", Hit::VmRemoveEnvValue);
             }
             y += 1;
         }
