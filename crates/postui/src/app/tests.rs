@@ -3749,18 +3749,86 @@ fn move_all_requests_empties_the_source_and_follows_the_open_request() {
     assert_eq!(app.editor.slug.as_deref(), Some("auth/alpha"));
     assert_eq!(app.sidebar.space_counts().get("main"), None);
 
-    // The follow re-seeds the shadow through `ForceOpenRequest`, so the
-    // next input event finds nothing to diff: a move is not an edit, and
-    // must never leave a phantom `EditorDelta` behind.
+    // The move is one file step. The follow re-seeds the shadow through
+    // `ForceOpenRequest`, so the next input event finds nothing to diff:
+    // a move is not an edit, and must never leave a phantom
+    // `EditorDelta` behind on top of it.
+    assert_eq!(
+        app.history.undo_len(),
+        steps_before + 1,
+        "one step for the move"
+    );
     assert!(!app.capture_undo(), "the move itself is not an edit");
-    assert_eq!(app.history.undo_len(), steps_before);
+    assert_eq!(app.history.undo_len(), steps_before + 1);
     dirty_the_editor(&mut app);
     assert!(app.capture_undo());
     assert_eq!(
         app.history.undo_len(),
-        steps_before + 1,
-        "only the typed character, no phantom step for the move"
+        steps_before + 2,
+        "the typed character, no phantom step for the move"
     );
+}
+
+#[test]
+fn undo_of_a_move_all_puts_every_file_and_both_lists_back_and_follows_the_open_request() {
+    let (mut app, dir) = slotted_app(&["gamma", "alpha"]);
+    postui_core::order::set_level_order(dir.path(), "auth", "", &["login".to_string()]).unwrap();
+    app.project.reload_meta();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.update(Action::MoveAllRequests {
+        from: "main".into(),
+        to: "auth".into(),
+    });
+    assert_eq!(app.editor.slug.as_deref(), Some("auth/alpha"));
+    assert_eq!(app.project.active_space, "auth");
+    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    assert_eq!(
+        postui_core::order::space_order(&meta, "auth"),
+        ["login", "gamma", "alpha", "beta"]
+    );
+
+    app.update(Action::Undo);
+    for slug in ["alpha", "beta", "gamma"] {
+        assert!(
+            dir.path()
+                .join(format!("requests/main/{slug}.toml"))
+                .is_file(),
+            "{slug} back"
+        );
+        assert!(
+            !dir.path()
+                .join(format!("requests/auth/{slug}.toml"))
+                .exists(),
+            "{slug} gone"
+        );
+    }
+    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    assert_eq!(
+        postui_core::order::space_order(&meta, "main"),
+        ["gamma", "alpha"]
+    );
+    assert_eq!(postui_core::order::space_order(&meta, "auth"), ["login"]);
+    assert_eq!(
+        app.editor.slug.as_deref(),
+        Some("main/alpha"),
+        "the open request follows back to its own file, not to the first moved one"
+    );
+    assert_eq!(app.project.active_space, "main");
+    assert_eq!(
+        request_rows(&app),
+        ["main/gamma", "main/alpha", "main/beta"]
+    );
+
+    app.update(Action::Redo);
+    assert!(dir.path().join("requests/auth/beta.toml").is_file());
+    assert!(!dir.path().join("requests/main/beta.toml").exists());
+    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    assert!(postui_core::order::space_order(&meta, "main").is_empty());
+    assert_eq!(
+        postui_core::order::space_order(&meta, "auth"),
+        ["login", "gamma", "alpha", "beta"]
+    );
+    assert_eq!(app.editor.slug.as_deref(), Some("auth/alpha"));
 }
 
 #[test]
@@ -3967,7 +4035,11 @@ fn move_all_requests_holding_a_dirty_open_request_gates_first() {
     assert_eq!(app.editor.slug.as_deref(), Some("auth/alpha"));
     assert!(!app.editor.is_dirty(), "reloaded clean from disk");
     assert!(!app.capture_undo(), "the move is not an edit");
-    assert_eq!(app.history.undo_len(), steps_before);
+    assert_eq!(
+        app.history.undo_len(),
+        steps_before + 1,
+        "one file step for the move, no phantom edit step on top"
+    );
 }
 
 fn ordered_app() -> (App, tempfile::TempDir) {

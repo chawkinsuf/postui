@@ -5071,10 +5071,28 @@ impl App {
                     shown.iter().position(|s| *s == slug).unwrap_or(usize::MAX)
                 });
                 let r = postui_core::order::order_move_all(&self.project.root, &from, &to, &moves);
-                // Move-all is not an undo step (yet), so its edits are not
-                // kept.
-                let _ = self.order_cascade("move", r);
-                self.project.forget_space(&from);
+                let orders = self.order_cascade("move", r);
+                // One undo step for the whole move: every file back where
+                // it was, plus the cascade's edits replayed backwards. The
+                // files moved byte-identically, so the destination's
+                // content is the source's `before`. The source space's
+                // local memory (its remembered open request, its expanded
+                // folders) is deliberately left alone: a remembered
+                // request is checked for existence before it is opened,
+                // so the entries are harmless while the space is empty and
+                // exactly right again once an undo refills it.
+                let mut before = Vec::new();
+                let mut after_paths = Vec::new();
+                for (old, new) in &moved {
+                    let from_path = postui_core::storage::request_path(&self.project.root, old);
+                    let to_path = postui_core::storage::request_path(&self.project.root, new);
+                    let content = std::fs::read_to_string(&to_path).ok();
+                    before.push((from_path.clone(), content));
+                    before.push((to_path.clone(), None));
+                    after_paths.push(from_path);
+                    after_paths.push(to_path);
+                }
+                self.record_file_step_with_orders(before, &after_paths, None, orders);
                 self.refresh_sidebar();
                 if let Some(open) = open
                     && let Some((_, new_slug)) = moved.iter().find(|(old, _)| *old == open)
@@ -9252,12 +9270,26 @@ impl App {
                     let open_path = postui_core::storage::request_path(&self.project.root, &open);
                     let went_absent = target.iter().any(|(p, c)| *p == open_path && c.is_none());
                     if went_absent {
-                        let moved_to = target
+                        // A step can move many files at once (move-all):
+                        // the open request's own destination is the one
+                        // with the same space-relative path, and only a
+                        // single-file step falls back to the one other
+                        // path that gained content.
+                        let open_rel = Self::split_rel(&open).map(|(_, rel)| rel.to_string());
+                        let gained: Vec<String> = target
                             .iter()
-                            .find(|(p, c)| *p != open_path && c.is_some())
-                            .and_then(|(p, _)| {
+                            .filter(|(p, c)| *p != open_path && c.is_some())
+                            .filter_map(|(p, _)| {
                                 postui_core::storage::slug_for_path(&self.project.root, p)
-                            });
+                            })
+                            .collect();
+                        let moved_to = gained
+                            .iter()
+                            .find(|s| {
+                                Self::split_rel(s).map(|(_, rel)| rel.to_string()) == open_rel
+                            })
+                            .cloned()
+                            .or_else(|| (gained.len() == 1).then(|| gained[0].clone()));
                         match moved_to {
                             Some(new_slug) => {
                                 self.editor.slug = Some(new_slug.clone());

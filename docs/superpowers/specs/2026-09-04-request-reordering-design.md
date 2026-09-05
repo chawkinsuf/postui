@@ -249,8 +249,10 @@ sidebar_press: Option<(usize, String)>, // row index + slug of the armed press
   request goes back to exactly the slot it held. The replay is
   index-tolerant: a reorder made between the op and its undo (still not
   an undo step) survives — the re-inserted entry lands at its old index
-  and its rearranged siblings stay put. Move-all records no undo step,
-  so its cascade is not replayed.
+  and its rearranged siblings stay put. Move-all is one undo step of
+  its own (every file back, both lists replayed); the source space's
+  local memory is left in place by the move, since a remembered open
+  request is checked for existence before use.
 
 ## Testing
 
