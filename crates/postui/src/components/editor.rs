@@ -607,12 +607,12 @@ impl Editor {
     /// width, but badge color never does, so this stands in a fixed color
     /// where [`Self::draw_tab_bar`] uses the real validity color.
     pub fn tab_strip_spans(&self) -> Vec<(u16, u16)> {
-        let labels: Vec<(String, Option<(char, ratatui::style::Color)>)> = DRAW_ORDER
+        let labels: Vec<(String, Option<(&'static str, ratatui::style::Color)>)> = DRAW_ORDER
             .iter()
             .map(|t| {
                 let label = self.tab_label_text(*t);
                 let badge = (matches!(t, EditorTab::Body) && self.body_badge_present())
-                    .then_some(('_', ratatui::style::Color::Reset));
+                    .then_some(("_", ratatui::style::Color::Reset));
                 (label, badge)
             })
             .collect();
@@ -1987,13 +1987,12 @@ impl Editor {
                 theme.text_muted
             };
             fill(buf, lock_area, lock_bg);
-            let glyph = if effective_insecure {
-                crate::glyph::LOCK_OPEN
+            let label = if effective_insecure {
+                crate::glyph::LOCK_OPEN_PILL
             } else {
-                crate::glyph::LOCK
+                crate::glyph::LOCK_PILL
             };
-            let label = format!(" {glyph} ");
-            text(buf, lock_area.x, text_y, &label, lock_fg, lock_bg, false);
+            text(buf, lock_area.x, text_y, label, lock_fg, lock_bg, false);
             hits.register(lock_area, lock_hit);
         }
 
@@ -2264,15 +2263,15 @@ impl Editor {
         // Params/Headers carry their entry count inside the tab label; Body
         // carries the live JSON-validity badge, colored from the semantic
         // tokens so it also reads without the glyph.
-        let tab_strip: Vec<(String, Option<(char, ratatui::style::Color)>)> = tabs
+        let tab_strip: Vec<(String, Option<(&'static str, ratatui::style::Color)>)> = tabs
             .iter()
             .map(|t| {
                 let label = self.tab_label_text(*t);
                 let badge = match t {
                     EditorTab::Body if self.body_badge_present() => Some(if self.body_is_valid() {
-                        ('✓', theme.success)
+                        ("✓", theme.success)
                     } else {
-                        ('✗', theme.error)
+                        ("✗", theme.error)
                     }),
                     _ => None,
                 };
@@ -3007,7 +3006,7 @@ impl Editor {
             let line = Line::from(vec![
                 Span::styled(name_piece, name_style),
                 Span::styled(value_piece, value_style),
-                Span::styled(format!(" {} ", crate::glyph::COPY), glyph_style),
+                Span::styled(crate::glyph::COPY_PILL, glyph_style),
             ]);
             frame.render_widget(Paragraph::new(line), Rect::new(area.x, y, area.width, 1));
             crate::components::var_tokens::paint_var_tokens(

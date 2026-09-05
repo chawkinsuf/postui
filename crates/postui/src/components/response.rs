@@ -2814,7 +2814,7 @@ fn draw_header_strip(
 
 /// A [`crate::paint::TabStrip::tabs`]-shaped label list: `(text, badge)`
 /// per tab, where a badge is a trailing colored glyph.
-type TabLabels = Vec<(String, Option<(char, ratatui::style::Color)>)>;
+type TabLabels = Vec<(String, Option<(&'static str, ratatui::style::Color)>)>;
 
 /// The response tab strip's labels and the [`ViewMode`] each one selects,
 /// in on-screen order: `Tree` (only while `view.has_tree_view()`), `Raw`,
@@ -2834,7 +2834,7 @@ pub fn response_tab_defs(
     let mut modes: Vec<ViewMode> = Vec::new();
     if view.has_tree_view() {
         let badge = view.jq_tree.is_some().then_some((
-            crate::glyph::FILTER.chars().next().unwrap(),
+            crate::glyph::FILTER,
             if bar.stale { theme.error } else { theme.accent },
         ));
         tabs.push(("Tree".to_string(), badge));
@@ -2850,7 +2850,7 @@ pub fn response_tab_defs(
 /// The horizontal span [`crate::paint::TabStrip::paint`] occupies for
 /// `tabs`, mirroring its own padded-block-width + 1-column-gap layout so
 /// callers can right-align the strip without painting it first.
-fn tabstrip_width(tabs: &[(String, Option<(char, ratatui::style::Color)>)]) -> u16 {
+fn tabstrip_width(tabs: &[(String, Option<(&'static str, ratatui::style::Color)>)]) -> u16 {
     crate::paint::TabStrip::spans(tabs)
         .last()
         .map(|(x, w)| x + w)
@@ -2867,11 +2867,17 @@ fn tabstrip_width(tabs: &[(String, Option<(char, ratatui::style::Color)>)]) -> u
 /// emoji font's fixed colours — so all four sit level, at one size.
 /// All of them act on the *active tab's* text, following it like search.
 const HEADER_ACTIONS: [(&str, crate::hit::Hit); 5] = [
-    (crate::glyph::SEARCH, crate::hit::Hit::ResponseSearchButton),
-    (crate::glyph::PENCIL, crate::hit::Hit::ResponseEditorButton),
-    (crate::glyph::SAVE, crate::hit::Hit::SaveBodyButton),
-    (crate::glyph::COPY, crate::hit::Hit::CopyBodyButton),
-    (crate::glyph::FILTER, crate::hit::Hit::ResponseJqButton),
+    (
+        crate::glyph::SEARCH_PILL,
+        crate::hit::Hit::ResponseSearchButton,
+    ),
+    (
+        crate::glyph::PENCIL_PILL,
+        crate::hit::Hit::ResponseEditorButton,
+    ),
+    (crate::glyph::SAVE_PILL, crate::hit::Hit::SaveBodyButton),
+    (crate::glyph::COPY_PILL, crate::hit::Hit::CopyBodyButton),
+    (crate::glyph::FILTER_PILL, crate::hit::Hit::ResponseJqButton),
 ];
 
 /// The header strip's icon actions, left-aligned on the underline row
@@ -2894,12 +2900,10 @@ fn draw_header_actions(
     let mut x = area.x + 1;
     let buf = frame.buffer_mut();
     let mut rects = Vec::new();
-    for (glyph, hit) in HEADER_ACTIONS {
+    for (label, hit) in HEADER_ACTIONS {
         if !jq_available && hit == crate::hit::Hit::ResponseJqButton {
             continue;
         }
-        // Each icon in a three-cell pill so its hover fill surrounds it.
-        let label = &format!(" {glyph} ");
         // Display width, not char count, so the labels' padding is honoured.
         let w = label.width() as u16;
         let rect = Rect::new(x, y, w, 1);
@@ -3102,7 +3106,7 @@ fn body_lines(
                 let pieces = vec![
                     (name_piece, Style::default().fg(t.accent)),
                     (value_piece, text),
-                    (format!(" {} ", crate::glyph::COPY), glyph_style),
+                    (crate::glyph::COPY_PILL.to_string(), glyph_style),
                 ];
                 push(i, i, pieces, true, (0, view.h_scroll));
 
@@ -3433,8 +3437,8 @@ fn draw_jq_bar(
         return None;
     }
     let mut caret = None;
-    let ai = format!(" {} ", crate::glyph::CREATION);
-    let ai_w = ai.chars().count() as u16;
+    const AI: &str = crate::glyph::CREATION_PILL;
+    let ai_w = AI.chars().count() as u16;
     let text_w = area.width.saturating_sub(ai_w + 1);
     let row = Rect {
         height: 1,
@@ -3506,7 +3510,7 @@ fn draw_jq_bar(
         crate::paint::action(
             frame.buffer_mut(),
             ai_area,
-            &ai,
+            AI,
             crate::hit::Hit::ResponseJqAiButton,
             ctx.hovered,
             t.page,
@@ -6673,7 +6677,7 @@ mod tests {
         assert_eq!(tabs[0].1, None);
         r.apply_jq(".data", SYNC_PRETTY_BYTES);
         let (tabs, _) = response_tab_defs(r.view().unwrap(), r.jq_bar(), &theme);
-        assert_eq!(tabs[0].1.map(|(c, _)| c), Some('\u{F0232}'));
+        assert_eq!(tabs[0].1.map(|(c, _)| c), Some(crate::glyph::FILTER));
     }
 
     #[test]

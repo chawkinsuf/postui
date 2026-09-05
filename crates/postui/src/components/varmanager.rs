@@ -1782,15 +1782,7 @@ impl VarManager {
                 };
                 // Nerd Font Material glyph (one cell everywhere), centred in
                 // the three-cell zone.
-                text(
-                    buf,
-                    trash_x,
-                    ry,
-                    &format!(" {} ", crate::glyph::DELETE),
-                    dfg,
-                    dbg,
-                    false,
-                );
+                text(buf, trash_x, ry, crate::glyph::DELETE_PILL, dfg, dbg, false);
                 hits.register(Rect::new(trash_x, ry, TRASH_W, 1), trash_hit);
             }
         }

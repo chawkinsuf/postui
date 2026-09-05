@@ -62,7 +62,7 @@ impl Chip<'_> {
 /// badge)` — a badge renders a trailing colored glyph (e.g. the Body tab's
 /// JSON-validity `✓`/`✗`) after the label.
 pub struct TabStrip<'a> {
-    pub tabs: &'a [(String, Option<(char, Color)>)],
+    pub tabs: &'a [(String, Option<(&'static str, Color)>)],
     pub active: usize,
     /// The index of the tab currently under the mouse, if any.
     pub hovered: Option<usize>,
@@ -85,7 +85,7 @@ impl TabStrip<'_> {
     /// for a badge) padding and 2-column inter-tab gap that [`Self::paint`]
     /// lays out with. Callers use this to compute underline animation
     /// targets and hit rects without painting.
-    pub fn spans(tabs: &[(String, Option<(char, Color)>)]) -> Vec<(u16, u16)> {
+    pub fn spans(tabs: &[(String, Option<(&'static str, Color)>)]) -> Vec<(u16, u16)> {
         let mut x = 0u16;
         let mut spans = Vec::with_capacity(tabs.len());
         for (label, badge) in tabs {
@@ -497,7 +497,7 @@ mod tests {
     fn tabstrip_badge_appends_colored_glyph_after_the_label() {
         let theme = Theme::dark();
         let mut term = Terminal::new(TestBackend::new(40, 2)).unwrap();
-        let tabs = vec![("Body".to_string(), Some(('✓', theme.success)))];
+        let tabs = vec![("Body".to_string(), Some(("✓", theme.success)))];
         let spans = TabStrip::spans(&tabs);
         let mut rects = Vec::new();
         term.draw(|f| {

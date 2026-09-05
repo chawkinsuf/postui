@@ -358,10 +358,13 @@ impl Hit {
         }
     }
 
-    /// Overlays that float over the panes without owning a right click:
-    /// `{{token}}` spans and the variable tooltip. A right click belongs
-    /// to the row/cell under them and its context menu.
-    fn is_float_overlay(&self) -> bool {
+    /// Overlays that float over the panes: `{{token}}` spans and the
+    /// variable tooltip's hits. A click on one is never a "click away":
+    /// it must not commit a table cell under edit, blur the URL line, or
+    /// drop the row selection beneath — and a right click belongs to the
+    /// row/cell under it and its context menu, so right-click resolution
+    /// skips them (`HitMap::hit_at_ignoring_overlays`).
+    pub fn is_float_overlay(&self) -> bool {
         matches!(self, Hit::VarToken(_)) || self.tip_name().is_some()
     }
 }
@@ -425,11 +428,34 @@ impl HitMap {
 
     /// Topmost (= last registered) hit containing the point.
     pub fn hit_at(&self, x: u16, y: u16) -> Option<&Hit> {
+        self.hit_at_where(x, y, |_| false)
+    }
+
+    /// Topmost hit containing the point among those `skip` does not
+    /// exclude — the one lookup the public variants specialise.
+    fn hit_at_where(&self, x: u16, y: u16, skip: impl Fn(&Hit) -> bool) -> Option<&Hit> {
         self.regions
             .iter()
             .rev()
+            .filter(|(_, hit)| !skip(hit))
             .find(|(rect, _)| rect.contains(ratatui::layout::Position { x, y }))
             .map(|(_, hit)| hit)
+    }
+
+    /// Whether `hit` was registered over exactly `rect` this frame — the
+    /// tooltip's hold uses it to confirm its token is still drawn where
+    /// the tip was anchored (a token can be drawn more than once).
+    pub fn contains_region(&self, rect: Rect, hit: &Hit) -> bool {
+        self.regions.iter().any(|(r, h)| *r == rect && h == hit)
+    }
+
+    /// Every rect `hit` was registered over this frame, in draw order.
+    pub fn rects_of(&self, hit: &Hit) -> Vec<Rect> {
+        self.regions
+            .iter()
+            .filter(|(_, h)| h == hit)
+            .map(|(r, _)| *r)
+            .collect()
     }
 
     /// Topmost hit containing the point, skipping [`Hit::VarToken`]
@@ -439,24 +465,14 @@ impl HitMap {
     /// its value). Token hovering is tracked separately, by
     /// [`HitMap::var_token_at`].
     pub fn hit_at_ignoring_var_tokens(&self, x: u16, y: u16) -> Option<&Hit> {
-        self.regions
-            .iter()
-            .rev()
-            .filter(|(_, hit)| !matches!(hit, Hit::VarToken(_)))
-            .find(|(rect, _)| rect.contains(ratatui::layout::Position { x, y }))
-            .map(|(_, hit)| hit)
+        self.hit_at_where(x, y, |hit| matches!(hit, Hit::VarToken(_)))
     }
 
     /// Topmost hit containing the point, skipping every floating overlay
     /// (`VarToken` spans and the variable tooltip's hits): what a right
     /// click lands on, since the overlays are left-click affordances only.
     pub fn hit_at_ignoring_overlays(&self, x: u16, y: u16) -> Option<&Hit> {
-        self.regions
-            .iter()
-            .rev()
-            .filter(|(_, hit)| !hit.is_float_overlay())
-            .find(|(rect, _)| rect.contains(ratatui::layout::Position { x, y }))
-            .map(|(_, hit)| hit)
+        self.hit_at_where(x, y, Hit::is_float_overlay)
     }
 
     /// Topmost hit containing the point, skipping the modal layer
@@ -466,17 +482,12 @@ impl HitMap {
     /// context menu is open dismisses it and acts on the control
     /// underneath, whose hits are still registered below the overlay.
     pub fn hit_at_under_modal(&self, x: u16, y: u16) -> Option<&Hit> {
-        self.regions
-            .iter()
-            .rev()
-            .filter(|(_, hit)| {
-                !matches!(
-                    hit,
-                    Hit::VarToken(_) | Hit::ModalOutside | Hit::ModalBody | Hit::DropdownRow(_)
-                )
-            })
-            .find(|(rect, _)| rect.contains(ratatui::layout::Position { x, y }))
-            .map(|(_, hit)| hit)
+        self.hit_at_where(x, y, |hit| {
+            matches!(
+                hit,
+                Hit::VarToken(_) | Hit::ModalOutside | Hit::ModalBody | Hit::DropdownRow(_)
+            )
+        })
     }
 
     /// The topmost drawn `{{token}}` under the point: its name and the rect

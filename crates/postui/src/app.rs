@@ -252,11 +252,15 @@ pub struct App {
     /// against the *current* frame's hit map, so a token that scrolled or
     /// tabbed out from under a resting pointer takes its tooltip with it.
     hovered_token: Option<String>,
-    /// The tooltip whose panel or pill the pointer is over, resolved
-    /// against the last drawn frame's hit map on every mouse event (a
-    /// press included, so a click with no preceding motion event counts).
-    /// The tip holds while this is set and its token is still drawn.
-    pub(crate) held_tip: Option<String>,
+    /// The tooltip the pointer is holding open by resting on its panel or
+    /// a pill: name *and* anchor, so a token drawn more than once (the URL
+    /// and a header value, say) holds the instance the tip was raised
+    /// for. Resolved against the last drawn frame's hit map on every mouse
+    /// event (a press included, so a click with no preceding motion event
+    /// counts); cleared by any frame that draws no tip.
+    pub(crate) held_tip: Option<TokenTip>,
+    /// The tip the last frame painted, if any — what a hold captures.
+    pub(crate) drawn_tip: Option<TokenTip>,
     /// Set when a sidebar right-click moved `sidebar.selected` onto the
     /// clicked row to open its context menu: the selection to restore
     /// (`Some(prev)`, itself possibly `None`) if that menu is dismissed
@@ -879,6 +883,7 @@ impl App {
             shift_enter_send: false,
             hovered_token: None,
             held_tip: None,
+            drawn_tip: None,
             sidebar_menu_revert: None,
             modal_handoff: false,
             last_pointer_shape: PointerShape::Default,
@@ -1418,9 +1423,10 @@ impl App {
     }
 
     /// The variable tooltip to draw this frame, if any: the tip the
-    /// pointer is resting on (`held_tip`, anchored at wherever its token
-    /// is drawn *this* frame, so the tip closes by itself once the token
-    /// is no longer on screen), else the token under the pointer, or —
+    /// pointer is resting on (`held_tip`, kept only while its token is
+    /// still drawn at the very anchor the tip was raised at, so the tip
+    /// closes by itself once the token leaves the screen or moves), else
+    /// the token under the pointer, or —
     /// with no hover — the one the caret has been resting in for
     /// [`CARET_TIP_DWELL`].
     /// Suppressed while a modal is up: the tooltip draws above everything
@@ -1429,13 +1435,12 @@ impl App {
         if !self.modals.is_empty() {
             return None;
         }
-        if let Some(name) = self.held_tip.as_deref()
-            && let Some(anchor) = self.hits.rect_of(&Hit::VarToken(name.to_string()))
+        if let Some(held) = &self.held_tip
+            && self
+                .hits
+                .contains_region(held.anchor, &Hit::VarToken(held.name.clone()))
         {
-            return Some(TokenTip {
-                name: name.to_string(),
-                anchor,
-            });
+            return Some(held.clone());
         }
         if let Some((x, y)) = self.pointer
             && let Some((name, anchor)) = self.hits.var_token_at(x, y)
@@ -8505,6 +8510,18 @@ impl App {
         }
     }
 
+    /// Starts the slide-in of any toast pushed since the last call. Run at
+    /// the tail of every input path (`update`, `handle_key`, `handle_mouse`)
+    /// so a toast never reaches its first draw settled and then slides in
+    /// over itself on the next tick — whichever code path pushed it.
+    pub(crate) fn arm_pending_toasts(&mut self) {
+        self.toasts.start_pending_anims(
+            &mut self.anims,
+            Instant::now(),
+            self.ui_settings.anim_ms.toast,
+        );
+    }
+
     /// Central key router. Order (each step tested):
     /// 1. A CTRL/ALT combo the keymap maps to Quit pre-empts everything,
     ///    including open modals — ctrl+c must always quit.
@@ -8534,18 +8551,6 @@ impl App {
     /// (i.e. whether the caller should redraw): the OR of every
     /// `self.update(..)` call's result along the branch taken, plus any
     /// modal state change (close/typing) that bypasses `update`.
-    /// Starts the slide-in of any toast pushed since the last call. Run at
-    /// the tail of every input path (`update`, `handle_key`, `handle_mouse`)
-    /// so a toast never reaches its first draw settled and then slides in
-    /// over itself on the next tick — whichever code path pushed it.
-    pub(crate) fn arm_pending_toasts(&mut self) {
-        self.toasts.start_pending_anims(
-            &mut self.anims,
-            Instant::now(),
-            self.ui_settings.anim_ms.toast,
-        );
-    }
-
     pub fn handle_key(&mut self, keymap: &Keymap, ev: KeyEvent) -> bool {
         let changed = self.handle_key_inner(keymap, ev);
         self.arm_pending_toasts();

@@ -36,15 +36,21 @@ impl App {
         // a tip opened by one hover would otherwise hang over the UI
         // through every later click — including the clicks it covers.
         self.pointer = Some((m.column, m.row));
-        // Likewise the tooltip under it: resolved against the last drawn
-        // frame (the only map that has the tip's own hits), so the tip
-        // holds through a click on its pills and drops on the first event
-        // that lands elsewhere.
-        self.held_tip = self
+        // The control under the pointer, `{{token}}` overlays aside (they
+        // have their own hover track, `hovered_token`). Resolved once here
+        // for both the tooltip hold and the motion arm's hover styling.
+        let under = self
             .hits
             .hit_at_ignoring_var_tokens(m.column, m.row)
-            .and_then(Hit::tip_name)
-            .map(str::to_string);
+            .cloned();
+        // The tooltip hold: the pointer on the last-drawn tip's panel or a
+        // pill captures that tip (name + anchor), so it holds through a
+        // click on its pills and drops on the first event landing
+        // elsewhere.
+        self.held_tip = match (under.as_ref().and_then(Hit::tip_name), &self.drawn_tip) {
+            (Some(name), Some(drawn)) if drawn.name == name => Some(drawn.clone()),
+            _ => None,
+        };
 
         match m.kind {
             // Terminals report pointer motion with a button held as `Drag`,
@@ -162,10 +168,7 @@ impl App {
                 // (the value tooltip). A token must not steal its control's
                 // hover styling, and leaving one must drop the tooltip on
                 // the very next motion event.
-                let hit = self
-                    .hits
-                    .hit_at_ignoring_var_tokens(m.column, m.row)
-                    .cloned();
+                let hit = under;
                 let token = self
                     .hits
                     .var_token_at(m.column, m.row)
@@ -1023,19 +1026,16 @@ impl App {
                 | Hit::ScrollbarTrack(..)
                 | Hit::HScrollThumb(_)
                 | Hit::HScrollTrack(..)
-                // A token sits *on* a cell: hovering or clicking one must
-                // neither commit the cell under edit nor drop the selection.
-                // Its tooltip (and the tooltip's pills) float the same way.
-                | Hit::VarToken(_)
-                | Hit::TipPanel(_)
-                | Hit::TipCopy(_)
-                | Hit::TipReveal(_)
                 // The `{{ }} vars` chip inserts into whatever text field is
                 // live, so it must not be treated as a click away: blurring
                 // the URL line (or committing the cell) first would leave
                 // the picker it opens with nowhere to insert.
                 | Hit::FooterChip(Action::OpenVarPicker { .. })
-        );
+        )
+        // A token sits *on* a cell, and its tooltip floats over the rows:
+        // clicking either must neither commit the cell under edit nor
+        // drop the selection.
+        || hit.is_float_overlay();
         if !keeps_table_selection {
             self.commit_table_edit();
             self.editor.table.selected = None;
@@ -1065,17 +1065,8 @@ impl App {
         // sub-focus (UrlBar, BodyEditor, the table hits) re-set it right
         // after; modal and scrollbar hits are excluded above so an open
         // popup or a scroll never blurs the input under it.
-        let keeps_editor_input = keeps_table_selection
-            || matches!(
-                hit,
-                Hit::UrlBar
-                    | Hit::BodyEditor
-                    | Hit::VarToken(_)
-                    | Hit::CopyUrl
-                    | Hit::TipPanel(_)
-                    | Hit::TipCopy(_)
-                    | Hit::TipReveal(_)
-            );
+        let keeps_editor_input =
+            keeps_table_selection || matches!(hit, Hit::UrlBar | Hit::BodyEditor | Hit::CopyUrl);
         if !keeps_editor_input {
             self.editor.sub_focus = SubFocus::None;
         }

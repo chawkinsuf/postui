@@ -188,7 +188,7 @@ pub fn draw_testbed(frame: &mut Frame, area: Rect, ctx: &DrawCtx) {
     let tabs = vec![
         ("Params".to_string(), None),
         ("Headers".to_string(), None),
-        ("Body".to_string(), Some(('✓', theme.success))),
+        ("Body".to_string(), Some(("✓", theme.success))),
     ];
     let spans = TabStrip::spans(&tabs);
     let strip_w = 60;
@@ -347,7 +347,7 @@ fn draw_motion_section(buf: &mut Buffer, area: Rect, x0: u16, y: &mut u16, ctx: 
     let motion_tabs = vec![
         ("Params".to_string(), None),
         ("Headers".to_string(), None),
-        ("Body".to_string(), Some(('✓', theme.success))),
+        ("Body".to_string(), Some(("✓", theme.success))),
     ];
     let spans = TabStrip::spans(&motion_tabs);
     let strip_w = 40;

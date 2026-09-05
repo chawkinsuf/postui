@@ -796,6 +796,8 @@ impl FilePickerState {
         let rows_y = list_area.y + u16::from(self.error.is_some());
         let rows_h = list_h.saturating_sub(usize::from(self.error.is_some()));
         let hover_t = 1.0;
+        // The directory row's leading icon: the Material folder plus a gap.
+        let folder_icon = format!("{} ", crate::glyph::FOLDER);
         for (i, row) in self.rows.iter().enumerate().skip(self.scroll).take(rows_h) {
             let y = rows_y + (i - self.scroll) as u16;
             let selected = i == self.selected;
@@ -820,8 +822,6 @@ impl FilePickerState {
                 theme,
             );
             let fill = ListRow::resolve_fill(theme, highlight, theme.panel, hover_t);
-            // The directory row's leading icon: the Material folder plus a gap.
-            let folder_icon = format!("{} ", crate::glyph::FOLDER);
             let (icon, label, tag): (&str, String, Option<(&str, ratatui::style::Color)>) =
                 match row {
                     Row::Parent => ("  ", "..".to_string(), None),

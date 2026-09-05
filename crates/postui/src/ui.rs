@@ -386,8 +386,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 app.hovered.as_ref(),
                 &mut app.hits,
             );
+            app.drawn_tip = Some(tip);
         }
-        None => app.tip_revealed = None,
+        None => {
+            // No tip this frame: nothing to hold, nothing revealed. A hold
+            // that outlived its tip (the token left the screen under a
+            // resting pointer) would otherwise re-raise it, secret and
+            // all, the moment the token came back.
+            app.drawn_tip = None;
+            app.held_tip = None;
+            app.tip_revealed = None;
+        }
     }
 }
 
@@ -419,7 +428,7 @@ fn draw_var_tooltip(
     use crate::hit::Hit;
     use ratatui::layout::Rect;
     use unicode_width::UnicodeWidthStr;
-    let mut value_lines = wrap_chars(&info.tooltip_value(revealed), TOOLTIP_MAX_TEXT_W);
+    let mut value_lines = wrap_cells(&info.tooltip_value(revealed), TOOLTIP_MAX_TEXT_W);
     let line2 = info.source.label();
     let line3 = info
         .description
@@ -427,19 +436,16 @@ fn draw_var_tooltip(
         .map(|d| ellipsize(d, TOOLTIP_MAX_TEXT_W));
     // The icon pills, only when there is a value to act on: three cells
     // each (` 󰆏 `) so the hover fill surrounds the glyph.
-    let mut pills: Vec<(String, Hit)> = Vec::new();
+    let mut pills: Vec<(&str, Hit)> = Vec::new();
     if info.value.is_some() {
-        pills.push((
-            format!(" {} ", crate::glyph::COPY),
-            Hit::TipCopy(tip.name.clone()),
-        ));
+        pills.push((crate::glyph::COPY_PILL, Hit::TipCopy(tip.name.clone())));
         if info.secret {
             let eye = if revealed {
-                crate::glyph::EYE_OFF
+                crate::glyph::EYE_OFF_PILL
             } else {
-                crate::glyph::EYE
+                crate::glyph::EYE_PILL
             };
-            pills.push((format!(" {eye} "), Hit::TipReveal(tip.name.clone())));
+            pills.push((eye, Hit::TipReveal(tip.name.clone())));
         }
     }
     // Trailing the first value row: a gap, then the pills.
@@ -453,11 +459,7 @@ fn draw_var_tooltip(
     if value_lines.len() > max_value_rows {
         value_lines.truncate(max_value_rows);
         let last = value_lines.last_mut().unwrap();
-        *last = last
-            .chars()
-            .take(TOOLTIP_MAX_TEXT_W - 1)
-            .chain(std::iter::once('\u{2026}'))
-            .collect();
+        *last = ellipsize(&format!("{last}\u{2026}\u{2026}"), TOOLTIP_MAX_TEXT_W);
     }
     let height = fixed + value_lines.len() as u16;
     // Display cells throughout (a wide glyph is one char but two cells),
@@ -540,32 +542,51 @@ fn draw_var_tooltip(
     let mut cx = x + width - 2 - pills_w as u16;
     for (label, hit) in pills {
         let rect = Rect::new(cx, y + 1, 3, 1);
-        crate::paint::action(buf, rect, &label, hit.clone(), hovered, theme.panel, theme);
+        crate::paint::action(buf, rect, label, hit.clone(), hovered, theme.panel, theme);
         hits.register(rect, hit);
         cx += 3;
     }
 }
 
-/// `s` hard-wrapped into chunks of at most `max` characters — values are
-/// often unbroken URLs or tokens, so there is no word boundary to prefer.
-/// Always yields at least one (possibly empty) line.
-fn wrap_chars(s: &str, max: usize) -> Vec<String> {
-    let chars: Vec<char> = s.chars().collect();
-    if chars.is_empty() {
-        return vec![String::new()];
+/// `s` hard-wrapped into lines of at most `max` display cells — values
+/// are often unbroken URLs or tokens, so there is no word boundary to
+/// prefer. Cells, not chars: a wide glyph takes two, so a masked secret
+/// (one dot per cell) and its revealed value wrap identically. Always
+/// yields at least one (possibly empty) line.
+fn wrap_cells(s: &str, max: usize) -> Vec<String> {
+    use unicode_width::UnicodeWidthChar;
+    let max = max.max(1);
+    let mut lines = vec![String::new()];
+    let mut w = 0;
+    for c in s.chars() {
+        let cw = c.width().unwrap_or(0);
+        if w + cw > max && w > 0 {
+            lines.push(String::new());
+            w = 0;
+        }
+        lines.last_mut().unwrap().push(c);
+        w += cw;
     }
-    chars
-        .chunks(max.max(1))
-        .map(|c| c.iter().collect())
-        .collect()
+    lines
 }
 
-/// `s` cut to at most `max` characters, the last of which becomes `…`.
+/// `s` cut to at most `max` display cells, the last of which becomes `…`.
 fn ellipsize(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    if s.width() <= max {
         return s.to_string();
     }
-    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+    let budget = max.saturating_sub(1);
+    let mut out = String::new();
+    let mut w = 0;
+    for c in s.chars() {
+        let cw = c.width().unwrap_or(0);
+        if w + cw > budget {
+            break;
+        }
+        out.push(c);
+        w += cw;
+    }
     out.push('\u{2026}');
     out
 }

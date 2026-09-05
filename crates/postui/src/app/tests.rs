@@ -20765,3 +20765,89 @@ fn right_click_under_the_tooltip_reaches_the_row_beneath() {
         "{under:?}"
     );
 }
+
+/// A token drawn twice (URL and a header value) holds the instance the
+/// tip was raised for: entering the panel must not re-anchor the tip at
+/// the other instance and lose it.
+#[test]
+fn tooltip_holds_the_instance_it_was_raised_for_when_a_token_is_drawn_twice() {
+    let (mut app, _dir, _out) = tooltip_app("base_url");
+    app.editor.active_tab = EditorTab::Headers;
+    app.editor.headers.insert(
+        "x-origin".into(),
+        postui_core::model::Entry {
+            value: "{{base_url}}".into(),
+            enabled: true,
+        },
+    );
+    app.update(Action::Render);
+    render_once(&mut app);
+    // Two instances on screen; hover the URL bar's (the first drawn).
+    let instances = app.hits.rects_of(&Hit::VarToken("base_url".into()));
+    assert_eq!(instances.len(), 2, "{instances:?}");
+    let url_token = instances[0];
+    app.handle_mouse(moved(url_token.x + 1, url_token.y));
+    render_once(&mut app);
+    let tip = app.var_token_tip().unwrap();
+    assert_eq!(tip.anchor, url_token);
+    let panel = app.hits.rect_of(&Hit::TipPanel("base_url".into())).unwrap();
+    app.handle_mouse(moved(panel.x + 2, panel.bottom() - 1));
+    render_once(&mut app);
+    let held = app.var_token_tip().expect("the tip holds on its panel");
+    assert_eq!(held.anchor, url_token, "same instance, not the header's");
+}
+
+/// A hold dies with the frame that draws no tip: after Manage opens and
+/// closes with the pointer never moving, the tip (and its revealed
+/// secret) must not come back on its own.
+#[test]
+fn tooltip_does_not_reopen_when_its_screen_comes_back_under_a_resting_pointer() {
+    let (mut app, _dir, _out) = tooltip_app("api_key");
+    hover_token(&mut app, "api_key");
+    click_hit(&mut app, Hit::TipReveal("api_key".into()));
+    assert!(tooltip_text(&mut app).contains("sk-super-secret"));
+    app.update(Action::OpenManage { tab: None });
+    tooltip_text(&mut app);
+    app.update(Action::CloseScreen);
+    let text = tooltip_text(&mut app);
+    assert!(
+        app.var_token_tip().is_none(),
+        "no hold survives a tipless frame"
+    );
+    assert!(!text.contains("sk-super-secret"), "{text}");
+    assert!(app.tip_revealed.is_none());
+}
+
+/// A wide-character secret keeps the same panel masked and revealed: the
+/// mask is one dot per *cell* and the wrap is by cells, so nothing
+/// moves under the pointer on reveal.
+#[test]
+fn wide_char_secret_keeps_its_panel_footprint_on_reveal() {
+    let (mut app, dir, _out) = tooltip_app("api_key");
+    postui_core::project::save_secrets(dir.path(), &{
+        let mut secrets = indexmap::IndexMap::new();
+        let mut qa = indexmap::IndexMap::new();
+        qa.insert("api_key".to_string(), "日".repeat(40));
+        secrets.insert("qa".to_string(), qa);
+        secrets
+    })
+    .unwrap();
+    app.update(Action::ReloadProjectFiles);
+    hover_token(&mut app, "api_key");
+    let masked = app.hits.rect_of(&Hit::TipPanel("api_key".into())).unwrap();
+    let pill = app.hits.rect_of(&Hit::TipReveal("api_key".into())).unwrap();
+    click_hit(&mut app, Hit::TipReveal("api_key".into()));
+    let text = tooltip_text(&mut app);
+    assert!(
+        text.contains(&"日".repeat(28)),
+        "revealed and wrapped by cells: {text}"
+    );
+    assert_eq!(
+        app.hits.rect_of(&Hit::TipPanel("api_key".into())),
+        Some(masked)
+    );
+    assert_eq!(
+        app.hits.rect_of(&Hit::TipReveal("api_key".into())),
+        Some(pill)
+    );
+}

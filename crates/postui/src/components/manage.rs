@@ -53,7 +53,7 @@ impl ManageTab {
     /// geometry `draw_manage_bar` lays the strip out with, exposed so the
     /// app can glide the underline between them.
     pub fn strip_spans() -> Vec<(u16, u16)> {
-        let tabs: Vec<(String, Option<(char, ratatui::style::Color)>)> = Self::ALL
+        let tabs: Vec<(String, Option<(&'static str, ratatui::style::Color)>)> = Self::ALL
             .iter()
             .map(|t| (t.label().to_string(), None))
             .collect();
@@ -117,7 +117,7 @@ pub fn draw_manage_bar(
 
     // The strip's natural width, measured before anything is laid out:
     // the buttons are fitted into what is left of the bar beyond it.
-    let tabs: Vec<(String, Option<(char, ratatui::style::Color)>)> = ManageTab::ALL
+    let tabs: Vec<(String, Option<(&'static str, ratatui::style::Color)>)> = ManageTab::ALL
         .iter()
         .map(|t| (t.label().to_string(), None))
         .collect();
