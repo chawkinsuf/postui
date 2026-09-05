@@ -363,8 +363,28 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // the hit map is back on `app`, because a caret-raised tip is anchored
     // at the `VarToken` rect this very frame registered. It never covers a
     // dialog: `var_token_tip` yields nothing while a modal is up.
-    if let Some(tip) = app.var_token_tip() {
-        draw_var_tooltip(frame, frame.area(), &app.theme, &tip, &app.editor.vars);
+    match app.var_token_tip() {
+        Some(tip) => {
+            if app.tip_revealed.as_deref().is_some_and(|n| n != tip.name) {
+                app.tip_revealed = None;
+            }
+            let revealed = app.tip_revealed.is_some();
+            let rect = draw_var_tooltip(
+                frame,
+                frame.area(),
+                &app.theme,
+                &tip,
+                &app.editor.vars,
+                revealed,
+                app.hovered.as_ref(),
+                &mut app.hits,
+            );
+            app.last_tip = rect.map(|r| (tip, r));
+        }
+        None => {
+            app.last_tip = None;
+            app.tip_revealed = None;
+        }
     }
 }
 
@@ -372,32 +392,66 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 const TOOLTIP_MAX_TEXT_W: usize = 56;
 
 /// Draws the hover/caret tooltip for one `{{token}}` (spec §7): first the
-/// value — always `SECRET_MASK` for a secret, with no reveal anywhere,
-/// wrapped onto further rows rather than truncated so the whole value is
-/// readable — then a line naming the scope the value came from (`this
-/// request`, `env = qa`, `default`, `option = user 2`, `needs selection`,
-/// `missing secret`). It sits under the token it belongs to,
+/// value — `SECRET_MASK` for a secret unless `revealed` — wrapped onto
+/// further rows rather than truncated so the whole value is readable —
+/// then a line naming the scope the value came from (`this request`,
+/// `env = qa`, `default`, `option = user 2`, `needs selection`, `missing
+/// secret`), and, when there is a value, a row of inline controls:
+/// `󰆏 copy` (the real value, a secret's included) and, for a secret,
+/// `󰈈 reveal` / `󰈉 hide`. It sits under the token it belongs to,
 /// flipping above when there is no room below, and is clamped to stay
-/// inside `screen`.
+/// inside `screen`. Registers the controls and the panel itself in
+/// `hits` and returns the panel rect, or `None` when nothing fit.
+#[allow(clippy::too_many_arguments)]
 fn draw_var_tooltip(
     frame: &mut Frame,
     screen: ratatui::layout::Rect,
     theme: &crate::theme::Theme,
     tip: &crate::app::TokenTip,
     vars: &crate::components::var_tokens::VarView,
-) {
+    revealed: bool,
+    hovered: Option<&crate::hit::Hit>,
+    hits: &mut crate::hit::HitMap,
+) -> Option<ratatui::layout::Rect> {
+    use crate::hit::Hit;
     use ratatui::layout::Rect;
     let info = vars.describe(&tip.name);
-    let mut value_lines = wrap_chars(&info.display_value(), TOOLTIP_MAX_TEXT_W);
+    let shown = match (&info.value, info.secret, revealed) {
+        (Some(v), true, true) => v.clone(),
+        _ => info.display_value(),
+    };
+    let mut value_lines = wrap_chars(&shown, TOOLTIP_MAX_TEXT_W);
     let line2 = info.source.label();
     let line3 = info
         .description
         .as_ref()
         .map(|d| ellipsize(d, TOOLTIP_MAX_TEXT_W));
-    // Padding rows top and bottom, the value rows, the source line, and an
-    // optional description line. A value taller than the terminal is cut
-    // to fit, the last surviving row ellipsized to say so.
-    let fixed = 3 + u16::from(line3.is_some());
+    // The controls row, only when there is a value to act on.
+    let mut controls: Vec<(String, Hit)> = Vec::new();
+    if info.value.is_some() {
+        controls.push((
+            "\u{F018F} copy".to_string(), // 󰆏 nf-md-content_copy
+            Hit::TipCopy(tip.name.clone()),
+        ));
+        if info.secret {
+            let label = if revealed {
+                "\u{F06D1} hide" // 󰈉 nf-md-eye_off
+            } else {
+                "\u{F06D0} reveal" // 󰈈 nf-md-eye
+            };
+            controls.push((label.to_string(), Hit::TipReveal(tip.name.clone())));
+        }
+    }
+    let controls_w: usize = controls
+        .iter()
+        .map(|(l, _)| l.chars().count())
+        .sum::<usize>()
+        + 2 * controls.len().saturating_sub(1);
+    // Padding rows top and bottom, the value rows, the source line, an
+    // optional description line, and the controls row. A value taller
+    // than the terminal is cut to fit, the last surviving row ellipsized
+    // to say so.
+    let fixed = 3 + u16::from(line3.is_some()) + u16::from(!controls.is_empty());
     let max_value_rows = screen.height.saturating_sub(fixed).max(1) as usize;
     if value_lines.len() > max_value_rows {
         value_lines.truncate(max_value_rows);
@@ -415,11 +469,12 @@ fn draw_var_tooltip(
         .max()
         .unwrap_or(0)
         .max(line2.chars().count())
-        .max(line3.as_ref().map_or(0, |l| l.chars().count())) as u16;
+        .max(line3.as_ref().map_or(0, |l| l.chars().count()))
+        .max(controls_w) as u16;
     // 2 columns of padding each side, plus a column for the drop shadow.
     let width = (text_w + 4).min(screen.width.saturating_sub(1));
     if width < 5 || screen.height < height {
-        return;
+        return None;
     }
     let below = tip.anchor.bottom();
     let y = if below + height <= screen.bottom() {
@@ -459,16 +514,38 @@ fn draw_var_tooltip(
         false,
     );
     if let Some(desc) = &line3 {
+        row += 1;
         crate::paint::text(
             buf,
             x + 2,
-            row + 1,
+            row,
             &ellipsize(desc, inner),
             theme.text_muted,
             theme.panel,
             false,
         );
     }
+    // The panel first: later registrations win a hit lookup, so the
+    // controls painted next sit on top of it.
+    hits.register(area, Hit::TipPanel);
+    // Small accent-coloured inline controls, laid left-to-right — the
+    // same treatment as the variable form's `reveal` / `remove`.
+    if !controls.is_empty() {
+        row += 1;
+        let mut cx = x + 2;
+        for (label, hit) in controls {
+            let w = label.chars().count() as u16;
+            let (fg, bg) = if hovered == Some(&hit) {
+                (theme.on_accent, theme.accent)
+            } else {
+                (theme.accent, theme.panel)
+            };
+            crate::paint::text(buf, cx, row, &label, fg, bg, false);
+            hits.register(Rect::new(cx, row, w, 1), hit);
+            cx += w + 2;
+        }
+    }
+    Some(area)
 }
 
 /// `s` hard-wrapped into chunks of at most `max` characters — values are

@@ -2933,9 +2933,9 @@ impl Editor {
         // there's a secret to reveal.
         if y < max_y {
             let toggle_label = if self.computed.revealed {
-                "\u{1F441} hide"
+                "\u{F06D1} hide" // 󰈉 nf-md-eye_off
             } else {
-                "\u{1F441} reveal"
+                "\u{F06D0} reveal" // 󰈈 nf-md-eye
             };
             let show_toggle = self.computed.has_secret;
             let toggle_w = if show_toggle {

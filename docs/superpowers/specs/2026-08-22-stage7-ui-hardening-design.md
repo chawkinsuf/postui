@@ -126,7 +126,7 @@ The editor's Headers tab gains a read-only **auto section** below the editable r
 ## 7. Inline variable value preview
 
 - Every `{{token}}` in the URL bar, table cells, and body editor is highlighted: tinted when it resolves, red when unresolved/needs-selection/missing-secret.
-- Hovering a token (mouse-motion events; already captured for hover states) or resting the caret inside one for a tick pops a small tooltip: `name = value` (masked for secrets), plus the source scope (request / env / default / group "user → user 2").
+- Hovering a token (mouse-motion events; already captured for hover states) or resting the caret inside one for a tick pops a small tooltip: `name = value` (masked for secrets), plus the source scope (request / env / default / group "user → user 2"). *Amended 2026-09-04:* the tooltip holds while the pointer is over it and carries a `copy` control (always the real value, a secret's included) and, for secrets, a `reveal`/`hide` toggle that resets when the tooltip closes — reversing the original "no reveal anywhere" ruling.
 - Clicking a token still opens the var picker prefiltered to it.
 
 ## 8. Small fixes

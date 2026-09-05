@@ -288,6 +288,15 @@ pub struct App {
     /// the dwell threshold is crossed (for the redraw) without re-reporting
     /// it on every later tick while still resting in the same token.
     caret_tip_shown: bool,
+    /// The tooltip the last frame painted, and the panel rect it took:
+    /// the tip holds while the pointer rests inside that rect, so its
+    /// controls can be reached. Cleared by the draw pass when no tip
+    /// shows.
+    pub(crate) last_tip: Option<(TokenTip, ratatui::layout::Rect)>,
+    /// The token whose secret the tooltip is currently showing unmasked
+    /// (its `reveal` toggle). Reset whenever the tip closes or moves to
+    /// another token, so a secret never stays revealed by accident.
+    pub(crate) tip_revealed: Option<String>,
     /// An in-progress drag (e.g. a scrollbar thumb), if any.
     pub drag: Option<Drag>,
     /// A live text-selection sweep (which surface it is over), or `None`.
@@ -874,6 +883,8 @@ impl App {
             caret_token: None,
             caret_token_since: None,
             caret_tip_shown: false,
+            last_tip: None,
+            tip_revealed: None,
             drag: None,
             text_drag: None,
             sidebar_press: None,
@@ -1417,13 +1428,21 @@ impl App {
         if !self.modals.is_empty() {
             return None;
         }
-        if let Some((x, y)) = self.pointer
-            && let Some((name, anchor)) = self.hits.var_token_at(x, y)
-        {
-            return Some(TokenTip {
-                name: name.to_string(),
-                anchor,
-            });
+        if let Some((x, y)) = self.pointer {
+            // Over the tip the last frame drew: keep that tip (checked
+            // before tokens, since the panel floats over any token that
+            // happens to be drawn beneath it).
+            if let Some((tip, rect)) = &self.last_tip
+                && rect.contains(ratatui::layout::Position { x, y })
+            {
+                return Some(tip.clone());
+            }
+            if let Some((name, anchor)) = self.hits.var_token_at(x, y) {
+                return Some(TokenTip {
+                    name: name.to_string(),
+                    anchor,
+                });
+            }
         }
         if !self.caret_tip_shown {
             return None;

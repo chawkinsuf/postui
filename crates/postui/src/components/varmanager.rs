@@ -1961,9 +1961,9 @@ impl VarManager {
                 };
             if secret {
                 let reveal_label = if self.form.revealed {
-                    "\u{1f441} hide"
+                    "\u{F06D1} hide" // 󰈉 nf-md-eye_off
                 } else {
-                    "\u{1f441} reveal"
+                    "\u{F06D0} reveal" // 󰈈 nf-md-eye
                 };
                 inline_control(buf, hits, reveal_label, Hit::VmRevealToggle);
             }

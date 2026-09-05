@@ -16,7 +16,7 @@ use crate::hit::{Hit, HitMap};
 use crate::theme::Theme;
 use indexmap::IndexMap;
 use postui_core::model::Entry;
-use postui_core::prepare::SECRET_MASK;
+pub use postui_core::prepare::SECRET_MASK;
 use postui_core::varmodel::{Resolved, VarMeta};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -63,8 +63,9 @@ pub struct TokenInfo {
     /// `None` when nothing would substitute — the token would be sent
     /// verbatim (or refused).
     pub value: Option<String>,
-    /// A secret's value is never shown: [`TokenInfo::display_value`] masks
-    /// it, and there is no reveal anywhere in the tooltip.
+    /// A secret's value is masked by [`TokenInfo::display_value`]; the
+    /// tooltip's `reveal` control is the one place it can be shown, and
+    /// its `copy` control always takes the real value.
     pub secret: bool,
     pub source: TokenSource,
     /// The declaration's description (a selector field carries its

@@ -1052,7 +1052,13 @@ impl App {
         let keeps_editor_input = keeps_table_selection
             || matches!(
                 hit,
-                Hit::UrlBar | Hit::BodyEditor | Hit::VarToken(_) | Hit::CopyUrl
+                Hit::UrlBar
+                    | Hit::BodyEditor
+                    | Hit::VarToken(_)
+                    | Hit::CopyUrl
+                    | Hit::TipPanel
+                    | Hit::TipCopy(_)
+                    | Hit::TipReveal(_)
             );
         if !keeps_editor_input {
             self.editor.sub_focus = SubFocus::None;
@@ -1793,6 +1799,26 @@ impl App {
             // filtered to that name (spec §7) — the shortest path from
             // "what is this?" to the variable itself.
             Hit::VarToken(name) => self.update(Action::OpenVarTokenPopup(name)),
+            // The tooltip's controls. A secret's *real* value is what gets
+            // copied, mask or no mask — the point of the button.
+            Hit::TipCopy(name) => {
+                let Some(value) = self.editor.vars.describe(&name).value else {
+                    return false;
+                };
+                self.copy_text_with_toast(&value, format!("Copied {{{{{name}}}}}"));
+                true
+            }
+            Hit::TipReveal(name) => {
+                self.tip_revealed = if self.tip_revealed.as_deref() == Some(name.as_str()) {
+                    None
+                } else {
+                    Some(name)
+                };
+                true
+            }
+            // A click on the panel between its controls: consumed, so it
+            // never reaches whatever the tip floats over.
+            Hit::TipPanel => true,
             // Like `VmFormField`/`VmEntryCell` above: the commit attempts at
             // the top of this function just ran, and a write failure
             // restores the original edit (still live) with its typed text.

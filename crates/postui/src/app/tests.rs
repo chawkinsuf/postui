@@ -12769,7 +12769,10 @@ fn auto_header_copy_icon_is_the_shared_copy_glyph() {
         .take(100)
         .map(|c| c.symbol())
         .collect::<String>();
-    assert!(row.contains('\u{F018F}'), "the Host row's copy icon is 󰆏: {row}");
+    assert!(
+        row.contains('\u{F018F}'),
+        "the Host row's copy icon is 󰆏: {row}"
+    );
 }
 
 #[test]
@@ -12969,7 +12972,7 @@ fn computed_headers_reveal_resets_when_switching_to_a_different_request() {
         "B shows the dot mask: {b_view}"
     );
     assert!(
-        b_view.contains("\u{1F441} reveal") && !b_view.contains("\u{1F441} hide"),
+        b_view.contains("\u{F06D0} reveal") && !b_view.contains("\u{F06D1} hide"),
         "B's own toggle reads \"reveal\", not \"hide\" (the collapse toggle's unrelated \
          \"⌄ hide\" label is a substring trap here, so this checks the 👁 glyph too): {b_view}"
     );
@@ -20532,4 +20535,142 @@ fn the_footer_advertises_only_the_cancel_keys_during_a_space_drag() {
     let text = footer_text(&mut app);
     assert!(!text.contains("cancel drag"), "{text}");
     assert!(text.contains("rename"), "{text}");
+}
+
+// --- The variable tooltip's copy / reveal controls -----------------------
+
+/// A project with a resolved plain variable (`base_url`) and a secret
+/// (`api_key`) in the active `qa` environment, the request URL carrying
+/// `{{token}}`, and a fake clipboard that writes to `out`.
+fn tooltip_app(token: &str) -> (App, tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    postui_core::project::save_secrets(dir.path(), &{
+        let mut secrets = indexmap::IndexMap::new();
+        let mut qa = indexmap::IndexMap::new();
+        qa.insert("api_key".to_string(), "sk-super-secret".to_string());
+        secrets.insert("qa".to_string(), qa);
+        secrets
+    })
+    .unwrap();
+    let out = dir.path().join("clip.txt");
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.anims.enabled = false;
+    app.set_clipboard_for_test(crate::clipboard::Clipboard::new_for_test(
+        Some(format!("cat > {}", out.to_string_lossy())),
+        65536,
+        false,
+    ));
+    app.editor.url = crate::components::line_input::LineInput::new(&format!("{{{{{token}}}}}/x"));
+    app.update(Action::Render);
+    (app, dir, out)
+}
+
+/// Renders at the 120×40 size `render_once` uses (so hit rects line up)
+/// and returns the screen text.
+fn tooltip_text(app: &mut App) -> String {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    let backend = TestBackend::new(120, 40);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+    format!("{:?}", terminal.backend().buffer())
+}
+
+/// Moves the pointer onto the drawn `{{name}}` token and re-renders so
+/// the tooltip (and its controls) are painted and registered.
+fn hover_token(app: &mut App, name: &str) {
+    render_once(app);
+    let r = app
+        .hits
+        .rect_of(&Hit::VarToken(name.to_string()))
+        .unwrap_or_else(|| panic!("no {{{{{name}}}}} drawn"));
+    app.handle_mouse(moved(r.x + 1, r.y));
+    render_once(app);
+}
+
+#[test]
+fn tooltip_stays_while_the_pointer_is_over_it_and_drops_when_it_leaves() {
+    let (mut app, _dir, _out) = tooltip_app("base_url");
+    hover_token(&mut app, "base_url");
+    assert_eq!(
+        app.var_token_tip().map(|t| t.name),
+        Some("base_url".to_string())
+    );
+    let panel = app
+        .hits
+        .rect_of(&Hit::TipPanel)
+        .expect("the tooltip registers its panel");
+    let token = app.hits.rect_of(&Hit::VarToken("base_url".into())).unwrap();
+    // Onto the panel's last row — well clear of the token itself.
+    let (x, y) = (panel.x + 2, panel.bottom() - 1);
+    assert!(!token.contains(ratatui::layout::Position { x, y }));
+    app.handle_mouse(moved(x, y));
+    assert_eq!(
+        app.var_token_tip().map(|t| t.name),
+        Some("base_url".to_string()),
+        "the tip must hold while the pointer is over it"
+    );
+    render_once(&mut app);
+    app.handle_mouse(moved(panel.right() + 3, panel.bottom() + 3));
+    assert!(app.var_token_tip().is_none(), "leaving both drops it");
+}
+
+#[test]
+fn tooltip_copy_puts_the_value_on_the_clipboard() {
+    let (mut app, _dir, out) = tooltip_app("base_url");
+    hover_token(&mut app, "base_url");
+    let text = tooltip_text(&mut app);
+    assert!(text.contains("\u{F018F} copy"), "copy control: {text}");
+    assert!(
+        !text.contains("reveal"),
+        "no reveal for a plain value: {text}"
+    );
+    click_hit(&mut app, Hit::TipCopy("base_url".into()));
+    assert_eq!(
+        std::fs::read_to_string(&out).unwrap(),
+        "https://qa.example.com"
+    );
+}
+
+#[test]
+fn tooltip_copy_of_a_secret_copies_the_real_value_without_revealing_it() {
+    let (mut app, _dir, out) = tooltip_app("api_key");
+    hover_token(&mut app, "api_key");
+    let text = tooltip_text(&mut app);
+    assert!(
+        text.contains(crate::components::var_tokens::SECRET_MASK),
+        "{text}"
+    );
+    assert!(!text.contains("sk-super-secret"), "{text}");
+    click_hit(&mut app, Hit::TipCopy("api_key".into()));
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "sk-super-secret");
+    let text = tooltip_text(&mut app);
+    assert!(!text.contains("sk-super-secret"), "still masked: {text}");
+}
+
+#[test]
+fn tooltip_reveal_shows_the_secret_until_the_tip_moves_on() {
+    let (mut app, _dir, _out) = tooltip_app("api_key");
+    hover_token(&mut app, "api_key");
+    let text = tooltip_text(&mut app);
+    assert!(text.contains("\u{F06D0} reveal"), "reveal control: {text}");
+    click_hit(&mut app, Hit::TipReveal("api_key".into()));
+    let text = tooltip_text(&mut app);
+    assert!(text.contains("sk-super-secret"), "revealed: {text}");
+    assert!(text.contains("\u{F06D1} hide"), "hide control: {text}");
+    // Clicking hide masks it again.
+    click_hit(&mut app, Hit::TipReveal("api_key".into()));
+    let text = tooltip_text(&mut app);
+    assert!(!text.contains("sk-super-secret"), "hidden again: {text}");
+    // Reveal, then let the tip close: reopening shows the mask.
+    click_hit(&mut app, Hit::TipReveal("api_key".into()));
+    assert!(tooltip_text(&mut app).contains("sk-super-secret"));
+    app.handle_mouse(moved(119, 39));
+    render_once(&mut app);
+    assert!(app.var_token_tip().is_none());
+    hover_token(&mut app, "api_key");
+    let text = tooltip_text(&mut app);
+    assert!(!text.contains("sk-super-secret"), "reveal resets: {text}");
 }

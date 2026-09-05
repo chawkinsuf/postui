@@ -221,6 +221,15 @@ pub enum Hit {
     /// hover styling and to right-click menus — see
     /// [`HitMap::hit_at_ignoring_var_tokens`].
     VarToken(String),
+    /// The variable tooltip's panel: a catch-all so a click on the tip
+    /// (between its controls) lands nowhere underneath, and so the tip
+    /// knows the pointer is still over it.
+    TipPanel,
+    /// The tooltip's `󰆏 copy` control: copies the token's *real* value
+    /// (a secret's included, unmasked) to the clipboard.
+    TipCopy(String),
+    /// The tooltip's `󰈈 reveal` / `󰈉 hide` toggle, offered for a secret.
+    TipReveal(String),
     /// A clickable `[y] Label` chip in a Confirm modal.
     ConfirmChoice(char),
     /// The top modal's painted Cancel button (Message has none; Prompt and
