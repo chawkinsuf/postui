@@ -52,6 +52,17 @@ pub enum StepKind {
         /// See `FileStates::orders`: the delete's removal from the list.
         orders: Vec<postui_core::order::OrderEdit>,
     },
+    /// A request reorder (a dropped row drag, alt+↑/↓, the row menu's
+    /// Move up/down): no file other than `project.toml` changed, so the
+    /// step is just the order edits. `slug` is the request that moved —
+    /// the selection lands back on it. `burst` marks a keyboard move:
+    /// quick successive presses on the same request merge into one step
+    /// (see `History::try_merge`); a drag never merges.
+    Reorder {
+        edits: Vec<postui_core::order::OrderEdit>,
+        slug: String,
+        burst: bool,
+    },
 }
 
 /// Where the cursor sat before/after a step, so undo/redo can restore it.
@@ -126,12 +137,14 @@ impl History {
     }
 
     /// Records `step`, merging it into the top undo step when all of these
-    /// hold: coalescing is active, the top step is an `EditorDelta` with the
-    /// same `slug` as `step`, `now` is within the coalesce window of the last
-    /// record, and both steps' `coalesce_key` agree (and are `Some`).
-    /// Merging keeps the top's `before`/`cursor_before` and takes `step`'s
-    /// `after`/`cursor_after`. Clears the redo stack either way and evicts
-    /// the oldest step past the cap.
+    /// hold: coalescing is active, `now` is within the coalesce window of
+    /// the last record, and the two steps are mergeable — `EditorDelta`s
+    /// with the same `slug` whose `coalesce_key`s agree (and are `Some`),
+    /// or keyboard `Reorder`s of the same request. Merging keeps the top's
+    /// `before`/`cursor_before` and takes `step`'s `after`/`cursor_after`;
+    /// a reorder burst that ends back where it started is dropped
+    /// altogether. Clears the redo stack either way and evicts the oldest
+    /// step past the cap.
     pub fn record(&mut self, step: Step, now: Instant) {
         self.redo.clear();
 
@@ -143,6 +156,8 @@ impl History {
 
         if !merged {
             self.undo.push(step);
+        } else if self.undo.last().is_some_and(Self::is_noop_reorder) {
+            self.undo.pop();
         }
 
         self.last_record = Some(now);
@@ -153,9 +168,61 @@ impl History {
         }
     }
 
+    /// A merged reorder whose list is back where the burst started.
+    fn is_noop_reorder(step: &Step) -> bool {
+        match &step.kind {
+            StepKind::Reorder { edits, .. } => edits.iter().all(|e| {
+                matches!(
+                    e,
+                    postui_core::order::OrderEdit::Replaced { before, after, .. } if before == after
+                )
+            }),
+            _ => false,
+        }
+    }
+
     /// Attempts to merge `new` into `top` in place. Returns whether it did.
     fn try_merge(top: Option<&mut Step>, new: &Step) -> bool {
         let Some(top) = top else { return false };
+        if let (
+            StepKind::Reorder {
+                edits: top_edits,
+                slug: top_slug,
+                burst: true,
+            },
+            StepKind::Reorder {
+                edits: new_edits,
+                slug: new_slug,
+                burst: true,
+            },
+        ) = (&mut top.kind, &new.kind)
+        {
+            use postui_core::order::OrderEdit::Replaced;
+            // Two single-level rewrites of the same request's list: the
+            // burst is one rewrite from the first `before` to the last
+            // `after`.
+            if top_slug != new_slug || top_edits.len() != 1 || new_edits.len() != 1 {
+                return false;
+            }
+            let (
+                Some(Replaced {
+                    space: ts, after, ..
+                }),
+                Some(Replaced {
+                    space: ns,
+                    after: new_after,
+                    ..
+                }),
+            ) = (top_edits.first_mut(), new_edits.first())
+            else {
+                return false;
+            };
+            if ts != ns {
+                return false;
+            }
+            *after = new_after.clone();
+            return true;
+        }
         let StepKind::EditorDelta {
             slug: top_slug,
             before: top_before,

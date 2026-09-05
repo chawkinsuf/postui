@@ -49,9 +49,18 @@ brainstorm"; this is that brainstorm.
   focuses, selects and opens it. The press also arms a *possible* drag;
   nothing further happens unless the pointer moves onto another row
   while the button is held.
-- **Not an undo step**, matching space reorder (undo-redo spec). A
-  reorder is cheap to redo by hand and putting it in the undo stack
-  would interleave with content edits confusingly.
+- **An undo step** *(revised 2026-09-04; originally "not an undo step,
+  matching space reorder")*: a dropped drag, an alt+↑/↓ press and the
+  row menu's Move up/down each record one `StepKind::Reorder` carrying
+  the `OrderEdit::Replaced` that `set_level_order` reports (the level's
+  list before and after). Quick successive keyboard moves of the same
+  request roll up into one step (the history's usual 2 s burst window,
+  the same one typing uses), and a burst that ends where it started
+  records nothing; a drag is always its own step. Undo/redo rewrites
+  the list, reloads `meta`, refreshes the sidebar and puts the selection
+  back on the moved request, with an "Undid/Redid reorder of X" toast. A
+  move that writes nothing records nothing. The Manage screen's space
+  reorder is unchanged (still not an undo step).
 
 ## Architecture
 
@@ -297,7 +306,6 @@ shows; drag feels right at the edges.
 - Reordering folders, or interleaving folders with requests.
 - Drag to reparent (into a folder) or across spaces.
 - A "sort alphabetically" reset.
-- Reorder as an undo step.
 - Ordering on the Manage screen. *(Superseded — see §Space drag
   (Manage screen) below, which brings the same gesture to the Spaces
   tab. Environments still have no order to rearrange.)*

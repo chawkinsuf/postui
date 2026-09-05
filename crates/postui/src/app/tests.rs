@@ -3959,10 +3959,133 @@ fn undo_of_a_move_to_space_restores_both_lists() {
 }
 
 #[test]
+fn quick_keyboard_moves_of_one_request_roll_up_into_one_undo_step() {
+    let (mut app, dir) = slotted_app(&["alpha", "beta", "gamma"]);
+    let steps = app.history.undo_len();
+    for _ in 0..2 {
+        app.update(Action::MoveRequest {
+            slug: "main/gamma".into(),
+            delta: -1,
+        });
+    }
+    assert_eq!(slot_order(&dir), ["gamma", "alpha", "beta"]);
+    assert_eq!(app.history.undo_len(), steps + 1, "a burst is one step");
+    // A move that changes nothing records nothing.
+    app.update(Action::MoveRequest {
+        slug: "main/gamma".into(),
+        delta: -1,
+    });
+    assert_eq!(app.history.undo_len(), steps + 1);
+
+    app.update(Action::Undo);
+    assert_eq!(
+        slot_order(&dir),
+        ["alpha", "beta", "gamma"],
+        "one undo takes the whole burst back"
+    );
+    assert_eq!(
+        request_rows(&app),
+        ["main/alpha", "main/beta", "main/gamma"]
+    );
+    assert_eq!(
+        app.sidebar.selected_slug().as_deref(),
+        Some("main/gamma"),
+        "the selection lands back on the moved request"
+    );
+    app.update(Action::Redo);
+    assert_eq!(slot_order(&dir), ["gamma", "alpha", "beta"]);
+    assert!(
+        rendered_text(&mut app).contains("Redid reorder of gamma"),
+        "{}",
+        rendered_text(&mut app)
+    );
+}
+
+#[test]
+fn a_keyboard_burst_that_ends_where_it_started_records_nothing() {
+    let (mut app, dir) = slotted_app(&["alpha", "beta", "gamma"]);
+    let steps = app.history.undo_len();
+    app.update(Action::MoveRequest {
+        slug: "main/beta".into(),
+        delta: 1,
+    });
+    app.update(Action::MoveRequest {
+        slug: "main/beta".into(),
+        delta: -1,
+    });
+    assert_eq!(slot_order(&dir), ["alpha", "beta", "gamma"]);
+    assert_eq!(
+        app.history.undo_len(),
+        steps,
+        "down then up is no step at all"
+    );
+}
+
+#[test]
+fn keyboard_moves_of_different_requests_are_separate_steps() {
+    let (mut app, _dir) = slotted_app(&["alpha", "beta", "gamma"]);
+    let steps = app.history.undo_len();
+    app.update(Action::MoveRequest {
+        slug: "main/gamma".into(),
+        delta: -1,
+    });
+    app.update(Action::MoveRequest {
+        slug: "main/alpha".into(),
+        delta: 1,
+    });
+    assert_eq!(app.history.undo_len(), steps + 2);
+}
+
+#[test]
+fn a_dropped_row_drag_is_its_own_undo_step() {
+    let (mut app, dir) = three_row_app();
+    let r0 = row_rect(&mut app, 0);
+    let r1 = row_rect(&mut app, 1);
+    let r2 = row_rect(&mut app, 2);
+    let steps = app.history.undo_len();
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    app.handle_mouse(left_up(r0.x + 2, r2.y));
+    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    assert_eq!(
+        postui_core::order::space_order(&meta, "main"),
+        ["beta", "gamma", "alpha"]
+    );
+    assert_eq!(app.history.undo_len(), steps + 1);
+
+    // A second drag straight after the first is a second step: drags
+    // never roll up.
+    let r2 = row_rect(&mut app, 2);
+    app.handle_mouse(left_down(r2.x + 2, r2.y));
+    app.handle_mouse(moved(r2.x + 2, r1.y));
+    app.handle_mouse(left_up(r2.x + 2, r1.y));
+    assert_eq!(app.history.undo_len(), steps + 2);
+    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    assert_eq!(
+        postui_core::order::space_order(&meta, "main"),
+        ["beta", "alpha", "gamma"]
+    );
+
+    app.update(Action::Undo);
+    app.update(Action::Undo);
+    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    assert!(
+        postui_core::order::space_order(&meta, "main").is_empty(),
+        "the level was never listed before the first drag, and is not after its undo"
+    );
+    assert_eq!(
+        request_rows(&app),
+        ["main/alpha", "main/beta", "main/gamma"]
+    );
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/alpha"));
+}
+
+#[test]
 fn undo_of_a_delete_keeps_a_reorder_made_since() {
-    // Reordering is not an undo step, so a drag between the delete and
-    // its undo is not undone with it: the restored request goes back to
-    // its old index and the rearranged siblings stay as they are.
+    // A reorder written between the delete and its undo (here straight
+    // to disk, as one undone out of order would be) is not undone with
+    // it: the restored request goes back to its old index and the
+    // rearranged siblings stay as they are.
     let (mut app, dir) = slotted_app(&["alpha", "beta", "gamma"]);
     app.update(Action::DeleteRequest("main/gamma".into()));
     postui_core::order::set_level_order(

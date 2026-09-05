@@ -4979,12 +4979,13 @@ impl App {
                     _ => postui_core::order::move_request(&self.project.root, &slug, delta),
                 };
                 match r {
-                    Ok(()) => {
+                    Ok(edits) => {
                         // Same mtime hazard as `MoveSpace`: read the file
                         // we just wrote rather than waiting for the stamp.
                         self.project.reload_meta();
                         self.rebuild_sidebar();
                         self.sidebar.select_slug(&slug);
+                        self.record_reorder_step(edits, &slug, true);
                     }
                     Err(e) => {
                         self.toasts
@@ -7001,6 +7002,39 @@ impl App {
         edits
     }
 
+    /// Records a request reorder as an undo step; nothing when the
+    /// reorder wrote nothing. A keyboard move (`burst`) merges into a
+    /// keyboard move of the same request made within the history's
+    /// coalesce window, so holding alt+↓ is one step; a drag is always
+    /// its own step and merges with nothing.
+    fn record_reorder_step(
+        &mut self,
+        edits: Vec<postui_core::order::OrderEdit>,
+        slug: &str,
+        burst: bool,
+    ) {
+        if edits.is_empty() {
+            return;
+        }
+        let step = crate::undo::Step {
+            kind: crate::undo::StepKind::Reorder {
+                edits,
+                slug: slug.to_string(),
+                burst,
+            },
+            context: crate::undo::Context {
+                slug: Some(slug.to_string()),
+                cursor_before: crate::undo::CursorPos::None,
+                cursor_after: crate::undo::CursorPos::None,
+            },
+        };
+        if burst {
+            self.history.record(step, std::time::Instant::now());
+        } else {
+            self.history.record_no_coalesce(step);
+        }
+    }
+
     /// Puts a step's order-list cascade back (undo) or forward again
     /// (redo). The files are already restored by the time this runs; a
     /// failure here leaves only a mis-slotted entry, so it warns.
@@ -7201,7 +7235,10 @@ impl App {
                 &drag.level,
                 &drag.working,
             ) {
-                Ok(()) => self.project.reload_meta(),
+                Ok(edits) => {
+                    self.project.reload_meta();
+                    self.record_reorder_step(edits, &drag.slug, false);
+                }
                 Err(e) => self
                     .toasts
                     .push(format!("cannot reorder: {e}"), ToastKind::Warning),
@@ -9330,6 +9367,35 @@ impl App {
                     Some(slug) => format!("{verb} file change to {}", self.request_display(slug)),
                     None => format!("{verb} file change"),
                 };
+                self.toasts.push(msg, ToastKind::Info);
+                if redo {
+                    self.history.push_undo_no_coalesce(step.clone());
+                } else {
+                    self.history.push_redo(step.clone());
+                }
+                true
+            }
+            StepKind::Reorder { edits, slug, .. } => {
+                if let Err(e) = postui_core::order::apply_edits(&self.project.root, edits, !redo) {
+                    self.toasts.push(
+                        format!(
+                            "could not {} the reorder: {e}",
+                            if redo { "redo" } else { "undo" }
+                        ),
+                        ToastKind::Error,
+                    );
+                    return false;
+                }
+                // Same mtime hazard as the forward reorder: read the list
+                // just written rather than waiting for the stamp.
+                self.project.reload_meta();
+                self.refresh_sidebar();
+                if postui_core::storage::space_of(slug) == Some(self.project.active_space.as_str())
+                {
+                    self.sidebar.select_slug(slug);
+                }
+                let verb = if redo { "Redid" } else { "Undid" };
+                let msg = format!("{verb} reorder of {}", self.request_display(slug));
                 self.toasts.push(msg, ToastKind::Info);
                 if redo {
                     self.history.push_undo_no_coalesce(step.clone());

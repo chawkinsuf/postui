@@ -113,6 +113,13 @@ pub enum OrderEdit {
         from: String,
         to: String,
     },
+    /// The whole list went from `before` to `after` (a reorder: one
+    /// level rewritten through [`set_level_order`]).
+    Replaced {
+        space: String,
+        before: Vec<String>,
+        after: Vec<String>,
+    },
 }
 
 impl OrderEdit {
@@ -120,7 +127,8 @@ impl OrderEdit {
         match self {
             OrderEdit::Inserted { space, .. }
             | OrderEdit::Removed { space, .. }
-            | OrderEdit::Renamed { space, .. } => space,
+            | OrderEdit::Renamed { space, .. }
+            | OrderEdit::Replaced { space, .. } => space,
         }
     }
 
@@ -133,6 +141,15 @@ impl OrderEdit {
                 space,
                 from: to,
                 to: from,
+            },
+            OrderEdit::Replaced {
+                space,
+                before,
+                after,
+            } => OrderEdit::Replaced {
+                space,
+                before: after,
+                after: before,
             },
         }
     }
@@ -165,6 +182,7 @@ impl OrderEdit {
                     }
                 }
             }
+            OrderEdit::Replaced { after, .. } => *order = after.clone(),
         }
     }
 }
@@ -375,22 +393,27 @@ fn merge_level(existing: &[String], level: &str, slugs: &[String]) -> Vec<String
 
 /// Rewrites one level of `space`'s order to exactly `slugs` (relative
 /// slugs, all of the same `level`). See [`merge_level`] for what happens
-/// to everything else in the list.
+/// to everything else in the list. Reports the rewrite as one
+/// [`OrderEdit::Replaced`] (nothing when the list already read that way).
 pub fn set_level_order(
     root: &Path,
     space: &str,
     level: &str,
     slugs: &[String],
-) -> Result<(), ProjectError> {
+) -> Result<Vec<OrderEdit>, ProjectError> {
     debug_assert!(
         slugs.iter().all(|s| level_of(s) == level),
         "set_level_order got slugs from another level: {slugs:?} is not all under {level:?}"
     );
     edit_order(root, space, |order| {
+        let before = order.clone();
         *order = merge_level(order, level, slugs);
-        Vec::new()
+        vec![OrderEdit::Replaced {
+            space: space.to_string(),
+            before,
+            after: order.clone(),
+        }]
     })
-    .map(|_| ())
 }
 
 /// Every request of `space` in `listing`, as full slugs, in display
@@ -445,13 +468,13 @@ pub fn move_shown(
     shown: &[String],
     rel: &str,
     delta: i32,
-) -> Result<(), ProjectError> {
+) -> Result<Vec<OrderEdit>, ProjectError> {
     let Some(pos) = shown.iter().position(|s| s == rel) else {
         return Err(ProjectError::NotFound(format!("{space}/{rel}")));
     };
     let target = (pos as i32 + delta).clamp(0, shown.len() as i32 - 1) as usize;
     if target == pos {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let mut shown = shown.to_vec();
     let moved = shown.remove(pos);
@@ -462,7 +485,7 @@ pub fn move_shown(
 /// Moves `slug` (a full slug, `space/…`) by `delta` positions among its
 /// siblings: [`move_shown`] over the level's displayed order read from
 /// disk.
-pub fn move_request(root: &Path, slug: &str, delta: i32) -> Result<(), ProjectError> {
+pub fn move_request(root: &Path, slug: &str, delta: i32) -> Result<Vec<OrderEdit>, ProjectError> {
     let space =
         crate::storage::space_of(slug).ok_or_else(|| ProjectError::NotFound(slug.to_string()))?;
     let rel = relative(slug, space).ok_or_else(|| ProjectError::NotFound(slug.to_string()))?;
@@ -782,6 +805,31 @@ mod tests {
 
         // A no-op cascade reports nothing, so its undo touches nothing.
         assert!(order_remove(dir.path(), "main", "zzz").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_reorder_reports_a_replaced_edit_that_undoes_to_the_previous_list() {
+        let dir = project_with(&["main/a", "main/b", "main/c"]);
+        set_level_order(dir.path(), "main", "", &v(&["a", "b", "c"])).unwrap();
+        let edits = move_shown(dir.path(), "main", "", &v(&["a", "b", "c"]), "c", -2).unwrap();
+        assert_eq!(
+            edits,
+            [OrderEdit::Replaced {
+                space: "main".into(),
+                before: v(&["a", "b", "c"]),
+                after: v(&["c", "a", "b"]),
+            }]
+        );
+        apply_edits(dir.path(), &edits, true).unwrap();
+        assert_eq!(order_of(dir.path(), "main"), v(&["a", "b", "c"]));
+        apply_edits(dir.path(), &edits, false).unwrap();
+        assert_eq!(order_of(dir.path(), "main"), v(&["c", "a", "b"]));
+        // A move to where the row already is reports nothing.
+        assert!(
+            move_shown(dir.path(), "main", "", &v(&["c", "a", "b"]), "c", -1)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
