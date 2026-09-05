@@ -109,6 +109,58 @@ impl Session {
         true
     }
 
+    /// Follows a request whose slug changed on disk (a rename, a move to
+    /// another space): the open slug, the cache slot, the warm list and
+    /// any in-flight send all move with it, so Send stays disabled for
+    /// the renamed request and its late response still lands on it
+    /// rather than under a slug some future request would inherit.
+    pub fn rename(&mut self, from: &str, to: &str) {
+        if from == to {
+            return;
+        }
+        let from_key = Some(from.to_string());
+        let to_key = Some(to.to_string());
+        if self.open_slug == from_key {
+            self.open_slug = to_key.clone();
+        }
+        if let Some(response) = self.cache.remove(&from_key) {
+            self.cache.insert(to_key.clone(), response);
+        }
+        for slot in self.warm.iter_mut() {
+            if *slot == from_key {
+                *slot = to_key.clone();
+            }
+        }
+        for inflight in self.in_flight.iter_mut() {
+            if inflight.slug == from_key {
+                inflight.slug = to_key.clone();
+            }
+        }
+    }
+
+    /// [`Self::rename`] for every request of a renamed space: slugs are
+    /// `<space>/<rest>`, so all of them changed at once.
+    pub fn rename_space(&mut self, from: &str, to: &str) {
+        let from_prefix = format!("{from}/");
+        let rekey = |slug: &mut Option<String>| {
+            if let Some(rest) = slug.as_deref().and_then(|s| s.strip_prefix(&from_prefix)) {
+                *slug = Some(format!("{to}/{rest}"));
+            }
+        };
+        rekey(&mut self.open_slug);
+        for slot in self.warm.iter_mut() {
+            rekey(slot);
+        }
+        for inflight in self.in_flight.iter_mut() {
+            rekey(&mut inflight.slug);
+        }
+        let cache = std::mem::take(&mut self.cache);
+        for (mut key, response) in cache {
+            rekey(&mut key);
+            self.cache.insert(key, response);
+        }
+    }
+
     /// The response owned by `slug`: the on-screen one while that request
     /// is open, its cache slot otherwise.
     fn response_for(&mut self, slug: &Option<String>) -> &mut Response {

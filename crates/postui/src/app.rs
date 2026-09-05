@@ -2493,6 +2493,7 @@ impl App {
                         let was_selected =
                             self.sidebar.selected_slug().as_deref() == Some(slug.as_str());
                         let from_row = self.sidebar.selected;
+                        self.session.rename(&slug, &new_slug);
                         self.refresh_sidebar();
                         self.toasts.push(
                             format!(
@@ -2567,6 +2568,7 @@ impl App {
                             orders,
                             vec![(from.clone(), slug.clone())],
                         );
+                        self.session.rename(&from, &slug);
                         self.refresh_sidebar();
                         if self.editor.slug.as_deref() == Some(from.as_str()) {
                             self.editor.slug = Some(slug.clone());
@@ -4946,6 +4948,7 @@ impl App {
                         // new name or their undo would write to a space
                         // that no longer exists.
                         self.history.rename_space(&self.project.root, &from, &to);
+                        self.session.rename_space(&from, &to);
                         self.apply(Action::ReloadProjectFiles);
                         self.project.reload_meta();
                         self.project.reload_spaces();
@@ -5247,6 +5250,9 @@ impl App {
                     orders,
                     moved.clone(),
                 );
+                for (old, new) in &moved {
+                    self.session.rename(old, new);
+                }
                 self.refresh_sidebar();
                 if let Some(open) = open
                     && let Some((_, new_slug)) = moved.iter().find(|(old, _)| *old == open)
@@ -9460,6 +9466,16 @@ impl App {
                     return false; // step dropped; earlier writes in this step stand
                 }
                 self.replay_order_edits(orders, redo);
+                // Every request the step moved changes slug again: the
+                // session's cache and in-flight entries follow, as they
+                // did for the forward op.
+                for (old, new) in moves {
+                    if redo {
+                        self.session.rename(old, new);
+                    } else {
+                        self.session.rename(new, old);
+                    }
+                }
                 // Before the `SwitchEnv` below, whose persist would write
                 // the stale in-memory table straight back over the
                 // `state.toml` these writes just restored.

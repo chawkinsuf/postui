@@ -21022,3 +21022,51 @@ fn save_and_quit_stays_open_when_the_save_fails() {
     );
 }
 
+#[tokio::test]
+async fn renaming_an_in_flight_request_keeps_its_send_and_its_response() {
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.session.in_flight.push(crate::session::InFlight {
+        started: std::time::Instant::now(),
+        generation: 7,
+        slug: Some("main/alpha".into()),
+        task: tokio::spawn(async {}),
+    });
+    app.session.send_generation = 7;
+    app.update(Action::Render);
+    assert!(app.editor.sending);
+
+    app.update(Action::RenameRequest {
+        from: "main/alpha".into(),
+        to: "omega".into(),
+    });
+    app.update(Action::Render);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/omega"));
+    assert!(
+        app.editor.sending,
+        "the renamed request is still the one in flight: Send stays disabled"
+    );
+    assert!(app.session.is_in_flight(&Some("main/omega".into())));
+    assert!(!app.session.is_in_flight(&Some("main/alpha".into())));
+
+    // The late result lands on the renamed request, not under the old slug.
+    app.update(Action::RequestFailed {
+        generation: 7,
+        error: "boom".into(),
+    });
+    app.update(Action::Render);
+    assert!(matches!(
+        app.session.response.state(),
+        ResponseState::Failed(e) if e == "boom"
+    ));
+
+    // Undoing the rename carries it back.
+    app.update(Action::Undo);
+    app.update(Action::Render);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
+    assert!(matches!(
+        app.session.response.state(),
+        ResponseState::Failed(e) if e == "boom"
+    ));
+}
+
