@@ -23,6 +23,15 @@ use std::time::{Duration, Instant};
 /// too big to pretty-print and none of them stall the UI.
 pub const SYNC_PRETTY_BYTES: usize = 256 * 1024;
 
+/// The inline limit the app hands `apply_jq` / `refresh_jq_completion`:
+/// zero, so every jq run and every completion key fetch goes to the
+/// blocking pool whatever the body's size. A filter's cost is a property
+/// of the filter, not the body — `[range(1e8)]` or `last(range(1e12))`
+/// over a 1 KB response would freeze a synchronous UI thread with no Esc
+/// to reach for. (Component tests pass `SYNC_PRETTY_BYTES` to exercise
+/// the inline path directly.)
+pub const JQ_SYNC_BYTES: usize = 0;
+
 /// Braille spinner frames, cycled while a request is in flight.
 pub const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -502,14 +511,17 @@ pub struct JqRunRequest {
     pub body: Option<String>,
 }
 
-/// A completion key fetch too big for the UI thread: run `input_expr`
-/// against `doc` on the blocking pool (`complete::keys_at`) and hand the
-/// keys back as `Action::JqCompleteFinished`.
+/// A completion key fetch for the blocking pool: run `input_expr` against
+/// `doc` (`complete::keys_at`) and hand the keys back as
+/// `Action::JqCompleteFinished`. As with [`JqRunRequest`], `body` is the
+/// raw text to parse first when no document is cached yet; the parse
+/// comes back with the keys so the view can keep it.
 pub struct JqCompleteRequest {
     pub generation: u64,
     pub seq: u64,
     pub input_expr: String,
-    pub doc: JqDocument,
+    pub doc: Option<JqDocument>,
+    pub body: Option<String>,
 }
 
 /// What a jq run hands back: the document it parsed (when it had to), the
@@ -1645,12 +1657,18 @@ impl Response {
             return None;
         }
         let view = self.view.as_mut()?;
-        let body_len = view.raw_lines.iter().map(|l| l.len() + 1).sum::<usize>();
-        if view.jq_doc.is_none() && view.has_tree_view() && body_len <= sync_limit {
-            view.jq_doc = JqDocument::parse(&view.raw_lines.join("\n")).ok();
+        // No document and no JSON body to make one from: nothing to
+        // complete against (a body parse still running comes back through
+        // `attach_tree`, after which this runs again).
+        if view.jq_doc.is_none() && view.tree.is_none() {
+            return None;
         }
-        let doc = view.jq_doc.clone()?;
+        let body_len = view.raw_lines.iter().map(|l| l.len() + 1).sum::<usize>();
         if body_len <= sync_limit {
+            if view.jq_doc.is_none() {
+                view.jq_doc = JqDocument::parse(&view.raw_lines.join("\n")).ok();
+            }
+            let doc = view.jq_doc.clone()?;
             c.cached_keys = complete::keys_at(&expr, &doc);
             c.cached_expr = Some(expr);
             c.candidates = complete::candidates(&ctx, &c.cached_keys);
@@ -1658,11 +1676,14 @@ impl Response {
         }
         c.seq += 1;
         c.pending = Some((c.seq, expr.clone()));
+        let doc = view.jq_doc.clone();
+        let body = doc.is_none().then(|| view.raw_lines.join("\n"));
         Some(JqCompleteRequest {
             generation: view.generation,
             seq: c.seq,
             input_expr: expr,
             doc,
+            body,
         })
     }
 
@@ -1680,18 +1701,24 @@ impl Response {
         seq: u64,
         input_expr: String,
         keys: Vec<String>,
+        doc: Option<JqDocument>,
     ) -> bool {
         let c = &mut self.jq.completion;
         if c.pending() != Some(seq) {
             return false;
         }
-        if self
-            .view
-            .as_ref()
-            .is_none_or(|v| v.generation != generation)
-        {
-            self.jq.completion.pending = None;
-            return false;
+        match self.view.as_mut() {
+            Some(view) if view.generation == generation => {
+                // The fetch had to parse the body: keep the document so
+                // the next run or fetch for this view needn't.
+                if view.jq_doc.is_none() {
+                    view.jq_doc = doc;
+                }
+            }
+            _ => {
+                self.jq.completion.pending = None;
+                return false;
+            }
         }
         let c = &mut self.jq.completion;
         c.pending = None;
@@ -5548,10 +5575,16 @@ mod tests {
         // (A stale generation is `an_attach_for_a_gone_generation_still_
         // clears_its_pending_fetch`: it drops the keys *and* the fetch.)
         assert!(
-            !r.attach_jq_completion(3, creq.seq + 9, ".".into(), vec!["pad".into()]),
+            !r.attach_jq_completion(3, creq.seq + 9, ".".into(), vec!["pad".into()], None),
             "stale sequence"
         );
-        assert!(r.attach_jq_completion(3, creq.seq, ".".into(), vec!["pad".into(), "n".into()]));
+        assert!(r.attach_jq_completion(
+            3,
+            creq.seq,
+            ".".into(),
+            vec!["pad".into(), "n".into()],
+            None
+        ));
         assert_eq!(r.jq_ghost(), Some("pad"));
     }
 
@@ -5631,7 +5664,7 @@ mod tests {
             .expect("the new body's keys are fetched afresh");
         assert_eq!(creq2.generation, 4);
         assert!(creq2.seq > creq.seq, "a new sequence number");
-        assert!(r.attach_jq_completion(4, creq2.seq, ".".into(), vec!["other".into()]));
+        assert!(r.attach_jq_completion(4, creq2.seq, ".".into(), vec!["other".into()], None));
         assert_eq!(r.jq_ghost(), Some("other"));
     }
 
@@ -5647,7 +5680,7 @@ mod tests {
         // the rule on its own.)
         r.view.as_mut().unwrap().generation = 4;
         assert!(
-            !r.attach_jq_completion(3, creq.seq, ".".into(), vec!["pad".into()]),
+            !r.attach_jq_completion(3, creq.seq, ".".into(), vec!["pad".into()], None),
             "keys for a view that is gone are dropped"
         );
         assert_eq!(r.jq_ghost(), None);
@@ -5668,10 +5701,22 @@ mod tests {
         let creq = r
             .refresh_jq_completion(SYNC_PRETTY_BYTES)
             .expect("a big body fetches keys on the pool");
-        assert!(!r.attach_jq_completion(3, creq.seq + 9, ".".into(), vec!["superseded".into()]));
+        assert!(!r.attach_jq_completion(
+            3,
+            creq.seq + 9,
+            ".".into(),
+            vec!["superseded".into()],
+            None
+        ));
         assert_eq!(r.jq_ghost(), None, "a superseded fetch shows nothing");
         assert!(
-            r.attach_jq_completion(3, creq.seq, ".".into(), vec!["pad".into(), "n".into()]),
+            r.attach_jq_completion(
+                3,
+                creq.seq,
+                ".".into(),
+                vec!["pad".into(), "n".into()],
+                None
+            ),
             "the fetch that is still wanted lands"
         );
         assert_eq!(r.jq_ghost(), Some("pad"), "not the superseded keys");
@@ -5688,7 +5733,13 @@ mod tests {
         r.jq_bar_mut().input.set_cursor(0);
         assert!(r.refresh_jq_completion(SYNC_PRETTY_BYTES).is_none());
         assert!(
-            !r.attach_jq_completion(3, creq.seq, ".".into(), vec!["pad".into(), "n".into()]),
+            !r.attach_jq_completion(
+                3,
+                creq.seq,
+                ".".into(),
+                vec!["pad".into(), "n".into()],
+                None
+            ),
             "nothing is offered at the caret, so the ghost does not change"
         );
         assert_eq!(r.jq_ghost(), None);

@@ -18618,12 +18618,13 @@ fn a_big_body_fetches_completion_keys_in_the_background_and_lands_via_an_action(
         seq: 1,
         input_expr: ".".into(),
         keys: vec!["zzz".into()],
+        doc: None,
     }));
     assert_eq!(app.session.response.jq_ghost(), Some("pad"));
 
     // The worker itself.
     let doc = postui_core::jq::JqDocument::parse(&big).unwrap();
-    let action = crate::app::jq_complete_worker(generation, 5, ".".into(), doc);
+    let action = crate::app::jq_complete_worker(generation, 5, ".".into(), Some(doc), None);
     let Action::JqCompleteFinished { seq: 5, keys, .. } = &action else {
         panic!("{action:?}");
     };
@@ -19167,14 +19168,38 @@ fn stub_ai(app: &mut App, script: &str) {
 }
 
 async fn drain_ai(app: &mut App) -> Action {
-    // The AI task is a tokio task; await its JoinHandle then read the action it sent.
+    // The AI task is a tokio task; await its JoinHandle then read the action
+    // it sent. Every jq run goes to the blocking pool too, so its finished
+    // result may be queued ahead of the reply: apply anything else first.
     let (_, handle) = app.ai_task.take().expect("an AI request is in flight");
     handle.await.unwrap();
-    app._test_rx
-        .as_mut()
-        .unwrap()
-        .try_recv()
-        .expect("the task sent its result")
+    loop {
+        let action = app
+            ._test_rx
+            .as_mut()
+            .unwrap()
+            .try_recv()
+            .expect("the task sent its result");
+        if matches!(action, Action::JqAiFinished { .. }) {
+            return action;
+        }
+        app.update(action);
+    }
+}
+
+/// Waits for the pool-side jq run the last reconcile started and lands its
+/// result, so a test can look at the filtered view.
+async fn settle_jq(app: &mut App) {
+    for _ in 0..400 {
+        while let Ok(action) = app._test_rx.as_mut().unwrap().try_recv() {
+            app.update(action);
+        }
+        if app.session.response.jq_bar().pending.is_none() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    panic!("the jq run never finished");
 }
 
 #[tokio::test]
@@ -19205,6 +19230,7 @@ async fn describe_a_filter_sends_the_shape_and_lands_the_reply_in_the_bar() {
     app.update(action);
     assert!(!app.session.response.jq_bar().ai_pending);
     assert_eq!(app.session.response.jq_text(), ".data.total");
+    settle_jq(&mut app).await;
     assert_eq!(app.session.response.view().unwrap().view_text(), "2");
     let sent = std::fs::read_to_string(&seen).unwrap();
     assert!(sent.contains(r#"Structure: {"data": {"items": [{"id": number, "status": string}] /* 2 items */, "total": number}}"#), "{sent}");
@@ -20902,6 +20928,7 @@ fn a_held_tip_closes_when_its_token_moves_instead_of_swapping_to_a_covered_one()
     render_once(&mut app);
     assert!(app.var_token_tip().is_none(), "the hold died with the tip");
 }
+
 // --- a project that refuses to open ---------------------------------------
 
 #[test]

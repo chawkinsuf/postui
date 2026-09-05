@@ -790,6 +790,8 @@ pub enum Action {
         seq: u64,
         input_expr: String,
         keys: Vec<String>,
+        /// The document the worker parsed when the view had none cached.
+        doc: Option<postui_core::jq::JqDocument>,
     },
     /// Copies a tree line's jq path.
     CopyJqPath(String),

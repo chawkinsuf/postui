@@ -1076,14 +1076,27 @@ pub(crate) fn jq_complete_worker(
     generation: u64,
     seq: u64,
     input_expr: String,
-    doc: postui_core::jq::JqDocument,
+    doc: Option<postui_core::jq::JqDocument>,
+    body: Option<String>,
 ) -> Action {
-    let keys = postui_core::jq::complete::keys_at(&input_expr, &doc);
+    let (doc, fresh) = match (doc, body) {
+        (Some(d), _) => (Some(d), None),
+        (None, Some(b)) => {
+            let d = postui_core::jq::JqDocument::parse(&b).ok();
+            (d.clone(), d)
+        }
+        (None, None) => (None, None),
+    };
+    let keys = doc
+        .as_ref()
+        .map(|d| postui_core::jq::complete::keys_at(&input_expr, d))
+        .unwrap_or_default();
     Action::JqCompleteFinished {
         generation,
         seq,
         input_expr,
         keys,
+        doc: fresh,
     }
 }
 
@@ -1130,17 +1143,20 @@ impl App {
         } else {
             String::new()
         };
+        // Every run and key fetch goes to the blocking pool (see
+        // `JQ_SYNC_BYTES`): a filter's cost is unbounded whatever the
+        // body's size, and the UI thread must stay free to take the Esc.
         if let Some(req) = self
             .session
             .response
-            .apply_jq(&code, crate::components::response::SYNC_PRETTY_BYTES)
+            .apply_jq(&code, crate::components::response::JQ_SYNC_BYTES)
         {
             self.spawn_jq_run(req);
         }
         if let Some(req) = self
             .session
             .response
-            .refresh_jq_completion(crate::components::response::SYNC_PRETTY_BYTES)
+            .refresh_jq_completion(crate::components::response::JQ_SYNC_BYTES)
         {
             self.spawn_jq_complete(req);
         }
@@ -1204,7 +1220,8 @@ impl App {
     /// dispatched immediately) outside one, like [`Self::spawn_jq_run`].
     fn spawn_jq_complete(&mut self, req: crate::components::response::JqCompleteRequest) {
         if tokio::runtime::Handle::try_current().is_err() {
-            let action = jq_complete_worker(req.generation, req.seq, req.input_expr, req.doc);
+            let action =
+                jq_complete_worker(req.generation, req.seq, req.input_expr, req.doc, req.body);
             self.dispatch(action);
             return;
         }
@@ -1213,7 +1230,7 @@ impl App {
         let expr = req.input_expr.clone();
         tokio::spawn(async move {
             let action = tokio::task::spawn_blocking(move || {
-                jq_complete_worker(req.generation, req.seq, req.input_expr, req.doc)
+                jq_complete_worker(req.generation, req.seq, req.input_expr, req.doc, req.body)
             })
             .await
             .unwrap_or_else(|_| Action::JqCompleteFinished {
@@ -1221,6 +1238,7 @@ impl App {
                 seq,
                 input_expr: expr,
                 keys: Vec::new(),
+                doc: None,
             });
             let _ = tx.send(action);
         });
@@ -3451,10 +3469,11 @@ impl App {
                 seq,
                 input_expr,
                 keys,
+                doc,
             } => self
                 .session
                 .response
-                .attach_jq_completion(generation, seq, input_expr, keys),
+                .attach_jq_completion(generation, seq, input_expr, keys, doc),
             Action::CopyJqPath(path) => {
                 self.copy_text_with_toast(&path, "Copied path".to_string());
                 true
