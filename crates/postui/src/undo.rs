@@ -89,6 +89,29 @@ fn rekey_slug(s: &mut String, from: &str, to: &str) {
     }
 }
 
+/// A file-state entry's text, re-keyed when the entry is
+/// `.local/state.toml`: the delete steps carry that file so undo restores
+/// local state exactly, and its text names spaces too (the active space,
+/// the open request, per-space memory, expanded folders). Any other
+/// file, or a state file that no longer parses, is left as it is.
+fn rekey_file_state(
+    (path, text): &mut (PathBuf, Option<String>),
+    root: &Path,
+    from: &str,
+    to: &str,
+) {
+    rekey_path(path, root, from, to);
+    if *path != root.join(".local").join("state.toml") {
+        return;
+    }
+    if let Some(text) = text.as_mut()
+        && let Ok(mut state) = toml::from_str::<postui_core::project::LocalState>(text)
+    {
+        state.rename_space(from, to);
+        *text = toml::to_string(&state).expect("LocalState always serializes");
+    }
+}
+
 /// `p`, re-keyed if it lies under space `from`'s directory.
 fn rekey_path(p: &mut PathBuf, root: &Path, from: &str, to: &str) {
     let old = postui_core::project::space_dir(root, from);
@@ -126,8 +149,8 @@ impl Step {
                 moves,
                 ..
             } => {
-                for (p, _) in before.iter_mut().chain(after.iter_mut()) {
-                    rekey_path(p, root, from, to);
+                for entry in before.iter_mut().chain(after.iter_mut()) {
+                    rekey_file_state(entry, root, from, to);
                 }
                 for e in orders {
                     e.rename_space(from, to);
@@ -147,8 +170,8 @@ impl Step {
                 for t in items {
                     rekey_path(&mut t.original, root, from, to);
                 }
-                for (p, _) in files_before.iter_mut().chain(files_after.iter_mut()) {
-                    rekey_path(p, root, from, to);
+                for entry in files_before.iter_mut().chain(files_after.iter_mut()) {
+                    rekey_file_state(entry, root, from, to);
                 }
                 for e in orders {
                     e.rename_space(from, to);

@@ -306,6 +306,38 @@ pub struct LocalState {
     pub space_open: IndexMap<String, String>,
 }
 
+impl LocalState {
+    /// Re-keys every field that names space `from` after it was renamed
+    /// `to`: the active space, the open request, the remembered
+    /// per-space requests (key and value) and the expanded folders.
+    pub fn rename_space(&mut self, from: &str, to: &str) {
+        let rekey = |s: &mut String| {
+            if s == from {
+                *s = to.to_string();
+            } else if let Some(rest) = s.strip_prefix(from).and_then(|r| r.strip_prefix('/')) {
+                *s = format!("{to}/{rest}");
+            }
+        };
+        if let Some(space) = self.space.as_mut() {
+            rekey(space);
+        }
+        if let Some(open) = self.open_request.as_mut() {
+            rekey(open);
+        }
+        for folder in self.expanded.iter_mut() {
+            rekey(folder);
+        }
+        self.space_open = std::mem::take(&mut self.space_open)
+            .into_iter()
+            .map(|(mut space, mut slug)| {
+                rekey(&mut space);
+                rekey(&mut slug);
+                (space, slug)
+            })
+            .collect();
+    }
+}
+
 #[derive(thiserror::Error, Debug)]
 pub enum ProjectError {
     #[error("{0}")]
@@ -875,6 +907,41 @@ pub fn init_project(root: &Path, name: Option<&str>) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_state_rename_space_rekeys_every_field_that_names_it() {
+        let mut st = LocalState {
+            space: Some("auth".into()),
+            open_request: Some("auth/login".into()),
+            expanded: vec![
+                "auth".into(),
+                "auth/deep".into(),
+                "authx/no".into(),
+                "main/a".into(),
+            ],
+            space_open: [("auth", "auth/login"), ("main", "main/a")]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            ..LocalState::default()
+        };
+        st.rename_space("auth", "accounts");
+        assert_eq!(st.space.as_deref(), Some("accounts"));
+        assert_eq!(st.open_request.as_deref(), Some("accounts/login"));
+        assert_eq!(
+            st.expanded,
+            ["accounts", "accounts/deep", "authx/no", "main/a"]
+        );
+        assert_eq!(
+            st.space_open.get("accounts").map(String::as_str),
+            Some("accounts/login")
+        );
+        assert!(!st.space_open.contains_key("auth"));
+        assert_eq!(
+            st.space_open.get("main").map(String::as_str),
+            Some("main/a")
+        );
+    }
     use tempfile::tempdir;
 
     #[test]

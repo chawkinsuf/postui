@@ -21097,6 +21097,38 @@ fn undo_of_a_request_delete_reopens_it_in_the_editor() {
 }
 
 #[test]
+fn undo_of_a_request_delete_after_a_space_rename_restores_state_under_the_new_name() {
+    let (mut app, dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("auth/login".into()));
+    app.update(Action::DeleteRequest("auth/login".into()));
+    assert!(app.editor.slug.is_none());
+    app.update(Action::RenameSpace {
+        from: "auth".into(),
+        to: "accounts".into(),
+    });
+    assert_eq!(app.project.active_space, "accounts");
+
+    app.update(Action::Undo);
+    assert_eq!(
+        app.editor.slug.as_deref(),
+        Some("accounts/login"),
+        "the restored state.toml names the space by its new name"
+    );
+    assert_eq!(app.project.active_space, "accounts");
+    let state = postui_core::project::load_local_state(dir.path()).unwrap();
+    assert_eq!(state.space.as_deref(), Some("accounts"));
+    assert_eq!(state.open_request.as_deref(), Some("accounts/login"));
+    assert_eq!(
+        state.space_open.get("accounts").map(String::as_str),
+        Some("accounts/login")
+    );
+    assert!(
+        !state.space_open.contains_key("auth"),
+        "nothing is keyed under the dead name: {state:?}"
+    );
+}
+
+#[test]
 fn undo_of_a_request_delete_leaves_another_open_request_alone() {
     let (mut app, _dir) = spaced_app();
     app.update(Action::ForceOpenRequest("main/beta".into()));
