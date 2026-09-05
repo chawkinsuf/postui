@@ -873,12 +873,10 @@ impl App {
         }
     }
 
-    /// The context the app runs on when it has no project: an empty root,
-    /// which has no files to read (so this can't fail) and can't persist.
+    /// The context the app runs on when it has no project: an empty root
+    /// that reads nothing and can't persist.
     fn empty_project() -> ProjectContext {
-        ProjectContext::open(PathBuf::new())
-            .expect("an empty root has no files to fail on")
-            .0
+        ProjectContext::empty()
     }
 
     /// Shows `open_error` in place of the request list — the sidebar's

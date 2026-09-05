@@ -20968,6 +20968,27 @@ fn startup_with_a_broken_project_file_runs_empty_and_leaves_the_file_alone() {
 }
 
 #[test]
+fn a_refused_open_in_the_process_cwd_still_runs_empty() {
+    // `postui .` in a project whose project.toml is broken: the fallback
+    // context has an empty root, and an empty root joined with
+    // "project.toml" is the cwd's broken file — the fallback must never
+    // read it (it just refused the open on that very file).
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::storage::ensure_project(dir.path()).unwrap();
+    std::fs::write(dir.path().join("project.toml"), "spaces = [\"main\"\n").unwrap();
+    let previous = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        App::with_root(tx, dir.path().to_path_buf())
+    }));
+    std::env::set_current_dir(previous).unwrap();
+    let app = outcome.expect("the empty fallback context reads nothing from disk");
+    assert!(app.open_error.is_some());
+    assert!(!app.project.can_persist());
+}
+
+#[test]
 fn switching_to_a_project_that_refuses_to_open_stays_put() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let good = tempfile::tempdir().unwrap();

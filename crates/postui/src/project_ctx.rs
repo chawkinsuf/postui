@@ -267,6 +267,13 @@ impl ProjectContext {
     /// (a stale saved space, a selection that no longer resolves) degrades
     /// and is appended to the returned warnings.
     pub fn open(root: PathBuf) -> Result<(Self, Vec<String>), OpenError> {
+        if root.as_os_str().is_empty() {
+            // An empty root is "no project", never the process's cwd:
+            // `"".join("project.toml")` is `./project.toml`, which the
+            // loaders would happily read (and which, when a refused open
+            // falls back here, is the very file that just refused).
+            return Ok((Self::empty(), Vec::new()));
+        }
         let mut warnings = Vec::new();
         let fatal = |file: &str, e: &dyn std::fmt::Display| OpenError {
             root: root.clone(),
@@ -438,6 +445,34 @@ impl ProjectContext {
 
         ctx.refresh_resolved();
         Ok((ctx, warnings))
+    }
+
+    /// The context for no project at all: an empty root, defaults for
+    /// everything, nothing read from disk. It cannot persist (see
+    /// [`Self::can_persist`]), so nothing is ever written relative to the
+    /// process's cwd either.
+    pub fn empty() -> Self {
+        ProjectContext {
+            root: PathBuf::new(),
+            meta: ProjectMeta::default(),
+            model: VarModel::default(),
+            environments: Vec::new(),
+            active_env: None,
+            env_data: varmodel::EnvData::default(),
+            secrets: IndexMap::new(),
+            resolved: varmodel::Resolved::default(),
+            expanded: std::collections::BTreeSet::new(),
+            spaces: Vec::new(),
+            active_space: postui_core::project::DEFAULT_SPACE.to_string(),
+            space_open: IndexMap::new(),
+            selections: IndexMap::new(),
+            shared_selections: IndexMap::new(),
+            stamps: Vec::new(),
+            local_open_request: None,
+            main_split: None,
+            pending_migration: None,
+            migration_declined: false,
+        }
     }
 
     /// The project's display name: `meta.name`, falling back to the root
