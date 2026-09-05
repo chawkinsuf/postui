@@ -114,7 +114,7 @@ pub(crate) fn footer_chips(
                 chips.insert(1, ("alt+a", label, Some(Action::TableAddRow)));
             }
             if let Some((i, enabled)) = table_row_selected {
-                // Keyboard twins of the expanded row's ● toggle and 🗑
+                // Keyboard twins of the expanded row's ● toggle and 󰆴
                 // delete buttons; the ␣ keycap keeps the row narrow.
                 let toggle_label = if enabled { "disable" } else { "enable" };
                 let pos = chips.len() - 2; // before vars + navigate
@@ -162,7 +162,7 @@ pub(crate) fn footer_chips(
                     ),
                     ("esc", "cancel", Some(Action::CancelJqEdit)),
                     ("alt+shift+q", "unfilter", Some(Action::ToggleJqBar)),
-                    ("✦", "describe…", Some(Action::OpenJqDescribe)),
+                    ("\u{F0674}", "describe…", Some(Action::OpenJqDescribe)),
                 ]);
                 chips
             } else {
@@ -656,7 +656,7 @@ mod tests {
     }
 
     /// A selected data row advertises its own quick actions — the
-    /// keyboard twins of the expanded row's ● toggle and 🗑 delete
+    /// keyboard twins of the expanded row's ● toggle and 󰆴 delete
     /// buttons.
     #[test]
     fn selected_table_row_adds_toggle_and_delete_chips() {

@@ -370,7 +370,7 @@ pub fn promote_action(
 }
 
 /// Whether the active environment stores a value (a secret for secret
-/// variables) for `name` — gates the env row's "✕ remove" control and
+/// variables) for `name` — gates the env row's "󰅖 remove" control and
 /// its keyboard twin (`x` with the form's cursor on the env field).
 fn env_stores(ctx: &ProjectContext, name: &str) -> bool {
     let secret = ctx.model.vars.get(name).is_some_and(|d| d.secret);
@@ -466,7 +466,7 @@ pub struct VarManager {
 /// The left list's fixed width (spec §3.4's mock).
 pub const LEFT_W: u16 = 31;
 
-const GLYPH_LOCK: &str = "\u{1f512}"; // 🔒
+const GLYPH_LOCK: &str = "\u{F033E}"; // 󰌾 nf-md-lock
 const GLYPH_UNRESOLVED: &str = "\u{25cf}"; // ●
 const GLYPH_RADIO_ON: &str = "\u{25c9}"; // ◉
 const GLYPH_RADIO_OFF: &str = "\u{25cb}"; // ○
@@ -491,8 +491,8 @@ const GHOST_LABEL: &str = "+ option";
 /// Width of the grid's radio column (glyph + one column of gutter).
 const RADIO_W: u16 = 3;
 
-/// The option row's `🗑` zone: space + two-cell emoji + space.
-const TRASH_W: u16 = 4;
+/// The option row's `󰆴` zone: space + glyph + space.
+const TRASH_W: u16 = 3;
 
 /// Where each grid column starts and how wide it is: `x[0]`/`w[0]` is the
 /// option-name column, `x[n]` the selector's `n-1`th field. Columns that would
@@ -775,7 +775,7 @@ impl VarManager {
         }
         // Form focus advertises the form's own quick actions — the
         // keyboard twins of its inline controls (secret toggle, the
-        // env row's "✕ remove", the Promote button).
+        // env row's "󰅖 remove", the Promote button).
         if let (VmDetail::Var(name), VmFocus::Form) = (&self.detail, self.focus) {
             let mut chips: Vec<(&'static str, &'static str, Option<Action>)> = Vec::new();
             if ctx.model.vars.contains_key(name) {
@@ -1766,7 +1766,7 @@ impl VarManager {
                 hits.register(Rect::new(cx, ry, cw, 1), Hit::VmEntryCell { row: i, col });
             }
 
-            // Per-row `🗑` delete at the right edge (the table editor's
+            // Per-row `󰆴` delete at the right edge (the table editor's
             // row-trash twin — spec: destructive actions get an explicit
             // control). Hidden while a cell edit is live on the row: the
             // last column's windowed input owns those cells, and a stray
@@ -1780,15 +1780,9 @@ impl VarManager {
                 } else {
                     (theme.text_muted, bg)
                 };
-                // The bare glyph, no VS16, with a blank cell after it: unicode-width
-                // counts it as one cell, so ratatui paints every cell of the zone
-                // (bg included) and its cursor accounting matches the terminal's.
-                // A VS16-widened glyph makes ratatui skip the second cell entirely,
-                // and terminals that widen on the selector (Ghostty) leave that
-                // cell's old style in place, so it showed whatever was drawn there
-                // before. Emoji-capable terminals still render the glyph across the
-                // blank neighbour, so it sits centred in the four-cell zone.
-                text(buf, trash_x, ry, " \u{1F5D1}  ", dfg, dbg, false);
+                // Nerd Font Material glyph (one cell everywhere), centred in
+                // the three-cell zone.
+                text(buf, trash_x, ry, " \u{F01B4} ", dfg, dbg, false); // 󰆴 nf-md-delete
                 hits.register(Rect::new(trash_x, ry, TRASH_W, 1), trash_hit);
             }
         }
@@ -1813,7 +1807,7 @@ impl VarManager {
     }
 
     /// The right pane for `VmDetail::Var(name)` (spec §3.4): a title row
-    /// (`name  🔒?  [Rename] [Delete]`), then description/default/env-value
+    /// (`name  󰌾?  [Rename] [Delete]`), then description/default/env-value
     /// fields as label + `TextField` rows (`Default` omitted for a secret —
     /// it can never hold one), the secret on/off toggle, the Promote
     /// button where [`promote_action`] applies, and a dim `used by:`
@@ -1978,7 +1972,7 @@ impl VarManager {
             // environment actually stores one; a bare default shows
             // "(not set)" and has nothing here to remove.
             if env_stores(ctx, name) {
-                inline_control(buf, hits, "\u{2715} remove", Hit::VmRemoveEnvValue);
+                inline_control(buf, hits, "\u{F0156} remove", Hit::VmRemoveEnvValue);
             }
             y += 1;
         }

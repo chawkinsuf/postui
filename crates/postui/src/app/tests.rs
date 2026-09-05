@@ -849,7 +849,7 @@ fn clicking_the_row_delete_affordance_deletes_the_row() {
         .expect("delete affordance on the selected row");
     assert!(app.handle_mouse(left_down(del.x, del.y)));
     assert!(app.modals.top().is_none(), "delete is undoable, no confirm");
-    assert!(app.editor.params.is_empty(), "clicking ✕ deletes the row");
+    assert!(app.editor.params.is_empty(), "clicking 󰅖 deletes the row");
 }
 
 /// A test app whose clipboard read returns `text` (no OS clipboard).
@@ -7154,7 +7154,7 @@ fn insert_picker_marks_secret_vars_with_the_lock_badge_and_never_shows_the_value
 
     let content = rendered_text(&mut app);
     assert!(content.contains("api_key"), "{content}");
-    assert!(content.contains("\u{1f512}"), "secret badge: {content}");
+    assert!(content.contains("\u{F033E}"), "secret badge: {content}");
     assert!(
         !content.contains("sk-super-secret"),
         "secret value must never render: {content}"
@@ -8476,7 +8476,7 @@ fn picker_save_of_a_new_file_closes_the_picker_and_writes() {
     );
 }
 
-/// The ✎ toolbar button parks `OpenResponseInEditor` for the main loop
+/// The 󰏫 toolbar button parks `OpenResponseInEditor` for the main loop
 /// (which must suspend the terminal), exactly as the request body's
 /// `$EDITOR` action does.
 #[test]
@@ -11028,9 +11028,9 @@ fn the_value_popup_offers_remove_only_where_a_value_is_stored() {
         .rect_of(&crate::hit::Hit::ModalRemove)
         .expect("the env stores a value, so it can be removed");
     // Same affordance as the variable form's inline control: the
-    // one-row "✕ remove" beside the value field's label, not a boxed
+    // one-row "󰅖 remove" beside the value field's label, not a boxed
     // button in the confirm row.
-    assert!(content.contains("\u{2715} remove"), "{content}");
+    assert!(content.contains("\u{F0156} remove"), "{content}");
     assert_eq!(r.height, 1, "inline control, not a boxed button");
 
     // Cycle to "This request", which stores nothing — nothing to remove.
@@ -11048,10 +11048,10 @@ fn the_value_popup_offers_remove_only_where_a_value_is_stored() {
     );
 }
 
-/// The keyboard mirror of the popup's "✕ remove": `alt+d` marks the
+/// The keyboard mirror of the popup's "󰅖 remove": `alt+d` marks the
 /// chosen Write-to scope's stored value for removal and re-lands the
 /// popup on the next supplier, exactly like the click. Where the chosen scope stores
-/// nothing (no ✕ painted), the chord is inert.
+/// nothing (no 󰅖 painted), the chord is inert.
 #[test]
 fn the_value_popup_alt_d_removes_the_chosen_scopes_value() {
     let (mut app, _dir) = token_popup_app();
@@ -11084,7 +11084,7 @@ fn the_value_popup_alt_d_removes_the_chosen_scopes_value() {
 }
 
 /// The value popup's footer chips teach its keys and name the scope the
-/// remove chord would hit — and the remove chip only shows where the ✕
+/// remove chord would hit — and the remove chip only shows where the 󰅖
 /// itself would (the chosen scope stores something).
 #[test]
 fn the_value_popup_advertises_its_chords_in_the_footer() {
@@ -13520,7 +13520,7 @@ fn fields_editor_remove_button_marks_the_row_and_confirm_deletes_the_field() {
     let Some(Modal::FieldsEditor(fe)) = app.modals.top() else {
         panic!("still open")
     };
-    assert!(fe.rows[1].removed, "the ✕ marks the row for removal");
+    assert!(fe.rows[1].removed, "the 󰅖 marks the row for removal");
 
     // Clicking again restores it...
     rendered_text(&mut app);
@@ -13617,7 +13617,7 @@ fn fields_editor_alt_a_appends_a_focused_row() {
     );
 }
 
-/// The keyboard mirror of a row's ✕/↩ toggle: `alt+d` marks the focused
+/// The keyboard mirror of a row's 󰅖/↩ toggle: `alt+d` marks the focused
 /// row removed (focus stepping off it, as the click does), and pressing
 /// it again on that row restores it.
 #[test]
@@ -13882,7 +13882,7 @@ fn editing_a_field_cell_and_clicking_away_rewrites_the_env_file() {
 }
 
 /// User finding: there was no button for deleting an option — only the `d`
-/// key and the right-click menu. Each option row gets an explicit `🗑`
+/// key and the right-click menu. Each option row gets an explicit `󰆴`
 /// (the table editor's row-trash twin) running the same immediate delete.
 #[test]
 fn clicking_an_option_rows_trash_deletes_the_option() {
@@ -14052,7 +14052,7 @@ fn keyboard_enters_the_variable_form_and_edits_its_fields() {
 /// With the form focused, the footer advertises the form's own quick
 /// actions and the keys work: `s` flips the secret flag, and — with the
 /// cursor on the env-value field, while the env stores one — `x` clears
-/// the stored value, the inline "✕ remove" control's keyboard twin.
+/// the stored value, the inline "󰅖 remove" control's keyboard twin.
 #[test]
 fn form_focus_advertises_and_handles_the_field_verbs() {
     let dir = tempfile::tempdir().unwrap();
@@ -16609,7 +16609,7 @@ mod undo_tests {
     }
 
     /// User finding: there was no way to remove an env value from the
-    /// variable form. It gets an explicit `✕ remove` control beside the
+    /// variable form. It gets an explicit `󰅖 remove` control beside the
     /// "Value in <env>" label (mirroring the value popup's Remove button)
     /// — an emptied field commit stays a verbatim write (`name = ""`),
     /// deliberately not overloaded to mean removal.
@@ -18424,7 +18424,7 @@ fn the_focused_bar_advertises_enter_apply_and_esc_cancel() {
             ("enter", "apply"),
             ("esc", "cancel"),
             ("alt+shift+q", "unfilter"),
-            ("✦", "describe…")
+            ("\u{F0674}", "describe…")
         ],
         "{chips:?}"
     );

@@ -603,12 +603,7 @@ impl VarPickerState {
                     );
                     x += ORIGIN_COL_W;
                     if entry.secret {
-                        // The lock glyph is double-width in most terminals
-                        // (unlike the ✓ used elsewhere in this file) — use
-                        // its real display width, not its char count, so
-                        // the name after it doesn't overlap the glyph's
-                        // second cell.
-                        const LOCK: &str = "\u{1f512} ";
+                        const LOCK: &str = "\u{F033E} "; // 󰌾 nf-md-lock
                         paint::text(
                             frame.buffer_mut(),
                             x,

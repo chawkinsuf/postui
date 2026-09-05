@@ -112,7 +112,7 @@ pub enum Action {
     /// the footer chip twin of the space key and the row's ● toggle button.
     ToggleTableRow(usize),
     /// Delete row `i` from the active params/headers table (the
-    /// `d`/`Delete` key or the row's `✕` affordance). No confirm — the
+    /// `d`/`Delete` key or the row's `󰅖` affordance). No confirm — the
     /// deletion is an ordinary editor undo step.
     DeleteTableRow(usize),
     /// The row context menu's "Duplicate row" (Task 17, spec §5): copies row

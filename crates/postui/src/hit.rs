@@ -78,7 +78,7 @@ pub enum Hit {
     /// lands in a cell (`TableCell`) rather than here.
     TableRow(usize),
     TableCheckbox(usize),
-    /// The `✕` delete affordance on the active (expanded) row.
+    /// The `󰅖` delete affordance on the active (expanded) row.
     TableDelete(usize),
     /// One editable cell of a key/value table: `col` 0 is the key, 1 the
     /// value. `row == map.len()` is the ghost row — the always-present
@@ -100,7 +100,7 @@ pub enum Hit {
     ResponseTab(crate::components::response::ViewMode),
     CopyBodyButton,
     SaveBodyButton,
-    /// The `✎` button on the response header strip: opens the active
+    /// The `󰏫` button on the response header strip: opens the active
     /// tab's text in `$EDITOR` (view-only — nothing is read back).
     ResponseEditorButton,
     /// The `Find` button on the response header strip: opens the in-pane
@@ -173,7 +173,7 @@ pub enum Hit {
     /// The variable form's `👁 reveal`/`hide` toggle beside a secret's
     /// "Value in <env>" field.
     VmRevealToggle,
-    /// The variable form's `✕ remove` control beside the "Value in <env>"
+    /// The variable form's `󰅖 remove` control beside the "Value in <env>"
     /// label — offered only while the environment actually stores a value
     /// (or a secret) for the selected variable, and the explicit way to
     /// un-set it (the value popup's Remove button's twin).
@@ -202,7 +202,7 @@ pub enum Hit {
         row: usize,
         col: usize,
     },
-    /// The selector grid's per-row `🗑` delete on option row `i` (the
+    /// The selector grid's per-row `󰆴` delete on option row `i` (the
     /// table editor's row-trash twin): opens the delete-option confirm.
     VmEntryDelete(usize),
     /// The selector pane's `[+ Option]` button.
@@ -249,7 +249,7 @@ pub enum Hit {
     /// the caret, drag sweeps a selection, double click selects all —
     /// while the label row keeps `ModalField`'s plain focus-click.
     ModalInput(usize),
-    /// The ✕/↩ button of row `i` in the fields editor: marks the field for
+    /// The 󰅖/↩ button of row `i` in the fields editor: marks the field for
     /// removal (or restores it; an added row is dropped outright).
     ModalRowToggle(usize),
     /// The fields editor's "+ Add field" button.
@@ -269,7 +269,7 @@ pub enum Hit {
     /// under the pointer, drag sweeps a selection, double click selects
     /// the word — exactly like `UrlBar`.
     ResponseJqBar,
-    /// The jq bar's `✦` button: asks the AI to turn a plain-language
+    /// The jq bar's `󰙴` button: asks the AI to turn a plain-language
     /// description into a filter (the describe-a-filter task).
     ResponseJqAiButton,
 }

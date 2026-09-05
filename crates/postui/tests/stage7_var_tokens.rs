@@ -132,7 +132,7 @@ fn resolved_tokens_are_tinted_and_unresolved_ones_render_in_the_error_color() {
 
     let good = app.hits.rect_of(&Hit::VarToken("base_url".into())).unwrap();
     let bad = app.hits.rect_of(&Hit::VarToken("nope".into())).unwrap();
-    assert_eq!(buf[(good.x, good.y)].fg, app.theme.accent_edge_dark);
+    assert_eq!(buf[(good.x, good.y)].fg, app.theme.accent);
     assert_ne!(buf[(good.x, good.y)].fg, app.theme.error);
     for x in bad.x..bad.right() {
         assert_eq!(
@@ -356,7 +356,7 @@ fn tokens_in_table_cells_are_tinted_and_hoverable_without_disturbing_the_table()
         r.x >= cell.x && r.right() <= cell.right() && r.y == cell.y,
         "the token sits in the value cell: {r:?} vs {cell:?}"
     );
-    assert_eq!(buf[(r.x, r.y)].fg, app.theme.accent_edge_dark);
+    assert_eq!(buf[(r.x, r.y)].fg, app.theme.accent);
 
     // Hovering the token neither blurs the table nor drops its selection...
     app.handle_mouse(moved(r.x + 1, r.y));
@@ -458,7 +458,7 @@ fn body_editor_tokens_are_tinted_and_hoverable() {
         .hits
         .rect_of(&Hit::VarToken("base_url".into()))
         .expect("the body's token registers");
-    assert_eq!(buf[(r.x, r.y)].fg, app.theme.accent_edge_dark);
+    assert_eq!(buf[(r.x, r.y)].fg, app.theme.accent);
     let body = app.hits.rect_of(&Hit::BodyEditor).unwrap();
     assert!(r.x >= body.x && r.right() <= body.right());
 

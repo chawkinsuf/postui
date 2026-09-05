@@ -145,7 +145,7 @@ pub enum PromptKind {
 
 /// One row of the fields editor: the field's current on-disk name (`None`
 /// for a row added in this session), its editable text (typing renames),
-/// and whether the row is marked for removal (the ✕ button; a marked row
+/// and whether the row is marked for removal (the 󰅖 button; a marked row
 /// shows ↩ to restore instead).
 pub struct FieldRow {
     pub original: Option<String>,
@@ -182,7 +182,7 @@ impl FieldsEditorState {
         }
     }
 
-    /// The ✕/↩ button: flip row `i`'s removal mark. An added (never-saved)
+    /// The 󰅖/↩ button: flip row `i`'s removal mark. An added (never-saved)
     /// row is simply dropped — there is nothing to restore.
     pub fn toggle(&mut self, i: usize) {
         let Some(row) = self.rows.get_mut(i) else {
@@ -360,7 +360,7 @@ fn value_placeholder_line(focused: bool, theme: &Theme) -> Line<'static> {
 }
 
 /// The value popup's chosen Write-to label and whether that scope stores
-/// a value — the predicate behind the "✕ remove" affordance, shared by
+/// a value — the predicate behind the "󰅖 remove" affordance, shared by
 /// its painter, its footer chip, and the remove itself (click or alt+d).
 pub(crate) fn chosen_scope(
     fields: &[PromptField],
@@ -519,7 +519,7 @@ pub enum Modal {
         kind: PromptKind,
     },
     /// The selector fields editor ("Fields of X"): one text row per field
-    /// with a ✕/↩ removal toggle, a "+ Add field" button, applied as one
+    /// with a 󰅖/↩ removal toggle, a "+ Add field" button, applied as one
     /// `Action::ApplyGroupFields` on confirm.
     FieldsEditor(FieldsEditorState),
 }
@@ -1333,7 +1333,7 @@ impl ModalStack {
                     None // swallowed: modals capture all input
                 }
                 // The keyboard mirrors of the "+ Add field" button and a
-                // row's ✕/↩ toggle — the rows are text inputs, so the
+                // row's 󰅖/↩ toggle — the rows are text inputs, so the
                 // quick actions live on alt chords that typing can never
                 // collide with.
                 KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::ALT) => {
@@ -1950,13 +1950,13 @@ impl ModalStack {
                 draw_cancel_confirm_row(frame, hits, theme, area, buttons_y, hovered);
                 // The value popup's remove: only when the chosen Write-to
                 // scope actually stores a value to delete. Painted as the
-                // same one-row "✕ remove" accent control the variable
+                // same one-row "󰅖 remove" accent control the variable
                 // form uses, right-aligned on the value field's label row
                 // (registered after `ModalField(0)`, so it wins the hit).
                 if let PromptKind::EditVarValue { scope_values, .. } = kind {
                     let (_, stored) = chosen_scope(fields, scope_values);
                     if stored {
-                        let label = "\u{2715} remove";
+                        let label = "\u{F0156} remove";
                         let remove_hit = crate::hit::Hit::ModalRemove;
                         let style = if hovered == Some(&remove_hit) {
                             Style::default().bg(theme.accent).fg(theme.on_accent)
@@ -2004,7 +2004,7 @@ impl ModalStack {
                 );
 
                 let field_x = area.x + 2;
-                // The row's text box stops short of a 4-column ✕/↩ zone.
+                // The row's text box stops short of a 4-column 󰅖/↩ zone.
                 let toggle_w: u16 = 4;
                 let field_w = area.width.saturating_sub(4 + toggle_w);
                 let mut y = title_y + 2;
@@ -2047,7 +2047,7 @@ impl ModalStack {
                         .paint(frame.buffer_mut(), field_area, theme);
                         hits.register(field_area, crate::hit::Hit::ModalInput(i));
                     }
-                    // The ✕ (or ↩ restore) button, on the box's middle row.
+                    // The 󰅖 (or ↩ restore) button, on the box's middle row.
                     let toggle_area = Rect {
                         x: field_x + field_w + 1,
                         y,
@@ -2056,7 +2056,7 @@ impl ModalStack {
                     };
                     let toggle_hit = crate::hit::Hit::ModalRowToggle(i);
                     let toggle_hovered = hovered == Some(&toggle_hit);
-                    let glyph = if row.removed { "\u{21a9}" } else { "\u{2715}" };
+                    let glyph = if row.removed { "\u{21a9}" } else { "\u{F0156}" };
                     let fg = if toggle_hovered {
                         theme.text
                     } else {

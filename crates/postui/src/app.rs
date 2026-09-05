@@ -5605,13 +5605,13 @@ impl App {
         }
     }
 
-    /// The value popup's remove — shared by the clicked "✕ remove"
+    /// The value popup's remove — shared by the clicked "󰅖 remove"
     /// (`Hit::ModalRemove`) and its keyboard chord (`alt+d`): marks the
     /// chosen Write-to scope's stored value for removal on Confirm, then
     /// re-lands the popup on the next supplier with its value ready to
     /// edit. Inert (returns `false`) unless the top modal is the value
     /// popup and the chosen scope actually stores something — mirroring
-    /// when the ✕ is painted at all.
+    /// when the 󰅖 is painted at all.
     pub(crate) fn remove_from_value_popup(&mut self) -> bool {
         use crate::components::modal::{Modal, stage_value_removal};
         let Some(Modal::MultiPrompt { fields, kind, .. }) = self.modals.top_mut() else {
@@ -8592,7 +8592,7 @@ impl App {
             // The value popup's remove chord needs App (it removes, then
             // rebuilds the popup), so it can't live in the modal's own
             // key handler like the fields editor's chords do. Inert when
-            // the chosen scope stores nothing — same as the unpainted ✕.
+            // the chosen scope stores nothing — same as the unpainted 󰅖.
             if ev.modifiers.contains(KeyModifiers::ALT)
                 && ev.code == KeyCode::Char('d')
                 && matches!(

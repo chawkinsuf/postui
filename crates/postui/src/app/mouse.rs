@@ -362,7 +362,7 @@ impl App {
                 }
                 // A table hit is normalized to `TableRow(resolved)` for the
                 // menu lookup below: right-clicking any part of the row (a
-                // cell, the checkbox, the ✕) opens the same row menu, and
+                // cell, the checkbox, the 󰅖) opens the same row menu, and
                 // `resolve_table_row_across_commit` re-numbers `i` past
                 // whatever commit just landed — see its own doc comment.
                 let mut menu_hit = hit.clone();

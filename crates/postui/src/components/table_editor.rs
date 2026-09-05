@@ -363,7 +363,7 @@ impl TableEditorState {
     }
 
     /// Deletes row `i` outright — no confirm gate (both the `d` key and
-    /// the `✕` click land here directly): the deletion is an ordinary
+    /// the `󰅖` click land here directly): the deletion is an ordinary
     /// editor undo step.
     pub fn delete_row(&mut self, map: &mut IndexMap<String, Entry>, i: usize) {
         if i >= map.len() {
@@ -567,7 +567,7 @@ impl TableEditorState {
     /// Draws the table as one contiguous painted control: a muted-uppercase
     /// `NAME`/`VALUE` header row on `panel`, a `control` body of compact
     /// 1-line rows (the active row — selected, or being edited — expands to
-    /// 3 with a full-row pill and a `✕` delete affordance), the ghost row
+    /// 3 with a full-row pill and a `󰅖` delete affordance), the ghost row
     /// (an empty row labelled by `add_label` until it is typed into), and a
     /// closing `▔` edge. Every cell registers a `Hit::TableCell`, so a
     /// click lands straight in that cell's editor.
@@ -802,10 +802,9 @@ impl TableEditorState {
     }
 
     /// Paints the row's two right-edge buttons — the enable/disable toggle
-    /// (`●` on / `○` off, a 3-cell zone) and the `🗑` delete (a 4-cell
-    /// zone: the trash is forced to emoji presentation, which terminals
-    /// render two cells wide, so its pill is space+glyph+space = 4) —
-    /// flush against the row's right edge with one column of margin. A
+    /// (`●` on / `○` off, a 3-cell zone) and the `󰆴` delete (a Nerd Font
+    /// Material glyph in its own 3-cell zone) — flush against the row's
+    /// right edge with one column of margin. A
     /// directly-hovered button inverts onto accent (error red for the
     /// trash), the same treatment the response pane's copy pills use.
     #[allow(clippy::too_many_arguments)]
@@ -820,7 +819,7 @@ impl TableEditorState {
         hovered: Option<&Hit>,
         theme: &Theme,
     ) {
-        let trash_x = right.saturating_sub(5);
+        let trash_x = right.saturating_sub(4);
         let toggle_x = trash_x.saturating_sub(3);
         let toggle_hit = Hit::TableCheckbox(i);
         let trash_hit = Hit::TableDelete(i);
@@ -828,7 +827,7 @@ impl TableEditorState {
         // `text` patches styles, so a disabled row's strikethrough would
         // bleed onto the glyphs when the value runs under this zone —
         // scrub it first.
-        for x in toggle_x..trash_x + 4 {
+        for x in toggle_x..trash_x + 3 {
             if let Some(cell) = buf.cell_mut((x, y)) {
                 cell.set_style(Style::default().remove_modifier(Modifier::CROSSED_OUT));
             }
@@ -851,18 +850,12 @@ impl TableEditorState {
         } else {
             (theme.text_muted, bg)
         };
-        // The bare glyph, no VS16, with a blank cell after it: unicode-width
-        // counts it as one cell, so ratatui paints every cell of the zone
-        // (bg included) and its cursor accounting matches the terminal's.
-        // A VS16-widened glyph makes ratatui skip the second cell entirely,
-        // and terminals that widen on the selector (Ghostty) leave that
-        // cell's old style in place, so it showed whatever was drawn there
-        // before. Emoji-capable terminals still render the glyph across the
-        // blank neighbour, so it sits centred in the four-cell zone.
-        text(buf, trash_x, y, " \u{1F5D1}  ", dfg, dbg, false);
+        // Nerd Font Material glyph (one cell everywhere), centred in a
+        // three-cell zone like the toggle beside it.
+        text(buf, trash_x, y, " \u{F01B4} ", dfg, dbg, false); // 󰆴 nf-md-delete
 
         hits.register(Rect::new(toggle_x, y, 3, 1), toggle_hit);
-        hits.register(Rect::new(trash_x, y, 4, 1), trash_hit);
+        hits.register(Rect::new(trash_x, y, 3, 1), trash_hit);
     }
 
     /// Strikes through `len` cells starting at `(x, y)` — the disabled
@@ -967,7 +960,7 @@ impl TableEditorState {
 
     /// Draws row `i` expanded to 3 lines (pad/text/pad) — 4 (pad/text/hint/
     /// pad) when `hint` is `Some`, adding a dim shadow line ("overrides qa:
-    /// 1001") right under the value row. `show_delete` gates the `✕`
+    /// 1001") right under the value row. `show_delete` gates the `󰅖`
     /// affordance (the ghost row has nothing to delete yet). Returns the
     /// next `y`.
     ///
@@ -1978,7 +1971,7 @@ mod tests {
         let terminal = draw_to(&t, &map, &ctx(&theme, Some(&hovered)), &mut hits);
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(
-            content.contains("\u{1F5D1}"),
+            content.contains("\u{F01B4}"),
             "the delete button is a trash can: {content}"
         );
         let toggle = hits.rect_of(&Hit::TableCheckbox(0)).expect("toggle hit");
@@ -2031,10 +2024,10 @@ mod tests {
         let content = format!("{:?}", terminal.backend().buffer());
         assert!(hits.rect_of(&Hit::TableCheckbox(0)).is_some());
         assert!(hits.rect_of(&Hit::TableDelete(0)).is_some());
-        assert!(content.contains("\u{1F5D1}"), "trash, not ✕: {content}");
+        assert!(content.contains("\u{F01B4}"), "trash, not 󰅖: {content}");
         assert!(
-            !content.contains('\u{2715}'),
-            "the old ✕ delete glyph is gone: {content}"
+            !content.contains('\u{F0156}'),
+            "the old 󰅖 delete glyph is gone: {content}"
         );
         assert!(
             !content.contains('\u{2713}') && !content.contains('\u{2717}'),

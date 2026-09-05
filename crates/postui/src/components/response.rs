@@ -3442,7 +3442,7 @@ fn highlighted(pieces: Vec<(String, Style)>, hits: &LineMatches) -> Line<'static
 }
 
 /// The jq filter bar: a `jq ` chip, the live filter text (or the "asking…"
-/// spinner while an AI request is pending), and the `✦` AI button
+/// spinner while an AI request is pending), and the `󰙴` AI button
 /// right-aligned. A second row — when the bar reserved one — shows the
 /// last error's message, with its span (when known) underlined in the bar
 /// text above it.
@@ -3459,7 +3459,7 @@ fn draw_jq_bar(
         return None;
     }
     let mut caret = None;
-    const AI: &str = " ✦ ";
+    const AI: &str = " \u{F0674} ";
     let ai_w = AI.chars().count() as u16;
     let text_w = area.width.saturating_sub(ai_w + 1);
     let row = Rect {
@@ -4026,7 +4026,7 @@ mod tests {
         assert!(out.contains("\"hello\""), "pretty body key: {out}");
     }
 
-    /// The header strip carries a ✎ icon that opens the active tab's text
+    /// The header strip carries a 󰏫 icon that opens the active tab's text
     /// in `$EDITOR`, registered like the other icon actions.
     #[test]
     fn header_actions_include_an_open_in_editor_icon() {
@@ -4050,7 +4050,7 @@ mod tests {
         assert!(
             hits.rect_of(&crate::hit::Hit::ResponseEditorButton)
                 .is_some(),
-            "the ✎ icon registers its hit"
+            "the 󰏫 icon registers its hit"
         );
     }
 
@@ -6930,7 +6930,7 @@ mod tests {
         r.set_jq_tab(JqTab::Cycle);
         type_jq(&mut r, ".data.");
         // 18 columns: the pane's 1-column-each-side inset (pane_surface)
-        // takes 2, the ` ✦ ` chip plus its gap take 4, and `jq ` takes 3,
+        // takes 2, the ` 󰙴 ` chip plus its gap take 4, and `jq ` takes 3,
         // leaving the input 9 cells; `.data.` uses 6 (the caret is the
         // terminal cursor, on the ghost's first cell, not a cell of its
         // own), so the ghost is cut to three characters.
