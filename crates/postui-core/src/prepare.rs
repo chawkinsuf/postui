@@ -259,7 +259,13 @@ pub fn prepare(
             continue;
         }
         let name = sub(k);
-        if req.headers.keys().any(|rk| rk.eq_ignore_ascii_case(&name)) {
+        // The request side is substituted too: a row named `{{h}}` with
+        // `h = Authorization` is an Authorization row. A disabled row's
+        // unresolved tokens are its own business (it is never sent), so
+        // this probe records nothing in `missing`.
+        if req.headers.keys().any(|rk| {
+            substitute_masked(rk, &vars, &no_mask, &mut BTreeSet::new()).eq_ignore_ascii_case(&name)
+        }) {
             continue;
         }
         let lower = name.to_ascii_lowercase();
@@ -393,7 +399,10 @@ pub fn computed_headers(
             continue;
         }
         let (name, value, unresolved) = substitute_row(k, &e.value);
-        let overridden = req.headers.keys().any(|rk| rk.eq_ignore_ascii_case(&name));
+        let overridden = req
+            .headers
+            .keys()
+            .any(|rk| substitute_row(rk, "").0.eq_ignore_ascii_case(&name));
         let duplicate = !claimed.insert(name.to_ascii_lowercase());
         rows.push(ComputedHeader {
             name,
@@ -634,6 +643,51 @@ mod tests {
             p.headers,
             vec![("x-api".to_string(), "literal".to_string())],
             "substituted default name X-Api matches request header x-api case-insensitively"
+        );
+    }
+
+    #[test]
+    fn templated_request_header_name_suppresses_the_same_named_default() {
+        // The request row's NAME is a template: after substitution it is
+        // the default's name, so the request's value must win on the wire
+        // (headers are appended, so a leftover default would be sent
+        // first and a server would take it over the user's override).
+        let mut r = base("http://x.test");
+        r.headers.insert("{{auth_hdr}}".into(), on("Bearer req"));
+        let c = ctx(
+            &[("auth_hdr", "Authorization")],
+            &[("Authorization", "Bearer default", true)],
+        );
+        let (p, _) = prepare(&r, &c).unwrap();
+        assert_eq!(
+            p.headers,
+            vec![("Authorization".to_string(), "Bearer req".to_string())],
+            "the substituted request name suppresses the default"
+        );
+    }
+
+    #[test]
+    fn suppression_probe_does_not_report_a_disabled_rows_unresolved_name() {
+        let mut r = base("http://x.test");
+        r.headers.insert("{{nope}}".into(), off("ignored"));
+        let c = ctx(&[], &[("X-Default", "d", true)]);
+        let (p, _) = prepare(&r, &c).expect("a disabled row's template is never unresolved");
+        assert_eq!(p.headers, vec![("X-Default".to_string(), "d".to_string())]);
+    }
+
+    #[test]
+    fn computed_headers_marks_a_default_suppressed_by_a_templated_request_name() {
+        let mut req = base("http://x.test");
+        req.headers.insert("{{auth_hdr}}".into(), on("Bearer req"));
+        let mut ctx = PrepareContext::default();
+        ctx.vars.insert("auth_hdr".into(), "Authorization".into());
+        ctx.default_headers
+            .insert("Authorization".into(), on("Bearer default"));
+        let rows = computed_headers(&req, &ctx, true);
+        assert!(
+            rows.iter()
+                .any(|r| r.origin == (HeaderOrigin::DefaultHeader { suppressed: true })),
+            "{rows:?}"
         );
     }
 
