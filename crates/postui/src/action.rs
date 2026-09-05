@@ -51,7 +51,7 @@ pub enum CopyTarget {
     ResponseBody,
     /// The response pane's active tab, as rendered: the pretty text on
     /// Pretty, the verbatim body on Raw, the header list on Headers — the
-    /// toolbar ❐ button's target, following the tab like search does.
+    /// toolbar 󰆏 button's target, following the tab like search does.
     ResponseView,
     ResponseHeader(usize),
     Url,

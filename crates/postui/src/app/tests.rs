@@ -8326,7 +8326,7 @@ fn copy_body_writes_via_clipboard_cmd_and_toasts_copied() {
     );
 }
 
-/// The ❐ toolbar button follows the active tab like search does: on the
+/// The 󰆏 toolbar button follows the active tab like search does: on the
 /// Headers tab it copies the header list, not the body.
 #[test]
 fn toolbar_copy_follows_the_headers_tab() {
@@ -12746,7 +12746,7 @@ fn declining_the_migration_leaves_saved_selections_on_disk() {
 
 // --- computed request-headers section: copy/reveal/env-switch (Task 10) ---
 
-/// Every copy affordance uses the same `❐` glyph — the computed-header
+/// Every copy affordance uses the same `󰆏` glyph — the computed-header
 /// rows once carried `⧉`, which renders wrong in some terminals.
 #[test]
 fn auto_header_copy_icon_is_the_shared_copy_glyph() {
@@ -12769,7 +12769,7 @@ fn auto_header_copy_icon_is_the_shared_copy_glyph() {
         .take(100)
         .map(|c| c.symbol())
         .collect::<String>();
-    assert!(row.contains('❐'), "the Host row's copy icon is ❐: {row}");
+    assert!(row.contains('\u{F018F}'), "the Host row's copy icon is 󰆏: {row}");
 }
 
 #[test]

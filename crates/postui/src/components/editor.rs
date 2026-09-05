@@ -1735,8 +1735,8 @@ pub const ADDRESS_BAR_HEIGHT: u16 = 5;
 /// Columns of padding between the method segment and the URL text, so the
 /// text isn't flush against the method button.
 const URL_PAD: u16 = 2;
-/// Fixed width, in cells, of the `❐` copy-URL chip at the URL well's right
-/// edge (`" ❐ "` — one glyph column, one padding column each side).
+/// Fixed width, in cells, of the `󰆏` copy-URL chip at the URL well's right
+/// edge (`" \u{F018F} "` — one glyph column, one padding column each side).
 const COPY_CHIP_WIDTH: u16 = 3;
 /// Fixed width, in cells, of the `󰌾`/`󰍀` TLS-verification lock at the URL
 /// well's left edge (`" 󰌾 "` — a single-cell Nerd Font glyph plus one
@@ -2026,7 +2026,7 @@ impl Editor {
                 buf,
                 chip_area.x + chip_area.width / 2,
                 chip_area.y,
-                "❐",
+                "\u{F018F}",
                 chip_fg,
                 chip_bg,
                 false,
@@ -2817,7 +2817,7 @@ impl Editor {
     /// above. A `DefaultHeader { suppressed: true }` row (overridden, or a
     /// duplicate default) renders struck through; a row with unresolved
     /// `{{tokens}}` tints its whole value `theme.error` (span-level tinting
-    /// is Task 12). Each row gets a trailing `❐` copy icon
+    /// is Task 12). Each row gets a trailing `󰆏` copy icon
     /// (`Hit::AutoHeaderCopy`, indexed by its position in this filtered
     /// list); the divider carries a `👁 reveal`/`hide` toggle
     /// (`Hit::AutoHeaderReveal`) whenever `self.computed.has_secret`.
@@ -3006,7 +3006,7 @@ impl Editor {
             let line = Line::from(vec![
                 Span::styled(name_piece, name_style),
                 Span::styled(value_piece, value_style),
-                Span::styled(" ❐ ", glyph_style),
+                Span::styled(" \u{F018F} ", glyph_style),
             ]);
             frame.render_widget(Paragraph::new(line), Rect::new(area.x, y, area.width, 1));
             crate::components::var_tokens::paint_var_tokens(

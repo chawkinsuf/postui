@@ -784,7 +784,7 @@ impl ReadyView {
         let w = match self.mode {
             ViewMode::Pretty => self.active_tree().map_or(0, JsonTree::visible_width),
             ViewMode::Raw => self.raw_lines.iter().map(|l| l.width()).max().unwrap_or(0),
-            // + 3 for the ` ❐ ` copy pill appended to each rendered row.
+            // + 3 for the ` 󰆏 ` copy pill appended to each rendered row.
             ViewMode::Headers => self
                 .header_lines
                 .iter()
@@ -2980,7 +2980,7 @@ fn human_size(bytes: usize) -> String {
 /// In `Pretty` mode, also registers a `JsonRow` hit over each rendered row
 /// (click selects) and a `JsonArrow` hit over its first two columns when the
 /// row opens a container (click toggles). In `Headers` mode, registers a
-/// `HeaderCopy` hit over the trailing ` ❐ ` pill appended to each row.
+/// `HeaderCopy` hit over the trailing ` 󰆏 ` pill appended to each row.
 /// `Raw` registers nothing per-row.
 fn body_lines(
     view: &ReadyView,
@@ -3128,7 +3128,7 @@ fn body_lines(
                 let pieces = vec![
                     (name_piece, Style::default().fg(t.accent)),
                     (value_piece, text),
-                    (" ❐ ".to_string(), glyph_style),
+                    (" \u{F018F} ".to_string(), glyph_style),
                 ];
                 push(i, i, pieces, true, (0, view.h_scroll));
 
@@ -4284,7 +4284,7 @@ mod tests {
             .collect();
         assert_eq!(
             pill,
-            vec![" ", "❐", " "],
+            vec![" ", "\u{F018F}", " "],
             "the hovered pill is odd-width with the glyph in its center"
         );
     }
