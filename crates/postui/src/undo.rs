@@ -32,6 +32,11 @@ pub enum StepKind {
         before: Vec<(PathBuf, Option<String>)>,
         after: Vec<(PathBuf, Option<String>)>,
         active_env: Option<(Option<String>, Option<String>)>,
+        /// What the op did to the request order lists (a create's
+        /// arrival, a rename's slot, a move's remove-then-arrive): undo
+        /// replays them backwards, redo forwards, so the list ends up
+        /// exactly as it was on either side.
+        orders: Vec<postui_core::order::OrderEdit>,
     },
     /// A delete that went to `.local/trash` (request, environment, or a
     /// whole space). Undo renames the items back (reverse order) and
@@ -44,6 +49,8 @@ pub enum StepKind {
         files_before: Vec<(PathBuf, Option<String>)>,
         files_after: Vec<(PathBuf, Option<String>)>,
         active_env: Option<(Option<String>, Option<String>)>,
+        /// See `FileStates::orders`: the delete's removal from the list.
+        orders: Vec<postui_core::order::OrderEdit>,
     },
 }
 

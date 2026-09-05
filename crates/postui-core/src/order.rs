@@ -88,21 +88,125 @@ fn write_order(doc: &mut toml_edit::DocumentMut, space: &str, order: &[String]) 
     it["order"] = toml_edit::value(arr);
 }
 
+/// One change a cascade made to a space's list, precise enough to be
+/// reversed: the undo of the file op that caused the cascade replays
+/// these backwards (see [`apply_edits`]), so the list ends up exactly as
+/// it was — and an unrelated reorder made in between survives, which a
+/// whole-list snapshot could not manage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OrderEdit {
+    /// `rel` was inserted at index `at`.
+    Inserted {
+        space: String,
+        rel: String,
+        at: usize,
+    },
+    /// `rel` was removed from index `at`.
+    Removed {
+        space: String,
+        rel: String,
+        at: usize,
+    },
+    /// Every entry `from` became `to`.
+    Renamed {
+        space: String,
+        from: String,
+        to: String,
+    },
+}
+
+impl OrderEdit {
+    fn space(&self) -> &str {
+        match self {
+            OrderEdit::Inserted { space, .. }
+            | OrderEdit::Removed { space, .. }
+            | OrderEdit::Renamed { space, .. } => space,
+        }
+    }
+
+    /// The edit that puts this one back.
+    fn inverse(&self) -> OrderEdit {
+        match self.clone() {
+            OrderEdit::Inserted { space, rel, at } => OrderEdit::Removed { space, rel, at },
+            OrderEdit::Removed { space, rel, at } => OrderEdit::Inserted { space, rel, at },
+            OrderEdit::Renamed { space, from, to } => OrderEdit::Renamed {
+                space,
+                from: to,
+                to: from,
+            },
+        }
+    }
+
+    /// Applies this edit to a list that may have moved on since it was
+    /// recorded: an insert lands at its index (clamped) unless the entry
+    /// is already there, a remove takes the entry at its index when it
+    /// still sits there and otherwise wherever it went.
+    fn apply(&self, order: &mut Vec<String>) {
+        match self {
+            OrderEdit::Inserted { rel, at, .. } => {
+                if !order.iter().any(|e| e == rel) {
+                    let at = (*at).min(order.len());
+                    order.insert(at, rel.clone());
+                }
+            }
+            OrderEdit::Removed { rel, at, .. } => {
+                let i = match order.get(*at) {
+                    Some(e) if e == rel => Some(*at),
+                    _ => order.iter().position(|e| e == rel),
+                };
+                if let Some(i) = i {
+                    order.remove(i);
+                }
+            }
+            OrderEdit::Renamed { from, to, .. } => {
+                for e in order.iter_mut() {
+                    if e == from {
+                        *e = to.clone();
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Replays `edits` forward (redo), or their inverses backwards (undo),
+/// one read-modify-write per run of edits to the same space.
+pub fn apply_edits(root: &Path, edits: &[OrderEdit], undo: bool) -> Result<(), ProjectError> {
+    let steps: Vec<OrderEdit> = if undo {
+        edits.iter().rev().map(OrderEdit::inverse).collect()
+    } else {
+        edits.to_vec()
+    };
+    for run in steps.chunk_by(|a, b| a.space() == b.space()) {
+        let space = run[0].space();
+        edit_order(root, space, |order| {
+            for e in run {
+                e.apply(order);
+            }
+            Vec::new()
+        })?;
+    }
+    Ok(())
+}
+
 /// Reads the list, hands it to `f`, and writes back only if `f` changed
 /// it — so every cascade is a no-op write when there is nothing to do.
+/// `f` returns the edits it made; they come back only when something was
+/// actually written.
 fn edit_order(
     root: &Path,
     space: &str,
-    f: impl FnOnce(&mut Vec<String>),
-) -> Result<(), ProjectError> {
+    f: impl FnOnce(&mut Vec<String>) -> Vec<OrderEdit>,
+) -> Result<Vec<OrderEdit>, ProjectError> {
     let meta = load_meta(root)?;
     let before = space_order(&meta, space).to_vec();
     let mut after = before.clone();
-    f(&mut after);
+    let edits = f(&mut after);
     if after == before {
-        return Ok(());
+        return Ok(Vec::new());
     }
-    edit_project_toml(root, |doc| write_order(doc, space, &after))
+    edit_project_toml(root, |doc| write_order(doc, space, &after))?;
+    Ok(edits)
 }
 
 /// Whether `level` has a *displayed* listed entry: one naming a file that
@@ -116,18 +220,42 @@ fn level_is_listed(root: &Path, space: &str, order: &[String], level: &str) -> b
 }
 
 /// [`order_arrive`]'s edit, on a list already in hand.
-fn arrive(root: &Path, space: &str, order: &mut Vec<String>, rel: &str) {
+fn arrive(root: &Path, space: &str, order: &mut Vec<String>, rel: &str) -> Vec<OrderEdit> {
     if order.iter().any(|e| e == rel) || !level_is_listed(root, space, order, level_of(rel)) {
-        return;
+        return Vec::new();
     }
+    let at = order.len();
     order.push(rel.to_string());
+    vec![OrderEdit::Inserted {
+        space: space.to_string(),
+        rel: rel.to_string(),
+        at,
+    }]
+}
+
+/// [`order_remove`]'s edit, on a list already in hand: every occurrence,
+/// recorded last index first so that replaying the inverses backwards
+/// re-inserts first index first.
+fn remove(space: &str, order: &mut Vec<String>, rel: &str) -> Vec<OrderEdit> {
+    let mut edits = Vec::new();
+    for at in (0..order.len()).rev() {
+        if order[at] == rel {
+            order.remove(at);
+            edits.push(OrderEdit::Removed {
+                space: space.to_string(),
+                rel: rel.to_string(),
+                at,
+            });
+        }
+    }
+    edits
 }
 
 /// A request newly appearing in a level (created, renamed in, moved in):
 /// appended after the level's listed entries so it shows last; nothing
 /// at all when the level has no displayed entries (it then sorts
 /// alphabetically with its unlisted siblings).
-pub fn order_arrive(root: &Path, space: &str, rel: &str) -> Result<(), ProjectError> {
+pub fn order_arrive(root: &Path, space: &str, rel: &str) -> Result<Vec<OrderEdit>, ProjectError> {
     edit_order(root, space, |order| arrive(root, space, order, rel))
 }
 
@@ -140,25 +268,35 @@ pub fn order_move_all(
     from: &str,
     to: &str,
     moves: &[(String, String)],
-) -> Result<(), ProjectError> {
-    edit_order(root, from, |order| {
-        order.retain(|e| !moves.iter().any(|(f, _)| f == e));
+) -> Result<Vec<OrderEdit>, ProjectError> {
+    let mut edits = edit_order(root, from, |order| {
+        moves
+            .iter()
+            .flat_map(|(f, _)| remove(from, order, f))
+            .collect()
     })?;
-    edit_order(root, to, |order| {
-        for (_, t) in moves {
-            arrive(root, to, order, t);
-        }
-    })
+    edits.extend(edit_order(root, to, |order| {
+        moves
+            .iter()
+            .flat_map(|(_, t)| arrive(root, to, order, t))
+            .collect()
+    })?);
+    Ok(edits)
 }
 
 /// Drops `rel`'s entry (every occurrence).
-pub fn order_remove(root: &Path, space: &str, rel: &str) -> Result<(), ProjectError> {
-    edit_order(root, space, |order| order.retain(|e| e != rel))
+pub fn order_remove(root: &Path, space: &str, rel: &str) -> Result<Vec<OrderEdit>, ProjectError> {
+    edit_order(root, space, |order| remove(space, order, rel))
 }
 
 /// A rename inside one level keeps the slot; one that changes level is a
 /// remove from the old level plus an arrival in the new one.
-pub fn order_rename(root: &Path, space: &str, from: &str, to: &str) -> Result<(), ProjectError> {
+pub fn order_rename(
+    root: &Path,
+    space: &str,
+    from: &str,
+    to: &str,
+) -> Result<Vec<OrderEdit>, ProjectError> {
     if level_of(from) == level_of(to) {
         return edit_order(root, space, |order| {
             for e in order.iter_mut() {
@@ -166,10 +304,16 @@ pub fn order_rename(root: &Path, space: &str, from: &str, to: &str) -> Result<()
                     *e = to.to_string();
                 }
             }
+            vec![OrderEdit::Renamed {
+                space: space.to_string(),
+                from: from.to_string(),
+                to: to.to_string(),
+            }]
         });
     }
-    order_remove(root, space, from)?;
-    order_arrive(root, space, to)
+    let mut edits = order_remove(root, space, from)?;
+    edits.extend(order_arrive(root, space, to)?);
+    Ok(edits)
 }
 
 /// Puts `rel` directly after `anchor`; a no-op when `anchor` is unlisted
@@ -181,14 +325,20 @@ pub fn order_insert_after(
     space: &str,
     anchor: &str,
     rel: &str,
-) -> Result<(), ProjectError> {
+) -> Result<Vec<OrderEdit>, ProjectError> {
     edit_order(root, space, |order| {
         if order.iter().any(|e| e == rel) {
-            return;
+            return Vec::new();
         }
-        if let Some(i) = order.iter().position(|e| e == anchor) {
-            order.insert(i + 1, rel.to_string());
-        }
+        let Some(i) = order.iter().position(|e| e == anchor) else {
+            return Vec::new();
+        };
+        order.insert(i + 1, rel.to_string());
+        vec![OrderEdit::Inserted {
+            space: space.to_string(),
+            rel: rel.to_string(),
+            at: i + 1,
+        }]
     })
 }
 
@@ -237,8 +387,10 @@ pub fn set_level_order(
         "set_level_order got slugs from another level: {slugs:?} is not all under {level:?}"
     );
     edit_order(root, space, |order| {
-        *order = merge_level(order, level, slugs)
+        *order = merge_level(order, level, slugs);
+        Vec::new()
     })
+    .map(|_| ())
 }
 
 /// Every request of `space` in `listing`, as full slugs, in display
@@ -589,6 +741,66 @@ mod tests {
             displayed_slugs(&listing, &order, "main"),
             v(&["main/b", "main/a", "main/auth/y", "main/auth/x"])
         );
+    }
+
+    #[test]
+    fn cascades_report_their_edits_and_apply_edits_reverses_them_exactly() {
+        let dir = project_with(&["main/a", "main/b", "main/c"]);
+        set_level_order(dir.path(), "main", "", &v(&["c", "b", "a"])).unwrap();
+
+        let removed = order_remove(dir.path(), "main", "b").unwrap();
+        assert_eq!(
+            removed,
+            [OrderEdit::Removed {
+                space: "main".into(),
+                rel: "b".into(),
+                at: 1
+            }]
+        );
+        assert_eq!(order_of(dir.path(), "main"), v(&["c", "a"]));
+        apply_edits(dir.path(), &removed, true).unwrap();
+        assert_eq!(order_of(dir.path(), "main"), v(&["c", "b", "a"]));
+        apply_edits(dir.path(), &removed, false).unwrap();
+        assert_eq!(order_of(dir.path(), "main"), v(&["c", "a"]));
+        apply_edits(dir.path(), &removed, true).unwrap();
+
+        let renamed = order_rename(dir.path(), "main", "b", "bee").unwrap();
+        assert_eq!(order_of(dir.path(), "main"), v(&["c", "bee", "a"]));
+        apply_edits(dir.path(), &renamed, true).unwrap();
+        assert_eq!(order_of(dir.path(), "main"), v(&["c", "b", "a"]));
+
+        crate::storage::save_request(dir.path(), "main/d", &req()).unwrap();
+        let arrived = order_arrive(dir.path(), "main", "d").unwrap();
+        assert_eq!(order_of(dir.path(), "main"), v(&["c", "b", "a", "d"]));
+        apply_edits(dir.path(), &arrived, true).unwrap();
+        assert_eq!(order_of(dir.path(), "main"), v(&["c", "b", "a"]));
+
+        let inserted = order_insert_after(dir.path(), "main", "c", "d").unwrap();
+        assert_eq!(order_of(dir.path(), "main"), v(&["c", "d", "b", "a"]));
+        apply_edits(dir.path(), &inserted, true).unwrap();
+        assert_eq!(order_of(dir.path(), "main"), v(&["c", "b", "a"]));
+
+        // A no-op cascade reports nothing, so its undo touches nothing.
+        assert!(order_remove(dir.path(), "main", "zzz").unwrap().is_empty());
+    }
+
+    #[test]
+    fn undoing_an_edit_tolerates_a_list_that_moved_on() {
+        // A reorder between the cascade and its undo: the re-insert lands
+        // at its old index (clamped), the remove finds the entry wherever
+        // it went, and nothing else is disturbed.
+        let dir = project_with(&["main/a", "main/b", "main/c"]);
+        set_level_order(dir.path(), "main", "", &v(&["a", "b", "c"])).unwrap();
+        let removed = order_remove(dir.path(), "main", "c").unwrap();
+        set_level_order(dir.path(), "main", "", &v(&["b", "a"])).unwrap();
+        apply_edits(dir.path(), &removed, true).unwrap();
+        assert_eq!(order_of(dir.path(), "main"), v(&["b", "a", "c"]));
+
+        crate::storage::save_request(dir.path(), "main/d", &req()).unwrap();
+        let arrived = order_arrive(dir.path(), "main", "d").unwrap();
+        set_level_order(dir.path(), "main", "", &v(&["d", "b", "a", "c"])).unwrap();
+        apply_edits(dir.path(), &arrived, true).unwrap();
+        assert_eq!(order_of(dir.path(), "main"), v(&["b", "a", "c"]));
     }
 
     #[test]

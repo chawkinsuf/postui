@@ -2198,18 +2198,24 @@ impl App {
                     Ok(new_slug) => {
                         let new_path =
                             postui_core::storage::request_path(&self.project.root, &new_slug);
-                        self.record_file_step(vec![(new_path.clone(), None)], &[new_path], None);
-                        if let (Some((space, anchor_rel)), Some((_, rel))) =
-                            (Self::split_rel(&slug), Self::split_rel(&new_slug))
-                        {
-                            let r = postui_core::order::order_insert_after(
-                                &self.project.root,
-                                space,
-                                anchor_rel,
-                                rel,
-                            );
-                            self.order_cascade("duplicate", r);
-                        }
+                        let orders = match (Self::split_rel(&slug), Self::split_rel(&new_slug)) {
+                            (Some((space, anchor_rel)), Some((_, rel))) => {
+                                let r = postui_core::order::order_insert_after(
+                                    &self.project.root,
+                                    space,
+                                    anchor_rel,
+                                    rel,
+                                );
+                                self.order_cascade("duplicate", r)
+                            }
+                            _ => Vec::new(),
+                        };
+                        self.record_file_step_with_orders(
+                            vec![(new_path.clone(), None)],
+                            &[new_path],
+                            None,
+                            orders,
+                        );
                         self.refresh_sidebar();
                         let display = self.request_display(&new_slug);
                         self.toasts
@@ -2348,13 +2354,19 @@ impl App {
                 match storage::move_request_to_space(&self.project.root, &slug, &space) {
                     Ok(new_slug) => {
                         let to_path = storage::request_path(&self.project.root, &new_slug);
-                        self.record_file_step(
+                        let mut orders =
+                            self.cascade_slug("move", &slug, postui_core::order::order_remove);
+                        orders.extend(self.cascade_slug(
+                            "move",
+                            &new_slug,
+                            postui_core::order::order_arrive,
+                        ));
+                        self.record_file_step_with_orders(
                             vec![(from_path.clone(), old_content), (to_path.clone(), None)],
                             &[from_path, to_path],
                             None,
+                            orders,
                         );
-                        self.cascade_slug("move", &slug, postui_core::order::order_remove);
-                        self.cascade_slug("move", &new_slug, postui_core::order::order_arrive);
                         // The move doesn't follow the request into its
                         // new space (user feedback: that made moving
                         // several in a row a chore). From this space's
@@ -2420,22 +2432,24 @@ impl App {
                 match storage::rename_request_named(&self.project.root, &from, &to) {
                     Ok((slug, leaf)) => {
                         let to_path = storage::request_path(&self.project.root, &slug);
-                        self.record_file_step(
+                        let orders = match (Self::split_rel(&from), Self::split_rel(&slug)) {
+                            (Some((space, from_rel)), Some((_, to_rel))) => {
+                                let r = postui_core::order::order_rename(
+                                    &self.project.root,
+                                    space,
+                                    from_rel,
+                                    to_rel,
+                                );
+                                self.order_cascade("rename", r)
+                            }
+                            _ => Vec::new(),
+                        };
+                        self.record_file_step_with_orders(
                             vec![(from_path.clone(), old_content), (to_path.clone(), None)],
                             &[from_path, to_path],
                             None,
+                            orders,
                         );
-                        if let (Some((space, from_rel)), Some((_, to_rel))) =
-                            (Self::split_rel(&from), Self::split_rel(&slug))
-                        {
-                            let r = postui_core::order::order_rename(
-                                &self.project.root,
-                                space,
-                                from_rel,
-                                to_rel,
-                            );
-                            self.order_cascade("rename", r);
-                        }
                         self.refresh_sidebar();
                         if self.editor.slug.as_deref() == Some(from.as_str()) {
                             self.editor.slug = Some(slug.clone());
@@ -2483,8 +2497,15 @@ impl App {
                         // Recorded before refresh_sidebar/editor-clearing
                         // reorder state: context.slug must still name the
                         // deleted request while self.editor.slug matches it.
-                        self.record_trashed_step(vec![trashed], Vec::new(), &[], None);
-                        self.cascade_slug("delete", &slug, postui_core::order::order_remove);
+                        let orders =
+                            self.cascade_slug("delete", &slug, postui_core::order::order_remove);
+                        self.record_trashed_step_with_orders(
+                            vec![trashed],
+                            Vec::new(),
+                            &[],
+                            None,
+                            orders,
+                        );
                         self.refresh_sidebar();
                         if self.editor.slug.as_deref() == Some(slug.as_str()) {
                             self.editor = Editor::default();
@@ -5050,7 +5071,9 @@ impl App {
                     shown.iter().position(|s| *s == slug).unwrap_or(usize::MAX)
                 });
                 let r = postui_core::order::order_move_all(&self.project.root, &from, &to, &moves);
-                self.order_cascade("move", r);
+                // Move-all is not an undo step (yet), so its edits are not
+                // kept.
+                let _ = self.order_cascade("move", r);
                 self.project.forget_space(&from);
                 self.refresh_sidebar();
                 if let Some(open) = open
@@ -6738,6 +6761,19 @@ impl App {
         after_paths: &[PathBuf],
         active_env: Option<(Option<String>, Option<String>)>,
     ) {
+        self.record_file_step_with_orders(before, after_paths, active_env, Vec::new());
+    }
+
+    /// [`Self::record_file_step`] for a request file op that also
+    /// cascaded the order lists: `orders` is what the cascade did, so
+    /// undo and redo can replay it.
+    fn record_file_step_with_orders(
+        &mut self,
+        before: Vec<(PathBuf, Option<String>)>,
+        after_paths: &[PathBuf],
+        active_env: Option<(Option<String>, Option<String>)>,
+        orders: Vec<postui_core::order::OrderEdit>,
+    ) {
         let after = self.read_file_states(after_paths);
         debug_assert_eq!(before.len(), after.len(), "before/after paths must line up");
         let mut kept_before = Vec::new();
@@ -6756,6 +6792,7 @@ impl App {
                 before: kept_before,
                 after: kept_after,
                 active_env,
+                orders,
             },
             context: crate::undo::Context {
                 slug: self.editor.slug.clone(),
@@ -6800,6 +6837,25 @@ impl App {
         after_paths: &[PathBuf],
         active_env: Option<(Option<String>, Option<String>)>,
     ) {
+        self.record_trashed_step_with_orders(
+            items,
+            files_before,
+            after_paths,
+            active_env,
+            Vec::new(),
+        );
+    }
+
+    /// [`Self::record_trashed_step`] for a request delete, which also
+    /// cascaded the order list: `orders` is what the cascade did.
+    fn record_trashed_step_with_orders(
+        &mut self,
+        items: Vec<postui_core::trash::Trashed>,
+        files_before: Vec<(PathBuf, Option<String>)>,
+        after_paths: &[PathBuf],
+        active_env: Option<(Option<String>, Option<String>)>,
+        orders: Vec<postui_core::order::OrderEdit>,
+    ) {
         let files_after = self.read_file_states(after_paths);
         self.history.record_no_coalesce(crate::undo::Step {
             kind: crate::undo::StepKind::Trashed {
@@ -6807,6 +6863,7 @@ impl App {
                 files_before,
                 files_after,
                 active_env,
+                orders,
             },
             context: crate::undo::Context {
                 slug: self.editor.slug.clone(),
@@ -6906,14 +6963,42 @@ impl App {
     /// Applies an order-list cascade after a request file op succeeded.
     /// The file is the truth; a failed cascade only leaves a stale entry
     /// (ignored for display), so it warns rather than failing the op.
-    fn order_cascade(&mut self, what: &str, r: Result<(), postui_core::project::ProjectError>) {
-        if let Err(e) = r {
+    /// Returns the edits the cascade made, for the op's undo step.
+    fn order_cascade(
+        &mut self,
+        what: &str,
+        r: Result<Vec<postui_core::order::OrderEdit>, postui_core::project::ProjectError>,
+    ) -> Vec<postui_core::order::OrderEdit> {
+        let edits = match r {
+            Ok(edits) => edits,
+            Err(e) => {
+                self.toasts.push(
+                    format!("could not update request order after {what}: {e}"),
+                    ToastKind::Warning,
+                );
+                Vec::new()
+            }
+        };
+        self.project.reload_meta();
+        edits
+    }
+
+    /// Puts a step's order-list cascade back (undo) or forward again
+    /// (redo). The files are already restored by the time this runs; a
+    /// failure here leaves only a mis-slotted entry, so it warns.
+    fn replay_order_edits(&mut self, orders: &[postui_core::order::OrderEdit], redo: bool) {
+        if orders.is_empty() {
+            return;
+        }
+        if let Err(e) = postui_core::order::apply_edits(&self.project.root, orders, !redo) {
             self.toasts.push(
-                format!("could not update request order after {what}: {e}"),
+                format!(
+                    "could not {} the request order: {e}",
+                    if redo { "redo" } else { "undo" }
+                ),
                 ToastKind::Warning,
             );
         }
-        self.project.reload_meta();
     }
 
     /// Splits a slug into its space and the path relative to that space,
@@ -6932,11 +7017,19 @@ impl App {
         &mut self,
         what: &str,
         slug: &str,
-        op: fn(&std::path::Path, &str, &str) -> Result<(), postui_core::project::ProjectError>,
-    ) {
-        if let Some((space, rel)) = Self::split_rel(slug) {
-            let r = op(&self.project.root, space, rel);
-            self.order_cascade(what, r);
+        op: fn(
+            &std::path::Path,
+            &str,
+            &str,
+        )
+            -> Result<Vec<postui_core::order::OrderEdit>, postui_core::project::ProjectError>,
+    ) -> Vec<postui_core::order::OrderEdit> {
+        match Self::split_rel(slug) {
+            Some((space, rel)) => {
+                let r = op(&self.project.root, space, rel);
+                self.order_cascade(what, r)
+            }
+            None => Vec::new(),
         }
     }
 
@@ -7669,8 +7762,13 @@ impl App {
                 // A brand-new file never existed before this write, so
                 // `before` is simply absent — no pre-read needed.
                 let path = storage::request_path(&self.project.root, &slug);
-                self.record_file_step(vec![(path.clone(), None)], &[path], None);
-                self.cascade_slug("create", &slug, postui_core::order::order_arrive);
+                let orders = self.cascade_slug("create", &slug, postui_core::order::order_arrive);
+                self.record_file_step_with_orders(
+                    vec![(path.clone(), None)],
+                    &[path],
+                    None,
+                    orders,
+                );
                 self.toasts
                     .push(format!("Saved {leaf}"), ToastKind::Success);
                 // Queue the slug's ancestor folders open, rebuild the tree
@@ -9102,6 +9200,7 @@ impl App {
                 before,
                 after,
                 active_env,
+                orders,
             } => {
                 let target = if redo { after } else { before };
                 if let Err(msg) = self.write_file_states(target, if redo { "redo" } else { "undo" })
@@ -9120,6 +9219,7 @@ impl App {
                     }
                     return false; // step dropped; earlier writes in this step stand
                 }
+                self.replay_order_edits(orders, redo);
                 // Before the `SwitchEnv` below, whose persist would write
                 // the stale in-memory table straight back over the
                 // `state.toml` these writes just restored.
@@ -9211,6 +9311,7 @@ impl App {
                 files_before,
                 files_after,
                 active_env,
+                orders,
             } => {
                 let result: Result<(), String> = if redo {
                     items
@@ -9237,6 +9338,7 @@ impl App {
                     self.reload_after_file_change();
                     return false; // step dropped; earlier renames stand
                 }
+                self.replay_order_edits(orders, redo);
                 // See the `FileStates` arm: `SwitchEnv` persists, so the
                 // restored table has to be in memory before it runs.
                 self.project.reload_selections_from_disk();

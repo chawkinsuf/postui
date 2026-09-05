@@ -3792,6 +3792,123 @@ fn move_all_requests_cascades_the_order_lists() {
     );
 }
 
+// --- undo puts the order list back exactly as the undone op found it ---
+
+fn slotted_app(order: &[&str]) -> (App, tempfile::TempDir) {
+    let (mut app, dir) = spaced_app();
+    postui_core::storage::save_request(dir.path(), "main/gamma", &req("https://x/3")).unwrap();
+    let order: Vec<String> = order.iter().map(|s| s.to_string()).collect();
+    postui_core::order::set_level_order(dir.path(), "main", "", &order).unwrap();
+    app.project.reload_meta();
+    app.update(Action::RefreshSidebar);
+    render_once(&mut app);
+    (app, dir)
+}
+
+fn slot_order(dir: &tempfile::TempDir) -> Vec<String> {
+    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    postui_core::order::space_order(&meta, "main").to_vec()
+}
+
+#[test]
+fn undo_of_a_delete_restores_the_order_slot() {
+    let (mut app, dir) = slotted_app(&["gamma", "alpha", "beta"]);
+    app.update(Action::DeleteRequest("main/alpha".into()));
+    assert_eq!(slot_order(&dir), ["gamma", "beta"]);
+
+    app.update(Action::Undo);
+    assert_eq!(slot_order(&dir), ["gamma", "alpha", "beta"]);
+    assert_eq!(
+        request_rows(&app),
+        ["main/gamma", "main/alpha", "main/beta"],
+        "the restored request is back in its slot on screen"
+    );
+
+    app.update(Action::Redo);
+    assert_eq!(slot_order(&dir), ["gamma", "beta"]);
+    app.update(Action::Undo);
+    assert_eq!(slot_order(&dir), ["gamma", "alpha", "beta"]);
+}
+
+#[test]
+fn undo_of_a_rename_restores_the_order_slot() {
+    let (mut app, dir) = slotted_app(&["beta", "alpha"]);
+    app.update(Action::RenameRequest {
+        from: "main/beta".into(),
+        to: "zeta".into(),
+    });
+    assert_eq!(slot_order(&dir), ["zeta", "alpha"]);
+    app.update(Action::Undo);
+    assert_eq!(slot_order(&dir), ["beta", "alpha"]);
+    app.update(Action::Redo);
+    assert_eq!(slot_order(&dir), ["zeta", "alpha"]);
+}
+
+#[test]
+fn undo_of_a_create_drops_its_arrival() {
+    let (mut app, dir) = slotted_app(&["beta", "alpha"]);
+    app.update(Action::CreateRequest("newest".into()));
+    assert_eq!(slot_order(&dir), ["beta", "alpha", "newest"]);
+    app.update(Action::Undo);
+    assert_eq!(slot_order(&dir), ["beta", "alpha"]);
+    app.update(Action::Redo);
+    assert_eq!(slot_order(&dir), ["beta", "alpha", "newest"]);
+}
+
+#[test]
+fn undo_of_a_duplicate_drops_the_copys_slot() {
+    let (mut app, dir) = slotted_app(&["beta", "alpha", "gamma"]);
+    app.sidebar.select_slug("main/alpha");
+    app.update(Action::DuplicateRequest);
+    assert_eq!(slot_order(&dir), ["beta", "alpha", "alpha-copy", "gamma"]);
+    app.update(Action::Undo);
+    assert_eq!(slot_order(&dir), ["beta", "alpha", "gamma"]);
+}
+
+#[test]
+fn undo_of_a_move_to_space_restores_both_lists() {
+    let (mut app, dir) = slotted_app(&["beta", "alpha"]);
+    postui_core::order::set_level_order(dir.path(), "auth", "", &["login".to_string()]).unwrap();
+    app.project.reload_meta();
+    app.update(Action::ForceMoveRequestToSpace {
+        slug: "main/alpha".into(),
+        space: "auth".into(),
+    });
+    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    assert_eq!(postui_core::order::space_order(&meta, "main"), ["beta"]);
+    assert_eq!(
+        postui_core::order::space_order(&meta, "auth"),
+        ["login", "alpha"]
+    );
+
+    app.update(Action::Undo);
+    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    assert_eq!(
+        postui_core::order::space_order(&meta, "main"),
+        ["beta", "alpha"]
+    );
+    assert_eq!(postui_core::order::space_order(&meta, "auth"), ["login"]);
+}
+
+#[test]
+fn undo_of_a_delete_keeps_a_reorder_made_since() {
+    // Reordering is not an undo step, so a drag between the delete and
+    // its undo is not undone with it: the restored request goes back to
+    // its old index and the rearranged siblings stay as they are.
+    let (mut app, dir) = slotted_app(&["alpha", "beta", "gamma"]);
+    app.update(Action::DeleteRequest("main/gamma".into()));
+    postui_core::order::set_level_order(
+        dir.path(),
+        "main",
+        "",
+        &["beta".to_string(), "alpha".to_string()],
+    )
+    .unwrap();
+    app.project.reload_meta();
+    app.update(Action::Undo);
+    assert_eq!(slot_order(&dir), ["beta", "alpha", "gamma"]);
+}
+
 #[test]
 fn move_all_requests_keeps_the_source_arrangement_in_a_listed_destination() {
     // The walk hands the moved requests back alphabetically; the cascade
@@ -15951,6 +16068,7 @@ mod undo_tests {
                     (blocked_path.clone(), Some("y".into())),
                 ],
                 active_env: None,
+                orders: Vec::new(),
             },
             context: crate::undo::Context {
                 slug: None,

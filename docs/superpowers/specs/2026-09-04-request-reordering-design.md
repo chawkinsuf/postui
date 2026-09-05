@@ -237,14 +237,20 @@ sidebar_press: Option<(usize, String)>, // row index + slug of the armed press
 - Concurrent edit of `project.toml` by another process between read
   and write: last writer wins, as for every other project.toml write
   today.
-- **Undo restores the file, not the order slot.** Undoing a delete or a
-  rename brings the request file back, but the order-list cascade that
-  ran alongside it is not reversed — reordering is not an undo step, so
-  nothing in the undo stack touches `[space.<slug>] order`. The request
-  therefore reappears *unlisted*: it sorts alphabetically after its
-  listed siblings rather than returning to the slot it held. Accepted:
-  putting the cascade in the undo stack would make a reorder an undoable
-  step by the back door, and re-dragging one row is cheap.
+- **Undo restores the order slot with the file.** *(Revised 2026-09-04:
+  the state after an undo must equal the state before the op it undoes,
+  so the earlier "file, not slot" acceptance is withdrawn.)* Every
+  cascade (`order_arrive`, `order_remove`, `order_rename`,
+  `order_insert_after`, `order_move_all`) reports what it did as a list
+  of `OrderEdit`s — insert at index, remove from index, rename — and the
+  request file op's undo step (`FileStates`/`Trashed` `orders`) carries
+  them. Undo replays the inverses backwards, redo replays them forwards
+  (`order::apply_edits`), so a deleted, renamed, moved or duplicated
+  request goes back to exactly the slot it held. The replay is
+  index-tolerant: a reorder made between the op and its undo (still not
+  an undo step) survives — the re-inserted entry lands at its old index
+  and its rearranged siblings stay put. Move-all records no undo step,
+  so its cascade is not replayed.
 
 ## Testing
 
