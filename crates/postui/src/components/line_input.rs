@@ -416,7 +416,6 @@ impl LineInput {
     /// the terminal's own cursor for a field drawn with
     /// [`Self::draw_line_windowed_no_caret`].
     pub fn caret_column(&self, width: u16) -> u16 {
-        use unicode_width::UnicodeWidthChar;
         let start = self.window_start(true, width);
         // Cells, not chars: a wide character before the caret occupies two
         // columns on screen, and the terminal's cursor must land after it.
@@ -424,7 +423,7 @@ impl LineInput {
             .chars()
             .skip(start)
             .take(self.cursor.saturating_sub(start))
-            .map(|c| c.width().unwrap_or(0) as u16)
+            .map(|c| cell_width(c) as u16)
             .sum()
     }
 
@@ -450,7 +449,24 @@ impl LineInput {
         if !focused {
             return 0;
         }
-        (self.cursor + 1).saturating_sub(width.max(1) as usize)
+        // Counted in cells, not chars, so the caret's column (the cells
+        // from the window start up to the cursor) always fits: the cursor
+        // cell itself — the char under it, or a one-cell blank at
+        // end-of-text — takes its room first, then chars before the
+        // cursor are admitted from the right while they still fit.
+        let width = width.max(1) as usize;
+        let chars: Vec<char> = self.text.chars().collect();
+        let mut used = chars.get(self.cursor).map(|&c| cell_width(c)).unwrap_or(1);
+        let mut start = self.cursor.min(chars.len());
+        while start > 0 {
+            let w = cell_width(chars[start - 1]);
+            if used + w > width {
+                break;
+            }
+            used += w;
+            start -= 1;
+        }
+        start
     }
 
     /// The exact text [`Self::draw_line_windowed`] puts on screen for a
@@ -458,11 +474,9 @@ impl LineInput {
     /// highlight).
     pub fn visible_window(&self, focused: bool, width: u16) -> String {
         let start = self.window_start(focused, width);
-        self.text
-            .chars()
-            .skip(start)
-            .take(width.max(1) as usize)
-            .collect()
+        let chars: Vec<char> = self.text.chars().collect();
+        let end = fit_cells(&chars, start, width.max(1) as usize);
+        chars[start..end].iter().collect()
     }
 
     fn render_windowed(
@@ -496,7 +510,7 @@ impl LineInput {
         };
         if !focused {
             let visible: String = match width {
-                Some(w) => chars.iter().take(w).collect(),
+                Some(w) => chars[..fit_cells(&chars, 0, w)].iter().collect(),
                 None => chars.iter().collect(),
             };
             // The color rides on the span, not the `Line`: callers that
@@ -512,7 +526,7 @@ impl LineInput {
             None => 0,
         };
         let end = match width {
-            Some(w) => chars.len().min(start + w),
+            Some(w) => fit_cells(&chars, start, w),
             None => chars.len(),
         };
         let reversed = base.add_modifier(Modifier::REVERSED);
@@ -551,6 +565,30 @@ impl LineInput {
         }
         Line::from(spans)
     }
+}
+
+/// A character's width in terminal cells (zero for combining marks).
+fn cell_width(c: char) -> usize {
+    use unicode_width::UnicodeWidthChar;
+    c.width().unwrap_or(0)
+}
+
+/// The end (exclusive) of the longest run of `chars` from `start` whose
+/// cells fit in `width` columns — the char-based clip a windowed field
+/// draws, which must agree with the cell-based window `window_start`
+/// picks or wide characters spill past the field.
+fn fit_cells(chars: &[char], start: usize, width: usize) -> usize {
+    let mut used = 0;
+    let mut end = start.min(chars.len());
+    while end < chars.len() {
+        let w = cell_width(chars[end]);
+        if used + w > width {
+            break;
+        }
+        used += w;
+        end += 1;
+    }
+    end
 }
 
 /// Flattens pasted text to one line: runs of line breaks and tabs collapse
@@ -1106,6 +1144,25 @@ mod tests {
         assert_eq!(input.caret_column(20), 5);
         input.set_cursor(0);
         assert_eq!(input.caret_column(20), 0);
+    }
+
+    #[test]
+    fn window_scrolls_by_cells_so_the_caret_stays_inside_a_narrow_field() {
+        let theme = Theme::dark();
+        // 12 wide chars in a 10-cell field, cursor at the end: the window
+        // must hold at most 4 wide chars (8 cells) plus the caret's blank.
+        let input = LineInput::new("日本語日本語日本語日本語");
+        assert!(input.caret_column(10) < 10, "{}", input.caret_column(10));
+        assert_eq!(input.caret_column(10), 8);
+        assert_eq!(input.window_start(true, 10), 8);
+        assert_eq!(input.visible_window(true, 10), "語日本語");
+        let line = input.draw_line_windowed_no_caret(true, &theme, 10);
+        assert_eq!(line_text(&line), "語日本語");
+        // Mid-text on a wide char: that char's two cells count too.
+        let mut input = input;
+        input.set_cursor(6);
+        assert_eq!(input.window_start(true, 10), 2);
+        assert_eq!(input.caret_column(10), 8);
     }
 
     #[test]
