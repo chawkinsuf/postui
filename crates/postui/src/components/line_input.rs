@@ -416,7 +416,16 @@ impl LineInput {
     /// the terminal's own cursor for a field drawn with
     /// [`Self::draw_line_windowed_no_caret`].
     pub fn caret_column(&self, width: u16) -> u16 {
-        (self.cursor - self.window_start(true, width)) as u16
+        use unicode_width::UnicodeWidthChar;
+        let start = self.window_start(true, width);
+        // Cells, not chars: a wide character before the caret occupies two
+        // columns on screen, and the terminal's cursor must land after it.
+        self.text
+            .chars()
+            .skip(start)
+            .take(self.cursor.saturating_sub(start))
+            .map(|c| c.width().unwrap_or(0) as u16)
+            .sum()
     }
 
     /// [`Self::draw_line_windowed`] and [`Self::draw_line_masked`] combined
@@ -1086,6 +1095,17 @@ mod tests {
         input.handle_key(shifted(KeyCode::Right));
         assert!(input.handle_key(word_key(KeyCode::Backspace, KeyModifiers::CONTROL)));
         assert_eq!(input.text(), "oo bar");
+    }
+
+    #[test]
+    fn caret_column_counts_cells_not_chars_past_wide_characters() {
+        let mut input = LineInput::new("日本x");
+        input.set_cursor(2);
+        assert_eq!(input.caret_column(20), 4, "two wide chars = four cells");
+        input.set_cursor(3);
+        assert_eq!(input.caret_column(20), 5);
+        input.set_cursor(0);
+        assert_eq!(input.caret_column(20), 0);
     }
 
     #[test]
