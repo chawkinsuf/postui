@@ -166,31 +166,87 @@ fn error_chain(err: &reqwest::Error, req: &PreparedRequest) -> String {
         parts.push(e.to_string());
         source = e.source();
     }
-    let joined = parts.join(": ");
-    let masked = if req.url.is_empty() || req.url == req.display_url {
-        joined
-    } else {
-        joined.replace(&req.url, &req.display_url)
-    };
-    // reqwest prints `... for url (<url>)`; the url it prints is its
-    // parsed (normalised) form, which may not be byte-identical to what
-    // was sent, so drop that clause outright and append the masked URL.
-    match (masked.find(" for url ("), masked.find(')')) {
-        (Some(start), Some(end)) if end > start => {
-            format!(
-                "{}{} for url ({})",
-                &masked[..start],
-                &masked[end + 1..],
-                req.display_url
-            )
+    mask_error_text(
+        &parts.join(": "),
+        err.url().map(|u| u.as_str()),
+        &req.url,
+        &req.display_url,
+    )
+}
+
+/// The masking behind [`error_chain`], on the joined chain text: `wire_url`
+/// is the URL reqwest itself reports on the error (its parsed, normalised
+/// form — `a%20b` for a sent `a b`, a lowercased host — so it need not be
+/// byte-identical to `sent_url`). reqwest's own text names it as
+/// ` for url (<wire_url>)`; that exact clause is removed and re-added
+/// with `display_url` — matched on the URL itself, never on the first
+/// `)` in the text, which a URL can contain. Every other mention of
+/// either form of the URL is masked too.
+fn mask_error_text(
+    joined: &str,
+    wire_url: Option<&str>,
+    sent_url: &str,
+    display_url: &str,
+) -> String {
+    let mut text = joined.to_string();
+    if let Some(wire) = wire_url {
+        text = text.replace(&format!(" for url ({wire})"), "");
+        if wire != display_url {
+            text = text.replace(wire, display_url);
         }
-        _ => masked,
+    }
+    if !sent_url.is_empty() && sent_url != display_url {
+        text = text.replace(sent_url, display_url);
+    }
+    match wire_url {
+        Some(_) => format!("{text} for url ({display_url})"),
+        None => text,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn error_text_strips_the_url_clause_on_the_url_itself_not_the_first_paren() {
+        // The wire URL holds a `)`: cutting at the first `)` would leave
+        // the secret-bearing tail of the URL in the message.
+        let wire = "http://127.0.0.1:1/a%20b?f=(x)&key=sk-REAL";
+        let sent = "http://127.0.0.1:1/a b?f=(x)&key=sk-REAL";
+        let display = "http://127.0.0.1:1/a b?f=(x)&key=\u{2022}\u{2022}\u{2022}";
+        let joined = format!(
+            "error sending request for url ({wire}): client error (Connect): tcp connect error: Connection refused"
+        );
+        let out = mask_error_text(&joined, Some(wire), sent, display);
+        assert!(!out.contains("sk-REAL"), "{out}");
+        assert_eq!(
+            out,
+            format!(
+                "error sending request: client error (Connect): tcp connect error: Connection refused for url ({display})"
+            )
+        );
+    }
+
+    #[test]
+    fn error_text_masks_a_normalised_url_the_sent_form_would_miss() {
+        let wire = "http://example.test/p?key=sk-REAL";
+        let sent = "http://EXAMPLE.test/p?key=sk-REAL";
+        let display = "http://EXAMPLE.test/p?key=\u{2022}";
+        let joined = format!("error sending request for url ({wire}): boom ({wire})");
+        let out = mask_error_text(&joined, Some(wire), sent, display);
+        assert!(!out.contains("sk-REAL"), "{out}");
+        assert_eq!(
+            out,
+            format!("error sending request: boom ({display}) for url ({display})")
+        );
+    }
+
+    #[test]
+    fn error_text_without_a_url_on_the_error_is_left_alone() {
+        let out = mask_error_text("body read failed: reset", None, "http://x", "http://x");
+        assert_eq!(out, "body read failed: reset");
+    }
 
     #[test]
     fn client_builds_without_a_tokio_runtime() {
