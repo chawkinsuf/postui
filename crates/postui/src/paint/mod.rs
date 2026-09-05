@@ -88,6 +88,12 @@ pub fn text(buf: &mut Buffer, x: u16, y: u16, s: &str, fg: Color, bg: Color, bol
     if bold {
         style = style.add_modifier(Modifier::BOLD);
     }
+    // `Buffer::set_string` panics on a cell outside the buffer; a caller
+    // laying out for a tiny terminal can legitimately land there.
+    if y < buf.area.top() || y >= buf.area.bottom() || x < buf.area.left() || x >= buf.area.right()
+    {
+        return;
+    }
     buf.set_string(x, y, s, style);
 }
 

@@ -1811,6 +1811,13 @@ impl Editor {
             width: bar_outer.width.saturating_sub(2),
             ..bar_outer
         };
+        // The bar's anatomy is three rows (bevel, text, bevel); a pane too
+        // short to hold them (a tiny terminal) draws no bar at all rather
+        // than writing rows past the buffer, which ratatui panics on.
+        if bar.height < 3 || bar.width == 0 {
+            self.last_method_area = None;
+            return;
+        }
 
         let cols = Layout::default()
             .direction(Direction::Horizontal)
