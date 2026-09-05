@@ -21070,3 +21070,92 @@ async fn renaming_an_in_flight_request_keeps_its_send_and_its_response() {
     ));
 }
 
+#[test]
+fn undo_of_a_request_delete_reopens_it_in_the_editor() {
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.update(Action::DeleteRequest("main/alpha".into()));
+    assert!(
+        app.editor.slug.is_none(),
+        "deleting the open request closes it"
+    );
+
+    app.update(Action::Undo);
+    assert_eq!(
+        app.editor.slug.as_deref(),
+        Some("main/alpha"),
+        "undo puts the editor back where it was"
+    );
+    assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/alpha"));
+    let state = postui_core::project::load_local_state(&app.project.root).unwrap();
+    assert_eq!(state.open_request.as_deref(), Some("main/alpha"));
+
+    app.update(Action::Redo);
+    assert!(app.editor.slug.is_none());
+    app.update(Action::Undo);
+    assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
+}
+
+#[test]
+fn undo_of_a_request_delete_leaves_another_open_request_alone() {
+    let (mut app, _dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/beta".into()));
+    app.update(Action::DeleteRequest("main/alpha".into()));
+    assert_eq!(app.editor.slug.as_deref(), Some("main/beta"));
+    app.update(Action::Undo);
+    assert_eq!(
+        app.editor.slug.as_deref(),
+        Some("main/beta"),
+        "the request that was open stays open"
+    );
+}
+
+#[test]
+fn undo_of_a_space_delete_restores_the_space_its_request_and_its_memory() {
+    let (mut app, dir) = spaced_app();
+    postui_core::storage::save_request(dir.path(), "main/api/deep", &req("https://x/d")).unwrap();
+    app.update(Action::RefreshSidebar);
+    app.project.expanded.insert("main/api".into());
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.update(Action::PersistLocalState);
+    let auth_memory_before = app.project.space_open_for("auth");
+
+    app.update(Action::ForceDeleteSpace("main".into()));
+    assert_eq!(app.project.active_space, "auth");
+    assert_eq!(app.editor.slug.as_deref(), Some("auth/login"));
+    assert!(!app.project.expanded.contains("main/api"));
+
+    app.update(Action::Undo);
+    assert_eq!(app.project.spaces, ["main", "auth"]);
+    assert_eq!(
+        app.project.active_space, "main",
+        "undo returns to the deleted space"
+    );
+    assert_eq!(
+        app.editor.slug.as_deref(),
+        Some("main/alpha"),
+        "…with its request open again"
+    );
+    assert!(
+        app.project.expanded.contains("main/api"),
+        "…and its expanded folders back"
+    );
+    assert_eq!(
+        app.project.space_open_for("auth"),
+        auth_memory_before,
+        "the other space's memory is exactly what it was before the delete"
+    );
+    let state = postui_core::project::load_local_state(dir.path()).unwrap();
+    assert_eq!(state.space.as_deref(), Some("main"));
+    assert_eq!(state.open_request.as_deref(), Some("main/alpha"));
+
+    app.update(Action::Redo);
+    assert_eq!(app.project.spaces, ["auth"]);
+    assert_eq!(app.project.active_space, "auth");
+    assert_eq!(app.editor.slug.as_deref(), Some("auth/login"));
+    assert!(!dir.path().join("requests/main").exists());
+
+    app.update(Action::Undo);
+    assert_eq!(app.project.active_space, "main");
+    assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
+}

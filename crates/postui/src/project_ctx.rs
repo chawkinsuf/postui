@@ -822,6 +822,26 @@ impl ProjectContext {
         self.refresh_resolved();
     }
 
+    /// Re-reads every piece of `.local/state.toml` the app keeps in memory
+    /// — remembered requests, expanded folders, selections — after an undo
+    /// or redo rewrote the file. The active space and open request are
+    /// returned for the caller to act on (entering a space and opening a
+    /// request are the app's moves, not this context's), along with the
+    /// rest of what was read. `None` when the root can't persist or the
+    /// file can't be read.
+    pub fn reload_local_state_from_disk(&mut self) -> Option<postui_core::project::LocalState> {
+        if !self.can_persist() {
+            return None;
+        }
+        let state = postui_core::project::load_local_state(&self.root).ok()?;
+        self.space_open = state.space_open.clone();
+        self.expanded = state.expanded.iter().cloned().collect();
+        self.selections = state.selections.clone();
+        self.shared_selections = state.shared_selections.clone();
+        self.refresh_resolved();
+        Some(state)
+    }
+
     /// Forces the next [`Self::reload_if_changed`] to do a full reload,
     /// whatever the mtime stamps say. The file-level undo/redo arms need
     /// it: they rewrite files and then re-stamp through `set_env`, so the

@@ -2607,29 +2607,35 @@ impl App {
             }
             Action::DeleteRequest(slug) => {
                 let display = self.request_display(&slug);
+                // The step carries state.toml on both sides: the "before"
+                // side still names this request as open (when it was), so
+                // undo reopens it rather than leaving an empty editor.
+                let state_toml = self.local_state_path();
+                self.apply(Action::PersistLocalState);
+                let before = self.read_file_states(std::slice::from_ref(&state_toml));
+                let context_slug = self.editor.slug.clone();
                 match postui_core::storage::delete_request(&self.project.root, &slug) {
                     Ok(trashed) => {
                         self.toasts.push(
                             format!("Deleted {display}{}", self.undo_hint()),
                             ToastKind::Info,
                         );
-                        // Recorded before refresh_sidebar/editor-clearing
-                        // reorder state: context.slug must still name the
-                        // deleted request while self.editor.slug matches it.
                         let orders =
                             self.cascade_slug("delete", &slug, postui_core::order::order_remove);
-                        self.record_trashed_step_with_orders(
-                            vec![trashed],
-                            Vec::new(),
-                            &[],
-                            None,
-                            orders,
-                        );
                         self.refresh_sidebar();
                         if self.editor.slug.as_deref() == Some(slug.as_str()) {
                             self.editor = Editor::default();
                             self.shadow = None;
                         }
+                        self.apply(Action::PersistLocalState);
+                        self.record_trashed_step_with_orders(
+                            vec![trashed],
+                            before,
+                            &[state_toml],
+                            None,
+                            orders,
+                            context_slug,
+                        );
                     }
                     Err(e) => {
                         self.toasts
@@ -5030,15 +5036,25 @@ impl App {
                         .push("cannot delete the last space", ToastKind::Warning);
                     return true;
                 }
+                // Snapshot local state before anything moves: the step's
+                // "before" side is the space still active with its request
+                // open, so undo lands the user exactly where they were.
+                let slug_before = self.editor.slug.clone();
+                self.apply(Action::PersistLocalState);
+                let companions = [
+                    self.project.root.join("project.toml"),
+                    self.local_state_path(),
+                ];
+                let before = self.read_file_states(&companions);
                 // Leave the space before it goes: the switch restores the
                 // other space's own open request and clears this one's.
+                let mut switched = false;
                 if self.project.active_space == name
                     && let Some(other) = self.project.spaces.iter().find(|s| **s != name).cloned()
                 {
                     self.apply(Action::ForceSwitchSpace(other));
+                    switched = true;
                 }
-                let project_toml = self.project.root.join("project.toml");
-                let before = self.read_file_states(std::slice::from_ref(&project_toml));
                 let display = self.project.space_name(&name);
                 match postui_core::project::delete_space(&self.project.root, &name) {
                     Ok(trashed) => {
@@ -5046,20 +5062,31 @@ impl App {
                             format!("Deleted space {display}{}", self.undo_hint()),
                             ToastKind::Info,
                         );
-                        self.record_trashed_step(
-                            trashed.into_iter().collect(),
-                            before,
-                            &[project_toml],
-                            None,
-                        );
                         self.project.forget_space(&name);
                         self.reload_after_file_change();
+                        // Persist first, so the step's "after" side is the
+                        // state file without this space.
                         self.apply(Action::PersistLocalState);
+                        self.record_trashed_step_with_orders(
+                            trashed.into_iter().collect(),
+                            before,
+                            &companions,
+                            None,
+                            Vec::new(),
+                            slug_before,
+                        );
                     }
                     Err(e) => {
                         self.toasts
                             .push(format!("cannot delete space: {e}"), ToastKind::Error);
                         self.last_action_failed = true;
+                        // Nothing was deleted: go back to where the user was.
+                        if switched {
+                            match slug_before {
+                                Some(slug) => self.apply(Action::ForceOpenRequest(slug)),
+                                None => self.apply(Action::ForceSwitchSpace(name.clone())),
+                            };
+                        }
                     }
                 }
                 true
@@ -7018,17 +7045,21 @@ impl App {
         after_paths: &[PathBuf],
         active_env: Option<(Option<String>, Option<String>)>,
     ) {
+        let slug = self.editor.slug.clone();
         self.record_trashed_step_with_orders(
             items,
             files_before,
             after_paths,
             active_env,
             Vec::new(),
+            slug,
         );
     }
 
-    /// [`Self::record_trashed_step`] for a request delete, which also
-    /// cascaded the order list: `orders` is what the cascade did.
+    /// [`Self::record_trashed_step`] with the order-list cascade the op
+    /// ran (`orders`) and an explicit `context_slug` — the request the
+    /// step belongs to, captured by the caller *before* the op closed or
+    /// switched the editor.
     fn record_trashed_step_with_orders(
         &mut self,
         items: Vec<postui_core::trash::Trashed>,
@@ -7036,6 +7067,7 @@ impl App {
         after_paths: &[PathBuf],
         active_env: Option<(Option<String>, Option<String>)>,
         orders: Vec<postui_core::order::OrderEdit>,
+        context_slug: Option<String>,
     ) {
         let files_after = self.read_file_states(after_paths);
         self.history.record_no_coalesce(crate::undo::Step {
@@ -7047,11 +7079,19 @@ impl App {
                 orders,
             },
             context: crate::undo::Context {
-                slug: self.editor.slug.clone(),
+                slug: context_slug,
                 cursor_before: crate::undo::CursorPos::None,
                 cursor_after: crate::undo::CursorPos::None,
             },
         });
+    }
+
+    /// `.local/state.toml`: the companion file every delete step carries,
+    /// so undo puts back what the delete's cascade took out of local state
+    /// (the active space, the open request, remembered requests, expanded
+    /// folders) and not just the files.
+    fn local_state_path(&self) -> PathBuf {
+        self.project.root.join(".local").join("state.toml")
     }
 
     /// Shared tail of every arm that changes files under the app — the
@@ -9672,13 +9712,39 @@ impl App {
                 }
                 self.replay_order_edits(orders, redo);
                 // See the `FileStates` arm: `SwitchEnv` persists, so the
-                // restored table has to be in memory before it runs.
-                self.project.reload_selections_from_disk();
+                // restored table has to be in memory before it runs. A
+                // step that carries state.toml restores all of local
+                // state from it — the active space, open request,
+                // remembered requests and expanded folders the delete's
+                // cascade changed — not just the selections.
+                let state_toml = self.local_state_path();
+                let written = if redo { files_after } else { files_before };
+                let restored_state = if written.iter().any(|(p, _)| *p == state_toml) {
+                    self.project.reload_local_state_from_disk()
+                } else {
+                    self.project.reload_selections_from_disk();
+                    None
+                };
                 if let Some((before_env, after_env)) = active_env {
                     let env = if redo { after_env } else { before_env };
                     self.apply(Action::SwitchEnv(env.clone()));
                 }
                 self.reload_after_file_change();
+                if let Some(state) = restored_state {
+                    if let Some(space) = state.space.filter(|s| *s != self.project.active_space)
+                        && self.project.spaces.contains(&space)
+                    {
+                        // The editor describes the step's own target, not
+                        // the space being left.
+                        self.enter_space(&space, SpaceExit::Keep);
+                    }
+                    if let Some(slug) = state.open_request
+                        && self.editor.slug.as_deref() != Some(slug.as_str())
+                        && postui_core::storage::request_exists(&self.project.root, &slug)
+                    {
+                        self.apply(Action::ForceOpenRequest(slug));
+                    }
+                }
                 self.apply(Action::PersistLocalState);
                 let what = items
                     .first()
