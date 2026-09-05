@@ -4081,6 +4081,85 @@ fn a_dropped_row_drag_is_its_own_undo_step() {
 }
 
 #[test]
+fn quick_keyboard_space_moves_roll_up_into_one_undo_step() {
+    let (mut app, dir) = spaced_app();
+    postui_core::project::create_space(dir.path(), "billing").unwrap();
+    app.project.reload_meta();
+    app.project.reload_spaces();
+    assert_eq!(app.project.spaces, ["main", "auth", "billing"]);
+    let steps = app.history.undo_len();
+    for _ in 0..2 {
+        app.update(Action::MoveSpace {
+            name: "billing".into(),
+            delta: -1,
+        });
+    }
+    assert_eq!(listed_spaces(&dir), ["billing", "main", "auth"]);
+    assert_eq!(app.history.undo_len(), steps + 1, "a burst is one step");
+    app.update(Action::MoveSpace {
+        name: "billing".into(),
+        delta: -1,
+    });
+    assert_eq!(
+        app.history.undo_len(),
+        steps + 1,
+        "a no-op move records nothing"
+    );
+
+    app.update(Action::Undo);
+    assert_eq!(listed_spaces(&dir), ["main", "auth", "billing"]);
+    assert_eq!(app.project.spaces, ["main", "auth", "billing"]);
+    app.update(Action::Redo);
+    assert_eq!(listed_spaces(&dir), ["billing", "main", "auth"]);
+    assert_eq!(app.project.spaces, ["billing", "main", "auth"]);
+    assert!(
+        rendered_text(&mut app).contains("Redid reorder of space billing"),
+        "{}",
+        rendered_text(&mut app)
+    );
+
+    // Down then up: the burst ends where it started and records nothing.
+    let steps = app.history.undo_len();
+    app.update(Action::MoveSpace {
+        name: "main".into(),
+        delta: 1,
+    });
+    app.update(Action::MoveSpace {
+        name: "main".into(),
+        delta: -1,
+    });
+    assert_eq!(app.history.undo_len(), steps);
+}
+
+#[test]
+fn a_dropped_space_drag_is_its_own_undo_step_and_undo_follows_the_cursor() {
+    let (mut app, dir) = manage_spaces_app();
+    let r0 = manage_row(&mut app, 0);
+    let r2 = manage_row(&mut app, 2);
+    let steps = app.history.undo_len();
+    app.handle_mouse(left_down(r0.x + 2, r0.y));
+    app.handle_mouse(moved(r0.x + 2, r2.y));
+    app.handle_mouse(left_up(r0.x + 2, r2.y));
+    assert_eq!(listed_spaces(&dir), ["auth", "billing", "main"]);
+    assert_eq!(app.history.undo_len(), steps + 1);
+
+    app.update(Action::Undo);
+    assert_eq!(listed_spaces(&dir), ["main", "auth", "billing"]);
+    assert_eq!(app.project.spaces, ["main", "auth", "billing"]);
+    assert_eq!(
+        app.manage
+            .list
+            .selected(ManageTab::Spaces, &app.project)
+            .map(str::to_string)
+            .as_deref(),
+        Some("main"),
+        "the cursor follows the dragged space back"
+    );
+    app.update(Action::Redo);
+    assert_eq!(listed_spaces(&dir), ["auth", "billing", "main"]);
+}
+
+#[test]
 fn undo_of_a_delete_keeps_a_reorder_made_since() {
     // A reorder written between the delete and its undo (here straight
     // to disk, as one undone out of order would be) is not undone with

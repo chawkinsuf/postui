@@ -4930,7 +4930,8 @@ impl App {
             }
             Action::MoveSpace { name, delta } => {
                 match postui_core::project::move_space(&self.project.root, &name, delta) {
-                    Ok(()) => {
+                    Ok(change) => {
+                        self.record_space_reorder_step(change, &name, true);
                         self.apply(Action::ReloadProjectFiles);
                         // `ReloadProjectFiles` is mtime-gated, so a second
                         // reorder in the same clock tick would re-list from
@@ -7035,6 +7036,39 @@ impl App {
         }
     }
 
+    /// The space-list twin of [`Self::record_reorder_step`]: nothing when
+    /// the reorder wrote nothing; a keyboard move (`burst`) rolls up with
+    /// a keyboard move of the same space inside the coalesce window; a
+    /// drag is always its own step.
+    fn record_space_reorder_step(
+        &mut self,
+        change: Option<postui_core::project::SpaceReorder>,
+        name: &str,
+        burst: bool,
+    ) {
+        let Some(change) = change else {
+            return;
+        };
+        let step = crate::undo::Step {
+            kind: crate::undo::StepKind::SpaceReorder {
+                before: change.before,
+                after: change.after,
+                name: name.to_string(),
+                burst,
+            },
+            context: crate::undo::Context {
+                slug: self.editor.slug.clone(),
+                cursor_before: crate::undo::CursorPos::None,
+                cursor_after: crate::undo::CursorPos::None,
+            },
+        };
+        if burst {
+            self.history.record(step, std::time::Instant::now());
+        } else {
+            self.history.record_no_coalesce(step);
+        }
+    }
+
     /// Puts a step's order-list cascade back (undo) or forward again
     /// (redo). The files are already restored by the time this runs; a
     /// failure here leaves only a mis-slotted entry, so it warns.
@@ -7292,7 +7326,8 @@ impl App {
         };
         if commit && drag.working != drag.original {
             match postui_core::project::set_space_order(&self.project.root, &drag.working) {
-                Ok(()) => {
+                Ok(change) => {
+                    self.record_space_reorder_step(change, &drag.name, false);
                     // `ReloadProjectFiles` is mtime-gated (see
                     // `Action::MoveSpace`), so read the file just written
                     // rather than waiting for the stamp to move. Skipping
@@ -9396,6 +9431,42 @@ impl App {
                 }
                 let verb = if redo { "Redid" } else { "Undid" };
                 let msg = format!("{verb} reorder of {}", self.request_display(slug));
+                self.toasts.push(msg, ToastKind::Info);
+                if redo {
+                    self.history.push_undo_no_coalesce(step.clone());
+                } else {
+                    self.history.push_redo(step.clone());
+                }
+                true
+            }
+            StepKind::SpaceReorder {
+                before,
+                after,
+                name,
+                ..
+            } => {
+                let target = if redo { after } else { before };
+                if let Err(e) = postui_core::project::set_space_order(&self.project.root, target) {
+                    self.toasts.push(
+                        format!(
+                            "could not {} the space reorder: {e}",
+                            if redo { "redo" } else { "undo" }
+                        ),
+                        ToastKind::Error,
+                    );
+                    return false;
+                }
+                // As in `Action::MoveSpace`: read the list just written
+                // rather than waiting for the mtime stamp.
+                self.project.reload_meta();
+                self.project.reload_spaces();
+                if self.screen == Screen::Manage {
+                    self.manage
+                        .list
+                        .select_name(self.manage.tab, &self.project, name);
+                }
+                let verb = if redo { "Redid" } else { "Undid" };
+                let msg = format!("{verb} reorder of space {}", self.project.space_name(name));
                 self.toasts.push(msg, ToastKind::Info);
                 if redo {
                     self.history.push_undo_no_coalesce(step.clone());

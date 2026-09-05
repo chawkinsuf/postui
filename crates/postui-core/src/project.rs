@@ -557,7 +557,30 @@ pub fn delete_space(root: &Path, name: &str) -> Result<Option<Trashed>, ProjectE
 /// Moves `name` by `delta` positions (clamped to the ends). Unlisted
 /// directories are materialised into the written list so the order on
 /// disk is exactly the order displayed.
-pub fn move_space(root: &Path, name: &str, delta: i32) -> Result<(), ProjectError> {
+/// What a space reorder did: the displayed space order before and after.
+/// Undo writes `before` back through [`set_space_order`], redo `after`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpaceReorder {
+    pub before: Vec<String>,
+    pub after: Vec<String>,
+}
+
+/// The displayed (valid-name) entries of a written list, in order.
+fn displayed_spaces(spaces: &[String]) -> Vec<String> {
+    spaces
+        .iter()
+        .filter(|n| valid_space_name(n))
+        .cloned()
+        .collect()
+}
+
+/// Moves `name` by `delta` among the displayed spaces (a swap of two
+/// slots). `None` when the move changes nothing.
+pub fn move_space(
+    root: &Path,
+    name: &str,
+    delta: i32,
+) -> Result<Option<SpaceReorder>, ProjectError> {
     let mut spaces = write_list(root);
     // Reorder among the *displayed* spaces only: an invalid listed entry
     // isn't a row the user can see, so it must not absorb a step — and it
@@ -569,10 +592,16 @@ pub fn move_space(root: &Path, name: &str, delta: i32) -> Result<(), ProjectErro
         return Err(ProjectError::NotFound(name.to_string()));
     };
     let target = (pos as i32 + delta).clamp(0, slots.len() as i32 - 1) as usize;
-    if target != pos {
-        spaces.swap(slots[pos], slots[target]);
+    if target == pos {
+        return Ok(None);
     }
-    write_spaces(root, &spaces)
+    let before = displayed_spaces(&spaces);
+    spaces.swap(slots[pos], slots[target]);
+    write_spaces(root, &spaces)?;
+    Ok(Some(SpaceReorder {
+        before,
+        after: displayed_spaces(&spaces),
+    }))
 }
 
 /// Writes `displayed` — the whole displayed space order, as a drag left
@@ -587,8 +616,12 @@ pub fn move_space(root: &Path, name: &str, delta: i32) -> Result<(), ProjectErro
 /// order must name exactly those slots, once each — anything else would
 /// drop or duplicate a space on disk, so it is refused with
 /// [`ProjectError::NotFound`] for the offending name. Nothing is written
-/// when the result equals the list already on disk.
-pub fn set_space_order(root: &Path, displayed: &[String]) -> Result<(), ProjectError> {
+/// (and `None` is returned) when the result equals the list already on
+/// disk.
+pub fn set_space_order(
+    root: &Path,
+    displayed: &[String],
+) -> Result<Option<SpaceReorder>, ProjectError> {
     let mut spaces = write_list(root);
     let slots: Vec<usize> = (0..spaces.len())
         .filter(|i| valid_space_name(&spaces[*i]))
@@ -608,9 +641,13 @@ pub fn set_space_order(root: &Path, displayed: &[String]) -> Result<(), ProjectE
         spaces[*slot] = name.clone();
     }
     if valid == displayed {
-        return Ok(());
+        return Ok(None);
     }
-    write_spaces(root, &spaces)
+    write_spaces(root, &spaces)?;
+    Ok(Some(SpaceReorder {
+        before: valid,
+        after: displayed.to_vec(),
+    }))
 }
 
 /// Creates an empty `root/environments/<slug>.toml` for a free-form

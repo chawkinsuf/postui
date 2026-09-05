@@ -63,6 +63,16 @@ pub enum StepKind {
         slug: String,
         burst: bool,
     },
+    /// A space reorder (a dropped Manage-screen row drag, alt+↑/↓ on the
+    /// Spaces tab, the header menu's Move up/down): `project.toml`'s
+    /// `spaces` key went from `before` to `after`. Same `burst` rule as
+    /// `Reorder`.
+    SpaceReorder {
+        before: Vec<String>,
+        after: Vec<String>,
+        name: String,
+        burst: bool,
+    },
 }
 
 /// Where the cursor sat before/after a step, so undo/redo can restore it.
@@ -177,6 +187,7 @@ impl History {
                     postui_core::order::OrderEdit::Replaced { before, after, .. } if before == after
                 )
             }),
+            StepKind::SpaceReorder { before, after, .. } => before == after,
             _ => false,
         }
     }
@@ -184,6 +195,27 @@ impl History {
     /// Attempts to merge `new` into `top` in place. Returns whether it did.
     fn try_merge(top: Option<&mut Step>, new: &Step) -> bool {
         let Some(top) = top else { return false };
+        if let (
+            StepKind::SpaceReorder {
+                after,
+                name: top_name,
+                burst: true,
+                ..
+            },
+            StepKind::SpaceReorder {
+                after: new_after,
+                name: new_name,
+                burst: true,
+                ..
+            },
+        ) = (&mut top.kind, &new.kind)
+        {
+            if top_name != new_name {
+                return false;
+            }
+            *after = new_after.clone();
+            return true;
+        }
         if let (
             StepKind::Reorder {
                 edits: top_edits,

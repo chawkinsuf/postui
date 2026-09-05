@@ -60,7 +60,7 @@ brainstorm"; this is that brainstorm.
   the list, reloads `meta`, refreshes the sidebar and puts the selection
   back on the moved request, with an "Undid/Redid reorder of X" toast. A
   move that writes nothing records nothing. The Manage screen's space
-  reorder is unchanged (still not an undo step).
+  reorder follows the same rules (see §Space drag below).
 
 ## Architecture
 
@@ -352,9 +352,15 @@ mtime-gated `ReloadProjectFiles`, for the same reason `Action::MoveSpace`
 does, then puts the cursor back on the dragged space.
 
 Like `Action::MoveSpace` and the sidebar's request drag, a space
-reorder is **not an undo step**: it rewrites `project.toml`'s `spaces`
-key and nothing else, and the alt+↑↓ keys and the row menu's
-Move up/Move down remain the keyboard route to the same change.
+reorder **is an undo step** *(revised 2026-09-04)*: `move_space` and
+`set_space_order` report the displayed order before and after as a
+`SpaceReorder`, recorded as `StepKind::SpaceReorder`; undo writes
+`before` back through `set_space_order`, redo `after`, then reloads
+`meta` and the space list and puts the Manage cursor on the space that
+moved. Keyboard moves of the same space roll up inside the coalesce
+window and a burst that ends where it started records nothing; a drag
+is always its own step. The alt+↑↓ keys and the row menu's Move up/Move
+down remain the keyboard route to the same change.
 
 The terminal quirks recorded for the sidebar drag apply here
 unchanged: a right click is the in-band cancel because Ghostty (Linux)

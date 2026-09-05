@@ -284,9 +284,11 @@ Environments and Spaces tabs share one **ListEditState** face:
   `m` move all and `alt+up` / `alt+down` move. Footer chips advertise
   them. Tabs switch by click or `alt+left` / `alt+right`.
 - Undo coverage on these tabs: deletes are `Trashed` steps; an
-  environment rename is a `FileStates` step; **a space rename, a reorder,
-  and Move all requests are not undo steps** (a directory rename or a bulk
-  move has no bounded content capture; rename or move back by hand).
+  environment rename is a `FileStates` step; **a space rename is not an
+  undo step** (a directory rename has no bounded content capture; rename
+  back by hand). *(Revised 2026-09-04: a space reorder is a
+  `SpaceReorder` step and Move all requests is one `FileStates` step —
+  see the request-reordering spec.)*
 
 Delete semantics:
 
