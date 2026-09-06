@@ -16496,12 +16496,25 @@ mod undo_tests {
         assert_eq!(app.proj().active_env(), Some("staging"));
         let env_path = app.proj().root().join("environments/staging.toml");
         assert!(env_path.exists());
+        app.toasts = Default::default();
         app.update(Action::Undo);
         assert!(!env_path.exists());
         assert_eq!(app.proj().active_env(), None);
+        assert!(
+            app.toasts.messages().contains(&"env: no env"),
+            "undoing the create announces the environment it went back to, \
+             in `SwitchEnv`'s words: {:?}",
+            app.toasts.messages()
+        );
+        app.toasts = Default::default();
         app.update(Action::Redo);
         assert!(env_path.exists());
         assert_eq!(app.proj().active_env(), Some("staging"));
+        assert!(
+            app.toasts.messages().contains(&"env: staging"),
+            "{:?}",
+            app.toasts.messages()
+        );
     }
 
     #[test]

@@ -7239,15 +7239,17 @@ impl App {
     /// would make undoing a *create* reopen whatever was open when the
     /// create ran, which is not what the `FileStates` tail did and would
     /// short-circuit an undo walking back to an earlier request.
-    /// `space_before` is the active space as the app saw it just before
-    /// the replay: the restore of `.local/state.toml` can move the active
-    /// space in core (undoing a space delete goes back into the space
-    /// that was deleted), and the view has to follow it and say so.
+    /// `space_before` and `env_before` are the active space and
+    /// environment as the app saw them just before the replay: core moves
+    /// both by itself (the restore of `.local/state.toml`, and the
+    /// entry's own `active_env` transition), so the view has to follow
+    /// them and say so in the same words a switch does.
     fn after_undone(
         &mut self,
         u: &postui_core::project::Undone,
         reopen: bool,
         space_before: &str,
+        env_before: Option<&str>,
     ) {
         for w in &u.warnings {
             self.toasts.push(w.clone(), ToastKind::Warning);
@@ -7273,6 +7275,16 @@ impl App {
         // from under them.
         if self.screen == Screen::Manage {
             self.sync_varmanager();
+        }
+        // The replay switched the active environment (creating one
+        // activates it; deleting the active one falls to the next): core
+        // did the switch, so all that is left is to announce it in
+        // `Action::SwitchEnv`'s own words. The Manager was re-synced
+        // just above, as that arm does.
+        if self.active_env() != env_before {
+            let label = self.env_label_display();
+            self.toasts
+                .push(format!("env: {label}"), ToastKind::Success);
         }
         // The replay moved the active space (undoing a space delete goes
         // back into the deleted space; redoing it falls out again): the
@@ -7786,7 +7798,9 @@ impl App {
     /// armed press is disarmed either way — Escape ends the drag with the
     /// button still held, and a press left armed would let the next
     /// motion event promote straight back into the drag just cancelled.
-    /// Like `Action::MoveSpace`, this is not an undo step.
+    /// Like `Action::MoveSpace`, a committed drag records a
+    /// `SpaceReorder` marker for the entry core journaled; a drag never
+    /// merges with the keyboard bursts beside it.
     pub fn finish_manage_drag(&mut self, commit: bool) -> bool {
         self.manage_press = None;
         let Some(drag) = self.manage.list.drag.take() else {
@@ -9968,8 +9982,11 @@ impl App {
                 // The replay restores `.local/state.toml`, so the active
                 // space can move under the app (undoing a space delete
                 // goes back into the deleted space). `after_undone` needs
-                // to know where it started to announce the change.
+                // to know where it started to announce the change. Same
+                // for the active environment, which the entry's own
+                // `active_env` transition moves.
                 let space_before = self.active_space();
+                let env_before = self.active_env().map(str::to_string);
                 let Some(p) = self.project.as_mut() else {
                     return false;
                 };
@@ -9996,6 +10013,7 @@ impl App {
                             &u,
                             matches!(noun, ProjectNoun::Trash | ProjectNoun::TrashNamed),
                             &space_before,
+                            env_before.as_deref(),
                         );
                         // `marked_entry` tracks the journal's top as the
                         // app last saw it: a replay moved it, so re-read.
