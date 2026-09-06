@@ -517,6 +517,17 @@ impl Project {
     /// off (a stale saved space, a selection that no longer resolves)
     /// degrades into a warning.
     pub fn open(root: PathBuf) -> Result<(Project, Vec<Warning>), OpenError> {
+        if root.as_os_str().is_empty() {
+            // An empty root is "no project", never the process's cwd:
+            // `"".join("project.toml")` is `./project.toml`, which the
+            // loaders would happily read (and write back to).
+            return Err(OpenError {
+                root,
+                file: PROJECT_TOML.to_string(),
+                error: "no project root given (an empty root would read the current directory)"
+                    .to_string(),
+            });
+        }
         let mut disk = Disk::new(root);
         let mut warnings = Vec::new();
 
@@ -835,6 +846,12 @@ pub(crate) mod tests {
         assert_eq!(p.env_name("dev"), "Dev");
         assert_eq!(p.resolved().values.get("host").map(String::as_str), Some("dev.local"));
         assert_eq!(p.local().active_space, "main");
+    }
+
+    #[test]
+    fn an_empty_root_is_refused_not_the_cwd() {
+        let err = Project::open(PathBuf::new()).unwrap_err();
+        assert_eq!(err.file, "project.toml");
     }
 
     #[test]
