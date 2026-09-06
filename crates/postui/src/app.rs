@@ -3222,13 +3222,7 @@ impl App {
                         );
                         continue;
                     }
-                    let label = match postui_core::project::load_meta(path) {
-                        Ok(meta) => postui_core::project::display_name(path, &meta),
-                        Err(_) => postui_core::project::display_name(
-                            path,
-                            &postui_core::project::ProjectMeta::default(),
-                        ),
-                    };
+                    let label = Project::peek_display_name(path);
                     items.push(ChooserItem {
                         label,
                         detail: Some(path.display().to_string()),
@@ -3463,12 +3457,22 @@ impl App {
                 true
             }
             Action::CreateProjectAt(path) => {
-                if let Err(e) = postui_core::project::init_project(&path, None) {
-                    self.toasts.push(
-                        format!("could not create project at {}: {e}", path.display()),
-                        ToastKind::Error,
-                    );
-                    return true;
+                // The handle is only the writer: `ForceSwitchProject`
+                // below opens the project this just wrote, so drop it
+                // rather than installing it as `self.project`.
+                match Project::init(&path, None) {
+                    Ok((_written, warnings)) => {
+                        for w in warnings {
+                            self.toasts.push(w, ToastKind::Warning);
+                        }
+                    }
+                    Err(e) => {
+                        self.toasts.push(
+                            format!("could not create project at {}: {e}", path.display()),
+                            ToastKind::Error,
+                        );
+                        return true;
+                    }
                 }
                 self.apply(Action::ForceSwitchProject(path))
             }
@@ -3489,12 +3493,20 @@ impl App {
                     return true;
                 }
                 let path = crate::config::expand_tilde(&path);
-                if let Err(e) = postui_core::project::init_project(&path, Some(&name)) {
-                    self.toasts.push(
-                        format!("could not create project at {}: {e}", path.display()),
-                        ToastKind::Error,
-                    );
-                    return true;
+                // As in `CreateProjectAt`: the switch below re-opens it.
+                match Project::init(&path, Some(&name)) {
+                    Ok((_written, warnings)) => {
+                        for w in warnings {
+                            self.toasts.push(w, ToastKind::Warning);
+                        }
+                    }
+                    Err(e) => {
+                        self.toasts.push(
+                            format!("could not create project at {}: {e}", path.display()),
+                            ToastKind::Error,
+                        );
+                        return true;
+                    }
                 }
                 self.registry.add_known(path.clone());
                 self.save_registry();

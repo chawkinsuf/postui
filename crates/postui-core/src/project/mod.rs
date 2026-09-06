@@ -197,6 +197,25 @@ impl Project {
         root.join(PROJECT_TOML).is_file()
     }
 
+    /// The name to show for a project that is *not* open — the Projects
+    /// chooser's row labels. Reads `<root>/project.toml` through a
+    /// throwaway [`Disk`] (`peek`: no stamp recorded, nothing written)
+    /// and parses it with the same deserialiser [`Self::open`] uses. A
+    /// missing, unreadable or unparsable file falls back to the default
+    /// meta, so a broken project still lists under its directory name
+    /// rather than dropping out of the chooser — and, unlike `open`, this
+    /// never refuses: it only ever labels a row.
+    pub fn peek_display_name(root: &Path) -> String {
+        let disk = Disk::new(root.to_path_buf());
+        let meta = RelPath::new(PROJECT_TOML)
+            .ok()
+            .and_then(|rel| disk.peek(&rel).ok())
+            .flatten()
+            .and_then(|text| toml::from_str::<ProjectMeta>(&text).ok())
+            .unwrap_or_default();
+        legacy::display_name(root, &meta)
+    }
+
     pub fn root(&self) -> &Path {
         self.disk.root()
     }
@@ -1750,5 +1769,35 @@ pub(crate) mod tests {
         assert_eq!(p.journal_len(), 0);
         assert!(p.held_request("main/ping").is_some(), "the rename was rolled back");
         assert!(p.held_request("main/renamed").is_none());
+    }
+
+    #[test]
+    fn peek_display_name_reads_an_unopened_project_and_never_writes() {
+        // A named project: the declared name wins.
+        let named = tempfile::tempdir().unwrap();
+        std::fs::write(named.path().join("project.toml"), "name = \"Alpha\"\n").unwrap();
+        assert_eq!(Project::peek_display_name(named.path()), "Alpha");
+
+        // A bare directory (no project.toml at all): today's fallback,
+        // `display_name` of the default meta — the directory's own name.
+        let bare = tempfile::tempdir().unwrap();
+        let bare_root = bare.path().join("my-project");
+        std::fs::create_dir(&bare_root).unwrap();
+        assert_eq!(Project::peek_display_name(&bare_root), "my-project");
+        assert!(!bare_root.join("project.toml").exists(), "peek must not write");
+
+        // A project.toml that does not parse: same fallback, and the
+        // broken file is left exactly as it was.
+        let broken = tempfile::tempdir().unwrap();
+        let broken_root = broken.path().join("busted");
+        std::fs::create_dir(&broken_root).unwrap();
+        let toml = broken_root.join("project.toml");
+        std::fs::write(&toml, "name = [unclosed\n").unwrap();
+        assert_eq!(Project::peek_display_name(&broken_root), "busted");
+        assert_eq!(
+            std::fs::read_to_string(&toml).unwrap(),
+            "name = [unclosed\n",
+            "peek must leave the unparsable file untouched"
+        );
     }
 }
