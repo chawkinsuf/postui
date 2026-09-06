@@ -93,6 +93,12 @@ pub enum Stamp {
     Present { mtime: Option<SystemTime>, len: u64 },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirEntry {
+    pub name: String,
+    pub is_dir: bool,
+}
+
 pub struct Disk {
     root: PathBuf,
     stamps: HashMap<RelPath, Stamp>,
@@ -243,6 +249,107 @@ impl Disk {
         let s = self.stamp(rel);
         self.stamps.insert(rel.clone(), s);
     }
+
+    /// Renames a file or a whole directory. `NotFound` when `from` is
+    /// missing, `AlreadyExists` when `to` is occupied; `to`'s parent is
+    /// created. Records both stamps.
+    pub fn rename(&mut self, from: &RelPath, to: &RelPath) -> Result<(), DiskError> {
+        let from_abs = self.abs(from);
+        let to_abs = self.abs(to);
+        if !from_abs.exists() {
+            return Err(DiskError::NotFound(from.to_string()));
+        }
+        if to_abs.exists() {
+            return Err(DiskError::AlreadyExists(to.to_string()));
+        }
+        if let Some(parent) = to_abs.parent() {
+            std::fs::create_dir_all(parent).map_err(DiskError::io("create the directory of", to))?;
+        }
+        std::fs::rename(&from_abs, &to_abs).map_err(DiskError::io("move", from))?;
+        self.record(from);
+        self.record(to);
+        Ok(())
+    }
+
+    /// The entries of a directory, sorted by name. A missing directory
+    /// lists as empty. Records the directory's stamp.
+    pub fn list(&mut self, dir: &RelPath) -> Result<Vec<DirEntry>, DiskError> {
+        let mut out = Vec::new();
+        match std::fs::read_dir(self.abs(dir)) {
+            Ok(entries) => {
+                for e in entries {
+                    let e = e.map_err(DiskError::io("list", dir))?;
+                    let is_dir = e.path().is_dir();
+                    out.push(DirEntry {
+                        name: e.file_name().to_string_lossy().to_string(),
+                        is_dir,
+                    });
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(DiskError::io("list", dir)(e)),
+        }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        self.record(dir);
+        Ok(out)
+    }
+
+    /// Every file under `dir` (recursively) whose extension is `ext`,
+    /// sorted by path. The first directory that fails to list is reported
+    /// as the warning and skipped; everything else is still returned.
+    pub fn walk_files(&mut self, dir: &RelPath, ext: &str) -> (Vec<RelPath>, Option<String>) {
+        let mut files = Vec::new();
+        let mut warning = None;
+        let mut stack = vec![dir.clone()];
+        while let Some(d) = stack.pop() {
+            let entries = match self.list(&d) {
+                Ok(e) => e,
+                Err(e) => {
+                    warning.get_or_insert(e.to_string());
+                    continue;
+                }
+            };
+            for e in entries {
+                let Ok(p) = d.join(&e.name) else { continue };
+                if e.is_dir {
+                    stack.push(p);
+                } else if e.name.rsplit_once('.').is_some_and(|(_, x)| x == ext) {
+                    files.push(p);
+                }
+            }
+        }
+        files.sort();
+        (files, warning)
+    }
+
+    pub fn remove_dir_all(&mut self, rel: &RelPath) -> Result<(), DiskError> {
+        match std::fs::remove_dir_all(self.abs(rel)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(DiskError::io("remove", rel)(e)),
+        }
+        self.record(rel);
+        Ok(())
+    }
+
+    /// Whether `rel` differs from the stamp recorded at the last read or
+    /// write. `false` for a path never recorded.
+    pub fn changed(&self, rel: &RelPath) -> bool {
+        match self.stamps.get(rel) {
+            None => false,
+            Some(recorded) => *recorded != self.stamp(rel),
+        }
+    }
+
+    pub fn recorded(&self, rel: &RelPath) -> Option<Stamp> {
+        self.stamps.get(rel).copied()
+    }
+
+    /// Drops every recorded stamp, so the next `poll` sees everything as
+    /// unchanged until it is read again — the "force a full reload" hook.
+    pub fn forget_stamps(&mut self) {
+        self.stamps.clear();
+    }
 }
 
 #[cfg(test)]
@@ -353,5 +460,96 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("requests"), "{msg}");
         assert!(msg.contains("read"), "{msg}");
+    }
+
+    #[test]
+    fn rename_moves_files_and_directories_and_refuses_clobbering() {
+        let (_d, mut disk) = disk();
+        let a = RelPath::new("requests/main/a.toml").unwrap();
+        let b = RelPath::new("requests/auth/a.toml").unwrap();
+        disk.write(&a, "x").unwrap();
+        disk.rename(&a, &b).unwrap();
+        assert!(!disk.exists(&a));
+        assert_eq!(disk.read(&b).unwrap().as_deref(), Some("x"));
+        assert!(matches!(disk.rename(&a, &b), Err(DiskError::NotFound(_))));
+        disk.write(&a, "y").unwrap();
+        assert!(matches!(disk.rename(&a, &b), Err(DiskError::AlreadyExists(_))));
+        let d1 = RelPath::new("requests/auth").unwrap();
+        let d2 = RelPath::new("requests/login").unwrap();
+        disk.rename(&d1, &d2).unwrap();
+        assert!(disk.is_file(&RelPath::new("requests/login/a.toml").unwrap()));
+    }
+
+    #[test]
+    fn list_is_sorted_marks_dirs_and_treats_a_missing_dir_as_empty() {
+        let (_d, mut disk) = disk();
+        disk.write(&RelPath::new("environments/qa.toml").unwrap(), "").unwrap();
+        disk.write(&RelPath::new("environments/dev.toml").unwrap(), "").unwrap();
+        disk.create_dir(&RelPath::new("environments/sub").unwrap()).unwrap();
+        let names: Vec<(String, bool)> = disk
+            .list(&RelPath::new("environments").unwrap())
+            .unwrap()
+            .into_iter()
+            .map(|e| (e.name, e.is_dir))
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                ("dev.toml".to_string(), false),
+                ("qa.toml".to_string(), false),
+                ("sub".to_string(), true)
+            ]
+        );
+        assert!(disk.list(&RelPath::new("nope").unwrap()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn walk_files_is_recursive_sorted_and_filtered_by_extension() {
+        let (_d, mut disk) = disk();
+        disk.write(&RelPath::new("requests/main/b.toml").unwrap(), "").unwrap();
+        disk.write(&RelPath::new("requests/main/sub/a.toml").unwrap(), "").unwrap();
+        disk.write(&RelPath::new("requests/main/notes.md").unwrap(), "").unwrap();
+        disk.write(&RelPath::new("requests/auth/c.toml").unwrap(), "").unwrap();
+        let (files, warning) = disk.walk_files(&RelPath::new("requests").unwrap(), "toml");
+        let files: Vec<&str> = files.iter().map(|p| p.as_str()).collect();
+        assert_eq!(
+            files,
+            vec!["requests/auth/c.toml", "requests/main/b.toml", "requests/main/sub/a.toml"]
+        );
+        assert!(warning.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walk_files_reports_an_unreadable_subdirectory_and_keeps_going() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, mut disk) = disk();
+        disk.write(&RelPath::new("requests/main/a.toml").unwrap(), "").unwrap();
+        disk.write(&RelPath::new("requests/locked/b.toml").unwrap(), "").unwrap();
+        let locked = dir.path().join("requests/locked");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let (files, warning) = disk.walk_files(&RelPath::new("requests").unwrap(), "toml");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(files.len(), 1);
+        assert!(warning.unwrap().contains("requests/locked"));
+    }
+
+    #[test]
+    fn changed_compares_the_recorded_stamp_against_disk() {
+        let (dir, mut disk) = disk();
+        let p = RelPath::new("variables.toml").unwrap();
+        assert!(!disk.changed(&p), "nothing recorded yet");
+        disk.write(&p, "a = 1\n").unwrap();
+        assert!(!disk.changed(&p));
+        // An outside write with a different length is seen even on a
+        // coarse-mtime filesystem.
+        std::fs::write(dir.path().join("variables.toml"), "a = 12\n").unwrap();
+        assert!(disk.changed(&p));
+        disk.read(&p).unwrap();
+        assert!(!disk.changed(&p), "a read re-records");
+        std::fs::remove_file(dir.path().join("variables.toml")).unwrap();
+        assert!(disk.changed(&p), "absence is a change");
+        disk.forget_stamps();
+        assert!(!disk.changed(&p));
     }
 }
