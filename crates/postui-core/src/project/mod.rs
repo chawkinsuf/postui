@@ -12,9 +12,11 @@ mod local;
 mod migration;
 mod spaces;
 mod undo;
+mod varedit_ops;
 mod variables;
 pub use legacy::*;
 pub use undo::Undone;
+pub use varedit_ops::VarEdit;
 
 use crate::disk::{Disk, DiskError, RelPath, Ticket};
 use crate::journal::{Entry, EntryId, EntryMeta, Journal, Op};
