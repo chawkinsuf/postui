@@ -187,7 +187,7 @@ impl Project {
         Ok(data)
     }
 
-    fn load_active_env(&mut self, env: &str) -> Result<(), Error> {
+    pub(super) fn load_active_env(&mut self, env: &str) -> Result<(), Error> {
         let data = self.load_environment(env)?;
         self.env_data = data;
         self.active_env = Some(env.to_string());

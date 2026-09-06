@@ -10,13 +10,15 @@ use crate::journal::Op;
 /// `active_env` is `(before, after)` of the original forward action; the
 /// app applies `before` on an undo (`redo` is `false`) and `after` on a
 /// redo (`redo` is `true`). `moves` is likewise used as-recorded in both
-/// directions.
+/// directions. `warnings` are whatever the post-replay reload turned up
+/// (a document that no longer parses, a stale reference, …).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Undone {
     pub label: String,
     pub meta: EntryMeta,
     /// `true` for a redo.
     pub redo: bool,
+    pub warnings: Vec<Warning>,
 }
 
 impl Project {
@@ -99,8 +101,55 @@ impl Project {
         }
     }
 
-    pub fn undo(&mut self) -> Result<Option<Undone>, Error> {
-        let Some(entry) = self.journal.pop_undo() else { return Ok(None) };
+    /// Applies this entry's `active_env` transition directly (`before` on
+    /// undo, `after` on redo). `reload_all`'s `.local/state.toml`-based
+    /// restore already covers the steady-state case, but can't recover an
+    /// environment switch whose `persist_local_journaled` call was the
+    /// *first* write `state.toml` ever got (its recorded `before` is
+    /// `None`, so undoing it removes the file rather than restoring old
+    /// content) — this uses the entry's own record instead, so it always
+    /// wins when the two disagree.
+    fn apply_meta_active_env(&mut self, meta: &EntryMeta, redo: bool) -> Vec<Warning> {
+        let mut warnings = Vec::new();
+        let Some((before, after)) = &meta.active_env else {
+            return warnings;
+        };
+        match if redo { after } else { before } {
+            Some(env) if self.environments.contains(env) => {
+                if self.active_env.as_deref() != Some(env.as_str()) {
+                    match self.load_active_env(env) {
+                        Ok(()) => {
+                            let _ = self.persist_local();
+                        }
+                        Err(e) => warnings.push(format!("could not load environment {env:?}: {e}")),
+                    }
+                }
+            }
+            Some(env) => warnings.push(format!("environment {env:?} no longer exists")),
+            None => {
+                self.active_env = None;
+                self.env_data = EnvData::default();
+                let _ = self.persist_local();
+            }
+        }
+        self.refresh_resolved();
+        warnings
+    }
+
+    /// Pops nothing — `undo`/`redo` do that and hand the entry here, so
+    /// this same replay serves both directions. Preflights (a conflict
+    /// drops the entry, unchanged), then applies every op's inverse in
+    /// reverse order, recording as it goes so the ops it actually
+    /// performed become the opposite stack's entry. On success: reloads
+    /// everything, applies this entry's own `active_env` transition,
+    /// pushes the replay's ops onto the opposite stack, and returns
+    /// `Undone`. On a mid-replay failure (preflight passed but a later op
+    /// still failed, e.g. a permission error): reverses the ops already
+    /// applied (best effort, same loop as `run_transaction`'s Err path),
+    /// reloads, and puts the *original* entry back on the stack it came
+    /// from so the user can retry — nothing is lost.
+    fn replay(&mut self, entry: Entry, redo: bool) -> Result<Option<Undone>, Error> {
+        debug_assert!(self.recording.is_none());
         self.preflight(&entry.ops)?;
         self.recording = Some(Vec::new());
         let mut result = Ok(());
@@ -111,56 +160,51 @@ impl Project {
             }
         }
         let ops = self.recording.take().unwrap_or_default();
-        self.reload_all();
         match result {
             Ok(()) => {
-                self.journal.push_redo(Entry {
+                let mut warnings = self.reload_all();
+                warnings.extend(self.apply_meta_active_env(&entry.meta, redo));
+                let replayed = Entry {
                     label: entry.label.clone(),
                     ops,
                     meta: entry.meta.clone(),
                     merge: None,
-                });
+                };
+                if redo {
+                    self.journal.push_undo_replayed(replayed);
+                } else {
+                    self.journal.push_redo(replayed);
+                }
                 Ok(Some(Undone {
                     label: entry.label,
                     meta: entry.meta,
-                    redo: false,
+                    redo,
+                    warnings,
                 }))
             }
-            Err(e) => Err(e),
+            Err(e) => {
+                for op in ops.iter().rev() {
+                    let _ = self.apply_inverse_unrecorded(op);
+                }
+                self.reload_all();
+                if redo {
+                    self.journal.push_redo(entry);
+                } else {
+                    self.journal.push_undo_replayed(entry);
+                }
+                Err(e)
+            }
         }
+    }
+
+    pub fn undo(&mut self) -> Result<Option<Undone>, Error> {
+        let Some(entry) = self.journal.pop_undo() else { return Ok(None) };
+        self.replay(entry, false)
     }
 
     pub fn redo(&mut self) -> Result<Option<Undone>, Error> {
         let Some(entry) = self.journal.pop_redo() else { return Ok(None) };
-        // A redo entry's ops are the inverses recorded during undo, so
-        // "forward" here is applying *their* inverses.
-        self.preflight(&entry.ops)?;
-        self.recording = Some(Vec::new());
-        let mut result = Ok(());
-        for op in entry.ops.iter().rev() {
-            result = self.apply_inverse(op);
-            if result.is_err() {
-                break;
-            }
-        }
-        let ops = self.recording.take().unwrap_or_default();
-        self.reload_all();
-        match result {
-            Ok(()) => {
-                self.journal.push_undo_replayed(Entry {
-                    label: entry.label.clone(),
-                    ops,
-                    meta: entry.meta.clone(),
-                    merge: None,
-                });
-                Ok(Some(Undone {
-                    label: entry.label,
-                    meta: entry.meta,
-                    redo: true,
-                }))
-            }
-            Err(e) => Err(e),
-        }
+        self.replay(entry, true)
     }
 }
 
@@ -265,12 +309,16 @@ mod tests {
         let (dir, mut p) = fixture();
         p.set_active_space("auth");
         p.record_space_open(Some("auth/login"));
+        p.set_open_request(Some("auth/login"));
+        p.set_main_split(Some("60".into()));
         p.persist_local().unwrap();
         p.rename_space("auth", "Login").unwrap();
         p.undo().unwrap();
         assert!(dir.path().join("requests/auth/login.toml").is_file());
         assert_eq!(p.local().active_space, "auth");
         assert_eq!(p.local().space_open.get("auth").map(String::as_str), Some("auth/login"));
+        assert_eq!(p.local().open_request.as_deref(), Some("auth/login"));
+        assert_eq!(p.local().main_split.as_deref(), Some("60"));
         assert_eq!(p.spaces(), ["main", "auth"]);
     }
 
@@ -285,6 +333,45 @@ mod tests {
         assert_eq!(p.environments(), ["dev", "qa"]);
         assert_eq!(p.secrets().get("dev").and_then(|m| m.get("token")).map(String::as_str), Some("x"));
         assert_eq!(p.env_name("dev"), "Dev");
+        assert_eq!(p.active_env(), Some("dev"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_replay_that_fails_midway_rolls_back_and_keeps_the_entry() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, mut p) = fixture();
+        let a = RelPath::new("requests/main/ping.toml").unwrap();
+        let b = RelPath::new("requests/main/pong.toml").unwrap();
+        let newdir = RelPath::new("requests/newdir").unwrap();
+        // An entry with two ops: a rename inside `requests/main` (its
+        // inverse will be blocked below) and a directory create outside
+        // it (its inverse — trashing — is unaffected, so it applies and
+        // records fine before the rename's inverse fails).
+        p.transaction("t", EntryMeta::default(), |p| {
+            p.fs_rename(&a, &b)?;
+            p.fs_create_dir(&newdir)
+        })
+        .unwrap();
+        assert_eq!(p.journal_len(), 1);
+        let main_dir = dir.path().join("requests/main");
+        let original_perms = std::fs::metadata(&main_dir).unwrap().permissions();
+        // No write permission on `requests/main`: renaming inside it
+        // (undoing the `fs_rename`) will fail with a permission error,
+        // deterministically, after the directory-create's inverse
+        // (trashing `requests/newdir`, elsewhere) has already applied.
+        std::fs::set_permissions(&main_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let result = p.undo();
+        std::fs::set_permissions(&main_dir, original_perms).unwrap();
+        assert!(result.is_err(), "{result:?}");
+        assert!(
+            dir.path().join("requests/newdir").is_dir(),
+            "the first-applied inverse (trashing newdir) was rolled back"
+        );
+        assert!(dir.path().join("requests/main/pong.toml").is_file(), "the rename was never touched");
+        assert!(p.can_undo());
+        assert_eq!(p.journal_len(), 1);
+        assert!(!p.can_redo());
     }
 
     #[test]

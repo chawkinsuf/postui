@@ -556,23 +556,59 @@ impl Project {
     }
 
     /// After an undo or redo: everything, including the listing, the
-    /// local state and every held request.
+    /// local state and every held request. `.local/state.toml` is read
+    /// into `self.local` first — before `reload_documents` — so that its
+    /// `refresh_spaces` (which repairs a now-stale `active_space`) and
+    /// `prune_stale_selections` (which may persist) run against the
+    /// entry's own restored local state rather than overwriting it. The
+    /// restored `environment` is applied last, once `reload_documents`
+    /// has refreshed the environment list it must be checked against.
     pub(crate) fn reload_all(&mut self) -> Vec<Warning> {
-        let mut warnings = self.reload_documents();
+        let mut warnings = Vec::new();
+        // `None` = the read/parse failed, leave `active_env` untouched;
+        // `Some(env)` = what `.local/state.toml` said it should be.
+        let mut restored_environment: Option<Option<String>> = None;
         match self.disk.read(&RelPath::new(STATE_TOML).expect("constant")) {
             Ok(text) => match toml::from_str::<LocalState>(&text.unwrap_or_default()) {
                 Ok(state) => {
-                    self.local.space_open = state.space_open;
+                    self.local.open_request = state.open_request;
+                    self.local.main_split = state.main_split;
                     self.local.expanded = state.expanded.into_iter().collect();
                     self.local.selections = state.selections;
                     self.local.shared_selections = state.shared_selections;
-                    if let Some(space) = state.space.filter(|s| self.spaces.contains(s)) {
+                    self.local.space_open = state.space_open;
+                    if let Some(space) = state.space {
                         self.local.active_space = space;
                     }
+                    restored_environment = Some(state.environment);
                 }
                 Err(e) => warnings.push(format!("could not read .local/state.toml: {e}")),
             },
             Err(e) => warnings.push(format!("could not read .local/state.toml: {e}")),
+        }
+        warnings.extend(self.reload_documents());
+        if let Some(env) = restored_environment {
+            match env {
+                Some(name) if self.environments.contains(&name) => {
+                    if self.active_env.as_deref() != Some(name.as_str()) {
+                        if let Err(e) = self.load_active_env(&name) {
+                            warnings.push(format!("could not load environment {name:?}: {e}"));
+                        }
+                    }
+                }
+                Some(name) => warnings.push(format!("restored environment {name:?} no longer exists")),
+                // `.local/state.toml` never distinguishes "explicitly no
+                // environment" from "this field was never written" (its
+                // default): a project that has never persisted local
+                // state at all reads back `None` here even though an
+                // environment is legitimately active (picked by `open`'s
+                // own first-environment fallback). Clearing on `None`
+                // would destroy that. Leave `active_env` as whatever
+                // `reload_documents` already validated; a transition this
+                // entry actually made is instead restored precisely by
+                // `apply_meta_active_env`, from the entry's own record.
+                None => {}
+            }
         }
         self.relist();
         let held: Vec<String> = self.open_requests.keys().cloned().collect();
