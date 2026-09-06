@@ -72,14 +72,20 @@ impl From<legacy::ProjectError> for Error {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenError {
     pub root: PathBuf,
-    /// Relative to `root`.
+    /// Relative to `root`. Empty when the failure names no single file
+    /// (`Project::init`'s seeding, which creates several) — the `Display`
+    /// then omits it rather than emitting a bare `": "`.
     pub file: String,
     pub error: String,
 }
 
 impl std::fmt::Display for OpenError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.file, self.error)
+        if self.file.is_empty() {
+            write!(f, "{}", self.error)
+        } else {
+            write!(f, "{}: {}", self.file, self.error)
+        }
     }
 }
 
@@ -1799,5 +1805,25 @@ pub(crate) mod tests {
             "name = [unclosed\n",
             "peek must leave the unparsable file untouched"
         );
+    }
+
+    #[test]
+    fn open_error_naming_a_file_shows_it_before_the_reason() {
+        let e = OpenError {
+            root: PathBuf::from("/p"),
+            file: "project.toml".into(),
+            error: "expected a value".into(),
+        };
+        assert_eq!(e.to_string(), "project.toml: expected a value");
+    }
+
+    #[test]
+    fn open_error_with_no_file_shows_the_reason_alone() {
+        let e = OpenError {
+            root: PathBuf::from("/p"),
+            file: String::new(),
+            error: "create environments: Permission denied".into(),
+        };
+        assert_eq!(e.to_string(), "create environments: Permission denied");
     }
 }
