@@ -110,6 +110,13 @@ impl Project {
     /// `None`, so undoing it removes the file rather than restoring old
     /// content) — this uses the entry's own record instead, so it always
     /// wins when the two disagree.
+    ///
+    /// Its `state.toml` write is journaled (`persist_local_journaled`) and
+    /// [`Self::replay`] calls this while the replay is still recording, so
+    /// the write becomes an op of the entry the opposite stack gets. An
+    /// unrecorded write here would leave `state.toml` present where that
+    /// entry's `preflight` expects it absent, and the opposite direction
+    /// would be refused as a conflict.
     fn apply_meta_active_env(&mut self, meta: &EntryMeta, redo: bool) -> Vec<Warning> {
         let mut warnings = Vec::new();
         let Some((before, after)) = &meta.active_env else {
@@ -120,7 +127,7 @@ impl Project {
                 if self.active_env.as_deref() != Some(env.as_str()) {
                     match self.load_active_env(env) {
                         Ok(()) => {
-                            let _ = self.persist_local();
+                            let _ = self.persist_local_journaled();
                         }
                         Err(e) => warnings.push(format!("could not load environment {env:?}: {e}")),
                     }
@@ -130,7 +137,7 @@ impl Project {
             None => {
                 self.active_env = None;
                 self.env_data = EnvData::default();
-                let _ = self.persist_local();
+                let _ = self.persist_local_journaled();
             }
         }
         self.refresh_resolved();
@@ -160,11 +167,18 @@ impl Project {
                 break;
             }
         }
+        // The reload and the environment restore run *inside* the
+        // recording window, so the `state.toml` write the restore makes is
+        // an op of the entry the opposite stack gets (see
+        // `apply_meta_active_env`).
+        let mut warnings = Vec::new();
+        if result.is_ok() {
+            warnings = self.reload_all();
+            warnings.extend(self.apply_meta_active_env(&entry.meta, redo));
+        }
         let ops = self.recording.take().unwrap_or_default();
         match result {
             Ok(()) => {
-                let mut warnings = self.reload_all();
-                warnings.extend(self.apply_meta_active_env(&entry.meta, redo));
                 let replayed = Entry {
                     id: entry.id,
                     label: entry.label.clone(),
@@ -323,6 +337,37 @@ mod tests {
         assert_eq!(p.local().open_request.as_deref(), Some("auth/login"));
         assert_eq!(p.local().main_split.as_deref(), Some("60"));
         assert_eq!(p.spaces(), ["main", "auth"]);
+    }
+
+    /// The entry's `.local/state.toml` write was the file's *first*, so
+    /// undoing it removes the file; the environment restore that follows
+    /// must not re-create it behind the journal's back, or the redo's
+    /// preflight sees a file it expects to be absent and drops the step.
+    #[test]
+    fn redo_survives_an_env_switch_whose_entry_first_created_state_toml() {
+        let (dir, mut p) = fixture();
+        assert!(read(&dir, ".local/state.toml").is_none(), "never written yet");
+        let slug = p.create_environment("QA 2").unwrap();
+        assert_eq!(p.active_env(), Some(slug.as_str()));
+        p.undo().unwrap().unwrap();
+        assert_eq!(p.active_env(), Some("dev"));
+        p.redo().unwrap().unwrap();
+        assert_eq!(p.active_env(), Some("qa-2"));
+        assert!(read(&dir, ".local/state.toml").unwrap().contains("environment = \"qa-2\""));
+    }
+
+    #[test]
+    fn redo_of_an_environment_delete_survives_the_same_first_state_toml_write() {
+        let (dir, mut p) = fixture();
+        assert!(read(&dir, ".local/state.toml").is_none(), "never written yet");
+        p.delete_environment("dev").unwrap();
+        assert_eq!(p.active_env(), Some("qa"));
+        p.undo().unwrap().unwrap();
+        assert_eq!(p.active_env(), Some("dev"));
+        p.redo().unwrap().unwrap();
+        assert_eq!(p.active_env(), Some("qa"));
+        assert_eq!(p.environments(), ["qa"]);
+        assert!(read(&dir, ".local/state.toml").unwrap().contains("environment = \"qa\""));
     }
 
     #[test]

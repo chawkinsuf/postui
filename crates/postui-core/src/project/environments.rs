@@ -244,12 +244,6 @@ mod tests {
     #[test]
     fn create_activates_the_new_environment_and_undo_puts_the_old_one_back() {
         let (dir, mut p) = fixture();
-        // The app's steady state: `.local/state.toml` already exists. A
-        // project whose state file has *never* been written cannot redo
-        // any entry that both writes it and switches environment — see the
-        // pre-existing `apply_meta_active_env` note in the task report;
-        // `delete_environment` has the same limitation today.
-        p.persist_local().unwrap();
         assert_eq!(p.active_env(), Some("dev"));
         let slug = p.create_environment("QA 2").unwrap();
         assert_eq!(slug, "qa-2");
