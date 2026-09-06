@@ -114,7 +114,6 @@ impl Project {
                     .open_requests
                     .keys()
                     .filter(|s| crate::storage::space_of(s) == Some(from.as_str()))
-                    .cloned()
                     .map(|s| (s.clone(), s.replacen(&format!("{from}/"), &format!("{to}/"), 1)))
                     .collect();
                 for (old, new) in moved {

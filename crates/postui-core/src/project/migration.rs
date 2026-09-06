@@ -13,7 +13,7 @@ pub(super) fn probe(disk: &mut Disk) -> (bool, Option<MigrationOutcome>, Vec<War
     let envs: Vec<(String, String)> = Project::list_environments(disk)
         .into_iter()
         .map(|env| {
-            let text = RelPath::new(&format!("{ENVIRONMENTS_DIR}/{env}.toml"))
+            let text = RelPath::new(format!("{ENVIRONMENTS_DIR}/{env}.toml"))
                 .ok()
                 .and_then(|p| disk.read(&p).ok().flatten())
                 .unwrap_or_default();
@@ -67,7 +67,7 @@ impl Project {
     }
 
     fn write_with_backup(&mut self, path: &RelPath, text: &str) -> Result<(), Error> {
-        let backup = RelPath::new(&format!("{}.bak", path.as_str()))?;
+        let backup = RelPath::new(format!("{}.bak", path.as_str()))?;
         if self.disk.is_file(path) && !self.disk.is_file(&backup) {
             let existing = self.disk.read(path)?.unwrap_or_default();
             self.disk.write(&backup, &existing)?;

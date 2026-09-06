@@ -150,7 +150,6 @@ pub(crate) const PROJECT_TOML: &str = "project.toml";
 pub(crate) const VARIABLES_TOML: &str = "variables.toml";
 pub(crate) const ENVIRONMENTS_DIR: &str = "environments";
 pub(crate) const REQUESTS_DIR: &str = "requests";
-pub(crate) const LOCAL_DIR: &str = ".local";
 pub(crate) const STATE_TOML: &str = ".local/state.toml";
 pub(crate) const SECRETS_TOML: &str = ".local/secrets.toml";
 
@@ -642,10 +641,10 @@ impl Project {
         if let Some(env) = restored_environment {
             match env {
                 Some(name) if self.environments.contains(&name) => {
-                    if self.active_env.as_deref() != Some(name.as_str()) {
-                        if let Err(e) = self.load_active_env(&name) {
-                            warnings.push(format!("could not load environment {name:?}: {e}"));
-                        }
+                    if self.active_env.as_deref() != Some(name.as_str())
+                        && let Err(e) = self.load_active_env(&name)
+                    {
+                        warnings.push(format!("could not load environment {name:?}: {e}"));
                     }
                 }
                 Some(name) => warnings.push(format!("restored environment {name:?} no longer exists")),
@@ -791,7 +790,7 @@ impl Project {
 
         let mut environments = Self::list_environments(&mut disk);
         if environments.is_empty() && !legacy_vars && Self::is_project(disk.root()) {
-            let path = RelPath::new(&format!("{ENVIRONMENTS_DIR}/{DEFAULT_ENVIRONMENT}.toml"))
+            let path = RelPath::new(format!("{ENVIRONMENTS_DIR}/{DEFAULT_ENVIRONMENT}.toml"))
                 .expect("constant path");
             match disk.write_new(
                 &path,
@@ -1166,7 +1165,7 @@ pub(crate) mod tests {
         assert!(changed && warnings.is_empty(), "{warnings:?}");
         assert!(p.variables().vars.contains_key("extra"));
         assert_eq!(p.active_env(), Some("dev"), "the active env is kept");
-        assert_eq!(p.poll().0, false);
+        assert!(!p.poll().0);
     }
 
     #[test]

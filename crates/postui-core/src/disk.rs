@@ -349,10 +349,6 @@ impl Disk {
         }
     }
 
-    pub fn recorded(&self, rel: &RelPath) -> Option<Stamp> {
-        self.stamps.get(rel).copied()
-    }
-
     /// Drops every recorded stamp, so the next `poll` sees everything as
     /// unchanged until it is read again — the "force a full reload" hook.
     pub fn forget_stamps(&mut self) {
