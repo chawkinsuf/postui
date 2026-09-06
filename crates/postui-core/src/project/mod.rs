@@ -10,6 +10,7 @@ mod environments;
 mod legacy;
 mod local;
 mod spaces;
+mod variables;
 pub use legacy::*;
 
 use crate::disk::{Disk, DiskError, RelPath, Ticket};
