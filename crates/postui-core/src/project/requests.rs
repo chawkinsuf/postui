@@ -442,8 +442,8 @@ impl Project {
         self.transaction("duplicate request", meta, |p| {
             let path = request_rel(&new_slug)?;
             p.disk.write_new(&path, "")?;
+            p.record(Op::Created { path: path.clone() });
             p.disk.write_bytes(&path, &text)?;
-            p.record(Op::Created { path });
             p.relist();
             if let (Some((space, anchor)), Some((_, rel))) =
                 (Self::split_space(&slug), Self::split_space(&new_slug))
@@ -593,5 +593,14 @@ mod tests {
         assert_eq!(copy, "auth/login-copy");
         assert!(read(&dir, "requests/auth/login-copy.toml").unwrap().contains("Login copy"));
         assert_eq!(p.journal_len(), 2);
+    }
+
+    #[test]
+    fn duplicate_journals_a_single_created_op_for_the_copy() {
+        let (_dir, mut p) = fixture();
+        let copy = p.duplicate_request("auth/login").unwrap();
+        let e = p.journal.pop_undo().unwrap();
+        assert_eq!(e.ops.len(), 1);
+        assert!(matches!(&e.ops[0], Op::Created { path } if path.as_str() == format!("requests/{copy}.toml")));
     }
 }
