@@ -99,6 +99,14 @@ pub struct DirEntry {
     pub is_dir: bool,
 }
 
+/// One trashed path: where it was and the slot it sits in now
+/// (`.local/trash/<n>/<original>`). Undo of a delete is a rename back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ticket {
+    pub original: RelPath,
+    pub slot: RelPath,
+}
+
 pub struct Disk {
     root: PathBuf,
     stamps: HashMap<RelPath, Stamp>,
@@ -350,6 +358,51 @@ impl Disk {
     pub fn forget_stamps(&mut self) {
         self.stamps.clear();
     }
+
+    pub const TRASH_DIR: &'static str = ".local/trash";
+
+    fn trash_root() -> RelPath {
+        RelPath::new(Self::TRASH_DIR).expect("constant path")
+    }
+
+    /// The next free numbered slot: one more than the largest existing
+    /// numeric entry, starting at 1.
+    fn next_trash_slot(&mut self) -> Result<RelPath, DiskError> {
+        let root = Self::trash_root();
+        let max = self
+            .list(&root)?
+            .iter()
+            .filter_map(|e| e.name.parse::<u64>().ok())
+            .max()
+            .unwrap_or(0);
+        root.join(&(max + 1).to_string())
+    }
+
+    /// Renames a file or directory into a fresh trash slot. One rename,
+    /// so the cost is independent of size.
+    pub fn trash(&mut self, rel: &RelPath) -> Result<Ticket, DiskError> {
+        let slot = self.next_trash_slot()?.join(rel.as_str())?;
+        self.rename(rel, &slot)?;
+        Ok(Ticket {
+            original: rel.clone(),
+            slot,
+        })
+    }
+
+    /// Renames a trashed path back. `AlreadyExists` when the original is
+    /// occupied; never clobbers.
+    pub fn restore(&mut self, t: &Ticket) -> Result<(), DiskError> {
+        self.rename(&t.slot, &t.original)
+    }
+
+    /// The redo half of `restore`: back into the recorded slot.
+    pub fn retrash(&mut self, t: &Ticket) -> Result<(), DiskError> {
+        self.rename(&t.original, &t.slot)
+    }
+
+    pub fn empty_trash(&mut self) -> Result<(), DiskError> {
+        self.remove_dir_all(&Self::trash_root())
+    }
 }
 
 #[cfg(test)]
@@ -551,5 +604,60 @@ mod tests {
         assert!(disk.changed(&p), "absence is a change");
         disk.forget_stamps();
         assert!(!disk.changed(&p));
+    }
+
+    #[test]
+    fn trash_moves_under_a_numbered_slot_keeping_the_relative_path() {
+        let (_d, mut disk) = disk();
+        let p = RelPath::new("requests/main/a.toml").unwrap();
+        disk.write(&p, "x").unwrap();
+        let t = disk.trash(&p).unwrap();
+        assert_eq!(t.original, p);
+        assert_eq!(t.slot.as_str(), ".local/trash/1/requests/main/a.toml");
+        assert!(!disk.exists(&p));
+        assert_eq!(disk.read(&t.slot).unwrap().as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn two_trashes_of_the_same_path_get_distinct_slots_and_dirs_move_whole() {
+        let (_d, mut disk) = disk();
+        let d = RelPath::new("requests/auth").unwrap();
+        disk.write(&d.join("a.toml").unwrap(), "1").unwrap();
+        let t1 = disk.trash(&d).unwrap();
+        disk.write(&d.join("a.toml").unwrap(), "2").unwrap();
+        let t2 = disk.trash(&d).unwrap();
+        assert_eq!(t1.slot.as_str(), ".local/trash/1/requests/auth");
+        assert_eq!(t2.slot.as_str(), ".local/trash/2/requests/auth");
+        assert_eq!(
+            disk.read(&t1.slot.join("a.toml").unwrap()).unwrap().as_deref(),
+            Some("1")
+        );
+    }
+
+    #[test]
+    fn restore_puts_it_back_refuses_an_occupied_original_and_retrash_round_trips() {
+        let (_d, mut disk) = disk();
+        let p = RelPath::new("environments/dev.toml").unwrap();
+        disk.write(&p, "x").unwrap();
+        let t = disk.trash(&p).unwrap();
+        disk.restore(&t).unwrap();
+        assert_eq!(disk.read(&p).unwrap().as_deref(), Some("x"));
+        assert!(!disk.exists(&t.slot));
+        disk.retrash(&t).unwrap();
+        assert!(!disk.exists(&p));
+        assert!(disk.exists(&t.slot));
+        disk.write(&p, "other").unwrap();
+        assert!(matches!(disk.restore(&t), Err(DiskError::AlreadyExists(_))));
+    }
+
+    #[test]
+    fn empty_trash_removes_everything_and_tolerates_a_missing_dir() {
+        let (_d, mut disk) = disk();
+        disk.empty_trash().unwrap();
+        let p = RelPath::new("requests/main/a.toml").unwrap();
+        disk.write(&p, "x").unwrap();
+        disk.trash(&p).unwrap();
+        disk.empty_trash().unwrap();
+        assert!(!disk.exists(&RelPath::new(".local/trash").unwrap()));
     }
 }
