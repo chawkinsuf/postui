@@ -7,6 +7,7 @@
 //! their disk paths, only their pure text helpers.
 
 mod legacy;
+mod local;
 pub use legacy::*;
 
 use crate::disk::{Disk, DiskError, RelPath, Ticket};
@@ -787,12 +788,6 @@ mod requests {
     pub(super) fn list(disk: &mut Disk) -> (Vec<RequestListing>, Option<String>) {
         let (listing, warning) = crate::storage::list_requests(disk.root());
         (listing, warning)
-    }
-}
-
-impl Project {
-    pub(crate) fn persist_local(&mut self) -> Result<(), Error> {
-        Ok(())
     }
 }
 
