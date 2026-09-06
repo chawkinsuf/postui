@@ -59,6 +59,10 @@ impl Project {
         })();
         if let Err(e) = result {
             self.pending_migration = Some(outcome);
+            // A partial write (e.g. the default env's backup wrote but the
+            // next file's did not) can leave disk ahead of memory; force
+            // the next `poll` to re-sync rather than run on stale reads.
+            self.force_reload = true;
             return Err(e);
         }
         let mut notes = outcome.notes;

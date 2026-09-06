@@ -26,13 +26,12 @@ impl Project {
     /// Records a secret for `env`, writes the secrets file, re-resolves
     /// when `env` is active. The error never carries the value.
     pub fn set_secret_for(&mut self, env: &str, name: &str, value: String) -> Result<(), Error> {
-        let mut secrets = self.secrets.clone();
-        secrets.entry(env.to_string()).or_default().insert(name.to_string(), value);
-        let previous = std::mem::replace(&mut self.secrets, secrets);
-        if let Err(e) = self.transaction("set secret", EntryMeta::default(), |p| p.write_secrets_journaled()) {
-            self.secrets = previous;
-            return Err(e);
-        }
+        let env = env.to_string();
+        let name = name.to_string();
+        self.transaction("set secret", EntryMeta::default(), |p| {
+            p.secrets.entry(env.clone()).or_default().insert(name.clone(), value);
+            p.write_secrets_journaled()
+        })?;
         if self.env_key() == env {
             self.refresh_resolved();
         }
@@ -45,15 +44,15 @@ impl Project {
     }
 
     pub fn remove_secret_for(&mut self, env: &str, name: &str) -> Result<(), Error> {
-        let mut secrets = self.secrets.clone();
-        if secrets.get_mut(env).and_then(|m| m.shift_remove(name)).is_none() {
+        if !self.secrets.get(env).is_some_and(|m| m.contains_key(name)) {
             return Ok(());
         }
-        let previous = std::mem::replace(&mut self.secrets, secrets);
-        if let Err(e) = self.transaction("remove secret", EntryMeta::default(), |p| p.write_secrets_journaled()) {
-            self.secrets = previous;
-            return Err(e);
-        }
+        let env = env.to_string();
+        let name = name.to_string();
+        self.transaction("remove secret", EntryMeta::default(), |p| {
+            p.secrets.get_mut(&env).map(|m| m.shift_remove(&name));
+            p.write_secrets_journaled()
+        })?;
         if self.env_key() == env {
             self.refresh_resolved();
         }
@@ -295,6 +294,18 @@ mod tests {
         assert!(dir.path().join("environments/dev.toml").is_file());
         assert!(!dir.path().join("environments/development.toml").exists());
         assert!(p.secrets().get("development").is_none());
+    }
+
+    #[test]
+    fn a_failed_secret_write_leaves_memory_unchanged() {
+        let (dir, mut p) = fixture();
+        // A regular file at `.local` makes `create_dir_all(".local")` fail,
+        // so the secrets write inside the transaction fails.
+        std::fs::write(dir.path().join(".local"), "not a directory").unwrap();
+        let r = p.set_secret_for("dev", "token", "x".into());
+        assert!(r.is_err());
+        assert!(p.secrets().get("dev").is_none());
+        assert_eq!(p.journal_len(), 0);
     }
 
     #[test]

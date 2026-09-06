@@ -175,6 +175,9 @@ impl Project {
             p.open_requests
                 .retain(|slug, _| crate::storage::space_of(slug) != Some(name.as_str()));
             p.forget_space_local(&name);
+            if p.local.open_request.as_deref().and_then(crate::storage::space_of) == Some(name.as_str()) {
+                p.local.open_request = None;
+            }
             p.refresh_spaces();
             p.persist_local_journaled()?;
             p.relist();
@@ -334,11 +337,13 @@ mod tests {
     fn delete_trashes_the_dir_drops_the_entry_and_refuses_the_last_space() {
         let (dir, mut p) = fixture();
         p.set_active_space("auth");
+        p.set_open_request(Some("auth/login"));
         p.delete_space("auth").unwrap();
         assert!(!dir.path().join("requests/auth").exists());
         assert!(dir.path().join(".local/trash/1/requests/auth/login.toml").is_file());
         assert_eq!(p.spaces(), ["main"]);
         assert_eq!(p.local().active_space, "main");
+        assert!(p.local().open_request.is_none(), "the open request pointed into the deleted space");
         assert!(!read(&dir, "project.toml").unwrap().contains("[space.auth]"));
         assert!(matches!(p.delete_space("main"), Err(Error::LastSpace)));
     }

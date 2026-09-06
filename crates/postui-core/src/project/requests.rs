@@ -18,8 +18,8 @@ pub(crate) fn list(disk: &mut Disk) -> (Vec<RequestListing>, Option<String>) {
     let mut out = Vec::new();
     let mut loose = Vec::new();
     for path in files {
-        let rel = path.as_str().trim_start_matches("requests/");
-        let slug = rel.trim_end_matches(".toml").to_string();
+        let rel = path.as_str().strip_prefix("requests/").unwrap_or(path.as_str());
+        let slug = rel.strip_suffix(".toml").unwrap_or(rel).to_string();
         match crate::storage::space_of(&slug) {
             None => {
                 loose.push(format!("requests/{rel} is not in a space (move it into a space directory)"));
@@ -150,14 +150,18 @@ impl Project {
         space: &str,
         f: impl FnOnce(&mut Vec<String>) -> Vec<OrderEdit>,
     ) -> Result<Vec<OrderEdit>, Error> {
-        if !self.disk.is_dir(&space_rel(space)?) {
-            return Err(Error::NotFound(space.to_string()));
-        }
         let before = order::space_order(&self.meta, space).to_vec();
         let mut after = before.clone();
         let edits = f(&mut after);
         if after == before {
             return Ok(Vec::new());
+        }
+        // Only a real edit needs the space's directory to exist (an
+        // orphan table would otherwise be written for it); a no-op edit
+        // (e.g. moving zero requests out of a space with no directory)
+        // must stay a no-op, as it always was before order lists existed.
+        if !self.disk.is_dir(&space_rel(space)?) {
+            return Err(Error::NotFound(space.to_string()));
         }
         self.edit_project_toml(|doc| order::write_order(doc, space, &after))?;
         Ok(edits)
@@ -580,6 +584,30 @@ mod tests {
             !e.ops.iter().any(|o| matches!(o, Op::Text { path, .. } if path.as_str().starts_with("requests/"))),
             "no request text in the journal"
         );
+    }
+
+    #[test]
+    fn move_all_from_a_space_with_no_directory_is_a_no_op() {
+        let (_dir, mut p) = fixture();
+        let moved = p.move_all_requests("ghost", "auth").unwrap();
+        assert!(moved.is_empty());
+        assert_eq!(p.journal_len(), 0);
+    }
+
+    #[test]
+    fn move_all_refuses_whole_when_a_source_is_missing() {
+        let (dir, mut p) = fixture();
+        std::fs::write(dir.path().join("requests/main/r1.toml"), "method = \"GET\"\nurl = \"u\"\n").unwrap();
+        std::fs::write(dir.path().join("requests/main/r2.toml"), "method = \"GET\"\nurl = \"u\"\n").unwrap();
+        p.relist();
+        std::fs::remove_file(dir.path().join("requests/main/r1.toml")).unwrap();
+        let r = p.move_all_requests("main", "auth");
+        assert!(matches!(r, Err(Error::NotFound(_))), "{r:?}");
+        assert!(dir.path().join("requests/main/r2.toml").is_file());
+        assert!(dir.path().join("requests/main/ping.toml").is_file());
+        assert!(!dir.path().join("requests/auth/r2.toml").exists());
+        assert!(!dir.path().join("requests/auth/ping.toml").exists());
+        assert_eq!(p.journal_len(), 0);
     }
 
     #[test]

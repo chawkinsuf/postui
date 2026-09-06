@@ -140,9 +140,6 @@ struct Memory {
     secrets: IndexMap<String, IndexMap<String, String>>,
     resolved: Resolved,
     spaces: Vec<String>,
-    listing: Vec<RequestListing>,
-    listing_warning: Option<String>,
-    open_requests: IndexMap<String, crate::model::HttpRequest>,
     local: Local,
 }
 
@@ -301,9 +298,6 @@ impl Project {
             secrets: self.secrets.clone(),
             resolved: self.resolved.clone(),
             spaces: self.spaces.clone(),
-            listing: self.listing.clone(),
-            listing_warning: self.listing_warning.clone(),
-            open_requests: self.open_requests.clone(),
             local: self.local.clone(),
         }
     }
@@ -317,10 +311,31 @@ impl Project {
         self.secrets = m.secrets;
         self.resolved = m.resolved;
         self.spaces = m.spaces;
-        self.listing = m.listing;
-        self.listing_warning = m.listing_warning;
-        self.open_requests = m.open_requests;
         self.local = m.local;
+    }
+
+    /// Re-reads every key of `open_requests` from disk (re-parse, or drop
+    /// when it no longer parses or exists). Extracted so both `reload_all`
+    /// and a failed transaction's rollback can use it: the listing and
+    /// every held request are not part of [`Memory`] (they can be large),
+    /// so both are re-derived from disk instead of snapshotted.
+    pub(crate) fn reload_held_requests(&mut self) {
+        let held: Vec<String> = self.open_requests.keys().cloned().collect();
+        for slug in held {
+            match request_rel(&slug).and_then(|p| Ok(self.disk.read(&p)?)) {
+                Ok(Some(text)) => match crate::model::HttpRequest::from_toml_str(&text) {
+                    Ok(req) => {
+                        self.open_requests.insert(slug, req);
+                    }
+                    Err(_) => {
+                        self.open_requests.shift_remove(&slug);
+                    }
+                },
+                _ => {
+                    self.open_requests.shift_remove(&slug);
+                }
+            }
+        }
     }
 
     /// Runs `f` as one undo entry. Every primitive `f` calls records its
@@ -357,10 +372,27 @@ impl Project {
                 Ok(v)
             }
             Err(e) => {
+                // Best-effort rollback: if any reversal itself fails, disk
+                // and the about-to-be-restored memory snapshot may now
+                // disagree with each other. Force the next `poll` to
+                // re-sync memory from whatever disk actually holds rather
+                // than let it silently drift.
+                let mut reversal_failed = false;
                 for op in ops.iter().rev() {
-                    let _ = self.apply_inverse_unrecorded(op);
+                    if self.apply_inverse_unrecorded(op).is_err() {
+                        reversal_failed = true;
+                    }
                 }
                 self.restore(snapshot);
+                // The listing and every held request are not part of the
+                // snapshot (they can be large); re-derive them from disk,
+                // which the rollback above has already put back to its
+                // pre-transaction state.
+                self.relist();
+                self.reload_held_requests();
+                if reversal_failed {
+                    self.force_reload = true;
+                }
                 Err(e)
             }
         }
@@ -393,11 +425,33 @@ impl Project {
         }
     }
 
+    /// The slug `open_requests` would hold a request under, for a path
+    /// under `requests/`; `None` for anything else (a directory, or a
+    /// file elsewhere).
+    fn request_slug_of(path: &RelPath) -> Option<String> {
+        path.as_str()
+            .strip_prefix(&format!("{REQUESTS_DIR}/"))?
+            .strip_suffix(".toml")
+            .map(str::to_string)
+    }
+
     /// Reverses one op without recording anything (rollback of a failed
     /// transaction). Task 11's `apply_inverse` is the recording twin.
     fn apply_inverse_unrecorded(&mut self, op: &Op) -> Result<(), Error> {
         match op {
-            Op::Renamed { from, to } => self.disk.rename(to, from)?,
+            Op::Renamed { from, to } => {
+                self.disk.rename(to, from)?;
+                // `open_requests` is not part of the transaction snapshot
+                // (see `Memory`); a held request the transaction re-keyed
+                // to follow this rename must be re-keyed back here, in
+                // step with the disk move just reversed above, so
+                // `reload_held_requests` finds it under its original slug.
+                if let (Some(f), Some(t)) = (Self::request_slug_of(from), Self::request_slug_of(to))
+                    && let Some(req) = self.open_requests.shift_remove(&t)
+                {
+                    self.open_requests.insert(f, req);
+                }
+            }
             Op::Created { path } => {
                 if self.disk.is_dir(path) {
                     self.disk.remove_dir_all(path)?
@@ -494,8 +548,11 @@ impl Project {
             .map_err(|e: toml_edit::TomlError| parse_err(PROJECT_TOML)(&e))?;
         f(&mut doc);
         let new_text = doc.to_string();
+        // Validate before writing: a rejected edit must leave the file and
+        // `self.meta` untouched, not a document `ProjectMeta` can't parse.
+        let parsed: ProjectMeta = toml::from_str(&new_text).map_err(|e| parse_err(PROJECT_TOML)(&e))?;
         self.fs_write_text(&path, Some(&new_text))?;
-        self.meta = toml::from_str(&new_text).map_err(|e| parse_err(PROJECT_TOML)(&e))?;
+        self.meta = parsed;
         Ok(())
     }
 
@@ -547,6 +604,7 @@ impl Project {
         }
         self.force_reload = false;
         let warnings = self.reload_documents();
+        self.relist();
         (true, warnings)
     }
 
@@ -662,22 +720,7 @@ impl Project {
             }
         }
         self.relist();
-        let held: Vec<String> = self.open_requests.keys().cloned().collect();
-        for slug in held {
-            match request_rel(&slug).and_then(|p| Ok(self.disk.read(&p)?)) {
-                Ok(Some(text)) => match crate::model::HttpRequest::from_toml_str(&text) {
-                    Ok(req) => {
-                        self.open_requests.insert(slug, req);
-                    }
-                    Err(_) => {
-                        self.open_requests.shift_remove(&slug);
-                    }
-                },
-                _ => {
-                    self.open_requests.shift_remove(&slug);
-                }
-            }
-        }
+        self.reload_held_requests();
         self.refresh_resolved();
         warnings
     }
@@ -1169,6 +1212,20 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn poll_relists_requests_when_a_watched_file_changes() {
+        let (dir, mut p) = fixture();
+        std::fs::write(
+            dir.path().join("requests/main/extra.toml"),
+            "name = \"Extra\"\nmethod = \"GET\"\nurl = \"u\"\n",
+        )
+        .unwrap();
+        bump_mtime(&dir.path().join("requests"));
+        let (changed, warnings) = p.poll();
+        assert!(changed && warnings.is_empty(), "{warnings:?}");
+        assert!(p.requests().iter().any(|l| l.slug == "main/extra"));
+    }
+
+    #[test]
     fn poll_with_a_broken_file_warns_and_keeps_the_previous_value() {
         let (dir, mut p) = fixture();
         std::fs::write(dir.path().join("variables.toml"), "[host\n").unwrap();
@@ -1250,14 +1307,31 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn edit_project_toml_never_writes_a_document_meta_rejects() {
+        let (dir, mut p) = fixture();
+        let before = read(&dir, "project.toml").unwrap();
+        let r = p.edit_project_toml(|doc| doc["bogus_key"] = toml_edit::value(1));
+        assert!(matches!(r, Err(Error::Parse { .. })), "{r:?}");
+        assert_eq!(read(&dir, "project.toml").as_deref(), Some(before.as_str()));
+        assert_eq!(p.journal_len(), 0);
+    }
+
+    #[test]
     fn a_failed_transaction_restores_the_in_memory_documents() {
         let (dir, mut p) = fixture();
+        p.open_request("main/ping").unwrap();
         let path = RelPath::new("variables.toml").unwrap();
+        let from = RelPath::new("requests/main/ping.toml").unwrap();
+        let to = RelPath::new("requests/main/renamed.toml").unwrap();
         let r: Result<(), Error> = p.transaction("t", EntryMeta::default(), |p| {
             p.spaces.push("bogus".to_string());
             p.active_env = None;
             p.secrets.entry("dev".to_string()).or_default().insert("k".to_string(), "v".to_string());
             p.fs_write_text(&path, Some("[changed]\n"))?;
+            p.fs_rename(&from, &to)?;
+            if let Some(req) = p.open_requests.shift_remove("main/ping") {
+                p.open_requests.insert("main/renamed".to_string(), req);
+            }
             Err(Error::Conflict("boom".into()))
         });
         assert!(r.is_err());
@@ -1266,5 +1340,7 @@ pub(crate) mod tests {
         assert!(p.secrets().get("dev").is_none());
         assert_eq!(read(&dir, "variables.toml").as_deref(), Some("[host]\ndefault = \"localhost\"\n"));
         assert_eq!(p.journal_len(), 0);
+        assert!(p.held_request("main/ping").is_some(), "the rename was rolled back");
+        assert!(p.held_request("main/renamed").is_none());
     }
 }

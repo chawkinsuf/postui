@@ -165,6 +165,9 @@ impl Journal {
     /// A redo's product goes back on the undo stack without clearing redo.
     pub fn push_undo_replayed(&mut self, entry: Entry) {
         self.undo.push(entry);
+        if self.undo.len() > self.cap {
+            self.undo.remove(0);
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -226,6 +229,20 @@ mod tests {
         let mut j = Journal::with_cap(2);
         j.push(text_entry("a", "x", "", "1"));
         j.push(text_entry("b", "x", "1", "2"));
+        j.push(text_entry("c", "x", "2", "3"));
+        assert_eq!(j.len(), 2);
+        assert_eq!(j.pop_undo().unwrap().label, "c");
+        assert_eq!(j.pop_undo().unwrap().label, "b");
+        assert!(j.pop_undo().is_none());
+    }
+
+    #[test]
+    fn push_undo_replayed_also_respects_the_cap() {
+        let mut j = Journal::with_cap(2);
+        j.push(text_entry("a", "x", "", "1"));
+        j.push(text_entry("b", "x", "1", "2"));
+        let b = j.pop_undo().unwrap();
+        j.push_undo_replayed(b);
         j.push(text_entry("c", "x", "2", "3"));
         assert_eq!(j.len(), 2);
         assert_eq!(j.pop_undo().unwrap().label, "c");
