@@ -6,6 +6,7 @@
 //! are deleted once the app has migrated (stage 3). New code never calls
 //! their disk paths, only their pure text helpers.
 
+mod environments;
 mod legacy;
 mod local;
 mod spaces;
