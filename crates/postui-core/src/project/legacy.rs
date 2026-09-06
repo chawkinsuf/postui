@@ -122,19 +122,19 @@ pub fn env_display(meta: &ProjectMeta, slug: &str) -> String {
 
 /// Which of the two settings tables an op edits.
 #[derive(Clone, Copy)]
-enum Kind {
+pub(crate) enum Kind {
     Space,
     Environment,
 }
 
 impl Kind {
-    fn table(self) -> &'static str {
+    pub(crate) fn table(self) -> &'static str {
         match self {
             Kind::Space => "space",
             Kind::Environment => "environment",
         }
     }
-    fn fallback_slug(self) -> &'static str {
+    pub(crate) fn fallback_slug(self) -> &'static str {
         match self {
             Kind::Space => "space",
             Kind::Environment => "environment",
@@ -171,12 +171,12 @@ pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> 
 }
 
 /// `[<kind>.<slug>] name = <name>`, keeping the table's other keys.
-fn set_item_name(doc: &mut toml_edit::DocumentMut, kind: Kind, slug: &str, name: &str) {
+pub(crate) fn set_item_name(doc: &mut toml_edit::DocumentMut, kind: Kind, slug: &str, name: &str) {
     set_item_key(doc, kind, slug, "name", name)
 }
 
 /// `[<kind>.<slug>] <key> = <value>`, keeping the table's other keys.
-fn set_item_key(doc: &mut toml_edit::DocumentMut, kind: Kind, slug: &str, key: &str, value: &str) {
+pub(crate) fn set_item_key(doc: &mut toml_edit::DocumentMut, kind: Kind, slug: &str, key: &str, value: &str) {
     let table = doc
         .entry(kind.table())
         .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
@@ -195,7 +195,7 @@ fn set_item_key(doc: &mut toml_edit::DocumentMut, kind: Kind, slug: &str, key: &
 
 /// Moves `[<kind>.<from>]` to `[<kind>.<to>]` whole, so any setting a
 /// future build (or the user's hand) put there survives a rename.
-fn move_item_table(doc: &mut toml_edit::DocumentMut, kind: Kind, from: &str, to: &str) {
+pub(crate) fn move_item_table(doc: &mut toml_edit::DocumentMut, kind: Kind, from: &str, to: &str) {
     if from == to {
         return;
     }
@@ -206,7 +206,7 @@ fn move_item_table(doc: &mut toml_edit::DocumentMut, kind: Kind, from: &str, to:
     }
 }
 
-fn remove_item_table(doc: &mut toml_edit::DocumentMut, kind: Kind, slug: &str) {
+pub(crate) fn remove_item_table(doc: &mut toml_edit::DocumentMut, kind: Kind, slug: &str) {
     if let Some(t) = doc.get_mut(kind.table()).and_then(|i| i.as_table_mut()) {
         t.remove(slug);
         if t.is_empty() {
@@ -216,7 +216,7 @@ fn remove_item_table(doc: &mut toml_edit::DocumentMut, kind: Kind, slug: &str) {
 }
 
 /// A trimmed, non-empty display name, or `BadName`.
-fn display_name_of(input: &str) -> Result<String, ProjectError> {
+pub(crate) fn display_name_of(input: &str) -> Result<String, ProjectError> {
     let name = input.trim();
     if name.is_empty() {
         return Err(ProjectError::BadName(input.to_string()));
@@ -226,7 +226,7 @@ fn display_name_of(input: &str) -> Result<String, ProjectError> {
 
 /// The slug `display` gets among `taken` (slugs already in use, `exclude`
 /// not counting): `slugify(display)`, then `-2`, `-3`, … until free.
-fn unique_slug_among(
+pub(crate) fn unique_slug_among(
     kind: Kind,
     display: &str,
     taken: impl Fn(&str) -> bool,
@@ -244,7 +244,7 @@ fn unique_slug_among(
 
 /// Whether `display` (case-insensitively) already names one of `slugs`,
 /// other than `exclude`.
-fn display_taken(
+pub(crate) fn display_taken(
     display: &str,
     slugs: &[String],
     display_of: impl Fn(&str) -> String,
@@ -414,7 +414,7 @@ pub fn list_environments(root: &Path) -> Vec<String> {
     out
 }
 
-fn valid_space_name(name: &str) -> bool {
+pub(crate) fn valid_space_name(name: &str) -> bool {
     !name.contains('/') && crate::storage::validate_slug(name).is_ok()
 }
 
@@ -571,7 +571,7 @@ pub fn rename_space(root: &Path, from: &str, display: &str) -> Result<String, Pr
     Ok(to)
 }
 
-fn spaces_array(spaces: &[String]) -> toml_edit::Array {
+pub(crate) fn spaces_array(spaces: &[String]) -> toml_edit::Array {
     let mut arr = toml_edit::Array::new();
     for s in spaces {
         arr.push(s.as_str());
@@ -648,7 +648,7 @@ pub struct ListChange {
 }
 
 /// The displayed (valid-name) entries of a written list, in order.
-fn displayed_spaces(spaces: &[String]) -> Vec<String> {
+pub(crate) fn displayed_spaces(spaces: &[String]) -> Vec<String> {
     spaces
         .iter()
         .filter(|n| valid_space_name(n))
