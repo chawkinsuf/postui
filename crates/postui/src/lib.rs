@@ -7,6 +7,7 @@ pub mod components;
 pub mod config;
 pub mod glyph;
 pub mod hit;
+pub mod hostfs;
 pub mod http;
 pub mod keydump;
 pub mod keys;

@@ -2193,12 +2193,7 @@ impl App {
                     return true;
                 };
                 let expanded = crate::config::expand_tilde(&path);
-                let result = (|| -> std::io::Result<()> {
-                    if let Some(parent) = expanded.parent() {
-                        std::fs::create_dir_all(parent)?;
-                    }
-                    std::fs::write(&expanded, &data.body)
-                })();
+                let result = crate::hostfs::write_user_file(&expanded, data.body.as_bytes());
                 match result {
                     Ok(()) => self.toasts.push(
                         format!("Saved body to {}", expanded.display()),
@@ -2251,12 +2246,7 @@ impl App {
                 };
                 let text = view.view_text();
                 let expanded = crate::config::expand_tilde(&path);
-                let result = (|| -> std::io::Result<()> {
-                    if let Some(parent) = expanded.parent() {
-                        std::fs::create_dir_all(parent)?;
-                    }
-                    std::fs::write(&expanded, &text)
-                })();
+                let result = crate::hostfs::write_user_file(&expanded, text.as_bytes());
                 match result {
                     Ok(()) => self.toasts.push(
                         format!("Saved to {}", expanded.display()),

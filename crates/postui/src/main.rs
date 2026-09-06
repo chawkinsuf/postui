@@ -331,7 +331,7 @@ fn edit_body_externally(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
 ) -> anyhow::Result<()> {
-    let path = write_editor_tempfile("postui-body-", ".json", &app.editor.body_text())?;
+    let path = postui::hostfs::editor_tempfile("postui-body-", ".json", &app.editor.body_text())?;
     run_editor_and_restore(terminal, app, &path, true)
 }
 
@@ -353,28 +353,8 @@ fn view_response_externally(
                 if d.content_type.as_deref().is_some_and(|c| c.contains("json"))
         );
     let suffix = if is_json_body { ".json" } else { ".txt" };
-    let path = write_editor_tempfile("postui-response-", suffix, &view.view_text())?;
+    let path = postui::hostfs::editor_tempfile("postui-response-", suffix, &view.view_text())?;
     run_editor_and_restore(terminal, app, &path, false)
-}
-
-/// Writes `text` to a fresh temp file for an external-editor round-trip and
-/// keeps the file alive (into_temp_path is dropped by the caller when the
-/// editor exits — `run_editor_and_restore` removes it explicitly instead so
-/// the path stays valid for the child's whole lifetime).
-fn write_editor_tempfile(
-    prefix: &str,
-    suffix: &str,
-    text: &str,
-) -> anyhow::Result<std::path::PathBuf> {
-    use std::io::Write;
-    let file = tempfile::Builder::new()
-        .prefix(prefix)
-        .suffix(suffix)
-        .tempfile()?;
-    let (mut handle, path) = file.keep()?;
-    handle.write_all(text.as_bytes())?;
-    handle.flush()?;
-    Ok(path)
 }
 
 /// Tears the TUI down, runs `$EDITOR` (falling back to `vi`) on `path`,
@@ -420,7 +400,7 @@ fn run_editor_and_restore(
     match status {
         Ok(s) if s.success() => {
             if read_back {
-                match std::fs::read_to_string(path) {
+                match postui::hostfs::read_tempfile(path) {
                     // Editors conventionally leave a trailing newline;
                     // keeping it would add a phantom blank line and a
                     // spurious dirty flag on every round-trip.
@@ -454,6 +434,6 @@ fn run_editor_and_restore(
             ));
         }
     }
-    let _ = std::fs::remove_file(path);
+    postui::hostfs::remove_tempfile(path);
     Ok(())
 }

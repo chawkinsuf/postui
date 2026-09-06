@@ -107,26 +107,17 @@ pub struct FilePickerState {
 /// returned.
 pub fn list_dir(dir: &Path, show_hidden: bool, mode: PickerMode) -> std::io::Result<Vec<Entry>> {
     let mut entries = Vec::new();
-    for item in std::fs::read_dir(dir)? {
-        // One unreadable entry (a dangling symlink, a race with a delete)
-        // is skipped rather than failing the whole listing.
-        let Ok(item) = item else { continue };
-        let name = item.file_name().to_string_lossy().into_owned();
-        // `metadata` follows symlinks, so a link to a folder lists as one.
-        let Ok(meta) = std::fs::metadata(item.path()) else {
-            continue;
-        };
-        if !show_hidden && is_hidden(&name, platform_attributes(&meta)) {
+    for e in crate::hostfs::list_dir(dir)? {
+        if !show_hidden && is_hidden(&e.name, e.attributes) {
             continue;
         }
-        let is_dir = meta.is_dir();
-        if mode == PickerMode::ChooseDir && !is_dir {
+        if mode == PickerMode::ChooseDir && !e.is_dir {
             continue;
         }
-        let is_project = is_dir && postui_core::project::Project::is_project(&item.path());
+        let is_project = e.is_dir && postui_core::project::Project::is_project(&e.path);
         entries.push(Entry {
-            name,
-            is_dir,
+            name: e.name,
+            is_dir: e.is_dir,
             is_project,
         });
     }
@@ -140,17 +131,6 @@ pub fn list_dir(dir: &Path, show_hidden: bool, mode: PickerMode) -> std::io::Res
 }
 
 const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
-
-#[cfg(windows)]
-fn platform_attributes(meta: &std::fs::Metadata) -> u32 {
-    use std::os::windows::fs::MetadataExt;
-    meta.file_attributes()
-}
-
-#[cfg(not(windows))]
-fn platform_attributes(_meta: &std::fs::Metadata) -> u32 {
-    0
-}
 
 /// Whether an entry with this name and these raw platform attributes is
 /// hidden: a leading dot on every platform, or the Windows hidden bit.
