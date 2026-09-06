@@ -46,3 +46,7 @@ wiremock = "0.6"
 # integration tests get the feature-gated test helpers without callers
 # having to pass `--features test-util` by hand.
 postui = { path = ".", features = ["test-util"] }
+# Same trick for the core crate: its `fixtures` module (the former
+# project-file free functions) is what the app's tests use to write and
+# read project files directly.
+postui-core = { path = "../postui-core", features = ["test-util"] }

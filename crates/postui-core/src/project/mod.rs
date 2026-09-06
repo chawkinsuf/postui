@@ -2,19 +2,18 @@
 //! project's files, holds the parsed documents, and records its own undo
 //! journal. See docs/superpowers/specs/2026-09-05-project-file-access-design.md.
 //!
-//! `legacy` holds the stateless free functions the app still calls; they
-//! are deleted once the app has migrated (stage 3). New code never calls
-//! their disk paths, only their pure text helpers.
+//! `meta` holds the pure helpers over `ProjectMeta`, slugs and display
+//! names that the rest of the module builds on; it touches no files.
 
 mod environments;
-mod legacy;
 mod local;
+mod meta;
 mod migration;
 mod spaces;
 mod undo;
 mod varedit_ops;
 mod variables;
-pub use legacy::*;
+pub use meta::*;
 pub use undo::Undone;
 pub use varedit_ops::VarEdit;
 
@@ -54,13 +53,13 @@ pub enum Error {
     NothingPending,
 }
 
-impl From<legacy::ProjectError> for Error {
-    fn from(e: legacy::ProjectError) -> Self {
+impl From<meta::ProjectError> for Error {
+    fn from(e: meta::ProjectError) -> Self {
         match e {
-            legacy::ProjectError::BadName(n) => Error::BadName(n),
-            legacy::ProjectError::LastSpace => Error::LastSpace,
-            legacy::ProjectError::AlreadyExists(n) => Error::AlreadyExists(n),
-            legacy::ProjectError::NotFound(n) => Error::NotFound(n),
+            meta::ProjectError::BadName(n) => Error::BadName(n),
+            meta::ProjectError::LastSpace => Error::LastSpace,
+            meta::ProjectError::AlreadyExists(n) => Error::AlreadyExists(n),
+            meta::ProjectError::NotFound(n) => Error::NotFound(n),
             other => Error::Edit(other.to_string()),
         }
     }
@@ -172,7 +171,7 @@ pub(crate) fn request_rel(slug: &str) -> Result<RelPath, Error> {
 }
 
 pub(crate) fn space_rel(space: &str) -> Result<RelPath, Error> {
-    if !legacy::valid_space_name(space) {
+    if !meta::valid_space_name(space) {
         return Err(Error::BadName(space.to_string()));
     }
     rel(&format!("{REQUESTS_DIR}/{space}"))
@@ -219,7 +218,7 @@ impl Project {
             .flatten()
             .and_then(|text| toml::from_str::<ProjectMeta>(&text).ok())
             .unwrap_or_default();
-        legacy::display_name(root, &meta)
+        meta::display_name(root, &meta)
     }
 
     pub fn root(&self) -> &Path {
@@ -227,7 +226,7 @@ impl Project {
     }
 
     pub fn display_name(&self) -> String {
-        legacy::display_name(self.root(), &self.meta)
+        meta::display_name(self.root(), &self.meta)
     }
 
     pub fn meta(&self) -> &ProjectMeta {
@@ -269,17 +268,17 @@ impl Project {
     }
 
     pub fn space_name(&self, slug: &str) -> String {
-        legacy::space_display(&self.meta, slug)
+        meta::space_display(&self.meta, slug)
     }
 
     pub fn env_name(&self, slug: &str) -> String {
-        legacy::env_display(&self.meta, slug)
+        meta::env_display(&self.meta, slug)
     }
 
     pub fn env_tls(&self) -> Option<TlsPolicy> {
         self.active_env
             .as_deref()
-            .and_then(|slug| legacy::env_tls(&self.meta, slug))
+            .and_then(|slug| meta::env_tls(&self.meta, slug))
     }
 
     pub fn prepare_context(&self) -> crate::prepare::PrepareContext {
@@ -809,7 +808,7 @@ impl Project {
         let mut out: Vec<String> = Vec::new();
         let mut skipped: Vec<String> = Vec::new();
         for name in &meta.spaces {
-            if !legacy::valid_space_name(name) {
+            if !meta::valid_space_name(name) {
                 if !skipped.contains(name) {
                     skipped.push(name.clone());
                 }
@@ -822,7 +821,7 @@ impl Project {
         let mut unlisted = Vec::new();
         if let Ok(dir) = RelPath::new(REQUESTS_DIR) {
             for e in disk.list(&dir).unwrap_or_default() {
-                if e.is_dir && legacy::valid_space_name(&e.name) && !out.contains(&e.name) {
+                if e.is_dir && meta::valid_space_name(&e.name) && !out.contains(&e.name) {
                     unlisted.push(e.name);
                 }
             }
@@ -995,7 +994,7 @@ impl Project {
     /// never overwriting anything present, then opens it.
     pub fn init(root: &Path, name: Option<&str>) -> Result<(Project, Vec<Warning>), OpenError> {
         let mut disk = Disk::new(root.to_path_buf());
-        // What `legacy::init_project` wrote, through `Disk`: the two
+        // What `meta::init_project` wrote, through `Disk`: the two
         // directories, a `default` environment when the project has none
         // that `list_environments` recognises, and the three seed files —
         // each created only if absent, never rewritten.
@@ -1052,7 +1051,7 @@ impl Project {
             let seeded = (|| -> Result<(), Error> {
                 project.fs_create_dir(&space_rel(&spaces[0])?)?;
                 project.edit_project_toml(|doc| {
-                    doc["spaces"] = toml_edit::value(legacy::spaces_array(&spaces));
+                    doc["spaces"] = toml_edit::value(meta::spaces_array(&spaces));
                 })
             })();
             match seeded {
@@ -1088,7 +1087,7 @@ impl Project {
             let mut doc: toml_edit::DocumentMut = text
                 .parse()
                 .map_err(|e: toml_edit::TomlError| parse_err(PROJECT_TOML)(&e))?;
-            doc["spaces"] = toml_edit::value(legacy::spaces_array(&spaces));
+            doc["spaces"] = toml_edit::value(meta::spaces_array(&spaces));
             let new_text = doc.to_string();
             // Validate before writing, as `edit_project_toml` does.
             let parsed: ProjectMeta =

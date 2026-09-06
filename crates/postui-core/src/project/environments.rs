@@ -5,8 +5,8 @@ use super::*;
 
 impl Project {
     pub fn environment_slug_for(&self, display: &str, exclude: Option<&str>) -> String {
-        legacy::unique_slug_among(
-            legacy::Kind::Environment,
+        meta::unique_slug_among(
+            meta::Kind::Environment,
             display,
             |slug| env_rel(slug).map(|p| self.disk.exists(&p)).unwrap_or(false),
             exclude,
@@ -60,10 +60,10 @@ impl Project {
     }
 
     pub fn create_environment(&mut self, display: &str) -> Result<String, Error> {
-        let display = legacy::display_name_of(display)?;
+        let display = meta::display_name_of(display)?;
         let meta = self.meta.clone();
         let existing = self.environments.clone();
-        if legacy::display_taken(&display, &existing, |s| legacy::env_display(&meta, s), None) {
+        if meta::display_taken(&display, &existing, |s| meta::env_display(&meta, s), None) {
             return Err(Error::AlreadyExists(display));
         }
         let slug = self.environment_slug_for(&display, None);
@@ -75,7 +75,7 @@ impl Project {
         };
         self.transaction("create environment", entry_meta, |p| {
             p.fs_create_file(&env_rel(&slug)?, "")?;
-            p.edit_project_toml(|doc| legacy::set_item_name(doc, legacy::Kind::Environment, &slug, &display))?;
+            p.edit_project_toml(|doc| meta::set_item_name(doc, meta::Kind::Environment, &slug, &display))?;
             p.refresh_environments();
             p.load_active_env(&slug)?;
             p.refresh_resolved();
@@ -86,14 +86,14 @@ impl Project {
     }
 
     pub fn rename_environment(&mut self, from: &str, display: &str) -> Result<String, Error> {
-        let display = legacy::display_name_of(display)?;
+        let display = meta::display_name_of(display)?;
         let from_path = env_rel(from)?;
         if !self.disk.is_file(&from_path) {
             return Err(Error::NotFound(from.to_string()));
         }
         let meta = self.meta.clone();
         let existing = self.environments.clone();
-        if legacy::display_taken(&display, &existing, |s| legacy::env_display(&meta, s), Some(from)) {
+        if meta::display_taken(&display, &existing, |s| meta::env_display(&meta, s), Some(from)) {
             return Err(Error::AlreadyExists(display));
         }
         let to = self.environment_slug_for(&display, Some(from));
@@ -108,8 +108,8 @@ impl Project {
                 p.fs_rename(&from_path, &env_rel(&to)?)?;
             }
             p.edit_project_toml(|doc| {
-                legacy::move_item_table(doc, legacy::Kind::Environment, &from, &to);
-                legacy::set_item_name(doc, legacy::Kind::Environment, &to, &display);
+                meta::move_item_table(doc, meta::Kind::Environment, &from, &to);
+                meta::set_item_name(doc, meta::Kind::Environment, &to, &display);
             })?;
             if to != from {
                 if let Some(sel) = p.local.selections.shift_remove(&from) {
@@ -145,7 +145,7 @@ impl Project {
             ..EntryMeta::default()
         };
         self.transaction("delete environment", entry_meta, |p| {
-            p.edit_project_toml(|doc| legacy::remove_item_table(doc, legacy::Kind::Environment, &name))?;
+            p.edit_project_toml(|doc| meta::remove_item_table(doc, meta::Kind::Environment, &name))?;
             p.fs_trash(&path)?;
             p.local.selections.shift_remove(&name);
             if p.secrets.shift_remove(&name).is_some() {
@@ -171,10 +171,10 @@ impl Project {
         let slug = slug.to_string();
         self.transaction("set tls policy", EntryMeta::default(), |p| {
             p.edit_project_toml(|doc| match policy {
-                Some(pol) => legacy::set_item_key(doc, legacy::Kind::Environment, &slug, "tls", pol.as_str()),
+                Some(pol) => meta::set_item_key(doc, meta::Kind::Environment, &slug, "tls", pol.as_str()),
                 None => {
                     if let Some(it) = doc
-                        .get_mut(legacy::Kind::Environment.table())
+                        .get_mut(meta::Kind::Environment.table())
                         .and_then(|i| i.as_table_mut())
                         .and_then(|t| t.get_mut(&slug))
                         .and_then(|i| i.as_table_mut())

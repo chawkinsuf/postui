@@ -3,6 +3,14 @@ name = "postui-core"
 edition.workspace = true
 version.workspace = true
 
+[features]
+# Exposes `postui_core::fixtures`, the former free functions that write and
+# read project files directly. Tests use them as fixtures; nothing in the
+# library or the app calls them. The crate's own unit tests see the module
+# through `cfg(test)`; this feature is what makes it visible to another
+# crate's tests.
+test-util = []
+
 [dependencies]
 serde.workspace = true
 indexmap.workspace = true

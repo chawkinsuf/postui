@@ -96,7 +96,7 @@ async fn stage6_acceptance_flow() {
         .await;
 
     let dir = tempfile::tempdir().unwrap();
-    postui_core::project::init_project(dir.path(), Some("acme")).unwrap();
+    postui_core::fixtures::init_project(dir.path(), Some("acme")).unwrap();
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
@@ -332,7 +332,7 @@ async fn stage6_acceptance_flow() {
     app.handle_key(&keymap, enter());
 
     assert!(app.modals.is_empty(), "confirming the secret closes it");
-    let secrets = postui_core::project::load_secrets(dir.path()).unwrap();
+    let secrets = postui_core::fixtures::load_secrets(dir.path()).unwrap();
     assert_eq!(secrets["qa"]["api_key"], "sk-qa-999");
 
     let generation = app.session.send_generation;
@@ -424,7 +424,7 @@ region = \"west-9\"\n",
 #[test]
 fn variables_toml_comments_survive_one_manager_edit() {
     let dir = tempfile::tempdir().unwrap();
-    postui_core::project::init_project(dir.path(), Some("acme")).unwrap();
+    postui_core::fixtures::init_project(dir.path(), Some("acme")).unwrap();
     std::fs::write(
         dir.path().join("variables.toml"),
         "\

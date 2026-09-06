@@ -3441,7 +3441,7 @@ impl App {
             }
             Action::OpenProjectByPath(text) => {
                 let path = crate::config::expand_tilde(&text);
-                if postui_core::project::is_project(&path) {
+                if postui_core::project::Project::is_project(&path) {
                     self.apply(Action::SwitchProject(path));
                 } else {
                     let display = path.display().to_string();

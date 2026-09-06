@@ -72,7 +72,7 @@ fn seed(app: &mut App, slugs: &[&str]) {
     // Every request lives in a space; these all go in the default one, so
     // call sites can keep speaking bare names.
     for slug in slugs {
-        postui_core::storage::save_request(app.proj().root(), &format!("main/{slug}"), &req)
+        postui_core::fixtures::save_request(app.proj().root(), &format!("main/{slug}"), &req)
             .unwrap();
     }
     app.update(Action::RefreshSidebar);
@@ -147,7 +147,7 @@ fn right_click_sidebar_row_opens_menu_and_duplicate_creates_copy() {
     );
 
     press(&mut app, Hit::DropdownRow(1), left_down);
-    assert!(postui_core::storage::request_exists(
+    assert!(postui_core::fixtures::request_exists(
         app.proj().root(),
         "main/users/list-copy"
     ));
@@ -265,7 +265,7 @@ fn context_menu_is_keyboard_navigable() {
     // Open, Duplicate — one Down lands on Duplicate.
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(postui_core::storage::request_exists(
+    assert!(postui_core::fixtures::request_exists(
         app.proj().root(),
         "main/users/list-copy"
     ));
@@ -343,7 +343,7 @@ fn duplicate_request_action_acts_on_the_selected_row() {
     expand_all(&mut app);
     app.sidebar.selected = Some(row_index_of(&app, "users/list"));
     app.update(Action::DuplicateRequest);
-    assert!(postui_core::storage::request_exists(
+    assert!(postui_core::fixtures::request_exists(
         app.proj().root(),
         "main/users/list-copy"
     ));
@@ -352,7 +352,7 @@ fn duplicate_request_action_acts_on_the_selected_row() {
     // A second duplicate of the original does not collide.
     app.sidebar.selected = Some(row_index_of(&app, "users/list"));
     app.update(Action::DuplicateRequest);
-    assert!(postui_core::storage::request_exists(
+    assert!(postui_core::fixtures::request_exists(
         app.proj().root(),
         "main/users/list-copy-2"
     ));
@@ -380,7 +380,7 @@ type TestApp = (App, tempfile::TempDir, UnboundedReceiver<Action>);
 
 fn app_in_project(files: &[(&str, &str)]) -> TestApp {
     let dir = tempfile::tempdir().unwrap();
-    postui_core::project::init_project(dir.path(), Some("svc")).unwrap();
+    postui_core::fixtures::init_project(dir.path(), Some("svc")).unwrap();
     // A scenario that brings its own environments stands in for a project
     // whose author replaced the stock `default`; keep only theirs.
     if files
@@ -457,7 +457,7 @@ fn a_request_is_opened_edited_and_saved_with_nothing_but_clicks() {
     // ...and clicking it writes the file.
     click(&mut app, Hit::FooterChip(Action::SaveRequest));
     assert!(!app.editor.is_dirty(), "the click saved");
-    let on_disk = postui_core::storage::load_request(app.proj().root(), "main/ping").unwrap();
+    let on_disk = postui_core::fixtures::load_request(app.proj().root(), "main/ping").unwrap();
     assert_eq!(on_disk.method, postui_core::model::Method::Post);
 }
 
@@ -777,7 +777,7 @@ async fn a_three_megabyte_json_body_spins_on_the_tree_tab_and_shows_it_when_it_p
         .await;
 
     let dir = tempfile::tempdir().unwrap();
-    postui_core::project::init_project(dir.path(), Some("svc")).unwrap();
+    postui_core::fixtures::init_project(dir.path(), Some("svc")).unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.editor.url =

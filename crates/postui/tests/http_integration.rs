@@ -169,7 +169,7 @@ async fn a_multi_megabyte_json_body_is_pretty_printed_in_the_background() {
         .await;
 
     let dir = tempfile::tempdir().unwrap();
-    postui_core::project::init_project(dir.path(), Some("svc")).unwrap();
+    postui_core::fixtures::init_project(dir.path(), Some("svc")).unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = postui::app::App::with_root(tx, dir.path().to_path_buf());
     app.editor.url =
@@ -275,7 +275,7 @@ async fn send_substitutes_vars_and_applies_default_headers() {
         .await;
 
     let dir = tempfile::tempdir().unwrap();
-    postui_core::project::init_project(dir.path(), Some("svc")).unwrap();
+    postui_core::fixtures::init_project(dir.path(), Some("svc")).unwrap();
     std::fs::write(
         dir.path().join("project.toml"),
         "name = \"svc\"\n[default_headers]\naccept = \"application/json\"\nauthorization = \"Bearer {{tok}}\"\n",
@@ -327,7 +327,7 @@ async fn disabled_request_header_row_suppresses_a_default_header() {
         .await;
 
     let dir = tempfile::tempdir().unwrap();
-    postui_core::project::init_project(dir.path(), Some("svc")).unwrap();
+    postui_core::fixtures::init_project(dir.path(), Some("svc")).unwrap();
     std::fs::write(
         dir.path().join("project.toml"),
         "name = \"svc\"\n[default_headers]\naccept = \"application/json\"\n",

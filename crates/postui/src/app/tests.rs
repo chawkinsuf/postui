@@ -40,7 +40,7 @@ fn init_default_startup_writes_project_toml_with_the_main_space() {
     app.init_default_project(app.root().to_path_buf());
 
     assert_eq!(
-        postui_core::project::load_meta(dir.path()).unwrap().spaces,
+        postui_core::fixtures::load_meta(dir.path()).unwrap().spaces,
         ["main"]
     );
     assert_eq!(app.proj().spaces(), ["main"]);
@@ -60,7 +60,7 @@ fn resolve_startup_cli_non_project_root_prompts_create() {
 #[test]
 fn resolve_startup_cli_existing_project_is_registered() {
     let dir = tempfile::tempdir().unwrap();
-    postui_core::project::init_project(dir.path(), None).unwrap();
+    postui_core::fixtures::init_project(dir.path(), None).unwrap();
     let registry = crate::config::ProjectsRegistry::default();
     let (root, disposition, _) =
         resolve_startup(&registry, Some(dir.path().to_path_buf()), None).unwrap();
@@ -88,7 +88,7 @@ fn resolve_startup_registry_last_wins_over_known() {
 #[test]
 fn resolve_startup_cli_beats_registry_last() {
     let dir = tempfile::tempdir().unwrap();
-    postui_core::project::init_project(dir.path(), None).unwrap();
+    postui_core::fixtures::init_project(dir.path(), None).unwrap();
     let registry = crate::config::ProjectsRegistry {
         last: Some(PathBuf::from("/elsewhere")),
         ..Default::default()
@@ -156,11 +156,11 @@ fn resolve_startup_returns_none_when_nothing_available() {
 #[test]
 fn init_project_here_creates_project_toml_at_current_root() {
     let mut app = App::new_for_test();
-    assert!(!postui_core::project::is_project(app.proj().root()));
+    assert!(!postui_core::project::Project::is_project(app.proj().root()));
     app.update(Action::InitProjectHere);
-    assert!(postui_core::project::is_project(app.proj().root()));
+    assert!(postui_core::project::Project::is_project(app.proj().root()));
     assert_eq!(
-        postui_core::project::load_meta(app.proj().root())
+        postui_core::fixtures::load_meta(app.proj().root())
             .unwrap()
             .spaces,
         ["main"]
@@ -1555,7 +1555,7 @@ fn a_collapsing_commit_reresolves_the_row_a_delete_click_named() {
 #[test]
 fn ctrl_s_commits_the_cell_under_edit_into_the_saved_file() {
     let mut app = App::new_for_test();
-    postui_core::storage::save_request(app.proj().root(), "main/ping", &req("https://x/ping"))
+    postui_core::fixtures::save_request(app.proj().root(), "main/ping", &req("https://x/ping"))
         .unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::OpenRequest("main/ping".into()));
@@ -1566,7 +1566,7 @@ fn ctrl_s_commits_the_cell_under_edit_into_the_saved_file() {
     type_chars(&mut app, "page");
     app.handle_key(&Keymap::default_bindings(), ctrl('s'));
 
-    let saved = postui_core::storage::load_request(app.proj().root(), "main/ping").unwrap();
+    let saved = postui_core::fixtures::load_request(app.proj().root(), "main/ping").unwrap();
     assert!(
         saved.params.contains_key("page"),
         "the cell under the caret is part of what ctrl+s saves: {:?}",
@@ -1578,7 +1578,7 @@ fn ctrl_s_commits_the_cell_under_edit_into_the_saved_file() {
 #[test]
 fn clicking_the_toolbar_save_chip_commits_the_cell_under_edit_and_saves() {
     let mut app = App::new_for_test();
-    postui_core::storage::save_request(app.proj().root(), "main/ping", &req("https://x/ping"))
+    postui_core::fixtures::save_request(app.proj().root(), "main/ping", &req("https://x/ping"))
         .unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::OpenRequest("main/ping".into()));
@@ -1589,7 +1589,7 @@ fn clicking_the_toolbar_save_chip_commits_the_cell_under_edit_and_saves() {
     type_chars(&mut app, "page");
     click_hit(&mut app, Hit::FooterChip(Action::SaveRequest));
 
-    let saved = postui_core::storage::load_request(app.proj().root(), "main/ping").unwrap();
+    let saved = postui_core::fixtures::load_request(app.proj().root(), "main/ping").unwrap();
     assert!(
         saved.params.contains_key("page"),
         "the in-progress cell rides along with a mouse-only save: {:?}",
@@ -2315,7 +2315,7 @@ fn horizontal_wheel_over_the_response_pane_scrolls_it_sideways() {
 /// URL, so quit paths can exercise the unsaved-changes gate.
 fn dirty_app() -> App {
     let mut app = App::new_for_test();
-    postui_core::storage::save_request(app.proj().root(), "main/r", &req("https://x/r")).unwrap();
+    postui_core::fixtures::save_request(app.proj().root(), "main/r", &req("https://x/r")).unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/r".into()));
     app.focus = PaneId::Editor;
@@ -2450,7 +2450,7 @@ fn saving_a_scratch_through_the_gate_chains_the_quit() {
         app.handle_key(&keymap, plain(c));
     }
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    let saved = postui_core::storage::load_request(app.proj().root(), "main/fresh").unwrap();
+    let saved = postui_core::fixtures::load_request(app.proj().root(), "main/fresh").unwrap();
     assert_eq!(saved.url, "https://x/scratch");
     assert!(app.should_quit, "the deferred quit ran after the save");
 }
@@ -2485,7 +2485,7 @@ fn escaping_the_gates_save_prompt_cancels_everything() {
 #[test]
 fn opening_a_request_over_a_scratch_gates_first() {
     let mut app = scratch_app();
-    postui_core::storage::save_request(app.proj().root(), "main/other", &req("https://x/other"))
+    postui_core::fixtures::save_request(app.proj().root(), "main/other", &req("https://x/other"))
         .unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::OpenRequest("main/other".into()));
@@ -2801,13 +2801,13 @@ fn req(url: &str) -> postui_core::model::HttpRequest {
 fn sidebar_lists_requests_grouped_and_enter_opens() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();
-    postui_core::storage::ensure_project(dir.path()).unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
     // Both live in the active space `main`; `auth` is a folder *inside*
     // it, so the tree still groups (a second space would simply be
     // invisible here).
-    postui_core::storage::save_request(dir.path(), "main/auth/login", &req("https://x/login"))
+    postui_core::fixtures::save_request(dir.path(), "main/auth/login", &req("https://x/login"))
         .unwrap();
-    postui_core::storage::save_request(dir.path(), "main/ping", &req("https://x/ping")).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/ping", &req("https://x/ping")).unwrap();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
     assert_eq!(
@@ -2847,9 +2847,9 @@ fn sidebar_lists_requests_grouped_and_enter_opens() {
 fn startup_restores_persisted_open_request() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();
-    postui_core::storage::ensure_project(dir.path()).unwrap();
-    postui_core::storage::save_request(dir.path(), "main/ping", &req("https://x/ping")).unwrap();
-    postui_core::project::save_local_state(
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/ping", &req("https://x/ping")).unwrap();
+    postui_core::fixtures::save_local_state(
         dir.path(),
         &postui_core::project::LocalState {
             environment: None,
@@ -2874,12 +2874,12 @@ fn startup_restores_persisted_open_request() {
 fn startup_restores_open_request_inside_a_collapsed_folder() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();
-    postui_core::storage::ensure_project(dir.path()).unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
     // `auth` is a folder *inside* the active space, not a space: the point
     // of this test is the ancestor-folder expansion, which only happens for
     // a slug nested under the space root.
-    postui_core::storage::save_request(dir.path(), "main/auth/login", &req("https://x/l")).unwrap();
-    postui_core::project::save_local_state(
+    postui_core::fixtures::save_request(dir.path(), "main/auth/login", &req("https://x/l")).unwrap();
+    postui_core::fixtures::save_local_state(
         dir.path(),
         &postui_core::project::LocalState {
             environment: None,
@@ -2904,8 +2904,8 @@ fn startup_restores_open_request_inside_a_collapsed_folder() {
 fn startup_without_persisted_open_request_selects_nothing() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();
-    postui_core::storage::ensure_project(dir.path()).unwrap();
-    postui_core::storage::save_request(dir.path(), "main/ping", &req("https://x/ping")).unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/ping", &req("https://x/ping")).unwrap();
 
     let app = App::with_root(tx, dir.path().to_path_buf());
     assert_eq!(app.editor.slug, None);
@@ -2920,11 +2920,11 @@ fn startup_without_persisted_open_request_selects_nothing() {
 fn force_open_request_selects_its_sidebar_row() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();
-    postui_core::storage::ensure_project(dir.path()).unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
     // `auth` is a folder inside the active space, so opening `login`
     // really does have an ancestor folder to expand.
-    postui_core::storage::save_request(dir.path(), "main/auth/login", &req("https://x/l")).unwrap();
-    postui_core::storage::save_request(dir.path(), "main/ping", &req("https://x/ping")).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/auth/login", &req("https://x/l")).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/ping", &req("https://x/ping")).unwrap();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
     // Opened by an out-of-band route (palette, dirty-gate confirm, …)
@@ -2942,9 +2942,9 @@ fn opening_another_request_swaps_the_response_panel() {
     use crate::components::response::ResponseState;
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();
-    postui_core::storage::ensure_project(dir.path()).unwrap();
-    postui_core::storage::save_request(dir.path(), "main/a", &req("https://x/a")).unwrap();
-    postui_core::storage::save_request(dir.path(), "main/b", &req("https://x/b")).unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/a", &req("https://x/a")).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/b", &req("https://x/b")).unwrap();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
     app.update(Action::ForceOpenRequest("main/a".into()));
@@ -2969,9 +2969,9 @@ fn opening_another_request_swaps_the_response_panel() {
 fn opening_over_dirty_editor_prompts_save_discard_cancel() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();
-    postui_core::storage::ensure_project(dir.path()).unwrap();
-    postui_core::storage::save_request(dir.path(), "main/a", &req("https://x/a")).unwrap();
-    postui_core::storage::save_request(dir.path(), "main/b", &req("https://x/b")).unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/a", &req("https://x/a")).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/b", &req("https://x/b")).unwrap();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     let keymap = Keymap::default_bindings();
 
@@ -3007,7 +3007,7 @@ fn opening_over_dirty_editor_prompts_save_discard_cancel() {
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
     app.handle_key(&keymap, plain('s'));
     assert_eq!(app.editor.slug.as_deref(), Some("main/b"));
-    let saved = postui_core::storage::load_request(dir.path(), "main/a").unwrap();
+    let saved = postui_core::fixtures::load_request(dir.path(), "main/a").unwrap();
     assert_eq!(
         saved.url, "https://x/a/",
         "the edit was persisted before opening b"
@@ -3017,10 +3017,10 @@ fn opening_over_dirty_editor_prompts_save_discard_cancel() {
 fn sidebar_test_app() -> (App, tempfile::TempDir) {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();
-    postui_core::storage::ensure_project(dir.path()).unwrap();
-    postui_core::storage::save_request(dir.path(), "main/api/ping", &req("https://x/ping"))
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/api/ping", &req("https://x/ping"))
         .unwrap();
-    postui_core::storage::save_request(dir.path(), "main/top", &req("https://x/top")).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/top", &req("https://x/top")).unwrap();
     let app = App::with_root(tx, dir.path().to_path_buf());
     (app, dir)
 }
@@ -3031,10 +3031,10 @@ fn sidebar_test_app() -> (App, tempfile::TempDir) {
 fn spaced_app() -> (App, tempfile::TempDir) {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();
-    postui_core::storage::ensure_project(dir.path()).unwrap();
-    postui_core::project::create_space(dir.path(), "auth").unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
+    postui_core::fixtures::create_space(dir.path(), "auth").unwrap();
     for slug in ["main/alpha", "main/beta", "auth/login"] {
-        postui_core::storage::save_request(dir.path(), slug, &req("https://x/1")).unwrap();
+        postui_core::fixtures::save_request(dir.path(), slug, &req("https://x/1")).unwrap();
     }
     let app = App::with_root(tx, dir.path().to_path_buf());
     (app, dir)
@@ -3079,7 +3079,7 @@ fn switching_spaces_restores_each_spaces_open_request_and_persists() {
     );
     app.update(Action::SwitchSpace("main".into()));
     assert_eq!(app.editor.slug.as_deref(), Some("main/beta"), "remembered");
-    let st = postui_core::project::load_local_state(dir.path()).unwrap();
+    let st = postui_core::fixtures::load_local_state(dir.path()).unwrap();
     assert_eq!(st.space.as_deref(), Some("main"));
     assert_eq!(st.space_open["auth"], "auth/login");
     assert_eq!(st.space_open["main"], "main/beta");
@@ -3088,7 +3088,7 @@ fn switching_spaces_restores_each_spaces_open_request_and_persists() {
 #[test]
 fn switching_to_an_empty_space_clears_the_editor() {
     let (mut app, dir) = spaced_app();
-    postui_core::project::create_space(dir.path(), "empty").unwrap();
+    postui_core::fixtures::create_space(dir.path(), "empty").unwrap();
     app.update(Action::ReloadProjectFiles);
     app.reload_project_documents();
     app.update(Action::ForceOpenRequest("main/alpha".into()));
@@ -3279,7 +3279,7 @@ fn a_request_under_an_invalid_space_dir_warns_once_and_never_enters_the_tree() {
 #[test]
 fn an_invalid_listed_space_name_warns_once_and_survives_the_next_space_op() {
     let (mut app, dir) = spaced_app();
-    postui_core::project::write_spaces(
+    postui_core::fixtures::write_spaces(
         dir.path(),
         &["main".into(), "Not Valid".into(), "auth".into()],
     )
@@ -3312,7 +3312,7 @@ fn an_invalid_listed_space_name_warns_once_and_survives_the_next_space_op() {
     // entry — it keeps its slot in `project.toml`.
     app.update(Action::CreateSpace("billing".into()));
     assert_eq!(
-        postui_core::project::load_meta(dir.path()).unwrap().spaces,
+        postui_core::fixtures::load_meta(dir.path()).unwrap().spaces,
         ["main", "Not Valid", "auth", "billing"]
     );
     assert_eq!(app.proj().spaces(), ["main", "auth", "billing"]);
@@ -3433,7 +3433,7 @@ fn creating_an_environment_with_a_free_form_name_slugs_the_file_and_undoes_with_
 
     app.update(Action::Undo);
     assert!(!dir.path().join("environments/staging-eu.toml").exists());
-    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     assert!(
         meta.environment.get("staging-eu").is_none(),
         "project.toml rides along with the step"
@@ -3481,7 +3481,7 @@ fn renaming_an_environment_takes_a_display_name_and_reslugs() {
     app.update(Action::Undo);
     assert!(dir.path().join("environments/qa.toml").is_file());
     assert!(!dir.path().join("environments/qa-staging.toml").exists());
-    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     assert!(meta.environment.get("qa-staging").is_none());
 }
 
@@ -3522,7 +3522,7 @@ fn rename_space_cascades_editor_sidebar_and_state() {
     assert_eq!(app.editor.slug.as_deref(), Some("identity/login"));
     assert!(!app.editor.is_dirty());
     assert!(dir.path().join("requests/identity/login.toml").is_file());
-    let st = postui_core::project::load_local_state(dir.path()).unwrap();
+    let st = postui_core::fixtures::load_local_state(dir.path()).unwrap();
     assert_eq!(st.space.as_deref(), Some("identity"));
     assert_eq!(st.space_open["identity"], "identity/login");
 }
@@ -3579,7 +3579,7 @@ fn delete_space_confirms_with_the_count_then_trashes_and_undoes() {
     );
     assert_eq!(app.editor.slug.as_deref(), Some("auth/login"));
     assert_eq!(
-        postui_core::project::load_meta(dir.path()).unwrap().spaces,
+        postui_core::fixtures::load_meta(dir.path()).unwrap().spaces,
         ["auth"]
     );
 
@@ -3595,7 +3595,7 @@ fn delete_space_confirms_with_the_count_then_trashes_and_undoes() {
 #[test]
 fn delete_space_refuses_the_last_space_and_shows_a_plain_label_for_an_empty_one() {
     let (mut app, dir) = spaced_app();
-    postui_core::project::create_space(dir.path(), "empty").unwrap();
+    postui_core::fixtures::create_space(dir.path(), "empty").unwrap();
     app.update(Action::ReloadProjectFiles);
     app.reload_project_documents();
     app.update(Action::DeleteSpace("empty".into()));
@@ -3645,7 +3645,7 @@ fn move_space_reorders_and_persists() {
     });
     assert_eq!(app.proj().spaces(), ["auth", "main"]);
     assert_eq!(
-        postui_core::project::load_meta(dir.path()).unwrap().spaces,
+        postui_core::fixtures::load_meta(dir.path()).unwrap().spaces,
         ["auth", "main"]
     );
     app.update(Action::JumpSpace(1));
@@ -3660,7 +3660,7 @@ fn two_move_space_steps_in_a_row_both_land_without_waiting_for_mtime() {
     // `ReloadProjectFiles` is mtime-gated; on a coarse-mtime filesystem two
     // writes in the same tick look unchanged. Nothing here sleeps.
     let (mut app, dir) = spaced_app();
-    postui_core::project::create_space(dir.path(), "billing").unwrap();
+    postui_core::fixtures::create_space(dir.path(), "billing").unwrap();
     app.reload_project_documents();
     assert_eq!(app.proj().spaces(), ["main", "auth", "billing"]);
 
@@ -3674,7 +3674,7 @@ fn two_move_space_steps_in_a_row_both_land_without_waiting_for_mtime() {
     });
     assert_eq!(app.proj().spaces(), ["billing", "main", "auth"]);
     assert_eq!(
-        postui_core::project::load_meta(dir.path()).unwrap().spaces,
+        postui_core::fixtures::load_meta(dir.path()).unwrap().spaces,
         ["billing", "main", "auth"]
     );
 }
@@ -3698,7 +3698,7 @@ fn move_request_reorders_persists_and_keeps_the_selection_on_the_moved_row() {
         .collect();
     assert_eq!(slugs, ["main/beta", "main/alpha"]);
     assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/beta"));
-    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     assert_eq!(
         postui_core::order::space_order(&meta, "main"),
         ["beta", "alpha"]
@@ -3708,7 +3708,7 @@ fn move_request_reorders_persists_and_keeps_the_selection_on_the_moved_row() {
 #[test]
 fn two_move_request_steps_in_a_row_both_land_without_waiting_for_mtime() {
     let (mut app, _dir) = spaced_app();
-    postui_core::storage::save_request(_dir.path(), "main/gamma", &req("https://x/3")).unwrap();
+    postui_core::fixtures::save_request(_dir.path(), "main/gamma", &req("https://x/3")).unwrap();
     app.update(Action::RefreshSidebar);
     for _ in 0..2 {
         app.update(Action::MoveRequest {
@@ -3801,7 +3801,7 @@ fn move_all_requests_empties_the_source_and_follows_the_open_request() {
 #[test]
 fn undo_of_a_move_all_puts_every_file_and_both_lists_back_and_follows_the_open_request() {
     let (mut app, dir) = slotted_app(&["gamma", "alpha"]);
-    postui_core::order::set_level_order(dir.path(), "auth", "", &["login".to_string()]).unwrap();
+    postui_core::fixtures::set_level_order(dir.path(), "auth", "", &["login".to_string()]).unwrap();
     app.reload_project_documents();
     app.update(Action::ForceOpenRequest("main/alpha".into()));
     app.update(Action::MoveAllRequests {
@@ -3810,7 +3810,7 @@ fn undo_of_a_move_all_puts_every_file_and_both_lists_back_and_follows_the_open_r
     });
     assert_eq!(app.editor.slug.as_deref(), Some("auth/alpha"));
     assert_eq!(app.proj().local().active_space, "auth");
-    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     assert_eq!(
         postui_core::order::space_order(&meta, "auth"),
         ["login", "gamma", "alpha", "beta"]
@@ -3831,7 +3831,7 @@ fn undo_of_a_move_all_puts_every_file_and_both_lists_back_and_follows_the_open_r
             "{slug} gone"
         );
     }
-    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     assert_eq!(
         postui_core::order::space_order(&meta, "main"),
         ["gamma", "alpha"]
@@ -3851,7 +3851,7 @@ fn undo_of_a_move_all_puts_every_file_and_both_lists_back_and_follows_the_open_r
     app.update(Action::Redo);
     assert!(dir.path().join("requests/auth/beta.toml").is_file());
     assert!(!dir.path().join("requests/main/beta.toml").exists());
-    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     assert!(postui_core::order::space_order(&meta, "main").is_empty());
     assert_eq!(
         postui_core::order::space_order(&meta, "auth"),
@@ -3866,7 +3866,7 @@ fn move_all_requests_cascades_the_order_lists() {
     // them; the destination is unlisted, so the arrivals sort
     // alphabetically there rather than materialising a list.
     let (mut app, dir) = spaced_app();
-    postui_core::order::set_level_order(
+    postui_core::fixtures::set_level_order(
         dir.path(),
         "main",
         "",
@@ -3878,7 +3878,7 @@ fn move_all_requests_cascades_the_order_lists() {
         from: "main".into(),
         to: "auth".into(),
     });
-    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     assert!(
         postui_core::order::space_order(&meta, "main").is_empty(),
         "no stale entry left in the emptied space"
@@ -3893,9 +3893,9 @@ fn move_all_requests_cascades_the_order_lists() {
 
 fn slotted_app(order: &[&str]) -> (App, tempfile::TempDir) {
     let (mut app, dir) = spaced_app();
-    postui_core::storage::save_request(dir.path(), "main/gamma", &req("https://x/3")).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/gamma", &req("https://x/3")).unwrap();
     let order: Vec<String> = order.iter().map(|s| s.to_string()).collect();
-    postui_core::order::set_level_order(dir.path(), "main", "", &order).unwrap();
+    postui_core::fixtures::set_level_order(dir.path(), "main", "", &order).unwrap();
     app.reload_project_documents();
     app.update(Action::RefreshSidebar);
     render_once(&mut app);
@@ -3903,7 +3903,7 @@ fn slotted_app(order: &[&str]) -> (App, tempfile::TempDir) {
 }
 
 fn slot_order(dir: &tempfile::TempDir) -> Vec<String> {
-    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     postui_core::order::space_order(&meta, "main").to_vec()
 }
 
@@ -3965,13 +3965,13 @@ fn undo_of_a_duplicate_drops_the_copys_slot() {
 #[test]
 fn undo_of_a_move_to_space_restores_both_lists() {
     let (mut app, dir) = slotted_app(&["beta", "alpha"]);
-    postui_core::order::set_level_order(dir.path(), "auth", "", &["login".to_string()]).unwrap();
+    postui_core::fixtures::set_level_order(dir.path(), "auth", "", &["login".to_string()]).unwrap();
     app.reload_project_documents();
     app.update(Action::ForceMoveRequestToSpace {
         slug: "main/alpha".into(),
         space: "auth".into(),
     });
-    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     assert_eq!(postui_core::order::space_order(&meta, "main"), ["beta"]);
     assert_eq!(
         postui_core::order::space_order(&meta, "auth"),
@@ -3979,7 +3979,7 @@ fn undo_of_a_move_to_space_restores_both_lists() {
     );
 
     app.update(Action::Undo);
-    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     assert_eq!(
         postui_core::order::space_order(&meta, "main"),
         ["beta", "alpha"]
@@ -4090,7 +4090,7 @@ fn a_dropped_row_drag_is_its_own_undo_step() {
     app.handle_mouse(left_down(r0.x + 2, r0.y));
     app.handle_mouse(moved(r0.x + 2, r2.y));
     app.handle_mouse(left_up(r0.x + 2, r2.y));
-    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     assert_eq!(
         postui_core::order::space_order(&meta, "main"),
         ["beta", "gamma", "alpha"]
@@ -4104,7 +4104,7 @@ fn a_dropped_row_drag_is_its_own_undo_step() {
     app.handle_mouse(moved(r2.x + 2, r1.y));
     app.handle_mouse(left_up(r2.x + 2, r1.y));
     assert_eq!(app.history.undo_len(), steps + 2);
-    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     assert_eq!(
         postui_core::order::space_order(&meta, "main"),
         ["beta", "alpha", "gamma"]
@@ -4112,7 +4112,7 @@ fn a_dropped_row_drag_is_its_own_undo_step() {
 
     app.update(Action::Undo);
     app.update(Action::Undo);
-    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     assert!(
         postui_core::order::space_order(&meta, "main").is_empty(),
         "the level was never listed before the first drag, and is not after its undo"
@@ -4127,7 +4127,7 @@ fn a_dropped_row_drag_is_its_own_undo_step() {
 #[test]
 fn quick_keyboard_space_moves_roll_up_into_one_undo_step() {
     let (mut app, dir) = spaced_app();
-    postui_core::project::create_space(dir.path(), "billing").unwrap();
+    postui_core::fixtures::create_space(dir.path(), "billing").unwrap();
     app.reload_project_documents();
     assert_eq!(app.proj().spaces(), ["main", "auth", "billing"]);
     let steps = app.history.undo_len();
@@ -4235,7 +4235,7 @@ fn undo_walks_back_through_a_space_create_to_the_reorder_beneath_it() {
 fn undo_of_a_move_all_follows_the_open_request_even_when_it_collided() {
     let (mut app, dir) = spaced_app();
     // `auth` already has an `alpha`, so main's lands as `alpha-2`.
-    postui_core::storage::save_request(dir.path(), "auth/alpha", &req("https://x/a")).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "auth/alpha", &req("https://x/a")).unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/alpha".into()));
     app.update(Action::MoveAllRequests {
@@ -4266,22 +4266,22 @@ fn move_all_requests_keeps_the_source_arrangement_in_a_listed_destination() {
     // must arrive them in the order the source displayed them, or the
     // user's arrangement is silently re-materialised as alphabetical.
     let (mut app, dir) = spaced_app();
-    postui_core::storage::save_request(dir.path(), "main/gamma", &req("https://x/3")).unwrap();
-    postui_core::order::set_level_order(
+    postui_core::fixtures::save_request(dir.path(), "main/gamma", &req("https://x/3")).unwrap();
+    postui_core::fixtures::set_level_order(
         dir.path(),
         "main",
         "",
         &["gamma".to_string(), "alpha".to_string()],
     )
     .unwrap();
-    postui_core::order::set_level_order(dir.path(), "auth", "", &["login".to_string()]).unwrap();
+    postui_core::fixtures::set_level_order(dir.path(), "auth", "", &["login".to_string()]).unwrap();
     app.reload_project_documents();
     app.update(Action::RefreshSidebar);
     app.update(Action::MoveAllRequests {
         from: "main".into(),
         to: "auth".into(),
     });
-    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     assert_eq!(
         postui_core::order::space_order(&meta, "auth"),
         ["login", "gamma", "alpha", "beta"],
@@ -4328,7 +4328,7 @@ fn move_all_requests_holding_a_dirty_open_request_gates_first() {
 fn ordered_app() -> (App, tempfile::TempDir) {
     // main: alpha, beta (listed as beta, alpha); auth: login
     let (mut app, dir) = spaced_app();
-    postui_core::order::set_level_order(dir.path(), "main", "", &["beta".into(), "alpha".into()])
+    postui_core::fixtures::set_level_order(dir.path(), "main", "", &["beta".into(), "alpha".into()])
         .unwrap();
     app.reload_project_documents();
     app.update(Action::RefreshSidebar);
@@ -4336,7 +4336,7 @@ fn ordered_app() -> (App, tempfile::TempDir) {
 }
 
 fn main_order(dir: &tempfile::TempDir) -> Vec<String> {
-    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     postui_core::order::space_order(&meta, "main").to_vec()
 }
 
@@ -4379,7 +4379,7 @@ fn moving_to_another_space_removes_here_and_arrives_there_only_if_listed() {
         space: "auth".into(),
     });
     assert_eq!(main_order(&dir), ["alpha"]);
-    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     assert!(
         postui_core::order::space_order(&meta, "auth").is_empty(),
         "auth has no list yet"
@@ -4435,7 +4435,7 @@ fn request_context_menu_offers_one_move_row_that_opens_the_space_chooser() {
 #[test]
 fn request_context_menu_has_no_move_row_in_a_single_space_project() {
     let mut app = App::new_for_test();
-    postui_core::storage::save_request(app.proj().root(), "main/ping", &req("https://x/ping"))
+    postui_core::fixtures::save_request(app.proj().root(), "main/ping", &req("https://x/ping"))
         .unwrap();
     app.update(Action::RefreshSidebar);
     render_once(&mut app);
@@ -4544,7 +4544,7 @@ fn a_blocked_secrets_write_refuses_the_whole_environment_rename() {
     // env's secrets in one transaction: if the secrets write cannot
     // happen, nothing does — no half-renamed environment.
     let (mut app, dir) = spaced_app();
-    postui_core::project::create_environment(dir.path(), "dev").unwrap();
+    postui_core::fixtures::create_environment(dir.path(), "dev").unwrap();
     app.reload_project_documents();
     app.update(Action::SwitchEnv(Some("dev".into())));
     app.proj_mut().set_secret("token", "s3cret".into()).unwrap();
@@ -4669,9 +4669,9 @@ fn click_folder_arrow_expands_the_folder() {
 fn sidebar_test_app_three_flat_rows() -> (App, tempfile::TempDir) {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();
-    postui_core::storage::ensure_project(dir.path()).unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
     for slug in ["main/alpha", "main/beta", "main/gamma"] {
-        postui_core::storage::save_request(dir.path(), slug, &req("https://x/1")).unwrap();
+        postui_core::fixtures::save_request(dir.path(), slug, &req("https://x/1")).unwrap();
     }
     let app = App::with_root(tx, dir.path().to_path_buf());
     (app, dir)
@@ -5110,7 +5110,7 @@ fn clicking_another_row_over_dirty_editor_is_gated_by_confirm() {
 fn broken_file_shows_marker_and_error_modal() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();
-    postui_core::storage::ensure_project(dir.path()).unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
     std::fs::write(
         dir.path().join("requests/main/bad.toml"),
         "url = \"x\"\nurl = \"dup\"\n",
@@ -5144,8 +5144,8 @@ fn dirty_dot_renders_in_sidebar() {
 
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();
-    postui_core::storage::ensure_project(dir.path()).unwrap();
-    postui_core::storage::save_request(dir.path(), "main/a", &req("https://x/a")).unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/a", &req("https://x/a")).unwrap();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.update(Action::ForceOpenRequest("main/a".into()));
     app.focus = PaneId::Editor;
@@ -5182,7 +5182,7 @@ fn new_request_prompt_flow_creates_file_and_opens_it() {
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
     assert_eq!(app.editor.slug.as_deref(), Some("main/api/ping"));
-    assert!(postui_core::storage::load_request(app.proj().root(), "main/api/ping").is_ok());
+    assert!(postui_core::fixtures::load_request(app.proj().root(), "main/api/ping").is_ok());
     assert!(
         app.sidebar
             .rows
@@ -5204,7 +5204,7 @@ fn new_request_accepts_free_form_names_and_derives_the_slug() {
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.editor.slug.as_deref(), Some("main/my-request"));
     assert_eq!(app.editor.name.as_deref(), Some("My Request!"));
-    let loaded = postui_core::storage::load_request(app.proj().root(), "main/my-request").unwrap();
+    let loaded = postui_core::fixtures::load_request(app.proj().root(), "main/my-request").unwrap();
     assert_eq!(loaded.name.as_deref(), Some("My Request!"));
     assert!(
         rendered_text(&mut app).contains("Saved My Request!"),
@@ -5223,7 +5223,7 @@ fn new_request_blank_name_toasts_and_creates_nothing() {
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(!app.toasts.is_empty(), "a blank name must toast");
     assert!(
-        postui_core::storage::list_requests(app.proj().root())
+        postui_core::fixtures::list_requests(app.proj().root())
             .0
             .is_empty()
     );
@@ -5234,14 +5234,14 @@ fn new_request_same_display_name_toasts_and_creates_nothing() {
     let mut app = App::new_for_test();
     app.update(Action::CreateRequest("My Request!".into()));
     assert_eq!(
-        postui_core::storage::list_requests(app.proj().root())
+        postui_core::fixtures::list_requests(app.proj().root())
             .0
             .len(),
         1
     );
     app.update(Action::CreateRequest("my request!".into()));
     assert_eq!(
-        postui_core::storage::list_requests(app.proj().root())
+        postui_core::fixtures::list_requests(app.proj().root())
             .0
             .len(),
         1,
@@ -5278,7 +5278,7 @@ fn rename_flow_speaks_display_names_and_regenerates_the_slug() {
     assert_eq!(app.editor.slug.as_deref(), Some("main/get-user-v2"));
     assert_eq!(app.editor.name.as_deref(), Some("Get User v2"));
     assert_eq!(app.sidebar.open_slug.as_deref(), Some("main/get-user-v2"));
-    let loaded = postui_core::storage::load_request(app.proj().root(), "main/get-user-v2").unwrap();
+    let loaded = postui_core::fixtures::load_request(app.proj().root(), "main/get-user-v2").unwrap();
     assert_eq!(loaded.name.as_deref(), Some("Get User v2"));
 }
 
@@ -5295,7 +5295,7 @@ fn delete_and_duplicate_toasts_show_display_names() {
         app.modals.is_empty(),
         "delete is undoable, so no confirm gate"
     );
-    assert!(!postui_core::storage::request_exists(
+    assert!(!postui_core::fixtures::request_exists(
         app.proj().root(),
         "main/fancy-name"
     ));
@@ -5310,7 +5310,7 @@ fn delete_and_duplicate_toasts_show_display_names() {
     );
     app.update(Action::Undo);
     assert!(
-        postui_core::storage::request_exists(app.proj().root(), "main/fancy-name"),
+        postui_core::fixtures::request_exists(app.proj().root(), "main/fancy-name"),
         "undo restores the deleted request"
     );
 
@@ -5328,22 +5328,22 @@ fn delete_and_duplicate_toasts_show_display_names() {
 fn saving_a_legacy_request_does_not_invent_a_name() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();
-    postui_core::storage::ensure_project(dir.path()).unwrap();
-    postui_core::storage::save_request(dir.path(), "main/legacy", &req("https://x/a")).unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/legacy", &req("https://x/a")).unwrap();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.update(Action::ForceOpenRequest("main/legacy".into()));
     app.focus = PaneId::Editor;
     app.editor.sub_focus = SubFocus::Url;
     app.handle_key(&Keymap::default_bindings(), plain('/'));
     app.update(Action::SaveRequest);
-    let loaded = postui_core::storage::load_request(dir.path(), "main/legacy").unwrap();
+    let loaded = postui_core::fixtures::load_request(dir.path(), "main/legacy").unwrap();
     assert_eq!(loaded.name, None, "no name field appears uninvited");
 }
 
 #[test]
 fn new_request_duplicate_name_toasts_and_leaves_existing_file_alone() {
     let mut app = App::new_for_test();
-    postui_core::storage::save_request(
+    postui_core::fixtures::save_request(
         app.proj().root(),
         "main/api/ping",
         &req("https://x/existing"),
@@ -5363,7 +5363,7 @@ fn new_request_duplicate_name_toasts_and_leaves_existing_file_alone() {
     };
     assert_eq!(input.text(), "api/ping");
     assert!(!app.toasts.is_empty(), "a duplicate name must toast");
-    let existing = postui_core::storage::load_request(app.proj().root(), "main/api/ping").unwrap();
+    let existing = postui_core::fixtures::load_request(app.proj().root(), "main/api/ping").unwrap();
     assert_eq!(
         existing.url, "https://x/existing",
         "existing file must not be overwritten"
@@ -5373,7 +5373,7 @@ fn new_request_duplicate_name_toasts_and_leaves_existing_file_alone() {
 #[test]
 fn rename_request_updates_disk_and_open_slug() {
     let mut app = App::new_for_test();
-    postui_core::storage::save_request(app.proj().root(), "main/old", &req("https://x/old"))
+    postui_core::fixtures::save_request(app.proj().root(), "main/old", &req("https://x/old"))
         .unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/old".into()));
@@ -5400,8 +5400,8 @@ fn rename_request_updates_disk_and_open_slug() {
     }
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
-    assert!(postui_core::storage::load_request(app.proj().root(), "main/old").is_err());
-    assert!(postui_core::storage::load_request(app.proj().root(), "main/new").is_ok());
+    assert!(postui_core::fixtures::load_request(app.proj().root(), "main/old").is_err());
+    assert!(postui_core::fixtures::load_request(app.proj().root(), "main/new").is_ok());
     assert_eq!(app.editor.slug.as_deref(), Some("main/new"));
     assert_eq!(app.sidebar.open_slug.as_deref(), Some("main/new"));
 }
@@ -5409,7 +5409,7 @@ fn rename_request_updates_disk_and_open_slug() {
 #[test]
 fn delete_open_request_clears_editor_and_removes_file() {
     let mut app = App::new_for_test();
-    postui_core::storage::save_request(app.proj().root(), "main/gone", &req("https://x/gone"))
+    postui_core::fixtures::save_request(app.proj().root(), "main/gone", &req("https://x/gone"))
         .unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/gone".into()));
@@ -5421,7 +5421,7 @@ fn delete_open_request_clears_editor_and_removes_file() {
         app.editor.slug.is_none(),
         "editor must reset once its open request is deleted"
     );
-    assert!(postui_core::storage::load_request(app.proj().root(), "main/gone").is_err());
+    assert!(postui_core::fixtures::load_request(app.proj().root(), "main/gone").is_err());
 }
 
 #[test]
@@ -5443,7 +5443,7 @@ fn save_with_no_slug_opens_save_as_prompt() {
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
     assert_eq!(app.editor.slug.as_deref(), Some("main/fresh"));
-    let saved = postui_core::storage::load_request(app.proj().root(), "main/fresh").unwrap();
+    let saved = postui_core::fixtures::load_request(app.proj().root(), "main/fresh").unwrap();
     assert_eq!(saved.url, "https://x/new");
 }
 
@@ -5814,10 +5814,10 @@ fn two_projects() -> (App, tempfile::TempDir, tempfile::TempDir) {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let a = tempfile::tempdir().unwrap();
     let b = tempfile::tempdir().unwrap();
-    postui_core::project::init_project(a.path(), Some("alpha")).unwrap();
-    postui_core::project::init_project(b.path(), Some("beta")).unwrap();
-    postui_core::storage::ensure_project(b.path()).unwrap();
-    postui_core::storage::save_request(b.path(), "main/pong", &req("https://x/pong")).unwrap();
+    postui_core::fixtures::init_project(a.path(), Some("alpha")).unwrap();
+    postui_core::fixtures::init_project(b.path(), Some("beta")).unwrap();
+    postui_core::fixtures::ensure_project(b.path()).unwrap();
+    postui_core::fixtures::save_request(b.path(), "main/pong", &req("https://x/pong")).unwrap();
     let mut app = App::with_root(tx, a.path().to_path_buf());
     app.registry.register(a.path().to_path_buf());
     app.registry.register(b.path().to_path_buf());
@@ -5868,7 +5868,7 @@ fn cycle_switches_to_next_project_and_lists_its_requests() {
 #[test]
 fn cycle_with_dirty_editor_shows_no_switch_toast_until_discard() {
     let (mut app, _a, b) = two_projects();
-    postui_core::storage::save_request(app.proj().root(), "main/r", &req("https://x/r")).unwrap();
+    postui_core::fixtures::save_request(app.proj().root(), "main/r", &req("https://x/r")).unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/r".into()));
     app.focus = PaneId::Editor;
@@ -5895,7 +5895,7 @@ fn cycle_with_dirty_editor_shows_no_switch_toast_until_discard() {
 #[test]
 fn switch_with_dirty_editor_prompts_and_discard_proceeds() {
     let (mut app, _a, b) = two_projects();
-    postui_core::storage::save_request(app.proj().root(), "main/r", &req("https://x/r")).unwrap();
+    postui_core::fixtures::save_request(app.proj().root(), "main/r", &req("https://x/r")).unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/r".into()));
     app.focus = PaneId::Editor;
@@ -5912,7 +5912,7 @@ fn switch_with_dirty_editor_prompts_and_discard_proceeds() {
 #[test]
 fn switch_restores_target_projects_open_request_and_saves_state() {
     let (mut app, a, b) = two_projects();
-    postui_core::project::save_local_state(
+    postui_core::fixtures::save_local_state(
         b.path(),
         &postui_core::project::LocalState {
             open_request: Some("main/pong".into()),
@@ -5923,7 +5923,7 @@ fn switch_restores_target_projects_open_request_and_saves_state() {
     app.update(Action::SwitchProject(b.path().to_path_buf()));
     assert_eq!(app.editor.slug.as_deref(), Some("main/pong"));
     // and the old project's state got written on the way out
-    let old = postui_core::project::load_local_state(a.path()).unwrap();
+    let old = postui_core::fixtures::load_local_state(a.path()).unwrap();
     assert_eq!(old.open_request, None);
 }
 
@@ -5976,7 +5976,7 @@ fn project_chooser_lists_known_and_open_by_path_creates() {
         "non-project path asks to create"
     );
     app.handle_key(&Keymap::default_bindings(), plain('y'));
-    assert!(postui_core::project::is_project(&target));
+    assert!(postui_core::project::Project::is_project(&target));
     assert_eq!(app.proj().root(), target);
 }
 
@@ -6001,7 +6001,7 @@ fn new_project_modal_prefills_path_from_name_and_creates() {
     );
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     let expected = root.path().join("my-svc");
-    assert!(postui_core::project::is_project(&expected));
+    assert!(postui_core::project::Project::is_project(&expected));
     assert_eq!(app.proj().root(), expected);
     assert_eq!(app.proj().display_name(), "My Svc");
     assert!(app.registry.known.contains(&expected));
@@ -6160,7 +6160,7 @@ fn picker_mouse_rows_primary_and_hidden_toggle() {
     let root = tempfile::tempdir().unwrap();
     std::fs::create_dir(root.path().join(".dot")).unwrap();
     std::fs::create_dir(root.path().join("one")).unwrap();
-    postui_core::project::init_project(&root.path().join("one"), Some("one")).unwrap();
+    postui_core::fixtures::init_project(&root.path().join("one"), Some("one")).unwrap();
     app.push_modal(Modal::FilePicker(FilePickerState::new(
         "Open project",
         PickerTarget::OpenProject,
@@ -6211,7 +6211,7 @@ fn picker_mouse_rows_primary_and_hidden_toggle() {
 fn create_project_with_dirty_editor_defers_last_until_dirty_gate_resolves() {
     let (mut app, dir, _b) = two_projects();
     // Dirty the editor on the current (old) project.
-    postui_core::storage::save_request(app.proj().root(), "main/r", &req("https://x/r")).unwrap();
+    postui_core::fixtures::save_request(app.proj().root(), "main/r", &req("https://x/r")).unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/r".into()));
     app.focus = PaneId::Editor;
@@ -6270,10 +6270,10 @@ fn cycle_env_reloads_project_files_before_switching() {
 #[test]
 fn force_open_request_persists_open_request_to_local_state() {
     let mut app = App::new_for_test();
-    postui_core::storage::save_request(app.proj().root(), "main/a", &req("https://x/a")).unwrap();
+    postui_core::fixtures::save_request(app.proj().root(), "main/a", &req("https://x/a")).unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/a".into()));
-    let st = postui_core::project::load_local_state(app.proj().root()).unwrap();
+    let st = postui_core::fixtures::load_local_state(app.proj().root()).unwrap();
     assert_eq!(st.open_request.as_deref(), Some("main/a"));
 }
 
@@ -6393,7 +6393,7 @@ fn stale_table_edit_does_not_capture_insert_var_text_after_focus_moves() {
 fn app_with_envs() -> (App, tempfile::TempDir) {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();
-    postui_core::project::init_project(dir.path(), Some("svc")).unwrap();
+    postui_core::fixtures::init_project(dir.path(), Some("svc")).unwrap();
     // A project whose author replaced the stock `default` env with their
     // own two: `prod` (first, so it's the one an open lands in) and `qa`.
     std::fs::remove_file(dir.path().join("environments/default.toml")).unwrap();
@@ -6410,7 +6410,7 @@ fn set_env_tls_writes_project_toml_and_toasts() {
         env: "prod".into(),
         policy: Some(TlsPolicy::Verify),
     });
-    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     assert_eq!(
         postui_core::project::env_tls(&meta, "prod"),
         Some(TlsPolicy::Verify)
@@ -6595,7 +6595,7 @@ fn cycle_env_wraps_and_skips_no_env() {
         "wraps directly, never through no-env"
     );
     assert_eq!(app.proj().env_data().values["tok"], "p");
-    let st = postui_core::project::load_local_state(dir.path()).unwrap();
+    let st = postui_core::fixtures::load_local_state(dir.path()).unwrap();
     assert_eq!(st.environment.as_deref(), Some("prod"), "persisted");
 
     // alt+shift+x: the other way round, wrapping the same way.
@@ -6639,10 +6639,10 @@ fn rename_env_moves_the_file_rekeys_secrets_and_follows_the_active_env() {
     assert!(dir.path().join("environments/staging.toml").is_file());
     assert!(!dir.path().join("environments/qa.toml").exists());
     assert_eq!(app.env_label(), "staging");
-    let secrets = postui_core::project::load_secrets(dir.path()).unwrap();
+    let secrets = postui_core::fixtures::load_secrets(dir.path()).unwrap();
     assert_eq!(secrets["staging"]["tok"], "s3cret");
     assert!(!secrets.contains_key("qa"));
-    let st = postui_core::project::load_local_state(dir.path()).unwrap();
+    let st = postui_core::fixtures::load_local_state(dir.path()).unwrap();
     assert_eq!(st.environment.as_deref(), Some("staging"));
     assert_eq!(app.proj().selections_for("staging")["user"], "alice");
     assert!(app.proj().selections_for("qa").is_empty());
@@ -6661,7 +6661,7 @@ fn rename_env_moves_the_file_rekeys_secrets_and_follows_the_active_env() {
         "selections re-keyed back"
     );
     assert!(app.proj().selections_for("staging").is_empty());
-    let st = postui_core::project::load_local_state(dir.path()).unwrap();
+    let st = postui_core::fixtures::load_local_state(dir.path()).unwrap();
     assert_eq!(st.selections["qa"]["user"], "alice");
     assert!(
         !st.selections.contains_key("staging"),
@@ -6712,14 +6712,14 @@ fn delete_env_confirms_trashes_clears_the_active_env_and_undoes() {
         "deleting the active env falls through to the first remaining one"
     );
     assert!(
-        !postui_core::project::load_secrets(dir.path())
+        !postui_core::fixtures::load_secrets(dir.path())
             .unwrap()
             .contains_key("qa")
     );
     assert!(!app.proj().environments().contains(&"qa".to_string()));
     assert!(app.proj().selections_for("qa").is_empty());
     assert!(
-        !postui_core::project::load_local_state(dir.path())
+        !postui_core::fixtures::load_local_state(dir.path())
             .unwrap()
             .selections
             .contains_key("qa")
@@ -6729,7 +6729,7 @@ fn delete_env_confirms_trashes_clears_the_active_env_and_undoes() {
     assert!(dir.path().join("environments/qa.toml").is_file());
     assert_eq!(app.env_label(), "qa", "active env restored");
     assert_eq!(
-        postui_core::project::load_secrets(dir.path()).unwrap()["qa"]["tok"],
+        postui_core::fixtures::load_secrets(dir.path()).unwrap()["qa"]["tok"],
         "s3cret"
     );
     assert_eq!(
@@ -6742,7 +6742,7 @@ fn delete_env_confirms_trashes_clears_the_active_env_and_undoes() {
         "the restored selections come back into memory too"
     );
     assert_eq!(
-        postui_core::project::load_local_state(dir.path())
+        postui_core::fixtures::load_local_state(dir.path())
             .unwrap()
             .selections["qa"]["user"],
         "alice"
@@ -6863,7 +6863,7 @@ fn create_env_prompt_flow_creates_empty_file_and_switches() {
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
     assert_eq!(app.env_label(), "dev", "switches to the new env");
     assert!(app.proj().environments().contains(&"dev".to_string()));
-    let st = postui_core::project::load_local_state(dir.path()).unwrap();
+    let st = postui_core::fixtures::load_local_state(dir.path()).unwrap();
     assert_eq!(st.environment.as_deref(), Some("dev"), "persisted");
 }
 
@@ -7102,7 +7102,7 @@ fields = ["user_id", "customer_id"]
             enabled: true,
         },
     );
-    postui_core::storage::save_request(dir.path(), "main/r", &req).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/r", &req).unwrap();
 
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
@@ -7130,7 +7130,7 @@ fields = ["user_id", "customer_id"]
 fn insert_picker_marks_secret_vars_with_the_lock_badge_and_never_shows_the_value() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
-    postui_core::project::save_secrets(dir.path(), &{
+    postui_core::fixtures::save_secrets(dir.path(), &{
         let mut secrets = indexmap::IndexMap::new();
         let mut qa = indexmap::IndexMap::new();
         qa.insert("api_key".to_string(), "sk-super-secret".to_string());
@@ -7209,7 +7209,7 @@ fn insert_picker_new_variable_confirm_creates_the_var_and_inserts_at_the_origina
         app.proj().variables().vars.contains_key("token"),
         "the new variable was declared"
     );
-    let saved = postui_core::project::load_variables(app.proj().root()).unwrap();
+    let saved = postui_core::fixtures::load_variables(app.proj().root()).unwrap();
     assert!(saved.vars.contains_key("token"), "written to disk too");
 }
 
@@ -7250,7 +7250,7 @@ fn insert_picker_new_variable_confirm_with_a_reserved_name_toasts_and_inserts_no
         !app.proj().variables().vars.contains_key("options"),
         "\"options\" must not be declared — it's a reserved name"
     );
-    let saved = postui_core::project::load_variables(app.proj().root()).unwrap();
+    let saved = postui_core::fixtures::load_variables(app.proj().root()).unwrap();
     assert!(
         !saved.vars.contains_key("options"),
         "variables.toml on disk must be unchanged"
@@ -8132,7 +8132,7 @@ fn click_prompt_cancel_button_closes_without_creating_a_request() {
         "clicking Cancel must close the modal, exactly like Esc"
     );
     assert!(
-        postui_core::storage::list_requests(app.proj().root())
+        postui_core::fixtures::list_requests(app.proj().root())
             .0
             .is_empty(),
         "Cancel must not create anything, matching Esc's no-op"
@@ -8153,7 +8153,7 @@ fn click_prompt_confirm_button_creates_the_request_like_enter() {
     assert!(app.handle_mouse(left_down(confirm.x, confirm.y)));
     assert!(app.modals.is_empty());
     assert!(
-        postui_core::storage::load_request(app.proj().root(), "main/api/ping").is_ok(),
+        postui_core::fixtures::load_request(app.proj().root(), "main/api/ping").is_ok(),
         "clicking Confirm must create the request, exactly like Enter"
     );
 }
@@ -8177,7 +8177,7 @@ fn click_new_project_cancel_button_closes_without_creating() {
         "clicking Cancel must close the modal, exactly like Esc"
     );
     assert!(
-        !postui_core::project::is_project(&root.path().join("my-svc")),
+        !postui_core::project::Project::is_project(&root.path().join("my-svc")),
         "Cancel must not create anything, matching Esc's no-op"
     );
 }
@@ -8200,7 +8200,7 @@ fn click_new_project_confirm_button_creates_the_project_like_enter() {
     let expected = root.path().join("my-svc");
     assert!(app.modals.is_empty());
     assert!(
-        postui_core::project::is_project(&expected),
+        postui_core::project::Project::is_project(&expected),
         "clicking Confirm must create the project, exactly like Enter"
     );
     assert_eq!(app.proj().root(), expected);
@@ -8916,7 +8916,7 @@ fn alt_i_toggles_insecure() {
 // --- Task 11: Manager navigation + in-place value editing (spec §5) -------
 
 fn var_project(dir: &std::path::Path) {
-    postui_core::project::init_project(dir, Some("demo")).unwrap();
+    postui_core::fixtures::init_project(dir, Some("demo")).unwrap();
     std::fs::write(
         dir.join("variables.toml"),
         r#"
@@ -8940,7 +8940,7 @@ secret = true
         "base_url = \"https://qa.example.com\"\n\n[options.user.alice]\nuser = \"1001\"\n\n[options.user.bob]\nuser = \"2002\"\n",
     )
     .unwrap();
-    postui_core::project::save_local_state(
+    postui_core::fixtures::save_local_state(
         dir,
         &postui_core::project::LocalState {
             environment: Some("qa".into()),
@@ -9028,7 +9028,7 @@ fn var_edit_set_secret_value_lands_only_in_secrets_toml() {
         value: "sk-live-abc123".into(),
     }));
 
-    let secrets = postui_core::project::load_secrets(dir.path()).unwrap();
+    let secrets = postui_core::fixtures::load_secrets(dir.path()).unwrap();
     assert_eq!(secrets["qa"]["api_key"], "sk-live-abc123");
     assert_eq!(app.proj().resolved().values["api_key"], "sk-live-abc123");
 
@@ -9072,7 +9072,7 @@ fn var_edit_set_request_var_mutates_the_open_editor_and_marks_it_dirty_without_w
     )
     .unwrap();
     req.url = "https://x/ping".into();
-    postui_core::storage::save_request(dir.path(), "main/ping", &req).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/ping", &req).unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.update(Action::ForceOpenRequest("main/ping".into()));
@@ -9115,7 +9115,7 @@ fn var_edit_select_records_the_choice_for_the_targeted_env_even_when_not_active(
         "qa (active) has no selection of its own; must be unaffected"
     );
 
-    let state = postui_core::project::load_local_state(dir.path()).unwrap();
+    let state = postui_core::fixtures::load_local_state(dir.path()).unwrap();
     assert_eq!(state.selections["dev"]["user"], "bob");
 }
 
@@ -9238,7 +9238,7 @@ fn a_new_declaration_selects_its_row_in_the_manager() {
 /// A project whose `locale` selector is shared: options in variables.toml,
 /// two envs (qa active) with empty files.
 fn shared_locale_project(dir: &std::path::Path) {
-    postui_core::project::init_project(dir, Some("demo")).unwrap();
+    postui_core::fixtures::init_project(dir, Some("demo")).unwrap();
     std::fs::write(
         dir.join("variables.toml"),
         "[selectors.locale]\nshared = true\nfields = [\"lang\"]\n\n[options.locale.en]\nlang = \"en\"\n\n[options.locale.fr]\nlang = \"fr\"\n",
@@ -9246,7 +9246,7 @@ fn shared_locale_project(dir: &std::path::Path) {
     .unwrap();
     std::fs::write(dir.join("environments/dev.toml"), "").unwrap();
     std::fs::write(dir.join("environments/qa.toml"), "").unwrap();
-    postui_core::project::save_local_state(
+    postui_core::fixtures::save_local_state(
         dir,
         &postui_core::project::LocalState {
             environment: Some("qa".into()),
@@ -9728,7 +9728,7 @@ fn var_struct_rename_updates_the_declaration() {
 #[test]
 fn var_struct_rename_cascades_into_every_environments_flat_value() {
     let dir = tempfile::tempdir().unwrap();
-    postui_core::project::init_project(dir.path(), Some("demo")).unwrap();
+    postui_core::fixtures::init_project(dir.path(), Some("demo")).unwrap();
     std::fs::write(
         dir.path().join("variables.toml"),
         r#"
@@ -9750,7 +9750,7 @@ fields = ["tier"]
         "[options.tier.gold]\ntier = \"g-1\"\n",
     )
     .unwrap();
-    postui_core::project::save_local_state(
+    postui_core::fixtures::save_local_state(
         dir.path(),
         &postui_core::project::LocalState {
             environment: Some("dev".into()),
@@ -9939,7 +9939,7 @@ fn request_with_var(dir: &std::path::Path, slug: &str, name: &str, value: &str) 
     ))
     .unwrap();
     r.url = format!("https://x/{leaf}");
-    postui_core::storage::save_request(dir, slug, &r).unwrap();
+    postui_core::fixtures::save_request(dir, slug, &r).unwrap();
 }
 
 #[test]
@@ -10006,7 +10006,7 @@ fn var_struct_promote_removes_the_entry_from_the_request_file_on_disk() {
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
     assert!(!app.editor.is_dirty());
-    let on_disk = postui_core::storage::load_request(dir.path(), "main/ping").unwrap();
+    let on_disk = postui_core::fixtures::load_request(dir.path(), "main/ping").unwrap();
     assert!(
         !on_disk.variables.contains_key("trace_id"),
         "the on-disk request file must no longer carry the promoted entry"
@@ -10020,7 +10020,7 @@ fn var_struct_promote_removes_the_entry_from_the_request_file_on_disk() {
 fn extract_to_request_saves_the_request_file_to_disk() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
-    postui_core::storage::save_request(dir.path(), "main/ping", &req("https://x/ping/abc-123"))
+    postui_core::fixtures::save_request(dir.path(), "main/ping", &req("https://x/ping/abc-123"))
         .unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
@@ -10043,7 +10043,7 @@ fn extract_to_request_saves_the_request_file_to_disk() {
         app.toasts.messages()
     );
     assert!(!app.editor.is_dirty());
-    let on_disk = postui_core::storage::load_request(dir.path(), "main/ping").unwrap();
+    let on_disk = postui_core::fixtures::load_request(dir.path(), "main/ping").unwrap();
     assert_eq!(
         on_disk.variables["trace_id"].value,
         "https://x/ping/abc-123"
@@ -10126,7 +10126,7 @@ fn prompt_rename_var_surfaces_scan_usage_count_like_delete_does() {
     var_project(dir.path());
     let mut r = req("https://x/uses-it/{{base_url}}");
     r.url = "https://x/uses-it/{{base_url}}".into();
-    postui_core::storage::save_request(dir.path(), "main/uses-it", &r).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/uses-it", &r).unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
@@ -10196,7 +10196,7 @@ fn delete_var_warns_about_referencing_requests() {
     var_project(dir.path());
     let mut r = req("https://x/uses-it/{{base_url}}");
     r.url = "https://x/uses-it/{{base_url}}".into();
-    postui_core::storage::save_request(dir.path(), "main/uses-it", &r).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/uses-it", &r).unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
 
@@ -10252,7 +10252,7 @@ fn delete_entry_is_immediate_with_an_undo_hint_toast() {
     });
 
     assert!(app.modals.is_empty(), "delete is undoable, no confirm");
-    let env = postui_core::project::load_environment(dir.path(), "qa").unwrap();
+    let env = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
     assert!(!env.options["user"].contains_key("alice"));
     assert!(
         app.toasts.messages().join("\n").contains("^Z undoes"),
@@ -10321,7 +10321,7 @@ fn toggle_secret_var_nonsecret_to_secret_moves_env_values_and_strips_env_files()
 
     assert!(app.toasts.is_empty());
     assert!(app.proj().variables().vars["base_url"].secret);
-    let secrets = postui_core::project::load_secrets(dir.path()).unwrap();
+    let secrets = postui_core::fixtures::load_secrets(dir.path()).unwrap();
     assert_eq!(secrets["qa"]["base_url"], "https://qa.example.com");
     let qa_on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(
@@ -10588,7 +10588,7 @@ fn add_and_remove_group_members_one_at_a_time() {
 // --- Task 14: selection-context picker ---------------------------------
 
 fn group_project(dir: &std::path::Path) {
-    postui_core::project::init_project(dir, Some("demo")).unwrap();
+    postui_core::fixtures::init_project(dir, Some("demo")).unwrap();
     std::fs::write(
         dir.join("variables.toml"),
         r#"
@@ -10613,7 +10613,7 @@ customer_id = "c-78"
 "#,
     )
     .unwrap();
-    postui_core::project::save_local_state(
+    postui_core::fixtures::save_local_state(
         dir,
         &postui_core::project::LocalState {
             environment: Some("qa".into()),
@@ -11456,7 +11456,7 @@ fn select_option_enter_writes_selection_to_state_toml_and_leaves_url_unchanged()
     assert_eq!(app.editor.url.text(), url, "token text must be untouched");
     assert_eq!(app.proj().selections_for("qa")["user"], "alice");
 
-    let state = postui_core::project::load_local_state(dir.path()).unwrap();
+    let state = postui_core::fixtures::load_local_state(dir.path()).unwrap();
     assert_eq!(state.selections["qa"]["user"], "alice");
 
     assert!(
@@ -11489,7 +11489,7 @@ fn select_option_arrows_move_the_selection_and_typing_is_inert() {
 fn blocked_send_toast_names_first_needs_selection_var_with_a_picker_hint() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
-    postui_core::storage::save_request(dir.path(), "main/r", &req("https://x/{{user}}")).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/r", &req("https://x/{{user}}")).unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.update(Action::ForceOpenRequest("main/r".into()));
@@ -11514,7 +11514,7 @@ fn blocked_send_toast_names_first_needs_selection_var_with_a_picker_hint() {
 /// `BTreeMap` iteration order in `PrepareError::Unresolved`) wired into
 /// default headers, so a real send exercises the substituted value.
 fn two_secret_project(dir: &std::path::Path) {
-    postui_core::project::init_project(dir, Some("svc")).unwrap();
+    postui_core::fixtures::init_project(dir, Some("svc")).unwrap();
     std::fs::write(
         dir.join("project.toml"),
         "name = \"svc\"\n[default_headers]\nx-api-key = \"{{api_key}}\"\nx-api-secret = \"{{api_secret}}\"\n",
@@ -11612,7 +11612,7 @@ async fn missing_secrets_prompt_sequentially_then_the_request_sends() {
         _ => panic!("expected a ready response"),
     }
 
-    let secrets = postui_core::project::load_secrets(dir.path()).unwrap();
+    let secrets = postui_core::fixtures::load_secrets(dir.path()).unwrap();
     assert_eq!(secrets["qa"]["api_key"], "key-val");
     assert_eq!(secrets["qa"]["api_secret"], "secret-val");
 }
@@ -11645,7 +11645,7 @@ async fn esc_mid_chain_cancels_the_send_and_keeps_only_confirmed_secrets() {
     let content = rendered_text(&mut app);
     assert!(content.contains("send canceled"), "{content}");
 
-    let secrets = postui_core::project::load_secrets(dir.path()).unwrap();
+    let secrets = postui_core::fixtures::load_secrets(dir.path()).unwrap();
     assert_eq!(secrets["qa"]["api_key"], "key-val");
     assert!(
         !secrets["qa"].contains_key("api_secret"),
@@ -12448,7 +12448,7 @@ fn confirm_edit_option_with_an_emptied_description_removes_it_from_the_env_file(
 /// with `members`, and one environment carrying a keyed `[options.*]`
 /// override.
 fn legacy_project(dir: &std::path::Path) {
-    postui_core::project::init_project(dir, Some("legacy")).unwrap();
+    postui_core::fixtures::init_project(dir, Some("legacy")).unwrap();
     std::fs::write(
         dir.join("variables.toml"),
         r#"
@@ -12473,7 +12473,7 @@ customer_id = "c-77"
         "[options.tier.gold]\nvalue = \"g-qa\"\n",
     )
     .unwrap();
-    postui_core::project::save_local_state(
+    postui_core::fixtures::save_local_state(
         dir,
         &postui_core::project::LocalState {
             environment: Some("qa".into()),
@@ -12619,7 +12619,7 @@ fn declining_the_migration_leaves_the_files_alone_and_the_project_open() {
 #[test]
 fn migrating_a_project_with_no_environments_creates_default_toml_for_the_entries() {
     let dir = tempfile::tempdir().unwrap();
-    postui_core::project::init_project(dir.path(), Some("legacy")).unwrap();
+    postui_core::fixtures::init_project(dir.path(), Some("legacy")).unwrap();
     // A legacy project predates the stock `default` env.
     std::fs::remove_file(dir.path().join("environments/default.toml")).unwrap();
     std::fs::write(
@@ -12671,7 +12671,7 @@ fn a_legacy_projects_saved_selections_survive_the_prompt_and_resolve_after_apply
     qa.insert("tier".to_string(), "gold".to_string());
     qa.insert("user".to_string(), "alice".to_string());
     selections.insert("qa".to_string(), qa);
-    postui_core::project::save_local_state(
+    postui_core::fixtures::save_local_state(
         dir.path(),
         &postui_core::project::LocalState {
             environment: Some("qa".into()),
@@ -12695,7 +12695,7 @@ fn a_legacy_projects_saved_selections_survive_the_prompt_and_resolve_after_apply
     );
     assert_eq!(app.proj().selections_for("qa")["tier"], "gold");
     assert_eq!(app.proj().selections_for("qa")["user"], "alice");
-    let on_disk = postui_core::project::load_local_state(dir.path()).unwrap();
+    let on_disk = postui_core::fixtures::load_local_state(dir.path()).unwrap();
     assert_eq!(on_disk.selections["qa"]["tier"], "gold");
     assert_eq!(on_disk.selections["qa"]["user"], "alice");
 
@@ -12723,7 +12723,7 @@ fn declining_the_migration_leaves_saved_selections_on_disk() {
     let mut qa = indexmap::IndexMap::new();
     qa.insert("tier".to_string(), "gold".to_string());
     selections.insert("qa".to_string(), qa);
-    postui_core::project::save_local_state(
+    postui_core::fixtures::save_local_state(
         dir.path(),
         &postui_core::project::LocalState {
             environment: Some("qa".into()),
@@ -12738,7 +12738,7 @@ fn declining_the_migration_leaves_saved_selections_on_disk() {
     let keymap = Keymap::default_bindings();
     app.handle_key(&keymap, plain('n'));
 
-    let on_disk = postui_core::project::load_local_state(dir.path()).unwrap();
+    let on_disk = postui_core::fixtures::load_local_state(dir.path()).unwrap();
     assert_eq!(
         on_disk.selections["qa"]["tier"], "gold",
         "declining must not touch local state either"
@@ -12910,8 +12910,8 @@ fn computed_headers_reveal_resets_when_switching_to_a_different_request() {
         value: "sk-live-abc123".into(),
     }));
     set_default_header(&mut app, "Authorization", "Bearer {{api_key}}");
-    postui_core::storage::save_request(app.proj().root(), "main/a", &req("https://x/a")).unwrap();
-    postui_core::storage::save_request(app.proj().root(), "main/b", &req("https://x/b")).unwrap();
+    postui_core::fixtures::save_request(app.proj().root(), "main/a", &req("https://x/a")).unwrap();
+    postui_core::fixtures::save_request(app.proj().root(), "main/b", &req("https://x/b")).unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::OpenRequest("main/a".into()));
     app.editor.active_tab = EditorTab::Headers;
@@ -13325,7 +13325,7 @@ fn the_delete_button_opens_the_confirm_with_the_usage_list() {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
     request_with_var(dir.path(), "main/ping", "trace_id", "abc-123");
-    postui_core::storage::save_request(
+    postui_core::fixtures::save_request(
         dir.path(),
         "main/uses-base",
         &req("https://x/uses-base/{{base_url}}"),
@@ -13772,7 +13772,7 @@ fn clicking_an_entrys_radio_records_the_selection_and_re_resolves_every_field() 
         app.proj().resolved().values["user"], "2002",
         "{{user}} now resolves through the selected entry"
     );
-    let state = postui_core::project::load_local_state(dir.path()).unwrap();
+    let state = postui_core::fixtures::load_local_state(dir.path()).unwrap();
     assert_eq!(state.selections["qa"]["user"], "bob");
 
     // …and clicking the other radio moves it, rather than adding a second.
@@ -13867,7 +13867,7 @@ fn clicking_an_option_rows_trash_deletes_the_option() {
         .expect("each option row registers a trash zone");
     app.handle_mouse(left_down(r.x + 1, r.y));
     assert!(app.modals.is_empty(), "delete is undoable, no confirm");
-    let env = postui_core::project::load_environment(dir.path(), "qa").unwrap();
+    let env = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
     assert!(!env.options["user"].contains_key("alice"));
 }
 
@@ -14322,7 +14322,7 @@ fn the_ghost_row_creates_an_entry_and_keeps_going_into_its_first_field() {
         app.handle_key(&keymap, plain(c));
     }
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    let env = postui_core::project::load_environment(dir.path(), "qa").unwrap();
+    let env = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
     assert_eq!(env.options["user"]["carol"].values["user"], "3003");
 }
 
@@ -14376,9 +14376,9 @@ fn the_field_editor_renames_adds_and_removes_across_variables_and_every_env() {
     });
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
     assert_eq!(app.proj().variables().selectors["user"].fields, vec!["user_id"]);
-    let qa = postui_core::project::load_environment(dir.path(), "qa").unwrap();
+    let qa = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
     assert_eq!(qa.options["user"]["alice"].values["user_id"], "1001");
-    let dev = postui_core::project::load_environment(dir.path(), "dev").unwrap();
+    let dev = postui_core::fixtures::load_environment(dir.path(), "dev").unwrap();
     assert_eq!(
         dev.options["user"]["dave"].values["user_id"], "7",
         "a non-active environment renames too"
@@ -14394,7 +14394,7 @@ fn the_field_editor_renames_adds_and_removes_across_variables_and_every_env() {
         app.proj().variables().selectors["user"].fields,
         vec!["user_id", "customer_id"]
     );
-    let qa = postui_core::project::load_environment(dir.path(), "qa").unwrap();
+    let qa = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
     assert_eq!(
         qa.options["user"]["alice"].values["customer_id"], "",
         "every existing entry gains the column, empty"
@@ -14407,7 +14407,7 @@ fn the_field_editor_renames_adds_and_removes_across_variables_and_every_env() {
     });
     assert!(app.modals.is_empty(), "removal is undoable, no confirm");
     assert_eq!(app.proj().variables().selectors["user"].fields, vec!["user_id"]);
-    let qa = postui_core::project::load_environment(dir.path(), "qa").unwrap();
+    let qa = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
     assert!(
         !qa.options["user"]["alice"]
             .values
@@ -14425,7 +14425,7 @@ fn renaming_a_group_moves_its_declaration_its_entries_and_its_selections() {
         "[options.user.dave]\nuser = \"7\"\n",
     )
     .unwrap();
-    postui_core::project::save_local_state(
+    postui_core::fixtures::save_local_state(
         dir.path(),
         &postui_core::project::LocalState {
             environment: Some("qa".into()),
@@ -14471,7 +14471,7 @@ fn renaming_a_group_moves_its_declaration_its_entries_and_its_selections() {
     assert_eq!(app.proj().selections_for("qa")["account"], "bob");
     assert_eq!(app.proj().selections_for("dev")["account"], "dave");
     assert!(!app.proj().selections_for("qa").contains_key("user"));
-    let state = postui_core::project::load_local_state(dir.path()).unwrap();
+    let state = postui_core::fixtures::load_local_state(dir.path()).unwrap();
     assert_eq!(state.selections["dev"]["account"], "dave");
     // …so the group's field still resolves to the same value it did.
     assert_eq!(app.proj().resolved().values["user"], "2002");
@@ -14549,7 +14549,7 @@ fn right_clicking_another_row_commits_the_live_cell_to_the_entry_it_belongs_to()
         app.varmanager.grid.editing.is_none(),
         "the right click committed the live cell first"
     );
-    let env = postui_core::project::load_environment(dir.path(), "qa").unwrap();
+    let env = postui_core::fixtures::load_environment(dir.path(), "qa").unwrap();
     assert_eq!(
         env.options["user"]["bob"].values["user"], "20029",
         "the text landed in the entry it was typed into"
@@ -14889,7 +14889,7 @@ fn every_named_action_is_mouse_reachable() {
             .flatten()
             .filter_map(|item| item.action),
     );
-    postui_core::storage::save_request(app.proj().root(), "main/req", &req("https://x/req"))
+    postui_core::fixtures::save_request(app.proj().root(), "main/req", &req("https://x/req"))
         .unwrap();
     app.refresh_sidebar();
     let row = app
@@ -15299,7 +15299,7 @@ fn split_persists_to_local_state_and_reseeds_on_open() {
     app.update(Action::SplitStop(SplitStop::EditorBig));
     let root = app.proj().root().to_path_buf();
     let saved = |root: &std::path::Path| {
-        postui_core::project::load_local_state(root)
+        postui_core::fixtures::load_local_state(root)
             .unwrap()
             .main_split
     };
@@ -16108,7 +16108,7 @@ mod undo_tests {
         app.update(Action::DeleteRequest("main/alpha".into()));
         let path = dir.path().join("requests/main/alpha.toml");
         assert!(!path.exists());
-        assert!(postui_core::trash::trash_dir(dir.path()).is_dir());
+        assert!(postui_core::fixtures::trash_dir(dir.path()).is_dir());
         assert!(
             app.editor.slug.is_none(),
             "deleting the open request clears the editor"
@@ -16139,7 +16139,7 @@ mod undo_tests {
         let (mut app, dir) = spaced_app();
         app.update(Action::DeleteRequest("main/alpha".into()));
         // Someone re-created the file meanwhile.
-        postui_core::storage::save_request(dir.path(), "main/alpha", &req("https://x/2")).unwrap();
+        postui_core::fixtures::save_request(dir.path(), "main/alpha", &req("https://x/2")).unwrap();
         let toasts_before = app.toasts.messages().len();
         app.update(Action::Undo);
         assert!(
@@ -17602,7 +17602,7 @@ fn extracting_a_url_selection_replaces_only_the_selected_part() {
     use crate::action::TextSurface;
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
-    postui_core::storage::save_request(dir.path(), "main/ping", &req("https://x/ping/abc-123"))
+    postui_core::fixtures::save_request(dir.path(), "main/ping", &req("https://x/ping/abc-123"))
         .unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
@@ -17636,7 +17636,7 @@ fn extracting_a_table_cell_selection_replaces_the_part_and_commits_the_cell() {
     use crate::components::table_editor::{CellEdit, Col};
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
-    postui_core::storage::save_request(dir.path(), "main/ping", &req("https://x/ping")).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/ping", &req("https://x/ping")).unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.update(Action::ForceOpenRequest("main/ping".into()));
@@ -17682,7 +17682,7 @@ fn extracting_a_body_selection_replaces_it_with_the_token() {
     use crate::action::TextSurface;
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
-    postui_core::storage::save_request(dir.path(), "main/ping", &req("https://x/ping")).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/ping", &req("https://x/ping")).unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.update(Action::ForceOpenRequest("main/ping".into()));
@@ -17857,7 +17857,7 @@ fn extract_selector_from_a_url_selection_creates_the_selector_its_option_and_sel
     use crate::action::{ExtractSource, TextSurface};
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
-    postui_core::storage::save_request(dir.path(), "main/ping", &req("https://x/ping/east"))
+    postui_core::fixtures::save_request(dir.path(), "main/ping", &req("https://x/ping/east"))
         .unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
@@ -18060,7 +18060,7 @@ fn type_str(app: &mut App, s: &str) {
 #[test]
 fn alt_q_focuses_the_jq_bar_and_typing_filters_the_tree_live() {
     let mut app = App::new_for_test();
-    postui_core::storage::save_request(app.proj().root(), "main/r", &req("https://x/r")).unwrap();
+    postui_core::fixtures::save_request(app.proj().root(), "main/r", &req("https://x/r")).unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/r".into()));
     ready_response(&mut app, JQ_BODY);
@@ -19405,7 +19405,7 @@ fn request_rows(app: &App) -> Vec<String> {
 
 fn three_row_app() -> (App, tempfile::TempDir) {
     let (mut app, dir) = spaced_app();
-    postui_core::storage::save_request(dir.path(), "main/gamma", &req("https://x/3")).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/gamma", &req("https://x/3")).unwrap();
     app.update(Action::RefreshSidebar);
     render_once(&mut app);
     assert_eq!(
@@ -19497,7 +19497,7 @@ fn press_move_release_reorders_and_persists() {
         Some(PointerShape::Grabbing),
         "the grabbing cursor is released with the button"
     );
-    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     assert_eq!(
         postui_core::order::space_order(&meta, "main"),
         ["beta", "gamma", "alpha"]
@@ -19549,7 +19549,7 @@ fn release_outside_the_sidebar_and_escape_both_cancel() {
             request_rows(&app),
             ["main/alpha", "main/beta", "main/gamma"]
         );
-        let meta = postui_core::project::load_meta(dir.path()).unwrap();
+        let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
         assert!(
             postui_core::order::space_order(&meta, "main").is_empty(),
             "nothing written"
@@ -19581,7 +19581,7 @@ fn a_right_click_during_a_drag_cancels_it_without_a_menu() {
         request_rows(&app),
         ["main/alpha", "main/beta", "main/gamma"]
     );
-    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     assert!(
         postui_core::order::space_order(&meta, "main").is_empty(),
         "nothing written"
@@ -19592,7 +19592,7 @@ fn a_right_click_during_a_drag_cancels_it_without_a_menu() {
     // or write anything either.
     app.handle_mouse(left_up(r1.x + 2, r1.y));
     assert!(app.sidebar.drag.is_none());
-    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     assert!(
         postui_core::order::space_order(&meta, "main").is_empty(),
         "still nothing written"
@@ -19670,7 +19670,7 @@ fn a_left_press_during_a_live_drag_cancels_it() {
 
     app.handle_mouse(left_up(r0.x + 2, r0.y));
     assert!(app.sidebar.drag.is_none());
-    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     assert!(
         postui_core::order::space_order(&meta, "main").is_empty(),
         "nothing written"
@@ -19735,7 +19735,7 @@ fn a_stale_press_never_promotes_over_a_live_thumb_drag() {
     app.handle_mouse(left_up(r0.x + 2, r2.y));
     assert!(app.drag.is_none(), "the release ends the thumb drag");
     assert!(app.sidebar_press.is_none());
-    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     assert!(postui_core::order::space_order(&meta, "main").is_empty());
 }
 
@@ -19816,7 +19816,7 @@ fn losing_terminal_focus_cancels_a_live_drag() {
         request_rows(&app),
         ["main/alpha", "main/beta", "main/gamma"]
     );
-    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     assert!(postui_core::order::space_order(&meta, "main").is_empty());
     assert_ne!(app.pointer_shape_update(), Some(PointerShape::Grabbing));
     assert!(!app.on_focus_lost(), "nothing left to cancel");
@@ -19838,9 +19838,9 @@ fn switching_projects_disarms_an_armed_press() {
     // same-named row in the next one.
     let (mut app, _dir) = three_row_app();
     let other = tempfile::tempdir().unwrap();
-    postui_core::storage::ensure_project(other.path()).unwrap();
+    postui_core::fixtures::ensure_project(other.path()).unwrap();
     for slug in ["main/alpha", "main/beta", "main/gamma"] {
-        postui_core::storage::save_request(other.path(), slug, &req("https://y")).unwrap();
+        postui_core::fixtures::save_request(other.path(), slug, &req("https://y")).unwrap();
     }
     let r0 = row_rect(&mut app, 0);
     let r2 = row_rect(&mut app, 2);
@@ -19893,7 +19893,7 @@ fn a_reload_that_changes_the_tree_cancels_a_live_drag() {
     app.update(Action::ReloadProjectFiles);
     assert!(app.sidebar.drag.is_none());
     assert_eq!(request_rows(&app), ["main/alpha", "main/gamma"]);
-    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     assert!(postui_core::order::space_order(&meta, "main").is_empty());
 }
 
@@ -19936,7 +19936,7 @@ fn a_right_click_on_an_armed_press_disarms_it() {
 #[test]
 fn a_drag_never_leaves_its_sibling_group() {
     let (mut app, dir) = spaced_app();
-    postui_core::storage::save_request(dir.path(), "main/auth/x", &req("https://x/3")).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/auth/x", &req("https://x/3")).unwrap();
     let mut expanded = app.proj().local().expanded.clone();
     expanded.insert("main/auth".into());
     app.proj_mut().set_expanded(expanded);
@@ -19953,7 +19953,7 @@ fn a_drag_never_leaves_its_sibling_group() {
         "pinned to the group's end"
     );
     app.handle_mouse(left_up(r0.x + 2, r3.y));
-    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     assert_eq!(
         postui_core::order::space_order(&meta, "main"),
         ["beta", "alpha"]
@@ -19968,7 +19968,7 @@ fn press_without_motion_still_just_opens_the_request() {
     app.handle_mouse(moved(r1.x + 4, r1.y)); // same row
     app.handle_mouse(left_up(r1.x + 4, r1.y));
     assert_eq!(app.editor.slug.as_deref(), Some("main/beta"));
-    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     assert!(postui_core::order::space_order(&meta, "main").is_empty());
 }
 
@@ -20007,7 +20007,7 @@ fn escape_disarms_the_press_so_motion_cannot_restart_the_drag() {
         request_rows(&app),
         ["main/alpha", "main/beta", "main/gamma"]
     );
-    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     assert!(
         postui_core::order::space_order(&meta, "main").is_empty(),
         "nothing written"
@@ -20018,7 +20018,7 @@ fn escape_disarms_the_press_so_motion_cannot_restart_the_drag() {
 fn dragging_at_the_list_edge_scrolls_on_tick() {
     let (mut app, dir) = spaced_app();
     for i in 0..60 {
-        postui_core::storage::save_request(dir.path(), &format!("main/r{i:02}"), &req("https://x"))
+        postui_core::fixtures::save_request(dir.path(), &format!("main/r{i:02}"), &req("https://x"))
             .unwrap();
     }
     app.update(Action::RefreshSidebar);
@@ -20055,7 +20055,7 @@ fn a_rebuild_between_press_and_motion_drags_the_pressed_request() {
     let (mut app, dir) = three_row_app();
     let r0 = row_rect(&mut app, 0);
     app.handle_mouse(left_down(r0.x + 2, r0.y)); // main/alpha, row 0
-    postui_core::order::set_level_order(
+    postui_core::fixtures::set_level_order(
         dir.path(),
         "main",
         "",
@@ -20083,7 +20083,7 @@ fn a_press_whose_request_vanished_promotes_nothing() {
     let (mut app, dir) = three_row_app();
     let r0 = row_rect(&mut app, 0);
     app.handle_mouse(left_down(r0.x + 2, r0.y)); // main/alpha
-    postui_core::storage::delete_request(dir.path(), "main/alpha").unwrap();
+    postui_core::fixtures::delete_request(dir.path(), "main/alpha").unwrap();
     app.update(Action::RefreshSidebar);
     let r1 = row_rect(&mut app, 1);
     app.handle_mouse(moved(r1.x + 2, r1.y));
@@ -20139,7 +20139,7 @@ fn switching_space_mid_drag_cancels_it_and_writes_nothing() {
     render_once(&mut app);
     assert_eq!(request_rows(&app), ["auth/login"]);
     app.handle_mouse(left_up(r0.x + 2, r2.y));
-    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     assert!(
         postui_core::order::space_order(&meta, "main").is_empty(),
         "nothing written to the space the drag started in"
@@ -20181,7 +20181,7 @@ fn manage_row(app: &mut App, i: usize) -> ratatui::layout::Rect {
 }
 
 fn listed_spaces(dir: &tempfile::TempDir) -> Vec<String> {
-    postui_core::project::load_meta(dir.path()).unwrap().spaces
+    postui_core::fixtures::load_meta(dir.path()).unwrap().spaces
 }
 
 #[test]
@@ -20360,7 +20360,7 @@ fn leaving_the_sidebar_mid_drag_previews_the_cancel() {
         request_rows(&app),
         ["main/alpha", "main/beta", "main/gamma"]
     );
-    let meta = postui_core::project::load_meta(dir.path()).unwrap();
+    let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
     assert!(
         postui_core::order::space_order(&meta, "main").is_empty(),
         "nothing written"
@@ -20447,7 +20447,7 @@ fn every_other_key_is_swallowed_during_a_sidebar_drag() {
         );
         assert_eq!(app.sidebar.selected_slug(), selected, "{ev:?}");
         assert!(app.modals.top().is_none(), "{ev:?}: nothing opened");
-        let meta = postui_core::project::load_meta(dir.path()).unwrap();
+        let meta = postui_core::fixtures::load_meta(dir.path()).unwrap();
         assert!(
             postui_core::order::space_order(&meta, "main").is_empty(),
             "{ev:?}: nothing written"
@@ -20546,7 +20546,7 @@ fn the_footer_advertises_only_the_cancel_keys_during_a_space_drag() {
 fn tooltip_app(token: &str) -> (App, tempfile::TempDir, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     var_project(dir.path());
-    postui_core::project::save_secrets(dir.path(), &{
+    postui_core::fixtures::save_secrets(dir.path(), &{
         let mut secrets = indexmap::IndexMap::new();
         let mut qa = indexmap::IndexMap::new();
         qa.insert("api_key".to_string(), "sk-super-secret".to_string());
@@ -20845,7 +20845,7 @@ fn any_secret_keeps_its_panel_footprint_on_reveal() {
         "abcde\n".repeat(10),
     ] {
         let (mut app, dir, _out) = tooltip_app("api_key");
-        postui_core::project::save_secrets(dir.path(), &{
+        postui_core::fixtures::save_secrets(dir.path(), &{
             let mut secrets = indexmap::IndexMap::new();
             let mut qa = indexmap::IndexMap::new();
             qa.insert("api_key".to_string(), secret.clone());
@@ -20925,8 +20925,8 @@ fn a_held_tip_closes_when_its_token_moves_instead_of_swapping_to_a_covered_one()
 fn startup_with_a_broken_project_file_runs_empty_and_leaves_the_file_alone() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();
-    postui_core::storage::ensure_project(dir.path()).unwrap();
-    postui_core::storage::save_request(dir.path(), "main/ping", &req("https://x/ping")).unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/ping", &req("https://x/ping")).unwrap();
     let broken = "spaces = [\"main\"\n";
     std::fs::write(dir.path().join("project.toml"), broken).unwrap();
 
@@ -20969,7 +20969,7 @@ fn a_refused_open_in_the_process_cwd_still_runs_empty() {
     // read it (it just refused the open on that very file).
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();
-    postui_core::storage::ensure_project(dir.path()).unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
     std::fs::write(dir.path().join("project.toml"), "spaces = [\"main\"\n").unwrap();
     let previous = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
@@ -21011,7 +21011,7 @@ fn a_refused_open_gates_every_way_of_writing_a_new_file() {
     let _cwd = CWD.lock().unwrap_or_else(|e| e.into_inner());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let dir = tempfile::tempdir().unwrap();
-    postui_core::storage::ensure_project(dir.path()).unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
     std::fs::write(dir.path().join("project.toml"), "spaces = [\"main\"\n").unwrap();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     assert!(app.open_error.is_some());
@@ -21070,10 +21070,10 @@ fn a_refused_open_gates_every_way_of_writing_a_new_file() {
 fn switching_to_a_project_that_refuses_to_open_stays_put() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let good = tempfile::tempdir().unwrap();
-    postui_core::storage::ensure_project(good.path()).unwrap();
-    postui_core::storage::save_request(good.path(), "main/ping", &req("https://x/ping")).unwrap();
+    postui_core::fixtures::ensure_project(good.path()).unwrap();
+    postui_core::fixtures::save_request(good.path(), "main/ping", &req("https://x/ping")).unwrap();
     let bad = tempfile::tempdir().unwrap();
-    postui_core::storage::ensure_project(bad.path()).unwrap();
+    postui_core::fixtures::ensure_project(bad.path()).unwrap();
     std::fs::write(bad.path().join("variables.toml"), "[\"bad name\"]\n").unwrap();
 
     let mut app = App::with_root(tx, good.path().to_path_buf());
@@ -21186,7 +21186,7 @@ fn undo_of_a_request_delete_reopens_it_in_the_editor() {
         "undo puts the editor back where it was"
     );
     assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/alpha"));
-    let state = postui_core::project::load_local_state(app.proj().root()).unwrap();
+    let state = postui_core::fixtures::load_local_state(app.proj().root()).unwrap();
     assert_eq!(state.open_request.as_deref(), Some("main/alpha"));
 
     app.update(Action::Redo);
@@ -21212,7 +21212,7 @@ fn undo_of_a_request_delete_leaves_another_open_request_alone() {
 #[test]
 fn undo_of_a_space_delete_restores_the_space_its_request_and_its_memory() {
     let (mut app, dir) = spaced_app();
-    postui_core::storage::save_request(dir.path(), "main/api/deep", &req("https://x/d")).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/api/deep", &req("https://x/d")).unwrap();
     app.update(Action::RefreshSidebar);
     let mut expanded = app.proj().local().expanded.clone();
     expanded.insert("main/api".into());
@@ -21258,7 +21258,7 @@ fn undo_of_a_space_delete_restores_the_space_its_request_and_its_memory() {
         auth_memory_before,
         "the other space's memory is exactly what it was before the delete"
     );
-    let state = postui_core::project::load_local_state(dir.path()).unwrap();
+    let state = postui_core::fixtures::load_local_state(dir.path()).unwrap();
     assert_eq!(state.space.as_deref(), Some("main"));
     assert_eq!(state.open_request.as_deref(), Some("main/alpha"));
 

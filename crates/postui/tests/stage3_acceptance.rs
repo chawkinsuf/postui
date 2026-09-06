@@ -6,9 +6,9 @@ use postui::components::modal::Modal;
 use postui::components::sidebar::Row;
 use postui::keys::Keymap;
 use postui::layout::PaneId;
+use postui_core::fixtures;
 use postui_core::model::HttpRequest;
-use postui_core::project::{self, LocalState};
-use postui_core::storage;
+use postui_core::project::LocalState;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -69,7 +69,7 @@ fn write_alpha(root: &Path, server_uri: &str) {
 /// exercises the "restore from local state" path.
 fn write_beta(root: &Path) {
     std::fs::write(root.join("project.toml"), "name = \"beta\"\n").unwrap();
-    storage::save_request(
+    fixtures::save_request(
         root,
         "main/pong",
         &dummy_request("https://example.test/pong"),
@@ -78,13 +78,13 @@ fn write_beta(root: &Path) {
     // A second request, not the one seeded as "open": switching to it while
     // beta is active (see the flow below) is what makes the final
     // persisted-state assertion discriminating rather than trivially true.
-    storage::save_request(
+    fixtures::save_request(
         root,
         "main/ping",
         &dummy_request("https://example.test/ping"),
     )
     .unwrap();
-    project::save_local_state(
+    fixtures::save_local_state(
         root,
         &LocalState {
             environment: None,
@@ -301,12 +301,12 @@ async fn stage3_acceptance_flow() {
 
     // --- quit path: the persist Quit does, then check both projects' state
     app.update(Action::ForceQuit);
-    let alpha_state = project::load_local_state(alpha_dir.path()).unwrap();
+    let alpha_state = fixtures::load_local_state(alpha_dir.path()).unwrap();
     assert_eq!(alpha_state.environment.as_deref(), Some("prod"));
     assert_eq!(alpha_state.open_request.as_deref(), Some("main/users/list"));
     assert!(alpha_state.expanded.contains(&"main/users".to_string()));
 
-    let beta_state = project::load_local_state(beta_dir.path()).unwrap();
+    let beta_state = fixtures::load_local_state(beta_dir.path()).unwrap();
     assert_eq!(
         beta_state.open_request.as_deref(),
         Some("main/ping"),

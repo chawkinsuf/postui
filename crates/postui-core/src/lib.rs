@@ -26,6 +26,7 @@ pub fn config_dir() -> Option<std::path::PathBuf> {
 
 pub mod jq;
 pub mod disk;
+pub mod fixtures;
 pub mod journal;
 pub mod json;
 pub mod migrate;
@@ -33,11 +34,9 @@ pub mod model;
 pub mod order;
 pub mod prepare;
 /// The open project. `project::Project` owns every read and write of
-/// project files; the free functions beside it are legacy and go away
-/// once the app has migrated.
+/// project files; the modules beside it hold only pure helpers.
 pub mod project;
 pub mod storage;
-pub mod trash;
 pub mod varedit;
 pub mod varmodel;
 pub mod vars;

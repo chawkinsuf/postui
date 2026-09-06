@@ -66,8 +66,8 @@ impl Project {
 
     pub fn space_slug_for(&self, display: &str, exclude: Option<&str>) -> String {
         let listed = self.meta.spaces.clone();
-        legacy::unique_slug_among(
-            legacy::Kind::Space,
+        meta::unique_slug_among(
+            meta::Kind::Space,
             display,
             |slug| {
                 listed.iter().any(|s| s == slug)
@@ -79,10 +79,10 @@ impl Project {
     }
 
     pub fn create_space(&mut self, display: &str) -> Result<String, Error> {
-        let display = legacy::display_name_of(display)?;
+        let display = meta::display_name_of(display)?;
         let mut spaces = self.write_list();
         let meta = self.meta.clone();
-        if legacy::display_taken(&display, &spaces, |s| legacy::space_display(&meta, s), None) {
+        if meta::display_taken(&display, &spaces, |s| meta::space_display(&meta, s), None) {
             return Err(Error::AlreadyExists(display));
         }
         let slug = self.space_slug_for(&display, None);
@@ -90,8 +90,8 @@ impl Project {
         self.transaction("create space", EntryMeta::default(), |p| {
             p.fs_create_dir(&space_rel(&slug)?)?;
             p.edit_project_toml(|doc| {
-                doc["spaces"] = toml_edit::value(legacy::spaces_array(&spaces));
-                legacy::set_item_name(doc, legacy::Kind::Space, &slug, &display);
+                doc["spaces"] = toml_edit::value(meta::spaces_array(&spaces));
+                meta::set_item_name(doc, meta::Kind::Space, &slug, &display);
             })?;
             p.refresh_spaces();
             Ok(())
@@ -104,13 +104,13 @@ impl Project {
     /// and local memory (active space, open request, expanded) re-keyed
     /// and persisted, all in one entry.
     pub fn rename_space(&mut self, from: &str, display: &str) -> Result<String, Error> {
-        let display = legacy::display_name_of(display)?;
+        let display = meta::display_name_of(display)?;
         let mut spaces = self.write_list();
         let Some(idx) = spaces.iter().position(|s| s == from) else {
             return Err(Error::NotFound(from.to_string()));
         };
         let meta = self.meta.clone();
-        if legacy::display_taken(&display, &spaces, |s| legacy::space_display(&meta, s), Some(from)) {
+        if meta::display_taken(&display, &spaces, |s| meta::space_display(&meta, s), Some(from)) {
             return Err(Error::AlreadyExists(display));
         }
         let to = self.space_slug_for(&display, Some(from));
@@ -137,9 +137,9 @@ impl Project {
                 p.fs_create_dir(&to_dir)?;
             }
             p.edit_project_toml(|doc| {
-                doc["spaces"] = toml_edit::value(legacy::spaces_array(&spaces));
-                legacy::move_item_table(doc, legacy::Kind::Space, &from, &to);
-                legacy::set_item_name(doc, legacy::Kind::Space, &to, &display);
+                doc["spaces"] = toml_edit::value(meta::spaces_array(&spaces));
+                meta::move_item_table(doc, meta::Kind::Space, &from, &to);
+                meta::set_item_name(doc, meta::Kind::Space, &to, &display);
             })?;
             if to != from {
                 p.rename_space_local(&from, &to);
@@ -177,7 +177,7 @@ impl Project {
         let Some(idx) = spaces.iter().position(|s| s == name) else {
             return Err(Error::NotFound(name.to_string()));
         };
-        if spaces.iter().filter(|s| legacy::valid_space_name(s)).count() == 1 {
+        if spaces.iter().filter(|s| meta::valid_space_name(s)).count() == 1 {
             return Err(Error::LastSpace);
         }
         spaces.remove(idx);
@@ -188,8 +188,8 @@ impl Project {
         };
         self.transaction("delete space", meta, |p| {
             p.edit_project_toml(|doc| {
-                doc["spaces"] = toml_edit::value(legacy::spaces_array(&spaces));
-                legacy::remove_item_table(doc, legacy::Kind::Space, &name);
+                doc["spaces"] = toml_edit::value(meta::spaces_array(&spaces));
+                meta::remove_item_table(doc, meta::Kind::Space, &name);
             })?;
             let dir = space_rel(&name)?;
             if p.disk.is_dir(&dir) {
@@ -212,7 +212,7 @@ impl Project {
     pub fn move_space(&mut self, name: &str, delta: i32) -> Result<Option<ListChange>, Error> {
         let mut spaces = self.write_list();
         let slots: Vec<usize> = (0..spaces.len())
-            .filter(|i| legacy::valid_space_name(&spaces[*i]))
+            .filter(|i| meta::valid_space_name(&spaces[*i]))
             .collect();
         let Some(pos) = slots.iter().position(|i| spaces[*i] == *name) else {
             return Err(Error::NotFound(name.to_string()));
@@ -221,12 +221,12 @@ impl Project {
         if target == pos {
             return Ok(None);
         }
-        let before = legacy::displayed_spaces(&spaces);
+        let before = meta::displayed_spaces(&spaces);
         spaces.swap(slots[pos], slots[target]);
-        let after = legacy::displayed_spaces(&spaces);
+        let after = meta::displayed_spaces(&spaces);
         let key = MergeKey::SpaceOrder { name: name.to_string() };
         self.transaction_merging("move space", key, |p| {
-            p.edit_project_toml(|doc| doc["spaces"] = toml_edit::value(legacy::spaces_array(&spaces)))?;
+            p.edit_project_toml(|doc| doc["spaces"] = toml_edit::value(meta::spaces_array(&spaces)))?;
             p.refresh_spaces();
             Ok(())
         })?;
@@ -238,7 +238,7 @@ impl Project {
     pub fn set_space_order(&mut self, displayed: &[String]) -> Result<Option<ListChange>, Error> {
         let mut spaces = self.write_list();
         let slots: Vec<usize> = (0..spaces.len())
-            .filter(|i| legacy::valid_space_name(&spaces[*i]))
+            .filter(|i| meta::valid_space_name(&spaces[*i]))
             .collect();
         let valid: Vec<String> = slots.iter().map(|i| spaces[*i].clone()).collect();
         if let Some(extra) = displayed.iter().find(|n| !valid.contains(n)) {
@@ -257,7 +257,7 @@ impl Project {
             spaces[*slot] = name.clone();
         }
         self.transaction("reorder spaces", EntryMeta::default(), |p| {
-            p.edit_project_toml(|doc| doc["spaces"] = toml_edit::value(legacy::spaces_array(&spaces)))?;
+            p.edit_project_toml(|doc| doc["spaces"] = toml_edit::value(meta::spaces_array(&spaces)))?;
             p.refresh_spaces();
             Ok(())
         })?;

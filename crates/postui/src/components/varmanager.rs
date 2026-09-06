@@ -2382,7 +2382,7 @@ fn draw_detail_placeholder(frame: &mut Frame, right: Rect, theme: &Theme) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use postui_core::project;
+    use postui_core::{fixtures, project};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::crossterm::event::KeyModifiers;
@@ -2394,7 +2394,7 @@ mod tests {
     /// `alice` selected there and nothing selected in dev.
     fn fixture() -> (tempfile::TempDir, Project) {
         let dir = tempfile::tempdir().unwrap();
-        project::init_project(dir.path(), Some("demo")).unwrap();
+        fixtures::init_project(dir.path(), Some("demo")).unwrap();
         std::fs::write(
             dir.path().join("variables.toml"),
             r#"
@@ -2423,7 +2423,7 @@ fields = ["user_id", "customer_id"]
         let mut qa_sel = IndexMap::new();
         qa_sel.insert("creds".to_string(), "alice".to_string());
         selections.insert("qa".to_string(), qa_sel);
-        project::save_local_state(
+        fixtures::save_local_state(
             dir.path(),
             &project::LocalState {
                 environment: Some("qa".into()),
@@ -2928,7 +2928,7 @@ fields = ["user_id", "customer_id"]
         let mut qa_secrets = IndexMap::new();
         qa_secrets.insert("api_key".to_string(), "sk-live-secret".to_string());
         secrets.insert("qa".to_string(), qa_secrets);
-        project::save_secrets(dir.path(), &secrets).unwrap();
+        fixtures::save_secrets(dir.path(), &secrets).unwrap();
         let (ctx, _) = Project::open(dir.path().to_path_buf()).unwrap();
 
         let mut vm = VarManager::default();
@@ -3136,7 +3136,7 @@ fields = ["user_id", "customer_id"]
     /// variables.toml and `fr` picked globally.
     fn shared_fixture() -> (tempfile::TempDir, Project) {
         let dir = tempfile::tempdir().unwrap();
-        project::init_project(dir.path(), Some("demo")).unwrap();
+        fixtures::init_project(dir.path(), Some("demo")).unwrap();
         std::fs::write(
             dir.path().join("variables.toml"),
             "[selectors.locale]\nshared = true\nfields = [\"lang\"]\n\n[options.locale.en]\nlang = \"en\"\n\n[options.locale.fr]\nlang = \"fr\"\n",
@@ -3145,7 +3145,7 @@ fields = ["user_id", "customer_id"]
         std::fs::write(dir.path().join("environments/qa.toml"), "").unwrap();
         let mut shared_selections = IndexMap::new();
         shared_selections.insert("locale".to_string(), "fr".to_string());
-        project::save_local_state(
+        fixtures::save_local_state(
             dir.path(),
             &project::LocalState {
                 environment: Some("qa".into()),
