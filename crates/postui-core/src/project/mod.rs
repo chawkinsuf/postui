@@ -17,7 +17,7 @@ pub use legacy::*;
 pub use undo::Undone;
 
 use crate::disk::{Disk, DiskError, RelPath, Ticket};
-use crate::journal::{Entry, EntryMeta, Journal, Op};
+use crate::journal::{Entry, EntryId, EntryMeta, Journal, Op};
 use crate::migrate::MigrationOutcome;
 use crate::storage::RequestListing;
 use crate::varmodel::{self, EnvData, Resolved, VarModel};
@@ -139,6 +139,8 @@ struct Memory {
     resolved: Resolved,
     spaces: Vec<String>,
     local: Local,
+    /// Slugs held in `open_requests` (keys only; bodies are re-read).
+    open_request_keys: Vec<String>,
 }
 
 pub(crate) const PROJECT_TOML: &str = "project.toml";
@@ -262,6 +264,16 @@ impl Project {
         self.journal.can_redo()
     }
 
+    /// The entry `undo` would replay next: its id and label.
+    pub fn last_entry(&self) -> Option<(EntryId, &str)> {
+        self.journal.peek_undo().map(|e| (e.id, e.label.as_str()))
+    }
+
+    /// The entry `redo` would replay next.
+    pub fn next_redo(&self) -> Option<EntryId> {
+        self.journal.peek_redo().map(|e| e.id)
+    }
+
     /// The key selections and secrets are stored under for the active
     /// environment: the empty string when none is active.
     pub(crate) fn env_key(&self) -> String {
@@ -297,6 +309,7 @@ impl Project {
             resolved: self.resolved.clone(),
             spaces: self.spaces.clone(),
             local: self.local.clone(),
+            open_request_keys: self.open_requests.keys().cloned().collect(),
         }
     }
 
@@ -310,6 +323,11 @@ impl Project {
         self.resolved = m.resolved;
         self.spaces = m.spaces;
         self.local = m.local;
+        self.open_requests = m
+            .open_request_keys
+            .into_iter()
+            .map(|k| (k, crate::model::HttpRequest::default()))
+            .collect();
     }
 
     /// Re-reads every key of `open_requests` from disk (re-parse, or drop
@@ -361,6 +379,7 @@ impl Project {
             Ok(v) => {
                 if !ops.is_empty() {
                     self.journal.push(Entry {
+                        id: EntryId(0),
                         label: label.to_string(),
                         ops,
                         meta,
@@ -423,32 +442,12 @@ impl Project {
         }
     }
 
-    /// The slug `open_requests` would hold a request under, for a path
-    /// under `requests/`; `None` for anything else (a directory, or a
-    /// file elsewhere).
-    fn request_slug_of(path: &RelPath) -> Option<String> {
-        path.as_str()
-            .strip_prefix(&format!("{REQUESTS_DIR}/"))?
-            .strip_suffix(".toml")
-            .map(str::to_string)
-    }
-
     /// Reverses one op without recording anything (rollback of a failed
     /// transaction). Task 11's `apply_inverse` is the recording twin.
     fn apply_inverse_unrecorded(&mut self, op: &Op) -> Result<(), Error> {
         match op {
             Op::Renamed { from, to } => {
                 self.disk.rename(to, from)?;
-                // `open_requests` is not part of the transaction snapshot
-                // (see `Memory`); a held request the transaction re-keyed
-                // to follow this rename must be re-keyed back here, in
-                // step with the disk move just reversed above, so
-                // `reload_held_requests` finds it under its original slug.
-                if let (Some(f), Some(t)) = (Self::request_slug_of(from), Self::request_slug_of(to))
-                    && let Some(req) = self.open_requests.shift_remove(&t)
-                {
-                    self.open_requests.insert(f, req);
-                }
             }
             Op::Created { path } => {
                 if self.disk.is_dir(path) {

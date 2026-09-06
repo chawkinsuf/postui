@@ -64,8 +64,15 @@ pub enum MergeKey {
     SpaceOrder { name: String },
 }
 
+/// Identity of one journal entry for the life of the `Project`. The app's
+/// history keeps one marker step per id so the two stacks stay aligned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct EntryId(pub u64);
+
 #[derive(Debug, Clone)]
 pub struct Entry {
+    /// Assigned by `Journal::push`; a value given by the caller is replaced.
+    pub id: EntryId,
     pub label: String,
     pub ops: Vec<Op>,
     pub meta: EntryMeta,
@@ -75,6 +82,11 @@ pub struct Entry {
 }
 
 impl Entry {
+    /// A merged burst that put the document back where it started.
+    fn is_identity(&self) -> bool {
+        self.ops.len() == 1 && matches!(&self.ops[0], Op::Text { before, after, .. } if before == after)
+    }
+
     /// Folds `next` into `self` when both are single `Text` ops on the
     /// same path: keep the first `before`, take the last `after`.
     fn try_merge(&mut self, next: &Entry) -> bool {
@@ -112,6 +124,7 @@ pub struct Journal {
     undo: Vec<Entry>,
     redo: Vec<Entry>,
     cap: usize,
+    next_id: u64,
 }
 
 impl Default for Journal {
@@ -130,20 +143,27 @@ impl Journal {
             undo: Vec::new(),
             redo: Vec::new(),
             cap,
+            next_id: 1,
         }
     }
 
-    /// Records a new entry: clears redo, merges a burst, drops the oldest
-    /// past the cap.
-    pub fn push(&mut self, entry: Entry) {
+    /// Records a new entry: clears redo, merges a burst (dropping it if
+    /// the merge nets to identity), drops the oldest past the cap. A
+    /// freshly recorded entry (not a merge) is assigned the next id.
+    pub fn push(&mut self, mut entry: Entry) {
         self.redo.clear();
         if let (Some(last), Some((_, t))) = (self.undo.last_mut(), &entry.merge)
             && let Some((_, t_last)) = &last.merge
             && t.saturating_duration_since(*t_last) <= MERGE_WINDOW
             && last.try_merge(&entry)
         {
+            if last.is_identity() {
+                self.undo.pop();
+            }
             return;
         }
+        entry.id = EntryId(self.next_id);
+        self.next_id += 1;
         self.undo.push(entry);
         if self.undo.len() > self.cap {
             self.undo.remove(0);
@@ -152,6 +172,14 @@ impl Journal {
 
     pub fn pop_undo(&mut self) -> Option<Entry> {
         self.undo.pop()
+    }
+
+    pub fn peek_undo(&self) -> Option<&Entry> {
+        self.undo.last()
+    }
+
+    pub fn peek_redo(&self) -> Option<&Entry> {
+        self.redo.last()
     }
 
     pub fn push_redo(&mut self, entry: Entry) {
@@ -199,6 +227,7 @@ mod tests {
 
     fn text_entry(label: &str, path: &str, before: &str, after: &str) -> Entry {
         Entry {
+            id: EntryId(0),
             label: label.to_string(),
             ops: vec![Op::Text {
                 path: RelPath::new(path).unwrap(),
@@ -302,6 +331,59 @@ mod tests {
         ));
         j.push(e3);
         assert_eq!(j.len(), 3, "different key");
+    }
+
+    /// Named apart from `text_entry` above (same shape, different
+    /// parameters) so the two helpers don't collide under one name.
+    fn merging_entry(before: &str, after: &str, key: Option<MergeKey>) -> Entry {
+        Entry {
+            id: EntryId(0),
+            label: "reorder".into(),
+            ops: vec![Op::Text {
+                path: RelPath::new("project.toml").unwrap(),
+                before: Some(before.into()),
+                after: Some(after.into()),
+            }],
+            meta: EntryMeta::default(),
+            merge: key.map(|k| (k, Instant::now())),
+        }
+    }
+
+    #[test]
+    fn push_assigns_increasing_ids_and_a_merge_keeps_the_first_id() {
+        let mut j = Journal::new();
+        let key = MergeKey::SpaceOrder { name: "main".into() };
+        j.push(merging_entry("a", "b", Some(key.clone())));
+        let first = j.peek_undo().unwrap().id;
+        j.push(merging_entry("b", "c", Some(key.clone())));
+        assert_eq!(j.len(), 1, "burst merged");
+        assert_eq!(j.peek_undo().unwrap().id, first, "merged entry keeps its id");
+        j.push(merging_entry("c", "d", None));
+        assert!(j.peek_undo().unwrap().id > first);
+    }
+
+    #[test]
+    fn a_burst_that_nets_to_identity_is_dropped() {
+        let mut j = Journal::new();
+        let key = MergeKey::SpaceOrder { name: "main".into() };
+        j.push(merging_entry("x", "y", None));
+        j.push(merging_entry("a", "b", Some(key.clone())));
+        j.push(merging_entry("b", "a", Some(key.clone())));
+        assert_eq!(j.len(), 1, "down then up is dropped, the step beneath stays");
+        match &j.peek_undo().unwrap().ops[0] {
+            Op::Text { before, .. } => assert_eq!(before.as_deref(), Some("x")),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn peek_redo_shows_the_entry_a_redo_would_replay() {
+        let mut j = Journal::new();
+        j.push(merging_entry("a", "b", None));
+        let e = j.pop_undo().unwrap();
+        let id = e.id;
+        j.push_redo(e);
+        assert_eq!(j.peek_redo().map(|e| e.id), Some(id));
     }
 
     #[test]

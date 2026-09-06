@@ -3,7 +3,7 @@
 //! entry), then re-read every document from disk.
 
 use super::*;
-use crate::journal::Op;
+use crate::journal::{EntryId, Op};
 
 /// What the app refreshes after an undo or redo: the entry's `meta`
 /// exactly as recorded (never swapped), plus which direction just ran.
@@ -14,6 +14,7 @@ use crate::journal::Op;
 /// (a document that no longer parses, a stale reference, …).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Undone {
+    pub id: EntryId,
     pub label: String,
     pub meta: EntryMeta,
     /// `true` for a redo.
@@ -165,6 +166,7 @@ impl Project {
                 let mut warnings = self.reload_all();
                 warnings.extend(self.apply_meta_active_env(&entry.meta, redo));
                 let replayed = Entry {
+                    id: entry.id,
                     label: entry.label.clone(),
                     ops,
                     meta: entry.meta.clone(),
@@ -176,6 +178,7 @@ impl Project {
                     self.journal.push_redo(replayed);
                 }
                 Ok(Some(Undone {
+                    id: entry.id,
                     label: entry.label,
                     meta: entry.meta,
                     redo,

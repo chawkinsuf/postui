@@ -346,7 +346,11 @@ mod tests {
         assert_eq!(c.after, ["auth", "main"]);
         p.move_space("main", -1).unwrap();
         assert_eq!(p.spaces(), ["main", "auth"]);
-        assert_eq!(p.journal_len(), 1, "two keyboard moves within 2 s are one step");
+        assert_eq!(
+            p.journal_len(),
+            0,
+            "two keyboard moves within 2 s merge into one step, which nets to identity and is dropped"
+        );
     }
 
     #[test]
@@ -375,5 +379,22 @@ mod tests {
         let c = p.set_request_order("main", "", &["ping".into(), "c".into(), "a".into(), "b".into()]).unwrap().unwrap();
         assert_eq!(c.after, ["ping", "c", "a", "b"]);
         assert_eq!(p.journal_len(), 2, "a drag never merges");
+    }
+
+    #[test]
+    fn a_failed_space_rename_keeps_the_held_request_open_and_unchanged() {
+        let (dir, mut p) = fixture();
+        let before = p.open_request("main/ping").unwrap().clone();
+        // Make the rename fail *after* the directory move and the held-request
+        // re-key: the local-state write at the end of the cascade hits a
+        // directory where `.local/state.toml` should be. `state.toml` does
+        // not exist yet at this point, so create it first.
+        std::fs::create_dir_all(dir.path().join(".local")).unwrap();
+        std::fs::write(dir.path().join(".local/state.toml"), "").unwrap();
+        std::fs::remove_file(dir.path().join(".local/state.toml")).unwrap();
+        std::fs::create_dir(dir.path().join(".local/state.toml")).unwrap();
+        assert!(p.rename_space("main", "Renamed").is_err());
+        assert_eq!(p.held_request("main/ping"), Some(&before), "still held under its old slug");
+        assert!(dir.path().join("requests/main/ping.toml").is_file());
     }
 }
