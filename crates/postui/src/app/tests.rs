@@ -12574,6 +12574,20 @@ fn confirming_the_migration_rewrites_the_files_leaves_baks_and_reloads() {
         content.contains("migrated"),
         "the result is toasted: {content}"
     );
+
+    // Core journals the conversion as one entry, so the arm's marker
+    // makes it one undo step that puts every file back.
+    assert_eq!(app.history.undo_len(), 1, "the migration is one undo step");
+    app.update(Action::Undo);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("variables.toml")).unwrap(),
+        vars_before,
+        "undo restores the legacy text"
+    );
+    assert!(
+        !dir.path().join("variables.toml.bak").exists(),
+        "undo takes the backup with it"
+    );
 }
 
 #[test]

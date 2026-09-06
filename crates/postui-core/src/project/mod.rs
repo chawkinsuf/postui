@@ -1659,13 +1659,50 @@ pub(crate) mod tests {
         assert_eq!(read(&dir, "variables.toml.bak").unwrap(), bak);
     }
 
-    /// Ported from the app's `ProjectContext` test
-    /// `retrying_a_partly_applied_migration_keeps_the_original_bak`: an
-    /// apply that fails part-way stays pending, and the retry must not
-    /// copy the already-migrated text over the only surviving copy of the
-    /// original (`write_with_backup`'s "only once" guard).
+    /// The migration is one journal entry: undo puts every rewritten file
+    /// back byte-for-byte and takes the `.bak` copies it made with it.
     #[test]
-    fn retrying_a_partly_applied_migration_keeps_the_original_bak() {
+    fn undo_of_a_migration_restores_the_originals_and_removes_the_baks() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("environments")).unwrap();
+        std::fs::write(dir.path().join("project.toml"), "").unwrap();
+        let legacy_vars = "[tier]\n[tier.options.gold]\nvalue = \"g-1\"\n";
+        std::fs::write(dir.path().join("variables.toml"), legacy_vars).unwrap();
+        std::fs::write(dir.path().join("environments/dev.toml"), "").unwrap();
+
+        let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        assert!(p.pending_migration().is_some());
+        p.apply_migration().unwrap();
+        let migrated_vars = read(&dir, "variables.toml").unwrap();
+        assert_ne!(migrated_vars, legacy_vars, "the apply rewrote variables.toml");
+        assert!(dir.path().join("variables.toml.bak").is_file());
+        assert_eq!(p.journal_len(), 1, "the whole migration is one entry");
+
+        assert!(p.undo().unwrap().is_some());
+        assert_eq!(
+            read(&dir, "variables.toml").as_deref(),
+            Some(legacy_vars),
+            "undo restores the original text"
+        );
+        assert!(
+            !dir.path().join("variables.toml.bak").exists(),
+            "undo takes the backup it made with it"
+        );
+
+        assert!(p.redo().unwrap().is_some());
+        assert_eq!(read(&dir, "variables.toml").unwrap(), migrated_vars);
+        assert!(dir.path().join("variables.toml.bak").is_file());
+    }
+
+    /// Ported from the app's `ProjectContext` test
+    /// `retrying_a_partly_applied_migration_keeps_the_original_bak`, and
+    /// re-scoped now that the apply is one transaction: a failure part-way
+    /// can no longer leave a *partly* applied migration behind — the
+    /// rollback puts the original text back and removes the `.bak` it had
+    /// already made — so the retry sees a pristine project and saves the
+    /// original as its backup.
+    #[test]
+    fn a_failed_migration_rolls_back_and_the_retry_still_backs_up_the_original() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("environments")).unwrap();
         std::fs::write(dir.path().join("project.toml"), "").unwrap();
@@ -1685,15 +1722,15 @@ pub(crate) mod tests {
         assert!(p.apply_migration().is_err(), "the env write must fail");
 
         assert_eq!(
-            read(&dir, "variables.toml.bak").as_deref(),
-            Some(legacy_vars),
-            "the first attempt saved the original"
-        );
-        assert_ne!(
             read(&dir, "variables.toml").as_deref(),
             Some(legacy_vars),
-            "...and rewrote the live file before failing"
+            "the rollback put the live file back"
         );
+        assert!(
+            !dir.path().join("variables.toml.bak").exists(),
+            "...and removed the backup the failed attempt had made"
+        );
+        assert_eq!(p.journal_len(), 0, "a rolled-back apply journals nothing");
 
         // Clear the obstruction and retry.
         std::fs::remove_dir(dir.path().join("environments/dev.toml.bak")).unwrap();

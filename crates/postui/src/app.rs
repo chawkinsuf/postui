@@ -1044,25 +1044,6 @@ impl App {
         )
     }
 
-    /// Every on-disk file the variable manager can rewrite:
-    /// `variables.toml`, every environment override, and the
-    /// (git-ignored) secrets file. Environments are re-listed from disk on
-    /// every call, so an op that creates or deletes an environment file is
-    /// picked up the moment it is on disk. The last caller is
-    /// `Action::ApplyMigration`, whose rewrite core does not journal.
-    pub(crate) fn var_file_paths(&self) -> Vec<PathBuf> {
-        let Some(p) = self.project() else {
-            return Vec::new();
-        };
-        let root = p.root();
-        let mut paths = vec![root.join("variables.toml")];
-        for env in postui_core::project::list_environments(root) {
-            paths.push(root.join("environments").join(format!("{env}.toml")));
-        }
-        paths.push(root.join(".local").join("secrets.toml"));
-        paths
-    }
-
     // ----- local-state and variable writes -----
 
     fn set_selection_for(&mut self, env: &str, name: &str, key: &str) {
@@ -3678,18 +3659,15 @@ impl App {
                 true
             }
             Action::ApplyMigration => {
-                // The one variable write core does not journal (see
-                // `project::migration`: it makes its own `.bak` copies
-                // instead), so this still captures a file step rather than
-                // a marker — undoing a migration must keep working.
-                let before = self.read_file_states(&self.var_file_paths());
                 match self
                     .project_mut()
                     .map_or_else(|| Err(NO_PROJECT.to_string()), |p| {
                         p.apply_migration().map_err(|e| e.to_string())
                     }) {
                     Ok(notes) => {
-                        self.record_var_file_step(before);
+                        // Core journals the whole conversion (the `.bak`
+                        // copies included) as one entry.
+                        self.record_project_step();
                         self.refresh_sidebar();
                         let summary = if notes.is_empty() {
                             "variables migrated \u{2014} a .bak of each rewritten file is beside it"
@@ -4451,7 +4429,7 @@ impl App {
                 // those requests (references keep the old name until
                 // someone edits them), but the user should still know the
                 // name isn't as free-standing as it looks.
-                let usage = postui_core::varedit::scan_usage(self.root(), &from);
+                let usage = self.project().map(|p| p.scan_usage(&from)).unwrap_or_default();
                 let title = if usage.is_empty() {
                     format!("Rename {from}")
                 } else {
@@ -4480,7 +4458,7 @@ impl App {
                 true
             }
             Action::DeleteVar { name } => {
-                let usage = postui_core::varedit::scan_usage(self.root(), &name);
+                let usage = self.project().map(|p| p.scan_usage(&name)).unwrap_or_default();
                 self.apply(Action::VarStruct(VarStructOp::Delete {
                     name: name.clone(),
                 }));
@@ -6820,17 +6798,6 @@ impl App {
         self.history.break_coalescing();
     }
 
-    /// Reads each path's current contents; an unreadable path (gone, or a
-    /// permission error) reads as absent — these are small TOML files
-    /// postui itself wrote, so "can't read it" and "it isn't there" are
-    /// treated alike.
-    fn read_file_states(&self, paths: &[PathBuf]) -> Vec<(PathBuf, Option<String>)> {
-        paths
-            .iter()
-            .map(|p| (p.clone(), std::fs::read_to_string(p).ok()))
-            .collect()
-    }
-
     /// Records a marker for the journal entry the last `Project` call
     /// produced, if it produced a new one. Called right after every
     /// mutating `Project` call. A merged burst (a held alt+↓) leaves the
@@ -7072,63 +7039,6 @@ impl App {
         self.project().is_some_and(|p| p.request_exists(slug))
     }
 
-    /// Reads `after_paths`' current contents, drops any pair whose content
-    /// matches the corresponding `before` option (position-paired — callers
-    /// pass both in the same path order), and — when anything real
-    /// remains — records a `FileStates` undo step for the rest.
-    /// `record_no_coalesce`: a disk write is never a burst-coalescing
-    /// candidate and must clear the redo stack (spec: new steps invalidate
-    /// stale redo options).
-    fn record_file_step(
-        &mut self,
-        before: Vec<(PathBuf, Option<String>)>,
-        after_paths: &[PathBuf],
-        active_env: Option<(Option<String>, Option<String>)>,
-    ) {
-        self.record_file_step_with_orders(before, after_paths, active_env, Vec::new(), Vec::new());
-    }
-
-    /// [`Self::record_file_step`] for a request file op that also
-    /// cascaded the order lists: `orders` is what the cascade did, so
-    /// undo and redo can replay it, and `moves` pairs every request the
-    /// op moved with where it went, so they can follow the open request.
-    fn record_file_step_with_orders(
-        &mut self,
-        before: Vec<(PathBuf, Option<String>)>,
-        after_paths: &[PathBuf],
-        active_env: Option<(Option<String>, Option<String>)>,
-        orders: Vec<postui_core::order::OrderEdit>,
-        moves: Vec<(String, String)>,
-    ) {
-        let after = self.read_file_states(after_paths);
-        debug_assert_eq!(before.len(), after.len(), "before/after paths must line up");
-        let mut kept_before = Vec::new();
-        let mut kept_after = Vec::new();
-        for (b, a) in before.into_iter().zip(after) {
-            if b.1 != a.1 {
-                kept_before.push(b);
-                kept_after.push(a);
-            }
-        }
-        if kept_before.is_empty() {
-            return;
-        }
-        self.history.record_no_coalesce(crate::undo::Step {
-            kind: crate::undo::StepKind::FileStates {
-                before: kept_before,
-                after: kept_after,
-                active_env,
-                orders,
-                moves,
-            },
-            context: crate::undo::Context {
-                slug: self.editor.slug.clone(),
-                cursor_before: crate::undo::CursorPos::None,
-                cursor_after: crate::undo::CursorPos::None,
-            },
-        });
-    }
-
     /// Writes each `(path, content)`: `Some` writes atomically, `None`
     /// removes (a missing file counts as removed). Stops at the first
     /// failure with a toast-ready message; earlier writes stand.
@@ -7202,27 +7112,6 @@ impl App {
             self.shadow = None;
             self.sidebar.open_slug = None;
         }
-    }
-
-    /// `Action::ApplyMigration`'s capture helper — the one variable
-    /// write core does not journal (it makes its own `.bak` copies
-    /// instead), so it still records a file step. `before` is a
-    /// `read_file_states(&self.var_file_paths())` snapshot taken
-    /// before the op ran. `var_file_paths` is re-listed from disk, so an op
-    /// that creates or deletes an environment file changes the path set
-    /// between `before` and now — `record_file_step` position-pairs
-    /// before/after, so this extends `before` with a `None` option for any
-    /// current path it doesn't already cover (i.e. the union of the
-    /// before- and after-side path sets) before handing both to
-    /// `record_file_step`.
-    fn record_var_file_step(&mut self, mut before: Vec<(PathBuf, Option<String>)>) {
-        for path in self.var_file_paths() {
-            if !before.iter().any(|(p, _)| *p == path) {
-                before.push((path, None));
-            }
-        }
-        let all_paths: Vec<PathBuf> = before.iter().map(|(p, _)| p.clone()).collect();
-        self.record_file_step(before, &all_paths, None);
     }
 
     /// Makes `space` the active one without opening anything: records the

@@ -1,6 +1,7 @@
 //! The stage 6 → 7 variable-format conversion: probed at open and every
-//! reload, offered once, applied with `.bak` copies. Not journaled (it
-//! makes its own backups, as today).
+//! reload, offered once, applied with `.bak` copies. Journaled as one
+//! entry — the `.bak` writes go through the same recorded text op as the
+//! rewrites, so undo removes the backups and restores the originals.
 
 use super::*;
 
@@ -39,30 +40,31 @@ impl Project {
     }
 
     /// Each rewritten file is copied to `<file>.bak` first — only once,
-    /// so a retry after a partial apply never overwrites the original —
-    /// then written atomically. Reloads everything afterwards.
+    /// so a retry after a failed apply never overwrites the original —
+    /// then written atomically. The whole conversion is one journal entry
+    /// (backups included), so it undoes like any other project write; a
+    /// failure part-way rolls every file back and stays pending for a
+    /// retry. Reloads everything afterwards.
     pub fn apply_migration(&mut self) -> Result<Vec<Warning>, Error> {
         let Some(outcome) = self.pending_migration.take() else {
             return Err(Error::NothingPending);
         };
-        let result = (|| -> Result<(), Error> {
+        let result = self.transaction("apply migration", EntryMeta::default(), |p| {
             if let Some(text) = &outcome.variables {
-                self.write_with_backup(&rel(VARIABLES_TOML)?, text)?;
+                p.write_with_backup(&rel(VARIABLES_TOML)?, text)?;
             }
             for (env, text) in &outcome.envs {
-                self.write_with_backup(&env_rel(env)?, text)?;
+                p.write_with_backup(&env_rel(env)?, text)?;
             }
             if let Some(text) = &outcome.new_default_env {
-                self.write_with_backup(&env_rel(DEFAULT_ENVIRONMENT)?, text)?;
+                p.write_with_backup(&env_rel(DEFAULT_ENVIRONMENT)?, text)?;
             }
             Ok(())
-        })();
+        });
         if let Err(e) = result {
+            // The transaction put every file back and re-derived memory
+            // from disk; all that is left is the offer itself.
             self.pending_migration = Some(outcome);
-            // A partial write (e.g. the default env's backup wrote but the
-            // next file's did not) can leave disk ahead of memory; force
-            // the next `poll` to re-sync rather than run on stale reads.
-            self.force_reload = true;
             return Err(e);
         }
         let mut notes = outcome.notes;
@@ -70,13 +72,15 @@ impl Project {
         Ok(notes)
     }
 
+    /// The recorded write: `fs_write_text` both times, so undo removes a
+    /// `.bak` this apply created and puts the rewritten file back.
     fn write_with_backup(&mut self, path: &RelPath, text: &str) -> Result<(), Error> {
         let backup = RelPath::new(format!("{}.bak", path.as_str()))?;
         if self.disk.is_file(path) && !self.disk.is_file(&backup) {
             let existing = self.disk.read(path)?.unwrap_or_default();
-            self.disk.write(&backup, &existing)?;
+            self.fs_write_text(&backup, Some(&existing))?;
         }
-        self.disk.write(path, text)?;
+        self.fs_write_text(path, Some(text))?;
         Ok(())
     }
 
