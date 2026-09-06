@@ -229,6 +229,38 @@ mod tests {
         assert!(p.selections_for("dev").get("region").is_none());
     }
 
+    /// Ported from the app's `ProjectContext` test
+    /// `clear_selection_for_a_shared_selector_clears_the_global_pick`:
+    /// a shared selector's pick lives in the global table whichever
+    /// environment the gesture came from, so clearing it from any
+    /// environment must empty that table and un-resolve its fields
+    /// (`clear_selection_for`'s `removed_shared` branch).
+    #[test]
+    fn clear_selection_for_a_shared_selector_clears_the_global_pick() {
+        let (dir, _p) = fixture();
+        std::fs::write(
+            dir.path().join("variables.toml"),
+            "[selectors.locale]\nfields = [\"lang\"]\nshared = true\n\n[options.locale.fr]\nlang = \"fr\"\n",
+        )
+        .unwrap();
+        let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        p.set_active_env(Some("qa".into()));
+        p.set_selection("locale", "fr");
+        assert_eq!(p.resolved().values.get("lang").map(String::as_str), Some("fr"));
+        assert_eq!(
+            p.local().shared_selections.get("locale").map(String::as_str),
+            Some("fr")
+        );
+
+        // Cleared from `qa`, but the pick was never `qa`'s: the global
+        // table empties and the field stops resolving everywhere.
+        p.clear_selection_for("qa", "locale");
+        assert!(!p.local().shared_selections.contains_key("locale"));
+        assert!(!p.resolved().values.contains_key("lang"));
+        let text = read(&dir, ".local/state.toml").unwrap();
+        assert!(!text.contains("fr"), "the cleared pick is off disk too: {text}");
+    }
+
     #[test]
     fn a_selection_for_a_non_active_env_does_not_touch_resolved() {
         let (dir, _p) = fixture();

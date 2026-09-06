@@ -617,21 +617,24 @@ impl Project {
     /// restores the file's pre-op text behind the project's back. Returns
     /// what was read; `None` when the file could not be read or parsed,
     /// leaving memory as it was. The active environment is deliberately
-    /// left alone: the replay restores that separately, through
-    /// `set_active_env`. Disappears with the last legacy write.
+    /// left alone, as are the active space, the open request and the
+    /// split: the replay restores those separately, from the returned
+    /// [`LocalState`]. Disappears with the last legacy write.
     pub fn reload_local_state(&mut self) -> Option<LocalState> {
         let path = RelPath::new(STATE_TOML).expect("constant");
         let text = self.disk.read(&path).ok()?;
         let state: LocalState = toml::from_str(&text.unwrap_or_default()).ok()?;
-        self.local.open_request = state.open_request.clone();
-        self.local.main_split = state.main_split.clone();
+        // Only what memory owns outright. The active space, the open
+        // request and the split are the *caller's* to act on — entering a
+        // space and opening a request are the app's moves, not the
+        // project's, and applying the space here would make the caller's
+        // own switch look like a second one (an extra `space:` toast and
+        // a sidebar rebuild on every undo of a space delete). They are
+        // returned instead.
         self.local.expanded = state.expanded.iter().cloned().collect();
         self.local.selections = state.selections.clone();
         self.local.shared_selections = state.shared_selections.clone();
         self.local.space_open = state.space_open.clone();
-        if let Some(space) = state.space.clone() {
-            self.local.active_space = space;
-        }
         self.refresh_resolved();
         Some(state)
     }
@@ -1654,6 +1657,54 @@ pub(crate) mod tests {
         // A second apply is refused; the .bak is untouched.
         assert!(matches!(p.apply_migration(), Err(Error::NothingPending)));
         assert_eq!(read(&dir, "variables.toml.bak").unwrap(), bak);
+    }
+
+    /// Ported from the app's `ProjectContext` test
+    /// `retrying_a_partly_applied_migration_keeps_the_original_bak`: an
+    /// apply that fails part-way stays pending, and the retry must not
+    /// copy the already-migrated text over the only surviving copy of the
+    /// original (`write_with_backup`'s "only once" guard).
+    #[test]
+    fn retrying_a_partly_applied_migration_keeps_the_original_bak() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("environments")).unwrap();
+        std::fs::write(dir.path().join("project.toml"), "").unwrap();
+        // A stage-6 enumerated variable: the conversion rewrites
+        // `variables.toml` first and then every environment file, so an
+        // environment that cannot be written fails the apply part-way.
+        let legacy_vars = "[tier]\n[tier.options.gold]\nvalue = \"g-1\"\n";
+        std::fs::write(dir.path().join("variables.toml"), legacy_vars).unwrap();
+        std::fs::write(dir.path().join("environments/dev.toml"), "").unwrap();
+        // A directory where the env file's backup must go: the env write
+        // fails after `variables.toml` has already been backed up and
+        // rewritten.
+        std::fs::create_dir(dir.path().join("environments/dev.toml.bak")).unwrap();
+
+        let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        assert!(p.pending_migration().is_some());
+        assert!(p.apply_migration().is_err(), "the env write must fail");
+
+        assert_eq!(
+            read(&dir, "variables.toml.bak").as_deref(),
+            Some(legacy_vars),
+            "the first attempt saved the original"
+        );
+        assert_ne!(
+            read(&dir, "variables.toml").as_deref(),
+            Some(legacy_vars),
+            "...and rewrote the live file before failing"
+        );
+
+        // Clear the obstruction and retry.
+        std::fs::remove_dir(dir.path().join("environments/dev.toml.bak")).unwrap();
+        assert!(p.pending_migration().is_some(), "still retryable");
+        p.apply_migration().unwrap();
+
+        assert_eq!(
+            read(&dir, "variables.toml.bak").as_deref(),
+            Some(legacy_vars),
+            "the retry must not overwrite the original with migrated text"
+        );
     }
 
     #[test]

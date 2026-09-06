@@ -20978,6 +20978,30 @@ fn a_refused_open_in_the_process_cwd_still_runs_empty() {
     assert!(!app.project.is_some());
 }
 
+/// The Manage screen is reachable with no project open (`OpenManage` is
+/// not behind the write gate), and both its tabs are built around
+/// `&Project` — so the body must still be painted rather than left as raw
+/// terminal default.
+#[test]
+fn the_manage_screen_paints_its_body_with_no_project_open() {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::bare(tx, PathBuf::new());
+    assert!(app.project.is_none());
+    for tab in [
+        crate::components::manage::ManageTab::Variables,
+        crate::components::manage::ManageTab::Spaces,
+        crate::components::manage::ManageTab::Environments,
+    ] {
+        app.update(Action::OpenManage { tab: Some(tab) });
+        let text = rendered_text(&mut app);
+        assert!(
+            text.contains("no project is open"),
+            "{tab:?} body is unpainted: {text}"
+        );
+        app.update(Action::CloseScreen);
+    }
+}
+
 #[test]
 fn a_refused_open_gates_every_way_of_writing_a_new_file() {
     let _cwd = CWD.lock().unwrap_or_else(|e| e.into_inner());
@@ -21230,12 +21254,25 @@ fn undo_of_a_space_delete_restores_the_space_its_request_and_its_memory() {
     assert_eq!(app.editor.slug.as_deref(), Some("auth/login"));
     assert!(!app.proj().local().expanded.contains("main/api"));
 
+    let toasts_before = app.toasts.messages().len();
     app.update(Action::Undo);
     assert_eq!(app.proj().spaces(), ["main", "auth"]);
     assert_eq!(
         app.proj().local().active_space, "main",
         "undo returns to the deleted space"
     );
+    // Exactly one space switch: restoring `.local/state.toml` must not
+    // move the active space itself, or the undo announces the space it is
+    // passing through on the way back (`space: auth`) before announcing
+    // the one it lands in.
+    let space_toasts: Vec<&str> = app
+        .toasts
+        .messages()
+        .into_iter()
+        .skip(toasts_before)
+        .filter(|m| m.starts_with("space: "))
+        .collect();
+    assert_eq!(space_toasts, ["space: main"], "{:?}", app.toasts.messages());
     assert_eq!(
         app.editor.slug.as_deref(),
         Some("main/alpha"),

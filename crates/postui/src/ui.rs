@@ -190,8 +190,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                         hovered,
                         ..
                     } = app;
-                    if let Some(p) = project.as_ref() {
-                        varmanager.draw(
+                    match project.as_ref() {
+                        Some(p) => varmanager.draw(
                             frame,
                             body,
                             theme,
@@ -199,7 +199,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                             open_request.as_ref(),
                             &mut hits,
                             hovered.as_ref(),
-                        );
+                        ),
+                        None => draw_manage_without_a_project(frame, body, theme),
                     }
                 }
                 tab => {
@@ -211,8 +212,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                         hovered,
                         ..
                     } = app;
-                    if let Some(p) = project.as_ref() {
-                        manage.list.draw(
+                    match project.as_ref() {
+                        Some(p) => manage.list.draw(
                             frame,
                             body,
                             theme,
@@ -221,7 +222,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                             &requests,
                             &mut hits,
                             hovered.as_ref(),
-                        );
+                        ),
+                        None => draw_manage_without_a_project(frame, body, theme),
                     }
                 }
             }
@@ -652,6 +654,25 @@ fn focus_bar(
             cell.set_fg(theme.focus_ring);
         }
     }
+}
+
+/// The Manage screen's body with no project open. Both tabs are built
+/// around `&Project`, so there is nothing to list — but the screen is
+/// reachable (`Action::OpenManage` is not gated), and an unpainted body
+/// would show raw terminal default where the themed page belongs. Paints
+/// the page and says why it is empty, in the same words the write gate
+/// uses.
+fn draw_manage_without_a_project(
+    frame: &mut ratatui::Frame,
+    body: ratatui::layout::Rect,
+    theme: &crate::theme::Theme,
+) {
+    use crate::paint::{fill, text};
+    fill(frame.buffer_mut(), body, theme.page);
+    const MSG: &str = "no project is open \u{2014} open or create one first";
+    let x = body.x + body.width.saturating_sub(MSG.chars().count() as u16) / 2;
+    let y = body.y + body.height / 3;
+    text(frame.buffer_mut(), x, y, MSG, theme.text_muted, theme.page, false);
 }
 
 #[cfg(test)]
