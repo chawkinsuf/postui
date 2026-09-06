@@ -62,7 +62,7 @@ pub fn default_project_dir() -> Option<PathBuf> {
 /// `project.toml`: a bare directory must never gain one behind the user's
 /// back, ahead of the "create a project here?" consent modal, and an
 /// unreadable one must never be overwritten by seeding, matching
-/// `ProjectContext::open`'s "never fail to open outright" policy of
+/// `Project::open`'s "never fail to open outright" policy of
 /// degrading a broken `project.toml` to a warning rather than a hard
 /// error. `list_spaces` still reports `main` as an unlisted directory
 /// either way.

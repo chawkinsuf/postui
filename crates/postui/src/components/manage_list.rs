@@ -12,7 +12,7 @@ use crate::paint::{
     BUTTON_HEIGHT, Button, ButtonKind, ControlState, ListRow, RowHighlight, button_min_width, fill,
     text,
 };
-use crate::project_ctx::ProjectContext;
+use postui_core::project::Project;
 use crate::theme::Theme;
 use ratatui::Frame;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -55,19 +55,19 @@ pub struct ListDrag {
 
 impl ManageList {
     /// The tab's items: the project's spaces, or its environments.
-    pub fn items(tab: ManageTab, ctx: &ProjectContext) -> &[String] {
+    pub fn items(tab: ManageTab, ctx: &Project) -> &[String] {
         match tab {
-            ManageTab::Spaces => &ctx.spaces,
-            _ => &ctx.environments,
+            ManageTab::Spaces => ctx.spaces(),
+            _ => ctx.environments(),
         }
     }
 
-    pub fn selected<'a>(&self, tab: ManageTab, ctx: &'a ProjectContext) -> Option<&'a str> {
+    pub fn selected<'a>(&self, tab: ManageTab, ctx: &'a Project) -> Option<&'a str> {
         Self::items(tab, ctx).get(self.cursor).map(String::as_str)
     }
 
     /// Keeps the cursor on `name` after a reorder/rename/reload.
-    pub fn select_name(&mut self, tab: ManageTab, ctx: &ProjectContext, name: &str) {
+    pub fn select_name(&mut self, tab: ManageTab, ctx: &Project, name: &str) {
         if let Some(i) = Self::items(tab, ctx).iter().position(|s| s == name) {
             self.cursor = i;
             self.ensure_visible = true;
@@ -98,7 +98,7 @@ impl ManageList {
     /// `original` and the starting `working` order, and lands the cursor
     /// on the dragged row. Only the Spaces tab reorders, so every other
     /// tab (and a row past the end) refuses.
-    pub fn begin_drag(&mut self, i: usize, tab: ManageTab, ctx: &ProjectContext) -> bool {
+    pub fn begin_drag(&mut self, i: usize, tab: ManageTab, ctx: &Project) -> bool {
         if tab != ManageTab::Spaces {
             return false;
         }
@@ -177,11 +177,11 @@ impl ManageList {
 
     /// The Environments tab's `t` key: steps env `name`'s TLS force
     /// through per request → verify → insecure.
-    fn cycle_tls_action(ctx: &ProjectContext, name: &str) -> Action {
+    fn cycle_tls_action(ctx: &Project, name: &str) -> Action {
         use postui_core::project::{TlsPolicy, env_tls};
         Action::SetEnvTls {
             env: name.to_string(),
-            policy: TlsPolicy::cycle(env_tls(&ctx.meta, name)),
+            policy: TlsPolicy::cycle(env_tls(ctx.meta(), name)),
         }
     }
 
@@ -203,7 +203,7 @@ impl ManageList {
     /// `None` past the end of the list.
     pub fn context_menu(
         tab: ManageTab,
-        ctx: &ProjectContext,
+        ctx: &Project,
         i: usize,
     ) -> Option<Vec<crate::components::modal::MenuItem>> {
         use crate::components::modal::MenuItem;
@@ -245,7 +245,7 @@ impl ManageList {
         &mut self,
         ev: KeyEvent,
         tab: ManageTab,
-        ctx: &ProjectContext,
+        ctx: &Project,
     ) -> Option<Action> {
         let len = Self::items(tab, ctx).len();
         let alt = ev.modifiers.contains(KeyModifiers::ALT);
@@ -290,7 +290,7 @@ impl ManageList {
     pub fn footer_chips(
         &self,
         tab: ManageTab,
-        ctx: &ProjectContext,
+        ctx: &Project,
     ) -> Vec<(&'static str, &'static str, Option<Action>)> {
         let selected = self.selected(tab, ctx);
         let mut chips = vec![
@@ -322,7 +322,7 @@ impl ManageList {
         body: Rect,
         theme: &Theme,
         tab: ManageTab,
-        ctx: &ProjectContext,
+        ctx: &Project,
         requests: &BTreeMap<String, Vec<String>>,
         hits: &mut HitMap,
         hovered: Option<&Hit>,
@@ -364,7 +364,7 @@ impl ManageList {
         bottom: u16,
         right: Rect,
         theme: &Theme,
-        ctx: &ProjectContext,
+        ctx: &Project,
         name: &str,
         hits: &mut HitMap,
         hovered: Option<&Hit>,
@@ -373,7 +373,7 @@ impl ManageList {
         if y + BUTTON_HEIGHT > bottom {
             return;
         }
-        let current = env_tls(&ctx.meta, name);
+        let current = env_tls(ctx.meta(), name);
         let label = "TLS";
         text(buf, x0, y + 1, label, theme.text_muted, theme.page, false);
         let mut x = x0 + label.chars().count() as u16 + 2;
@@ -422,7 +422,7 @@ impl ManageList {
         left: Rect,
         theme: &Theme,
         tab: ManageTab,
-        ctx: &ProjectContext,
+        ctx: &Project,
         items: &[String],
         hits: &mut HitMap,
         hovered: Option<&Hit>,
@@ -536,7 +536,7 @@ impl ManageList {
         right: Rect,
         theme: &Theme,
         tab: ManageTab,
-        ctx: &ProjectContext,
+        ctx: &Project,
         items: &[String],
         requests: &BTreeMap<String, Vec<String>>,
         hits: &mut HitMap,
@@ -659,10 +659,7 @@ impl ManageList {
                 }
             }
             _ => {
-                let path = postui_core::project::environment_path(&ctx.root, name)
-                    .strip_prefix(&ctx.root)
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_default();
+                let path = format!("environments/{name}.toml");
                 if y < bottom {
                     text(
                         buf,
@@ -687,13 +684,12 @@ mod tests {
 
     /// A project with three spaces (`main`, `auth`, `billing`) and the
     /// context that lists them.
-    fn ctx() -> (ProjectContext, tempfile::TempDir) {
+    fn ctx() -> (Project, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        postui_core::storage::ensure_project(dir.path()).unwrap();
-        postui_core::project::create_space(dir.path(), "auth").unwrap();
-        postui_core::project::create_space(dir.path(), "billing").unwrap();
-        let (ctx, _) = ProjectContext::open(dir.path().to_path_buf()).unwrap();
-        assert_eq!(ctx.spaces, ["main", "auth", "billing"]);
+        let (mut ctx, _) = Project::init(dir.path(), None).unwrap();
+        ctx.create_space("auth").unwrap();
+        ctx.create_space("billing").unwrap();
+        assert_eq!(ctx.spaces(), ["main", "auth", "billing"]);
         (ctx, dir)
     }
 

@@ -612,6 +612,46 @@ impl Project {
         self.force_reload = true;
     }
 
+    /// Re-reads `.local/state.toml` into `local` after a write that did
+    /// not go through the project — today's file-level undo replay, which
+    /// restores the file's pre-op text behind the project's back. Returns
+    /// what was read; `None` when the file could not be read or parsed,
+    /// leaving memory as it was. The active environment is deliberately
+    /// left alone: the replay restores that separately, through
+    /// `set_active_env`. Disappears with the last legacy write.
+    pub fn reload_local_state(&mut self) -> Option<LocalState> {
+        let path = RelPath::new(STATE_TOML).expect("constant");
+        let text = self.disk.read(&path).ok()?;
+        let state: LocalState = toml::from_str(&text.unwrap_or_default()).ok()?;
+        self.local.open_request = state.open_request.clone();
+        self.local.main_split = state.main_split.clone();
+        self.local.expanded = state.expanded.iter().cloned().collect();
+        self.local.selections = state.selections.clone();
+        self.local.shared_selections = state.shared_selections.clone();
+        self.local.space_open = state.space_open.clone();
+        if let Some(space) = state.space.clone() {
+            self.local.active_space = space;
+        }
+        self.refresh_resolved();
+        Some(state)
+    }
+
+    /// [`Self::reload_local_state`]'s narrow twin: re-reads only the
+    /// per-environment `selections` table. An unreadable file leaves the
+    /// selections empty rather than keeping a table the undo just
+    /// invalidated. Disappears with the legacy writes.
+    pub fn reload_selections(&mut self) {
+        let path = RelPath::new(STATE_TOML).expect("constant");
+        self.local.selections = self
+            .disk
+            .read(&path)
+            .ok()
+            .and_then(|t| toml::from_str::<LocalState>(&t.unwrap_or_default()).ok())
+            .map(|st| st.selections)
+            .unwrap_or_default();
+        self.refresh_resolved();
+    }
+
     /// Today's timer reload: silent, mtime-gated, keeps what fails to
     /// parse. Returns whether anything was re-read.
     pub fn poll(&mut self) -> (bool, Vec<Warning>) {
@@ -1223,6 +1263,98 @@ pub(crate) mod tests {
         assert_eq!(p.environments(), ["default"]);
         assert_eq!(p.active_env(), Some("default"));
         assert!(warnings.iter().any(|w| w.contains("created environments/default.toml")));
+    }
+
+    /// Ported from the app's `ProjectContext` tests
+    /// (`open_loads_secrets_and_resolved_reflects_a_selection_from_state`,
+    /// `shared_selection_restores_on_open`): a selection and a shared pick
+    /// recorded in `.local/state.toml` are in `resolved` the moment the
+    /// project opens, and so are the secrets.
+    #[test]
+    fn open_restores_selections_shared_picks_and_secrets_into_resolved() {
+        let (dir, _p) = fixture();
+        std::fs::write(
+            dir.path().join("variables.toml"),
+            "[token]\nsecret = true\n\n[selectors.region]\nfields = [\"host\"]\n\n[selectors.locale]\nfields = [\"lang\"]\nshared = true\n\n[options.locale.en]\nlang = \"en\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("environments/dev.toml"),
+            "[options.region.east]\nhost = \"east.local\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join(".local")).unwrap();
+        std::fs::write(
+            dir.path().join(".local/secrets.toml"),
+            "[dev]\ntoken = \"s3cret\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join(".local/state.toml"),
+            "environment = \"dev\"\n\n[selections.dev]\nregion = \"east\"\n\n[shared_selections]\nlocale = \"en\"\n",
+        )
+        .unwrap();
+
+        let (p, warnings) = Project::open(dir.path().to_path_buf()).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(p.resolved().values.get("host").map(String::as_str), Some("east.local"));
+        assert_eq!(p.resolved().values.get("lang").map(String::as_str), Some("en"));
+        assert_eq!(p.resolved().values.get("token").map(String::as_str), Some("s3cret"));
+    }
+
+    /// Ported from `open_warns_and_clears_a_stale_selection`,
+    /// `stale_shared_selection_warns_and_clears_on_open` and
+    /// `reload_warns_and_clears_a_stale_selection_when_the_option_disappears`:
+    /// a selection (env-scoped or shared) naming an option that is gone is
+    /// dropped, once, with a warning — at open and again at poll.
+    #[test]
+    fn a_stale_selection_is_cleared_with_a_warning_at_open_and_at_poll() {
+        let (dir, _p) = fixture();
+        std::fs::write(
+            dir.path().join("variables.toml"),
+            "[selectors.region]\nfields = [\"host\"]\n\n[selectors.locale]\nfields = [\"lang\"]\nshared = true\n\n[options.locale.en]\nlang = \"en\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("environments/dev.toml"),
+            "[options.region.east]\nhost = \"east.local\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join(".local")).unwrap();
+        std::fs::write(
+            dir.path().join(".local/state.toml"),
+            "environment = \"dev\"\n\n[selections.dev]\nregion = \"gone\"\n\n[shared_selections]\nlocale = \"nope\"\n",
+        )
+        .unwrap();
+
+        let (mut p, warnings) = Project::open(dir.path().to_path_buf()).unwrap();
+        assert!(
+            warnings.iter().any(|w| w.contains("`region`") && w.contains("cleared")),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains("`locale`") && w.contains("cleared")),
+            "{warnings:?}"
+        );
+        assert!(p.selections_for("dev").get("region").is_none());
+        assert!(p.local().shared_selections.get("locale").is_none());
+        // The pruned table is written back, so the stale pick does not
+        // linger in `.local/state.toml`.
+        let state = read(&dir, ".local/state.toml").unwrap();
+        assert!(!state.contains("gone"), "{state}");
+
+        // The same happens on a reload when the option disappears from a
+        // file edited outside the app.
+        p.set_selection_for("dev", "region", "east");
+        std::fs::write(dir.path().join("environments/dev.toml"), "").unwrap();
+        p.invalidate_stamps();
+        let (changed, warnings) = p.poll();
+        assert!(changed);
+        assert!(
+            warnings.iter().any(|w| w.contains("`region`") && w.contains("cleared")),
+            "{warnings:?}"
+        );
+        assert!(p.selections_for("dev").get("region").is_none());
     }
 
     #[test]

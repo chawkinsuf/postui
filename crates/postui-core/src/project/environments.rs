@@ -23,6 +23,35 @@ impl Project {
         self.fs_write_text(&rel(SECRETS_TOML)?, Some(&text))
     }
 
+    /// In-memory cascade of an environment rename the app performed
+    /// outside the project (its legacy write). Selections and secrets
+    /// follow the new name and the active environment is re-pointed;
+    /// persisting is the caller's job. Disappears with the legacy
+    /// environment writes.
+    pub fn rename_env_state(&mut self, from: &str, to: &str) {
+        if let Some(sel) = self.local.selections.shift_remove(from) {
+            self.local.selections.insert(to.to_string(), sel);
+        }
+        if let Some(sec) = self.secrets.shift_remove(from) {
+            self.secrets.insert(to.to_string(), sec);
+        }
+        if self.active_env.as_deref() == Some(from) {
+            self.active_env = Some(to.to_string());
+        }
+    }
+
+    /// [`Self::rename_env_state`]'s delete twin: the environment's
+    /// selections and secrets go, and the active environment is cleared
+    /// when it was the one deleted.
+    pub fn remove_env_state(&mut self, name: &str) {
+        self.local.selections.shift_remove(name);
+        self.secrets.shift_remove(name);
+        if self.active_env.as_deref() == Some(name) {
+            self.active_env = None;
+            self.env_data = EnvData::default();
+        }
+    }
+
     /// Records a secret for `env`, writes the secrets file, re-resolves
     /// when `env` is active. The error never carries the value.
     pub fn set_secret_for(&mut self, env: &str, name: &str, value: String) -> Result<(), Error> {
@@ -322,6 +351,42 @@ mod tests {
         assert!(dir.path().join("environments/dev.toml").is_file());
         assert!(!dir.path().join("environments/development.toml").exists());
         assert!(p.secrets().get("development").is_none());
+    }
+
+    /// Ported from the app's `ProjectContext` tests
+    /// (`set_secret_writes_secrets_file_and_resolves`,
+    /// `set_secret_resolves_immediately_with_no_active_environment`): the
+    /// value reaches `.local/secrets.toml` and `resolved` at once, in the
+    /// active environment and in the no-environment slot alike.
+    #[test]
+    fn set_secret_writes_the_file_and_resolves_with_and_without_an_environment() {
+        let (dir, mut p) = fixture();
+        std::fs::write(dir.path().join("variables.toml"), "[token]\nsecret = true\n").unwrap();
+        p.invalidate_stamps();
+        p.poll();
+
+        p.set_secret("token", "s3cret".into()).unwrap();
+        assert!(read(&dir, ".local/secrets.toml").unwrap().contains("s3cret"));
+        assert_eq!(p.resolved().values.get("token").map(String::as_str), Some("s3cret"));
+
+        // With no environment active, the secret lives under the shared
+        // `""` key and still resolves immediately — the send-time secret
+        // prompt depends on it.
+        p.set_active_env(None);
+        assert!(p.resolved().values.get("token").is_none());
+        p.set_secret("token", "no-env".into()).unwrap();
+        assert_eq!(p.resolved().values.get("token").map(String::as_str), Some("no-env"));
+    }
+
+    /// Ported from `prepare_context_carries_the_active_environment_tls_force`.
+    #[test]
+    fn prepare_context_carries_the_active_environments_tls_force() {
+        let (_dir, mut p) = fixture();
+        assert_eq!(p.prepare_context().tls_override, None, "no force: per request");
+        p.set_env_tls("dev", Some(TlsPolicy::Verify)).unwrap();
+        assert_eq!(p.prepare_context().tls_override, Some(TlsPolicy::Verify));
+        p.set_active_env(Some("qa".into()));
+        assert_eq!(p.prepare_context().tls_override, None, "qa has no force");
     }
 
     #[test]

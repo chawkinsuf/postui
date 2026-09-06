@@ -1,6 +1,20 @@
 use super::*;
 use ratatui::crossterm::event::KeyCode;
 
+/// Writes a project default header into `project.toml` and re-reads the
+/// project, the way an outside edit would — `Project` owns `meta`, so a
+/// test can no longer poke it in memory.
+fn set_default_header(app: &mut App, name: &str, value: &str) {
+    let path = app.proj().root().join("project.toml");
+    let mut text = std::fs::read_to_string(&path).unwrap_or_default();
+    if !text.contains("[default_headers]") {
+        text.push_str("\n[default_headers]\n");
+    }
+    text.push_str(&format!("{name} = \"{value}\"\n"));
+    std::fs::write(&path, text).unwrap();
+    app.reload_project_documents();
+}
+
 #[test]
 fn resolve_startup_fresh_install_picks_default_dir_to_init_with_no_prompt() {
     let registry = crate::config::ProjectsRegistry::default();
@@ -23,13 +37,13 @@ fn init_default_startup_writes_project_toml_with_the_main_space() {
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     assert!(!dir.path().join("project.toml").exists());
 
-    app.init_default_project();
+    app.init_default_project(app.root().to_path_buf());
 
     assert_eq!(
         postui_core::project::load_meta(dir.path()).unwrap().spaces,
         ["main"]
     );
-    assert_eq!(app.project.spaces, ["main"]);
+    assert_eq!(app.proj().spaces(), ["main"]);
     assert!(dir.path().join("requests/main").is_dir());
 }
 
@@ -142,19 +156,19 @@ fn resolve_startup_returns_none_when_nothing_available() {
 #[test]
 fn init_project_here_creates_project_toml_at_current_root() {
     let mut app = App::new_for_test();
-    assert!(!postui_core::project::is_project(&app.project.root));
+    assert!(!postui_core::project::is_project(app.proj().root()));
     app.update(Action::InitProjectHere);
-    assert!(postui_core::project::is_project(&app.project.root));
+    assert!(postui_core::project::is_project(app.proj().root()));
     assert_eq!(
-        postui_core::project::load_meta(&app.project.root)
+        postui_core::project::load_meta(app.proj().root())
             .unwrap()
             .spaces,
         ["main"]
     );
     // The stock `default` env is written and the app lands in it, exactly
     // as an open of the finished project would.
-    assert_eq!(app.project.environments, vec!["default".to_string()]);
-    assert_eq!(app.project.active_env.as_deref(), Some("default"));
+    assert_eq!(app.proj().environments(), vec!["default".to_string()]);
+    assert_eq!(app.proj().active_env(), Some("default"));
 }
 
 #[test]
@@ -771,17 +785,14 @@ fn shadowed_var_shows_masked_hint_when_project_var_is_secret() {
 
     let mut app = App::new_for_test();
     std::fs::write(
-        app.project.root.join("variables.toml"),
+        app.proj().root().join("variables.toml"),
         "[token]\nsecret = true\n",
     )
     .unwrap();
     app.update(Action::ReloadProjectFiles);
-    app.project
-        .secrets
-        .entry(String::new())
-        .or_default()
-        .insert("token".into(), "s3cr3t".into());
-    app.project.refresh_resolved();
+    app.proj_mut()
+        .set_secret_for("", "token", "s3cr3t".into())
+        .unwrap();
 
     app.editor.variables.insert(
         "token".into(),
@@ -1544,7 +1555,7 @@ fn a_collapsing_commit_reresolves_the_row_a_delete_click_named() {
 #[test]
 fn ctrl_s_commits_the_cell_under_edit_into_the_saved_file() {
     let mut app = App::new_for_test();
-    postui_core::storage::save_request(&app.project.root, "main/ping", &req("https://x/ping"))
+    postui_core::storage::save_request(app.proj().root(), "main/ping", &req("https://x/ping"))
         .unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::OpenRequest("main/ping".into()));
@@ -1555,7 +1566,7 @@ fn ctrl_s_commits_the_cell_under_edit_into_the_saved_file() {
     type_chars(&mut app, "page");
     app.handle_key(&Keymap::default_bindings(), ctrl('s'));
 
-    let saved = postui_core::storage::load_request(&app.project.root, "main/ping").unwrap();
+    let saved = postui_core::storage::load_request(app.proj().root(), "main/ping").unwrap();
     assert!(
         saved.params.contains_key("page"),
         "the cell under the caret is part of what ctrl+s saves: {:?}",
@@ -1567,7 +1578,7 @@ fn ctrl_s_commits_the_cell_under_edit_into_the_saved_file() {
 #[test]
 fn clicking_the_toolbar_save_chip_commits_the_cell_under_edit_and_saves() {
     let mut app = App::new_for_test();
-    postui_core::storage::save_request(&app.project.root, "main/ping", &req("https://x/ping"))
+    postui_core::storage::save_request(app.proj().root(), "main/ping", &req("https://x/ping"))
         .unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::OpenRequest("main/ping".into()));
@@ -1578,7 +1589,7 @@ fn clicking_the_toolbar_save_chip_commits_the_cell_under_edit_and_saves() {
     type_chars(&mut app, "page");
     click_hit(&mut app, Hit::FooterChip(Action::SaveRequest));
 
-    let saved = postui_core::storage::load_request(&app.project.root, "main/ping").unwrap();
+    let saved = postui_core::storage::load_request(app.proj().root(), "main/ping").unwrap();
     assert!(
         saved.params.contains_key("page"),
         "the in-progress cell rides along with a mouse-only save: {:?}",
@@ -2101,9 +2112,7 @@ fn duplicating_a_variable_copies_its_description_and_default() {
     app.update(Action::DuplicateVar {
         name: "base_url".into(),
     });
-    let copy = app
-        .project
-        .model
+    let copy = app.proj().variables()
         .vars
         .get("base_url-copy")
         .expect("copy declared");
@@ -2114,7 +2123,7 @@ fn duplicating_a_variable_copies_its_description_and_default() {
     app.update(Action::DuplicateVar {
         name: "base_url".into(),
     });
-    assert!(app.project.model.vars.contains_key("base_url-copy-2"));
+    assert!(app.proj().variables().vars.contains_key("base_url-copy-2"));
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
 }
 
@@ -2189,9 +2198,9 @@ fn click_header_env_cycle_pill_cycles_the_environment() {
         .hits
         .rect_of(&crate::hit::Hit::HeaderEnvCycle)
         .expect("env-cycle pill registered in the header");
-    assert_eq!(app.project.env_label(), "prod", "opens in the first env");
+    assert_eq!(app.env_label(), "prod", "opens in the first env");
     app.handle_mouse(left_down(r.x + 1, r.y));
-    assert_eq!(app.project.env_label(), "qa");
+    assert_eq!(app.env_label(), "qa");
     assert!(app.modals.is_empty(), "cycling opens no dropdown");
 }
 
@@ -2306,7 +2315,7 @@ fn horizontal_wheel_over_the_response_pane_scrolls_it_sideways() {
 /// URL, so quit paths can exercise the unsaved-changes gate.
 fn dirty_app() -> App {
     let mut app = App::new_for_test();
-    postui_core::storage::save_request(&app.project.root, "main/r", &req("https://x/r")).unwrap();
+    postui_core::storage::save_request(app.proj().root(), "main/r", &req("https://x/r")).unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/r".into()));
     app.focus = PaneId::Editor;
@@ -2441,7 +2450,7 @@ fn saving_a_scratch_through_the_gate_chains_the_quit() {
         app.handle_key(&keymap, plain(c));
     }
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    let saved = postui_core::storage::load_request(&app.project.root, "main/fresh").unwrap();
+    let saved = postui_core::storage::load_request(app.proj().root(), "main/fresh").unwrap();
     assert_eq!(saved.url, "https://x/scratch");
     assert!(app.should_quit, "the deferred quit ran after the save");
 }
@@ -2476,7 +2485,7 @@ fn escaping_the_gates_save_prompt_cancels_everything() {
 #[test]
 fn opening_a_request_over_a_scratch_gates_first() {
     let mut app = scratch_app();
-    postui_core::storage::save_request(&app.project.root, "main/other", &req("https://x/other"))
+    postui_core::storage::save_request(app.proj().root(), "main/other", &req("https://x/other"))
         .unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::OpenRequest("main/other".into()));
@@ -3062,7 +3071,7 @@ fn switching_spaces_restores_each_spaces_open_request_and_persists() {
     let (mut app, dir) = spaced_app();
     app.update(Action::ForceOpenRequest("main/beta".into()));
     app.update(Action::SwitchSpace("auth".into()));
-    assert_eq!(app.project.active_space, "auth");
+    assert_eq!(app.proj().local().active_space, "auth");
     assert_eq!(
         app.editor.slug.as_deref(),
         Some("auth/login"),
@@ -3081,10 +3090,10 @@ fn switching_to_an_empty_space_clears_the_editor() {
     let (mut app, dir) = spaced_app();
     postui_core::project::create_space(dir.path(), "empty").unwrap();
     app.update(Action::ReloadProjectFiles);
-    app.project.reload_spaces();
+    app.reload_project_documents();
     app.update(Action::ForceOpenRequest("main/alpha".into()));
     app.update(Action::SwitchSpace("empty".into()));
-    assert_eq!(app.project.active_space, "empty");
+    assert_eq!(app.proj().local().active_space, "empty");
     assert!(app.editor.slug.is_none());
     assert!(app.sidebar.rows.is_empty());
 }
@@ -3108,29 +3117,29 @@ fn switching_spaces_goes_through_the_dirty_gate() {
         matches!(app.modals.top(), Some(Modal::Confirm { .. })),
         "gate opened"
     );
-    assert_eq!(app.project.active_space, "main", "not switched yet");
+    assert_eq!(app.proj().local().active_space, "main", "not switched yet");
     app.update(Action::Close);
-    assert_eq!(app.project.active_space, "main", "cancel keeps the space");
+    assert_eq!(app.proj().local().active_space, "main", "cancel keeps the space");
 }
 
 #[test]
 fn jump_and_cycle_resolve_by_position_and_wrap() {
     let (mut app, _dir) = spaced_app();
     app.update(Action::JumpSpace(2));
-    assert_eq!(app.project.active_space, "auth");
+    assert_eq!(app.proj().local().active_space, "auth");
     app.update(Action::JumpSpace(9));
-    assert_eq!(app.project.active_space, "auth", "out of range is a no-op");
+    assert_eq!(app.proj().local().active_space, "auth", "out of range is a no-op");
     app.update(Action::CycleSpace(1));
-    assert_eq!(app.project.active_space, "main", "wraps");
+    assert_eq!(app.proj().local().active_space, "main", "wraps");
     app.update(Action::CycleSpace(-1));
-    assert_eq!(app.project.active_space, "auth");
+    assert_eq!(app.proj().local().active_space, "auth");
 }
 
 #[test]
 fn opening_a_request_from_another_space_switches_first() {
     let (mut app, _dir) = spaced_app();
     app.update(Action::OpenRequest("auth/login".into()));
-    assert_eq!(app.project.active_space, "auth");
+    assert_eq!(app.proj().local().active_space, "auth");
     assert_eq!(app.editor.slug.as_deref(), Some("auth/login"));
     assert!(
         app.sidebar
@@ -3147,7 +3156,7 @@ fn startup_restores_the_stored_space_and_its_request() {
     drop(app);
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let app = App::with_root(tx, dir.path().to_path_buf());
-    assert_eq!(app.project.active_space, "auth");
+    assert_eq!(app.proj().local().active_space, "auth");
     assert_eq!(app.editor.slug.as_deref(), Some("auth/login"));
 }
 
@@ -3257,9 +3266,9 @@ fn a_request_under_an_invalid_space_dir_warns_once_and_never_enters_the_tree() {
     );
 
     assert!(
-        !app.project.spaces.iter().any(|s| s == "Auth"),
+        !app.proj().spaces().iter().any(|s| s == "Auth"),
         "{:?}",
-        app.project.spaces
+        app.proj().spaces()
     );
     assert_eq!(
         app.sidebar.rows, rows_before,
@@ -3275,8 +3284,7 @@ fn an_invalid_listed_space_name_warns_once_and_survives_the_next_space_op() {
         &["main".into(), "Not Valid".into(), "auth".into()],
     )
     .unwrap();
-    app.project.reload_meta();
-    app.project.reload_spaces();
+    app.reload_project_documents();
 
     app.toasts = Default::default();
     app.update(Action::RefreshSidebar);
@@ -3307,7 +3315,7 @@ fn an_invalid_listed_space_name_warns_once_and_survives_the_next_space_op() {
         postui_core::project::load_meta(dir.path()).unwrap().spaces,
         ["main", "Not Valid", "auth", "billing"]
     );
-    assert_eq!(app.project.spaces, ["main", "auth", "billing"]);
+    assert_eq!(app.proj().spaces(), ["main", "auth", "billing"]);
 }
 
 #[test]
@@ -3351,14 +3359,14 @@ fn new_space_prompt_creates_and_switches() {
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
     assert!(dir.path().join("requests/billing").is_dir());
-    assert_eq!(app.project.spaces, ["main", "auth", "billing"]);
-    assert_eq!(app.project.active_space, "billing");
+    assert_eq!(app.proj().spaces(), ["main", "auth", "billing"]);
+    assert_eq!(app.proj().local().active_space, "billing");
     assert!(app.editor.slug.is_none());
     let toasts = app.toasts.messages().len();
     app.update(Action::CreateSpace("auth".into()));
     assert!(app.toasts.messages().len() > toasts, "duplicate toasts");
     app.update(Action::CreateSpace("   ".into()));
-    assert_eq!(app.project.spaces.len(), 3);
+    assert_eq!(app.proj().spaces().len(), 3);
 }
 
 #[test]
@@ -3366,8 +3374,8 @@ fn creating_a_space_with_a_free_form_name_slugs_the_folder_and_shows_the_name() 
     let (mut app, dir) = spaced_app();
     app.update(Action::CreateSpace("Auth v2!".into()));
     assert!(dir.path().join("requests/auth-v2").is_dir());
-    assert_eq!(app.project.active_space, "auth-v2");
-    assert_eq!(app.project.space_name("auth-v2"), "Auth v2!");
+    assert_eq!(app.proj().local().active_space, "auth-v2");
+    assert_eq!(app.proj().space_name("auth-v2"), "Auth v2!");
     let text = rendered_text_wide(&mut app);
     assert!(text.contains("Space: Auth v2!"), "{text}");
     assert!(
@@ -3396,15 +3404,15 @@ fn renaming_a_space_takes_a_display_name_and_reslugs() {
         from: "auth".into(),
         to: "Identity & SSO".into(),
     });
-    assert_eq!(app.project.spaces, ["main", "identity-sso"]);
-    assert_eq!(app.project.active_space, "identity-sso");
+    assert_eq!(app.proj().spaces(), ["main", "identity-sso"]);
+    assert_eq!(app.proj().local().active_space, "identity-sso");
     assert_eq!(app.editor.slug.as_deref(), Some("identity-sso/login"));
     assert!(
         dir.path()
             .join("requests/identity-sso/login.toml")
             .is_file()
     );
-    assert_eq!(app.project.space_name("identity-sso"), "Identity & SSO");
+    assert_eq!(app.proj().space_name("identity-sso"), "Identity & SSO");
     // The rename prompt opens prefilled with the display name, not the slug.
     app.update(Action::PromptRenameSpace("identity-sso".into()));
     let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
@@ -3418,8 +3426,8 @@ fn creating_an_environment_with_a_free_form_name_slugs_the_file_and_undoes_with_
     let (mut app, dir) = app_with_envs();
     app.update(Action::CreateEnv("Staging (EU)".into()));
     assert!(dir.path().join("environments/staging-eu.toml").is_file());
-    assert_eq!(app.project.active_env.as_deref(), Some("staging-eu"));
-    assert_eq!(app.project.env_name("staging-eu"), "Staging (EU)");
+    assert_eq!(app.proj().active_env(), Some("staging-eu"));
+    assert_eq!(app.proj().env_name("staging-eu"), "Staging (EU)");
     let text = rendered_text_wide(&mut app);
     assert!(text.contains("Environment: Staging (EU)"), "{text}");
 
@@ -3432,7 +3440,7 @@ fn creating_an_environment_with_a_free_form_name_slugs_the_file_and_undoes_with_
     );
     app.update(Action::Redo);
     assert!(dir.path().join("environments/staging-eu.toml").is_file());
-    assert_eq!(app.project.env_name("staging-eu"), "Staging (EU)");
+    assert_eq!(app.proj().env_name("staging-eu"), "Staging (EU)");
 }
 
 #[test]
@@ -3445,8 +3453,8 @@ fn renaming_an_environment_takes_a_display_name_and_reslugs() {
     });
     assert!(dir.path().join("environments/qa-staging.toml").is_file());
     assert!(!dir.path().join("environments/qa.toml").exists());
-    assert_eq!(app.project.active_env.as_deref(), Some("qa-staging"));
-    assert_eq!(app.project.env_name("qa-staging"), "QA / Staging");
+    assert_eq!(app.proj().active_env(), Some("qa-staging"));
+    assert_eq!(app.proj().env_name("qa-staging"), "QA / Staging");
     app.update(Action::PromptRenameEnv("qa-staging".into()));
     let Some(Modal::Prompt { input, .. }) = app.modals.top() else {
         panic!("prompt")
@@ -3509,8 +3517,8 @@ fn rename_space_cascades_editor_sidebar_and_state() {
         from: "auth".into(),
         to: "identity".into(),
     });
-    assert_eq!(app.project.spaces, ["main", "identity"]);
-    assert_eq!(app.project.active_space, "identity");
+    assert_eq!(app.proj().spaces(), ["main", "identity"]);
+    assert_eq!(app.proj().local().active_space, "identity");
     assert_eq!(app.editor.slug.as_deref(), Some("identity/login"));
     assert!(!app.editor.is_dirty());
     assert!(dir.path().join("requests/identity/login.toml").is_file());
@@ -3540,9 +3548,9 @@ fn delete_space_confirms_with_the_count_then_trashes_and_undoes() {
     app.handle_key(&keymap, plain(confirm));
     assert!(app.modals.is_empty());
     assert!(!dir.path().join("requests/main").exists());
-    assert_eq!(app.project.spaces, ["auth"]);
+    assert_eq!(app.proj().spaces(), ["auth"]);
     assert_eq!(
-        app.project.active_space, "auth",
+        app.proj().local().active_space, "auth",
         "switched away before deleting"
     );
     assert_eq!(app.editor.slug.as_deref(), Some("auth/login"));
@@ -3554,7 +3562,7 @@ fn delete_space_confirms_with_the_count_then_trashes_and_undoes() {
     app.update(Action::Undo);
     assert!(dir.path().join("requests/main/alpha.toml").is_file());
     assert_eq!(
-        app.project.spaces,
+        app.proj().spaces(),
         ["main", "auth"],
         "list entry restored at its old position"
     );
@@ -3565,7 +3573,7 @@ fn delete_space_refuses_the_last_space_and_shows_a_plain_label_for_an_empty_one(
     let (mut app, dir) = spaced_app();
     postui_core::project::create_space(dir.path(), "empty").unwrap();
     app.update(Action::ReloadProjectFiles);
-    app.project.reload_spaces();
+    app.reload_project_documents();
     app.update(Action::DeleteSpace("empty".into()));
     let Some(Modal::Confirm { body, choices, .. }) = app.modals.top() else {
         panic!("confirm")
@@ -3585,10 +3593,10 @@ fn delete_space_refuses_the_last_space_and_shows_a_plain_label_for_an_empty_one(
 
     app.update(Action::ForceDeleteSpace("auth".into()));
     app.update(Action::ForceDeleteSpace("empty".into()));
-    assert_eq!(app.project.spaces, ["main"]);
+    assert_eq!(app.proj().spaces(), ["main"]);
     let toasts = app.toasts.messages().len();
     app.update(Action::ForceDeleteSpace("main".into()));
-    assert_eq!(app.project.spaces, ["main"]);
+    assert_eq!(app.proj().spaces(), ["main"]);
     assert!(app.toasts.messages().len() > toasts);
 }
 
@@ -3611,14 +3619,14 @@ fn move_space_reorders_and_persists() {
         name: "auth".into(),
         delta: -1,
     });
-    assert_eq!(app.project.spaces, ["auth", "main"]);
+    assert_eq!(app.proj().spaces(), ["auth", "main"]);
     assert_eq!(
         postui_core::project::load_meta(dir.path()).unwrap().spaces,
         ["auth", "main"]
     );
     app.update(Action::JumpSpace(1));
     assert_eq!(
-        app.project.active_space, "auth",
+        app.proj().local().active_space, "auth",
         "alt+1 follows the new order"
     );
 }
@@ -3631,9 +3639,8 @@ fn two_move_space_steps_in_a_row_both_land_without_waiting_for_mtime() {
     // `project_ctx::tests::reload_meta_sees_a_write_the_stamp_cannot`.)
     let (mut app, dir) = spaced_app();
     postui_core::project::create_space(dir.path(), "billing").unwrap();
-    app.project.reload_meta();
-    app.project.reload_spaces();
-    assert_eq!(app.project.spaces, ["main", "auth", "billing"]);
+    app.reload_project_documents();
+    assert_eq!(app.proj().spaces(), ["main", "auth", "billing"]);
 
     app.update(Action::MoveSpace {
         name: "billing".into(),
@@ -3643,7 +3650,7 @@ fn two_move_space_steps_in_a_row_both_land_without_waiting_for_mtime() {
         name: "billing".into(),
         delta: -1,
     });
-    assert_eq!(app.project.spaces, ["billing", "main", "auth"]);
+    assert_eq!(app.proj().spaces(), ["billing", "main", "auth"]);
     assert_eq!(
         postui_core::project::load_meta(dir.path()).unwrap().spaces,
         ["billing", "main", "auth"]
@@ -3745,7 +3752,7 @@ fn move_all_requests_empties_the_source_and_follows_the_open_request() {
     });
     assert!(dir.path().join("requests/auth/alpha.toml").is_file());
     assert!(dir.path().join("requests/auth/beta.toml").is_file());
-    assert_eq!(app.project.active_space, "auth");
+    assert_eq!(app.proj().local().active_space, "auth");
     assert_eq!(app.editor.slug.as_deref(), Some("auth/alpha"));
     assert_eq!(app.sidebar.space_counts().get("main"), None);
 
@@ -3773,14 +3780,14 @@ fn move_all_requests_empties_the_source_and_follows_the_open_request() {
 fn undo_of_a_move_all_puts_every_file_and_both_lists_back_and_follows_the_open_request() {
     let (mut app, dir) = slotted_app(&["gamma", "alpha"]);
     postui_core::order::set_level_order(dir.path(), "auth", "", &["login".to_string()]).unwrap();
-    app.project.reload_meta();
+    app.reload_project_documents();
     app.update(Action::ForceOpenRequest("main/alpha".into()));
     app.update(Action::MoveAllRequests {
         from: "main".into(),
         to: "auth".into(),
     });
     assert_eq!(app.editor.slug.as_deref(), Some("auth/alpha"));
-    assert_eq!(app.project.active_space, "auth");
+    assert_eq!(app.proj().local().active_space, "auth");
     let meta = postui_core::project::load_meta(dir.path()).unwrap();
     assert_eq!(
         postui_core::order::space_order(&meta, "auth"),
@@ -3813,7 +3820,7 @@ fn undo_of_a_move_all_puts_every_file_and_both_lists_back_and_follows_the_open_r
         Some("main/alpha"),
         "the open request follows back to its own file, not to the first moved one"
     );
-    assert_eq!(app.project.active_space, "main");
+    assert_eq!(app.proj().local().active_space, "main");
     assert_eq!(
         request_rows(&app),
         ["main/gamma", "main/alpha", "main/beta"]
@@ -3844,7 +3851,7 @@ fn move_all_requests_cascades_the_order_lists() {
         &["beta".to_string(), "alpha".to_string()],
     )
     .unwrap();
-    app.project.reload_meta();
+    app.reload_project_documents();
     app.update(Action::MoveAllRequests {
         from: "main".into(),
         to: "auth".into(),
@@ -3867,7 +3874,7 @@ fn slotted_app(order: &[&str]) -> (App, tempfile::TempDir) {
     postui_core::storage::save_request(dir.path(), "main/gamma", &req("https://x/3")).unwrap();
     let order: Vec<String> = order.iter().map(|s| s.to_string()).collect();
     postui_core::order::set_level_order(dir.path(), "main", "", &order).unwrap();
-    app.project.reload_meta();
+    app.reload_project_documents();
     app.update(Action::RefreshSidebar);
     render_once(&mut app);
     (app, dir)
@@ -3937,7 +3944,7 @@ fn undo_of_a_duplicate_drops_the_copys_slot() {
 fn undo_of_a_move_to_space_restores_both_lists() {
     let (mut app, dir) = slotted_app(&["beta", "alpha"]);
     postui_core::order::set_level_order(dir.path(), "auth", "", &["login".to_string()]).unwrap();
-    app.project.reload_meta();
+    app.reload_project_documents();
     app.update(Action::ForceMoveRequestToSpace {
         slug: "main/alpha".into(),
         space: "auth".into(),
@@ -4084,9 +4091,8 @@ fn a_dropped_row_drag_is_its_own_undo_step() {
 fn quick_keyboard_space_moves_roll_up_into_one_undo_step() {
     let (mut app, dir) = spaced_app();
     postui_core::project::create_space(dir.path(), "billing").unwrap();
-    app.project.reload_meta();
-    app.project.reload_spaces();
-    assert_eq!(app.project.spaces, ["main", "auth", "billing"]);
+    app.reload_project_documents();
+    assert_eq!(app.proj().spaces(), ["main", "auth", "billing"]);
     let steps = app.history.undo_len();
     for _ in 0..2 {
         app.update(Action::MoveSpace {
@@ -4108,10 +4114,10 @@ fn quick_keyboard_space_moves_roll_up_into_one_undo_step() {
 
     app.update(Action::Undo);
     assert_eq!(listed_spaces(&dir), ["main", "auth", "billing"]);
-    assert_eq!(app.project.spaces, ["main", "auth", "billing"]);
+    assert_eq!(app.proj().spaces(), ["main", "auth", "billing"]);
     app.update(Action::Redo);
     assert_eq!(listed_spaces(&dir), ["billing", "main", "auth"]);
-    assert_eq!(app.project.spaces, ["billing", "main", "auth"]);
+    assert_eq!(app.proj().spaces(), ["billing", "main", "auth"]);
     assert!(
         rendered_text(&mut app).contains("Redid reorder of space billing"),
         "{}",
@@ -4145,11 +4151,11 @@ fn a_dropped_space_drag_is_its_own_undo_step_and_undo_follows_the_cursor() {
 
     app.update(Action::Undo);
     assert_eq!(listed_spaces(&dir), ["main", "auth", "billing"]);
-    assert_eq!(app.project.spaces, ["main", "auth", "billing"]);
+    assert_eq!(app.proj().spaces(), ["main", "auth", "billing"]);
     assert_eq!(
         app.manage
             .list
-            .selected(ManageTab::Spaces, &app.project)
+            .selected(ManageTab::Spaces, app.proj())
             .map(str::to_string)
             .as_deref(),
         Some("main"),
@@ -4192,7 +4198,7 @@ fn undo_of_a_reorder_follows_a_space_renamed_since() {
         from: "main".into(),
         to: "Primary".into(),
     });
-    assert_eq!(app.project.active_space, "primary");
+    assert_eq!(app.proj().local().active_space, "primary");
 
     app.update(Action::Undo);
     let meta = postui_core::project::load_meta(dir.path()).unwrap();
@@ -4277,7 +4283,7 @@ fn undo_of_a_delete_keeps_a_reorder_made_since() {
         &["beta".to_string(), "alpha".to_string()],
     )
     .unwrap();
-    app.project.reload_meta();
+    app.reload_project_documents();
     app.update(Action::Undo);
     assert_eq!(slot_order(&dir), ["beta", "alpha", "gamma"]);
 }
@@ -4297,7 +4303,7 @@ fn move_all_requests_keeps_the_source_arrangement_in_a_listed_destination() {
     )
     .unwrap();
     postui_core::order::set_level_order(dir.path(), "auth", "", &["login".to_string()]).unwrap();
-    app.project.reload_meta();
+    app.reload_project_documents();
     app.update(Action::RefreshSidebar);
     app.update(Action::MoveAllRequests {
         from: "main".into(),
@@ -4329,7 +4335,7 @@ fn move_all_requests_holding_a_dirty_open_request_gates_first() {
         dir.path().join("requests/main/alpha.toml").is_file(),
         "nothing moved yet"
     );
-    assert_eq!(app.project.active_space, "main");
+    assert_eq!(app.proj().local().active_space, "main");
 
     // Discarding runs the move: the editor is re-opened from disk by
     // `ForceOpenRequest`, which re-seeds the shadow — the discarded edit
@@ -4352,7 +4358,7 @@ fn ordered_app() -> (App, tempfile::TempDir) {
     let (mut app, dir) = spaced_app();
     postui_core::order::set_level_order(dir.path(), "main", "", &["beta".into(), "alpha".into()])
         .unwrap();
-    app.project.reload_meta();
+    app.reload_project_documents();
     app.update(Action::RefreshSidebar);
     (app, dir)
 }
@@ -4457,7 +4463,7 @@ fn request_context_menu_offers_one_move_row_that_opens_the_space_chooser() {
 #[test]
 fn request_context_menu_has_no_move_row_in_a_single_space_project() {
     let mut app = App::new_for_test();
-    postui_core::storage::save_request(&app.project.root, "main/ping", &req("https://x/ping"))
+    postui_core::storage::save_request(app.proj().root(), "main/ping", &req("https://x/ping"))
         .unwrap();
     app.update(Action::RefreshSidebar);
     render_once(&mut app);
@@ -4489,7 +4495,7 @@ fn move_request_to_space_moves_the_file_stays_put_and_undoes() {
         space: "auth".into(),
     });
     assert!(dir.path().join("requests/auth/alpha.toml").is_file());
-    assert_eq!(app.project.active_space, "main");
+    assert_eq!(app.proj().local().active_space, "main");
     assert_eq!(app.editor.slug, None, "the editor clears");
     assert_eq!(
         app.sidebar.selected_slug().as_deref(),
@@ -4503,7 +4509,7 @@ fn move_request_to_space_moves_the_file_stays_put_and_undoes() {
     app.update(Action::Undo);
     assert!(dir.path().join("requests/main/alpha.toml").is_file());
     assert!(!dir.path().join("requests/auth/alpha.toml").exists());
-    assert_eq!(app.project.active_space, "main");
+    assert_eq!(app.proj().local().active_space, "main");
 }
 
 #[test]
@@ -4516,7 +4522,7 @@ fn moving_a_request_that_is_not_open_leaves_the_editor_alone() {
         slug: "main/alpha".into(),
         space: "auth".into(),
     });
-    assert_eq!(app.project.active_space, "main");
+    assert_eq!(app.proj().local().active_space, "main");
     assert_eq!(app.editor.slug.as_deref(), Some("main/beta"));
     assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/beta"));
 }
@@ -4545,16 +4551,16 @@ fn undo_of_a_move_follows_the_file_back_and_keeps_the_outgoing_space_s_memory() 
         slug: "main/alpha".into(),
         space: "auth".into(),
     });
-    assert_eq!(app.project.active_space, "main");
+    assert_eq!(app.proj().local().active_space, "main");
     // Go look at it in auth, then undo from there: the file comes back to
     // main and the editor follows it, leaving auth on what it was on.
     app.update(Action::ForceOpenRequest("auth/alpha".into()));
-    assert_eq!(app.project.active_space, "auth");
+    assert_eq!(app.proj().local().active_space, "auth");
     app.update(Action::Undo);
-    assert_eq!(app.project.active_space, "main");
+    assert_eq!(app.proj().local().active_space, "main");
     assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
     assert_eq!(
-        app.project.space_open_for("auth").as_deref(),
+        app.proj().space_open_for("auth").as_deref(),
         Some("auth/alpha"),
         "the space being left keeps what it was left on"
     );
@@ -4564,7 +4570,7 @@ fn undo_of_a_move_follows_the_file_back_and_keeps_the_outgoing_space_s_memory() 
 fn renaming_an_environment_reports_a_secrets_write_failure() {
     let (mut app, dir) = spaced_app();
     postui_core::project::create_environment(dir.path(), "dev").unwrap();
-    app.project.environments = postui_core::project::list_environments(dir.path());
+    app.reload_project_documents();
     // Block `.local/secrets.toml` with a non-empty directory.
     std::fs::create_dir_all(dir.path().join(".local/secrets.toml/in-the-way")).unwrap();
 
@@ -4636,7 +4642,7 @@ fn move_request_to_space_holding_a_dirty_open_request_gates_first() {
         dir.path().join("requests/main/alpha.toml").is_file(),
         "nothing moved yet"
     );
-    assert_eq!(app.project.active_space, "main");
+    assert_eq!(app.proj().local().active_space, "main");
 }
 
 #[test]
@@ -5082,7 +5088,9 @@ fn clicking_a_prompts_own_body_does_not_close_it_or_touch_the_input() {
 #[test]
 fn clicking_another_row_over_dirty_editor_is_gated_by_confirm() {
     let (mut app, _dir) = sidebar_test_app();
-    app.project.expanded.insert("main/api".into());
+    let mut expanded = app.proj().local().expanded.clone();
+    expanded.insert("main/api".into());
+    app.proj_mut().set_expanded(expanded);
     app.refresh_sidebar();
     let keymap = Keymap::default_bindings();
     app.update(Action::ForceOpenRequest("main/top".into()));
@@ -5192,7 +5200,7 @@ fn new_request_prompt_flow_creates_file_and_opens_it() {
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
     assert_eq!(app.editor.slug.as_deref(), Some("main/api/ping"));
-    assert!(postui_core::storage::load_request(&app.project.root, "main/api/ping").is_ok());
+    assert!(postui_core::storage::load_request(app.proj().root(), "main/api/ping").is_ok());
     assert!(
         app.sidebar
             .rows
@@ -5214,7 +5222,7 @@ fn new_request_accepts_free_form_names_and_derives_the_slug() {
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(app.editor.slug.as_deref(), Some("main/my-request"));
     assert_eq!(app.editor.name.as_deref(), Some("My Request!"));
-    let loaded = postui_core::storage::load_request(&app.project.root, "main/my-request").unwrap();
+    let loaded = postui_core::storage::load_request(app.proj().root(), "main/my-request").unwrap();
     assert_eq!(loaded.name.as_deref(), Some("My Request!"));
     assert!(
         rendered_text(&mut app).contains("Saved My Request!"),
@@ -5233,7 +5241,7 @@ fn new_request_blank_name_toasts_and_creates_nothing() {
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(!app.toasts.is_empty(), "a blank name must toast");
     assert!(
-        postui_core::storage::list_requests(&app.project.root)
+        postui_core::storage::list_requests(app.proj().root())
             .0
             .is_empty()
     );
@@ -5244,14 +5252,14 @@ fn new_request_same_display_name_toasts_and_creates_nothing() {
     let mut app = App::new_for_test();
     app.update(Action::CreateRequest("My Request!".into()));
     assert_eq!(
-        postui_core::storage::list_requests(&app.project.root)
+        postui_core::storage::list_requests(app.proj().root())
             .0
             .len(),
         1
     );
     app.update(Action::CreateRequest("my request!".into()));
     assert_eq!(
-        postui_core::storage::list_requests(&app.project.root)
+        postui_core::storage::list_requests(app.proj().root())
             .0
             .len(),
         1,
@@ -5288,7 +5296,7 @@ fn rename_flow_speaks_display_names_and_regenerates_the_slug() {
     assert_eq!(app.editor.slug.as_deref(), Some("main/get-user-v2"));
     assert_eq!(app.editor.name.as_deref(), Some("Get User v2"));
     assert_eq!(app.sidebar.open_slug.as_deref(), Some("main/get-user-v2"));
-    let loaded = postui_core::storage::load_request(&app.project.root, "main/get-user-v2").unwrap();
+    let loaded = postui_core::storage::load_request(app.proj().root(), "main/get-user-v2").unwrap();
     assert_eq!(loaded.name.as_deref(), Some("Get User v2"));
 }
 
@@ -5306,7 +5314,7 @@ fn delete_and_duplicate_toasts_show_display_names() {
         "delete is undoable, so no confirm gate"
     );
     assert!(!postui_core::storage::request_exists(
-        &app.project.root,
+        app.proj().root(),
         "main/fancy-name"
     ));
     let text = rendered_text(&mut app);
@@ -5320,7 +5328,7 @@ fn delete_and_duplicate_toasts_show_display_names() {
     );
     app.update(Action::Undo);
     assert!(
-        postui_core::storage::request_exists(&app.project.root, "main/fancy-name"),
+        postui_core::storage::request_exists(app.proj().root(), "main/fancy-name"),
         "undo restores the deleted request"
     );
 
@@ -5354,7 +5362,7 @@ fn saving_a_legacy_request_does_not_invent_a_name() {
 fn new_request_duplicate_name_toasts_and_leaves_existing_file_alone() {
     let mut app = App::new_for_test();
     postui_core::storage::save_request(
-        &app.project.root,
+        app.proj().root(),
         "main/api/ping",
         &req("https://x/existing"),
     )
@@ -5373,7 +5381,7 @@ fn new_request_duplicate_name_toasts_and_leaves_existing_file_alone() {
     };
     assert_eq!(input.text(), "api/ping");
     assert!(!app.toasts.is_empty(), "a duplicate name must toast");
-    let existing = postui_core::storage::load_request(&app.project.root, "main/api/ping").unwrap();
+    let existing = postui_core::storage::load_request(app.proj().root(), "main/api/ping").unwrap();
     assert_eq!(
         existing.url, "https://x/existing",
         "existing file must not be overwritten"
@@ -5383,7 +5391,7 @@ fn new_request_duplicate_name_toasts_and_leaves_existing_file_alone() {
 #[test]
 fn rename_request_updates_disk_and_open_slug() {
     let mut app = App::new_for_test();
-    postui_core::storage::save_request(&app.project.root, "main/old", &req("https://x/old"))
+    postui_core::storage::save_request(app.proj().root(), "main/old", &req("https://x/old"))
         .unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/old".into()));
@@ -5410,8 +5418,8 @@ fn rename_request_updates_disk_and_open_slug() {
     }
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
-    assert!(postui_core::storage::load_request(&app.project.root, "main/old").is_err());
-    assert!(postui_core::storage::load_request(&app.project.root, "main/new").is_ok());
+    assert!(postui_core::storage::load_request(app.proj().root(), "main/old").is_err());
+    assert!(postui_core::storage::load_request(app.proj().root(), "main/new").is_ok());
     assert_eq!(app.editor.slug.as_deref(), Some("main/new"));
     assert_eq!(app.sidebar.open_slug.as_deref(), Some("main/new"));
 }
@@ -5419,7 +5427,7 @@ fn rename_request_updates_disk_and_open_slug() {
 #[test]
 fn delete_open_request_clears_editor_and_removes_file() {
     let mut app = App::new_for_test();
-    postui_core::storage::save_request(&app.project.root, "main/gone", &req("https://x/gone"))
+    postui_core::storage::save_request(app.proj().root(), "main/gone", &req("https://x/gone"))
         .unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/gone".into()));
@@ -5431,7 +5439,7 @@ fn delete_open_request_clears_editor_and_removes_file() {
         app.editor.slug.is_none(),
         "editor must reset once its open request is deleted"
     );
-    assert!(postui_core::storage::load_request(&app.project.root, "main/gone").is_err());
+    assert!(postui_core::storage::load_request(app.proj().root(), "main/gone").is_err());
 }
 
 #[test]
@@ -5453,7 +5461,7 @@ fn save_with_no_slug_opens_save_as_prompt() {
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
     assert_eq!(app.editor.slug.as_deref(), Some("main/fresh"));
-    let saved = postui_core::storage::load_request(&app.project.root, "main/fresh").unwrap();
+    let saved = postui_core::storage::load_request(app.proj().root(), "main/fresh").unwrap();
     assert_eq!(saved.url, "https://x/new");
 }
 
@@ -5861,14 +5869,14 @@ fn rendered_text_at(app: &mut App, w: u16, h: u16) -> String {
 fn cycle_switches_to_next_project_and_lists_its_requests() {
     let (mut app, _a, b) = two_projects();
     app.update(Action::CycleProject(1));
-    assert_eq!(app.project.root, b.path());
+    assert_eq!(app.proj().root(), b.path());
     assert!(
         app.sidebar
             .rows
             .iter()
             .any(|r| matches!(r, Row::Request { slug, .. } if slug == "main/pong"))
     );
-    assert_eq!(app.project.display_name(), "beta");
+    assert_eq!(app.proj().display_name(), "beta");
     assert!(
         rendered_text(&mut app).contains("Switched to beta"),
         "a clean cycle must confirm the switch with a toast"
@@ -5878,7 +5886,7 @@ fn cycle_switches_to_next_project_and_lists_its_requests() {
 #[test]
 fn cycle_with_dirty_editor_shows_no_switch_toast_until_discard() {
     let (mut app, _a, b) = two_projects();
-    postui_core::storage::save_request(&app.project.root, "main/r", &req("https://x/r")).unwrap();
+    postui_core::storage::save_request(app.proj().root(), "main/r", &req("https://x/r")).unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/r".into()));
     app.focus = PaneId::Editor;
@@ -5888,14 +5896,14 @@ fn cycle_with_dirty_editor_shows_no_switch_toast_until_discard() {
 
     app.update(Action::CycleProject(1));
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
-    assert_ne!(app.project.root, b.path(), "not switched yet");
+    assert_ne!(app.proj().root(), b.path(), "not switched yet");
     assert!(
         !rendered_text(&mut app).contains("Switched to"),
         "no switch toast before the dirty gate is resolved"
     );
 
     app.handle_key(&Keymap::default_bindings(), plain('d'));
-    assert_eq!(app.project.root, b.path());
+    assert_eq!(app.proj().root(), b.path());
     assert!(
         rendered_text(&mut app).contains("Switched to beta"),
         "the switch toast appears once the discard actually switches"
@@ -5905,7 +5913,7 @@ fn cycle_with_dirty_editor_shows_no_switch_toast_until_discard() {
 #[test]
 fn switch_with_dirty_editor_prompts_and_discard_proceeds() {
     let (mut app, _a, b) = two_projects();
-    postui_core::storage::save_request(&app.project.root, "main/r", &req("https://x/r")).unwrap();
+    postui_core::storage::save_request(app.proj().root(), "main/r", &req("https://x/r")).unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/r".into()));
     app.focus = PaneId::Editor;
@@ -5914,9 +5922,9 @@ fn switch_with_dirty_editor_prompts_and_discard_proceeds() {
     assert!(app.editor.is_dirty());
     app.update(Action::SwitchProject(b.path().to_path_buf()));
     assert!(matches!(app.modals.top(), Some(Modal::Confirm { .. })));
-    assert_ne!(app.project.root, b.path(), "not switched yet");
+    assert_ne!(app.proj().root(), b.path(), "not switched yet");
     app.handle_key(&Keymap::default_bindings(), plain('d'));
-    assert_eq!(app.project.root, b.path());
+    assert_eq!(app.proj().root(), b.path());
 }
 
 #[test]
@@ -5987,7 +5995,7 @@ fn project_chooser_lists_known_and_open_by_path_creates() {
     );
     app.handle_key(&Keymap::default_bindings(), plain('y'));
     assert!(postui_core::project::is_project(&target));
-    assert_eq!(app.project.root, target);
+    assert_eq!(app.proj().root(), target);
 }
 
 #[test]
@@ -6012,8 +6020,8 @@ fn new_project_modal_prefills_path_from_name_and_creates() {
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     let expected = root.path().join("my-svc");
     assert!(postui_core::project::is_project(&expected));
-    assert_eq!(app.project.root, expected);
-    assert_eq!(app.project.display_name(), "My Svc");
+    assert_eq!(app.proj().root(), expected);
+    assert_eq!(app.proj().display_name(), "My Svc");
     assert!(app.registry.known.contains(&expected));
 }
 
@@ -6051,7 +6059,7 @@ fn picker_confirm_of_a_project_folder_switches_to_it() {
         target: PickerTarget::OpenProject,
         path: b.path().to_path_buf(),
     });
-    assert_eq!(app.project.root, b.path());
+    assert_eq!(app.proj().root(), b.path());
 }
 
 #[test]
@@ -6199,7 +6207,7 @@ fn picker_mouse_rows_primary_and_hidden_toggle() {
     // is a click on the selected row: it acts, and a project opens.
     click_hit(&mut app, Hit::PickerRow(2));
     assert!(app.modals.is_empty(), "opening a project closes the picker");
-    assert_eq!(app.project.root, root.path().join("one"));
+    assert_eq!(app.proj().root(), root.path().join("one"));
 
     // The primary confirms the folder being shown, whatever row is lit.
     let bare = tempfile::tempdir().unwrap();
@@ -6221,7 +6229,7 @@ fn picker_mouse_rows_primary_and_hidden_toggle() {
 fn create_project_with_dirty_editor_defers_last_until_dirty_gate_resolves() {
     let (mut app, dir, _b) = two_projects();
     // Dirty the editor on the current (old) project.
-    postui_core::storage::save_request(&app.project.root, "main/r", &req("https://x/r")).unwrap();
+    postui_core::storage::save_request(app.proj().root(), "main/r", &req("https://x/r")).unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/r".into()));
     app.focus = PaneId::Editor;
@@ -6245,10 +6253,10 @@ fn create_project_with_dirty_editor_defers_last_until_dirty_gate_resolves() {
         app.registry.known.contains(&new_path),
         "new path is known even though not yet current"
     );
-    assert_eq!(app.project.root, dir.path(), "not switched yet");
+    assert_eq!(app.proj().root(), dir.path(), "not switched yet");
 
     app.handle_key(&Keymap::default_bindings(), plain('d'));
-    assert_eq!(app.project.root, new_path);
+    assert_eq!(app.proj().root(), new_path);
     assert_eq!(app.registry.last, Some(new_path));
 }
 
@@ -6271,7 +6279,7 @@ fn cycle_env_reloads_project_files_before_switching() {
 
     app.update(Action::CycleEnv(1));
     assert_eq!(
-        app.project.model.vars["greeting"].default.as_deref(),
+        app.proj().variables().vars["greeting"].default.as_deref(),
         Some("hi"),
         "CycleEnv must reload project files (spec sec7 symmetry with OpenEnvChooser)"
     );
@@ -6280,10 +6288,10 @@ fn cycle_env_reloads_project_files_before_switching() {
 #[test]
 fn force_open_request_persists_open_request_to_local_state() {
     let mut app = App::new_for_test();
-    postui_core::storage::save_request(&app.project.root, "main/a", &req("https://x/a")).unwrap();
+    postui_core::storage::save_request(app.proj().root(), "main/a", &req("https://x/a")).unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/a".into()));
-    let st = postui_core::project::load_local_state(&app.project.root).unwrap();
+    let st = postui_core::project::load_local_state(app.proj().root()).unwrap();
     assert_eq!(st.open_request.as_deref(), Some("main/a"));
 }
 
@@ -6344,7 +6352,7 @@ fn new_project_tab_prefill_noop_when_slugify_is_empty() {
 #[test]
 fn create_project_with_empty_path_toasts_and_creates_nothing() {
     let mut app = App::new_for_test();
-    let before_root = app.project.root.clone();
+    let before_root = app.proj().root().to_path_buf();
     let before_known = app.registry.known.clone();
     app.update(Action::CreateProject {
         name: "x".into(),
@@ -6355,7 +6363,7 @@ fn create_project_with_empty_path_toasts_and_creates_nothing() {
         text.contains("project path is empty — enter a path"),
         "error toast shown: {text}"
     );
-    assert_eq!(app.project.root, before_root, "no project switch");
+    assert_eq!(app.proj().root(), before_root, "no project switch");
     assert_eq!(app.registry.known, before_known, "no project registered");
 }
 
@@ -6426,7 +6434,7 @@ fn set_env_tls_writes_project_toml_and_toasts() {
         Some(TlsPolicy::Verify)
     );
     assert_eq!(
-        postui_core::project::env_tls(&app.project.meta, "prod"),
+        postui_core::project::env_tls(app.proj().meta(), "prod"),
         Some(TlsPolicy::Verify),
         "meta reloaded in memory"
     );
@@ -6447,7 +6455,7 @@ fn set_env_tls_writes_project_toml_and_toasts() {
         policy: None,
     });
     assert_eq!(
-        postui_core::project::env_tls(&app.project.meta, "prod"),
+        postui_core::project::env_tls(app.proj().meta(), "prod"),
         None
     );
     assert_eq!(
@@ -6467,7 +6475,7 @@ fn toggle_insecure_under_an_environment_force_saves_but_warns() {
         "[environment.prod]\nname = \"Prod\"\n",
     )
     .unwrap();
-    app.project.reload_meta();
+    app.reload_project_documents();
     app.update(Action::SetEnvTls {
         env: "prod".into(),
         policy: Some(TlsPolicy::Verify),
@@ -6509,9 +6517,7 @@ fn manage_environments_pane_has_a_tls_control_that_writes_the_force() {
     app.update(Action::OpenManage {
         tab: Some(ManageTab::Environments),
     });
-    app.manage
-        .list
-        .select_name(ManageTab::Environments, &app.project, "prod");
+    app.manage_select_name("prod");
     let text = rendered_text_tall(&mut app);
     assert!(text.contains("TLS"), "{text}");
     assert!(text.contains("Per request"), "{text}");
@@ -6520,12 +6526,12 @@ fn manage_environments_pane_has_a_tls_control_that_writes_the_force() {
 
     click_hit(&mut app, Hit::ManageEnvTls(Some(TlsPolicy::Verify)));
     assert_eq!(
-        postui_core::project::env_tls(&app.project.meta, "prod"),
+        postui_core::project::env_tls(app.proj().meta(), "prod"),
         Some(TlsPolicy::Verify)
     );
     click_hit(&mut app, Hit::ManageEnvTls(None));
     assert_eq!(
-        postui_core::project::env_tls(&app.project.meta, "prod"),
+        postui_core::project::env_tls(app.proj().meta(), "prod"),
         None
     );
 
@@ -6533,24 +6539,24 @@ fn manage_environments_pane_has_a_tls_control_that_writes_the_force() {
     let keymap = Keymap::default_bindings();
     app.handle_key(&keymap, plain('t'));
     assert_eq!(
-        postui_core::project::env_tls(&app.project.meta, "prod"),
+        postui_core::project::env_tls(app.proj().meta(), "prod"),
         Some(TlsPolicy::Verify)
     );
     app.handle_key(&keymap, plain('t'));
     assert_eq!(
-        postui_core::project::env_tls(&app.project.meta, "prod"),
+        postui_core::project::env_tls(app.proj().meta(), "prod"),
         Some(TlsPolicy::Insecure)
     );
     app.handle_key(&keymap, plain('t'));
     assert_eq!(
-        postui_core::project::env_tls(&app.project.meta, "prod"),
+        postui_core::project::env_tls(app.proj().meta(), "prod"),
         None
     );
     // Advertised in the footer.
     assert!(
         app.manage
             .list
-            .footer_chips(ManageTab::Environments, &app.project)
+            .footer_chips(ManageTab::Environments, app.proj())
             .iter()
             .any(|(k, l, _)| *k == "t" && *l == "tls"),
     );
@@ -6594,33 +6600,33 @@ fn padlock_shows_the_effective_tls_state_under_an_environment_force() {
 fn cycle_env_wraps_and_skips_no_env() {
     let (mut app, dir) = app_with_envs();
     assert_eq!(
-        app.project.env_label(),
+        app.env_label(),
         "prod",
         "an open lands in the first env"
     );
     app.update(Action::CycleEnv(1));
-    assert_eq!(app.project.env_label(), "qa");
+    assert_eq!(app.env_label(), "qa");
     app.update(Action::CycleEnv(1));
     assert_eq!(
-        app.project.env_label(),
+        app.env_label(),
         "prod",
         "wraps directly, never through no-env"
     );
-    assert_eq!(app.project.env_data.values["tok"], "p");
+    assert_eq!(app.proj().env_data().values["tok"], "p");
     let st = postui_core::project::load_local_state(dir.path()).unwrap();
     assert_eq!(st.environment.as_deref(), Some("prod"), "persisted");
 
     // alt+shift+x: the other way round, wrapping the same way.
     app.update(Action::CycleEnv(-1));
-    assert_eq!(app.project.env_label(), "qa");
+    assert_eq!(app.env_label(), "qa");
     app.update(Action::CycleEnv(-1));
-    assert_eq!(app.project.env_label(), "prod");
+    assert_eq!(app.env_label(), "prod");
 
     // From no env (only reachable by a file going missing), a backward
     // step lands on the last env rather than skipping one.
     app.update(Action::SwitchEnv(None));
     app.update(Action::CycleEnv(-1));
-    assert_eq!(app.project.env_label(), "qa");
+    assert_eq!(app.env_label(), "qa");
 }
 
 #[test]
@@ -6642,8 +6648,8 @@ fn rename_env_moves_the_file_rekeys_secrets_and_follows_the_active_env() {
     .unwrap();
     app.update(Action::ReloadProjectFiles);
     app.update(Action::SwitchEnv(Some("qa".into())));
-    app.project.set_secret("tok", "s3cret".into()).unwrap();
-    app.project.set_selection_for("qa", "user", "alice");
+    app.proj_mut().set_secret("tok", "s3cret".into()).unwrap();
+    app.proj_mut().set_selection_for("qa", "user", "alice");
     app.update(Action::PersistLocalState);
     app.update(Action::RenameEnv {
         from: "qa".into(),
@@ -6651,29 +6657,29 @@ fn rename_env_moves_the_file_rekeys_secrets_and_follows_the_active_env() {
     });
     assert!(dir.path().join("environments/staging.toml").is_file());
     assert!(!dir.path().join("environments/qa.toml").exists());
-    assert_eq!(app.project.env_label(), "staging");
+    assert_eq!(app.env_label(), "staging");
     let secrets = postui_core::project::load_secrets(dir.path()).unwrap();
     assert_eq!(secrets["staging"]["tok"], "s3cret");
     assert!(!secrets.contains_key("qa"));
     let st = postui_core::project::load_local_state(dir.path()).unwrap();
     assert_eq!(st.environment.as_deref(), Some("staging"));
-    assert_eq!(app.project.selections_for("staging")["user"], "alice");
-    assert!(app.project.selections_for("qa").is_empty());
+    assert_eq!(app.proj().selections_for("staging")["user"], "alice");
+    assert!(app.proj().selections_for("qa").is_empty());
     assert_eq!(st.selections["staging"]["user"], "alice");
     assert!(!st.selections.contains_key("qa"));
     app.update(Action::Undo);
     assert!(dir.path().join("environments/qa.toml").is_file());
-    assert_eq!(app.project.env_label(), "qa");
+    assert_eq!(app.env_label(), "qa");
     assert_eq!(
-        app.project.secrets["qa"]["tok"], "s3cret",
+        app.proj().secrets()["qa"]["tok"], "s3cret",
         "secrets re-keyed back"
     );
     assert_eq!(
-        app.project.selections_for("qa")["user"],
+        app.proj().selections_for("qa")["user"],
         "alice",
         "selections re-keyed back"
     );
-    assert!(app.project.selections_for("staging").is_empty());
+    assert!(app.proj().selections_for("staging").is_empty());
     let st = postui_core::project::load_local_state(dir.path()).unwrap();
     assert_eq!(st.selections["qa"]["user"], "alice");
     assert!(
@@ -6701,8 +6707,8 @@ fn delete_env_confirms_trashes_clears_the_active_env_and_undoes() {
     .unwrap();
     app.update(Action::ReloadProjectFiles);
     app.update(Action::SwitchEnv(Some("qa".into())));
-    app.project.set_secret("tok", "s3cret".into()).unwrap();
-    app.project.set_selection_for("qa", "user", "alice");
+    app.proj_mut().set_secret("tok", "s3cret".into()).unwrap();
+    app.proj_mut().set_selection_for("qa", "user", "alice");
     app.update(Action::PersistLocalState);
     app.update(Action::DeleteEnv("qa".into()));
     let Some(Modal::Confirm {
@@ -6721,7 +6727,7 @@ fn delete_env_confirms_trashes_clears_the_active_env_and_undoes() {
     app.handle_key(&keymap, plain(confirm));
     assert!(!dir.path().join("environments/qa.toml").exists());
     assert_eq!(
-        app.project.env_label(),
+        app.env_label(),
         "prod",
         "deleting the active env falls through to the first remaining one"
     );
@@ -6730,8 +6736,8 @@ fn delete_env_confirms_trashes_clears_the_active_env_and_undoes() {
             .unwrap()
             .contains_key("qa")
     );
-    assert!(!app.project.environments.contains(&"qa".to_string()));
-    assert!(app.project.selections_for("qa").is_empty());
+    assert!(!app.proj().environments().contains(&"qa".to_string()));
+    assert!(app.proj().selections_for("qa").is_empty());
     assert!(
         !postui_core::project::load_local_state(dir.path())
             .unwrap()
@@ -6741,17 +6747,17 @@ fn delete_env_confirms_trashes_clears_the_active_env_and_undoes() {
 
     app.update(Action::Undo);
     assert!(dir.path().join("environments/qa.toml").is_file());
-    assert_eq!(app.project.env_label(), "qa", "active env restored");
+    assert_eq!(app.env_label(), "qa", "active env restored");
     assert_eq!(
         postui_core::project::load_secrets(dir.path()).unwrap()["qa"]["tok"],
         "s3cret"
     );
     assert_eq!(
-        app.project.secrets["qa"]["tok"], "s3cret",
+        app.proj().secrets()["qa"]["tok"], "s3cret",
         "the restored secrets file is re-read into memory, not just to disk"
     );
     assert_eq!(
-        app.project.selections_for("qa")["user"],
+        app.proj().selections_for("qa")["user"],
         "alice",
         "the restored selections come back into memory too"
     );
@@ -6789,7 +6795,7 @@ fn env_dropdown_has_no_no_environment_row() {
 fn deleting_the_last_environment_is_refused() {
     let (mut app, dir) = app_with_envs();
     app.update(Action::ForceDeleteEnv("qa".into()));
-    assert_eq!(app.project.environments, vec!["prod".to_string()]);
+    assert_eq!(app.proj().environments(), vec!["prod".to_string()]);
     app.update(Action::DeleteEnv("prod".into()));
     assert!(app.modals.is_empty(), "no confirm for the last env");
     assert!(
@@ -6875,8 +6881,8 @@ fn create_env_prompt_flow_creates_empty_file_and_switches() {
     let path = dir.path().join("environments/dev.toml");
     assert!(path.is_file());
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
-    assert_eq!(app.project.env_label(), "dev", "switches to the new env");
-    assert!(app.project.environments.contains(&"dev".to_string()));
+    assert_eq!(app.env_label(), "dev", "switches to the new env");
+    assert!(app.proj().environments().contains(&"dev".to_string()));
     let st = postui_core::project::load_local_state(dir.path()).unwrap();
     assert_eq!(st.environment.as_deref(), Some("dev"), "persisted");
 }
@@ -6892,7 +6898,7 @@ fn create_env_invalid_or_duplicate_name_toasts_and_keeps_active_env() {
         app.toasts.messages().len() > toasts_before,
         "invalid name must toast"
     );
-    assert_eq!(app.project.env_label(), "qa");
+    assert_eq!(app.env_label(), "qa");
 
     let toasts_before = app.toasts.messages().len();
     app.update(Action::CreateEnv("prod".into()));
@@ -6900,7 +6906,7 @@ fn create_env_invalid_or_duplicate_name_toasts_and_keeps_active_env() {
         app.toasts.messages().len() > toasts_before,
         "duplicate name must toast"
     );
-    assert_eq!(app.project.env_label(), "qa", "no switch on failure");
+    assert_eq!(app.env_label(), "qa", "no switch on failure");
     assert_eq!(
         std::fs::read_to_string(dir.path().join("environments/prod.toml")).unwrap(),
         "tok = \"p\"\n",
@@ -6927,7 +6933,7 @@ fn cycle_env_with_no_environments_toasts() {
     let mut app = App::new_for_test();
     app.update(Action::CycleEnv(1));
     assert!(!app.toasts.is_empty());
-    assert_eq!(app.project.env_label(), "no env");
+    assert_eq!(app.env_label(), "no env");
 }
 
 #[tokio::test]
@@ -6987,7 +6993,7 @@ fn toggle_insecure_toasts_the_new_state() {
 fn app_with_vars() -> App {
     let mut app = App::new_for_test();
     std::fs::write(
-        app.project.root.join("variables.toml"),
+        app.proj().root().join("variables.toml"),
         "[base]\ndefault = \"http://x\"\n[tok]\n",
     )
     .unwrap();
@@ -7220,10 +7226,10 @@ fn insert_picker_new_variable_confirm_creates_the_var_and_inserts_at_the_origina
         "inserted at the original cursor, focus returned exactly where it was"
     );
     assert!(
-        app.project.model.vars.contains_key("token"),
+        app.proj().variables().vars.contains_key("token"),
         "the new variable was declared"
     );
-    let saved = postui_core::project::load_variables(&app.project.root).unwrap();
+    let saved = postui_core::project::load_variables(app.proj().root()).unwrap();
     assert!(saved.vars.contains_key("token"), "written to disk too");
 }
 
@@ -7261,10 +7267,10 @@ fn insert_picker_new_variable_confirm_with_a_reserved_name_toasts_and_inserts_no
         "no {{options}} token — the insert must not run after NewVar failed"
     );
     assert!(
-        !app.project.model.vars.contains_key("options"),
+        !app.proj().variables().vars.contains_key("options"),
         "\"options\" must not be declared — it's a reserved name"
     );
-    let saved = postui_core::project::load_variables(&app.project.root).unwrap();
+    let saved = postui_core::project::load_variables(app.proj().root()).unwrap();
     assert!(
         !saved.vars.contains_key("options"),
         "variables.toml on disk must be unchanged"
@@ -8065,13 +8071,13 @@ fn click_chooser_row_selects_then_click_again_confirms() {
         unreachable!()
     };
     assert_eq!(c.selected(), 1, "selection moved to the clicked row");
-    assert_ne!(app.project.root, b.path(), "not switched yet");
+    assert_ne!(app.proj().root(), b.path(), "not switched yet");
 
     render_once(&mut app);
     let row1 = app.hits.rect_of(&Hit::ChooserRow(1)).unwrap();
     assert!(app.handle_mouse(left_down(row1.x, row1.y)));
     assert_eq!(
-        app.project.root,
+        app.proj().root(),
         b.path(),
         "second click on the already-selected row confirms"
     );
@@ -8146,7 +8152,7 @@ fn click_prompt_cancel_button_closes_without_creating_a_request() {
         "clicking Cancel must close the modal, exactly like Esc"
     );
     assert!(
-        postui_core::storage::list_requests(&app.project.root)
+        postui_core::storage::list_requests(app.proj().root())
             .0
             .is_empty(),
         "Cancel must not create anything, matching Esc's no-op"
@@ -8167,7 +8173,7 @@ fn click_prompt_confirm_button_creates_the_request_like_enter() {
     assert!(app.handle_mouse(left_down(confirm.x, confirm.y)));
     assert!(app.modals.is_empty());
     assert!(
-        postui_core::storage::load_request(&app.project.root, "main/api/ping").is_ok(),
+        postui_core::storage::load_request(app.proj().root(), "main/api/ping").is_ok(),
         "clicking Confirm must create the request, exactly like Enter"
     );
 }
@@ -8217,7 +8223,7 @@ fn click_new_project_confirm_button_creates_the_project_like_enter() {
         postui_core::project::is_project(&expected),
         "clicking Confirm must create the project, exactly like Enter"
     );
-    assert_eq!(app.project.root, expected);
+    assert_eq!(app.proj().root(), expected);
 }
 
 #[test]
@@ -8714,7 +8720,7 @@ fn plain_q_types_into_a_live_grid_edit_instead_of_quitting() {
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     let keymap = Keymap::default_bindings();
     goto_group(&mut app, "user");
-    app.varmanager.start_cell_edit(&app.project, 0, 1);
+    app.vm_start_cell_edit(0, 1);
 
     app.handle_key(&keymap, plain('q'));
     assert!(!app.should_quit, "a live edit owns the keyboard");
@@ -8834,11 +8840,11 @@ fn alt_x_cycles_env_from_the_manager_screen() {
     let keymap = Keymap::default_bindings();
     app.handle_key(&keymap, alt('v'));
     assert_eq!(app.screen, crate::app::Screen::Manage);
-    assert_eq!(app.project.env_label(), "prod");
+    assert_eq!(app.env_label(), "prod");
 
     app.handle_key(&keymap, alt('x'));
     assert_eq!(
-        app.project.env_label(),
+        app.env_label(),
         "qa",
         "alt+x must reach Action::CycleEnv(1) from the Manager screen"
     );
@@ -8982,7 +8988,7 @@ fn var_edit_set_env_value_writes_the_env_file_and_re_resolves() {
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(on_disk.contains("https://qa2.example.com"), "{on_disk}");
     assert_eq!(
-        app.project.resolved.values["base_url"],
+        app.proj().resolved().values["base_url"],
         "https://qa2.example.com"
     );
 }
@@ -8993,7 +8999,7 @@ fn var_edit_set_env_value_on_a_non_active_env_does_not_disturb_the_active_resolu
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    assert_eq!(app.project.env_label(), "qa");
+    assert_eq!(app.env_label(), "qa");
 
     app.update(Action::VarEdit(VarEditOp::SetEnvValue {
         env: "dev".into(),
@@ -9004,7 +9010,7 @@ fn var_edit_set_env_value_on_a_non_active_env_does_not_disturb_the_active_resolu
     let on_disk = std::fs::read_to_string(dir.path().join("environments/dev.toml")).unwrap();
     assert!(on_disk.contains("http://dev.local"), "{on_disk}");
     assert_eq!(
-        app.project.resolved.values["base_url"], "https://qa.example.com",
+        app.proj().resolved().values["base_url"], "https://qa.example.com",
         "qa is still active; its own resolution must be untouched"
     );
 }
@@ -9024,7 +9030,7 @@ fn var_edit_set_default_writes_variables_toml() {
     let on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     assert!(on_disk.contains("http://localhost:9090"), "{on_disk}");
     assert_eq!(
-        app.project.model.vars["base_url"].default.as_deref(),
+        app.proj().variables().vars["base_url"].default.as_deref(),
         Some("http://localhost:9090")
     );
 }
@@ -9044,7 +9050,7 @@ fn var_edit_set_secret_value_lands_only_in_secrets_toml() {
 
     let secrets = postui_core::project::load_secrets(dir.path()).unwrap();
     assert_eq!(secrets["qa"]["api_key"], "sk-live-abc123");
-    assert_eq!(app.project.resolved.values["api_key"], "sk-live-abc123");
+    assert_eq!(app.proj().resolved().values["api_key"], "sk-live-abc123");
 
     let vars_on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     assert!(!vars_on_disk.contains("sk-live-abc123"));
@@ -9115,7 +9121,7 @@ fn var_edit_select_records_the_choice_for_the_targeted_env_even_when_not_active(
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    assert_eq!(app.project.env_label(), "qa");
+    assert_eq!(app.env_label(), "qa");
 
     app.update(Action::VarEdit(VarEditOp::SelectOption {
         env: "dev".into(),
@@ -9123,9 +9129,9 @@ fn var_edit_select_records_the_choice_for_the_targeted_env_even_when_not_active(
         option: "bob".into(),
     }));
 
-    assert_eq!(app.project.selections_for("dev")["user"], "bob");
+    assert_eq!(app.proj().selections_for("dev")["user"], "bob");
     assert!(
-        !app.project.resolved.values.contains_key("user"),
+        !app.proj().resolved().values.contains_key("user"),
         "qa (active) has no selection of its own; must be unaffected"
     );
 
@@ -9200,7 +9206,7 @@ fn var_struct_new_var_creates_a_bare_declaration() {
     }));
 
     assert!(app.toasts.is_empty());
-    assert!(app.project.model.vars.contains_key("widget_id"));
+    assert!(app.proj().variables().vars.contains_key("widget_id"));
     let on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     assert!(on_disk.contains("[widget_id]"), "{on_disk}");
 }
@@ -9293,7 +9299,7 @@ fn shared_selector_new_option_writes_variables_toml_not_the_env() {
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
     assert_eq!(
-        app.project.model.options["locale"]["de"].values["lang"],
+        app.proj().variables().options["locale"]["de"].values["lang"],
         "de"
     );
     let vars = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
@@ -9306,7 +9312,7 @@ fn shared_selector_new_option_writes_variables_toml_not_the_env() {
 fn shared_selector_rename_option_carries_the_global_selection() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = shared_locale_app(dir.path());
-    app.project.set_selection_for("qa", "locale", "fr");
+    app.proj_mut().set_selection_for("qa", "locale", "fr");
 
     app.update(Action::VarStruct(VarStructOp::RenameOption {
         env: "qa".into(),
@@ -9316,15 +9322,15 @@ fn shared_selector_rename_option_carries_the_global_selection() {
     }));
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert!(app.project.model.options["locale"].contains_key("fr-FR"));
-    assert_eq!(app.project.shared_selections()["locale"], "fr-FR");
+    assert!(app.proj().variables().options["locale"].contains_key("fr-FR"));
+    assert_eq!(app.proj().local().shared_selections["locale"], "fr-FR");
 }
 
 #[test]
 fn shared_selector_delete_option_clears_the_global_selection() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = shared_locale_app(dir.path());
-    app.project.set_selection_for("qa", "locale", "fr");
+    app.proj_mut().set_selection_for("qa", "locale", "fr");
 
     app.update(Action::VarStruct(VarStructOp::DeleteOption {
         env: "qa".into(),
@@ -9332,8 +9338,8 @@ fn shared_selector_delete_option_clears_the_global_selection() {
         name: "fr".into(),
     }));
 
-    assert!(!app.project.model.options["locale"].contains_key("fr"));
-    assert!(!app.project.shared_selections().contains_key("locale"));
+    assert!(!app.proj().variables().options["locale"].contains_key("fr"));
+    assert!(!app.proj().local().shared_selections.contains_key("locale"));
 }
 
 #[test]
@@ -9349,7 +9355,7 @@ fn shared_selector_duplicate_option_lands_in_variables_toml() {
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
     assert_eq!(
-        app.project.model.options["locale"]["en copy"].values["lang"],
+        app.proj().variables().options["locale"]["en copy"].values["lang"],
         "en"
     );
 }
@@ -9368,7 +9374,7 @@ fn shared_selector_option_edits_route_to_variables_toml() {
     }));
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
     assert_eq!(
-        app.project.model.options["locale"]["en"].values["lang"],
+        app.proj().variables().options["locale"]["en"].values["lang"],
         "en-GB"
     );
 
@@ -9379,7 +9385,7 @@ fn shared_selector_option_edits_route_to_variables_toml() {
         description: Some("the King's".into()),
     }));
     assert_eq!(
-        app.project.model.options["locale"]["en"]
+        app.proj().variables().options["locale"]["en"]
             .description
             .as_deref(),
         Some("the King's")
@@ -9400,35 +9406,35 @@ fn shared_selector_inline_new_option_needs_no_active_env_and_selects_globally() 
     });
 
     assert!(
-        app.project.model.options["locale"].contains_key("de"),
+        app.proj().variables().options["locale"].contains_key("de"),
         "{:?}",
         app.toasts.messages()
     );
-    assert_eq!(app.project.shared_selections()["locale"], "de");
-    assert_eq!(app.project.resolved.values["lang"], "de");
+    assert_eq!(app.proj().local().shared_selections["locale"], "de");
+    assert_eq!(app.proj().resolved().values["lang"], "de");
 }
 
 #[test]
 fn deleting_a_shared_selector_removes_its_options_and_global_selection() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = shared_locale_app(dir.path());
-    app.project.set_selection_for("qa", "locale", "fr");
+    app.proj_mut().set_selection_for("qa", "locale", "fr");
 
     app.update(Action::VarStruct(VarStructOp::Delete {
         name: "locale".into(),
     }));
 
-    assert!(!app.project.model.selectors.contains_key("locale"));
+    assert!(!app.proj().variables().selectors.contains_key("locale"));
     let vars = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     assert!(!vars.contains("options.locale"), "{vars}");
-    assert!(!app.project.shared_selections().contains_key("locale"));
+    assert!(!app.proj().local().shared_selections.contains_key("locale"));
 }
 
 #[test]
 fn renaming_a_shared_selector_carries_options_and_the_global_selection() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = shared_locale_app(dir.path());
-    app.project.set_selection_for("qa", "locale", "fr");
+    app.proj_mut().set_selection_for("qa", "locale", "fr");
 
     app.update(Action::VarStruct(VarStructOp::Rename {
         from: "locale".into(),
@@ -9436,13 +9442,13 @@ fn renaming_a_shared_selector_carries_options_and_the_global_selection() {
     }));
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert!(app.project.model.selectors["lingo"].shared);
+    assert!(app.proj().variables().selectors["lingo"].shared);
     assert_eq!(
-        app.project.model.options["lingo"]["fr"].values["lang"],
+        app.proj().variables().options["lingo"]["fr"].values["lang"],
         "fr"
     );
-    assert_eq!(app.project.shared_selections()["lingo"], "fr");
-    assert!(!app.project.shared_selections().contains_key("locale"));
+    assert_eq!(app.proj().local().shared_selections["lingo"], "fr");
+    assert!(!app.proj().local().shared_selections.contains_key("locale"));
 }
 
 #[test]
@@ -9459,10 +9465,10 @@ fn apply_group_fields_reshapes_a_shared_selectors_options_in_variables_toml() {
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
     assert_eq!(
-        app.project.model.selectors["locale"].fields,
+        app.proj().variables().selectors["locale"].fields,
         vec!["tongue".to_string(), "fmt".to_string()]
     );
-    let en = &app.project.model.options["locale"]["en"];
+    let en = &app.proj().variables().options["locale"]["en"];
     assert_eq!(en.values["tongue"], "en");
     assert_eq!(en.values["fmt"], "");
 }
@@ -9477,18 +9483,18 @@ fn add_and_remove_selector_field_reshape_a_shared_selectors_options() {
         field: "fmt".into(),
     });
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert_eq!(app.project.model.options["locale"]["en"].values["fmt"], "");
+    assert_eq!(app.proj().variables().options["locale"]["en"].values["fmt"], "");
 
     app.update(Action::RemoveSelectorField {
         selector: "locale".into(),
         field: "fmt".into(),
     });
     assert_eq!(
-        app.project.model.selectors["locale"].fields,
+        app.proj().variables().selectors["locale"].fields,
         vec!["lang".to_string()]
     );
     assert!(
-        !app.project.model.options["locale"]["en"]
+        !app.proj().variables().options["locale"]["en"]
             .values
             .contains_key("fmt")
     );
@@ -9499,7 +9505,7 @@ fn shared_selector_grid_edit_and_ghost_row_work_without_an_env() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = shared_locale_app(dir.path());
     app.update(Action::SwitchEnv(None));
-    app.varmanager.sync(&app.project);
+    app.sync_varmanager();
     app.varmanager.select_name("locale");
 
     // The ghost row starts a new option with no environment active…
@@ -9514,19 +9520,19 @@ fn shared_selector_grid_edit_and_ghost_row_work_without_an_env() {
     edit.input.insert_str("de");
     app.commit_grid_edit();
     assert!(
-        app.project.model.options["locale"].contains_key("de"),
+        app.proj().variables().options["locale"].contains_key("de"),
         "{:?}",
         app.toasts.messages()
     );
 
     // …and a field-cell edit commits to variables.toml the same way.
-    app.varmanager.start_cell_edit(&app.project, 0, 1);
+    app.vm_start_cell_edit(0, 1);
     let edit = app.varmanager.grid.editing.as_mut().unwrap();
     edit.input.select_all();
     edit.input.paste("en-GB");
     app.commit_grid_edit();
     assert_eq!(
-        app.project.model.options["locale"]["en"].values["lang"],
+        app.proj().variables().options["locale"]["en"].values["lang"],
         "en-GB"
     );
 }
@@ -9544,7 +9550,7 @@ fn new_selector_op_with_shared_writes_the_flag() {
         shared: true,
     }));
 
-    assert!(app.project.model.selectors["locale"].shared);
+    assert!(app.proj().variables().selectors["locale"].shared);
     let vars = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     assert!(vars.contains("shared = true"), "{vars}");
 }
@@ -9569,7 +9575,7 @@ fn new_selector_prompt_arrows_focus_the_toggle_and_space_flips_shared() {
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert!(
-        app.project.model.selectors["locale"].shared,
+        app.proj().variables().selectors["locale"].shared,
         "{:?}",
         app.toasts.messages()
     );
@@ -9627,7 +9633,7 @@ fn new_selector_prompt_tab_cycles_between_the_name_field_and_the_toggle() {
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert!(
-        app.project.model.selectors["locale"].shared,
+        app.proj().variables().selectors["locale"].shared,
         "{:?}",
         app.toasts.messages()
     );
@@ -9652,7 +9658,7 @@ fn new_selector_prompt_up_returns_focus_to_the_name_field() {
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
     assert!(
-        app.project.model.selectors["locale"].shared,
+        app.proj().variables().selectors["locale"].shared,
         "{:?}",
         app.toasts.messages()
     );
@@ -9672,9 +9678,7 @@ fn var_struct_new_group_creates_group_with_members() {
     }));
 
     assert!(app.toasts.is_empty());
-    let g = app
-        .project
-        .model
+    let g = app.proj().variables()
         .selectors
         .get("creds")
         .expect("group created");
@@ -9708,7 +9712,7 @@ fn var_struct_new_entry_writes_every_field_into_the_active_env() {
     }));
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    let entry = postui_core::varmodel::selector_options(&app.project.env_data, "creds")
+    let entry = postui_core::varmodel::selector_options(app.proj().env_data(), "creds")
         .and_then(|entries| entries.get("alice"))
         .expect("entry created in the active env");
     assert_eq!(entry.values["user_id"], "1001");
@@ -9730,8 +9734,8 @@ fn var_struct_rename_updates_the_declaration() {
     }));
 
     assert!(app.toasts.is_empty());
-    assert!(!app.project.model.vars.contains_key("base_url"));
-    assert!(app.project.model.vars.contains_key("root_url"));
+    assert!(!app.proj().variables().vars.contains_key("base_url"));
+    assert!(app.proj().variables().vars.contains_key("root_url"));
 }
 
 /// Review finding: `rename_var` only ever touches `variables.toml`, so a
@@ -9776,7 +9780,7 @@ fields = ["tier"]
     .unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    assert_eq!(app.project.resolved.values["shard"], "d-1");
+    assert_eq!(app.proj().resolved().values["shard"], "d-1");
 
     app.update(Action::VarStruct(VarStructOp::Rename {
         from: "shard".into(),
@@ -9784,11 +9788,11 @@ fields = ["tier"]
     }));
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert!(app.project.model.vars.contains_key("node"));
-    assert!(!app.project.model.vars.contains_key("shard"));
+    assert!(app.proj().variables().vars.contains_key("node"));
+    assert!(!app.proj().variables().vars.contains_key("shard"));
     // Resolution follows the rename — still "d-1" in dev, now under "node".
-    assert_eq!(app.project.resolved.values["node"], "d-1");
-    assert!(!app.project.resolved.values.contains_key("shard"));
+    assert_eq!(app.proj().resolved().values["node"], "d-1");
+    assert!(!app.proj().resolved().values.contains_key("shard"));
 
     let dev_on_disk = std::fs::read_to_string(dir.path().join("environments/dev.toml")).unwrap();
     assert!(dev_on_disk.contains("node = \"d-1\""), "{dev_on_disk}");
@@ -9820,7 +9824,7 @@ fn var_struct_delete_var_removes_the_declaration_and_clamps_the_cursor() {
         "{:?}",
         app.toasts.messages()
     );
-    assert!(!app.project.model.vars.contains_key("base_url"));
+    assert!(!app.proj().variables().vars.contains_key("base_url"));
     assert!(
         app.varmanager.left_cursor < app.varmanager.left_rows.len(),
         "cursor must clamp back inside the (now shorter) row list"
@@ -9857,7 +9861,7 @@ fn var_struct_delete_cascades_into_every_environments_entries_table() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     assert_eq!(
-        app.project.resolved.meta["region"],
+        app.proj().resolved().meta["region"],
         postui_core::varmodel::VarMeta::NeedsSelection
     );
 
@@ -9866,7 +9870,7 @@ fn var_struct_delete_cascades_into_every_environments_entries_table() {
     }));
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert!(!app.project.model.selectors.contains_key("region"));
+    assert!(!app.proj().variables().selectors.contains_key("region"));
     let qa_on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(
         !qa_on_disk.contains("region"),
@@ -9879,7 +9883,7 @@ fn var_struct_delete_cascades_into_every_environments_entries_table() {
     );
     // The project must still load clean after switching to the
     // previously-stranded env.
-    let warns = app.project.set_env(Some("dev".into()));
+    let warns = app.proj_mut().set_active_env(Some("dev".into()));
     assert!(warns.is_empty(), "{warns:?}");
 }
 
@@ -9903,7 +9907,7 @@ fn var_struct_delete_group_cascades_into_every_environments_entries_table() {
     }));
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert!(!app.project.model.selectors.contains_key("creds"));
+    assert!(!app.proj().variables().selectors.contains_key("creds"));
     let qa_on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(!qa_on_disk.contains("creds"), "{qa_on_disk}");
 }
@@ -9943,7 +9947,7 @@ fn var_struct_set_fields_replaces_the_group_list() {
     }));
 
     assert_eq!(
-        app.project.model.selectors["creds"].fields,
+        app.proj().variables().selectors["creds"].fields,
         vec!["user_id".to_string(), "customer_id".to_string()]
     );
 }
@@ -9974,7 +9978,7 @@ fn var_struct_promote_to_default_writes_the_declaration_and_removes_the_request_
 
     assert!(app.toasts.is_empty());
     assert_eq!(
-        app.project.model.vars["trace_id"].default.as_deref(),
+        app.proj().variables().vars["trace_id"].default.as_deref(),
         Some("abc-123")
     );
     assert!(!app.editor.variables.contains_key("trace_id"));
@@ -9987,7 +9991,7 @@ fn var_struct_promote_to_env_writes_the_env_value_and_a_bare_declaration() {
     request_with_var(dir.path(), "main/ping", "trace_id", "abc-123");
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    assert_eq!(app.project.env_label(), "qa");
+    assert_eq!(app.env_label(), "qa");
     app.update(Action::ForceOpenRequest("main/ping".into()));
 
     app.update(Action::VarStruct(VarStructOp::Promote {
@@ -9996,8 +10000,8 @@ fn var_struct_promote_to_env_writes_the_env_value_and_a_bare_declaration() {
     }));
 
     assert!(app.toasts.is_empty());
-    assert!(app.project.model.vars.contains_key("trace_id"));
-    assert!(app.project.model.vars["trace_id"].default.is_none());
+    assert!(app.proj().variables().vars.contains_key("trace_id"));
+    assert!(app.proj().variables().vars["trace_id"].default.is_none());
     let env_on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(env_on_disk.contains("abc-123"), "{env_on_disk}");
     assert!(!app.editor.variables.contains_key("trace_id"));
@@ -10089,7 +10093,7 @@ fn delete_entry_removes_it_from_the_active_env() {
         "{:?}",
         app.toasts.messages()
     );
-    let entries = postui_core::varmodel::selector_options(&app.project.env_data, "user")
+    let entries = postui_core::varmodel::selector_options(app.proj().env_data(), "user")
         .expect("the group still has entries here");
     assert!(!entries.contains_key("bob"));
     assert!(entries.contains_key("alice"), "the others are untouched");
@@ -10119,8 +10123,8 @@ fn delete_entry_clears_the_selection_when_the_deleted_entry_was_selected() {
     var_project(dir.path());
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
-    app.project.set_selection("user", "alice");
-    assert_eq!(app.project.resolved.values["user"], "1001");
+    app.proj_mut().set_selection("user", "alice");
+    assert_eq!(app.proj().resolved().values["user"], "1001");
 
     app.update(Action::VarStruct(VarStructOp::DeleteOption {
         env: "qa".into(),
@@ -10128,8 +10132,8 @@ fn delete_entry_clears_the_selection_when_the_deleted_entry_was_selected() {
         name: "alice".into(),
     }));
 
-    assert!(!app.project.selections_for("qa").contains_key("user"));
-    assert!(!app.project.resolved.values.contains_key("user"));
+    assert!(!app.proj().selections_for("qa").contains_key("user"));
+    assert!(!app.proj().resolved().values.contains_key("user"));
 }
 
 // -------------------------------------------------------------
@@ -10200,7 +10204,7 @@ fn prompt_promote_var_onto_an_existing_secret_name_refuses_with_a_message_modal(
         "promoting onto a secret name must be refused with a message modal, not a raw parse error"
     );
     assert!(
-        app.project.model.vars["api_key"].secret,
+        app.proj().variables().vars["api_key"].secret,
         "the declaration must be untouched"
     );
     assert!(app.editor.variables.contains_key("api_key"));
@@ -10221,7 +10225,7 @@ fn delete_var_warns_about_referencing_requests() {
     });
 
     assert!(app.modals.is_empty(), "delete is undoable, no confirm");
-    assert!(!app.project.model.vars.contains_key("base_url"));
+    assert!(!app.proj().variables().vars.contains_key("base_url"));
     let msgs = app.toasts.messages().join("\n");
     assert!(
         msgs.contains("uses-it") && msgs.contains('1'),
@@ -10241,7 +10245,7 @@ fn delete_var_is_immediate_with_an_undo_hint_toast() {
     });
 
     assert!(app.modals.is_empty(), "delete is undoable, no confirm");
-    assert!(!app.project.model.vars.contains_key("base_url"));
+    assert!(!app.proj().variables().vars.contains_key("base_url"));
     let msgs = app.toasts.messages().join("\n");
     assert!(
         msgs.contains("^Z undoes"),
@@ -10249,7 +10253,7 @@ fn delete_var_is_immediate_with_an_undo_hint_toast() {
     );
     app.update(Action::Undo);
     assert!(
-        app.project.model.vars.contains_key("base_url"),
+        app.proj().variables().vars.contains_key("base_url"),
         "undo restores the declaration"
     );
 }
@@ -10311,7 +10315,7 @@ fn toggle_secret_var_secret_to_nonsecret_leaves_secrets_toml_untouched_and_shows
     app.update(Action::VarStruct(VarStructOp::ToggleSecret {
         name: "api_key".into(),
     }));
-    assert!(!app.project.model.vars["api_key"].secret);
+    assert!(!app.proj().variables().vars["api_key"].secret);
     let secrets_final = std::fs::read_to_string(dir.path().join(".local/secrets.toml")).unwrap();
     assert_eq!(
         secrets_before, secrets_final,
@@ -10336,7 +10340,7 @@ fn toggle_secret_var_nonsecret_to_secret_moves_env_values_and_strips_env_files()
     }));
 
     assert!(app.toasts.is_empty());
-    assert!(app.project.model.vars["base_url"].secret);
+    assert!(app.proj().variables().vars["base_url"].secret);
     let secrets = postui_core::project::load_secrets(dir.path()).unwrap();
     assert_eq!(secrets["qa"]["base_url"], "https://qa.example.com");
     let qa_on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
@@ -10420,12 +10424,12 @@ fn keyboard_f2_d_s_open_the_matching_var_row_actions() {
     app.handle_key(&keymap, plain('d'));
     assert!(app.modals.is_empty(), "delete is undoable, no confirm");
     assert!(
-        !app.project.model.vars.contains_key("base_url"),
+        !app.proj().variables().vars.contains_key("base_url"),
         "the row is deleted at once"
     );
     app.update(Action::Undo);
     assert!(
-        app.project.model.vars.contains_key("base_url"),
+        app.proj().variables().vars.contains_key("base_url"),
         "undo restores it"
     );
     goto_row(&mut app, |r| {
@@ -10462,7 +10466,7 @@ fn the_context_menu_delete_matches_the_d_key() {
     );
     app.update(via_menu[2].action.clone().unwrap());
     assert!(app.modals.is_empty(), "delete is undoable, no confirm");
-    assert!(!app.project.model.vars.contains_key("base_url"));
+    assert!(!app.proj().variables().vars.contains_key("base_url"));
 }
 
 #[test]
@@ -10529,15 +10533,13 @@ fn prompt_new_selector_takes_a_name_and_defaults_its_field() {
     // Creating the selector is the whole gesture: no follow-up prompt
     // opens, the new declaration is simply selected in the manager.
     assert!(app.modals.is_empty());
-    let g = app
-        .project
-        .model
+    let g = app.proj().variables()
         .selectors
         .get("creds")
         .expect("selector created");
     assert_eq!(g.fields, vec!["creds".to_string()]);
     app.update(Action::ReloadProjectFiles);
-    assert!(app.project.model.selectors.contains_key("creds"));
+    assert!(app.proj().variables().selectors.contains_key("creds"));
 }
 
 #[test]
@@ -10564,7 +10566,7 @@ fn add_and_remove_group_members_one_at_a_time() {
         app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     }
     assert_eq!(
-        app.project.model.selectors.get("creds").unwrap().fields,
+        app.proj().variables().selectors.get("creds").unwrap().fields,
         vec!["user_id".to_string(), "customer_id".to_string()]
     );
 
@@ -10579,8 +10581,7 @@ fn add_and_remove_group_members_one_at_a_time() {
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.toasts.messages().len() > toasts_before);
     assert_eq!(
-        app.project
-            .model
+        app.proj().variables()
             .selectors
             .get("creds")
             .unwrap()
@@ -10599,7 +10600,7 @@ fn add_and_remove_group_members_one_at_a_time() {
     });
     assert!(app.modals.is_empty(), "removal is undoable, no confirm");
     assert_eq!(
-        app.project.model.selectors.get("creds").unwrap().fields,
+        app.proj().variables().selectors.get("creds").unwrap().fields,
         vec!["customer_id".to_string()]
     );
 }
@@ -10661,7 +10662,7 @@ fn ctrl_v_on_a_one_field_groups_token_opens_select_option_with_checkmark() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.anims.enabled = false;
-    app.project.set_selection_for("qa", "user", "alice");
+    app.proj_mut().set_selection_for("qa", "user", "alice");
 
     focus_url_with_cursor_on(&mut app, "https://x/{{user}}", "{{user}}");
     app.update(Action::OpenVarPicker { completing: false });
@@ -10701,7 +10702,7 @@ fn token_popup_app() -> (App, tempfile::TempDir) {
 #[test]
 fn clicking_a_selector_field_token_opens_the_select_picker() {
     let (mut app, _dir) = token_popup_app();
-    app.project.set_selection_for("qa", "user", "alice");
+    app.proj_mut().set_selection_for("qa", "user", "alice");
     app.editor.url = crate::components::line_input::LineInput::new("https://x/{{user}}");
     render_once(&mut app);
 
@@ -10829,7 +10830,7 @@ fn confirming_the_value_popup_writes_the_env_scope_and_re_resolves() {
         "{on_disk}"
     );
     assert_eq!(
-        app.project.resolved.values["base_url"], "https://qa2.example.com",
+        app.proj().resolved().values["base_url"], "https://qa2.example.com",
         "linked tokens re-resolve immediately"
     );
 }
@@ -10952,7 +10953,7 @@ fn a_refused_apply_keeps_the_fields_editor_open() {
     };
     assert_eq!(fe.rows[0].input.text(), "customer_id", "typed text kept");
     assert_eq!(
-        app.project.model.selectors["creds"].fields,
+        app.proj().variables().selectors["creds"].fields,
         vec!["user_id", "customer_id"],
         "nothing was written"
     );
@@ -11239,7 +11240,7 @@ fn remove_is_pending_until_confirm_and_cancel_puts_nothing_on_disk() {
     let vars_on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     assert!(vars_on_disk.contains("default"), "{vars_on_disk}");
     assert_eq!(
-        app.project.resolved.values["base_url"], "https://qa.example.com",
+        app.proj().resolved().values["base_url"], "https://qa.example.com",
         "the env value still supplies"
     );
     // Reopening starts clean: the env value is back on offer to remove.
@@ -11263,7 +11264,7 @@ fn confirming_applies_the_pending_removal_and_the_default_shows_through() {
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(!on_disk.contains("base_url"), "{on_disk}");
     assert_eq!(
-        app.project.resolved.values["base_url"], "http://localhost:8080",
+        app.proj().resolved().values["base_url"], "http://localhost:8080",
         "the default shows through once the env value is gone"
     );
 }
@@ -11286,7 +11287,7 @@ fn confirming_with_every_scope_marked_removes_them_all_and_writes_nothing_blank(
     let vars_on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     assert!(!vars_on_disk.contains("default"), "{vars_on_disk}");
     assert!(
-        app.project.model.vars["base_url"].default.is_none(),
+        app.proj().variables().vars["base_url"].default.is_none(),
         "an empty box on a removed scope means removed, not set to \"\""
     );
 }
@@ -11320,7 +11321,7 @@ fn typing_a_value_on_a_marked_scope_writes_it_instead_of_removing() {
     assert!(app.modals.is_empty());
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(on_disk.contains("http://new.qa"), "{on_disk}");
-    assert_eq!(app.project.resolved.values["base_url"], "http://new.qa");
+    assert_eq!(app.proj().resolved().values["base_url"], "http://new.qa");
 }
 
 #[test]
@@ -11367,7 +11368,7 @@ fn remove_marks_the_default_when_it_is_the_supplier_and_confirm_clears_it() {
     let on_disk = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
     assert!(!on_disk.contains("default"), "{on_disk}");
     assert!(
-        app.project.model.vars["base_url"].default.is_none(),
+        app.proj().variables().vars["base_url"].default.is_none(),
         "the declaration keeps only its description"
     );
 }
@@ -11473,7 +11474,7 @@ fn select_option_enter_writes_selection_to_state_toml_and_leaves_url_unchanged()
 
     assert!(app.modals.is_empty());
     assert_eq!(app.editor.url.text(), url, "token text must be untouched");
-    assert_eq!(app.project.selections_for("qa")["user"], "alice");
+    assert_eq!(app.proj().selections_for("qa")["user"], "alice");
 
     let state = postui_core::project::load_local_state(dir.path()).unwrap();
     assert_eq!(state.selections["qa"]["user"], "alice");
@@ -11501,7 +11502,7 @@ fn select_option_arrows_move_the_selection_and_typing_is_inert() {
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
-    assert_eq!(app.project.selections_for("qa")["user"], "bob");
+    assert_eq!(app.proj().selections_for("qa")["user"], "bob");
 }
 
 #[test]
@@ -11775,7 +11776,7 @@ fn add_new_entry_writes_to_the_active_envs_entries_table_selects_it_and_restores
         "must not land in variables.toml: {shared_doc}"
     );
 
-    assert_eq!(app.project.selections_for("qa")["user"], "carol");
+    assert_eq!(app.proj().selections_for("qa")["user"], "carol");
 }
 
 /// Review finding 1: entry names are free-form strings (spec §3.2), unlike
@@ -11846,7 +11847,7 @@ fn inline_create_on_a_multi_field_group_takes_one_input_per_field() {
     app.handle_key(&keymap, enter_key());
 
     assert!(app.modals.is_empty(), "{:?}", app.toasts.messages());
-    let carol = &app.project.env_data.options["identity"]["carol"].values;
+    let carol = &app.proj().env_data().options["identity"]["carol"].values;
     assert_eq!(carol["user_id"], "u-3");
     assert_eq!(carol["customer_id"], "c-3");
     assert!(
@@ -11894,7 +11895,7 @@ fn the_option_menus_edit_opens_the_prompt_in_the_environment_that_holds_it() {
     // "Edit…" opens the full edit prompt (values + description).
     let items = app
         .varmanager
-        .entry_context_menu(&app.project, 0)
+        .entry_context_menu(app.proj(), 0)
         .expect("option menu");
     let edit = items
         .iter()
@@ -11992,7 +11993,7 @@ fn extract_to_variable_prompts_writes_and_replaces_field_text_dirty_saved() {
     );
     assert!(app.editor.is_dirty(), "the field is dirty-saved");
 
-    let doc = std::fs::read_to_string(app.project.root.join("variables.toml")).unwrap();
+    let doc = std::fs::read_to_string(app.proj().root().join("variables.toml")).unwrap();
     assert!(doc.contains("[api_key]"), "{doc}");
     assert!(doc.contains("abc123"), "{doc}");
 }
@@ -12132,7 +12133,7 @@ fn extract_to_active_env_writes_the_flat_pair_and_a_bare_declaration_and_replace
     );
 
     assert_eq!(
-        app.project.resolved.values["session_token"],
+        app.proj().resolved().values["session_token"],
         "https://x/token-abc123"
     );
 }
@@ -12408,10 +12409,10 @@ fn committing_the_description_cell_writes_through_and_an_emptied_one_removes() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.varmanager.detail = crate::components::varmanager::VmDetail::Group("identity".into());
-    app.varmanager.sync(&app.project);
+    app.sync_varmanager();
 
     // Cols: 0 entry, 1 user_id, 2 customer_id, 3 description.
-    app.varmanager.start_cell_edit(&app.project, 0, 3);
+    app.vm_start_cell_edit(0, 3);
     let edit = app.varmanager.grid.editing.as_mut().unwrap();
     assert_eq!(edit.input.text(), "admin", "seeded from the stored text");
     edit.input = crate::components::line_input::LineInput::new("head admin");
@@ -12419,7 +12420,7 @@ fn committing_the_description_cell_writes_through_and_an_emptied_one_removes() {
     let env_doc = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(env_doc.contains("head admin"), "{env_doc}");
 
-    app.varmanager.start_cell_edit(&app.project, 0, 3);
+    app.vm_start_cell_edit(0, 3);
     let edit = app.varmanager.grid.editing.as_mut().unwrap();
     edit.input = crate::components::line_input::LineInput::new("");
     app.commit_grid_edit();
@@ -12528,8 +12529,8 @@ fn opening_a_legacy_project_offers_the_migration_and_lists_its_notes() {
 
     // Until the user answers, the variables are inert rather than
     // half-parsed from a format the model doesn't speak.
-    assert!(app.project.model.vars.is_empty());
-    assert!(app.project.model.selectors.is_empty());
+    assert!(app.proj().variables().vars.is_empty());
+    assert!(app.proj().variables().selectors.is_empty());
 }
 
 #[test]
@@ -12546,7 +12547,7 @@ fn confirming_the_migration_rewrites_the_files_leaves_baks_and_reloads() {
 
     assert!(app.modals.is_empty(), "answering closes the prompt");
     assert!(
-        app.project.pending_migration().is_none(),
+        app.proj().pending_migration().is_none(),
         "nothing left to migrate"
     );
 
@@ -12567,11 +12568,11 @@ fn confirming_the_migration_rewrites_the_files_leaves_baks_and_reloads() {
     assert_eq!(parsed.selectors["tier"].fields, ["tier"]);
     assert_eq!(parsed.selectors["user"].fields, ["user_id", "customer_id"]);
     assert_eq!(
-        app.project.model.selectors["user"].fields,
+        app.proj().variables().selectors["user"].fields,
         ["user_id", "customer_id"]
     );
     assert_eq!(
-        app.project.model.vars["base_url"].default.as_deref(),
+        app.proj().variables().vars["base_url"].default.as_deref(),
         Some("http://localhost:8080"),
         "the plain variable came through untouched"
     );
@@ -12580,7 +12581,7 @@ fn confirming_the_migration_rewrites_the_files_leaves_baks_and_reloads() {
     let env = postui_core::varmodel::parse_environment(&qa_after).expect("new env text parses");
     assert_eq!(env.options["tier"]["gold"].values["tier"], "g-qa");
     assert_eq!(
-        app.project.env_data.options["user"]["alice"].values["customer_id"],
+        app.proj().env_data().options["user"]["alice"].values["customer_id"],
         "c-77"
     );
 
@@ -12609,14 +12610,14 @@ fn declining_the_migration_leaves_the_files_alone_and_the_project_open() {
         "declining must not touch a single file"
     );
     assert!(!dir.path().join("variables.toml.bak").exists());
-    assert!(app.project.model.vars.is_empty(), "variables stay inert");
-    assert!(app.project.resolved.values.is_empty());
+    assert!(app.proj().variables().vars.is_empty(), "variables stay inert");
+    assert!(app.proj().resolved().values.is_empty());
 
     // The project itself is still perfectly usable, and the prompt does
     // not come back on the next reload.
     app.update(Action::ReloadProjectFiles);
     assert!(app.modals.is_empty(), "declined once, not re-offered");
-    assert!(app.project.pending_migration().is_none());
+    assert!(app.proj().pending_migration().is_none());
     app.update(Action::CreateRequest("ping".into()));
     assert_eq!(app.editor.slug.as_deref(), Some("main/ping"));
 }
@@ -12635,7 +12636,7 @@ fn migrating_a_project_with_no_environments_creates_default_toml_for_the_entries
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     assert!(
-        app.project.environments.is_empty(),
+        app.proj().environments().is_empty(),
         "mid-migration, no default env is written under the migration's feet"
     );
 
@@ -12654,7 +12655,7 @@ fn migrating_a_project_with_no_environments_creates_default_toml_for_the_entries
         std::fs::read_to_string(dir.path().join("environments/default.toml")).unwrap();
     let env = postui_core::varmodel::parse_environment(&default_toml).unwrap();
     assert_eq!(env.options["tier"]["gold"].values["tier"], "g-1");
-    assert_eq!(app.project.environments, vec!["default".to_string()]);
+    assert_eq!(app.proj().environments(), vec!["default".to_string()]);
     assert!(
         !dir.path().join("environments/default.toml.bak").exists(),
         "a brand-new file has nothing to back up"
@@ -12698,8 +12699,8 @@ fn a_legacy_projects_saved_selections_survive_the_prompt_and_resolve_after_apply
         "no bogus stale-selection warnings: {:?}",
         app.toasts.messages()
     );
-    assert_eq!(app.project.selections_for("qa")["tier"], "gold");
-    assert_eq!(app.project.selections_for("qa")["user"], "alice");
+    assert_eq!(app.proj().selections_for("qa")["tier"], "gold");
+    assert_eq!(app.proj().selections_for("qa")["user"], "alice");
     let on_disk = postui_core::project::load_local_state(dir.path()).unwrap();
     assert_eq!(on_disk.selections["qa"]["tier"], "gold");
     assert_eq!(on_disk.selections["qa"]["user"], "alice");
@@ -12708,14 +12709,14 @@ fn a_legacy_projects_saved_selections_survive_the_prompt_and_resolve_after_apply
     let keymap = Keymap::default_bindings();
     app.handle_key(&keymap, plain('y'));
 
-    assert_eq!(app.project.selections_for("qa")["tier"], "gold");
+    assert_eq!(app.proj().selections_for("qa")["tier"], "gold");
     assert_eq!(
-        app.project.resolved.values["tier"], "g-qa",
+        app.proj().resolved().values["tier"], "g-qa",
         "the carried-over selection resolves: {:?}",
-        app.project.resolved.values
+        app.proj().resolved().values
     );
-    assert_eq!(app.project.resolved.values["user_id"], "1001");
-    assert_eq!(app.project.resolved.values["customer_id"], "c-77");
+    assert_eq!(app.proj().resolved().values["user_id"], "1001");
+    assert_eq!(app.proj().resolved().values["customer_id"], "c-77");
 }
 
 /// The decline half of the same finding: refusing the migration must leave
@@ -12824,13 +12825,7 @@ fn computed_headers_mask_a_secret_by_default_and_the_reveal_toggle_unmasks() {
     // section only shows non-`Request`-origin rows, so this is what
     // exercises it (see `computed_headers_recompute_reflects_an_env_switch`
     // for the same reasoning).
-    app.project.meta.default_headers.insert(
-        "Authorization".into(),
-        postui_core::model::Entry {
-            value: "Bearer {{api_key}}".into(),
-            enabled: true,
-        },
-    );
+    set_default_header(&mut app, "Authorization", "Bearer {{api_key}}");
     app.editor.active_tab = EditorTab::Headers;
     app.update(Action::Render);
 
@@ -12878,13 +12873,7 @@ fn computed_headers_recompute_reflects_an_env_switch() {
     // section only shows non-`Request`-origin rows (the editable table
     // above already shows the request's own rows, literal text and all),
     // so this is what actually exercises the env-driven recompute.
-    app.project.meta.default_headers.insert(
-        "X-Base".into(),
-        postui_core::model::Entry {
-            value: "{{base_url}}".into(),
-            enabled: true,
-        },
-    );
+    set_default_header(&mut app, "X-Base", "{{base_url}}");
     app.editor.active_tab = EditorTab::Headers;
     app.update(Action::Render);
 
@@ -12926,15 +12915,9 @@ fn computed_headers_reveal_resets_when_switching_to_a_different_request() {
         name: "api_key".into(),
         value: "sk-live-abc123".into(),
     }));
-    app.project.meta.default_headers.insert(
-        "Authorization".into(),
-        postui_core::model::Entry {
-            value: "Bearer {{api_key}}".into(),
-            enabled: true,
-        },
-    );
-    postui_core::storage::save_request(&app.project.root, "main/a", &req("https://x/a")).unwrap();
-    postui_core::storage::save_request(&app.project.root, "main/b", &req("https://x/b")).unwrap();
+    set_default_header(&mut app, "Authorization", "Bearer {{api_key}}");
+    postui_core::storage::save_request(app.proj().root(), "main/a", &req("https://x/a")).unwrap();
+    postui_core::storage::save_request(app.proj().root(), "main/b", &req("https://x/b")).unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::OpenRequest("main/a".into()));
     app.editor.active_tab = EditorTab::Headers;
@@ -13072,7 +13055,7 @@ fn clicking_the_env_value_field_typing_and_clicking_away_writes_the_env_file() {
         "the typed digit landed at the caret (end of qa's own override): {on_disk}"
     );
     assert_eq!(
-        app.project.resolved.values["base_url"],
+        app.proj().resolved().values["base_url"],
         "https://qa.example.com9"
     );
 }
@@ -13097,7 +13080,7 @@ fn enter_commits_a_field_edit_and_esc_reverts_it() {
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.varmanager.form.editing.is_none());
     assert_eq!(
-        app.project.model.vars["base_url"].description.as_deref(),
+        app.proj().variables().vars["base_url"].description.as_deref(),
         Some("API root"),
         "Esc must not write anything"
     );
@@ -13109,7 +13092,7 @@ fn enter_commits_a_field_edit_and_esc_reverts_it() {
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.varmanager.form.editing.is_none());
     assert_eq!(
-        app.project.model.vars["base_url"].description.as_deref(),
+        app.proj().variables().vars["base_url"].description.as_deref(),
         Some("API root!")
     );
 }
@@ -13142,7 +13125,7 @@ fn clicking_directly_from_one_field_into_another_commits_the_first() {
     app.handle_mouse(left_down(r.x + 1, r.y + 1));
 
     assert_eq!(
-        app.project.model.vars["base_url"].description.as_deref(),
+        app.proj().variables().vars["base_url"].description.as_deref(),
         Some("API root!"),
         "the description field must have committed, not been discarded"
     );
@@ -13363,7 +13346,7 @@ fn the_delete_button_opens_the_confirm_with_the_usage_list() {
     let r = app.hits.rect_of(&crate::hit::Hit::VmDelete).unwrap();
     app.handle_mouse(left_down(r.x + 1, r.y + 1));
     assert!(app.modals.is_empty(), "delete is undoable, no confirm");
-    assert!(!app.project.model.vars.contains_key("base_url"));
+    assert!(!app.proj().variables().vars.contains_key("base_url"));
     assert!(
         app.toasts.messages().join("\n").contains("uses-base"),
         "the usage warning names the referencing request: {:?}",
@@ -13406,7 +13389,7 @@ fn the_promote_button_promotes_the_requests_override_up_into_the_project() {
     // Confirm "Default value".
     app.handle_key(&Keymap::default_bindings(), plain('d'));
     assert_eq!(
-        app.project.model.vars["base_url"].default.as_deref(),
+        app.proj().variables().vars["base_url"].default.as_deref(),
         Some("http://from-request")
     );
     assert!(!app.editor.variables.contains_key("base_url"));
@@ -13535,7 +13518,7 @@ fn fields_editor_remove_button_marks_the_row_and_confirm_deletes_the_field() {
     let keymap = Keymap::default_bindings();
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty(), "removal is undoable, no confirm");
-    assert_eq!(app.project.model.selectors["creds"].fields, vec!["user_id"]);
+    assert_eq!(app.proj().variables().selectors["creds"].fields, vec!["user_id"]);
 }
 
 #[test]
@@ -13555,7 +13538,7 @@ fn fields_editor_rename_types_into_the_row() {
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty(), "apply closes the editor");
     assert_eq!(
-        app.project.model.selectors["creds"].fields,
+        app.proj().variables().selectors["creds"].fields,
         vec!["uid", "customer_id"]
     );
 }
@@ -13579,7 +13562,7 @@ fn fields_editor_add_button_appends_a_focused_row() {
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
     assert_eq!(
-        app.project.model.selectors["creds"].fields,
+        app.proj().variables().selectors["creds"].fields,
         vec!["user_id", "customer_id", "region"]
     );
 }
@@ -13603,7 +13586,7 @@ fn fields_editor_alt_a_appends_a_focused_row() {
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty());
     assert_eq!(
-        app.project.model.selectors["creds"].fields,
+        app.proj().variables().selectors["creds"].fields,
         vec!["user_id", "customer_id", "region"]
     );
 }
@@ -13644,7 +13627,7 @@ fn fields_editor_alt_d_toggles_removal_of_the_focused_row() {
     app.handle_key(&keymap, alt('d'));
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(app.modals.is_empty(), "removal is undoable, no confirm");
-    assert_eq!(app.project.model.selectors["creds"].fields, vec!["user_id"]);
+    assert_eq!(app.proj().variables().selectors["creds"].fields, vec!["user_id"]);
 }
 
 /// While the fields editor is open, the footer swaps to *its* context
@@ -13778,7 +13761,7 @@ fn clicking_an_entrys_radio_records_the_selection_and_re_resolves_every_field() 
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     goto_group(&mut app, "user");
     assert!(
-        !app.project.resolved.values.contains_key("user"),
+        !app.proj().resolved().values.contains_key("user"),
         "no selection yet: the group's field doesn't resolve"
     );
 
@@ -13790,9 +13773,9 @@ fn clicking_an_entrys_radio_records_the_selection_and_re_resolves_every_field() 
     app.handle_mouse(left_down(r.x, r.y));
 
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert_eq!(app.project.selections_for("qa")["user"], "bob");
+    assert_eq!(app.proj().selections_for("qa")["user"], "bob");
     assert_eq!(
-        app.project.resolved.values["user"], "2002",
+        app.proj().resolved().values["user"], "2002",
         "{{user}} now resolves through the selected entry"
     );
     let state = postui_core::project::load_local_state(dir.path()).unwrap();
@@ -13801,8 +13784,8 @@ fn clicking_an_entrys_radio_records_the_selection_and_re_resolves_every_field() 
     // …and clicking the other radio moves it, rather than adding a second.
     let r = app.hits.rect_of(&crate::hit::Hit::VmEntryRadio(0)).unwrap();
     app.handle_mouse(left_down(r.x, r.y));
-    assert_eq!(app.project.selections_for("qa")["user"], "alice");
-    assert_eq!(app.project.resolved.values["user"], "1001");
+    assert_eq!(app.proj().selections_for("qa")["user"], "alice");
+    assert_eq!(app.proj().resolved().values["user"], "1001");
 }
 
 /// Clicking bare background — the pane under the last option row registers
@@ -13978,7 +13961,7 @@ fn vm_footer_advertises_the_option_verbs_while_the_grid_has_focus() {
         selector: "user".into(),
         name: "alice".into(),
     };
-    let chips = app.varmanager.footer_chips(&app.project, None);
+    let chips = app.varmanager.footer_chips(app.proj(), None);
     assert!(
         chips
             .iter()
@@ -14063,7 +14046,7 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
     let secret = Action::ToggleSecretVar {
         name: "base_url".into(),
     };
-    let chips = app.varmanager.footer_chips(&app.project, None);
+    let chips = app.varmanager.footer_chips(app.proj(), None);
     assert!(
         chips
             .iter()
@@ -14087,7 +14070,7 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
         crate::components::varmanager::VmField::EnvValue,
         "two downs land on the env-value field"
     );
-    let chips = app.varmanager.footer_chips(&app.project, None);
+    let chips = app.varmanager.footer_chips(app.proj(), None);
     assert!(
         chips
             .iter()
@@ -14097,7 +14080,7 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
     app.handle_key(&keymap, plain('x'));
     let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(!on_disk.contains("base_url"), "{on_disk}");
-    let chips = app.varmanager.footer_chips(&app.project, None);
+    let chips = app.varmanager.footer_chips(app.proj(), None);
     assert!(
         !chips.iter().any(|(_, l, _)| *l == "clear env value"),
         "nothing stored, nothing to clear: {chips:?}"
@@ -14111,7 +14094,7 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
     let open_request = app.editor.current_request();
     let chips = app
         .varmanager
-        .footer_chips(&app.project, Some(&open_request));
+        .footer_chips(app.proj(), Some(&open_request));
     assert!(
         chips
             .iter()
@@ -14128,7 +14111,7 @@ fn form_focus_advertises_and_handles_the_field_verbs() {
     assert!(!app.modals.is_empty(), "s opens the secret confirm");
     app.handle_key(&keymap, plain('y'));
     assert!(
-        app.project.model.vars["base_url"].secret,
+        app.proj().variables().vars["base_url"].secret,
         "s flips the secret flag from the form area"
     );
 }
@@ -14147,14 +14130,14 @@ fn form_focus_r_toggles_reveal_on_a_secret_variable() {
     let keymap = Keymap::default_bindings();
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
 
-    let chips = app.varmanager.footer_chips(&app.project, None);
+    let chips = app.varmanager.footer_chips(app.proj(), None);
     assert!(
         chips.iter().any(|(k, l, _)| *k == "r" && *l == "reveal"),
         "{chips:?}"
     );
     app.handle_key(&keymap, plain('r'));
     assert!(app.varmanager.form.revealed, "r reveals the secret");
-    let chips = app.varmanager.footer_chips(&app.project, None);
+    let chips = app.varmanager.footer_chips(app.proj(), None);
     assert!(
         chips.iter().any(|(k, l, _)| *k == "r" && *l == "hide"),
         "{chips:?}"
@@ -14177,7 +14160,7 @@ fn vm_footer_advertises_edit_fields_on_a_selector() {
     let edit_fields = Action::PromptGroupFields {
         selector: "user".into(),
     };
-    let chips = app.varmanager.footer_chips(&app.project, None);
+    let chips = app.varmanager.footer_chips(app.proj(), None);
     assert!(
         chips
             .iter()
@@ -14189,7 +14172,7 @@ fn vm_footer_advertises_edit_fields_on_a_selector() {
     goto_row(&mut app, |r| {
         r == &crate::components::varmanager::VmRow::Var("base_url".into())
     });
-    let chips = app.varmanager.footer_chips(&app.project, None);
+    let chips = app.varmanager.footer_chips(app.proj(), None);
     assert!(
         !chips.iter().any(|(_, l, _)| *l == "edit fields"),
         "{chips:?}"
@@ -14209,7 +14192,7 @@ fn vm_footer_rename_delete_act_on_the_open_form_from_a_header_row() {
         r == &crate::components::varmanager::VmRow::Var("base_url".into())
     });
     app.varmanager.left_cursor = 0; // the "VARIABLES" section header
-    let chips = app.varmanager.footer_chips(&app.project, None);
+    let chips = app.varmanager.footer_chips(app.proj(), None);
     assert!(
         chips.iter().any(|(k, _, a)| *k == "e"
             && *a
@@ -14242,7 +14225,7 @@ fn vm_footer_drops_chips_with_no_target() {
     app.update(Action::OpenManage { tab: None });
     let keys: Vec<&str> = app
         .varmanager
-        .footer_chips(&app.project, None)
+        .footer_chips(app.proj(), None)
         .iter()
         .map(|(k, _, _)| *k)
         .collect();
@@ -14254,7 +14237,7 @@ fn vm_footer_drops_chips_with_no_target() {
     app.varmanager.grid.cursor = (2, 0); // alice, bob, then the ghost
     let keys: Vec<&str> = app
         .varmanager
-        .footer_chips(&app.project, None)
+        .footer_chips(app.proj(), None)
         .iter()
         .map(|(k, _, _)| *k)
         .collect();
@@ -14398,7 +14381,7 @@ fn the_field_editor_renames_adds_and_removes_across_variables_and_every_env() {
         slots: vec!["user_id".into()],
     });
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
-    assert_eq!(app.project.model.selectors["user"].fields, vec!["user_id"]);
+    assert_eq!(app.proj().variables().selectors["user"].fields, vec!["user_id"]);
     let qa = postui_core::project::load_environment(dir.path(), "qa").unwrap();
     assert_eq!(qa.options["user"]["alice"].values["user_id"], "1001");
     let dev = postui_core::project::load_environment(dir.path(), "dev").unwrap();
@@ -14414,7 +14397,7 @@ fn the_field_editor_renames_adds_and_removes_across_variables_and_every_env() {
     });
     assert!(app.toasts.is_empty(), "{:?}", app.toasts.messages());
     assert_eq!(
-        app.project.model.selectors["user"].fields,
+        app.proj().variables().selectors["user"].fields,
         vec!["user_id", "customer_id"]
     );
     let qa = postui_core::project::load_environment(dir.path(), "qa").unwrap();
@@ -14429,7 +14412,7 @@ fn the_field_editor_renames_adds_and_removes_across_variables_and_every_env() {
         slots: vec!["user_id".into(), String::new()],
     });
     assert!(app.modals.is_empty(), "removal is undoable, no confirm");
-    assert_eq!(app.project.model.selectors["user"].fields, vec!["user_id"]);
+    assert_eq!(app.proj().variables().selectors["user"].fields, vec!["user_id"]);
     let qa = postui_core::project::load_environment(dir.path(), "qa").unwrap();
     assert!(
         !qa.options["user"]["alice"]
@@ -14470,7 +14453,7 @@ fn renaming_a_group_moves_its_declaration_its_entries_and_its_selections() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     goto_group(&mut app, "user");
-    assert_eq!(app.project.resolved.values["user"], "2002");
+    assert_eq!(app.proj().resolved().values["user"], "2002");
 
     app.update(Action::VarStruct(VarStructOp::Rename {
         from: "user".into(),
@@ -14491,13 +14474,13 @@ fn renaming_a_group_moves_its_declaration_its_entries_and_its_selections() {
         assert!(!text.contains("[options.user."), "{env}: {text}");
     }
     // The selection follows the name in every environment…
-    assert_eq!(app.project.selections_for("qa")["account"], "bob");
-    assert_eq!(app.project.selections_for("dev")["account"], "dave");
-    assert!(!app.project.selections_for("qa").contains_key("user"));
+    assert_eq!(app.proj().selections_for("qa")["account"], "bob");
+    assert_eq!(app.proj().selections_for("dev")["account"], "dave");
+    assert!(!app.proj().selections_for("qa").contains_key("user"));
     let state = postui_core::project::load_local_state(dir.path()).unwrap();
     assert_eq!(state.selections["dev"]["account"], "dave");
     // …so the group's field still resolves to the same value it did.
-    assert_eq!(app.project.resolved.values["user"], "2002");
+    assert_eq!(app.proj().resolved().values["user"], "2002");
     // …and the detail pane is still looking at the group it was on.
     assert_eq!(
         app.varmanager.detail,
@@ -14518,7 +14501,7 @@ fn a_group_rename_onto_a_taken_name_changes_nothing() {
     }));
 
     assert!(!app.toasts.is_empty(), "the refusal is surfaced");
-    assert!(app.project.model.selectors.contains_key("user"));
+    assert!(app.proj().variables().selectors.contains_key("user"));
     let qa = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(qa.contains("[options.user.alice]"), "{qa}");
 }
@@ -14650,8 +14633,8 @@ fn the_keyboard_reaches_the_grid_selects_a_row_and_edits_the_focused_cell() {
 
     // space selects the entry the cursor is on — row 1, not row 0.
     app.handle_key(&keymap, plain(' '));
-    assert_eq!(app.project.selections_for("qa")["user"], "bob");
-    assert_eq!(app.project.resolved.values["user"], "2002");
+    assert_eq!(app.proj().selections_for("qa")["user"], "bob");
+    assert_eq!(app.proj().resolved().values["user"], "2002");
 
     // Enter edits the focused cell; Right first moves onto the value column.
     app.handle_key(&keymap, arrow(KeyCode::Right));
@@ -14912,7 +14895,7 @@ fn every_named_action_is_mouse_reachable() {
             .flatten()
             .filter_map(|item| item.action),
     );
-    postui_core::storage::save_request(&app.project.root, "main/req", &req("https://x/req"))
+    postui_core::storage::save_request(app.proj().root(), "main/req", &req("https://x/req"))
         .unwrap();
     app.refresh_sidebar();
     let row = app
@@ -15320,7 +15303,7 @@ fn split_persists_to_local_state_and_reseeds_on_open() {
     use crate::split::SplitStop;
     let mut app = App::new_for_test();
     app.update(Action::SplitStop(SplitStop::EditorBig));
-    let root = app.project.root.clone();
+    let root = app.proj().root().to_path_buf();
     let saved = |root: &std::path::Path| {
         postui_core::project::load_local_state(root)
             .unwrap()
@@ -15474,7 +15457,7 @@ fn header_shows_the_space_chip_between_env_and_manage() {
     let text = rendered_text(&mut app);
     assert!(text.contains("Space: main"), "{text}");
     click_hit(&mut app, Hit::HeaderSpaceCycle);
-    assert_eq!(app.project.active_space, "auth");
+    assert_eq!(app.proj().local().active_space, "auth");
 }
 
 /// At 80 columns — the common terminal width — the header's cycle pills
@@ -15623,7 +15606,7 @@ fn manage_pane_buttons_sit_right_aligned_on_the_title_row() {
     assert_eq!(delete.y, rename.y);
     // The Variables pane's title row sits at the same y.
     std::fs::write(
-        app.project.root.join("variables.toml"),
+        app.proj().root().join("variables.toml"),
         "[base_url]\ndefault = \"http://localhost\"\n",
     )
     .unwrap();
@@ -15664,7 +15647,7 @@ fn list_keys_move_delete_and_rename_through_the_prompt() {
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     assert_eq!(app.manage.list.cursor, 1);
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
-    assert_eq!(app.project.spaces, ["auth", "main"]);
+    assert_eq!(app.proj().spaces(), ["auth", "main"]);
     assert_eq!(app.manage.list.cursor, 0, "cursor follows the moved space");
 
     app.handle_key(&keymap, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -15808,7 +15791,7 @@ fn right_clicking_a_space_row_opens_its_menu_with_move_items() {
             "Delete"
         ]
     );
-    let first = app.project.spaces[0].clone();
+    let first = app.proj().spaces()[0].clone();
     assert_eq!(
         menu.items[0].action,
         Some(Action::PromptRenameSpace(first.clone()))
@@ -16113,7 +16096,7 @@ mod undo_tests {
         app.capture_undo();
         app.update(Action::SaveRequest);
         app.capture_undo();
-        let path = postui_core::storage::request_path(&app.project.root, "main/del-me");
+        let path = postui_core::storage::request_path(app.proj().root(), "main/del-me");
         let original = std::fs::read_to_string(&path).unwrap();
         app.update(Action::DeleteRequest("main/del-me".into()));
         app.capture_undo();
@@ -16188,7 +16171,7 @@ mod undo_tests {
         // delete and close the editor (reviewer finding).
         assert_eq!(app.editor.slug.as_deref(), Some("main/new-name"));
         app.update(Action::Undo);
-        let root = app.project.root.clone();
+        let root = app.proj().root().to_path_buf();
         assert!(
             postui_core::storage::request_path(&root, "main/old-name").exists(),
             "old-name restored"
@@ -16234,7 +16217,7 @@ mod undo_tests {
         app.capture_undo(); // one coalesced EditorDelta: "" -> "ab"
         app.update(Action::SaveRequest); // disk now holds "ab"
         app.capture_undo();
-        let path = postui_core::storage::request_path(&app.project.root, "main/sv");
+        let path = postui_core::storage::request_path(app.proj().root(), "main/sv");
         let saved_file = std::fs::read_to_string(&path).unwrap();
         assert!(!app.editor.is_dirty());
         app.update(Action::Undo); // reverts the "ab" edit, not the save
@@ -16318,7 +16301,7 @@ mod undo_tests {
         app.update(Action::DeleteRequest("main/ext".into()));
         app.capture_undo();
         app.update(Action::Undo); // restores file
-        let path = postui_core::storage::request_path(&app.project.root, "main/ext");
+        let path = postui_core::storage::request_path(app.proj().root(), "main/ext");
         std::fs::remove_file(&path).unwrap();
         std::fs::create_dir(&path).unwrap(); // remove_file on a dir errors
         app.update(Action::Undo); // tries to delete "created" file -> error
@@ -16418,8 +16401,8 @@ mod undo_tests {
     #[test]
     fn failed_multi_file_step_still_refreshes_the_sidebar() {
         let mut app = App::new_for_test();
-        let new_path = postui_core::storage::request_path(&app.project.root, "main/brand-new");
-        let blocked_path = app.project.root.join("blocked.toml");
+        let new_path = postui_core::storage::request_path(app.proj().root(), "main/brand-new");
+        let blocked_path = app.proj().root().join("blocked.toml");
         std::fs::create_dir_all(&blocked_path).unwrap(); // a dir where a file write is expected
 
         let step = crate::undo::Step {
@@ -16471,7 +16454,7 @@ mod undo_tests {
             value: "v1".into(),
         }));
         app.capture_undo();
-        let vars_path = app.project.root.join("variables.toml");
+        let vars_path = app.proj().root().join("variables.toml");
         let with_v1 = std::fs::read_to_string(&vars_path).unwrap();
         assert!(with_v1.contains("v1"), "{with_v1}");
 
@@ -16499,7 +16482,7 @@ mod undo_tests {
             description: None,
         }));
         app.capture_undo();
-        let vars_path = app.project.root.join("variables.toml");
+        let vars_path = app.proj().root().join("variables.toml");
         let before_dup = std::fs::read_to_string(&vars_path).unwrap();
 
         app.update(Action::DuplicateVar { name: "tok".into() });
@@ -16523,15 +16506,15 @@ mod undo_tests {
         let mut app = App::new_for_test();
         app.update(Action::CreateEnv("staging".into()));
         app.capture_undo();
-        assert_eq!(app.project.active_env.as_deref(), Some("staging"));
-        let env_path = app.project.root.join("environments/staging.toml");
+        assert_eq!(app.proj().active_env(), Some("staging"));
+        let env_path = app.proj().root().join("environments/staging.toml");
         assert!(env_path.exists());
         app.update(Action::Undo);
         assert!(!env_path.exists());
-        assert_eq!(app.project.active_env, None);
+        assert_eq!(app.proj().active_env(), None);
         app.update(Action::Redo);
         assert!(env_path.exists());
-        assert_eq!(app.project.active_env.as_deref(), Some("staging"));
+        assert_eq!(app.proj().active_env(), Some("staging"));
     }
 
     #[test]
@@ -16624,7 +16607,7 @@ mod undo_tests {
         let on_disk = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
         assert!(!on_disk.contains("base_url"), "pair removed: {on_disk}");
         assert_eq!(
-            app.project.resolved.values["base_url"], "http://localhost:8080",
+            app.proj().resolved().values["base_url"], "http://localhost:8080",
             "resolution falls back to the declaration default"
         );
 
@@ -16699,7 +16682,7 @@ mod undo_tests {
         app.handle_mouse(left_down(r.x, r.y));
 
         assert_eq!(
-            app.project.secrets.get("qa").and_then(|m| m.get("api_key")),
+            app.proj().secrets().get("qa").and_then(|m| m.get("api_key")),
             None,
             "the stored secret is gone"
         );
@@ -17501,7 +17484,7 @@ fn right_click_on_the_edited_grid_cell_offers_the_text_menu_instead_of_the_row_m
     let mut app = App::with_root(tx, dir.path().to_path_buf());
     app.set_clipboard_for_test(file_clipboard(&out, ""));
     goto_group(&mut app, "user");
-    app.varmanager.start_cell_edit(&app.project, 0, 1);
+    app.vm_start_cell_edit(0, 1);
     app.varmanager
         .grid
         .editing
@@ -17896,14 +17879,13 @@ fn extract_selector_from_a_url_selection_creates_the_selector_its_option_and_sel
     assert!(env.contains("[options.region.us-east]"), "{env}");
     assert!(env.contains("region = \"east\""), "{env}");
     assert_eq!(
-        app.project
-            .selections_for("qa")
+        app.proj().selections_for("qa")
             .get("region")
             .map(String::as_str),
         Some("us-east"),
         "the new option is selected so the token resolves"
     );
-    assert_eq!(app.project.resolved.values["region"], "east");
+    assert_eq!(app.proj().resolved().values["region"], "east");
     assert!(
         app.toasts
             .messages()
@@ -17949,13 +17931,12 @@ fn extract_selector_shared_puts_the_option_in_variables_toml() {
     let env = std::fs::read_to_string(dir.path().join("environments/qa.toml")).unwrap();
     assert!(!env.contains("api_version"), "{env}");
     assert_eq!(
-        app.project
-            .shared_selections()
+        app.proj().local().shared_selections
             .get("api_version")
             .map(String::as_str),
         Some("v2")
     );
-    assert_eq!(app.project.resolved.values["api_version"], "v2");
+    assert_eq!(app.proj().resolved().values["api_version"], "v2");
 }
 
 #[test]
@@ -18058,7 +18039,7 @@ fn row_menu_extract_value_to_selector_promotes_the_row_and_replaces_the_cell() {
         app.editor.table.editing.is_none(),
         "the cell edit is committed"
     );
-    assert_eq!(app.project.resolved.values["tenant"], "acme");
+    assert_eq!(app.proj().resolved().values["tenant"], "acme");
 }
 
 // --- jq filter bar ---
@@ -18075,7 +18056,7 @@ fn type_str(app: &mut App, s: &str) {
 #[test]
 fn alt_q_focuses_the_jq_bar_and_typing_filters_the_tree_live() {
     let mut app = App::new_for_test();
-    postui_core::storage::save_request(&app.project.root, "main/r", &req("https://x/r")).unwrap();
+    postui_core::storage::save_request(app.proj().root(), "main/r", &req("https://x/r")).unwrap();
     app.update(Action::RefreshSidebar);
     app.update(Action::ForceOpenRequest("main/r".into()));
     ready_response(&mut app, JQ_BODY);
@@ -19794,7 +19775,7 @@ fn a_left_press_during_a_live_space_drag_selects_the_painted_row() {
     assert_eq!(
         app.manage
             .list
-            .selected(ManageTab::Spaces, &app.project)
+            .selected(ManageTab::Spaces, app.proj())
             .map(str::to_string)
             .as_deref(),
         Some("auth"),
@@ -19952,7 +19933,9 @@ fn a_right_click_on_an_armed_press_disarms_it() {
 fn a_drag_never_leaves_its_sibling_group() {
     let (mut app, dir) = spaced_app();
     postui_core::storage::save_request(dir.path(), "main/auth/x", &req("https://x/3")).unwrap();
-    app.project.expanded.insert("main/auth".into());
+    let mut expanded = app.proj().local().expanded.clone();
+    expanded.insert("main/auth".into());
+    app.proj_mut().set_expanded(expanded);
     app.update(Action::RefreshSidebar);
     render_once(&mut app);
     // rows: alpha, beta, auth/, auth/x
@@ -20075,7 +20058,7 @@ fn a_rebuild_between_press_and_motion_drags_the_pressed_request() {
         &["beta".to_string(), "gamma".to_string(), "alpha".to_string()],
     )
     .unwrap();
-    app.project.reload_meta();
+    app.reload_project_documents();
     app.update(Action::RefreshSidebar);
     render_once(&mut app);
     assert_eq!(
@@ -20182,7 +20165,7 @@ fn manage_spaces_app() -> (App, tempfile::TempDir) {
         tab: Some(ManageTab::Spaces),
     });
     render_once(&mut app);
-    assert_eq!(app.project.spaces, ["main", "auth", "billing"]);
+    assert_eq!(app.proj().spaces(), ["main", "auth", "billing"]);
     (app, dir)
 }
 
@@ -20228,9 +20211,9 @@ fn dragging_a_space_row_reorders_and_persists() {
         "the grabbing cursor is released with the button"
     );
     assert_eq!(listed_spaces(&dir), ["auth", "billing", "main"]);
-    assert_eq!(app.project.spaces, ["auth", "billing", "main"]);
+    assert_eq!(app.proj().spaces(), ["auth", "billing", "main"]);
     assert_eq!(
-        app.manage.list.selected(app.manage.tab, &app.project),
+        app.manage.list.selected(app.manage.tab, app.proj()),
         Some("main"),
         "the cursor stays on the space that moved"
     );
@@ -20258,7 +20241,7 @@ fn a_space_drag_snaps_back_on_a_release_outside_escape_or_a_right_click() {
         assert!(app.manage.list.drag.is_none(), "{cancel}");
         assert!(app.manage_press.is_none(), "{cancel}");
         assert_eq!(listed_spaces(&dir), ["main", "auth", "billing"], "{cancel}");
-        assert_eq!(app.project.spaces, ["main", "auth", "billing"], "{cancel}");
+        assert_eq!(app.proj().spaces(), ["main", "auth", "billing"], "{cancel}");
         if cancel == "escape" {
             assert_eq!(
                 app.screen,
@@ -20409,7 +20392,7 @@ fn leaving_the_space_list_mid_drag_previews_the_cancel() {
     app.handle_mouse(left_up(110, 30));
     assert!(app.manage.list.drag.is_none());
     assert_eq!(listed_spaces(&dir), ["main", "auth", "billing"]);
-    assert_eq!(app.project.spaces, ["main", "auth", "billing"]);
+    assert_eq!(app.proj().spaces(), ["main", "auth", "billing"]);
 }
 
 // ---- a live drag owns the keyboard and the footer ----------------------
@@ -20866,6 +20849,9 @@ fn any_secret_keeps_its_panel_footprint_on_reveal() {
             secrets
         })
         .unwrap();
+        // `.local/secrets.toml` is not one of the watched files, so the
+        // mtime-gated reload would not see this write on its own.
+        app.proj_mut().invalidate_stamps();
         app.update(Action::ReloadProjectFiles);
         hover_token(&mut app, "api_key");
         let masked = app.hits.rect_of(&Hit::TipPanel("api_key".into())).unwrap();
@@ -20945,10 +20931,9 @@ fn startup_with_a_broken_project_file_runs_empty_and_leaves_the_file_alone() {
     assert_eq!(err.root, dir.path());
     assert_eq!(err.file, "project.toml");
     assert!(
-        app.project.root.as_os_str().is_empty(),
-        "nothing is loaded: the app runs on an empty root"
+        app.project().is_none(),
+        "nothing is loaded: the app runs with no project"
     );
-    assert!(!app.project.can_persist());
     assert!(app.sidebar.rows.is_empty());
     let notice = app.sidebar.notice.as_deref().expect("the sidebar explains");
     assert!(notice.contains("project.toml"), "{notice}");
@@ -20990,7 +20975,7 @@ fn a_refused_open_in_the_process_cwd_still_runs_empty() {
     std::env::set_current_dir(previous).unwrap();
     let app = outcome.expect("the empty fallback context reads nothing from disk");
     assert!(app.open_error.is_some());
-    assert!(!app.project.can_persist());
+    assert!(!app.project.is_some());
 }
 
 #[test]
@@ -21067,7 +21052,7 @@ fn switching_to_a_project_that_refuses_to_open_stays_put() {
     app.update(Action::ForceOpenRequest("main/ping".into()));
     app.update(Action::ForceSwitchProject(bad.path().to_path_buf()));
     assert_eq!(
-        app.project.root,
+        app.proj().root(),
         good.path(),
         "the current project stays open"
     );
@@ -21088,7 +21073,7 @@ fn save_and_quit_stays_open_when_the_save_fails() {
     let mut app = dirty_app();
     // Make the request file unwritable: the save must fail, and the quit
     // queued behind it must not run with the edit unsaved.
-    let space_dir = app.project.root.join("requests/main");
+    let space_dir = app.proj().root().join("requests/main");
     let mut perms = std::fs::metadata(&space_dir).unwrap().permissions();
     std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o555);
     std::fs::set_permissions(&space_dir, perms.clone()).unwrap();
@@ -21173,7 +21158,7 @@ fn undo_of_a_request_delete_reopens_it_in_the_editor() {
         "undo puts the editor back where it was"
     );
     assert_eq!(app.sidebar.selected_slug().as_deref(), Some("main/alpha"));
-    let state = postui_core::project::load_local_state(&app.project.root).unwrap();
+    let state = postui_core::project::load_local_state(app.proj().root()).unwrap();
     assert_eq!(state.open_request.as_deref(), Some("main/alpha"));
 
     app.update(Action::Redo);
@@ -21192,7 +21177,7 @@ fn undo_of_a_request_delete_after_a_space_rename_restores_state_under_the_new_na
         from: "auth".into(),
         to: "accounts".into(),
     });
-    assert_eq!(app.project.active_space, "accounts");
+    assert_eq!(app.proj().local().active_space, "accounts");
 
     app.update(Action::Undo);
     assert_eq!(
@@ -21200,7 +21185,7 @@ fn undo_of_a_request_delete_after_a_space_rename_restores_state_under_the_new_na
         Some("accounts/login"),
         "the restored state.toml names the space by its new name"
     );
-    assert_eq!(app.project.active_space, "accounts");
+    assert_eq!(app.proj().local().active_space, "accounts");
     let state = postui_core::project::load_local_state(dir.path()).unwrap();
     assert_eq!(state.space.as_deref(), Some("accounts"));
     assert_eq!(state.open_request.as_deref(), Some("accounts/login"));
@@ -21233,20 +21218,22 @@ fn undo_of_a_space_delete_restores_the_space_its_request_and_its_memory() {
     let (mut app, dir) = spaced_app();
     postui_core::storage::save_request(dir.path(), "main/api/deep", &req("https://x/d")).unwrap();
     app.update(Action::RefreshSidebar);
-    app.project.expanded.insert("main/api".into());
+    let mut expanded = app.proj().local().expanded.clone();
+    expanded.insert("main/api".into());
+    app.proj_mut().set_expanded(expanded);
     app.update(Action::ForceOpenRequest("main/alpha".into()));
     app.update(Action::PersistLocalState);
-    let auth_memory_before = app.project.space_open_for("auth");
+    let auth_memory_before = app.proj().space_open_for("auth");
 
     app.update(Action::ForceDeleteSpace("main".into()));
-    assert_eq!(app.project.active_space, "auth");
+    assert_eq!(app.proj().local().active_space, "auth");
     assert_eq!(app.editor.slug.as_deref(), Some("auth/login"));
-    assert!(!app.project.expanded.contains("main/api"));
+    assert!(!app.proj().local().expanded.contains("main/api"));
 
     app.update(Action::Undo);
-    assert_eq!(app.project.spaces, ["main", "auth"]);
+    assert_eq!(app.proj().spaces(), ["main", "auth"]);
     assert_eq!(
-        app.project.active_space, "main",
+        app.proj().local().active_space, "main",
         "undo returns to the deleted space"
     );
     assert_eq!(
@@ -21255,11 +21242,11 @@ fn undo_of_a_space_delete_restores_the_space_its_request_and_its_memory() {
         "…with its request open again"
     );
     assert!(
-        app.project.expanded.contains("main/api"),
+        app.proj().local().expanded.contains("main/api"),
         "…and its expanded folders back"
     );
     assert_eq!(
-        app.project.space_open_for("auth"),
+        app.proj().space_open_for("auth"),
         auth_memory_before,
         "the other space's memory is exactly what it was before the delete"
     );
@@ -21268,12 +21255,12 @@ fn undo_of_a_space_delete_restores_the_space_its_request_and_its_memory() {
     assert_eq!(state.open_request.as_deref(), Some("main/alpha"));
 
     app.update(Action::Redo);
-    assert_eq!(app.project.spaces, ["auth"]);
-    assert_eq!(app.project.active_space, "auth");
+    assert_eq!(app.proj().spaces(), ["auth"]);
+    assert_eq!(app.proj().local().active_space, "auth");
     assert_eq!(app.editor.slug.as_deref(), Some("auth/login"));
     assert!(!dir.path().join("requests/main").exists());
 
     app.update(Action::Undo);
-    assert_eq!(app.project.active_space, "main");
+    assert_eq!(app.proj().local().active_space, "main");
     assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
 }

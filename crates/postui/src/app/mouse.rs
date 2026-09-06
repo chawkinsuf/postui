@@ -88,7 +88,7 @@ impl App {
                     {
                         None => self.sidebar_press = None,
                         Some(i) if self.sidebar.row_at_y(m.row) != i => {
-                            let space = self.project.active_space.clone();
+                            let space = self.active_space();
                             if self.sidebar.begin_drag(i, &space) {
                                 self.hovered = None;
                                 return self.sidebar_drag_to(m.column, m.row)
@@ -113,13 +113,20 @@ impl App {
                     && matches!(self.hits.hit_at(m.column, m.row), Some(Hit::ManageRow(_)))
                 {
                     let tab = self.manage.tab;
-                    match crate::components::manage_list::ManageList::items(tab, &self.project)
+                    match self
+                        .manage_items(tab)
                         .iter()
                         .position(|n| *n == pressed)
                     {
                         None => self.manage_press = None,
                         Some(i) if self.manage.list.row_at_y(m.row) != i => {
-                            if self.manage.list.begin_drag(i, tab, &self.project) {
+                            let Self {
+                                project, manage, ..
+                            } = self;
+                            let began = project
+                                .as_ref()
+                                .is_some_and(|p| manage.list.begin_drag(i, tab, p));
+                            if began {
                                 self.hovered = None;
                                 return self.manage_drag_to(m.column, m.row)
                                     | self.update(Action::Render);
@@ -567,7 +574,8 @@ impl App {
             };
             self.finish_manage_drag(false);
             if let Some(name) = painted {
-                hit = crate::components::manage_list::ManageList::items(tab, &self.project)
+                hit = self
+                    .manage_items(tab)
                     .iter()
                     .position(|n| *n == name)
                     .map(Hit::ManageRow);
@@ -1108,9 +1116,9 @@ impl App {
                 // starts once the pointer leaves the row). Environments
                 // have no order to rearrange, so they never arm.
                 if self.manage.tab == ManageTab::Spaces
-                    && let Some(name) = self.manage.list.selected(self.manage.tab, &self.project)
+                    && let Some(name) = self.manage_selected(self.manage.tab)
                 {
-                    self.manage_press = Some((i, name.to_string()));
+                    self.manage_press = Some((i, name));
                 }
                 self.update(Action::Render)
             }
@@ -1120,12 +1128,7 @@ impl App {
             }),
             Hit::ManageRename => {
                 let tab = self.manage.tab;
-                match self
-                    .manage
-                    .list
-                    .selected(tab, &self.project)
-                    .map(str::to_string)
-                {
+                match self.manage_selected(tab) {
                     Some(name) => self.update(
                         crate::components::manage_list::ManageList::rename_action(tab, &name),
                     ),
@@ -1134,12 +1137,7 @@ impl App {
             }
             Hit::ManageDelete => {
                 let tab = self.manage.tab;
-                match self
-                    .manage
-                    .list
-                    .selected(tab, &self.project)
-                    .map(str::to_string)
-                {
+                match self.manage_selected(tab) {
                     Some(name) if tab == ManageTab::Spaces => {
                         self.update(Action::DeleteSpace(name))
                     }
@@ -1153,34 +1151,19 @@ impl App {
                 } else {
                     1
                 };
-                match self
-                    .manage
-                    .list
-                    .selected(ManageTab::Spaces, &self.project)
-                    .map(str::to_string)
-                {
+                match self.manage_selected(ManageTab::Spaces) {
                     Some(name) => self.update(Action::MoveSpace { name, delta }),
                     None => false,
                 }
             }
             Hit::ManageEnvTls(policy) => {
-                match self
-                    .manage
-                    .list
-                    .selected(ManageTab::Environments, &self.project)
-                    .map(str::to_string)
-                {
+                match self.manage_selected(ManageTab::Environments) {
                     Some(env) => self.update(Action::SetEnvTls { env, policy }),
                     None => false,
                 }
             }
             Hit::ManageMoveAll => {
-                match self
-                    .manage
-                    .list
-                    .selected(ManageTab::Spaces, &self.project)
-                    .map(str::to_string)
-                {
+                match self.manage_selected(ManageTab::Spaces) {
                     Some(from) => self.update(Action::PromptMoveAllRequests(from)),
                     None => false,
                 }
@@ -1865,7 +1848,14 @@ impl App {
                     if self.varmanager.form.editing.is_some() {
                         return self.update(Action::Render);
                     }
-                    self.varmanager.start_field_edit(&self.project, field);
+                    let Self {
+                        project,
+                        varmanager,
+                        ..
+                    } = self;
+                    if let Some(p) = project {
+                        varmanager.start_field_edit(p, field);
+                    }
                 }
                 // Map the click through the field's `TextField` geometry
                 // (text 2 columns in, windowed to `width - 2` — the drawn
@@ -1913,7 +1903,7 @@ impl App {
                         return self.update(Action::Render);
                     }
                     self.varmanager.grid.cursor = (row, col);
-                    self.varmanager.start_cell_edit(&self.project, row, col);
+                    self.vm_start_cell_edit(row, col);
                 }
                 // Caret at the clicked column (the cell draws windowed at
                 // the hit rect's own left edge; the resting text draws from
@@ -1950,8 +1940,9 @@ impl App {
                     return false;
                 };
                 let (Some(env), Some(option)) = (
-                    self.project.active_env.clone(),
-                    self.varmanager.entry_at(&self.project, row),
+                    self.active_env().map(str::to_string),
+                    self.project()
+                        .and_then(|p| self.varmanager.entry_at(p, row)),
                 ) else {
                     return false;
                 };
@@ -1970,8 +1961,9 @@ impl App {
                     return false;
                 };
                 let (Some(env), Some(name)) = (
-                    self.project.active_env.clone(),
-                    self.varmanager.entry_at(&self.project, row),
+                    self.active_env().map(str::to_string),
+                    self.project()
+                        .and_then(|p| self.varmanager.entry_at(p, row)),
                 ) else {
                     return false;
                 };
@@ -2044,11 +2036,13 @@ impl App {
                     .slug
                     .is_some()
                     .then(|| self.editor.current_request());
-                let Some((_, action)) = crate::components::varmanager::promote_action(
-                    &self.project,
-                    open_request.as_ref(),
-                    &name,
-                ) else {
+                let Some((_, action)) = self.project().and_then(|p| {
+                    crate::components::varmanager::promote_action(
+                        p,
+                        open_request.as_ref(),
+                        &name,
+                    )
+                }) else {
                     return false;
                 };
                 self.update(action)

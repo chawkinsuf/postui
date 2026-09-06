@@ -69,7 +69,7 @@ fn seed(app: &mut App, slugs: &[&str]) {
     };
     // Every request lives in a space; these all go in the default one.
     for slug in slugs {
-        postui_core::storage::save_request(&app.project.root, &format!("main/{slug}"), &req)
+        postui_core::storage::save_request(app.proj().root(), &format!("main/{slug}"), &req)
             .unwrap();
     }
     app.update(Action::RefreshSidebar);

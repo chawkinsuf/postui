@@ -204,7 +204,7 @@ async fn stage3_acceptance_flow() {
 
     // --- cycle to prod via alt+x (real binding), send again ----------
     app.handle_key(&keymap, alt('x'));
-    assert_eq!(app.project.active_env.as_deref(), Some("prod"));
+    assert_eq!(app.proj().active_env(), Some("prod"));
     app.update(Action::Send);
     let generation = app.session.send_generation;
     drain_until(&mut rx, &mut app, generation).await;
@@ -249,7 +249,7 @@ async fn stage3_acceptance_flow() {
         app.modals.is_empty(),
         "editor is clean: no dirty-gate prompt"
     );
-    assert_eq!(app.project.root, beta_dir.path().to_path_buf());
+    assert_eq!(app.proj().root(), beta_dir.path().to_path_buf());
     assert_eq!(
         app.editor.slug.as_deref(),
         Some("main/pong"),
@@ -266,19 +266,19 @@ async fn stage3_acceptance_flow() {
     assert_eq!(app.editor.slug.as_deref(), Some("main/ping"));
 
     app.handle_key(&keymap, alt('z'));
-    assert_eq!(app.project.root, alpha_dir.path().to_path_buf());
+    assert_eq!(app.proj().root(), alpha_dir.path().to_path_buf());
     assert_eq!(
         app.editor.slug.as_deref(),
         Some("main/users/list"),
         "alpha's open request is restored"
     );
     assert_eq!(
-        app.project.active_env.as_deref(),
+        app.proj().active_env(),
         Some("prod"),
         "alpha's active environment is restored"
     );
     assert!(
-        app.project.expanded.contains("main/users"),
+        app.proj().local().expanded.contains("main/users"),
         "alpha's sidebar expansion is restored"
     );
 

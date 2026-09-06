@@ -123,7 +123,7 @@ pub fn list_dir(dir: &Path, show_hidden: bool, mode: PickerMode) -> std::io::Res
         if mode == PickerMode::ChooseDir && !is_dir {
             continue;
         }
-        let is_project = is_dir && postui_core::project::is_project(&item.path());
+        let is_project = is_dir && postui_core::project::Project::is_project(&item.path());
         entries.push(Entry {
             name,
             is_dir,

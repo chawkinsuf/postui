@@ -131,7 +131,7 @@ pub struct Editor {
     /// Params/Headers table editor) and carried through load/save.
     pub variables: IndexMap<String, Entry>,
     /// `name → "overrides <env>: <value>"`, already formatted (masked for
-    /// secrets) by `App` out of `ProjectContext::resolved` — one entry per
+    /// secrets) by `App` out of `Project::resolved` — one entry per
     /// project variable that a request-scope entry with the same name
     /// shadows. Synced by `App` on every `update()` alongside
     /// `inherited_headers`. Draw-only: consumed by the Vars tab's table draw
@@ -5660,13 +5660,13 @@ url = "https://api.example.com/users""#,
     #[test]
     fn headers_tab_shows_overridden_default_as_struck_through_auto_row() {
         let mut app = App::new_for_test();
-        app.project.meta.default_headers.insert(
-            "Accept".into(),
-            Entry {
-                value: "application/json".into(),
-                enabled: true,
-            },
-        );
+        let root = app.proj().root().to_path_buf();
+        std::fs::write(
+            root.join("project.toml"),
+            "[default_headers]\nAccept = \"application/json\"\n",
+        )
+        .unwrap();
+        app.resync_project();
         app.editor.active_tab = EditorTab::Headers;
         app.editor.headers.insert(
             "Accept".into(),

@@ -129,8 +129,9 @@ impl Project {
     }
 
     /// Drops what local memory holds about `name`: its open request and
-    /// expanded folders. Memory only; the caller persists.
-    pub(crate) fn forget_space_local(&mut self, name: &str) {
+    /// expanded folders. Memory only; the caller persists. Public for the
+    /// app's legacy space delete, which writes outside the project.
+    pub fn forget_space_local(&mut self, name: &str) {
         self.local.space_open.shift_remove(name);
         let prefix = format!("{name}/");
         self.local
@@ -138,8 +139,9 @@ impl Project {
             .retain(|p| !p.starts_with(&prefix) && p != name);
     }
 
-    /// Re-keys local memory after a space rename. Memory only.
-    pub(crate) fn rename_space_local(&mut self, from: &str, to: &str) {
+    /// Re-keys local memory after a space rename. Memory only. Public for
+    /// the app's legacy space rename, which writes outside the project.
+    pub fn rename_space_local(&mut self, from: &str, to: &str) {
         let mut state = LocalState {
             space: Some(self.local.active_space.clone()),
             open_request: self.local.open_request.clone(),

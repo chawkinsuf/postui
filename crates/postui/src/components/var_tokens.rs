@@ -126,33 +126,33 @@ pub struct VarView {
 impl VarView {
     /// Snapshots `project` plus the open request's `[variables]` overlay.
     pub fn from_context(
-        project: &crate::project_ctx::ProjectContext,
+        project: &postui_core::project::Project,
         request: &IndexMap<String, Entry>,
     ) -> Self {
         Self {
-            resolved: project.resolved.clone(),
+            resolved: project.resolved().clone(),
             request: request
                 .iter()
                 .filter(|(_, e)| e.enabled)
                 .map(|(k, e)| (k.clone(), e.value.clone()))
                 .collect(),
-            env_names: project.env_data.values.keys().cloned().collect(),
+            env_names: project.env_data().values.keys().cloned().collect(),
             default_names: project
-                .model
+                .variables()
                 .vars
                 .iter()
                 .filter(|(_, d)| d.default.is_some())
                 .map(|(n, _)| n.clone())
                 .collect(),
-            env_label: project.active_env.clone(),
+            env_label: project.active_env().map(str::to_string),
             descriptions: {
                 let mut d: IndexMap<String, String> = project
-                    .model
+                    .variables()
                     .vars
                     .iter()
                     .filter_map(|(n, decl)| decl.description.clone().map(|desc| (n.clone(), desc)))
                     .collect();
-                for decl in project.model.selectors.values() {
+                for decl in project.variables().selectors.values() {
                     if let Some(desc) = &decl.description {
                         for field in &decl.fields {
                             d.insert(field.clone(), desc.clone());

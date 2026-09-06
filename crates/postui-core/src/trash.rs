@@ -1,6 +1,6 @@
 //! `.local/trash/`: deletes are renames into a per-project trash so undo
 //! is a rename back, whatever the size of what was deleted. Emptied when a
-//! project is opened (`ProjectContext::open`), so it only ever backs the
+//! project is opened (`Project::open`), so it only ever backs the
 //! current session's undo history.
 
 use std::path::{Path, PathBuf};
