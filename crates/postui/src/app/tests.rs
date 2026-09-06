@@ -3528,6 +3528,30 @@ fn rename_space_cascades_editor_sidebar_and_state() {
 }
 
 #[test]
+fn undo_of_a_space_rename_takes_the_open_request_back_with_it() {
+    // The entry pairs every request in the space with where it went, so
+    // the editor, the sidebar and the session follow the rename back.
+    let (mut app, dir) = spaced_app();
+    app.update(Action::ForceOpenRequest("main/alpha".into()));
+    app.update(Action::RenameSpace {
+        from: "main".into(),
+        to: "Renamed".into(),
+    });
+    assert_eq!(app.editor.slug.as_deref(), Some("renamed/alpha"));
+
+    app.update(Action::Undo);
+    assert_eq!(app.proj().spaces(), ["main", "auth"]);
+    assert_eq!(app.proj().local().active_space, "main");
+    assert_eq!(
+        app.editor.slug.as_deref(),
+        Some("main/alpha"),
+        "the request that was open is still open, under its old slug"
+    );
+    assert_eq!(app.sidebar.open_slug.as_deref(), Some("main/alpha"));
+    assert!(dir.path().join("requests/main/alpha.toml").is_file());
+}
+
+#[test]
 fn delete_space_confirms_with_the_count_then_trashes_and_undoes() {
     let (mut app, dir) = spaced_app();
     app.update(Action::ForceOpenRequest("main/alpha".into()));
@@ -4011,11 +4035,12 @@ fn quick_keyboard_moves_of_one_request_roll_up_into_one_undo_step() {
 #[test]
 fn a_keyboard_reorder_that_returns_to_the_start_leaves_no_step_and_undo_reaches_the_one_beneath() {
     // The two moves merge in the journal and net to nothing, so the
-    // journal drops the entry: the marker recorded for it points at an
-    // entry that is gone, and undo skips it to land on the create beneath.
+    // journal drops the entry: the marker recorded for it goes with it,
+    // and undo lands on the create beneath.
     let (mut app, _dir) = slotted_app(&["alpha", "beta", "gamma"]);
     app.update(Action::CreateRequest("delta".into()));
     assert!(app.proj().request_exists("main/delta"));
+    let steps = app.history.undo_len();
     app.update(Action::MoveRequest {
         slug: "main/beta".into(),
         delta: 1,
@@ -4028,6 +4053,11 @@ fn a_keyboard_reorder_that_returns_to_the_start_leaves_no_step_and_undo_reaches_
         app.proj().last_entry().map(|(_, l)| l.to_string()).as_deref(),
         Some("create request"),
         "the burst netted to nothing: no order entry remains"
+    );
+    assert_eq!(
+        app.history.undo_len(),
+        steps,
+        "and its marker was dropped with it"
     );
 
     app.update(Action::Undo);
@@ -4175,7 +4205,10 @@ fn a_dropped_space_drag_is_its_own_undo_step_and_undo_follows_the_cursor() {
 }
 
 #[test]
-fn undo_of_a_space_reorder_survives_a_space_created_since() {
+fn undo_walks_back_through_a_space_create_to_the_reorder_beneath_it() {
+    // Plan decision 7: a space create is a journal entry like any other,
+    // so undo is strictly linear — it takes the create first and only
+    // then the reorder underneath it.
     let (mut app, dir) = spaced_app();
     app.update(Action::MoveSpace {
         name: "main".into(),
@@ -4188,9 +4221,14 @@ fn undo_of_a_space_reorder_survives_a_space_created_since() {
     app.update(Action::Undo);
     assert_eq!(
         listed_spaces(&dir),
-        ["main", "auth", "billing"],
-        "the recorded order is applied to the spaces still present; the new one stays"
+        ["auth", "main"],
+        "the create goes first"
     );
+    app.update(Action::Undo);
+    assert_eq!(listed_spaces(&dir), ["main", "auth"], "then the reorder");
+
+    app.update(Action::Redo);
+    assert_eq!(listed_spaces(&dir), ["auth", "main"]);
     app.update(Action::Redo);
     assert_eq!(listed_spaces(&dir), ["auth", "main", "billing"]);
 }
@@ -4503,11 +4541,17 @@ fn undo_of_a_move_follows_the_file_back_and_keeps_the_outgoing_space_s_memory() 
 }
 
 #[test]
-fn renaming_an_environment_reports_a_secrets_write_failure() {
+fn a_blocked_secrets_write_refuses_the_whole_environment_rename() {
+    // The rename moves the file, the `[environment.<slug>]` table and the
+    // env's secrets in one transaction: if the secrets write cannot
+    // happen, nothing does — no half-renamed environment.
     let (mut app, dir) = spaced_app();
     postui_core::project::create_environment(dir.path(), "dev").unwrap();
     app.reload_project_documents();
+    app.update(Action::SwitchEnv(Some("dev".into())));
+    app.proj_mut().set_secret("token", "s3cret".into()).unwrap();
     // Block `.local/secrets.toml` with a non-empty directory.
+    std::fs::remove_file(dir.path().join(".local/secrets.toml")).unwrap();
     std::fs::create_dir_all(dir.path().join(".local/secrets.toml/in-the-way")).unwrap();
 
     app.toasts = Default::default();
@@ -4516,11 +4560,15 @@ fn renaming_an_environment_reports_a_secrets_write_failure() {
         to: "staging".into(),
     });
     let msg = app.toasts.messages().join(" | ");
-    assert!(msg.contains("could not save secrets:"), "{msg}");
+    assert!(msg.contains("cannot rename environment:"), "{msg}");
+    assert!(app.last_action_failed);
     assert!(
-        dir.path().join("environments/staging.toml").is_file(),
-        "the rename itself still happened"
+        !dir.path().join("environments/staging.toml").exists(),
+        "the rename is rolled back whole"
     );
+    assert!(dir.path().join("environments/dev.toml").is_file());
+    assert!(app.proj().environments().contains(&"dev".to_string()));
+    assert_eq!(app.proj().env_name("dev"), "dev");
 }
 
 #[test]

@@ -44,6 +44,26 @@ impl Project {
         Some(format!("space {gone:?} no longer exists"))
     }
 
+    /// `(old, new)` for every request under space `from`, at any folder
+    /// level — what a rename of the space's directory does to slugs.
+    fn space_moves(
+        listing: &[RequestListing],
+        from: &str,
+        to: &str,
+    ) -> Vec<(String, String)> {
+        let prefix = format!("{from}/");
+        listing
+            .iter()
+            .filter(|l| crate::storage::space_of(&l.slug) == Some(from))
+            .map(|l| {
+                (
+                    l.slug.clone(),
+                    l.slug.replacen(&prefix, &format!("{to}/"), 1),
+                )
+            })
+            .collect()
+    }
+
     pub fn space_slug_for(&self, display: &str, exclude: Option<&str>) -> String {
         let listed = self.meta.spaces.clone();
         legacy::unique_slug_among(
@@ -96,7 +116,19 @@ impl Project {
         let to = self.space_slug_for(&display, Some(from));
         spaces[idx] = to.clone();
         let from = from.to_string();
-        self.transaction("rename space", EntryMeta::default(), |p| {
+        // Every request in the space changes slug with the directory, at
+        // every folder level: the entry says so, so an undo or redo can
+        // take the open request (and the app's session cache) back with
+        // it, exactly as a request move does.
+        let meta = EntryMeta {
+            moves: if to != from {
+                Self::space_moves(&self.listing, &from, &to)
+            } else {
+                Vec::new()
+            },
+            ..EntryMeta::default()
+        };
+        self.transaction("rename space", meta, |p| {
             let from_dir = space_rel(&from)?;
             let to_dir = space_rel(&to)?;
             if to != from && p.disk.is_dir(&from_dir) {
@@ -315,6 +347,28 @@ mod tests {
         assert!(read(&dir, "project.toml").unwrap().contains("[space.login-flow]"));
         let e = p.journal.pop_undo().unwrap();
         assert!(e.ops.iter().any(|o| matches!(o, crate::journal::Op::Text { path, .. } if path.as_str() == ".local/state.toml")));
+    }
+
+    #[test]
+    fn rename_records_a_move_for_every_request_in_the_space() {
+        let (dir, mut p) = fixture();
+        std::fs::create_dir_all(dir.path().join("requests/main/api")).unwrap();
+        std::fs::write(dir.path().join("requests/main/api/deep.toml"), "method = \"GET\"\nurl = \"https://x/d\"\n").unwrap();
+        p.reload_all();
+        p.rename_space("main", "Core").unwrap();
+        let u = p.undo().unwrap().unwrap();
+        assert_eq!(u.label, "rename space");
+        let mut moves = u.meta.moves.clone();
+        moves.sort();
+        assert_eq!(
+            moves,
+            vec![
+                ("main/api/deep".to_string(), "core/api/deep".to_string()),
+                ("main/ping".to_string(), "core/ping".to_string()),
+            ],
+            "every request in the space, at every folder level"
+        );
+        assert!(dir.path().join("requests/main/api/deep.toml").is_file());
     }
 
     #[test]

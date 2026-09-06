@@ -93,8 +93,16 @@ pub enum ProjectNoun {
     FileChange,
     /// `"{Undid|Redid} reorder of {display}"`.
     Reorder,
+    /// `"{Undid|Redid} reorder of space {display}"` — the step's `slug`
+    /// is a space name, not a request slug.
+    SpaceReorder,
     /// `"Restored {file}"` / `"Deleted {file} again"`.
     Trash,
+    /// [`Self::Trash`] for something that is not a request: the step's
+    /// `slug` is the name to show verbatim (an environment's file name,
+    /// a space's directory name) rather than a request slug the `.toml`
+    /// is appended to.
+    TrashNamed,
 }
 
 /// Which list a `Reorder` step rewrote.
@@ -418,9 +426,10 @@ impl History {
         true
     }
 
-    /// The top undo step without popping it. Test-only: production code
-    /// drives undo/redo through `pop_undo`/`pop_redo`.
-    #[cfg(test)]
+    /// The top undo step without popping it. Undo/redo itself goes
+    /// through `pop_undo`/`pop_redo`; this is for the one caller that has
+    /// to know *what* is on top before deciding to drop it (a `Project`
+    /// marker whose journal entry a burst merge dissolved).
     pub fn peek_undo(&self) -> Option<&Step> {
         self.undo.last()
     }

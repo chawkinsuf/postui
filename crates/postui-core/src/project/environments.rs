@@ -23,35 +23,6 @@ impl Project {
         self.fs_write_text(&rel(SECRETS_TOML)?, Some(&text))
     }
 
-    /// In-memory cascade of an environment rename the app performed
-    /// outside the project (its legacy write). Selections and secrets
-    /// follow the new name and the active environment is re-pointed;
-    /// persisting is the caller's job. Disappears with the legacy
-    /// environment writes.
-    pub fn rename_env_state(&mut self, from: &str, to: &str) {
-        if let Some(sel) = self.local.selections.shift_remove(from) {
-            self.local.selections.insert(to.to_string(), sel);
-        }
-        if let Some(sec) = self.secrets.shift_remove(from) {
-            self.secrets.insert(to.to_string(), sec);
-        }
-        if self.active_env.as_deref() == Some(from) {
-            self.active_env = Some(to.to_string());
-        }
-    }
-
-    /// [`Self::rename_env_state`]'s delete twin: the environment's
-    /// selections and secrets go, and the active environment is cleared
-    /// when it was the one deleted.
-    pub fn remove_env_state(&mut self, name: &str) {
-        self.local.selections.shift_remove(name);
-        self.secrets.shift_remove(name);
-        if self.active_env.as_deref() == Some(name) {
-            self.active_env = None;
-            self.env_data = EnvData::default();
-        }
-    }
-
     /// Records a secret for `env`, writes the secrets file, re-resolves
     /// when `env` is active. The error never carries the value.
     pub fn set_secret_for(&mut self, env: &str, name: &str, value: String) -> Result<(), Error> {

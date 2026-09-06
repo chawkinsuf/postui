@@ -974,12 +974,6 @@ impl App {
         self.project().and_then(|p| p.active_env())
     }
 
-    /// The key selections and secrets are stored under for the active
-    /// environment — the empty string when none is active.
-    pub(crate) fn env_key(&self) -> String {
-        self.active_env().unwrap_or_default().to_string()
-    }
-
     /// The space the sidebar is rooted at.
     pub(crate) fn active_space(&self) -> String {
         self.project().map_or_else(
@@ -3145,11 +3139,13 @@ impl App {
             }
             Action::CancelSend => self.session.cancel(),
             Action::SetSecret { name, value } => {
-                let before = self.read_file_states(&self.var_file_paths());
-                let env = self.env_key();
-                match self.set_secret_for(&env, &name, value) {
+                let result = match self.project.as_mut() {
+                    Some(p) => p.set_secret(&name, value).map_err(|e| e.to_string()),
+                    None => Err(NO_PROJECT.to_string()),
+                };
+                match result {
                     Ok(()) => {
-                        self.record_var_file_step(before);
+                        self.record_project_step();
                         self.apply(Action::ForceSend)
                     }
                     Err(e) => {
@@ -3616,28 +3612,24 @@ impl App {
                 if self.refuse_without_project() {
                     return true;
                 }
-                let prev_active = self.active_env().map(str::to_string);
-                // The name is free-form; the file is its slug, and
-                // project.toml records the name — so it is part of the
-                // step, or an undo would strand the `[environment.<slug>]`
-                // table.
-                let project_toml = self.root().join("project.toml");
-                let before_meta = self.read_file_states(std::slice::from_ref(&project_toml));
-                match postui_core::project::create_environment(self.root(), &name) {
-                    Ok(slug) => {
-                        self.reload_project_documents();
-                        let path =
-                            postui_core::project::environment_path(self.root(), &slug);
-                        let mut before = vec![(path.clone(), None)];
-                        before.extend(before_meta);
-                        self.record_file_step(
-                            before,
-                            &[path, project_toml],
-                            Some((prev_active, Some(slug.clone()))),
-                        );
-                        self.apply(Action::SwitchEnv(Some(slug)));
+                let Some(p) = self.project.as_mut() else {
+                    return true;
+                };
+                match p.create_environment(&name) {
+                    Ok(_slug) => {
+                        // Core activated the new environment inside the
+                        // transaction and recorded the transition, so
+                        // there is no switch to make here — only the
+                        // switch's own visible effects.
+                        self.record_project_step();
+                        if self.screen == Screen::Manage {
+                            self.sync_varmanager();
+                        }
+                        let label = self.env_label_display();
+                        self.toasts
+                            .push(format!("env: {label}"), ToastKind::Success);
                     }
-                    Err(postui_core::project::ProjectError::AlreadyExists(name)) => {
+                    Err(postui_core::project::Error::AlreadyExists(name)) => {
                         self.toasts.push(
                             format!("environment \"{name}\" already exists"),
                             ToastKind::Warning,
@@ -5085,9 +5077,12 @@ impl App {
                 if self.refuse_without_project() {
                     return true;
                 }
-                match postui_core::project::create_space(self.root(), &name) {
+                let Some(p) = self.project.as_mut() else {
+                    return true;
+                };
+                match p.create_space(&name) {
                     Ok(slug) => {
-                        self.resync_project();
+                        self.record_project_step();
                         self.toasts.push(
                             format!("Created space {}", self.space_name(&slug)),
                             ToastKind::Success,
@@ -5118,49 +5113,12 @@ impl App {
                 if to.trim() == self.env_name(&from) {
                     return true;
                 }
-                let root = self.root().to_path_buf();
-                let from_path = postui_core::project::environment_path(&root, &from);
-                let to_slug =
-                    postui_core::project::environment_slug_for(&root, to.trim(), Some(&from));
-                let to_path = postui_core::project::environment_path(&root, &to_slug);
-                let secrets_path = root.join(".local").join("secrets.toml");
-                // `.local/state.toml` rides along: the per-env `selections`
-                // table is re-keyed in memory by `rename_env_state` and only
-                // ever reaches disk through `PersistLocalState`, so without
-                // it in the step an undo would strand this env's selections
-                // under the new name. So does project.toml, which holds the
-                // display name.
-                let state_path = root.join(".local").join("state.toml");
-                let project_toml = root.join("project.toml");
-                let paths = vec![from_path, to_path, secrets_path, state_path, project_toml];
-                let before = self.read_file_states(&paths);
-                let was_active = self.active_env() == Some(from.as_str());
-                match postui_core::project::rename_environment(&root, &from, &to) {
+                let Some(p) = self.project.as_mut() else {
+                    return true;
+                };
+                match p.rename_environment(&from, &to) {
                     Ok(to) => {
-                        if let Some(p) = self.project_mut() {
-                            p.rename_env_state(&from, &to);
-                        }
-                        if let Err(e) =
-                            postui_core::project::save_secrets(&root, self.secrets())
-                        {
-                            self.toasts
-                                .push(format!("could not save secrets: {e}"), ToastKind::Warning);
-                        }
-                        self.reload_project_documents();
-                        if was_active {
-                            // Reload data under the new name (set_env re-stamps too).
-                            for w in self.set_active_env(Some(to.clone())) {
-                                self.toasts.push(w, ToastKind::Warning);
-                            }
-                        }
-                        // Persist first: the step's "after" side has to see
-                        // the re-keyed selections already on disk.
-                        self.apply(Action::PersistLocalState);
-                        self.record_file_step(
-                            before,
-                            &paths,
-                            was_active.then(|| (Some(from.clone()), Some(to.clone()))),
-                        );
+                        self.record_project_step();
                         if self.screen == Screen::Manage {
                             self.sync_varmanager();
                             self.manage_select_name(&to);
@@ -5181,13 +5139,12 @@ impl App {
                 true
             }
             Action::SetEnvTls { env, policy } => {
-                let root = self.root().to_path_buf();
-                let paths = vec![root.join("project.toml")];
-                let before = self.read_file_states(&paths);
-                match postui_core::project::set_env_tls(&root, &env, policy) {
+                let Some(p) = self.project.as_mut() else {
+                    return true;
+                };
+                match p.set_env_tls(&env, policy) {
                     Ok(()) => {
-                        self.reload_project_documents();
-                        self.record_file_step(before, &paths, None);
+                        self.record_project_step();
                         let name = self.env_name(&env);
                         let msg = match policy {
                             Some(postui_core::project::TlsPolicy::Verify) => {
@@ -5230,49 +5187,23 @@ impl App {
                 true
             }
             Action::ForceDeleteEnv(name) => {
-                let root = self.root().to_path_buf();
-                let secrets_path = root.join(".local").join("secrets.toml");
-                // See `Action::RenameEnv`: the dropped env's `selections`
-                // live in `.local/state.toml`, so it is a companion file.
-                let state_path = root.join(".local").join("state.toml");
-                let project_toml = root.join("project.toml");
-                let companions = [secrets_path, state_path, project_toml];
-                let before = self.read_file_states(&companions);
-                let prev_active = self.active_env().map(str::to_string);
-                let was_active = prev_active.as_deref() == Some(name.as_str());
                 let display = self.env_name(&name);
-                match postui_core::project::delete_environment(&root, &name) {
-                    Ok(trashed) => {
-                        if let Some(p) = self.project_mut() {
-                            p.remove_env_state(&name);
-                        }
-                        if let Err(e) =
-                            postui_core::project::save_secrets(&root, self.secrets())
-                        {
-                            self.toasts
-                                .push(format!("could not save secrets: {e}"), ToastKind::Warning);
-                        }
-                        self.reload_project_documents();
-                        // The active env is gone: fall through to the
-                        // first remaining one rather than to no env.
-                        let fallback = self.environments().first().cloned();
-                        if was_active {
-                            for w in self.set_active_env(fallback.clone()) {
-                                self.toasts.push(w, ToastKind::Warning);
-                            }
-                        }
+                let Some(p) = self.project.as_mut() else {
+                    return true;
+                };
+                // Core drops the table, the secrets and the selections,
+                // and falls through to the first remaining environment.
+                match p.delete_environment(&name) {
+                    Ok(()) => {
+                        // The undo toast names the file that went to the
+                        // trash, as the trashed-file step it replaces did.
+                        self.record_project_step_as(
+                            crate::undo::ProjectNoun::TrashNamed,
+                            Some(format!("{name}.toml")),
+                        );
                         self.toasts.push(
                             format!("Deleted environment {display}{}", self.undo_hint()),
                             ToastKind::Info,
-                        );
-                        // Persist first, so the step's "after" side records
-                        // the state file without this environment.
-                        self.apply(Action::PersistLocalState);
-                        self.record_trashed_step(
-                            vec![trashed],
-                            before,
-                            &companions,
-                            was_active.then(|| (prev_active.clone(), fallback)),
                         );
                         if self.screen == Screen::Manage {
                             self.sync_varmanager();
@@ -5302,24 +5233,13 @@ impl App {
                 if to.trim() == self.space_name(&from) {
                     return true;
                 }
-                match postui_core::project::rename_space(self.root(), &from, &to) {
+                let Some(p) = self.project.as_mut() else {
+                    return true;
+                };
+                match p.rename_space(&from, &to) {
                     Ok(to) => {
-                        // Re-key local state (the active space included)
-                        // before anything re-lists: both
-                        // `ReloadProjectFiles` and `reload_spaces` drop an
-                        // active space they no longer find on disk, and
-                        // the old name is gone by now.
-                        if let Some(p) = self.project_mut() {
-                            p.rename_space_local(&from, &to);
-                        }
-                        // A space rename is not an undo step, so the steps
-                        // already recorded must follow the space to its
-                        // new name or their undo would write to a space
-                        // that no longer exists.
-                        let root = self.root().to_path_buf();
-                        self.history.rename_space(&root, &from, &to);
+                        self.record_project_step();
                         self.session.rename_space(&from, &to);
-                        self.resync_project();
                         let from_prefix = format!("{from}/");
                         if let Some(rest) = self
                             .editor
@@ -5335,7 +5255,6 @@ impl App {
                             }
                         }
                         self.refresh_sidebar();
-                        self.apply(Action::PersistLocalState);
                         self.toasts.push(
                             format!("Renamed space to {}", self.space_name(&to)),
                             ToastKind::Success,
@@ -5396,75 +5315,58 @@ impl App {
                         .push("cannot delete the last space", ToastKind::Warning);
                     return true;
                 }
-                // Snapshot local state before anything moves: the step's
-                // "before" side is the space still active with its request
-                // open, so undo lands the user exactly where they were.
-                let slug_before = self.editor.slug.clone();
-                self.apply(Action::PersistLocalState);
-                let companions = [
-                    self.root().join("project.toml"),
-                    self.local_state_path(),
-                ];
-                let before = self.read_file_states(&companions);
-                // Leave the space before it goes: the switch restores the
-                // other space's own open request and clears this one's.
-                let mut switched = false;
-                if self.active_space() == name
-                    && let Some(other) = self.spaces().iter().find(|s| **s != name).cloned()
-                {
-                    self.apply(Action::ForceSwitchSpace(other));
-                    switched = true;
-                }
+                // The delete goes first, so the entry records local state
+                // as it was *before* anything moved — the space still
+                // active with its request open, which is where an undo
+                // has to land the user. Core falls the active space back
+                // to the first remaining one and clears the open request;
+                // the view follows below. (Nothing to switch back on
+                // failure: the transaction is atomic.)
+                let was_active = self.active_space() == name;
                 let display = self.space_name(&name);
-                match postui_core::project::delete_space(self.root(), &name) {
-                    Ok(trashed) => {
+                let Some(p) = self.project.as_mut() else {
+                    return true;
+                };
+                match p.delete_space(&name) {
+                    Ok(()) => {
+                        // The undo toast names the directory that went to
+                        // the trash, as the trashed-file step it replaces
+                        // did.
+                        self.record_project_step_as(
+                            crate::undo::ProjectNoun::TrashNamed,
+                            Some(name.clone()),
+                        );
                         self.toasts.push(
                             format!("Deleted space {display}{}", self.undo_hint()),
                             ToastKind::Info,
                         );
-                        if let Some(p) = self.project_mut() {
-                            p.forget_space_local(&name);
+                        if was_active {
+                            self.follow_active_space();
+                        } else {
+                            self.refresh_sidebar();
                         }
-                        self.reload_after_file_change();
-                        // Persist first, so the step's "after" side is the
-                        // state file without this space.
-                        self.apply(Action::PersistLocalState);
-                        self.record_trashed_step_with_orders(
-                            trashed.into_iter().collect(),
-                            before,
-                            &companions,
-                            None,
-                            Vec::new(),
-                            slug_before,
-                        );
                     }
                     Err(e) => {
                         self.toasts
                             .push(format!("cannot delete space: {e}"), ToastKind::Error);
                         self.last_action_failed = true;
-                        // Nothing was deleted: go back to where the user was.
-                        if switched {
-                            match slug_before {
-                                Some(slug) => self.apply(Action::ForceOpenRequest(slug)),
-                                None => self.apply(Action::ForceSwitchSpace(name.clone())),
-                            };
-                        }
                     }
                 }
                 true
             }
             Action::MoveSpace { name, delta } => {
-                match postui_core::project::move_space(self.root(), &name, delta) {
-                    Ok(change) => {
-                        let target = crate::undo::ReorderTarget::Spaces { name: name.clone() };
-                        self.record_reorder_step(change, target, true);
-                        self.apply(Action::ReloadProjectFiles);
-                        // `ReloadProjectFiles` is mtime-gated, so a second
-                        // reorder in the same clock tick would re-list from
-                        // a stale `meta` and undo itself on screen. Read
-                        // the file we just wrote instead of waiting for the
-                        // stamp to move.
-                        self.resync_project();
+                let Some(p) = self.project.as_mut() else {
+                    return true;
+                };
+                match p.move_space(&name, delta) {
+                    Ok(_) => {
+                        // A burst merges in core: the journal's top id
+                        // stays the same, so nothing is re-recorded and
+                        // the whole burst stays one undo step.
+                        self.record_project_step_as(
+                            crate::undo::ProjectNoun::SpaceReorder,
+                            Some(name.clone()),
+                        );
                         // The Manage screen's list cursor follows the space
                         // that just moved, rather than staying on the row
                         // index the reorder swapped something else into.
@@ -7247,6 +7149,23 @@ impl App {
             // into the entry the marker on top already covers.
             return;
         }
+        // The journal's top went *backwards*: this call merged into the
+        // entry the marker on top covers and netted to identity, so the
+        // journal dropped that entry. Its marker goes with it — the entry
+        // now on top already has one. (When something else was recorded
+        // in between, the marker is not on top to pop; it is left where
+        // it is and undo skips it as stale.)
+        if let (Some(marked), true) = (
+            self.marked_entry,
+            top.is_none_or(|t| Some(t) < self.marked_entry),
+        ) && matches!(
+            self.history.peek_undo().map(|s| &s.kind),
+            Some(crate::undo::StepKind::Project { id, .. }) if *id == marked
+        ) {
+            self.history.pop_undo();
+            self.marked_entry = top;
+            return;
+        }
         self.marked_entry = top;
         let Some(id) = top else { return };
         self.history.record_no_coalesce(crate::undo::Step {
@@ -7320,7 +7239,16 @@ impl App {
     /// would make undoing a *create* reopen whatever was open when the
     /// create ran, which is not what the `FileStates` tail did and would
     /// short-circuit an undo walking back to an earlier request.
-    fn after_undone(&mut self, u: &postui_core::project::Undone, reopen: bool) {
+    /// `space_before` is the active space as the app saw it just before
+    /// the replay: the restore of `.local/state.toml` can move the active
+    /// space in core (undoing a space delete goes back into the space
+    /// that was deleted), and the view has to follow it and say so.
+    fn after_undone(
+        &mut self,
+        u: &postui_core::project::Undone,
+        reopen: bool,
+        space_before: &str,
+    ) {
         for w in &u.warnings {
             self.toasts.push(w.clone(), ToastKind::Warning);
         }
@@ -7345,6 +7273,15 @@ impl App {
         // from under them.
         if self.screen == Screen::Manage {
             self.sync_varmanager();
+        }
+        // The replay moved the active space (undoing a space delete goes
+        // back into the deleted space; redoing it falls out again): the
+        // view follows it and says so, opening what that space was last
+        // left on. The entry's own record — its `moves` pairs and its
+        // `reopen` — is applied on top below, so an entry that says where
+        // the editor belongs still wins.
+        if self.active_space() != space_before {
+            self.follow_active_space();
         }
         if let Some(open) = self.editor.slug.clone() {
             // The entry's own pairing says where the open request went (a
@@ -7496,56 +7433,6 @@ impl App {
         Ok(())
     }
 
-    /// Records a `Trashed` step: reads `after_paths`' current contents as
-    /// the companion files' "after" side. Never coalesces; clears redo.
-    fn record_trashed_step(
-        &mut self,
-        items: Vec<postui_core::trash::Trashed>,
-        files_before: Vec<(PathBuf, Option<String>)>,
-        after_paths: &[PathBuf],
-        active_env: Option<(Option<String>, Option<String>)>,
-    ) {
-        let slug = self.editor.slug.clone();
-        self.record_trashed_step_with_orders(
-            items,
-            files_before,
-            after_paths,
-            active_env,
-            Vec::new(),
-            slug,
-        );
-    }
-
-    /// [`Self::record_trashed_step`] with the order-list cascade the op
-    /// ran (`orders`) and an explicit `context_slug` — the request the
-    /// step belongs to, captured by the caller *before* the op closed or
-    /// switched the editor.
-    fn record_trashed_step_with_orders(
-        &mut self,
-        items: Vec<postui_core::trash::Trashed>,
-        files_before: Vec<(PathBuf, Option<String>)>,
-        after_paths: &[PathBuf],
-        active_env: Option<(Option<String>, Option<String>)>,
-        orders: Vec<postui_core::order::OrderEdit>,
-        context_slug: Option<String>,
-    ) {
-        let files_after = self.read_file_states(after_paths);
-        self.history.record_no_coalesce(crate::undo::Step {
-            kind: crate::undo::StepKind::Trashed {
-                items,
-                files_before,
-                files_after,
-                active_env,
-                orders,
-            },
-            context: crate::undo::Context {
-                slug: context_slug,
-                cursor_before: crate::undo::CursorPos::None,
-                cursor_after: crate::undo::CursorPos::None,
-            },
-        });
-    }
-
     /// `.local/state.toml`: the companion file every delete step carries,
     /// so undo puts back what the delete's cascade took out of local state
     /// (the active space, the open request, remembered requests, expanded
@@ -7648,38 +7535,32 @@ impl App {
         true
     }
 
-    /// Records a reorder as an undo step; nothing when the reorder wrote
-    /// nothing. A keyboard move (`burst`) merges into a keyboard move of
-    /// the same target made within the history's coalesce window, so
-    /// holding alt+↓ is one step; a drag is always its own step and
-    /// merges with nothing.
-    fn record_reorder_step(
-        &mut self,
-        change: Option<postui_core::project::ListChange>,
-        target: crate::undo::ReorderTarget,
-        burst: bool,
-    ) {
-        let Some(change) = change else {
+    /// Brings the view to the space the project now says is active, after
+    /// an op moved it there in core (deleting the active space falls back
+    /// to the first remaining one). `SpaceExit::Keep`: the space being
+    /// left is gone, so there is nothing to remember for it. Opens what
+    /// the space it lands in was last left on, as a switch does.
+    fn follow_active_space(&mut self) {
+        let space = self.active_space();
+        if !self.enter_space(&space, SpaceExit::Keep) {
             return;
-        };
-        let slug = match &target {
-            crate::undo::ReorderTarget::Requests { slug, .. } => Some(slug.clone()),
-            crate::undo::ReorderTarget::Spaces { .. } => self.editor.slug.clone(),
-        };
-        let step = crate::undo::Step {
-            kind: crate::undo::StepKind::Reorder {
-                target,
-                before: change.before,
-                after: change.after,
-                burst,
-            },
-            context: crate::undo::Context {
-                slug,
-                cursor_before: crate::undo::CursorPos::None,
-                cursor_after: crate::undo::CursorPos::None,
-            },
-        };
-        self.history.record_maybe_coalesce(step, burst);
+        }
+        let target = self
+            .project()
+            .and_then(|p| p.space_open_for(&space))
+            .filter(|s| self.request_exists(s))
+            .or_else(|| self.sidebar.first_request_slug());
+        match target {
+            Some(slug) => {
+                self.apply(Action::ForceOpenRequest(slug));
+            }
+            None => {
+                self.editor = Editor::default();
+                self.shadow = None;
+                self.sidebar.open_slug = None;
+                self.apply(Action::PersistLocalState);
+            }
+        }
     }
 
     /// Puts a step's order-list cascade back (undo) or forward again
@@ -7911,21 +7792,15 @@ impl App {
         let Some(drag) = self.manage.list.drag.take() else {
             return false;
         };
-        if commit && drag.working != drag.original {
-            match postui_core::project::set_space_order(self.root(), &drag.working) {
-                Ok(change) => {
-                    let target = crate::undo::ReorderTarget::Spaces {
-                        name: drag.name.clone(),
-                    };
-                    self.record_reorder_step(change, target, false);
-                    // `ReloadProjectFiles` is mtime-gated (see
-                    // `Action::MoveSpace`), so read the file just written
-                    // rather than waiting for the stamp to move. Skipping
-                    // it entirely (unlike `MoveSpace`, which runs it
-                    // first) is deliberate: these two reloads cover
-                    // everything a `spaces`-key rewrite can change.
-                    self.reload_project_documents();
-                }
+        if commit
+            && drag.working != drag.original
+            && let Some(p) = self.project.as_mut()
+        {
+            match p.set_space_order(&drag.working) {
+                Ok(_) => self.record_project_step_as(
+                    crate::undo::ProjectNoun::SpaceReorder,
+                    Some(drag.name.clone()),
+                ),
                 Err(e) => self
                     .toasts
                     .push(format!("cannot reorder: {e}"), ToastKind::Warning),
@@ -10090,6 +9965,11 @@ impl App {
             }
             StepKind::Project { id, slug, noun } => {
                 use crate::undo::ProjectNoun;
+                // The replay restores `.local/state.toml`, so the active
+                // space can move under the app (undoing a space delete
+                // goes back into the deleted space). `after_undone` needs
+                // to know where it started to announce the change.
+                let space_before = self.active_space();
                 let Some(p) = self.project.as_mut() else {
                     return false;
                 };
@@ -10112,7 +9992,11 @@ impl App {
                 };
                 match result {
                     Ok(Some(u)) => {
-                        self.after_undone(&u, matches!(noun, ProjectNoun::Trash));
+                        self.after_undone(
+                            &u,
+                            matches!(noun, ProjectNoun::Trash | ProjectNoun::TrashNamed),
+                            &space_before,
+                        );
                         // `marked_entry` tracks the journal's top as the
                         // app last saw it: a replay moved it, so re-read.
                         self.sync_marked_entry();
@@ -10138,11 +10022,29 @@ impl App {
                                 };
                                 format!("{done} reorder of {what}")
                             }
-                            ProjectNoun::Trash => {
-                                let what = slug
-                                    .as_deref()
-                                    .map(|s| format!("{}.toml", s.rsplit('/').next().unwrap_or(s)))
-                                    .unwrap_or_else(|| "delete".into());
+                            ProjectNoun::SpaceReorder => {
+                                let what = match slug {
+                                    Some(name) => {
+                                        // The Manage cursor follows the
+                                        // space that moved back, as the
+                                        // forward reorder's own does.
+                                        if self.screen == Screen::Manage {
+                                            self.manage_select_name(name);
+                                        }
+                                        format!("space {}", self.space_name(name))
+                                    }
+                                    None => "the spaces".to_string(),
+                                };
+                                format!("{done} reorder of {what}")
+                            }
+                            ProjectNoun::Trash | ProjectNoun::TrashNamed => {
+                                let what = match (noun, slug.as_deref()) {
+                                    (ProjectNoun::TrashNamed, Some(name)) => name.to_string(),
+                                    (_, Some(s)) => {
+                                        format!("{}.toml", s.rsplit('/').next().unwrap_or(s))
+                                    }
+                                    (_, None) => "delete".into(),
+                                };
                                 if redo {
                                     format!("Deleted {what} again")
                                 } else {
@@ -10163,7 +10065,9 @@ impl App {
                     Ok(None) => false,
                     Err(e) => {
                         let msg = match noun {
-                            ProjectNoun::Reorder => format!("could not {verb} the reorder: {e}"),
+                            ProjectNoun::Reorder | ProjectNoun::SpaceReorder => {
+                                format!("could not {verb} the reorder: {e}")
+                            }
                             // The file the entry names changed under the
                             // app; `{e}` says which and how.
                             _ => format!("could not {verb}: {e}"),
