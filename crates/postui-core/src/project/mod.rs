@@ -48,8 +48,6 @@ pub enum Error {
     /// a secret value).
     #[error("{0}")]
     Edit(String),
-    #[error("no active environment")]
-    NoActiveEnvironment,
     #[error("no migration is pending")]
     NothingPending,
 }

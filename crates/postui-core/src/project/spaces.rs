@@ -133,17 +133,7 @@ impl Project {
     /// `persist_local` as a journaled text op, for the cascades whose
     /// undo must put local memory back exactly.
     pub(crate) fn persist_local_journaled(&mut self) -> Result<(), Error> {
-        let state = LocalState {
-            environment: self.active_env.clone(),
-            open_request: self.local.open_request.clone(),
-            main_split: self.local.main_split.clone(),
-            expanded: self.local.expanded.iter().cloned().collect(),
-            selections: self.local.selections.clone(),
-            shared_selections: self.local.shared_selections.clone(),
-            space: Some(self.local.active_space.clone()),
-            space_open: self.local.space_open.clone(),
-        };
-        let text = toml::to_string(&state).expect("LocalState always serializes");
+        let text = self.local_state_text();
         self.fs_write_text(&rel(STATE_TOML)?, Some(&text))
     }
 

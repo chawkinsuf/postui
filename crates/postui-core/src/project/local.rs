@@ -9,6 +9,14 @@ impl Project {
     /// sites that were best effort before; callers that want the error
     /// get it.
     pub(crate) fn persist_local(&mut self) -> Result<(), Error> {
+        let text = self.local_state_text();
+        self.disk.write(&rel(STATE_TOML)?, &text)?;
+        Ok(())
+    }
+
+    /// `.local/state.toml` as it should read right now. Shared by the
+    /// immediate and the journaled writer so the two cannot drift.
+    pub(crate) fn local_state_text(&self) -> String {
         let state = LocalState {
             environment: self.active_env.clone(),
             open_request: self.local.open_request.clone(),
@@ -19,9 +27,7 @@ impl Project {
             space: Some(self.local.active_space.clone()),
             space_open: self.local.space_open.clone(),
         };
-        let text = toml::to_string(&state).expect("LocalState always serializes");
-        self.disk.write(&rel(STATE_TOML)?, &text)?;
-        Ok(())
+        toml::to_string(&state).expect("LocalState always serializes")
     }
 
     /// The editor told the project which request it has open. Memory
