@@ -376,7 +376,7 @@ pub fn order_insert_after(
 /// with no slot to take are appended; every other entry (other levels,
 /// entries of this level not named in `slugs` — stale ones) keeps its
 /// slot. Duplicates in `existing` collapse to their first occurrence.
-fn merge_level(existing: &[String], level: &str, slugs: &[String]) -> Vec<String> {
+pub(crate) fn merge_level(existing: &[String], level: &str, slugs: &[String]) -> Vec<String> {
     let mut deduped: Vec<&String> = Vec::new();
     for e in existing {
         if !deduped.contains(&e) {

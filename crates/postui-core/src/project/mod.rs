@@ -8,6 +8,7 @@
 
 mod legacy;
 mod local;
+mod spaces;
 pub use legacy::*;
 
 use crate::disk::{Disk, DiskError, RelPath, Ticket};
