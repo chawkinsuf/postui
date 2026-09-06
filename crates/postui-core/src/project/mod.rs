@@ -121,6 +121,24 @@ pub struct Project {
     migration_declined: bool,
 }
 
+/// A snapshot of every in-memory document `Project` holds, for restoring
+/// memory when a transaction's disk ops must be rolled back. See
+/// [`Project::snapshot`] / [`Project::restore`].
+struct Memory {
+    meta: ProjectMeta,
+    model: VarModel,
+    environments: Vec<String>,
+    active_env: Option<String>,
+    env_data: EnvData,
+    secrets: IndexMap<String, IndexMap<String, String>>,
+    resolved: Resolved,
+    spaces: Vec<String>,
+    listing: Vec<RequestListing>,
+    listing_warning: Option<String>,
+    open_requests: IndexMap<String, crate::model::HttpRequest>,
+    local: Local,
+}
+
 pub(crate) const PROJECT_TOML: &str = "project.toml";
 pub(crate) const VARIABLES_TOML: &str = "variables.toml";
 pub(crate) const ENVIRONMENTS_DIR: &str = "environments";
@@ -264,19 +282,59 @@ impl Project {
 
     // ----- transaction and the journaled primitives -----
 
+    /// A snapshot of every in-memory document, taken before the outermost
+    /// transaction runs so a failed transaction can restore memory to
+    /// match the disk ops its rollback already reversed.
+    fn snapshot(&self) -> Memory {
+        Memory {
+            meta: self.meta.clone(),
+            model: self.model.clone(),
+            environments: self.environments.clone(),
+            active_env: self.active_env.clone(),
+            env_data: self.env_data.clone(),
+            secrets: self.secrets.clone(),
+            resolved: self.resolved.clone(),
+            spaces: self.spaces.clone(),
+            listing: self.listing.clone(),
+            listing_warning: self.listing_warning.clone(),
+            open_requests: self.open_requests.clone(),
+            local: self.local.clone(),
+        }
+    }
+
+    fn restore(&mut self, m: Memory) {
+        self.meta = m.meta;
+        self.model = m.model;
+        self.environments = m.environments;
+        self.active_env = m.active_env;
+        self.env_data = m.env_data;
+        self.secrets = m.secrets;
+        self.resolved = m.resolved;
+        self.spaces = m.spaces;
+        self.listing = m.listing;
+        self.listing_warning = m.listing_warning;
+        self.open_requests = m.open_requests;
+        self.local = m.local;
+    }
+
     /// Runs `f` as one undo entry. Every primitive `f` calls records its
-    /// inverse; on `Ok` the ops become one journal entry labelled `label`;
-    /// on `Err` the ops done so far are reversed (best effort) and nothing
-    /// is recorded. Nested calls join the outer transaction.
-    pub(crate) fn transaction<T>(
+    /// inverse; on `Ok` the ops become one journal entry labelled `label`
+    /// (carrying `merge` when given, for a keyboard-reorder burst); on
+    /// `Err` the ops done so far are reversed (best effort), the
+    /// in-memory documents are restored to their pre-transaction
+    /// snapshot, and nothing is recorded. Nested calls join the outer
+    /// transaction (no snapshot, no separate entry).
+    fn run_transaction<T>(
         &mut self,
         label: &str,
         meta: EntryMeta,
+        merge: Option<crate::journal::MergeKey>,
         f: impl FnOnce(&mut Project) -> Result<T, Error>,
     ) -> Result<T, Error> {
         if self.recording.is_some() {
             return f(self);
         }
+        let snapshot = self.snapshot();
         self.recording = Some(Vec::new());
         let result = f(self);
         let ops = self.recording.take().unwrap_or_default();
@@ -287,7 +345,7 @@ impl Project {
                         label: label.to_string(),
                         ops,
                         meta,
-                        merge: None,
+                        merge: merge.map(|k| (k, std::time::Instant::now())),
                     });
                 }
                 Ok(v)
@@ -296,9 +354,20 @@ impl Project {
                 for op in ops.iter().rev() {
                     let _ = self.apply_inverse_unrecorded(op);
                 }
+                self.restore(snapshot);
                 Err(e)
             }
         }
+    }
+
+    /// Runs `f` as one undo entry. See [`Self::run_transaction`].
+    pub(crate) fn transaction<T>(
+        &mut self,
+        label: &str,
+        meta: EntryMeta,
+        f: impl FnOnce(&mut Project) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        self.run_transaction(label, meta, None, f)
     }
 
     /// `transaction` for a keyboard reorder: the entry carries a merge key
@@ -309,31 +378,7 @@ impl Project {
         key: crate::journal::MergeKey,
         f: impl FnOnce(&mut Project) -> Result<T, Error>,
     ) -> Result<T, Error> {
-        if self.recording.is_some() {
-            return f(self);
-        }
-        self.recording = Some(Vec::new());
-        let result = f(self);
-        let ops = self.recording.take().unwrap_or_default();
-        match result {
-            Ok(v) => {
-                if !ops.is_empty() {
-                    self.journal.push(Entry {
-                        label: label.to_string(),
-                        ops,
-                        meta: EntryMeta::default(),
-                        merge: Some((key, std::time::Instant::now())),
-                    });
-                }
-                Ok(v)
-            }
-            Err(e) => {
-                for op in ops.iter().rev() {
-                    let _ = self.apply_inverse_unrecorded(op);
-                }
-                Err(e)
-            }
-        }
+        self.run_transaction(label, EntryMeta::default(), Some(key), f)
     }
 
     pub(super) fn record(&mut self, op: Op) {
@@ -943,5 +988,24 @@ pub(crate) mod tests {
         assert_eq!(entry.ops.len(), 2);
         assert!(matches!(entry.ops[0], Op::Text { .. }));
         assert!(matches!(entry.ops[1], Op::Renamed { .. }));
+    }
+
+    #[test]
+    fn a_failed_transaction_restores_the_in_memory_documents() {
+        let (dir, mut p) = fixture();
+        let path = RelPath::new("variables.toml").unwrap();
+        let r: Result<(), Error> = p.transaction("t", EntryMeta::default(), |p| {
+            p.spaces.push("bogus".to_string());
+            p.active_env = None;
+            p.secrets.entry("dev".to_string()).or_default().insert("k".to_string(), "v".to_string());
+            p.fs_write_text(&path, Some("[changed]\n"))?;
+            Err(Error::Conflict("boom".into()))
+        });
+        assert!(r.is_err());
+        assert_eq!(p.spaces(), ["main", "auth"]);
+        assert_eq!(p.active_env(), Some("dev"));
+        assert!(p.secrets().get("dev").is_none());
+        assert_eq!(read(&dir, "variables.toml").as_deref(), Some("[host]\ndefault = \"localhost\"\n"));
+        assert_eq!(p.journal_len(), 0);
     }
 }

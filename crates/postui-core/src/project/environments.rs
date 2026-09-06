@@ -280,6 +280,24 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_rename_leaves_memory_matching_disk() {
+        let (dir, mut p) = fixture();
+        // `.local` as a regular file makes `create_dir_all(".local")` fail,
+        // so the write of `.local/state.toml` inside the rename's
+        // transaction fails after the disk rename and table edit already
+        // happened — exercising the rollback.
+        std::fs::write(dir.path().join(".local"), "not a directory").unwrap();
+        let r = p.rename_environment("dev", "Development");
+        assert!(r.is_err());
+        assert_eq!(p.environments(), ["dev", "qa"]);
+        assert_eq!(p.active_env(), Some("dev"));
+        assert_eq!(p.env_name("dev"), "Dev");
+        assert!(dir.path().join("environments/dev.toml").is_file());
+        assert!(!dir.path().join("environments/development.toml").exists());
+        assert!(p.secrets().get("development").is_none());
+    }
+
+    #[test]
     fn set_env_tls_writes_and_clears_the_key_keeping_the_name() {
         let (dir, mut p) = fixture();
         p.set_env_tls("dev", Some(TlsPolicy::Insecure)).unwrap();
