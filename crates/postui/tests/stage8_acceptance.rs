@@ -287,17 +287,14 @@ fn disabled_labels_are_dimmed_by_the_control_mix_formula() {
 /// no table is present at all.
 #[test]
 fn animation_ms_table_parses() {
-    use postui::config::load_ui_settings;
+    use postui::config::UiSettings;
     use std::time::Duration;
 
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("config.toml");
-    let (s, warnings) = load_ui_settings(&path);
+    let (s, warnings) = UiSettings::parse("");
     assert_eq!(s.anim_ms.tab_slide, Duration::from_millis(250));
     assert!(warnings.is_empty());
 
-    std::fs::write(&path, "[animation_ms]\ntab_slide = 400\n").unwrap();
-    let (s, warnings) = load_ui_settings(&path);
+    let (s, warnings) = UiSettings::parse("[animation_ms]\ntab_slide = 400\n");
     assert_eq!(s.anim_ms.tab_slide, Duration::from_millis(400));
     assert_eq!(
         s.anim_ms.hover,

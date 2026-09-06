@@ -156,13 +156,11 @@ pub struct App {
     /// The global registry of known projects (config.toml's `[projects]`
     /// table): cycle order, configured root, last-used project.
     pub registry: crate::config::ProjectsRegistry,
-    /// Where to save `registry` back to. `None` in tests, so test runs never
-    /// touch the real global config file.
-    registry_path: Option<PathBuf>,
-    /// The same `config.toml` path, for `Action::SetAiConfirmed` to persist
-    /// through `save_ui_flag`. `None` in tests, same posture as
-    /// `registry_path`.
-    config_path: Option<PathBuf>,
+    /// The XDG config files (`config.toml`, `keys.toml`, `ui.toml`,
+    /// `themes/*.toml`) — the sole owner of every config file read and
+    /// write. `Config::none()` in tests, so test runs never touch the
+    /// user's real config.
+    config: crate::config::Config,
     /// The tiered clipboard (external command / OS clipboard / OSC 52),
     /// configured from `ui_settings`.
     pub clipboard: crate::clipboard::Clipboard,
@@ -186,9 +184,6 @@ pub struct App {
     /// opens; flipped by `Action::ToggleThemePickerPolarity`. Meaningless
     /// while the picker is closed.
     theme_picker_dark: bool,
-    /// The custom-themes directory, `None` when no config dir resolved for
-    /// this platform.
-    pub themes_dir: Option<PathBuf>,
     /// Eased animated values (tab underline, hover fade, ...), constructed
     /// from `ui_settings.animations`. Time is always passed in by the
     /// caller — `Action::Tick`'s handler and `DrawCtx::now` both sample
@@ -205,17 +200,13 @@ pub struct App {
     /// that transition (active → finished) still force one more redraw.
     animating_last_tick: bool,
     /// The active key bindings (defaults + `keys.toml` overrides), used at
-    /// draw time for the palette's keybinding column (`keys::combo_for`).
-    /// `main.rs`'s event loop loads its own copy for `handle_key` — this one
-    /// exists purely for read-only lookups during drawing, since `App`
-    /// otherwise has no way to reach the keymap from inside `Component::draw`.
+    /// draw time for the palette's keybinding column (`keys::combo_for`)
+    /// and cloned by `main.rs`'s event loop for `handle_key` — `App` has no
+    /// way to reach a keymap from inside `Component::draw` otherwise.
     pub keymap: crate::keys::Keymap,
     /// Palette command frecency stats (recency + count per command id),
     /// loaded from `ui.toml` at startup and saved back on quit.
     pub usage: crate::usage::UsageStore,
-    /// Where to save `usage` back to. `None` in tests, so test runs never
-    /// touch the real `ui.toml`.
-    usage_path: Option<PathBuf>,
     /// The HTTP clients used for every send (verifying + insecure, picked
     /// per request). Built eagerly and cheaply
     /// (`reqwest::Client::builder().build()` needs no running Tokio
@@ -519,21 +510,14 @@ impl App {
     /// Resolves the project to open (see [`resolve_startup`]) and opens it,
     /// self-initializing or prompting to create as its disposition says.
     pub fn new(tx: UnboundedSender<Action>, cli_root: Option<PathBuf>) -> Self {
-        let registry_path = crate::config::config_file_path();
-        let (registry, registry_warnings) = registry_path
-            .as_deref()
-            .map(crate::config::ProjectsRegistry::load_from)
-            .unwrap_or_default();
-        let (ui_settings, mut ui_warnings) = registry_path
-            .as_deref()
-            .map(crate::config::load_ui_settings)
-            .unwrap_or_default();
-        // Both loaders parse the same file: one parse failure, one toast.
-        if !registry_warnings.is_empty() && ui_warnings.is_empty() {
-            ui_warnings.extend(registry_warnings);
-        }
-        let themes_dir = crate::config::themes_dir_path();
-        let (themes, theme_warnings) = crate::theme::ThemeRegistry::load(themes_dir.as_deref());
+        let (config, loaded, mut warnings) = crate::config::Config::load(cfg!(target_os = "macos"));
+        let crate::config::Loaded {
+            registry,
+            ui: ui_settings,
+            keymap,
+            themes,
+            usage,
+        } = loaded;
         let terminal_colors = {
             use crate::theme::TerminalPalette;
             crate::theme::OscQuery.query()
@@ -547,18 +531,12 @@ impl App {
                     .expect("terminal is always registered"),
             ),
         };
-        ui_warnings.extend(theme_warnings); // malformed custom theme files surface as startup toasts
         if theme_name != ui_settings.theme {
-            ui_warnings.push(format!(
+            warnings.push(format!(
                 "unknown theme {:?} in config.toml; using terminal",
                 ui_settings.theme
             ));
         }
-        let usage_path = crate::config::ui_file_path();
-        let usage = usage_path
-            .as_deref()
-            .map(crate::usage::UsageStore::load_from)
-            .unwrap_or_default();
 
         let testbed = std::env::var_os("POSTUI_TESTBED").is_some();
 
@@ -569,18 +547,13 @@ impl App {
         ) else {
             let mut app = Self::bare(tx, PathBuf::new());
             app.registry = registry;
-            app.registry_path = registry_path.clone();
-            app.config_path = registry_path;
+            app.config = config;
             app.themes = themes;
             app.terminal_colors = terminal_colors;
-            app.themes_dir = themes_dir;
             app.apply_ui_settings(ui_settings, theme_name, theme);
             app.usage = usage;
-            app.usage_path = usage_path;
-            let (keymap, key_warnings) =
-                crate::keys::Keymap::load_with_warnings(cfg!(target_os = "macos"));
             app.keymap = keymap;
-            for w in ui_warnings.into_iter().chain(key_warnings) {
+            for w in warnings {
                 app.toasts.push(w, ToastKind::Warning);
             }
             app.toasts.push(
@@ -595,18 +568,13 @@ impl App {
 
         let mut app = Self::with_root(tx, root.clone());
         app.registry = registry;
-        app.registry_path = registry_path.clone();
-        app.config_path = registry_path;
+        app.config = config;
         app.themes = themes;
         app.terminal_colors = terminal_colors;
-        app.themes_dir = themes_dir;
         app.apply_ui_settings(ui_settings, theme_name, theme);
         app.usage = usage;
-        app.usage_path = usage_path;
-        let (keymap, key_warnings) =
-            crate::keys::Keymap::load_with_warnings(cfg!(target_os = "macos"));
         app.keymap = keymap;
-        for w in ui_warnings.into_iter().chain(key_warnings) {
+        for w in warnings {
             app.toasts.push(w, ToastKind::Warning);
         }
 
@@ -674,9 +642,7 @@ impl App {
     /// Persists the registry to `config.toml`, telling the user when it
     /// couldn't be (a config that doesn't parse is refused, not replaced).
     fn save_registry(&mut self) {
-        if let Some(path) = &self.registry_path
-            && let Err(e) = self.registry.save_to(path)
-        {
+        if let Err(e) = self.config.save_registry(&self.registry) {
             self.toasts.push(
                 format!("could not save project list: {e}"),
                 ToastKind::Error,
@@ -1236,8 +1202,7 @@ impl App {
             modals: ModalStack::default(),
             project,
             registry: crate::config::ProjectsRegistry::default(),
-            registry_path: None,
-            config_path: None,
+            config: crate::config::Config::none(),
             clipboard: crate::clipboard::Clipboard::new(&crate::config::UiSettings::default()),
             ui_settings: crate::config::UiSettings::default(),
             themes: crate::theme::ThemeRegistry::builtin(),
@@ -1245,12 +1210,10 @@ impl App {
             theme_name: "terminal".into(),
             theme_preview: None,
             theme_picker_dark: true,
-            themes_dir: None,
             anims: Anims::new(crate::config::UiSettings::default().animations),
             animating_last_tick: false,
             keymap: crate::keys::Keymap::default_bindings(),
             usage: crate::usage::UsageStore::default(),
-            usage_path: None,
             clients: crate::http::Clients::new(),
             tx,
             ai_task: None,
@@ -1953,9 +1916,7 @@ impl App {
                 if let Some(p) = self.project_mut() {
                     p.set_open_request(slug.as_deref());
                 }
-                if let Some(path) = &self.usage_path {
-                    let _ = self.usage.save_to(path);
-                }
+                let _ = self.config.save_usage(&self.usage);
                 self.should_quit = true;
                 true
             }
@@ -3255,8 +3216,7 @@ impl App {
                 use crate::components::chooser::ChooserState;
                 // Rescan the themes dir so a custom file edited or added since
                 // startup shows up without a restart (spec: rescan on picker open).
-                let (themes, warnings) =
-                    crate::theme::ThemeRegistry::load(self.themes_dir.as_deref());
+                let (themes, warnings) = self.config.reload_themes();
                 for w in warnings {
                     self.toasts.push(w, ToastKind::Warning);
                 }
@@ -3311,9 +3271,7 @@ impl App {
             Action::ApplyTheme(name) => {
                 self.set_theme_by_name(&name);
                 self.ui_settings.theme = self.theme_name.clone();
-                if let Some(path) = self.registry_path.clone()
-                    && let Err(e) = crate::config::save_ui_theme(&path, &self.theme_name)
-                {
+                if let Err(e) = self.config.save_ui_theme(&self.theme_name) {
                     self.toasts
                         .push(format!("could not save theme: {e}"), ToastKind::Error);
                 }
@@ -3880,9 +3838,7 @@ impl App {
             }
             Action::SetAiConfirmed => {
                 self.ui_settings.ai_confirmed = true;
-                if let Some(path) = &self.config_path
-                    && let Err(e) = crate::config::save_ui_flag(path, "ai_confirmed", true)
-                {
+                if let Err(e) = self.config.save_ui_flag("ai_confirmed", true) {
                     self.toasts
                         .push(format!("could not save config: {e}"), ToastKind::Warning);
                 }

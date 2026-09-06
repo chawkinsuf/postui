@@ -16946,7 +16946,7 @@ mod undo_tests {
     fn theme_picker_polarity_toggle_flips_sets_and_esc_still_reverts() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = App::new_for_test();
-        let keymap = crate::keys::Keymap::load();
+        let keymap = crate::keys::Keymap::default_bindings();
         let original = app.theme.page;
         let original_name = app.theme_name.clone();
         app.update(Action::OpenThemeChooser);
@@ -17002,7 +17002,7 @@ mod undo_tests {
     fn theme_picker_flip_stays_on_the_selected_family() {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
         let mut app = App::new_for_test();
-        let keymap = crate::keys::Keymap::load();
+        let keymap = crate::keys::Keymap::default_bindings();
         app.update(Action::ApplyTheme("gruvbox-dark".into()));
         app.update(Action::OpenThemeChooser);
         app.handle_key(&keymap, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));

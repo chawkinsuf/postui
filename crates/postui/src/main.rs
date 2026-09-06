@@ -2,7 +2,6 @@ use futures::StreamExt;
 use postui::action::Action;
 use postui::app::App;
 use postui::components::toast::ToastKind;
-use postui::keys::Keymap;
 use postui::ui;
 use ratatui::crossterm::SynchronizedUpdate;
 use ratatui::crossterm::cursor::SetCursorStyle;
@@ -197,7 +196,8 @@ async fn run(
         Ok(true)
     );
     let mut events = EventStream::new();
-    let keymap = Keymap::load();
+    // The event loop's own copy of the bindings `App::new` loaded.
+    let keymap = app.keymap.clone();
 
     app.update(Action::ShowToast(
         "Welcome to postui".into(),

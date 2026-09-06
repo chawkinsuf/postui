@@ -4,7 +4,6 @@
 //! first. See spec §6.
 
 use std::collections::HashMap;
-use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The count at which an id's usage count (and every other id's, in the
@@ -19,15 +18,13 @@ pub struct UsageStore {
 }
 
 impl UsageStore {
-    /// Loads the store from `path`'s `[palette.usage]` table. Never errors:
-    /// a missing file, corrupt TOML, or a malformed entry degrades to an
-    /// empty store (or just drops that one malformed entry).
-    pub fn load_from(path: &Path) -> Self {
+    /// Parses the store out of `ui.toml`'s `[palette.usage]` table. Never
+    /// errors: an empty string (the missing file), corrupt TOML, or a
+    /// malformed entry degrades to an empty store (or just drops that one
+    /// malformed entry).
+    pub fn parse(text: &str) -> Self {
         let mut store = Self::default();
-        let Ok(contents) = std::fs::read_to_string(path) else {
-            return store;
-        };
-        let Ok(value) = toml::from_str::<toml::Value>(&contents) else {
+        let Ok(value) = toml::from_str::<toml::Value>(text) else {
             return store;
         };
         let Some(usage) = value
@@ -55,13 +52,10 @@ impl UsageStore {
         store
     }
 
-    /// Writes the store to `path`'s `[palette.usage]` table, round-tripping
-    /// through `toml_edit::DocumentMut` so unrelated keys are preserved.
-    /// Creates the parent directory if needed.
-    pub fn save_to(&self, path: &Path) -> anyhow::Result<()> {
-        let existing = std::fs::read_to_string(path).unwrap_or_default();
-        let mut doc: toml_edit::DocumentMut = existing.parse().unwrap_or_default();
-
+    /// Writes the store into `doc`'s `[palette.usage]` table, leaving every
+    /// unrelated key alone. The I/O around it is `Config::save_usage`'s
+    /// business.
+    pub fn write_into(&self, doc: &mut toml_edit::DocumentMut) {
         let mut usage_table = toml_edit::Table::new();
         for (id, (count, last_used)) in &self.entries {
             let mut entry = toml_edit::InlineTable::new();
@@ -75,12 +69,6 @@ impl UsageStore {
         let mut palette_table = toml_edit::Table::new();
         palette_table.insert("usage", toml_edit::Item::Table(usage_table));
         doc.insert("palette", toml_edit::Item::Table(palette_table));
-
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(path, doc.to_string())?;
-        Ok(())
     }
 
     /// Bumps `id`'s count and sets its last-used timestamp to `now_secs`.
@@ -126,7 +114,6 @@ pub fn now() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
 
     const DAY: i64 = 86_400;
 
@@ -167,48 +154,38 @@ mod tests {
     }
 
     #[test]
-    fn save_and_load_round_trip_preserves_scores() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("ui.toml");
-
+    fn render_and_parse_round_trip_preserves_scores() {
         let mut store = UsageStore::default();
         store.record("quit", 1000);
         store.record("send", 2000);
-        store.save_to(&path).unwrap();
+        let mut doc = toml_edit::DocumentMut::new();
+        store.write_into(&mut doc);
 
-        let loaded = UsageStore::load_from(&path);
+        let loaded = UsageStore::parse(&doc.to_string());
         assert_eq!(loaded.score("quit", 5000), store.score("quit", 5000));
         assert_eq!(loaded.score("send", 5000), store.score("send", 5000));
     }
 
     #[test]
-    fn missing_file_loads_empty() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("does-not-exist.toml");
-        let store = UsageStore::load_from(&path);
-        assert_eq!(store.entries.len(), 0);
+    fn missing_file_parses_empty() {
+        assert_eq!(UsageStore::parse("").entries.len(), 0);
     }
 
     #[test]
-    fn corrupt_file_loads_empty() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("ui.toml");
-        std::fs::write(&path, "not valid { toml").unwrap();
-        let store = UsageStore::load_from(&path);
-        assert_eq!(store.entries.len(), 0);
+    fn corrupt_text_parses_empty() {
+        assert_eq!(UsageStore::parse("not valid { toml").entries.len(), 0);
     }
 
     #[test]
-    fn save_preserves_unrelated_keys() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("ui.toml");
-        std::fs::write(&path, "some_other_key = \"kept\"\n").unwrap();
+    fn write_into_preserves_unrelated_keys() {
+        let mut doc: toml_edit::DocumentMut = "some_other_key = \"kept\"\n".parse().unwrap();
 
         let mut store = UsageStore::default();
         store.record("quit", 1000);
-        store.save_to(&path).unwrap();
+        store.write_into(&mut doc);
 
-        let contents = std::fs::read_to_string(&path).unwrap();
-        assert!(contents.contains("some_other_key"));
+        let contents = doc.to_string();
+        assert!(contents.contains("some_other_key"), "{contents}");
+        assert!(contents.contains("quit"), "{contents}");
     }
 }
