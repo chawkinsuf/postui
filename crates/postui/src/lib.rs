@@ -12,7 +12,6 @@ pub mod keydump;
 pub mod keys;
 pub mod layout;
 pub mod paint;
-pub mod project_ctx;
 pub mod session;
 pub mod setup;
 pub mod split;

@@ -268,10 +268,6 @@ pub enum Action {
     /// Toggle the currently selected sidebar folder row between collapsed
     /// and expanded.
     ToggleSelectedFolder,
-    /// Write `.local/state.toml` (expanded folders, active environment, the
-    /// currently open request) from current app state. Fired after any
-    /// change to that state and on quit.
-    PersistLocalState,
     /// Open the project chooser: every registered project plus a final
     /// "open by path…" option.
     OpenProjectChooser,

@@ -5,7 +5,6 @@
 
 use crate::components::editor::EditorTab;
 use postui_core::model::HttpRequest;
-use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 /// Steps older than this are evicted once the undo stack exceeds it.
@@ -27,45 +26,6 @@ pub enum StepKind {
         slug: Option<String>,
         before: Box<HttpRequest>,
         after: Box<HttpRequest>,
-    },
-    FileStates {
-        before: Vec<(PathBuf, Option<String>)>,
-        after: Vec<(PathBuf, Option<String>)>,
-        active_env: Option<(Option<String>, Option<String>)>,
-        /// What the op did to the request order lists (a create's
-        /// arrival, a rename's slot, a move's remove-then-arrive): undo
-        /// replays them backwards, redo forwards, so the list ends up
-        /// exactly as it was on either side.
-        orders: Vec<postui_core::order::OrderEdit>,
-        /// `(old, new)` slug pairs for every request the op moved
-        /// (rename, move to space, move all) — how undo/redo find where
-        /// the open request went, however many files the step covers.
-        moves: Vec<(String, String)>,
-    },
-    /// A delete that went to `.local/trash` (request, environment, or a
-    /// whole space). Undo renames the items back (reverse order) and
-    /// rewrites `files_before`; redo re-trashes them and rewrites
-    /// `files_after`. The companion files are the small ones a delete also
-    /// touched (`project.toml`'s `spaces`, `.local/secrets.toml`) — the
-    /// trashed payload itself is never held in memory.
-    Trashed {
-        items: Vec<postui_core::trash::Trashed>,
-        files_before: Vec<(PathBuf, Option<String>)>,
-        files_after: Vec<(PathBuf, Option<String>)>,
-        active_env: Option<(Option<String>, Option<String>)>,
-        /// See `FileStates::orders`: the delete's removal from the list.
-        orders: Vec<postui_core::order::OrderEdit>,
-    },
-    /// A reorder (a dropped row drag, alt+↑/↓, a menu's Move up/down): a
-    /// list in `project.toml` went from `before` to `after` and nothing
-    /// else changed. `burst` marks a keyboard move: quick successive
-    /// presses on the same target merge into one step (see
-    /// `History::try_merge`); a drag never merges.
-    Reorder {
-        target: ReorderTarget,
-        before: Vec<String>,
-        after: Vec<String>,
-        burst: bool,
     },
     /// One `Project` journal entry: undoing this step calls
     /// `Project::undo`, whose own journal holds the inverse ops. `id` is
@@ -103,140 +63,6 @@ pub enum ProjectNoun {
     /// a space's directory name) rather than a request slug the `.toml`
     /// is appended to.
     TrashNamed,
-}
-
-/// Which list a `Reorder` step rewrote.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReorderTarget {
-    /// `[space.<space>] order`; `slug` is the request that moved, which
-    /// the selection lands back on.
-    Requests { space: String, slug: String },
-    /// The `spaces` key; `name` is the space that moved, which the Manage
-    /// cursor lands back on.
-    Spaces { name: String },
-}
-
-/// `s`, re-keyed if it names `from` or a request inside it.
-fn rekey_slug(s: &mut String, from: &str, to: &str) {
-    if s == from {
-        *s = to.to_string();
-    } else if let Some(rest) = s.strip_prefix(from).and_then(|r| r.strip_prefix('/')) {
-        *s = format!("{to}/{rest}");
-    }
-}
-
-/// A file-state entry's text, re-keyed when the entry is
-/// `.local/state.toml`: the delete steps carry that file so undo restores
-/// local state exactly, and its text names spaces too (the active space,
-/// the open request, per-space memory, expanded folders). Any other
-/// file, or a state file that no longer parses, is left as it is.
-fn rekey_file_state(
-    (path, text): &mut (PathBuf, Option<String>),
-    root: &Path,
-    from: &str,
-    to: &str,
-) {
-    rekey_path(path, root, from, to);
-    if *path != root.join(".local").join("state.toml") {
-        return;
-    }
-    if let Some(text) = text.as_mut()
-        && let Ok(mut state) = toml::from_str::<postui_core::project::LocalState>(text)
-    {
-        state.rename_space(from, to);
-        *text = toml::to_string(&state).expect("LocalState always serializes");
-    }
-}
-
-/// `p`, re-keyed if it lies under space `from`'s directory.
-fn rekey_path(p: &mut PathBuf, root: &Path, from: &str, to: &str) {
-    let old = postui_core::project::space_dir(root, from);
-    if let Ok(rest) = p.strip_prefix(&old) {
-        let new = postui_core::project::space_dir(root, to);
-        *p = if rest.as_os_str().is_empty() {
-            new
-        } else {
-            new.join(rest)
-        };
-    }
-}
-
-impl Step {
-    /// Re-keys everything in the step that names space `from` after it
-    /// was renamed to `to`: request slugs, request file paths, order
-    /// edits and reorder targets. A space rename is not itself an undo
-    /// step, so the steps made before it must keep pointing at the space
-    /// under its new name or their undo would write to a space that no
-    /// longer exists.
-    pub fn rename_space(&mut self, root: &Path, from: &str, to: &str) {
-        if let Some(slug) = self.context.slug.as_mut() {
-            rekey_slug(slug, from, to);
-        }
-        match &mut self.kind {
-            StepKind::EditorDelta { slug, .. } => {
-                if let Some(slug) = slug.as_mut() {
-                    rekey_slug(slug, from, to);
-                }
-            }
-            StepKind::FileStates {
-                before,
-                after,
-                orders,
-                moves,
-                ..
-            } => {
-                for entry in before.iter_mut().chain(after.iter_mut()) {
-                    rekey_file_state(entry, root, from, to);
-                }
-                for e in orders {
-                    e.rename_space(from, to);
-                }
-                for (old, new) in moves {
-                    rekey_slug(old, from, to);
-                    rekey_slug(new, from, to);
-                }
-            }
-            StepKind::Trashed {
-                items,
-                files_before,
-                files_after,
-                orders,
-                ..
-            } => {
-                for t in items {
-                    rekey_path(&mut t.original, root, from, to);
-                }
-                for entry in files_before.iter_mut().chain(files_after.iter_mut()) {
-                    rekey_file_state(entry, root, from, to);
-                }
-                for e in orders {
-                    e.rename_space(from, to);
-                }
-            }
-            StepKind::Reorder {
-                target,
-                before,
-                after,
-                ..
-            } => match target {
-                ReorderTarget::Requests { space, slug } => {
-                    rekey_slug(space, from, to);
-                    rekey_slug(slug, from, to);
-                }
-                ReorderTarget::Spaces { name } => {
-                    rekey_slug(name, from, to);
-                    for n in before.iter_mut().chain(after.iter_mut()) {
-                        rekey_slug(n, from, to);
-                    }
-                }
-            },
-            StepKind::Project { slug, .. } => {
-                if let Some(slug) = slug.as_mut() {
-                    rekey_slug(slug, from, to);
-                }
-            }
-        }
-    }
 }
 
 /// Where the cursor sat before/after a step, so undo/redo can restore it.
@@ -313,12 +139,10 @@ impl History {
     /// Records `step`, merging it into the top undo step when all of these
     /// hold: coalescing is active, `now` is within the coalesce window of
     /// the last record, and the two steps are mergeable — `EditorDelta`s
-    /// with the same `slug` whose `coalesce_key`s agree (and are `Some`),
-    /// or keyboard `Reorder`s of the same request. Merging keeps the top's
-    /// `before`/`cursor_before` and takes `step`'s `after`/`cursor_after`;
-    /// a reorder burst that ends back where it started is dropped
-    /// altogether. Clears the redo stack either way and evicts the oldest
-    /// step past the cap.
+    /// with the same `slug` whose `coalesce_key`s agree (and are `Some`).
+    /// Merging keeps the top's `before`/`cursor_before` and takes `step`'s
+    /// `after`/`cursor_after`. Clears the redo stack either way and evicts
+    /// the oldest step past the cap.
     pub fn record(&mut self, step: Step, now: Instant) {
         self.redo.clear();
 
@@ -330,13 +154,6 @@ impl History {
 
         if !merged {
             self.undo.push(step);
-        } else if self.undo.last().is_some_and(Self::is_noop_reorder) {
-            // The burst netted to nothing: drop it, and do not let the
-            // step it uncovers (however old) absorb the next keystroke.
-            self.undo.pop();
-            self.last_record = Some(now);
-            self.coalescing = false;
-            return;
         }
 
         self.last_record = Some(now);
@@ -345,11 +162,6 @@ impl History {
         if self.undo.len() > MAX_STEPS {
             self.undo.remove(0);
         }
-    }
-
-    /// A merged reorder whose list is back where the burst started.
-    fn is_noop_reorder(step: &Step) -> bool {
-        matches!(&step.kind, StepKind::Reorder { before, after, .. } if before == after)
     }
 
     /// `record` or `record_no_coalesce`, by flag: the one place that
@@ -362,40 +174,9 @@ impl History {
         }
     }
 
-    /// Re-keys every step on both stacks after space `from` was renamed
-    /// `to` (see `Step::rename_space`).
-    pub fn rename_space(&mut self, root: &Path, from: &str, to: &str) {
-        for step in self.undo.iter_mut().chain(self.redo.iter_mut()) {
-            step.rename_space(root, from, to);
-        }
-    }
-
     /// Attempts to merge `new` into `top` in place. Returns whether it did.
     fn try_merge(top: Option<&mut Step>, new: &Step) -> bool {
         let Some(top) = top else { return false };
-        if let (
-            StepKind::Reorder {
-                target: top_target,
-                after,
-                burst: true,
-                ..
-            },
-            StepKind::Reorder {
-                target: new_target,
-                after: new_after,
-                burst: true,
-                ..
-            },
-        ) = (&mut top.kind, &new.kind)
-        {
-            // Two keyboard moves of the same target: the burst is one
-            // rewrite from the first `before` to the last `after`.
-            if top_target != new_target {
-                return false;
-            }
-            *after = new_after.clone();
-            return true;
-        }
         let StepKind::EditorDelta {
             slug: top_slug,
             before: top_before,
@@ -518,69 +299,6 @@ impl Default for History {
 mod tests {
     use super::*;
 
-    fn reorder(before: &[&str], after: &[&str], burst: bool) -> Step {
-        Step {
-            kind: StepKind::Reorder {
-                target: ReorderTarget::Requests {
-                    space: "main".into(),
-                    slug: "main/a".into(),
-                },
-                before: before.iter().map(|s| s.to_string()).collect(),
-                after: after.iter().map(|s| s.to_string()).collect(),
-                burst,
-            },
-            context: Context {
-                slug: None,
-                cursor_before: CursorPos::None,
-                cursor_after: CursorPos::None,
-            },
-        }
-    }
-
-    #[test]
-    fn a_burst_that_nets_to_nothing_is_dropped_and_does_not_reopen_the_step_beneath() {
-        let mut h = History::new();
-        let t0 = Instant::now();
-        h.record(reorder(&["a", "b"], &["b", "a"], true), t0);
-        assert_eq!(h.undo_len(), 1);
-        // A minute later: a fresh burst that goes down then straight back.
-        let t1 = t0 + Duration::from_secs(60);
-        h.record(reorder(&["b", "a"], &["a", "b"], true), t1);
-        assert_eq!(h.undo_len(), 2);
-        h.record(
-            reorder(&["a", "b"], &["b", "a"], true),
-            t1 + Duration::from_millis(500),
-        );
-        assert_eq!(h.undo_len(), 1, "down then up is dropped");
-        // The next move must be its own step, not a merge into the
-        // minute-old step the pop uncovered.
-        h.record(
-            reorder(&["b", "a"], &["a", "b"], true),
-            t1 + Duration::from_secs(1),
-        );
-        assert_eq!(h.undo_len(), 2);
-        let Some(Step {
-            kind: StepKind::Reorder { before, .. },
-            ..
-        }) = h.peek_undo()
-        else {
-            panic!("reorder on top")
-        };
-        assert_eq!(before, &["b", "a"]);
-    }
-
-    #[test]
-    fn a_drag_reorder_never_merges() {
-        let mut h = History::new();
-        let t0 = Instant::now();
-        h.record(reorder(&["a", "b"], &["b", "a"], true), t0);
-        h.record_no_coalesce(reorder(&["b", "a"], &["a", "b"], false));
-        h.record(
-            reorder(&["a", "b"], &["b", "a"], true),
-            t0 + Duration::from_millis(100),
-        );
-        assert_eq!(h.undo_len(), 3);
-    }
     use postui_core::model::{HttpRequest, Method};
     use std::time::{Duration, Instant};
 

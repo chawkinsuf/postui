@@ -299,8 +299,8 @@ async fn stage3_acceptance_flow() {
         "picked variable inserted at the cursor"
     );
 
-    // --- quit path: PersistLocalState, then check both projects' state
-    app.update(Action::PersistLocalState);
+    // --- quit path: the persist Quit does, then check both projects' state
+    app.update(Action::ForceQuit);
     let alpha_state = project::load_local_state(alpha_dir.path()).unwrap();
     assert_eq!(alpha_state.environment.as_deref(), Some("prod"));
     assert_eq!(alpha_state.open_request.as_deref(), Some("main/users/list"));

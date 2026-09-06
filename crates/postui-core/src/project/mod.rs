@@ -603,56 +603,12 @@ impl Project {
         }
     }
 
-    /// Forces the next `poll` to reload (the app's
-    /// `reload_after_file_change`).
+    /// Forces the next `poll` to reload.
     pub fn invalidate_stamps(&mut self) {
         self.disk.forget_stamps();
         // A cleared table compares as "unchanged"; mark one watched path
         // as never seen by recording a stamp that cannot match.
         self.force_reload = true;
-    }
-
-    /// Re-reads `.local/state.toml` into `local` after a write that did
-    /// not go through the project — today's file-level undo replay, which
-    /// restores the file's pre-op text behind the project's back. Returns
-    /// what was read; `None` when the file could not be read or parsed,
-    /// leaving memory as it was. The active environment is deliberately
-    /// left alone, as are the active space, the open request and the
-    /// split: the replay restores those separately, from the returned
-    /// [`LocalState`]. Disappears with the last legacy write.
-    pub fn reload_local_state(&mut self) -> Option<LocalState> {
-        let path = RelPath::new(STATE_TOML).expect("constant");
-        let text = self.disk.read(&path).ok()?;
-        let state: LocalState = toml::from_str(&text.unwrap_or_default()).ok()?;
-        // Only what memory owns outright. The active space, the open
-        // request and the split are the *caller's* to act on — entering a
-        // space and opening a request are the app's moves, not the
-        // project's, and applying the space here would make the caller's
-        // own switch look like a second one (an extra `space:` toast and
-        // a sidebar rebuild on every undo of a space delete). They are
-        // returned instead.
-        self.local.expanded = state.expanded.iter().cloned().collect();
-        self.local.selections = state.selections.clone();
-        self.local.shared_selections = state.shared_selections.clone();
-        self.local.space_open = state.space_open.clone();
-        self.refresh_resolved();
-        Some(state)
-    }
-
-    /// [`Self::reload_local_state`]'s narrow twin: re-reads only the
-    /// per-environment `selections` table. An unreadable file leaves the
-    /// selections empty rather than keeping a table the undo just
-    /// invalidated. Disappears with the legacy writes.
-    pub fn reload_selections(&mut self) {
-        let path = RelPath::new(STATE_TOML).expect("constant");
-        self.local.selections = self
-            .disk
-            .read(&path)
-            .ok()
-            .and_then(|t| toml::from_str::<LocalState>(&t.unwrap_or_default()).ok())
-            .map(|st| st.selections)
-            .unwrap_or_default();
-        self.refresh_resolved();
     }
 
     /// Today's timer reload: silent, mtime-gated, keeps what fails to

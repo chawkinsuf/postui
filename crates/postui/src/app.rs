@@ -1148,12 +1148,11 @@ impl App {
         }
     }
 
-    /// Re-reads the project's own documents after a write that went
-    /// around it, without the app-level refreshes `ReloadProjectFiles`
-    /// performs — the direct replacement for the old `reload_meta` at the
-    /// call sites that do their own refreshing (and that must not have the
-    /// sidebar rebuilt under them mid-op). Disappears with the last legacy
-    /// write (Task 8).
+    /// Re-reads the project's own documents, without the app-level
+    /// refreshes `ReloadProjectFiles` performs. Test-only: tests write
+    /// project files directly (with `std::fs` or the free functions) and
+    /// need the project to see them without a sidebar rebuild.
+    #[cfg(test)]
     fn reload_project_documents(&mut self) {
         if let Some(p) = self.project.as_mut() {
             p.invalidate_stamps();
@@ -1161,28 +1160,14 @@ impl App {
         }
     }
 
-    /// After a write that did not go through `Project` yet: forget the
-    /// stamps and re-read. Disappears with the last legacy write (Task 8).
+    /// A forced (not mtime-gated) re-read plus the app-level refreshes:
+    /// the environment selectors reload the project before listing, so a
+    /// file another process just created shows up in the list.
     pub fn resync_project(&mut self) {
         if let Some(p) = self.project.as_mut() {
             p.invalidate_stamps();
         }
         self.apply(Action::ReloadProjectFiles);
-    }
-
-    /// Pulls `.local/state.toml` back into the project after a legacy
-    /// write (today's undo replay) rewrote it behind the project's back.
-    /// Returns what was read. Disappears with the last legacy write.
-    fn reload_local_state(&mut self) -> Option<postui_core::project::LocalState> {
-        self.project_mut().and_then(|p| p.reload_local_state())
-    }
-
-    /// [`Self::reload_local_state`]'s narrow twin, for the sites that only
-    /// ever had the selections rewritten under them.
-    fn reload_selections(&mut self) {
-        if let Some(p) = self.project_mut() {
-            p.reload_selections();
-        }
     }
 
     /// The gate every arm that would create a file passes first: with no
@@ -2547,7 +2532,11 @@ impl App {
                         self.refresh_sidebar();
                         self.sidebar.select_slug(&slug);
                         self.retarget_sidebar_travel(prev);
-                        self.apply(Action::PersistLocalState);
+                        let slug = self.editor.slug.clone();
+                        if let Some(p) = self.project_mut() {
+                            p.record_space_open(slug.as_deref());
+                            p.set_open_request(slug.as_deref());
+                        }
                     }
                     Err(e) => {
                         self.toasts
@@ -2919,7 +2908,11 @@ impl App {
                 // The entry records the open request as its `reopen`, so
                 // undo puts the editor back rather than leaving it empty:
                 // persist first, so the project's own local state names it.
-                self.apply(Action::PersistLocalState);
+                let open = self.editor.slug.clone();
+                if let Some(p) = self.project_mut() {
+                    p.record_space_open(open.as_deref());
+                    p.set_open_request(open.as_deref());
+                }
                 let Some(p) = self.project.as_mut() else {
                     return true;
                 };
@@ -2938,7 +2931,11 @@ impl App {
                             self.editor = Editor::default();
                             self.shadow = None;
                         }
-                        self.apply(Action::PersistLocalState);
+                        let slug = self.editor.slug.clone();
+                        if let Some(p) = self.project_mut() {
+                            p.record_space_open(slug.as_deref());
+                            p.set_open_request(slug.as_deref());
+                        }
                     }
                     Err(e) => {
                         self.toasts
@@ -3206,18 +3203,10 @@ impl App {
                         expanded.remove(&path);
                     }
                     if let Some(p) = self.project_mut() {
-                        // The setter persists; no separate `PersistLocalState`.
+                        // The setter persists.
                         p.set_expanded(expanded);
                     }
                     self.refresh_sidebar();
-                }
-                true
-            }
-            Action::PersistLocalState => {
-                let slug = self.editor.slug.clone();
-                if let Some(p) = self.project_mut() {
-                    p.record_space_open(slug.as_deref());
-                    p.set_open_request(slug.as_deref());
                 }
                 true
             }
@@ -3646,7 +3635,6 @@ impl App {
                     }
                     return true;
                 }
-                self.apply(Action::PersistLocalState);
                 // The Manager caches per-env rows; an env switched under it
                 // (alt+x is whitelisted through its input capture) must show
                 // the new env's values.
@@ -4928,7 +4916,7 @@ impl App {
                 let target = self
                     .project()
                     .and_then(|p| p.space_open_for(&name))
-                    .filter(|s| postui_core::storage::request_exists(self.root(), s))
+                    .filter(|s| self.request_exists(s))
                     .or_else(|| self.sidebar.first_request_slug());
                 match target {
                     Some(slug) => self.apply(Action::ForceOpenRequest(slug)),
@@ -4936,7 +4924,12 @@ impl App {
                         self.editor = Editor::default();
                         self.shadow = None;
                         self.sidebar.open_slug = None;
-                        self.apply(Action::PersistLocalState)
+                        let slug = self.editor.slug.clone();
+                        if let Some(p) = self.project_mut() {
+                            p.record_space_open(slug.as_deref());
+                            p.set_open_request(slug.as_deref());
+                        }
+                        true
                     }
                 }
             }
@@ -5470,7 +5463,11 @@ impl App {
                     // record" branch and forge a phantom edit step.
                     self.apply(Action::ForceOpenRequest(new_slug.clone()));
                 } else {
-                    self.apply(Action::PersistLocalState);
+                    let slug = self.editor.slug.clone();
+                    if let Some(p) = self.project_mut() {
+                        p.record_space_open(slug.as_deref());
+                        p.set_open_request(slug.as_deref());
+                    }
                 }
                 true
             }
@@ -7031,87 +7028,16 @@ impl App {
         {
             self.apply(Action::ForceOpenRequest(slug));
         }
-        self.apply(Action::PersistLocalState);
+        let slug = self.editor.slug.clone();
+        if let Some(p) = self.project_mut() {
+            p.record_space_open(slug.as_deref());
+            p.set_open_request(slug.as_deref());
+        }
     }
 
     /// Whether a request file is there, through the open project.
     fn request_exists(&self, slug: &str) -> bool {
         self.project().is_some_and(|p| p.request_exists(slug))
-    }
-
-    /// Writes each `(path, content)`: `Some` writes atomically, `None`
-    /// removes (a missing file counts as removed). Stops at the first
-    /// failure with a toast-ready message; earlier writes stand.
-    fn write_file_states(
-        &mut self,
-        target: &[(PathBuf, Option<String>)],
-        verb: &str,
-    ) -> Result<(), String> {
-        for (path, content) in target {
-            let result: std::io::Result<()> = match content {
-                Some(text) => crate::project_ctx::atomic_write(path, text),
-                None => std::fs::remove_file(path).or_else(|e| {
-                    if e.kind() == std::io::ErrorKind::NotFound {
-                        Ok(())
-                    } else {
-                        Err(e)
-                    }
-                }),
-            };
-            if let Err(e) = result {
-                return Err(format!("{verb} failed at {}: {e}", path.display()));
-            }
-        }
-        Ok(())
-    }
-
-    /// `.local/state.toml`: the companion file every delete step carries,
-    /// so undo puts back what the delete's cascade took out of local state
-    /// (the active space, the open request, remembered requests, expanded
-    /// folders) and not just the files.
-    fn local_state_path(&self) -> PathBuf {
-        self.root().join(".local").join("state.toml")
-    }
-
-    /// Shared tail of every arm that changes files under the app — the
-    /// file-level undo/redo arms and the forward-path ops that write
-    /// through the trash (`ForceDeleteSpace`). Files changed underneath
-    /// the app, so reload wholesale, and drop the editor if its file is
-    /// gone. When the editor followed a rename into another space, the
-    /// sidebar follows it there too (it is rooted at the active space).
-    fn reload_after_file_change(&mut self) {
-        // The write went around the project: pull the selections
-        // `.local/state.toml` now holds back into memory before the
-        // reload, or the next persist would write the stale table
-        // straight back over them.
-        self.reload_selections();
-        // A vanished active space is repaired (and warned about) by the
-        // reload itself.
-        self.resync_project();
-        if let Some(space) = self
-            .editor
-            .slug
-            .as_deref()
-            .and_then(postui_core::storage::space_of)
-            .filter(|s| *s != self.active_space())
-            .map(str::to_string)
-        {
-            // The editor has already followed its file into `space`, so
-            // it says nothing about the space being left — recording it
-            // would erase that space's remembered request.
-            self.enter_space(&space, SpaceExit::Keep);
-        }
-        self.refresh_sidebar();
-        if self.screen == Screen::Manage {
-            self.sync_varmanager();
-        }
-        if let Some(open) = self.editor.slug.clone()
-            && !postui_core::storage::request_exists(self.root(), &open)
-        {
-            self.editor = Editor::default();
-            self.shadow = None;
-            self.sidebar.open_slug = None;
-        }
     }
 
     /// Makes `space` the active one without opening anything: records the
@@ -7171,26 +7097,12 @@ impl App {
                 self.editor = Editor::default();
                 self.shadow = None;
                 self.sidebar.open_slug = None;
-                self.apply(Action::PersistLocalState);
+                let slug = self.editor.slug.clone();
+                if let Some(p) = self.project_mut() {
+                    p.record_space_open(slug.as_deref());
+                    p.set_open_request(slug.as_deref());
+                }
             }
-        }
-    }
-
-    /// Puts a step's order-list cascade back (undo) or forward again
-    /// (redo). The files are already restored by the time this runs; a
-    /// failure here leaves only a mis-slotted entry, so it warns.
-    fn replay_order_edits(&mut self, orders: &[postui_core::order::OrderEdit], redo: bool) {
-        if orders.is_empty() {
-            return;
-        }
-        if let Err(e) = postui_core::order::apply_edits(self.root(), orders, !redo) {
-            self.toasts.push(
-                format!(
-                    "could not {} the request order: {e}",
-                    if redo { "redo" } else { "undo" }
-                ),
-                ToastKind::Warning,
-            );
         }
     }
 
@@ -7944,7 +7856,11 @@ impl App {
                 self.refresh_sidebar();
                 self.sidebar.select_slug(&slug);
                 self.retarget_sidebar_travel(prev);
-                self.apply(Action::PersistLocalState);
+                let slug = self.editor.slug.clone();
+                if let Some(p) = self.project_mut() {
+                    p.record_space_open(slug.as_deref());
+                    p.set_open_request(slug.as_deref());
+                }
                 true
             }
             Err(Error::AlreadyExists(taken)) => {
@@ -9386,198 +9302,6 @@ impl App {
                 }
                 true
             }
-            StepKind::FileStates {
-                before,
-                after,
-                active_env,
-                orders,
-                moves,
-            } => {
-                let target = if redo { after } else { before };
-                if let Err(msg) = self.write_file_states(target, if redo { "redo" } else { "undo" })
-                {
-                    self.toasts.push(msg, ToastKind::Error);
-                    // Earlier writes in this step stand — the sidebar
-                    // and Variable Manager must reflect them (and drop
-                    // any stale pre-undo cache) even though the step
-                    // itself is dropped, or the UI shows a state that
-                    // no longer matches disk.
-                    self.resync_project();
-                    self.refresh_sidebar();
-                    if self.screen == Screen::Manage {
-                        self.sync_varmanager();
-                    }
-                    return false; // step dropped; earlier writes in this step stand
-                }
-                self.replay_order_edits(orders, redo);
-                // Every request the step moved changes slug again: the
-                // session's cache and in-flight entries follow, as they
-                // did for the forward op.
-                for (old, new) in moves {
-                    if redo {
-                        self.session.rename(old, new);
-                    } else {
-                        self.session.rename(new, old);
-                    }
-                }
-                // Before the `SwitchEnv` below, whose persist would write
-                // the stale in-memory table straight back over the
-                // `state.toml` these writes just restored.
-                self.reload_selections();
-                if let Some((before_env, after_env)) = active_env {
-                    let env = if redo { after_env } else { before_env };
-                    self.apply(Action::SwitchEnv(env.clone()));
-                }
-                // Files changed under the app: reuse the wholesale reload +
-                // refresh paths rather than guessing what the step touched.
-                self.resync_project();
-                self.apply(Action::PersistLocalState);
-                self.refresh_sidebar();
-                // Mirrors `Action::VarStruct`'s success path: the Variable
-                // Manager grid/form cache the current declarations and
-                // won't otherwise notice a var/env/secrets file an undo or
-                // redo just rewrote out from under them.
-                if self.screen == Screen::Manage {
-                    self.sync_varmanager();
-                }
-                // If the open request's file went absent in this step, it
-                // either moved (a rename — another option in the same
-                // `target` gained content) or was genuinely deleted. A
-                // move retitles in place, following the forward rename's
-                // own behavior, rather than closing a still-open editor;
-                // only a true delete closes it (mirroring
-                // Action::DeleteRequest's own arm).
-                if let Some(open) = self.editor.slug.clone() {
-                    let open_path = postui_core::storage::request_path(self.root(), &open);
-                    let went_absent = target.iter().any(|(p, c)| *p == open_path && c.is_none());
-                    if went_absent {
-                        // The step's own pairing says where the open
-                        // request went (a rename, a move to space, or
-                        // any one file of a move-all, collisions and
-                        // their `-2` suffixes included); a step that
-                        // moved nothing is a true delete.
-                        let moved_to = moves.iter().find_map(|(old, new)| {
-                            if redo {
-                                (*old == open).then(|| new.clone())
-                            } else {
-                                (*new == open).then(|| old.clone())
-                            }
-                        });
-                        match moved_to {
-                            Some(new_slug) => {
-                                self.editor.slug = Some(new_slug.clone());
-                                if let Ok(reloaded) = postui_core::storage::load_request(
-                                    self.root(),
-                                    &new_slug,
-                                ) {
-                                    self.editor.name = reloaded.name.clone();
-                                    if let Some(saved) = self.editor.saved.as_mut() {
-                                        saved.name = reloaded.name;
-                                    }
-                                }
-                                self.sidebar.open_slug = Some(new_slug.clone());
-                                // A move-to-space undo/redo can land the
-                                // open request back in a space that isn't
-                                // the active one (e.g. undoing a
-                                // `MoveRequestToSpace`) — the sidebar is
-                                // rooted at the active space, so follow it
-                                // there, same as `reload_after_file_change`.
-                                if let Some(space) = postui_core::storage::space_of(&new_slug)
-                                    .filter(|s| *s != self.active_space())
-                                {
-                                    // As in `reload_after_file_change`:
-                                    // the editor already followed, so the
-                                    // outgoing space keeps its memory.
-                                    self.enter_space(space, SpaceExit::Keep);
-                                }
-                            }
-                            None => {
-                                self.editor = Editor::default();
-                                self.shadow = None;
-                            }
-                        }
-                    }
-                }
-                let verb = if redo { "Redid" } else { "Undid" };
-                let msg = match &step.context.slug {
-                    Some(slug) => format!("{verb} file change to {}", self.request_display(slug)),
-                    None => format!("{verb} file change"),
-                };
-                self.toasts.push(msg, ToastKind::Info);
-                if redo {
-                    self.history.push_undo_no_coalesce(step.clone());
-                } else {
-                    self.history.push_redo(step.clone());
-                }
-                true
-            }
-            StepKind::Reorder {
-                target,
-                before,
-                after,
-                ..
-            } => {
-                use crate::undo::ReorderTarget;
-                let list = if redo { after } else { before };
-                let written = match target {
-                    ReorderTarget::Requests { space, .. } => {
-                        postui_core::order::set_order(self.root(), space, list)
-                    }
-                    ReorderTarget::Spaces { .. } => {
-                        // A space created since (not an undo step) is not
-                        // in the recorded list, so the list is applied as
-                        // a permutation of the spaces present now: the
-                        // recorded names still present, in recorded
-                        // order, then the rest in their current order.
-                        let current = self.spaces().to_vec();
-                        let mut perm: Vec<String> = list
-                            .iter()
-                            .filter(|n| current.contains(n))
-                            .cloned()
-                            .collect();
-                        perm.extend(current.iter().filter(|n| !list.contains(n)).cloned());
-                        postui_core::project::set_space_order(self.root(), &perm).map(|_| ())
-                    }
-                };
-                let verb = if redo { "redo" } else { "undo" };
-                if let Err(e) = written {
-                    self.toasts.push(
-                        format!("could not {verb} the reorder: {e}"),
-                        ToastKind::Error,
-                    );
-                    return false;
-                }
-                // Same mtime hazard as the forward reorders: read the list
-                // just written rather than waiting for the stamp.
-                self.reload_project_documents();
-                let what = match target {
-                    ReorderTarget::Requests { space, slug } => {
-                        // Only `project.toml` changed: the listing in hand
-                        // is still right, so no tree walk (as the forward
-                        // path).
-                        self.rebuild_sidebar();
-                        if *space == self.active_space() {
-                            self.sidebar.select_slug(slug);
-                        }
-                        self.request_display(slug)
-                    }
-                    ReorderTarget::Spaces { name } => {
-                        if self.screen == Screen::Manage {
-                            self.manage_select_name(name);
-                        }
-                        format!("space {}", self.space_name(name))
-                    }
-                };
-                let done = if redo { "Redid" } else { "Undid" };
-                self.toasts
-                    .push(format!("{done} reorder of {what}"), ToastKind::Info);
-                if redo {
-                    self.history.push_undo_no_coalesce(step.clone());
-                } else {
-                    self.history.push_redo(step.clone());
-                }
-                true
-            }
             StepKind::Project { id, slug, noun } => {
                 use crate::undo::ProjectNoun;
                 // The replay restores `.local/state.toml`, so the active
@@ -9712,94 +9436,6 @@ impl App {
                         false
                     }
                 }
-            }
-            StepKind::Trashed {
-                items,
-                files_before,
-                files_after,
-                active_env,
-                orders,
-            } => {
-                let result: Result<(), String> = if redo {
-                    items
-                        .iter()
-                        .try_for_each(|t| {
-                            postui_core::trash::retrash(t).map_err(|e| {
-                                format!("redo failed at {}: {e}", t.original.display())
-                            })
-                        })
-                        .and_then(|()| self.write_file_states(files_after, "redo"))
-                } else {
-                    items
-                        .iter()
-                        .rev()
-                        .try_for_each(|t| {
-                            postui_core::trash::restore(t).map_err(|e| {
-                                format!("undo failed at {}: {e}", t.original.display())
-                            })
-                        })
-                        .and_then(|()| self.write_file_states(files_before, "undo"))
-                };
-                if let Err(msg) = result {
-                    self.toasts.push(msg, ToastKind::Error);
-                    self.reload_after_file_change();
-                    return false; // step dropped; earlier renames stand
-                }
-                self.replay_order_edits(orders, redo);
-                // See the `FileStates` arm: `SwitchEnv` persists, so the
-                // restored table has to be in memory before it runs. A
-                // step that carries state.toml restores all of local
-                // state from it — the active space, open request,
-                // remembered requests and expanded folders the delete's
-                // cascade changed — not just the selections.
-                let state_toml = self.local_state_path();
-                let written = if redo { files_after } else { files_before };
-                let restored_state = if written.iter().any(|(p, _)| *p == state_toml) {
-                    self.reload_local_state()
-                } else {
-                    self.reload_selections();
-                    None
-                };
-                if let Some((before_env, after_env)) = active_env {
-                    let env = if redo { after_env } else { before_env };
-                    self.apply(Action::SwitchEnv(env.clone()));
-                }
-                self.reload_after_file_change();
-                if let Some(state) = restored_state {
-                    if let Some(space) = state.space.filter(|s| *s != self.active_space())
-                        && self.spaces().contains(&space)
-                    {
-                        // The editor describes the step's own target, not
-                        // the space being left.
-                        self.enter_space(&space, SpaceExit::Keep);
-                    }
-                    if let Some(slug) = state.open_request
-                        && self.editor.slug.as_deref() != Some(slug.as_str())
-                        && postui_core::storage::request_exists(self.root(), &slug)
-                    {
-                        self.apply(Action::ForceOpenRequest(slug));
-                    }
-                }
-                self.apply(Action::PersistLocalState);
-                let what = items
-                    .first()
-                    .and_then(|t| t.original.file_name())
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "delete".into());
-                self.toasts.push(
-                    if redo {
-                        format!("Deleted {what} again")
-                    } else {
-                        format!("Restored {what}")
-                    },
-                    ToastKind::Info,
-                );
-                if redo {
-                    self.history.push_undo_no_coalesce(step.clone());
-                } else {
-                    self.history.push_redo(step.clone());
-                }
-                true
             }
         }
     }

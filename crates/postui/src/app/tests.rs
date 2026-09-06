@@ -3658,9 +3658,7 @@ fn move_space_reorders_and_persists() {
 #[test]
 fn two_move_space_steps_in_a_row_both_land_without_waiting_for_mtime() {
     // `ReloadProjectFiles` is mtime-gated; on a coarse-mtime filesystem two
-    // writes in the same tick look unchanged. Nothing here sleeps. (The
-    // mtime hazard itself is pinned deterministically by
-    // `project_ctx::tests::reload_meta_sees_a_write_the_stamp_cannot`.)
+    // writes in the same tick look unchanged. Nothing here sleeps.
     let (mut app, dir) = spaced_app();
     postui_core::project::create_space(dir.path(), "billing").unwrap();
     app.reload_project_documents();
@@ -6634,7 +6632,6 @@ fn rename_env_moves_the_file_rekeys_secrets_and_follows_the_active_env() {
     app.update(Action::SwitchEnv(Some("qa".into())));
     app.proj_mut().set_secret("tok", "s3cret".into()).unwrap();
     app.proj_mut().set_selection_for("qa", "user", "alice");
-    app.update(Action::PersistLocalState);
     app.update(Action::RenameEnv {
         from: "qa".into(),
         to: "staging".into(),
@@ -6693,7 +6690,6 @@ fn delete_env_confirms_trashes_clears_the_active_env_and_undoes() {
     app.update(Action::SwitchEnv(Some("qa".into())));
     app.proj_mut().set_secret("tok", "s3cret".into()).unwrap();
     app.proj_mut().set_selection_for("qa", "user", "alice");
-    app.update(Action::PersistLocalState);
     app.update(Action::DeleteEnv("qa".into()));
     let Some(Modal::Confirm {
         title,
@@ -16391,58 +16387,6 @@ mod undo_tests {
         }
     }
 
-    /// Final-review finding: a mid-loop failure applying a multi-file
-    /// `FileStates` step returned early *before* the reload/refresh block,
-    /// so a write that landed (earlier in the loop) before the one that
-    /// failed never showed up in the sidebar. Builds a two-path step where
-    /// the first write succeeds (creates a brand-new request file) and the
-    /// second targets a path that's actually a directory, forcing a
-    /// mid-loop failure, then asserts the successfully-written request is
-    /// visible in the sidebar despite the step being dropped.
-    #[test]
-    fn failed_multi_file_step_still_refreshes_the_sidebar() {
-        let mut app = App::new_for_test();
-        let new_path = postui_core::storage::request_path(app.proj().root(), "main/brand-new");
-        let blocked_path = app.proj().root().join("blocked.toml");
-        std::fs::create_dir_all(&blocked_path).unwrap(); // a dir where a file write is expected
-
-        let step = crate::undo::Step {
-            kind: crate::undo::StepKind::FileStates {
-                before: vec![
-                    (new_path.clone(), None),
-                    (blocked_path.clone(), Some("x".into())),
-                ],
-                after: vec![
-                    (
-                        new_path.clone(),
-                        Some(req("https://brand-new").to_toml_string()),
-                    ),
-                    (blocked_path.clone(), Some("y".into())),
-                ],
-                active_env: None,
-                orders: Vec::new(),
-                moves: Vec::new(),
-            },
-            context: crate::undo::Context {
-                slug: None,
-                cursor_before: CursorPos::None,
-                cursor_after: CursorPos::None,
-            },
-        };
-
-        let applied = app.apply_undo_step(step, true); // redo direction
-        assert!(!applied, "the blocked second write must fail the step");
-        assert!(new_path.exists(), "the first write in the step must stand");
-        assert!(
-            app.sidebar
-                .rows
-                .iter()
-                .any(|r| matches!(r, Row::Request { slug, .. } if slug == "main/brand-new")),
-            "sidebar must be refreshed to reflect the write that landed before the failure: {:?}",
-            app.sidebar.rows
-        );
-    }
-
     #[test]
     fn undo_reverts_a_variable_value_edit_on_disk() {
         let mut app = App::new_for_test();
@@ -21274,7 +21218,6 @@ fn undo_of_a_space_delete_restores_the_space_its_request_and_its_memory() {
     expanded.insert("main/api".into());
     app.proj_mut().set_expanded(expanded);
     app.update(Action::ForceOpenRequest("main/alpha".into()));
-    app.update(Action::PersistLocalState);
     let auth_memory_before = app.proj().space_open_for("auth");
 
     app.update(Action::ForceDeleteSpace("main".into()));
