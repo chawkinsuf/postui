@@ -10,8 +10,10 @@ mod environments;
 mod legacy;
 mod local;
 mod spaces;
+mod undo;
 mod variables;
 pub use legacy::*;
+pub use undo::Undone;
 
 use crate::disk::{Disk, DiskError, RelPath, Ticket};
 use crate::journal::{Entry, EntryMeta, Journal, Op};
@@ -492,6 +494,105 @@ impl Project {
         self.fs_write_text(&path, Some(&new_text))?;
         self.meta = toml::from_str(&new_text).map_err(|e| parse_err(PROJECT_TOML)(&e))?;
         Ok(())
+    }
+
+    /// Task 12's watched-stamp bookkeeping; a no-op until then.
+    fn stamp_watched(&mut self) {}
+
+    /// Re-reads meta, variables, environments, spaces, secrets and the
+    /// active env. A file that fails to parse keeps its previous value
+    /// with a warning. Selections are pruned; stamps re-recorded.
+    fn reload_documents(&mut self) -> Vec<Warning> {
+        let mut warnings = Vec::new();
+        match self.disk.read(&RelPath::new(PROJECT_TOML).expect("constant")) {
+            Ok(text) => match toml::from_str::<ProjectMeta>(&text.unwrap_or_default()) {
+                Ok(meta) => self.meta = meta,
+                Err(e) => warnings.push(format!("could not read project.toml: {e}")),
+            },
+            Err(e) => warnings.push(format!("could not read project.toml: {e}")),
+        }
+        let (legacy_vars, pending, w) = migration::probe(&mut self.disk);
+        warnings.extend(w);
+        self.pending_migration = if self.migration_declined { None } else { pending };
+        if legacy_vars {
+            self.model = VarModel::default();
+            self.env_data = EnvData::default();
+        } else {
+            match self.disk.read(&RelPath::new(VARIABLES_TOML).expect("constant")) {
+                Ok(text) => match varmodel::parse_variables(&text.unwrap_or_default()) {
+                    Ok(model) => self.model = model,
+                    Err(e) => warnings.push(format!("could not read variables.toml: {e}")),
+                },
+                Err(e) => warnings.push(format!("could not read variables.toml: {e}")),
+            }
+        }
+        self.refresh_environments();
+        if let Some(w) = self.refresh_spaces() {
+            warnings.push(w);
+        }
+        match self.disk.read(&RelPath::new(SECRETS_TOML).expect("constant")) {
+            Ok(text) => match toml::from_str(&text.unwrap_or_default()) {
+                Ok(secrets) => self.secrets = secrets,
+                Err(e) => warnings.push(format!("could not read secrets: {e}")),
+            },
+            Err(e) => warnings.push(format!("could not read secrets: {e}")),
+        }
+        if let Some(env) = self.active_env.clone() {
+            if !self.environments.contains(&env) {
+                warnings.push(format!("active environment {env:?} no longer exists"));
+                self.active_env = None;
+                self.env_data = EnvData::default();
+            } else if !legacy_vars {
+                match self.load_environment(&env) {
+                    Ok(data) => self.env_data = data,
+                    Err(e) => warnings.push(format!("could not load environment {env:?}: {e}")),
+                }
+            }
+        }
+        warnings.extend(self.prune_stale_selections(legacy_vars));
+        self.stamp_watched();
+        self.refresh_resolved();
+        warnings
+    }
+
+    /// After an undo or redo: everything, including the listing, the
+    /// local state and every held request.
+    pub(crate) fn reload_all(&mut self) -> Vec<Warning> {
+        let mut warnings = self.reload_documents();
+        match self.disk.read(&RelPath::new(STATE_TOML).expect("constant")) {
+            Ok(text) => match toml::from_str::<LocalState>(&text.unwrap_or_default()) {
+                Ok(state) => {
+                    self.local.space_open = state.space_open;
+                    self.local.expanded = state.expanded.into_iter().collect();
+                    self.local.selections = state.selections;
+                    self.local.shared_selections = state.shared_selections;
+                    if let Some(space) = state.space.filter(|s| self.spaces.contains(s)) {
+                        self.local.active_space = space;
+                    }
+                }
+                Err(e) => warnings.push(format!("could not read .local/state.toml: {e}")),
+            },
+            Err(e) => warnings.push(format!("could not read .local/state.toml: {e}")),
+        }
+        self.relist();
+        let held: Vec<String> = self.open_requests.keys().cloned().collect();
+        for slug in held {
+            match request_rel(&slug).and_then(|p| Ok(self.disk.read(&p)?)) {
+                Ok(Some(text)) => match crate::model::HttpRequest::from_toml_str(&text) {
+                    Ok(req) => {
+                        self.open_requests.insert(slug, req);
+                    }
+                    Err(_) => {
+                        self.open_requests.shift_remove(&slug);
+                    }
+                },
+                _ => {
+                    self.open_requests.shift_remove(&slug);
+                }
+            }
+        }
+        self.refresh_resolved();
+        warnings
     }
 }
 
