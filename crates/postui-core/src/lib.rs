@@ -32,6 +32,9 @@ pub mod migrate;
 pub mod model;
 pub mod order;
 pub mod prepare;
+/// The open project. `project::Project` owns every read and write of
+/// project files; the free functions beside it are legacy and go away
+/// once the app has migrated.
 pub mod project;
 pub mod storage;
 pub mod trash;

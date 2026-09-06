@@ -4,6 +4,7 @@ Cargo workspace with two crates, both under `crates/`:
 
 - `crates/postui-core` — project/persistence/core library
 - `crates/postui` — the TUI binary
+- Project files are read and written only through `postui_core::project::Project` (and `disk::Disk` beneath it). The free functions in `project/legacy.rs`, `storage.rs`, `order.rs` and `trash.rs` are being retired; do not add callers.
 
 There is no `postui-core` directory outside of this repo. Anything named `postui-core` lives at `crates/postui-core/` inside this repo.
 
