@@ -16690,6 +16690,52 @@ mod undo_tests {
         assert!(!on_disk.contains("api_key"), "{on_disk}");
     }
 
+    /// Task 7 carry-over: the secret branch of `Action::RemoveVarValue`
+    /// recorded no undo step at all. Core journals the secrets write like
+    /// every other variable write, so the marker it now records puts the
+    /// value back.
+    #[test]
+    fn undo_restores_a_removed_secret_value() {
+        let dir = tempfile::tempdir().unwrap();
+        var_project(dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_root(tx, dir.path().to_path_buf());
+        app.update(Action::VarEdit(VarEditOp::SetSecretValue {
+            env: "qa".into(),
+            name: "api_key".into(),
+            value: "s3cret".into(),
+        }));
+        app.capture_undo();
+
+        app.update(Action::RemoveVarValue {
+            name: "api_key".into(),
+            destination: crate::action::ExtractDestination::ActiveEnv,
+        });
+        app.capture_undo();
+        assert_eq!(
+            app.proj().secrets().get("qa").and_then(|m| m.get("api_key")),
+            None,
+            "the stored secret is gone"
+        );
+
+        app.update(Action::Undo);
+        assert_eq!(
+            app.proj()
+                .secrets()
+                .get("qa")
+                .and_then(|m| m.get("api_key"))
+                .map(String::as_str),
+            Some("s3cret"),
+            "undo puts the removed secret back"
+        );
+        app.update(Action::Redo);
+        assert_eq!(
+            app.proj().secrets().get("qa").and_then(|m| m.get("api_key")),
+            None,
+            "redo removes it again"
+        );
+    }
+
     /// Reviewer finding: `commit_grid_edit` (the group entries grid's
     /// click-away/Enter commit) has the same gap as `commit_var_form` —
     /// called directly from `handle_key`, never through

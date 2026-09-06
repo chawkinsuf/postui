@@ -1048,7 +1048,8 @@ impl App {
     /// `variables.toml`, every environment override, and the
     /// (git-ignored) secrets file. Environments are re-listed from disk on
     /// every call, so an op that creates or deletes an environment file is
-    /// picked up the moment it is on disk. Moves onto `Project` in Task 7.
+    /// picked up the moment it is on disk. The last caller is
+    /// `Action::ApplyMigration`, whose rewrite core does not journal.
     pub(crate) fn var_file_paths(&self) -> Vec<PathBuf> {
         let Some(p) = self.project() else {
             return Vec::new();
@@ -1067,19 +1068,6 @@ impl App {
     fn set_selection_for(&mut self, env: &str, name: &str, key: &str) {
         if let Some(p) = self.project_mut() {
             p.set_selection_for(env, name, key);
-        }
-    }
-
-    fn clear_selection_for(&mut self, env: &str, name: &str) {
-        if let Some(p) = self.project_mut() {
-            p.clear_selection_for(env, name);
-        }
-    }
-
-    fn set_secret_for(&mut self, env: &str, name: &str, value: String) -> Result<(), String> {
-        match self.project_mut() {
-            Some(p) => p.set_secret_for(env, name, value).map_err(|e| e.to_string()),
-            None => Err(NO_PROJECT.to_string()),
         }
     }
 
@@ -3690,6 +3678,10 @@ impl App {
                 true
             }
             Action::ApplyMigration => {
+                // The one variable write core does not journal (see
+                // `project::migration`: it makes its own `.bak` copies
+                // instead), so this still captures a file step rather than
+                // a marker — undoing a migration must keep working.
                 let before = self.read_file_states(&self.var_file_paths());
                 match self
                     .project_mut()
@@ -4170,6 +4162,10 @@ impl App {
                         if secret {
                             match self.remove_secret_for(&env, &name) {
                                 Ok(()) => {
+                                    // Core journals the secrets write, so
+                                    // the removal is one undo step like
+                                    // every other variable write.
+                                    self.record_project_step();
                                     self.toasts.push(
                                         format!("removed {name}'s value for env {env}"),
                                         ToastKind::Success,
@@ -4182,11 +4178,10 @@ impl App {
                             }
                             return true;
                         }
-                        let before = self.read_file_states(&self.var_file_paths());
                         match self.edit_env(&env, |doc| varedit::set_env_value(doc, &name, None))
                         {
                             Ok(()) => {
-                                self.record_var_file_step(before);
+                                self.record_project_step();
                                 self.toasts.push(
                                     format!("removed {name} from env {env}"),
                                     ToastKind::Success,
@@ -4199,11 +4194,10 @@ impl App {
                         }
                     }
                     ExtractDestination::ProjectDefault => {
-                        let before = self.read_file_states(&self.var_file_paths());
                         match self.edit_variables(|doc| varedit::clear_default(doc, &name))
                         {
                             Ok(()) => {
-                                self.record_var_file_step(before);
+                                self.record_project_step();
                                 self.toasts
                                     .push(format!("removed {name}'s default"), ToastKind::Success);
                             }
@@ -4327,9 +4321,8 @@ impl App {
                 true
             }
             Action::VarEdit(op) => {
-                let before = self.read_file_states(&self.var_file_paths());
                 match self.apply_var_edit(&op) {
-                    Ok(()) => self.record_var_file_step(before),
+                    Ok(()) => self.record_project_step(),
                     Err(msg) => {
                         self.toasts.push(msg, ToastKind::Error);
                         self.last_action_failed = true;
@@ -4402,37 +4395,44 @@ impl App {
                         .push(format!("no selector \"{selector}\""), ToastKind::Error);
                     return true;
                 };
-                let before = self.read_file_states(&self.var_file_paths());
                 let remaining: Vec<String> = fields.into_iter().filter(|f| f != &field).collect();
-                let result = if self.selector_is_shared(&selector) {
-                    // Options live beside the declaration: strip the field
-                    // from them and rewrite the list in one write.
-                    self.edit_variables(|doc| {
-                        let stripped =
-                            postui_core::varedit::strip_option_field(doc, &selector, &field)?;
-                        postui_core::varedit::upsert_selector(
-                            &stripped, &selector, None, &remaining,
-                        )
-                    })
-                } else {
-                    let envs = postui_core::project::list_environments(self.root());
-                    envs.iter()
-                        .try_for_each(|env| {
-                            self.edit_env(env, |doc| {
-                                postui_core::varedit::strip_option_field(doc, &selector, &field)
-                            })
-                        })
-                        .and_then(|()| {
-                            self.edit_variables(|doc| {
+                let shared = self.selector_is_shared(&selector);
+                // One cascade: the env-side strips and the declaration's
+                // new field list are one undo step, as the file step they
+                // replace was.
+                let result = match self.project_mut() {
+                    None => Err(NO_PROJECT.to_string()),
+                    Some(p) => p
+                        .cascade("edit selector fields", |p| {
+                            if shared {
+                                // Options live beside the declaration:
+                                // strip the field from them and rewrite
+                                // the list in one write.
+                                return p.edit_variables(|doc| {
+                                    let stripped = postui_core::varedit::strip_option_field(
+                                        doc, &selector, &field,
+                                    )?;
+                                    postui_core::varedit::upsert_selector(
+                                        &stripped, &selector, None, &remaining,
+                                    )
+                                });
+                            }
+                            for env in p.environments().to_vec() {
+                                p.edit_env(&env, |doc| {
+                                    postui_core::varedit::strip_option_field(doc, &selector, &field)
+                                })?;
+                            }
+                            p.edit_variables(|doc| {
                                 postui_core::varedit::upsert_selector(
                                     doc, &selector, None, &remaining,
                                 )
                             })
                         })
+                        .map_err(|e| e.to_string()),
                 };
                 match result {
                     Ok(()) => {
-                        self.record_var_file_step(before);
+                        self.record_project_step();
                         self.toasts.push(
                             format!("removed \"{field}\" from {selector}{}", self.undo_hint()),
                             ToastKind::Info,
@@ -4470,12 +4470,11 @@ impl App {
                 true
             }
             Action::DuplicateVar { name } => {
-                let before = self.read_file_states(&self.var_file_paths());
                 if let Err(msg) = self.apply_duplicate_var(&name) {
                     self.toasts.push(msg, ToastKind::Error);
                     self.last_action_failed = true;
                 } else {
-                    self.record_var_file_step(before);
+                    self.record_project_step();
                     self.sync_varmanager();
                 }
                 true
@@ -4562,7 +4561,6 @@ impl App {
                         .is_some_and(|o| o.contains_key(name)),
                     _ => false,
                 };
-                let before = self.read_file_states(&self.var_file_paths());
                 match self.apply_var_struct(&op) {
                     Ok(()) => {
                         // A rename carries the detail pane's selection over
@@ -4585,7 +4583,7 @@ impl App {
                         {
                             self.varmanager.select_name(name);
                         }
-                        self.record_var_file_step(before);
+                        self.record_project_step();
                         // Deletes act without a confirm gate, so their
                         // toasts advertise the way back.
                         match &op {
@@ -4623,9 +4621,8 @@ impl App {
                 true
             }
             Action::ApplyGroupFields { selector, slots } => {
-                let before = self.read_file_states(&self.var_file_paths());
                 self.apply_group_fields(selector, slots);
-                self.record_var_file_step(before);
+                self.record_project_step();
                 true
             }
             Action::StartOptionNameEdit { row } => {
@@ -4804,18 +4801,15 @@ impl App {
                 for field in fields {
                     values.entry(field).or_default();
                 }
-                let before = self.read_file_states(&self.var_file_paths());
-                match self.edit_options_home(&owner, &env, |doc| {
-                    postui_core::varedit::upsert_option(
-                        doc,
-                        &owner,
-                        &key,
-                        description.as_deref(),
-                        &values,
-                    )
+                match self.apply_var_struct(&VarStructOp::NewOption {
+                    env: env.clone(),
+                    selector: owner.clone(),
+                    name: key.clone(),
+                    description,
+                    values,
                 }) {
                     Ok(()) => {
-                        self.record_var_file_step(before);
+                        self.record_project_step();
                         self.set_selection_for(&env, &owner, &key);
                         let where_label = if shared { "all environments" } else { &env };
                         self.toasts.push(
@@ -4842,7 +4836,6 @@ impl App {
                     );
                     return true;
                 };
-                let before = self.read_file_states(&self.var_file_paths());
                 let result = self.edit_env(&env, |doc| {
                     // The prompt maps a cleared Description field to `None`,
                     // which means "remove the stored description" here —
@@ -4862,7 +4855,7 @@ impl App {
                 });
                 match result {
                     Ok(()) => {
-                        self.record_var_file_step(before);
+                        self.record_project_step();
                         self.toasts
                             .push(format!("{key} updated"), ToastKind::Success);
                     }
@@ -5696,29 +5689,38 @@ impl App {
                 return true;
             }
         };
-        let before = self.read_file_states(&self.var_file_paths());
-        let result = self
-            .apply_var_struct(&VarStructOp::NewSelector {
-                name: name.clone(),
-                fields: vec![name.clone()],
-                shared,
-            })
-            .and_then(|()| {
-                let mut values = indexmap::IndexMap::new();
-                values.insert(name.clone(), text.clone());
-                self.apply_var_struct(&VarStructOp::NewOption {
-                    env: env.clone(),
-                    selector: name.clone(),
-                    name: option.clone(),
-                    description: None,
-                    values,
+        // The declaration and its first option are one gesture: core runs
+        // both under one journal entry, so one undo peels the whole
+        // extraction (and a failed second half rolls the first back).
+        use postui_core::project::VarEdit as E;
+        let declare = E::NewSelector {
+            name: name.clone(),
+            fields: vec![name.clone()],
+            shared,
+        };
+        let mut values = indexmap::IndexMap::new();
+        values.insert(name.clone(), text.clone());
+        let add_option = E::NewOption {
+            env: env.clone(),
+            selector: name.clone(),
+            name: option.clone(),
+            description: None,
+            values,
+        };
+        let result = match self.project_mut() {
+            None => Err(NO_PROJECT.to_string()),
+            Some(p) => p
+                .cascade("extract variable", |p| {
+                    p.apply_var_edit(&declare)?;
+                    p.apply_var_edit(&add_option)
                 })
-            });
+                .map_err(|e| e.to_string()),
+        };
         match result {
             Ok(()) => {
                 self.set_selection_for(&env, &name, &option);
                 self.sync_varmanager();
-                self.record_var_file_step(before);
+                self.record_project_step();
                 match source {
                     ExtractSource::FocusedField => self.replace_focused_field_with_token(&name),
                     ExtractSource::Selection(surface) => {
@@ -5729,10 +5731,11 @@ impl App {
                     .push(format!("extracted to {{{{{name}}}}}"), ToastKind::Success);
             }
             Err(msg) => {
-                // The selector may already be declared by the time the
-                // option write fails; the recorded step lets undo peel it.
+                // A failed option write rolls the declaration back with
+                // it, so there is nothing to undo — but the Manager still
+                // re-reads, as it did when the half-write stood.
                 self.sync_varmanager();
-                self.record_var_file_step(before);
+                self.record_project_step();
                 self.toasts.push(msg, ToastKind::Error);
                 self.last_action_failed = true;
             }
@@ -5772,7 +5775,6 @@ impl App {
             self.toasts.push(msg, ToastKind::Warning);
             return true;
         };
-        let before = self.read_file_states(&self.var_file_paths());
         use crate::action::ExtractDestination;
         let write_result: Result<(), String> = match destination {
             ExtractDestination::ProjectDefault => {
@@ -5809,26 +5811,49 @@ impl App {
                     self.last_action_failed = true;
                     return true;
                 }
-                if let Some(decl) = self.variables().vars.get(&name) {
-                    if decl.secret {
-                        self.toasts.push(
-                            format!(
-                                "\"{name}\" is a secret variable \u{2014} can't set a plain env value for it"
-                            ),
-                            ToastKind::Error,
-                        );
-                        self.last_action_failed = true;
-                        return true;
-                    }
-                } else if let Err(msg) = self.edit_variables(|doc| postui_core::varedit::upsert_var(doc, &name, None, None))
-                {
-                    self.toasts.push(msg, ToastKind::Error);
+                if self.variables().vars.get(&name).is_some_and(|d| d.secret) {
+                    self.toasts.push(
+                        format!(
+                            "\"{name}\" is a secret variable \u{2014} can't set a plain env value for it"
+                        ),
+                        ToastKind::Error,
+                    );
                     self.last_action_failed = true;
                     return true;
                 }
-                self.edit_env(&env, |doc| {
-                    postui_core::varedit::set_env_value(doc, &name, Some(&text))
-                })
+                // The declaration (when the name is new) and the env value
+                // are one gesture: core runs both under one journal entry,
+                // so one undo peels the whole extraction. A failure of the
+                // declaration half keeps its own toast-and-stop, exactly
+                // as when it was a separate write.
+                let declare = !self.variables().vars.contains_key(&name);
+                let mut declare_failed = false;
+                let result = match self.project_mut() {
+                    None => Err(NO_PROJECT.to_string()),
+                    Some(p) => p
+                        .cascade("extract variable", |p| {
+                            if declare {
+                                p.edit_variables(|doc| {
+                                    postui_core::varedit::upsert_var(doc, &name, None, None)
+                                })
+                                .inspect_err(|_| declare_failed = true)?;
+                            }
+                            p.edit_env(&env, |doc| {
+                                postui_core::varedit::set_env_value(doc, &name, Some(&text))
+                            })
+                        })
+                        .map_err(|e| e.to_string()),
+                };
+                if let Err(msg) = result {
+                    if declare_failed {
+                        self.toasts.push(msg, ToastKind::Error);
+                        self.last_action_failed = true;
+                        return true;
+                    }
+                    Err(msg)
+                } else {
+                    Ok(())
+                }
             }
             ExtractDestination::Request => {
                 // No structural-file hazard here — `[variables]`
@@ -5866,7 +5891,7 @@ impl App {
                 // `[variables]` insert) is captured by the next
                 // `capture_undo` as an EditorDelta — undo peels the
                 // token-replacement, then the declaration.
-                self.record_var_file_step(before);
+                self.record_project_step();
                 match source {
                     ExtractSource::FocusedField => self.replace_focused_field_with_token(&name),
                     ExtractSource::Selection(surface) => {
@@ -6118,11 +6143,10 @@ impl App {
             return;
         };
         // This commit never routes through `self.apply` — it's called
-        // directly from `handle_key` (click-away/Enter), so it needs its
-        // own capture rather than relying on `Action::VarEdit`'s wrap.
-        let before = self.read_file_states(&self.var_file_paths());
+        // directly from `handle_key` (click-away/Enter), so it records its
+        // own marker rather than relying on `Action::VarEdit`'s wrap.
         match self.apply_var_edit(&op) {
-            Ok(()) => self.record_var_file_step(before),
+            Ok(()) => self.record_project_step(),
             Err(msg) => {
                 self.varmanager.form.editing = Some((field, input));
                 self.toasts.push(msg, ToastKind::Error);
@@ -6130,68 +6154,58 @@ impl App {
         }
     }
 
+    /// Maps one [`VarEditOp`] onto core's [`postui_core::project::VarEdit`]
+    /// and applies it there: every cascade, guard and refusal message
+    /// lives on `Project` now. The two editor-only ops never reach it.
     fn apply_var_edit(&mut self, op: &VarEditOp) -> Result<(), String> {
-        match op {
-            VarEditOp::SetEnvValue { env, name, value } => self.edit_env(env, |doc| {
-                postui_core::varedit::set_env_value(doc, name, Some(value))
-            }),
-            VarEditOp::SetDefault { name, value } => self.edit_variables(|doc| {
-                postui_core::varedit::upsert_var(doc, name, None, Some(value))
-            }),
-            VarEditOp::SetDescription { owner, value } => {
-                if self.variables().vars.contains_key(owner) {
-                    self.edit_variables(|doc| {
-                        postui_core::varedit::upsert_var(doc, owner, Some(value), None)
-                    })
-                } else if let Some(fields) = self.variables()
-                    .selectors
-                    .get(owner)
-                    .map(|g| g.fields.clone())
-                {
-                    self.edit_variables(|doc| {
-                        postui_core::varedit::upsert_selector(doc, owner, Some(value), &fields)
-                    })
-                } else {
-                    Err(format!(
-                        "\"{owner}\" is not a declared variable or selector"
-                    ))
-                }
-            }
-            VarEditOp::SetSecretValue { env, name, value } => {
-                self.set_secret_for(env, name, value.clone())
-            }
+        use postui_core::project::VarEdit as E;
+        let edit = match op {
+            VarEditOp::SetEnvValue { env, name, value } => E::SetEnvValue {
+                env: env.clone(),
+                name: name.clone(),
+                value: value.clone(),
+            },
+            VarEditOp::SetDefault { name, value } => E::SetDefault {
+                name: name.clone(),
+                value: value.clone(),
+            },
+            VarEditOp::SetDescription { owner, value } => E::SetDescription {
+                owner: owner.clone(),
+                value: value.clone(),
+            },
+            VarEditOp::SetSecretValue { env, name, value } => E::SetSecretValue {
+                env: env.clone(),
+                name: name.clone(),
+                value: value.clone(),
+            },
             VarEditOp::SetOptionValue {
                 env,
                 selector,
                 option,
                 field,
                 value,
-            } => {
-                // An option's values live in one file — its selector's env
-                // file, or variables.toml for a shared selector; the cell
-                // being edited is one field of that option.
-                let mut values = indexmap::IndexMap::new();
-                values.insert(field.clone(), value.clone());
-                self.edit_options_home(selector, env, |doc| {
-                    postui_core::varedit::upsert_option(doc, selector, option, None, &values)
-                })
-            }
+            } => E::SetOptionValue {
+                env: env.clone(),
+                selector: selector.clone(),
+                option: option.clone(),
+                field: field.clone(),
+                value: value.clone(),
+            },
             VarEditOp::SetOptionDescription {
                 env,
                 selector,
                 option,
                 description,
-            } => self.edit_options_home(selector, env, |doc| match description {
-                Some(d) => postui_core::varedit::upsert_option(
-                    doc,
-                    selector,
-                    option,
-                    Some(d),
-                    &indexmap::IndexMap::new(),
-                ),
-                None => postui_core::varedit::remove_option_description(doc, selector, option),
-            }),
+            } => E::SetOptionDescription {
+                env: env.clone(),
+                selector: selector.clone(),
+                option: option.clone(),
+                description: description.clone(),
+            },
             VarEditOp::SetRequestVar { name, value } => {
+                // Editor-only: the open request's `[variables]` option
+                // rides the editor's own dirty/save path, so nothing is
+                // written (and nothing journaled) here.
                 match self.editor.variables.get_mut(name) {
                     Some(option) => option.value = value.clone(),
                     None => {
@@ -6204,17 +6218,23 @@ impl App {
                         );
                     }
                 }
-                Ok(())
+                return Ok(());
             }
             VarEditOp::SelectOption {
                 env,
                 selector,
                 option,
             } => {
+                // A selection is local state, not a document: not
+                // journaled, so it records no undo step (as today).
                 self.set_selection_for(env, selector, option);
-                Ok(())
+                return Ok(());
             }
-        }
+        };
+        self.project_mut()
+            .ok_or_else(|| NO_PROJECT.to_string())?
+            .apply_var_edit(&edit)
+            .map_err(|e| e.to_string())
     }
 
     /// `s` on a `Var` row (spec §3's two transitions): opens
@@ -6303,246 +6323,109 @@ impl App {
     /// (e.g. `PromptKind::NewVariableAndInsert`'s trailing `InsertVarText`,
     /// which must never fire for a variable that failed to declare).
     fn apply_var_struct(&mut self, op: &VarStructOp) -> Result<(), String> {
-        use postui_core::varedit;
-        use postui_core::vars::is_valid_var_name;
-
-        match op {
-            VarStructOp::NewVar { name, description } => {
-                if !is_valid_var_name(name) {
-                    return Err(format!("\"{name}\" is not a valid variable name"));
-                }
-                if name_taken(self.variables(), name) {
-                    return Err(format!("\"{name}\" already exists"));
-                }
-                self.edit_variables(|doc| {
-                    varedit::upsert_var(doc, name, description.as_deref(), None)
-                })
-            }
+        use postui_core::project::VarEdit as E;
+        let edit = match op {
+            VarStructOp::NewVar { name, description } => E::NewVar {
+                name: name.clone(),
+                description: description.clone(),
+            },
             VarStructOp::NewSelector {
                 name,
                 fields,
                 shared,
-            } => {
-                if !is_valid_var_name(name) {
-                    return Err(format!("\"{name}\" is not a valid selector name"));
-                }
-                if name_taken(self.variables(), name) {
-                    return Err(format!("\"{name}\" already exists"));
-                }
-                for f in fields {
-                    if !is_valid_var_name(f) {
-                        return Err(format!("\"{f}\" is not a valid field name"));
-                    }
-                }
-                self.edit_variables(|doc| {
-                    let out = varedit::upsert_selector(doc, name, None, fields)?;
-                    if *shared {
-                        varedit::set_selector_shared(&out, name, true)
-                    } else {
-                        Ok(out)
-                    }
-                })
-            }
-            VarStructOp::Rename { from, to } => {
-                if !is_valid_var_name(to) {
-                    return Err(format!("\"{to}\" is not a valid variable name"));
-                }
-                if name_taken(self.variables(), to) {
-                    return Err(format!("\"{to}\" already exists"));
-                }
-                if self.variables().selectors.contains_key(from) {
-                    return self.apply_rename_group(from, to);
-                }
-                self.edit_variables(|doc| varedit::rename_var(doc, from, to))?;
-                // `rename_var` only ever touches `variables.toml` — an
-                // active env override for `from` would otherwise silently
-                // degrade to the default post-rename (no error, no
-                // warning, just a wrong-looking resolved value). Cascade
-                // into every environment's flat pair and its
-                // `[options.<from>]` table too; `rename_env_var` no-ops
-                // for an environment with nothing to rename.
-                for env in self.environments().to_vec() {
-                    self.edit_env(&env, |doc| varedit::rename_env_var(doc, from, to))?;
-                }
-                Ok(())
-            }
-            VarStructOp::Delete { name } => {
-                let is_group = self.variables().selectors.contains_key(name);
-                if !is_group {
-                    // Mirror `delete_var`'s own "still a selector field"
-                    // conflict up front, using the already-loaded model —
-                    // before any environment file is touched, so a refusal
-                    // here leaves everything unchanged (`apply_var_struct`'s
-                    // documented contract), matching what `delete_var`
-                    // itself would have refused a moment later anyway.
-                    if let Some(gname) = self.variables()
-                        .selectors
-                        .iter()
-                        .find_map(|(gname, g)| g.fields.contains(name).then(|| gname.clone()))
-                    {
-                        return Err(format!(
-                            "variable \"{name}\" is a field of selector \"{gname}\"; remove it from the selector first"
-                        ));
-                    }
-                }
-                // Finding 1: `delete_var`/`delete_selector` only ever touch
-                // `variables.toml`. An env's `[options.<name>]` table for
-                // the deleted name would otherwise strand that env file —
-                // refused by `validate_env` in the ACTIVE env (a confusing
-                // parse-style toast), or silently left invalid with no GUI
-                // repair path in a NON-active one. Cascade into every
-                // environment FIRST — a strip can only shrink an env file,
-                // so it can never itself fail `validate_env` — and only
-                // THEN remove the declaration: doing it in the other order
-                // would have the declaration-removal's own `edit_variables`
-                // call validate the ACTIVE env's *not-yet-stripped*
-                // `[options.<name>]` table against a model that already
-                // doesn't declare `name`, reproducing the exact "confusing
-                // parse-style toast" this fix removes. `delete_env_var`
-                // no-ops for an environment with nothing to remove.
-                // A shared selector's options live in variables.toml with
-                // the declaration: both halves go in one write (an
-                // `[options.<name>]` table without its declaration fails
-                // validation in either order), and no env file holds
-                // anything to strip.
-                if is_group && self.selector_is_shared(name) {
-                    self.edit_variables(|doc| {
-                        let stripped = varedit::delete_selector_options(doc, name)?;
-                        varedit::delete_selector(&stripped, name)
-                    })?;
-                    self.clear_selection_for("", name);
-                    return Ok(());
-                }
-                for env in self.environments().to_vec() {
-                    if is_group {
-                        // The declaration's environment-side half: the whole
-                        // `[options.<name>]` subtree, plus the recorded
-                        // selection that named one of those options.
-                        self.edit_env(&env, |doc| varedit::delete_selector_options(doc, name))?;
-                        self.clear_selection_for(&env, name);
-                    } else {
-                        self.edit_env(&env, |doc| varedit::delete_env_var(doc, name))?;
-                    }
-                }
-                if is_group {
-                    self.edit_variables(|doc| varedit::delete_selector(doc, name))
-                } else {
-                    self.edit_variables(|doc| varedit::delete_var(doc, name))
+            } => E::NewSelector {
+                name: name.clone(),
+                fields: fields.clone(),
+                shared: *shared,
+            },
+            VarStructOp::Rename { from, to } => E::Rename {
+                from: from.clone(),
+                to: to.clone(),
+            },
+            VarStructOp::Delete { name } => E::Delete { name: name.clone() },
+            VarStructOp::ToggleSecret { name } => E::ToggleSecret { name: name.clone() },
+            VarStructOp::SetFields { selector, fields } => E::SetFields {
+                selector: selector.clone(),
+                fields: fields.clone(),
+            },
+            VarStructOp::Promote { name, target } => {
+                // The value being promoted lives in the open request's
+                // buffer, which core never sees: read it here, and refuse
+                // in the same words as before when it isn't there.
+                let value = self
+                    .editor
+                    .variables
+                    .get(name)
+                    .map(|o| o.value.clone())
+                    .ok_or_else(|| format!("\"{name}\" is not a request-scope variable"))?;
+                E::Promote {
+                    name: name.clone(),
+                    request_value: value,
+                    target: *target,
                 }
             }
-            VarStructOp::ToggleSecret { name } => self.apply_toggle_secret(name),
-            VarStructOp::SetFields { selector, fields } => {
-                for f in fields {
-                    if !is_valid_var_name(f) {
-                        return Err(format!("\"{f}\" is not a valid field name"));
-                    }
-                }
-                // A shared selector's options sit in the same file and
-                // must supply exactly the declared fields, so the list
-                // change carries them along in the one write (a non-shared
-                // selector's env-side halves go through the fields editor's
-                // `apply_group_fields` instead).
-                let current: Vec<String> = self.variables()
-                    .selectors
-                    .get(selector)
-                    .map(|g| g.fields.clone())
-                    .unwrap_or_default();
-                let shared = self.selector_is_shared(selector);
-                self.edit_variables(|doc| {
-                    let mut out = varedit::upsert_selector(doc, selector, None, fields)?;
-                    if shared {
-                        for field in fields.iter().filter(|f| !current.contains(f)) {
-                            out = varedit::ensure_option_field(&out, selector, field)?;
-                        }
-                        for field in current.iter().filter(|f| !fields.contains(f)) {
-                            out = varedit::strip_option_field(&out, selector, field)?;
-                        }
-                    }
-                    Ok(out)
-                })
-            }
-            VarStructOp::Promote { name, target } => self.apply_promote(name, *target),
             VarStructOp::NewOption {
                 env,
                 selector,
                 name,
                 description,
                 values,
-            } => self.edit_options_home(selector, env, |doc| {
-                varedit::upsert_option(doc, selector, name, description.as_deref(), values)
-            }),
+            } => E::NewOption {
+                env: env.clone(),
+                selector: selector.clone(),
+                name: name.clone(),
+                description: description.clone(),
+                values: values.clone(),
+            },
             VarStructOp::RenameOption {
                 env,
                 selector,
                 from,
                 to,
-            } => {
-                self.edit_options_home(selector, env, |doc| {
-                    varedit::rename_option(doc, selector, from, to)
-                })?;
-                // A selection names an option by key: carry it across the
-                // rename rather than leaving a dangling one behind. (A
-                // shared selector's selection is the global one;
-                // `set_selection_for` routes there itself.)
-                let selected = if self.selector_is_shared(selector) {
-                    self.shared_selections().get(selector)
-                } else {
-                    self.selections_for(env).get(selector)
-                };
-                if selected.map(String::as_str) == Some(from) {
-                    self.set_selection_for(env, selector, to);
-                }
-                Ok(())
-            }
+            } => E::RenameOption {
+                env: env.clone(),
+                selector: selector.clone(),
+                from: from.clone(),
+                to: to.clone(),
+            },
             VarStructOp::DeleteOption {
                 env,
                 selector,
                 name,
-            } => self.apply_delete_entry(env, selector, name),
+            } => E::DeleteOption {
+                env: env.clone(),
+                selector: selector.clone(),
+                name: name.clone(),
+            },
             VarStructOp::DuplicateOption {
                 env,
                 selector,
                 name,
-            } => self.apply_duplicate_entry(env, selector, name),
-        }
-    }
-
-    /// [`VarStructOp::Rename`] for a selector. Both halves of the declaration
-    /// have to move at once: an environment's `[options.<old>]` table names
-    /// a selector the renamed model no longer declares, and the new name has
-    /// no options yet — so `validate_env` refuses whichever half lands
-    /// first, in either order. `edit_variables_and_envs` builds and
-    /// validates them together, then writes.
-    ///
-    /// Selections name a selector by key, so each environment's recorded
-    /// selection is carried across the rename (the same repair
-    /// [`VarStructOp::RenameOption`] makes for an option key) — otherwise a
-    /// renamed selector would silently lose its "pick user 2" state
-    /// everywhere.
-    fn apply_rename_group(&mut self, from: &str, to: &str) -> Result<(), String> {
-        use postui_core::varedit;
-        // A shared selector renames wholly inside variables.toml — the
-        // declaration and its `[options.<from>]` subtree in one write —
-        // and carries its one global selection.
-        if self.selector_is_shared(from) {
-            self.edit_variables(|doc| {
-                let renamed = varedit::rename_selector(doc, from, to)?;
-                varedit::rename_selector_options(&renamed, from, to)
-            })?;
-            if let Some(key) = self.shared_selections().get(from).cloned() {
-                self.clear_selection_for("", from);
-                self.set_selection_for("", to, &key);
-            }
-            return Ok(());
-        }
-        self.edit_variables_and_envs(
-            |doc| varedit::rename_selector(doc, from, to),
-            |doc| varedit::rename_selector_options(doc, from, to),
-        )?;
-        for env in self.environments().to_vec() {
-            if let Some(key) = self.selections_for(&env).get(from).cloned() {
-                self.clear_selection_for(&env, from);
-                self.set_selection_for(&env, to, &key);
+            } => E::DuplicateOption {
+                env: env.clone(),
+                selector: selector.clone(),
+                name: name.clone(),
+            },
+        };
+        self.project_mut()
+            .ok_or_else(|| NO_PROJECT.to_string())?
+            .apply_var_edit(&edit)
+            .map_err(|e| e.to_string())?;
+        if let VarStructOp::Promote { name, .. } = op {
+            // The project side of the promote is durable the moment core
+            // returns `Ok`. The compensating half — removing the option
+            // from the request's own `[variables]` — only exists in the
+            // dirty editor buffer until now; save it synchronously so
+            // "promote, then quit" can't leave the old value stranded in
+            // both places. A save failure is reported as a toast rather
+            // than an `Err` (which would incorrectly roll back an op that,
+            // on the project side, already committed).
+            self.editor.variables.shift_remove(name);
+            if let Err(e) = self.save_open_request() {
+                self.toasts.push(
+                    format!("promoted \"{name}\" but {e} \u{2014} save the request manually"),
+                    ToastKind::Error,
+                );
             }
         }
         Ok(())
@@ -6748,8 +6631,7 @@ impl App {
         let ghost = edit.row >= options.len();
 
         // Same as `commit_var_form`: called directly from `handle_key`,
-        // never through `self.apply`, so it needs its own capture.
-        let before = self.read_file_states(&self.var_file_paths());
+        // never through `self.apply`, so it records its own marker.
         let result = if ghost {
             // Only the ghost's name cell creates anything; an emptied name
             // creates nothing (and neither does a value typed into a row
@@ -6803,7 +6685,7 @@ impl App {
         match result {
             Ok(()) => {
                 self.sync_varmanager();
-                self.record_var_file_step(before);
+                self.record_project_step();
                 // The ghost flow keeps going left-to-right: the row that
                 // was the ghost is now a real option (appended, so it keeps
                 // its index) with its first field cell live.
@@ -6816,40 +6698,6 @@ impl App {
                 self.toasts.push(msg, ToastKind::Error);
             }
         }
-    }
-
-    /// [`VarStructOp::DuplicateOption`]: copies one option's description and
-    /// values to a fresh name in the same environment — `"<name> copy"`,
-    /// then `"<name> copy-2"`, … while that is taken. Nothing else moves:
-    /// the copy is unselected, and no other environment is touched.
-    fn apply_duplicate_entry(
-        &mut self,
-        env: &str,
-        selector: &str,
-        name: &str,
-    ) -> Result<(), String> {
-        let options = self
-            .options_of_for(env, selector)
-            .ok_or_else(|| format!("selector \"{selector}\" has no options in {env}"))?;
-        let source = options
-            .get(name)
-            .ok_or_else(|| format!("no option \"{name}\" in {selector}"))?
-            .clone();
-        let mut copy = format!("{name} copy");
-        let mut n = 2;
-        while options.contains_key(&copy) {
-            copy = format!("{name} copy-{n}");
-            n += 1;
-        }
-        self.edit_options_home(selector, env, |doc| {
-            postui_core::varedit::upsert_option(
-                doc,
-                selector,
-                &copy,
-                source.description.as_deref(),
-                &source.values,
-            )
-        })
     }
 
     /// [`Action::DuplicateVar`]: copies a declaration under `<name>-copy`
@@ -6866,27 +6714,39 @@ impl App {
             copy = format!("{name}-copy-{n}");
             n += 1;
         }
-        if let Some(selector) = self.variables().selectors.get(name) {
-            let (fields, description) = (selector.fields.clone(), selector.description.clone());
-            return self.edit_variables(|doc| {
-                varedit::upsert_selector(doc, &copy, description.as_deref(), &fields)
-            });
-        }
-        let decl = self.variables()
+        let selector = self
+            .variables()
+            .selectors
+            .get(name)
+            .map(|g| (g.fields.clone(), g.description.clone()));
+        let variable = self
+            .variables()
             .vars
             .get(name)
-            .ok_or_else(|| format!("no variable \"{name}\""))?;
-        let (description, default, secret) =
-            (decl.description.clone(), decl.default.clone(), decl.secret);
-        self.edit_variables(|doc| {
-            varedit::upsert_var(doc, &copy, description.as_deref(), default.as_deref())
-        })?;
-        if secret {
-            // Safe on a just-created declaration: it has no value in any
-            // environment for the flag flip to have to move.
-            self.edit_variables(|doc| varedit::set_secret_flag(doc, &copy, true))?;
+            .map(|d| (d.description.clone(), d.default.clone(), d.secret));
+        if selector.is_none() && variable.is_none() {
+            return Err(format!("no variable \"{name}\""));
         }
-        Ok(())
+        let p = self.project_mut().ok_or_else(|| NO_PROJECT.to_string())?;
+        // The declaration and its secret flag are one undo step.
+        p.cascade("duplicate variable", |p| {
+            if let Some((fields, description)) = selector {
+                return p.edit_variables(|doc| {
+                    varedit::upsert_selector(doc, &copy, description.as_deref(), &fields)
+                });
+            }
+            let (description, default, secret) = variable.expect("checked above");
+            p.edit_variables(|doc| {
+                varedit::upsert_var(doc, &copy, description.as_deref(), default.as_deref())
+            })?;
+            if secret {
+                // Safe on a just-created declaration: it has no value in
+                // any environment for the flag flip to have to move.
+                p.edit_variables(|doc| varedit::set_secret_flag(doc, &copy, true))?;
+            }
+            Ok(())
+        })
+        .map_err(|e| e.to_string())
     }
 
     /// Whether `selector` is a shared selector — its options (and its one
@@ -6896,23 +6756,6 @@ impl App {
             .selectors
             .get(selector)
             .is_some_and(|d| d.shared)
-    }
-
-    /// Applies an option-table edit to wherever `selector`'s options live:
-    /// `variables.toml` for a shared selector (`env` is ignored — the same
-    /// `[options.*]` verbs apply, just in the model's own file), otherwise
-    /// `environments/<env>.toml`.
-    fn edit_options_home(
-        &mut self,
-        selector: &str,
-        env: &str,
-        f: impl FnOnce(&str) -> Result<String, postui_core::varedit::EditError>,
-    ) -> Result<(), String> {
-        if self.selector_is_shared(selector) {
-            self.edit_variables(f)
-        } else {
-            self.edit_env(env, f)
-        }
     }
 
     /// `selector`'s options as they currently stand, from wherever they
@@ -6939,139 +6782,6 @@ impl App {
         self.project_mut()
             .and_then(|p| p.load_environment(env).ok())
             .unwrap_or_default()
-    }
-
-    /// [`VarStructOp::DeleteOption`]: deletes one option of `selector` from
-    /// `env` (options belong to one environment each — spec §3.1). An option
-    /// that is already gone is a quiet no-op success (a stale row — nothing
-    /// left to do). Also clears any per-env selection naming the deleted
-    /// option, in every environment, so local state doesn't accumulate dead
-    /// selections (`resolve_env` already degrades a stale selection
-    /// harmlessly, but there's no reason to leave it).
-    fn apply_delete_entry(&mut self, env: &str, selector: &str, name: &str) -> Result<(), String> {
-        let present = self
-            .options_of_for(env, selector)
-            .is_some_and(|options| options.contains_key(name));
-        if present {
-            self.edit_options_home(selector, env, |doc| {
-                postui_core::varedit::delete_option(doc, selector, name)
-            })?;
-        }
-        if self.selector_is_shared(selector) {
-            if self.shared_selections()
-                .get(selector)
-                .map(String::as_str)
-                == Some(name)
-            {
-                self.clear_selection_for(env, selector);
-            }
-            return Ok(());
-        }
-        for other in self.environments().to_vec() {
-            if self.selections_for(&other)
-                .get(selector)
-                .map(String::as_str)
-                == Some(name)
-            {
-                self.clear_selection_for(&other, selector);
-            }
-        }
-        Ok(())
-    }
-
-    /// [`VarStructOp::ToggleSecret`]'s two directions (spec §3). Off->on
-    /// moves every environment's flat value for `name` into that
-    /// environment's `.local/secrets.toml` slot and strips it from the env
-    /// file; on->off only flips the flag — the local secret value is left
-    /// exactly where it is (never silently promoted into a git-tracked
-    /// file).
-    fn apply_toggle_secret(&mut self, name: &str) -> Result<(), String> {
-        let currently_secret = self.variables().vars.get(name).is_some_and(|d| d.secret);
-        if currently_secret {
-            return self.edit_variables(|doc| postui_core::varedit::set_secret_flag(doc, name, false));
-        }
-        let mut to_move: Vec<(String, String)> = Vec::new();
-        for env in self.environments().to_vec() {
-            let env_data = self.env_data_for(&env);
-            if let Some(v) = env_data.values.get(name) {
-                to_move.push((env, v.clone()));
-            }
-        }
-        // Order matters: `edit_variables` validates the flipped flag against
-        // the *active* env's current data, so a still-present flat value
-        // there (a flat value for a secret variable is a §1.2 error) would
-        // reject the flag flip. Move each value into secrets.toml and strip
-        // it from its env file first — harmless against the not-yet-secret
-        // model — so the flag flip last sees a model already consistent
-        // with every environment's (now-empty) flat value.
-        for (env, value) in &to_move {
-            self.set_secret_for(env, name, value.clone())?;
-        }
-        for (env, _) in &to_move {
-            self.edit_env(env, |doc| {
-                postui_core::varedit::set_env_value(doc, name, None)
-            })?;
-        }
-        self.edit_variables(|doc| postui_core::varedit::set_secret_flag(doc, name, true))?;
-        Ok(())
-    }
-
-    /// [`VarStructOp::Promote`] (spec §4): writes the request's own
-    /// `[variables]` option into the project (default or the active
-    /// environment), then removes it from the request now that the
-    /// project owns it.
-    fn apply_promote(
-        &mut self,
-        name: &str,
-        target: postui_core::varedit::PromoteTarget,
-    ) -> Result<(), String> {
-        let option = self
-            .editor
-            .variables
-            .get(name)
-            .cloned()
-            .ok_or_else(|| format!("\"{name}\" is not a request-scope variable"))?;
-        let vars_path = self.root().join("variables.toml");
-        let vars_text = std::fs::read_to_string(&vars_path).unwrap_or_default();
-        let env_name = self.active_env().map(str::to_string);
-        let env_text = env_name.as_ref().map(|env| {
-            std::fs::read_to_string(
-                self.root()
-                    .join("environments")
-                    .join(format!("{env}.toml")),
-            )
-            .unwrap_or_default()
-        });
-        let (new_vars, new_env) = postui_core::varedit::promote_var(
-            &vars_text,
-            env_text.as_deref(),
-            name,
-            &option.value,
-            target,
-        )
-        .map_err(|e| e.to_string())?;
-        self.edit_variables(|_| Ok(new_vars))?;
-        if let (Some(new_env), Some(env)) = (new_env, env_name) {
-            self.edit_env(&env, |_| Ok(new_env))?;
-        }
-        self.editor.variables.shift_remove(name);
-        // Finding 2: the project side of the promote is durable the moment
-        // `edit_variables`/`edit_env` above return `Ok` (both write
-        // atomically). The compensating half — removing the option from the
-        // request's own `[variables]` — only exists in the dirty editor
-        // buffer until now; save it synchronously so "promote, then quit"
-        // can't leave the old value stranded in both places. The project
-        // write already succeeded, so a save failure here is reported as a
-        // toast rather than an `Err` (which would incorrectly roll back an
-        // op that, on the project side, already committed) — the removal
-        // stays live in the editor buffer, just not yet on disk.
-        if let Err(e) = self.save_open_request() {
-            self.toasts.push(
-                format!("promoted \"{name}\" but {e} \u{2014} save the request manually"),
-                ToastKind::Error,
-            );
-        }
-        Ok(())
     }
 
     /// Synchronously persists the currently open request to disk, mirroring
@@ -7494,7 +7204,9 @@ impl App {
         }
     }
 
-    /// The var-manager arms' capture helper: `before` is a
+    /// `Action::ApplyMigration`'s capture helper — the one variable
+    /// write core does not journal (it makes its own `.bak` copies
+    /// instead), so it still records a file step. `before` is a
     /// `read_file_states(&self.var_file_paths())` snapshot taken
     /// before the op ran. `var_file_paths` is re-listed from disk, so an op
     /// that creates or deletes an environment file changes the path set

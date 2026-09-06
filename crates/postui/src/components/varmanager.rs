@@ -93,8 +93,8 @@ pub enum VarEditOp {
 
 /// A structural mutation dispatched by the Variable Manager: unlike
 /// [`VarEditOp`] (one value), these add/remove/rename/reshape declarations
-/// and options. Each applies through `ctx.edit_variables`/`edit_env` in
-/// `App::apply_var_struct`.
+/// and options. Each maps onto a `postui_core::project::VarEdit` in
+/// `App::apply_var_struct`, which core applies as one journal entry.
 ///
 /// The declaration ops (`NewVar`..`Promote`) write `variables.toml`; the
 /// option ops (`NewOption`..`DuplicateOption`) write one environment file
