@@ -1155,7 +1155,7 @@ impl Project {
 mod requests;
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
 
     /// A project with two spaces, one request each, two environments, a
