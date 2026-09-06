@@ -63,7 +63,7 @@ pub fn order_level<'a>(
 /// Writes `[space.<space>] order = [...]`, creating the table if needed
 /// and dropping the key when the list is empty. Keeps the table's other
 /// keys and the file's comments.
-fn write_order(doc: &mut toml_edit::DocumentMut, space: &str, order: &[String]) {
+pub(crate) fn write_order(doc: &mut toml_edit::DocumentMut, space: &str, order: &[String]) {
     let table = doc
         .entry("space")
         .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
@@ -229,18 +229,26 @@ fn edit_order(
     Ok(edits)
 }
 
-/// Whether `level` has a *displayed* listed entry: one naming a file that
-/// exists. Stale entries are ignored for display, so a level whose only
-/// entries are stale is an unlisted level as far as the screen goes.
-fn level_is_listed(root: &Path, space: &str, order: &[String], level: &str) -> bool {
-    order.iter().any(|e| {
-        level_of(e) == level && crate::storage::request_exists(root, &format!("{space}/{e}"))
-    })
+/// Whether `level` has a displayed listed entry: one naming a request
+/// that exists (`exists` answers for a full slug).
+pub(crate) fn level_is_listed(
+    space: &str,
+    order: &[String],
+    level: &str,
+    exists: &dyn Fn(&str) -> bool,
+) -> bool {
+    order
+        .iter()
+        .any(|e| level_of(e) == level && exists(&format!("{space}/{e}")))
 }
 
-/// [`order_arrive`]'s edit, on a list already in hand.
-fn arrive(root: &Path, space: &str, order: &mut Vec<String>, rel: &str) -> Vec<OrderEdit> {
-    if order.iter().any(|e| e == rel) || !level_is_listed(root, space, order, level_of(rel)) {
+pub(crate) fn arrive(
+    space: &str,
+    order: &mut Vec<String>,
+    rel: &str,
+    exists: &dyn Fn(&str) -> bool,
+) -> Vec<OrderEdit> {
+    if order.iter().any(|e| e == rel) || !level_is_listed(space, order, level_of(rel), exists) {
         return Vec::new();
     }
     let at = order.len();
@@ -255,7 +263,7 @@ fn arrive(root: &Path, space: &str, order: &mut Vec<String>, rel: &str) -> Vec<O
 /// [`order_remove`]'s edit, on a list already in hand: every occurrence,
 /// recorded last index first so that replaying the inverses backwards
 /// re-inserts first index first.
-fn remove(space: &str, order: &mut Vec<String>, rel: &str) -> Vec<OrderEdit> {
+pub(crate) fn remove(space: &str, order: &mut Vec<String>, rel: &str) -> Vec<OrderEdit> {
     let mut edits = Vec::new();
     for at in (0..order.len()).rev() {
         if order[at] == rel {
@@ -275,7 +283,9 @@ fn remove(space: &str, order: &mut Vec<String>, rel: &str) -> Vec<OrderEdit> {
 /// at all when the level has no displayed entries (it then sorts
 /// alphabetically with its unlisted siblings).
 pub fn order_arrive(root: &Path, space: &str, rel: &str) -> Result<Vec<OrderEdit>, ProjectError> {
-    edit_order(root, space, |order| arrive(root, space, order, rel))
+    edit_order(root, space, |order| {
+        arrive(space, order, rel, &|slug| crate::storage::request_exists(root, slug))
+    })
 }
 
 /// Every request of `moves` (`(from_rel, to_rel)` pairs) leaves `from`'s
@@ -297,7 +307,7 @@ pub fn order_move_all(
     edits.extend(edit_order(root, to, |order| {
         moves
             .iter()
-            .flat_map(|(_, t)| arrive(root, to, order, t))
+            .flat_map(|(_, t)| arrive(to, order, t, &|slug| crate::storage::request_exists(root, slug)))
             .collect()
     })?);
     Ok(edits)

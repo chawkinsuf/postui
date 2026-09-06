@@ -334,7 +334,7 @@ impl Project {
         }
     }
 
-    fn record(&mut self, op: Op) {
+    pub(super) fn record(&mut self, op: Op) {
         if let Some(r) = &mut self.recording {
             r.push(op);
         }
@@ -783,13 +783,7 @@ mod migration {
     }
 }
 
-mod requests {
-    use super::*;
-    pub(super) fn list(disk: &mut Disk) -> (Vec<RequestListing>, Option<String>) {
-        let (listing, warning) = crate::storage::list_requests(disk.root());
-        (listing, warning)
-    }
-}
+mod requests;
 
 #[cfg(test)]
 pub(crate) mod tests {
