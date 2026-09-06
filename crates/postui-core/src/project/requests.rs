@@ -348,12 +348,10 @@ impl Project {
     pub fn move_all_requests(&mut self, from: &str, to: &str) -> Result<Vec<(String, String)>, Error> {
         space_rel(from)?;
         space_rel(to)?;
-        let sources: Vec<String> = self
-            .listing
-            .iter()
-            .filter(|l| crate::storage::space_of(&l.slug) == Some(from))
-            .map(|l| l.slug.clone())
-            .collect();
+        // In the order the sidebar shows them (every level of the space),
+        // so the requests arrive in `to` looking as they did in `from`.
+        let sources: Vec<String> =
+            order::displayed_slugs(&self.listing, order::space_order(&self.meta, from), from);
         let mut pairs: Vec<(String, String)> = Vec::new();
         let mut reserved: Vec<String> = Vec::new();
         for slug in &sources {
@@ -584,6 +582,38 @@ mod tests {
             !e.ops.iter().any(|o| matches!(o, Op::Text { path, .. } if path.as_str().starts_with("requests/"))),
             "no request text in the journal"
         );
+    }
+
+    #[test]
+    fn move_all_arrives_in_the_order_the_sidebar_showed_not_alphabetically() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("requests/main/sub")).unwrap();
+        std::fs::create_dir_all(dir.path().join("requests/auth")).unwrap();
+        // `auth` is listed too: `order::arrive` deliberately appends
+        // nothing to a level that has no displayed entry (such a level
+        // sorts alphabetically), so an unlisted destination would record
+        // no order whatever the arrival order was.
+        std::fs::write(
+            dir.path().join("project.toml"),
+            "spaces = [\"main\", \"auth\"]\n\n[space.main]\norder = [\"b\", \"a\"]\n\n[space.auth]\norder = [\"login\"]\n",
+        )
+        .unwrap();
+        for slug in ["main/a", "main/b", "main/sub/c", "auth/login"] {
+            std::fs::write(
+                dir.path().join(format!("requests/{slug}.toml")),
+                "method = \"GET\"\nurl = \"u\"\n",
+            )
+            .unwrap();
+        }
+        let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        let moved = p.move_all_requests("main", "auth").unwrap();
+        assert_eq!(
+            moved.iter().map(|(f, _)| f.as_str()).collect::<Vec<_>>(),
+            ["main/b", "main/a", "main/sub/c"],
+            "the displayed order, not the listing's alphabetical one"
+        );
+        assert_eq!(order::space_order(p.meta(), "auth"), ["login", "b", "a"]);
+        assert!(dir.path().join("requests/auth/sub/c.toml").is_file());
     }
 
     #[test]

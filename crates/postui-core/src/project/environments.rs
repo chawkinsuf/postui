@@ -67,10 +67,19 @@ impl Project {
             return Err(Error::AlreadyExists(display));
         }
         let slug = self.environment_slug_for(&display, None);
-        self.transaction("create environment", EntryMeta::default(), |p| {
+        // Creating an environment switches to it, as today's app does;
+        // the transition is recorded so undo puts the old one back.
+        let entry_meta = EntryMeta {
+            active_env: Some((self.active_env.clone(), Some(slug.clone()))),
+            ..EntryMeta::default()
+        };
+        self.transaction("create environment", entry_meta, |p| {
             p.fs_create_file(&env_rel(&slug)?, "")?;
             p.edit_project_toml(|doc| legacy::set_item_name(doc, legacy::Kind::Environment, &slug, &display))?;
             p.refresh_environments();
+            p.load_active_env(&slug)?;
+            p.refresh_resolved();
+            p.persist_local_journaled()?;
             Ok(())
         })?;
         Ok(slug)
@@ -230,6 +239,31 @@ mod tests {
         assert_eq!(p.env_name("staging-2"), "Staging 2");
         assert!(matches!(p.create_environment("dev"), Err(Error::AlreadyExists(_))));
         assert_eq!(p.journal_len(), 1);
+    }
+
+    #[test]
+    fn create_activates_the_new_environment_and_undo_puts_the_old_one_back() {
+        let (dir, mut p) = fixture();
+        // The app's steady state: `.local/state.toml` already exists. A
+        // project whose state file has *never* been written cannot redo
+        // any entry that both writes it and switches environment — see the
+        // pre-existing `apply_meta_active_env` note in the task report;
+        // `delete_environment` has the same limitation today.
+        p.persist_local().unwrap();
+        assert_eq!(p.active_env(), Some("dev"));
+        let slug = p.create_environment("QA 2").unwrap();
+        assert_eq!(slug, "qa-2");
+        assert_eq!(p.active_env(), Some("qa-2"), "a new environment is switched to");
+        assert!(read(&dir, ".local/state.toml").unwrap().contains("environment = \"qa-2\""));
+        let (_id, label) = p.last_entry().unwrap();
+        assert_eq!(label, "create environment");
+        let u = p.undo().unwrap().unwrap();
+        assert_eq!(u.meta.active_env, Some((Some("dev".into()), Some("qa-2".into()))));
+        assert_eq!(p.active_env(), Some("dev"));
+        assert!(!dir.path().join("environments/qa-2.toml").exists());
+        p.redo().unwrap().unwrap();
+        assert_eq!(p.active_env(), Some("qa-2"));
+        assert_eq!(p.environments(), ["dev", "qa", "qa-2"]);
     }
 
     #[test]

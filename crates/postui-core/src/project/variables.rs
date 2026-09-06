@@ -10,12 +10,16 @@ use crate::varedit::EditError;
 use crate::varedit;
 
 impl Project {
-    pub fn variables_text(&mut self) -> Result<String, Error> {
-        Ok(self.disk.read(&rel(VARIABLES_TOML)?)?.unwrap_or_default())
+    /// `variables.toml` as it reads right now. `peek`, not `read`: a
+    /// scan must never record the stamp `poll` watches.
+    pub fn variables_text(&self) -> Result<String, Error> {
+        Ok(self.disk.peek(&rel(VARIABLES_TOML)?)?.unwrap_or_default())
     }
 
-    pub fn env_text(&mut self, env: &str) -> Result<String, Error> {
-        Ok(self.disk.read(&env_rel(env)?)?.unwrap_or_default())
+    /// `environments/<env>.toml` as it reads right now. See
+    /// [`Self::variables_text`] for why this peeks.
+    pub fn env_text(&self, env: &str) -> Result<String, Error> {
+        Ok(self.disk.peek(&env_rel(env)?)?.unwrap_or_default())
     }
 
     /// The app's multi-step variable cascades run under one label so
@@ -92,15 +96,17 @@ impl Project {
         Ok(())
     }
 
-    /// Slugs of every request whose text uses `{{name}}`.
-    pub fn scan_usage(&mut self, name: &str) -> Vec<String> {
-        let slugs: Vec<String> = self.listing.iter().map(|l| l.slug.clone()).collect();
-        slugs
-            .into_iter()
+    /// Slugs of every request whose text uses `{{name}}`. Walks the
+    /// listing already in memory and peeks each file, so the scan neither
+    /// re-lists `requests/` nor stamps anything.
+    pub fn scan_usage(&self, name: &str) -> Vec<String> {
+        self.listing
+            .iter()
+            .map(|l| l.slug.clone())
             .filter(|slug| {
                 request_rel(slug)
                     .ok()
-                    .and_then(|p| self.disk.read(&p).ok().flatten())
+                    .and_then(|p| self.disk.peek(&p).ok().flatten())
                     .map(|text| crate::vars::find_tokens(&text).iter().any(|t| t.name == name))
                     .unwrap_or(false)
             })
@@ -198,8 +204,33 @@ mod tests {
 
     #[test]
     fn scan_usage_reads_request_files_through_the_project() {
-        let (_d, mut p) = fixture();
+        let (_d, p) = fixture();
         assert_eq!(p.scan_usage("host"), ["auth/login", "main/ping"]);
         assert!(p.scan_usage("nope").is_empty());
+    }
+
+    /// The app calls these while it holds the project immutably, and a
+    /// scan must not stamp files so that a later `poll` skips them.
+    #[test]
+    fn the_readers_take_shared_self_and_record_no_stamps() {
+        fn read_everything(p: &Project) -> (Vec<String>, String, String) {
+            (
+                p.scan_usage("host"),
+                p.variables_text().unwrap(),
+                p.env_text("dev").unwrap(),
+            )
+        }
+        let (dir, mut p) = fixture();
+        let (used, vars, env) = read_everything(&p);
+        assert_eq!(used, ["auth/login", "main/ping"]);
+        assert!(vars.contains("[host]"), "{vars}");
+        assert!(env.contains("dev.local"), "{env}");
+        // A scan of `variables.toml` must not count as `poll` having seen
+        // the outside edit that landed before it.
+        std::fs::write(dir.path().join("variables.toml"), "[host]\ndefault = \"changed\"\n[extra]\n").unwrap();
+        let _ = read_everything(&p);
+        p.invalidate_stamps();
+        assert!(p.poll().0);
+        assert!(p.variables().vars.contains_key("extra"));
     }
 }

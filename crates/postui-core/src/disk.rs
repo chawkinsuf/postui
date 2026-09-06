@@ -160,6 +160,16 @@ impl Disk {
         }
     }
 
+    /// `read` without recording a stamp: for scans that must not make a
+    /// later `poll` think the file was seen.
+    pub fn peek(&self, rel: &RelPath) -> Result<Option<String>, DiskError> {
+        match std::fs::read_to_string(self.abs(rel)) {
+            Ok(s) => Ok(Some(s)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(DiskError::io("read", rel)(e)),
+        }
+    }
+
     pub fn read_bytes(&mut self, rel: &RelPath) -> Result<Option<Vec<u8>>, DiskError> {
         let result = match std::fs::read(self.abs(rel)) {
             Ok(b) => Ok(Some(b)),
@@ -600,6 +610,21 @@ mod tests {
         assert!(disk.changed(&p), "absence is a change");
         disk.forget_stamps();
         assert!(!disk.changed(&p));
+    }
+
+    #[test]
+    fn peek_reads_without_recording_a_stamp() {
+        let (dir, mut d) = disk();
+        let p = RelPath::new("a.txt").unwrap();
+        std::fs::write(dir.path().join("a.txt"), "hi").unwrap();
+        assert_eq!(d.peek(&p).unwrap().as_deref(), Some("hi"));
+        // `changed` reads `false` both for "never seen" and for "seen and
+        // unchanged", so assert on the table itself: `peek` recorded nothing.
+        assert!(!d.stamps.contains_key(&p), "no stamp was recorded");
+        d.read(&p).unwrap();
+        assert!(d.stamps.contains_key(&p));
+        assert!(!d.changed(&p));
+        assert_eq!(d.peek(&RelPath::new("nope.txt").unwrap()).unwrap(), None);
     }
 
     #[test]

@@ -30,10 +30,11 @@ impl Project {
         toml::to_string(&state).expect("LocalState always serializes")
     }
 
-    /// The editor told the project which request it has open. Memory
-    /// only; the next `persist_local` writes it.
+    /// The editor told the project which request it has open. Persisted
+    /// at once (best effort), as every setter here is.
     pub fn set_open_request(&mut self, slug: Option<&str>) {
         self.local.open_request = slug.map(str::to_string);
+        let _ = self.persist_local();
     }
 
     /// Remembers `slug` as the active space's open request (`None`
@@ -48,6 +49,7 @@ impl Project {
                 self.local.space_open.shift_remove(&space);
             }
         }
+        let _ = self.persist_local();
     }
 
     pub fn space_open_for(&self, space: &str) -> Option<String> {
@@ -59,15 +61,18 @@ impl Project {
             return false;
         }
         self.local.active_space = name.to_string();
+        let _ = self.persist_local();
         true
     }
 
     pub fn set_expanded(&mut self, expanded: BTreeSet<String>) {
         self.local.expanded = expanded;
+        let _ = self.persist_local();
     }
 
     pub fn set_main_split(&mut self, token: Option<String>) {
         self.local.main_split = token;
+        let _ = self.persist_local();
     }
 
     pub fn selections_for(&self, env: &str) -> &IndexMap<String, String> {
@@ -173,6 +178,28 @@ mod tests {
         assert_eq!(p2.local().space_open.get("auth").map(String::as_str), Some("auth/login"));
         assert!(p2.local().expanded.contains("auth/sub"));
         assert_eq!(p2.local().main_split.as_deref(), Some("60"));
+    }
+
+    /// The app's setters are fire-and-forget: it never calls a separate
+    /// save, so each one must land in `.local/state.toml` at once.
+    #[test]
+    fn every_local_setter_writes_state_toml_at_once() {
+        let (dir, mut p) = fixture();
+        assert!(read(&dir, ".local/state.toml").is_none(), "nothing written yet");
+        p.set_main_split(Some("60".into()));
+        assert!(read(&dir, ".local/state.toml").unwrap().contains("main_split = \"60\""));
+        p.set_expanded(["main/deep".to_string()].into_iter().collect());
+        assert!(read(&dir, ".local/state.toml").unwrap().contains("main/deep"));
+        p.set_open_request(Some("main/ping"));
+        assert!(read(&dir, ".local/state.toml").unwrap().contains("open_request = \"main/ping\""));
+        p.record_space_open(Some("main/ping"));
+        assert!(read(&dir, ".local/state.toml").unwrap().contains("[space_open]"));
+        assert!(p.set_active_space("auth"));
+        assert!(read(&dir, ".local/state.toml").unwrap().contains("space = \"auth\""));
+        // A refused space change writes nothing new.
+        let before = read(&dir, ".local/state.toml").unwrap();
+        assert!(!p.set_active_space("ghost"));
+        assert_eq!(read(&dir, ".local/state.toml").as_deref(), Some(before.as_str()));
     }
 
     #[test]

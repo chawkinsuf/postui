@@ -111,6 +111,9 @@ pub struct Project {
     secrets: IndexMap<String, IndexMap<String, String>>,
     resolved: Resolved,
     spaces: Vec<String>,
+    /// `project.toml` entries that are not valid space names, joined;
+    /// re-derived by every `refresh_spaces`.
+    spaces_warning: Option<String>,
     listing: Vec<RequestListing>,
     listing_warning: Option<String>,
     /// Requests loaded on demand, held while open (Task 7).
@@ -138,6 +141,7 @@ struct Memory {
     secrets: IndexMap<String, IndexMap<String, String>>,
     resolved: Resolved,
     spaces: Vec<String>,
+    spaces_warning: Option<String>,
     local: Local,
     /// Slugs held in `open_requests` (keys only; bodies are re-read).
     open_request_keys: Vec<String>,
@@ -171,6 +175,12 @@ pub(crate) fn env_rel(env: &str) -> Result<RelPath, Error> {
         return Err(Error::BadName(env.to_string()));
     }
     rel(&format!("{ENVIRONMENTS_DIR}/{env}.toml"))
+}
+
+/// The `list_spaces` warnings as one line, or `None` when there are
+/// none: what `spaces_warning` reports.
+fn join_warnings(warnings: &[Warning]) -> Option<String> {
+    (!warnings.is_empty()).then(|| warnings.join("; "))
 }
 
 fn parse_err(file: &str) -> impl Fn(&dyn std::fmt::Display) -> Error + '_ {
@@ -223,6 +233,12 @@ impl Project {
 
     pub fn spaces(&self) -> &[String] {
         &self.spaces
+    }
+
+    /// `project.toml` entries that are not valid space names, joined; the
+    /// app toasts it once per change.
+    pub fn spaces_warning(&self) -> Option<&str> {
+        self.spaces_warning.as_deref()
     }
 
     pub fn space_name(&self, slug: &str) -> String {
@@ -308,6 +324,7 @@ impl Project {
             secrets: self.secrets.clone(),
             resolved: self.resolved.clone(),
             spaces: self.spaces.clone(),
+            spaces_warning: self.spaces_warning.clone(),
             local: self.local.clone(),
             open_request_keys: self.open_requests.keys().cloned().collect(),
         }
@@ -322,6 +339,7 @@ impl Project {
         self.secrets = m.secrets;
         self.resolved = m.resolved;
         self.spaces = m.spaces;
+        self.spaces_warning = m.spaces_warning;
         self.local = m.local;
         self.open_requests = m
             .open_request_keys
@@ -602,6 +620,9 @@ impl Project {
         self.force_reload = false;
         let warnings = self.reload_documents();
         self.relist();
+        // An outside edit to a request the editor holds open must reach
+        // the editor too, not just the listing.
+        self.reload_held_requests();
         (true, warnings)
     }
 
@@ -815,6 +836,7 @@ impl Project {
             warnings.push(format!("could not empty .local/trash: {e}"));
         }
         let (spaces, space_warnings) = Self::list_spaces(&mut disk, &meta);
+        let spaces_warning = join_warnings(&space_warnings);
         warnings.extend(space_warnings);
 
         let (legacy_vars, pending_migration, migration_warnings) =
@@ -917,6 +939,7 @@ impl Project {
             secrets,
             resolved: Resolved::default(),
             spaces,
+            spaces_warning,
             listing,
             listing_warning,
             open_requests: IndexMap::new(),
@@ -945,11 +968,52 @@ impl Project {
     /// `project.toml` with `name`, empty `variables.toml`, `.gitignore`),
     /// never overwriting anything present, then opens it.
     pub fn init(root: &Path, name: Option<&str>) -> Result<(Project, Vec<Warning>), OpenError> {
-        legacy::init_project(root, name).map_err(|e| OpenError {
+        let mut disk = Disk::new(root.to_path_buf());
+        // What `legacy::init_project` wrote, through `Disk`: the two
+        // directories, a `default` environment when the project has none
+        // that `list_environments` recognises, and the three seed files —
+        // each created only if absent, never rewritten.
+        let seed = |disk: &mut Disk| -> Result<(), DiskError> {
+            disk.create_dir(&RelPath::new(REQUESTS_DIR)?)?;
+            disk.create_dir(&RelPath::new(ENVIRONMENTS_DIR)?)?;
+            if Self::list_environments(disk).is_empty() {
+                match disk.write_new(
+                    &RelPath::new(format!("{ENVIRONMENTS_DIR}/{DEFAULT_ENVIRONMENT}.toml"))?,
+                    "# environments/default.toml: values for this project's variables\n",
+                ) {
+                    Ok(()) | Err(DiskError::AlreadyExists(_)) => {}
+                    Err(e) => return Err(e),
+                }
+            }
+            let project_toml = match name {
+                Some(n) => {
+                    let mut doc = toml_edit::DocumentMut::new();
+                    doc["name"] = toml_edit::value(n);
+                    doc.to_string()
+                }
+                None => "# project.toml: optional `name`, optional [default_headers]\n".to_string(),
+            };
+            for (file, text) in [
+                (PROJECT_TOML, project_toml.as_str()),
+                (
+                    VARIABLES_TOML,
+                    "# Declare variables: [name] with optional description/default\n",
+                ),
+                (".gitignore", "/.local/\n"),
+            ] {
+                match disk.write_new(&RelPath::new(file)?, text) {
+                    Ok(()) | Err(DiskError::AlreadyExists(_)) => {}
+                    Err(e) => return Err(e),
+                }
+            }
+            Ok(())
+        };
+        seed(&mut disk).map_err(|e| OpenError {
             root: root.to_path_buf(),
             file: String::new(),
             error: e.to_string(),
         })?;
+        drop(disk);
         // A fresh project has `main` on disk but not in the list yet.
         let (mut project, mut warnings) = Project::open(root.to_path_buf())?;
         if project.meta.spaces.is_empty() {
@@ -976,6 +1040,40 @@ impl Project {
             }
         }
         Ok((project, warnings))
+    }
+
+    /// What `storage::ensure_project` did on every open: `requests/`
+    /// exists; a project with no spaces gets `requests/main` and, when it
+    /// has a `project.toml`, a `spaces` list. A bare directory never
+    /// gains a `project.toml` behind the user's back. Not journaled.
+    pub fn ensure_spaces(&mut self) -> Result<(), Error> {
+        self.disk.create_dir(&rel(REQUESTS_DIR)?)?;
+        if self.spaces.is_empty() {
+            self.disk.create_dir(&space_rel(DEFAULT_SPACE)?)?;
+        }
+        if Self::is_project(self.disk.root()) && self.meta.spaces.is_empty() {
+            let spaces = if self.spaces.is_empty() {
+                vec![DEFAULT_SPACE.to_string()]
+            } else {
+                self.spaces.clone()
+            };
+            let path = rel(PROJECT_TOML)?;
+            let text = self.disk.read(&path)?.unwrap_or_default();
+            let mut doc: toml_edit::DocumentMut = text
+                .parse()
+                .map_err(|e: toml_edit::TomlError| parse_err(PROJECT_TOML)(&e))?;
+            doc["spaces"] = toml_edit::value(legacy::spaces_array(&spaces));
+            let new_text = doc.to_string();
+            // Validate before writing, as `edit_project_toml` does.
+            let parsed: ProjectMeta =
+                toml::from_str(&new_text).map_err(|e| parse_err(PROJECT_TOML)(&e))?;
+            self.disk.write(&path, &new_text)?;
+            self.meta = parsed;
+        }
+        // A vanished active space is repaired here as it is in `poll`;
+        // the warning is `spaces_warning`'s job, not this one's.
+        let _ = self.refresh_spaces();
+        Ok(())
     }
 
     /// Drops selections naming options that no longer exist (told once,
@@ -1150,10 +1248,128 @@ pub(crate) mod tests {
         assert_eq!(p.spaces(), ["main"]);
         assert_eq!(p.environments(), ["default"]);
         assert_eq!(read(&dir, ".gitignore").as_deref(), Some("/.local/\n"));
+        // `init`'s own seeding appends the `spaces` list to the stub.
+        let project_toml = read(&dir, "project.toml").unwrap();
+        assert!(project_toml.contains("name = \"New\""), "{project_toml}");
+        assert!(project_toml.contains("spaces = [\"main\"]"), "{project_toml}");
+        assert_eq!(
+            read(&dir, "variables.toml").as_deref(),
+            Some("# Declare variables: [name] with optional description/default\n")
+        );
+        assert_eq!(
+            read(&dir, "environments/default.toml").as_deref(),
+            Some("# environments/default.toml: values for this project's variables\n")
+        );
         std::fs::write(dir.path().join("variables.toml"), "[keep]\n").unwrap();
         let (p2, _w) = Project::init(dir.path(), Some("Other")).unwrap();
         assert_eq!(p2.display_name(), "New", "init never overwrites");
         assert!(p2.variables().vars.contains_key("keep"));
+    }
+
+    /// The three branches of the seed that the happy path does not show:
+    /// no `name` writes the comment stub, an existing environment stops
+    /// `default` being made, and nothing already on disk is rewritten.
+    #[test]
+    fn init_without_a_name_stubs_project_toml_and_keeps_an_existing_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("environments")).unwrap();
+        std::fs::write(dir.path().join("environments/dev.toml"), "").unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "mine\n").unwrap();
+        let (p, _w) = Project::init(dir.path(), None).unwrap();
+        assert!(p.meta().name.is_none());
+        let project_toml = read(&dir, "project.toml").unwrap();
+        assert!(
+            project_toml.contains("# project.toml: optional `name`, optional [default_headers]"),
+            "{project_toml}"
+        );
+        assert!(!project_toml.contains("name = "), "no name was given: {project_toml}");
+        assert_eq!(p.environments(), ["dev"], "an existing environment is enough");
+        assert!(!dir.path().join("environments/default.toml").exists());
+        assert_eq!(read(&dir, ".gitignore").as_deref(), Some("mine\n"));
+        assert!(dir.path().join("requests").is_dir());
+    }
+
+    /// `list_environments` skips files that are not valid slugs, so a
+    /// directory holding only those still gets the `default` environment.
+    #[test]
+    fn init_ignores_environment_files_that_are_not_valid_slugs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("environments")).unwrap();
+        std::fs::write(dir.path().join("environments/Bad Name.toml"), "").unwrap();
+        std::fs::write(dir.path().join("environments/notes.md"), "").unwrap();
+        let (p, _w) = Project::init(dir.path(), None).unwrap();
+        assert_eq!(p.environments(), ["default"]);
+    }
+
+    /// The four branches of what `storage::ensure_project` did on every
+    /// open, now on `Disk`.
+    #[test]
+    fn ensure_spaces_seeds_main_in_a_bare_dir_and_lists_dirs_in_a_project() {
+        // 1. A bare directory with no spaces: `main` on disk, no project.toml.
+        let dir = tempfile::tempdir().unwrap();
+        let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        p.ensure_spaces().unwrap();
+        assert!(dir.path().join("requests/main").is_dir());
+        assert!(!dir.path().join("project.toml").exists(), "a bare dir stays bare");
+        assert_eq!(p.spaces(), ["main"]);
+
+        // 2. A bare directory that already has a space: left alone.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("requests/auth")).unwrap();
+        let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        p.ensure_spaces().unwrap();
+        assert!(!dir.path().join("requests/main").exists());
+        assert!(!dir.path().join("project.toml").exists());
+        assert_eq!(p.spaces(), ["auth"]);
+
+        // 3. A project with an empty `spaces` and dirs on disk: listed.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("project.toml"), "").unwrap();
+        std::fs::create_dir_all(dir.path().join("requests/auth")).unwrap();
+        let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        p.ensure_spaces().unwrap();
+        assert_eq!(p.meta().spaces, ["auth"]);
+        assert!(!dir.path().join("requests/main").exists());
+        assert!(read(&dir, "project.toml").unwrap().contains("spaces = [\"auth\"]"));
+
+        // 4. A project with an empty `spaces` and none on disk: `main`,
+        // both as a directory and in the list.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("project.toml"), "# keep me\n").unwrap();
+        let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        p.ensure_spaces().unwrap();
+        assert!(dir.path().join("requests/main").is_dir());
+        assert_eq!(p.meta().spaces, ["main"]);
+        assert_eq!(p.spaces(), ["main"]);
+        let text = read(&dir, "project.toml").unwrap();
+        assert!(text.contains("spaces = [\"main\"]") && text.contains("# keep me"), "{text}");
+    }
+
+    #[test]
+    fn ensure_spaces_leaves_a_listed_project_untouched_and_is_not_journaled() {
+        let (dir, mut p) = fixture();
+        let before = read(&dir, "project.toml").unwrap();
+        p.ensure_spaces().unwrap();
+        assert_eq!(read(&dir, "project.toml").as_deref(), Some(before.as_str()));
+        assert_eq!(p.spaces(), ["main", "auth"]);
+        assert_eq!(p.journal_len(), 0);
+    }
+
+    #[test]
+    fn spaces_warning_names_an_invalid_entry_and_clears_when_it_is_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("project.toml"), "spaces = [\"main\", \"Bad Name\"]\n").unwrap();
+        std::fs::create_dir_all(dir.path().join("requests/main")).unwrap();
+        let (mut p, warnings) = Project::open(dir.path().to_path_buf()).unwrap();
+        let w = p.spaces_warning().expect("an invalid entry warns").to_string();
+        assert!(w.contains("Bad Name"), "{w}");
+        assert!(warnings.contains(&w), "open reports it too: {warnings:?}");
+        assert_eq!(p.spaces(), ["main"]);
+
+        std::fs::write(dir.path().join("project.toml"), "spaces = [\"main\"]\n").unwrap();
+        p.invalidate_stamps();
+        assert!(p.poll().0);
+        assert_eq!(p.spaces_warning(), None);
     }
 
     #[test]
@@ -1220,6 +1436,23 @@ pub(crate) mod tests {
         let (changed, warnings) = p.poll();
         assert!(changed && warnings.is_empty(), "{warnings:?}");
         assert!(p.requests().iter().any(|l| l.slug == "main/extra"));
+    }
+
+    #[test]
+    fn poll_re_reads_the_requests_the_editor_holds_open() {
+        let (dir, mut p) = fixture();
+        p.open_request("main/ping").unwrap();
+        p.open_request("auth/login").unwrap();
+        std::fs::write(
+            dir.path().join("requests/main/ping.toml"),
+            "method = \"GET\"\nurl = \"outside\"\n",
+        )
+        .unwrap();
+        std::fs::remove_file(dir.path().join("requests/auth/login.toml")).unwrap();
+        p.invalidate_stamps();
+        assert!(p.poll().0);
+        assert_eq!(p.held_request("main/ping").unwrap().url, "outside");
+        assert!(p.held_request("auth/login").is_none(), "a vanished request is dropped");
     }
 
     #[test]
