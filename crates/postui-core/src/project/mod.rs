@@ -9,6 +9,7 @@
 mod environments;
 mod legacy;
 mod local;
+mod migration;
 mod spaces;
 mod undo;
 mod variables;
@@ -122,6 +123,9 @@ pub struct Project {
     recording: Option<Vec<Op>>,
     pending_migration: Option<MigrationOutcome>,
     migration_declined: bool,
+    /// Set by `invalidate_stamps`; forces the next `poll` to reload even
+    /// though no watched stamp actually differs.
+    force_reload: bool,
 }
 
 /// A snapshot of every in-memory document `Project` holds, for restoring
@@ -496,8 +500,56 @@ impl Project {
         Ok(())
     }
 
-    /// Task 12's watched-stamp bookkeeping; a no-op until then.
-    fn stamp_watched(&mut self) {}
+    /// The files today's `reload_if_changed` stamps: `project.toml`,
+    /// `variables.toml`, `environments/`, the active env file, and
+    /// `requests/`.
+    fn watched(&self) -> Vec<RelPath> {
+        let mut out = vec![
+            RelPath::new(PROJECT_TOML).expect("constant"),
+            RelPath::new(VARIABLES_TOML).expect("constant"),
+            RelPath::new(ENVIRONMENTS_DIR).expect("constant"),
+            RelPath::new(REQUESTS_DIR).expect("constant"),
+        ];
+        if let Some(env) = &self.active_env
+            && let Ok(p) = env_rel(env)
+        {
+            out.push(p);
+        }
+        out
+    }
+
+    /// Records the watched files' stamps (what `open`'s reads did for
+    /// the ones it read; directories need an explicit list).
+    fn stamp_watched(&mut self) {
+        for path in self.watched() {
+            if self.disk.is_dir(&path) {
+                let _ = self.disk.list(&path);
+            } else {
+                let _ = self.disk.read(&path);
+            }
+        }
+    }
+
+    /// Forces the next `poll` to reload (the app's
+    /// `reload_after_file_change`).
+    pub fn invalidate_stamps(&mut self) {
+        self.disk.forget_stamps();
+        // A cleared table compares as "unchanged"; mark one watched path
+        // as never seen by recording a stamp that cannot match.
+        self.force_reload = true;
+    }
+
+    /// Today's timer reload: silent, mtime-gated, keeps what fails to
+    /// parse. Returns whether anything was re-read.
+    pub fn poll(&mut self) -> (bool, Vec<Warning>) {
+        let changed = self.force_reload || self.watched().iter().any(|p| self.disk.changed(p));
+        if !changed {
+            return (false, Vec::new());
+        }
+        self.force_reload = false;
+        let warnings = self.reload_documents();
+        (true, warnings)
+    }
 
     /// Re-reads meta, variables, environments, spaces, secrets and the
     /// active env. A file that fails to parse keeps its previous value
@@ -842,8 +894,10 @@ impl Project {
             recording: None,
             pending_migration,
             migration_declined: false,
+            force_reload: false,
         };
         warnings.extend(project.prune_stale_selections(legacy_vars));
+        project.stamp_watched();
         project.refresh_resolved();
         Ok((project, warnings))
     }
@@ -933,38 +987,6 @@ impl Project {
             let _ = self.persist_local();
         }
         warnings
-    }
-}
-
-mod migration {
-    use super::*;
-    pub(super) fn probe(disk: &mut Disk) -> (bool, Option<MigrationOutcome>, Vec<Warning>) {
-        let vars = disk
-            .read(&RelPath::new(VARIABLES_TOML).expect("constant"))
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        let envs: Vec<(String, String)> = Project::list_environments(disk)
-            .into_iter()
-            .map(|env| {
-                let text = RelPath::new(&format!("{ENVIRONMENTS_DIR}/{env}.toml"))
-                    .ok()
-                    .and_then(|p| disk.read(&p).ok().flatten())
-                    .unwrap_or_default();
-                (env, text)
-            })
-            .collect();
-        if !crate::migrate::needs_migration(&vars, &envs) {
-            return (false, None, Vec::new());
-        }
-        match crate::migrate::migrate(&vars, &envs) {
-            Ok(outcome) => (true, Some(outcome), Vec::new()),
-            Err(e) => (
-                true,
-                None,
-                vec![format!("variables use the old format and can't be converted automatically: {e}")],
-            ),
-        }
     }
 }
 
@@ -1126,6 +1148,106 @@ pub(crate) mod tests {
         assert_eq!(entry.ops.len(), 2);
         assert!(matches!(entry.ops[0], Op::Text { .. }));
         assert!(matches!(entry.ops[1], Op::Renamed { .. }));
+    }
+
+    fn bump_mtime(path: &std::path::Path) {
+        // Coarse-mtime filesystems need the clock to move.
+        let t = std::fs::metadata(path).unwrap().modified().unwrap() + std::time::Duration::from_secs(2);
+        std::fs::File::open(path).unwrap().set_modified(t).unwrap();
+    }
+
+    #[test]
+    fn poll_is_quiet_until_a_watched_file_changes_then_re_reads() {
+        let (dir, mut p) = fixture();
+        assert_eq!(p.poll(), (false, Vec::new()));
+        std::fs::write(dir.path().join("variables.toml"), "[host]\ndefault = \"changed\"\n[extra]\n").unwrap();
+        bump_mtime(&dir.path().join("variables.toml"));
+        let (changed, warnings) = p.poll();
+        assert!(changed && warnings.is_empty(), "{warnings:?}");
+        assert!(p.variables().vars.contains_key("extra"));
+        assert_eq!(p.active_env(), Some("dev"), "the active env is kept");
+        assert_eq!(p.poll().0, false);
+    }
+
+    #[test]
+    fn poll_with_a_broken_file_warns_and_keeps_the_previous_value() {
+        let (dir, mut p) = fixture();
+        std::fs::write(dir.path().join("variables.toml"), "[host\n").unwrap();
+        bump_mtime(&dir.path().join("variables.toml"));
+        let (changed, warnings) = p.poll();
+        assert!(changed);
+        assert!(warnings.iter().any(|w| w.contains("variables.toml")));
+        assert!(p.variables().vars.contains_key("host"));
+    }
+
+    #[test]
+    fn poll_notices_a_new_space_dir_and_a_deleted_active_env() {
+        let (dir, mut p) = fixture();
+        std::fs::create_dir_all(dir.path().join("requests/new")).unwrap();
+        bump_mtime(&dir.path().join("requests"));
+        assert!(p.poll().0);
+        assert_eq!(p.spaces(), ["main", "auth", "new"]);
+        std::fs::remove_file(dir.path().join("environments/dev.toml")).unwrap();
+        bump_mtime(&dir.path().join("environments"));
+        let (_, warnings) = p.poll();
+        assert!(warnings.iter().any(|w| w.contains("no longer exists")));
+        assert_eq!(p.active_env(), None);
+    }
+
+    #[test]
+    fn invalidate_stamps_forces_the_next_poll() {
+        let (_d, mut p) = fixture();
+        assert!(!p.poll().0);
+        p.invalidate_stamps();
+        assert!(p.poll().0);
+    }
+
+    #[test]
+    fn reload_all_re_reads_held_requests_and_drops_vanished_ones() {
+        let (dir, mut p) = fixture();
+        p.open_request("main/ping").unwrap();
+        p.open_request("auth/login").unwrap();
+        std::fs::write(dir.path().join("requests/main/ping.toml"), "method = \"GET\"\nurl = \"outside\"\n").unwrap();
+        std::fs::remove_file(dir.path().join("requests/auth/login.toml")).unwrap();
+        p.reload_all();
+        assert_eq!(p.held_request("main/ping").unwrap().url, "outside");
+        assert!(p.held_request("auth/login").is_none());
+    }
+
+    #[test]
+    fn a_legacy_project_offers_a_migration_and_applying_it_backs_up_once() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("environments")).unwrap();
+        std::fs::write(dir.path().join("project.toml"), "").unwrap();
+        // Stage-6 shape: a `[groups]` table `migrate::needs_migration` recognises.
+        std::fs::write(dir.path().join("variables.toml"), "[groups.region]\nmembers = [\"host\"]\n").unwrap();
+        std::fs::write(dir.path().join("environments/dev.toml"), "").unwrap();
+        let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        assert!(p.pending_migration().is_some());
+        assert!(p.variables().vars.is_empty(), "legacy files stay inert");
+        let notes = p.apply_migration().unwrap();
+        assert!(p.pending_migration().is_none());
+        assert!(dir.path().join("variables.toml.bak").is_file());
+        let bak = read(&dir, "variables.toml.bak").unwrap();
+        assert!(bak.contains("[groups.region]"));
+        let _ = notes;
+        // A second apply is refused; the .bak is untouched.
+        assert!(matches!(p.apply_migration(), Err(Error::NothingPending)));
+        assert_eq!(read(&dir, "variables.toml.bak").unwrap(), bak);
+    }
+
+    #[test]
+    fn declining_stops_the_offer_for_the_session() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("environments")).unwrap();
+        std::fs::write(dir.path().join("project.toml"), "").unwrap();
+        std::fs::write(dir.path().join("variables.toml"), "[groups.region]\nmembers = [\"host\"]\n").unwrap();
+        let (mut p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        p.decline_migration();
+        assert!(p.pending_migration().is_none());
+        p.invalidate_stamps();
+        p.poll();
+        assert!(p.pending_migration().is_none());
     }
 
     #[test]
