@@ -382,6 +382,12 @@ pub struct App {
     /// The undo/redo stacks. Populated by `capture_undo` and by later
     /// tasks' Undo/Redo apply arms.
     pub history: crate::undo::History,
+    /// The `Project` journal entry the last recorded `StepKind::Project`
+    /// marker points at. A `Project` call that merged into the entry
+    /// already on top leaves this unchanged, so
+    /// [`Self::record_project_step`] records nothing for it and a
+    /// keyboard burst stays one undo step.
+    marked_entry: Option<postui_core::journal::EntryId>,
     /// The open request as of the last `capture_undo` call (with its slug),
     /// diffed against the live editor each call to detect edits that never
     /// went through an `Action`. `None` before the first request is open.
@@ -1333,6 +1339,7 @@ impl App {
             _test_rx: None,
             _test_dir: None,
             history: crate::undo::History::new(),
+            marked_entry: None,
             shadow: None,
             shadow_cursor: crate::undo::CursorPos::None,
             no_coalesce: false,
@@ -2556,7 +2563,14 @@ impl App {
                 {
                     return true;
                 }
-                match postui_core::storage::load_request(self.root(), &slug) {
+                let Some(p) = self.project.as_mut() else {
+                    return true;
+                };
+                // Only one request is held at a time, as only one is open.
+                if let Some(prev) = outgoing.as_deref().filter(|s| *s != slug) {
+                    p.close_request(prev);
+                }
+                match p.open_request(&slug).cloned() {
                     Ok(req) => {
                         self.editor.load(Some(slug.clone()), req);
                         self.sync_active_tab();
@@ -2589,7 +2603,13 @@ impl App {
                 match self.editor.slug.clone() {
                     Some(slug) => {
                         let req = self.editor.current_request();
-                        match postui_core::storage::save_request(self.root(), &slug, &req) {
+                        // Not journaled: undoing past a save is the
+                        // editor's own memory-only step.
+                        let saved = match self.project_mut() {
+                            Some(p) => p.save_request(&slug, &req),
+                            None => return true,
+                        };
+                        match saved {
                             Ok(()) => {
                                 self.mark_saved_after_write();
                                 self.toasts
@@ -2680,29 +2700,12 @@ impl App {
                 let Some(slug) = self.sidebar.selected_slug() else {
                     return true;
                 };
-                match postui_core::storage::duplicate_request(self.root(), &slug) {
+                let Some(p) = self.project.as_mut() else {
+                    return true;
+                };
+                match p.duplicate_request(&slug) {
                     Ok(new_slug) => {
-                        let new_path =
-                            postui_core::storage::request_path(self.root(), &new_slug);
-                        let orders = match (Self::split_rel(&slug), Self::split_rel(&new_slug)) {
-                            (Some((space, anchor_rel)), Some((_, rel))) => {
-                                let r = postui_core::order::order_insert_after(
-                                    self.root(),
-                                    space,
-                                    anchor_rel,
-                                    rel,
-                                );
-                                self.order_cascade("duplicate", r)
-                            }
-                            _ => Vec::new(),
-                        };
-                        self.record_file_step_with_orders(
-                            vec![(new_path.clone(), None)],
-                            &[new_path],
-                            None,
-                            orders,
-                            Vec::new(),
-                        );
+                        self.record_project_step();
                         self.refresh_sidebar();
                         let display = self.request_display(&new_slug);
                         self.toasts
@@ -2835,26 +2838,12 @@ impl App {
                 true
             }
             Action::ForceMoveRequestToSpace { slug, space } => {
-                use postui_core::storage;
-                let from_path = storage::request_path(self.root(), &slug);
-                let old_content = std::fs::read_to_string(&from_path).ok();
-                match storage::move_request_to_space(self.root(), &slug, &space) {
+                let Some(p) = self.project.as_mut() else {
+                    return true;
+                };
+                match p.move_request(&slug, &space) {
                     Ok(new_slug) => {
-                        let to_path = storage::request_path(self.root(), &new_slug);
-                        let mut orders =
-                            self.cascade_slug("move", &slug, postui_core::order::order_remove);
-                        orders.extend(self.cascade_slug(
-                            "move",
-                            &new_slug,
-                            postui_core::order::order_arrive,
-                        ));
-                        self.record_file_step_with_orders(
-                            vec![(from_path.clone(), old_content), (to_path.clone(), None)],
-                            &[from_path, to_path],
-                            None,
-                            orders,
-                            vec![(slug.clone(), new_slug.clone())],
-                        );
+                        self.record_project_step();
                         // The move doesn't follow the request into its
                         // new space (user feedback: that made moving
                         // several in a row a chore). From this space's
@@ -2911,7 +2900,7 @@ impl App {
                 true
             }
             Action::RenameRequest { from, to } => {
-                use postui_core::storage::{self, StorageError};
+                use postui_core::project::Error;
                 // The typed name is relative to the active space, same as
                 // a create.
                 let to = format!(
@@ -2919,30 +2908,12 @@ impl App {
                     self.active_space(),
                     to.trim_start_matches('/')
                 );
-                let from_path = storage::request_path(self.root(), &from);
-                let old_content = std::fs::read_to_string(&from_path).ok();
-                match storage::rename_request_named(self.root(), &from, &to) {
+                let Some(p) = self.project.as_mut() else {
+                    return true;
+                };
+                match p.rename_request(&from, &to) {
                     Ok((slug, leaf)) => {
-                        let to_path = storage::request_path(self.root(), &slug);
-                        let orders = match (Self::split_rel(&from), Self::split_rel(&slug)) {
-                            (Some((space, from_rel)), Some((_, to_rel))) => {
-                                let r = postui_core::order::order_rename(
-                                    self.root(),
-                                    space,
-                                    from_rel,
-                                    to_rel,
-                                );
-                                self.order_cascade("rename", r)
-                            }
-                            _ => Vec::new(),
-                        };
-                        self.record_file_step_with_orders(
-                            vec![(from_path.clone(), old_content), (to_path.clone(), None)],
-                            &[from_path, to_path],
-                            None,
-                            orders,
-                            vec![(from.clone(), slug.clone())],
-                        );
+                        self.record_project_step();
                         self.session.rename(&from, &slug);
                         self.refresh_sidebar();
                         if self.editor.slug.as_deref() == Some(from.as_str()) {
@@ -2958,14 +2929,14 @@ impl App {
                             self.sidebar.open_slug = Some(slug);
                         }
                     }
-                    Err(StorageError::AlreadyExists(taken)) => {
+                    Err(Error::AlreadyExists(taken)) => {
                         self.toasts.push(
                             format!("a request named {taken:?} already exists here"),
                             ToastKind::Error,
                         );
                         self.last_action_failed = true;
                     }
-                    Err(StorageError::InvalidSlug(_)) => {
+                    Err(Error::BadName(_)) => {
                         self.toasts
                             .push("request name cannot be empty", ToastKind::Error);
                         self.last_action_failed = true;
@@ -2982,35 +2953,29 @@ impl App {
             }
             Action::DeleteRequest(slug) => {
                 let display = self.request_display(&slug);
-                // The step carries state.toml on both sides: the "before"
-                // side still names this request as open (when it was), so
-                // undo reopens it rather than leaving an empty editor.
-                let state_toml = self.local_state_path();
+                // The entry records the open request as its `reopen`, so
+                // undo puts the editor back rather than leaving it empty:
+                // persist first, so the project's own local state names it.
                 self.apply(Action::PersistLocalState);
-                let before = self.read_file_states(std::slice::from_ref(&state_toml));
-                let context_slug = self.editor.slug.clone();
-                match postui_core::storage::delete_request(self.root(), &slug) {
-                    Ok(trashed) => {
+                let Some(p) = self.project.as_mut() else {
+                    return true;
+                };
+                match p.delete_request(&slug) {
+                    Ok(()) => {
+                        self.record_project_step_as(
+                            crate::undo::ProjectNoun::Trash,
+                            Some(slug.clone()),
+                        );
                         self.toasts.push(
                             format!("Deleted {display}{}", self.undo_hint()),
                             ToastKind::Info,
                         );
-                        let orders =
-                            self.cascade_slug("delete", &slug, postui_core::order::order_remove);
                         self.refresh_sidebar();
                         if self.editor.slug.as_deref() == Some(slug.as_str()) {
                             self.editor = Editor::default();
                             self.shadow = None;
                         }
                         self.apply(Action::PersistLocalState);
-                        self.record_trashed_step_with_orders(
-                            vec![trashed],
-                            before,
-                            &[state_toml],
-                            None,
-                            orders,
-                            context_slug,
-                        );
                     }
                     Err(e) => {
                         self.toasts
@@ -3451,6 +3416,7 @@ impl App {
                 // into a drag of a same-named row in the next project.
                 self.cancel_stale_drags(None);
                 self.history.clear();
+                self.marked_entry = None;
                 self.shadow = None;
                 let slug = self.editor.slug.clone();
                 if let Some(p) = self.project_mut() {
@@ -3776,13 +3742,23 @@ impl App {
                 // so it becomes a step, then capture any pending delta.
                 self.commit_table_edit();
                 self.capture_undo();
-                match self.history.pop_undo() {
-                    None => {
-                        self.toasts.push("Nothing to undo", ToastKind::Info);
-                    }
-                    Some(step) => {
-                        if self.apply_undo_step(step, false) {
-                            self.history.break_coalescing();
+                loop {
+                    match self.history.pop_undo() {
+                        None => {
+                            self.toasts.push("Nothing to undo", ToastKind::Info);
+                            break;
+                        }
+                        Some(step) => {
+                            // A marker whose journal entry is gone (merged
+                            // away, netted to nothing) is not a step the
+                            // user made: skip it and undo the one beneath.
+                            if self.is_stale_marker(&step, false) {
+                                continue;
+                            }
+                            if self.apply_undo_step(step, false) {
+                                self.history.break_coalescing();
+                            }
+                            break;
                         }
                     }
                 }
@@ -3797,13 +3773,20 @@ impl App {
                 // after the last undo; capturing it clears the redo stack,
                 // which is exactly the linear-history contract.
                 self.capture_undo();
-                match self.history.pop_redo() {
-                    None => {
-                        self.toasts.push("Nothing to redo", ToastKind::Info);
-                    }
-                    Some(step) => {
-                        if self.apply_undo_step(step, true) {
-                            self.history.break_coalescing();
+                loop {
+                    match self.history.pop_redo() {
+                        None => {
+                            self.toasts.push("Nothing to redo", ToastKind::Info);
+                            break;
+                        }
+                        Some(step) => {
+                            if self.is_stale_marker(&step, true) {
+                                continue;
+                            }
+                            if self.apply_undo_step(step, true) {
+                                self.history.break_coalescing();
+                            }
+                            break;
                         }
                     }
                 }
@@ -5519,26 +5502,21 @@ impl App {
                     );
                     return true;
                 };
-                let r = postui_core::order::move_shown(
-                    self.root(),
-                    &space,
-                    &level,
-                    &shown,
-                    rel,
-                    delta,
-                );
-                match r {
-                    Ok(change) => {
-                        // Same mtime hazard as `MoveSpace`: read the file
-                        // we just wrote rather than waiting for the stamp.
-                        self.reload_project_documents();
+                let rel = rel.to_string();
+                let Some(p) = self.project.as_mut() else {
+                    return true;
+                };
+                match p.move_request_shown(&space, &level, &shown, &rel, delta) {
+                    Ok(_) => {
                         self.rebuild_sidebar();
                         self.sidebar.select_slug(&slug);
-                        let target = crate::undo::ReorderTarget::Requests {
-                            space,
-                            slug: slug.clone(),
-                        };
-                        self.record_reorder_step(change, target, true);
+                        // A burst merges in core: the journal's top id
+                        // stays the same, so nothing is re-recorded and
+                        // the whole burst stays one undo step.
+                        self.record_project_step_as(
+                            crate::undo::ProjectNoun::Reorder,
+                            Some(slug.clone()),
+                        );
                     }
                     Err(e) => {
                         self.toasts
@@ -5585,74 +5563,25 @@ impl App {
             }
             Action::ForceMoveAllRequests { from, to } => {
                 let open = self.editor.slug.clone();
-                let (moved, err) =
-                    postui_core::storage::move_all_requests(self.root(), &from, &to);
-                if let Some(e) = err {
-                    self.toasts.push(
-                        format!("moved {} request(s), then failed: {e}", moved.len()),
-                        ToastKind::Error,
-                    );
-                    self.last_action_failed = true;
-                } else {
-                    self.toasts.push(
-                        format!("Moved {} request(s) to {to}", moved.len()),
-                        ToastKind::Success,
-                    );
-                }
-                // Every moved request leaves a stale entry behind in the
-                // source's order list and arrives unlisted in the
-                // destination — entries the app itself made stale, so they
-                // are cascaded, exactly as the single-request move does.
-                // They arrive in the order the source displayed them (the
-                // listing and list in hand are both still pre-move), so a
-                // listed destination keeps the user's arrangement rather
-                // than the alphabetical order the walk returned them in.
-                let shown = postui_core::order::displayed_slugs(
-                    self.sidebar.listing(),
-                    postui_core::order::space_order(self.meta(), &from),
-                    &from,
+                let Some(p) = self.project.as_mut() else {
+                    return true;
+                };
+                // One entry for the whole move; the batch is pre-flighted,
+                // so a refusal has moved nothing.
+                let moved = match p.move_all_requests(&from, &to) {
+                    Ok(moved) => moved,
+                    Err(e) => {
+                        self.toasts
+                            .push(format!("could not move requests: {e}"), ToastKind::Error);
+                        self.last_action_failed = true;
+                        return true;
+                    }
+                };
+                self.toasts.push(
+                    format!("Moved {} request(s) to {to}", moved.len()),
+                    ToastKind::Success,
                 );
-                let mut moves: Vec<(String, String)> = moved
-                    .iter()
-                    .filter_map(|(old, new)| {
-                        let (_, from_rel) = Self::split_rel(old)?;
-                        let (_, to_rel) = Self::split_rel(new)?;
-                        Some((from_rel.to_string(), to_rel.to_string()))
-                    })
-                    .collect();
-                moves.sort_by_key(|(from_rel, _)| {
-                    let slug = format!("{from}/{from_rel}");
-                    shown.iter().position(|s| *s == slug).unwrap_or(usize::MAX)
-                });
-                let r = postui_core::order::order_move_all(self.root(), &from, &to, &moves);
-                let orders = self.order_cascade("move", r);
-                // One undo step for the whole move: every file back where
-                // it was, plus the cascade's edits replayed backwards. The
-                // files moved byte-identically, so the destination's
-                // content is the source's `before`. The source space's
-                // local memory (its remembered open request, its expanded
-                // folders) is deliberately left alone: a remembered
-                // request is checked for existence before it is opened,
-                // so the entries are harmless while the space is empty and
-                // exactly right again once an undo refills it.
-                let mut before = Vec::new();
-                let mut after_paths = Vec::new();
-                for (old, new) in &moved {
-                    let from_path = postui_core::storage::request_path(self.root(), old);
-                    let to_path = postui_core::storage::request_path(self.root(), new);
-                    let content = std::fs::read_to_string(&to_path).ok();
-                    before.push((from_path.clone(), content));
-                    before.push((to_path.clone(), None));
-                    after_paths.push(from_path);
-                    after_paths.push(to_path);
-                }
-                self.record_file_step_with_orders(
-                    before,
-                    &after_paths,
-                    None,
-                    orders,
-                    moved.clone(),
-                );
+                self.record_project_step();
                 for (old, new) in &moved {
                     self.session.rename(old, new);
                 }
@@ -7257,7 +7186,9 @@ impl App {
             .clone()
             .ok_or_else(|| "no request is open".to_string())?;
         let req = self.editor.current_request();
-        postui_core::storage::save_request(self.root(), &slug, &req)
+        self.project_mut()
+            .ok_or_else(|| "no project is open".to_string())?
+            .save_request(&slug, &req)
             .map_err(|e| format!("could not save {slug}: {e}"))?;
         self.mark_saved_after_write();
         self.refresh_sidebar();
@@ -7286,6 +7217,200 @@ impl App {
             .iter()
             .map(|p| (p.clone(), std::fs::read_to_string(p).ok()))
             .collect()
+    }
+
+    /// Records a marker for the journal entry the last `Project` call
+    /// produced, if it produced a new one. Called right after every
+    /// mutating `Project` call. A merged burst (a held alt+↓) leaves the
+    /// top id unchanged and records nothing, so it stays one undo step;
+    /// a burst that netted to nothing is popped by the journal and the
+    /// marker already recorded for it is skipped as stale on undo.
+    ///
+    /// The step's toast names the open request and reads like the
+    /// `FileStates` step it replaces; [`Self::record_project_step_as`] is
+    /// for the arms that toast differently.
+    fn record_project_step(&mut self) {
+        let slug = self.editor.slug.clone();
+        self.record_project_step_as(crate::undo::ProjectNoun::FileChange, slug);
+    }
+
+    /// [`Self::record_project_step`] with an explicit toast noun and the
+    /// request that noun names (the request that moved, for a reorder;
+    /// the deleted one, for a delete). The noun is chosen here rather
+    /// than derived from the entry's label because `move_request` and
+    /// `move_request_shown` both journal under the label `"move request"`
+    /// and toast differently — see [`crate::undo::ProjectNoun`].
+    fn record_project_step_as(&mut self, noun: crate::undo::ProjectNoun, slug: Option<String>) {
+        let top = self.journal_top();
+        if top == self.marked_entry {
+            // Nothing was journaled (a no-op call), or the call merged
+            // into the entry the marker on top already covers.
+            return;
+        }
+        self.marked_entry = top;
+        let Some(id) = top else { return };
+        self.history.record_no_coalesce(crate::undo::Step {
+            kind: crate::undo::StepKind::Project { id, slug: slug.clone(), noun },
+            context: crate::undo::Context {
+                slug,
+                cursor_before: crate::undo::CursorPos::None,
+                cursor_after: crate::undo::CursorPos::None,
+            },
+        });
+    }
+
+    /// The id of the entry `Project::undo` would replay next.
+    fn journal_top(&self) -> Option<postui_core::journal::EntryId> {
+        self.project().and_then(|p| p.last_entry()).map(|(id, _)| id)
+    }
+
+    /// Whether `id` is the entry `p` would replay next in `redo`'s
+    /// direction.
+    fn entry_on_top(
+        &self,
+        p: &Project,
+        id: postui_core::journal::EntryId,
+        redo: bool,
+    ) -> bool {
+        let top = if redo {
+            p.next_redo()
+        } else {
+            p.last_entry().map(|(id, _)| id)
+        };
+        top == Some(id)
+    }
+
+    /// Re-reads the journal's top into `marked_entry` after something
+    /// other than a forward op moved it (an undo, a redo, a failed
+    /// replay that put its entry back). `marked_entry` tracks the top
+    /// itself, not merely the last marker's id: were it the latter, a
+    /// later call that journals nothing (a no-op move-all, a refused
+    /// reorder) would find a stale value and record a second marker for
+    /// an entry that already has one.
+    fn sync_marked_entry(&mut self) {
+        self.marked_entry = self.journal_top();
+    }
+
+    /// Whether `step` is a `Project` marker whose entry is no longer the
+    /// one the journal would replay next — merged into an earlier entry,
+    /// netted to nothing, or evicted by the journal cap. Undo and redo
+    /// drop such a step and carry on to the one beneath it.
+    fn is_stale_marker(&self, step: &crate::undo::Step, redo: bool) -> bool {
+        let crate::undo::StepKind::Project { id, .. } = &step.kind else {
+            return false;
+        };
+        let Some(p) = self.project() else { return true };
+        let top = if redo {
+            p.next_redo()
+        } else {
+            p.last_entry().map(|(id, _)| id)
+        };
+        top != Some(*id)
+    }
+
+    /// Refreshes everything that mirrors project state after `Project`
+    /// replayed an entry: the session and the editor follow the request
+    /// moves the entry recorded, the sidebar and the Variable Manager
+    /// re-read, and the reload's warnings toast. The counterpart of the
+    /// tail every `FileStates`/`Trashed` undo used to run by hand.
+    /// `reopen` replays the entry's own record of which request was open
+    /// when it ran — the `state.toml` restore only the `Trashed` steps
+    /// ever carried, which the journal does not cover (local state is not
+    /// journaled). Only a delete passes it: applying it to every entry
+    /// would make undoing a *create* reopen whatever was open when the
+    /// create ran, which is not what the `FileStates` tail did and would
+    /// short-circuit an undo walking back to an earlier request.
+    fn after_undone(&mut self, u: &postui_core::project::Undone, reopen: bool) {
+        for w in &u.warnings {
+            self.toasts.push(w.clone(), ToastKind::Warning);
+        }
+        // Every request the entry moved changes slug again: the session's
+        // cache and in-flight entries follow, as they did for the forward
+        // op.
+        for (old, new) in &u.meta.moves {
+            if u.redo {
+                self.session.rename(old, new);
+            } else {
+                self.session.rename(new, old);
+            }
+        }
+        // A replay can land with the mouse button still held: the working
+        // order a live drag holds names rows the replay just rewrote.
+        self.finish_sidebar_drag(false);
+        self.finish_manage_drag(false);
+        self.refresh_sidebar();
+        // Mirrors `Action::VarStruct`'s success path: the Variable
+        // Manager grid/form cache the current declarations and won't
+        // otherwise notice a var/env/secrets file a replay rewrote out
+        // from under them.
+        if self.screen == Screen::Manage {
+            self.sync_varmanager();
+        }
+        if let Some(open) = self.editor.slug.clone() {
+            // The entry's own pairing says where the open request went (a
+            // rename, a move to space, or any one file of a move-all,
+            // collisions and their `-2` suffixes included); an entry that
+            // moved nothing and left the file absent is a true delete.
+            let moved_to = u.meta.moves.iter().find_map(|(old, new)| {
+                if u.redo {
+                    (*old == open).then(|| new.clone())
+                } else {
+                    (*new == open).then(|| old.clone())
+                }
+            });
+            match moved_to {
+                Some(new_slug) => {
+                    self.editor.slug = Some(new_slug.clone());
+                    // The rename wrote the new display name to disk;
+                    // mirror it in both the live fields and the saved
+                    // snapshot so the editor never reads as dirty.
+                    let name = match self.project_mut() {
+                        Some(p) => p.open_request(&new_slug).ok().and_then(|r| r.name.clone()),
+                        None => None,
+                    };
+                    if let Some(name) = name {
+                        self.editor.name = Some(name.clone());
+                        if let Some(saved) = self.editor.saved.as_mut() {
+                            saved.name = Some(name);
+                        }
+                    }
+                    self.sidebar.open_slug = Some(new_slug.clone());
+                    // The sidebar is rooted at the active space, so an
+                    // undo that put the open request back in another one
+                    // follows it there. The editor has already followed,
+                    // so the outgoing space keeps its memory.
+                    if let Some(space) = postui_core::storage::space_of(&new_slug)
+                        .filter(|s| *s != self.active_space())
+                        .map(str::to_string)
+                    {
+                        self.enter_space(&space, SpaceExit::Keep);
+                    }
+                }
+                None if !self.request_exists(&open) => {
+                    self.editor = Editor::default();
+                    self.shadow = None;
+                    self.sidebar.open_slug = None;
+                }
+                None => {}
+            }
+        }
+        // An undone delete puts back the request that was open when it
+        // ran (the delete closed it); `state.toml` is not journaled, so
+        // the entry's own record is what says so.
+        if reopen
+            && !u.redo
+            && let Some(slug) = u.meta.reopen.clone()
+            && self.editor.slug.as_deref() != Some(slug.as_str())
+            && self.request_exists(&slug)
+        {
+            self.apply(Action::ForceOpenRequest(slug));
+        }
+        self.apply(Action::PersistLocalState);
+    }
+
+    /// Whether a request file is there, through the open project.
+    fn request_exists(&self, slug: &str) -> bool {
+        self.project().is_some_and(|p| p.request_exists(slug))
     }
 
     /// Reads `after_paths`' current contents, drops any pair whose content
@@ -7523,29 +7648,6 @@ impl App {
         true
     }
 
-    /// Applies an order-list cascade after a request file op succeeded.
-    /// The file is the truth; a failed cascade only leaves a stale entry
-    /// (ignored for display), so it warns rather than failing the op.
-    /// Returns the edits the cascade made, for the op's undo step.
-    fn order_cascade(
-        &mut self,
-        what: &str,
-        r: Result<Vec<postui_core::order::OrderEdit>, postui_core::project::ProjectError>,
-    ) -> Vec<postui_core::order::OrderEdit> {
-        let edits = match r {
-            Ok(edits) => edits,
-            Err(e) => {
-                self.toasts.push(
-                    format!("could not update request order after {what}: {e}"),
-                    ToastKind::Warning,
-                );
-                Vec::new()
-            }
-        };
-        self.reload_project_documents();
-        edits
-    }
-
     /// Records a reorder as an undo step; nothing when the reorder wrote
     /// nothing. A keyboard move (`burst`) merges into a keyboard move of
     /// the same target made within the history's coalesce window, so
@@ -7595,38 +7697,6 @@ impl App {
                 ),
                 ToastKind::Warning,
             );
-        }
-    }
-
-    /// Splits a slug into its space and the path relative to that space,
-    /// for the order-list cascades below.
-    fn split_rel(slug: &str) -> Option<(&str, &str)> {
-        let space = postui_core::storage::space_of(slug)?;
-        let rel = postui_core::order::relative(slug, space)?;
-        Some((space, rel))
-    }
-
-    /// Runs one single-slug order cascade (`order_remove`, `order_arrive`)
-    /// for `slug` after a request file op named `what` succeeded, and
-    /// reports it through [`Self::order_cascade`]. A slug outside any
-    /// space has no list to cascade into.
-    fn cascade_slug(
-        &mut self,
-        what: &str,
-        slug: &str,
-        op: fn(
-            &std::path::Path,
-            &str,
-            &str,
-        )
-            -> Result<Vec<postui_core::order::OrderEdit>, postui_core::project::ProjectError>,
-    ) -> Vec<postui_core::order::OrderEdit> {
-        match Self::split_rel(slug) {
-            Some((space, rel)) => {
-                let r = op(self.root(), space, rel);
-                self.order_cascade(what, r)
-            }
-            None => Vec::new(),
         }
     }
 
@@ -7781,20 +7851,15 @@ impl App {
         let commit = commit && drag.space == self.active_space();
         if commit && drag.working != drag.original {
             let space = drag.space.clone();
-            match postui_core::order::set_level_order(
-                self.root(),
-                &space,
-                &drag.level,
-                &drag.working,
-            ) {
-                Ok(change) => {
-                    self.reload_project_documents();
-                    let target = crate::undo::ReorderTarget::Requests {
-                        space: drag.space.clone(),
-                        slug: drag.slug.clone(),
-                    };
-                    self.record_reorder_step(change, target, false);
-                }
+            let written = match self.project.as_mut() {
+                Some(p) => p.set_request_order(&space, &drag.level, &drag.working),
+                None => return true,
+            };
+            match written {
+                Ok(_) => self.record_project_step_as(
+                    crate::undo::ProjectNoun::Reorder,
+                    Some(drag.slug.clone()),
+                ),
                 Err(e) => self
                     .toasts
                     .push(format!("cannot reorder: {e}"), ToastKind::Warning),
@@ -8356,7 +8421,7 @@ impl App {
         name: &str,
         build: impl FnOnce(&str) -> postui_core::model::HttpRequest,
     ) -> bool {
-        use postui_core::storage::{self, StorageError};
+        use postui_core::project::Error;
         // Every new request lands inside the active space — the name the
         // user typed is relative to it.
         let name = format!(
@@ -8366,25 +8431,19 @@ impl App {
         );
         let name = name.as_str();
         let req = build(name);
-        match storage::create_request_named(self.root(), name, req) {
-            Ok((slug, leaf)) => {
-                // Reload from disk so the editor holds exactly what was
-                // written (display name included).
-                if let Ok(saved) = storage::load_request(self.root(), &slug) {
-                    self.editor.load(Some(slug.clone()), saved);
-                    self.editor.mark_saved();
-                }
-                // A brand-new file never existed before this write, so
-                // `before` is simply absent — no pre-read needed.
-                let path = storage::request_path(self.root(), &slug);
-                let orders = self.cascade_slug("create", &slug, postui_core::order::order_arrive);
-                self.record_file_step_with_orders(
-                    vec![(path.clone(), None)],
-                    &[path],
-                    None,
-                    orders,
-                    Vec::new(),
-                );
+        let Some(p) = self.project.as_mut() else {
+            return false;
+        };
+        // Hold the created request so the editor gets exactly what was
+        // written (display name included).
+        let created = p
+            .create_request(name, req)
+            .and_then(|(slug, leaf)| p.open_request(&slug).cloned().map(|r| (slug, leaf, r)));
+        match created {
+            Ok((slug, leaf, saved)) => {
+                self.editor.load(Some(slug.clone()), saved);
+                self.editor.mark_saved();
+                self.record_project_step();
                 self.toasts
                     .push(format!("Saved {leaf}"), ToastKind::Success);
                 // Queue the slug's ancestor folders open, rebuild the tree
@@ -8398,7 +8457,7 @@ impl App {
                 self.apply(Action::PersistLocalState);
                 true
             }
-            Err(StorageError::AlreadyExists(taken)) => {
+            Err(Error::AlreadyExists(taken)) => {
                 self.toasts.push(
                     format!("a request named {taken:?} already exists here"),
                     ToastKind::Error,
@@ -8406,7 +8465,7 @@ impl App {
                 self.last_action_failed = true;
                 false
             }
-            Err(StorageError::InvalidSlug(_)) => {
+            Err(Error::BadName(_)) => {
                 self.toasts
                     .push("request name cannot be empty", ToastKind::Error);
                 self.last_action_failed = true;
@@ -10028,6 +10087,108 @@ impl App {
                     self.history.push_redo(step.clone());
                 }
                 true
+            }
+            StepKind::Project { id, slug, noun } => {
+                use crate::undo::ProjectNoun;
+                let Some(p) = self.project.as_mut() else {
+                    return false;
+                };
+                let expected = if redo {
+                    p.next_redo()
+                } else {
+                    p.last_entry().map(|(id, _)| id)
+                };
+                if expected != Some(*id) {
+                    // Stale: the caller drops it and carries on to the
+                    // step beneath. (`Action::Undo`/`Redo` check this
+                    // before popping, so this is belt and braces.)
+                    return false;
+                }
+                let result = if redo { p.redo() } else { p.undo() };
+                let (verb, done) = if redo {
+                    ("redo", "Redid")
+                } else {
+                    ("undo", "Undid")
+                };
+                match result {
+                    Ok(Some(u)) => {
+                        self.after_undone(&u, matches!(noun, ProjectNoun::Trash));
+                        // `marked_entry` tracks the journal's top as the
+                        // app last saw it: a replay moved it, so re-read.
+                        self.sync_marked_entry();
+                        let msg = match noun {
+                            ProjectNoun::FileChange => match slug {
+                                Some(slug) => {
+                                    format!("{done} file change to {}", self.request_display(slug))
+                                }
+                                None => format!("{done} file change"),
+                            },
+                            ProjectNoun::Reorder => {
+                                let what = match slug {
+                                    Some(slug) => {
+                                        if let Some(space) =
+                                            postui_core::storage::space_of(slug)
+                                            && space == self.active_space()
+                                        {
+                                            self.sidebar.select_slug(slug);
+                                        }
+                                        self.request_display(slug)
+                                    }
+                                    None => "the requests".to_string(),
+                                };
+                                format!("{done} reorder of {what}")
+                            }
+                            ProjectNoun::Trash => {
+                                let what = slug
+                                    .as_deref()
+                                    .map(|s| format!("{}.toml", s.rsplit('/').next().unwrap_or(s)))
+                                    .unwrap_or_else(|| "delete".into());
+                                if redo {
+                                    format!("Deleted {what} again")
+                                } else {
+                                    format!("Restored {what}")
+                                }
+                            }
+                        };
+                        self.toasts.push(msg, ToastKind::Info);
+                        if redo {
+                            self.history.push_undo_no_coalesce(step.clone());
+                        } else {
+                            self.history.push_redo(step.clone());
+                        }
+                        true
+                    }
+                    // The journal emptied under the marker: nothing to
+                    // replay, and the step is dropped.
+                    Ok(None) => false,
+                    Err(e) => {
+                        let msg = match noun {
+                            ProjectNoun::Reorder => format!("could not {verb} the reorder: {e}"),
+                            // The file the entry names changed under the
+                            // app; `{e}` says which and how.
+                            _ => format!("could not {verb}: {e}"),
+                        };
+                        self.toasts.push(msg, ToastKind::Error);
+                        // `replay` puts the entry back on the stack it came
+                        // from only after a *mid-replay* failure; a refused
+                        // preflight returns before that and drops the entry
+                        // for good. So the marker follows its entry: kept
+                        // for the retry, dropped when the entry is gone
+                        // (today's "the failed step is dropped").
+                        let kept = self
+                            .project()
+                            .is_some_and(|p| self.entry_on_top(p, *id, redo));
+                        self.sync_marked_entry();
+                        if kept {
+                            if redo {
+                                self.history.push_redo(step.clone());
+                            } else {
+                                self.history.push_undo_no_coalesce(step.clone());
+                            }
+                        }
+                        false
+                    }
+                }
             }
             StepKind::Trashed {
                 items,

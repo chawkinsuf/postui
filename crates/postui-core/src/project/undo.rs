@@ -36,7 +36,10 @@ impl Project {
     /// replay will have done. Refuses the whole entry at the first op
     /// whose precondition fails, naming that path.
     fn preflight(&self, ops: &[Op]) -> Result<(), Error> {
-        let conflict = |path: &RelPath, what: &str| Error::Conflict(format!("{path} {what}; the step was dropped"));
+        // The user never sees the machinery, only the cause: something
+        // changed the file after the op that is being replayed.
+        let conflict =
+            |path: &RelPath, what: &str| Error::Conflict(format!("{path} {what} (changed outside the app)"));
         let mut overlay: std::collections::HashMap<RelPath, bool> = std::collections::HashMap::new();
         let exists = |overlay: &std::collections::HashMap<RelPath, bool>, p: &RelPath| {
             overlay.get(p).copied().unwrap_or_else(|| self.disk.exists(p))

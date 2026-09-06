@@ -67,6 +67,34 @@ pub enum StepKind {
         after: Vec<String>,
         burst: bool,
     },
+    /// One `Project` journal entry: undoing this step calls
+    /// `Project::undo`, whose own journal holds the inverse ops. `id` is
+    /// checked against the journal's top before replay: a marker whose
+    /// entry was merged into an earlier one, netted to nothing, or evicted
+    /// by the journal cap is skipped silently.
+    Project {
+        id: postui_core::journal::EntryId,
+        /// The request the toast names: the one open when the step was
+        /// made for a file change, the request that moved for a reorder,
+        /// the deleted one for a delete.
+        slug: Option<String>,
+        noun: ProjectNoun,
+    },
+}
+
+/// Which wording a `Project` marker's undo/redo toast uses — the wording
+/// the step kind it replaces used. Chosen by the recording arm rather
+/// than derived from the journal label, because two different ops share
+/// the label `"move request"` (a move to another space, and a keyboard
+/// reorder) and they toast differently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectNoun {
+    /// `"{Undid|Redid} file change to {display}"`.
+    FileChange,
+    /// `"{Undid|Redid} reorder of {display}"`.
+    Reorder,
+    /// `"Restored {file}"` / `"Deleted {file} again"`.
+    Trash,
 }
 
 /// Which list a `Reorder` step rewrote.
@@ -194,6 +222,11 @@ impl Step {
                     }
                 }
             },
+            StepKind::Project { slug, .. } => {
+                if let Some(slug) = slug.as_mut() {
+                    rekey_slug(slug, from, to);
+                }
+            }
         }
     }
 }

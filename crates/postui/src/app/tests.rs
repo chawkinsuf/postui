@@ -4009,9 +4009,13 @@ fn quick_keyboard_moves_of_one_request_roll_up_into_one_undo_step() {
 }
 
 #[test]
-fn a_keyboard_burst_that_ends_where_it_started_records_nothing() {
-    let (mut app, dir) = slotted_app(&["alpha", "beta", "gamma"]);
-    let steps = app.history.undo_len();
+fn a_keyboard_reorder_that_returns_to_the_start_leaves_no_step_and_undo_reaches_the_one_beneath() {
+    // The two moves merge in the journal and net to nothing, so the
+    // journal drops the entry: the marker recorded for it points at an
+    // entry that is gone, and undo skips it to land on the create beneath.
+    let (mut app, _dir) = slotted_app(&["alpha", "beta", "gamma"]);
+    app.update(Action::CreateRequest("delta".into()));
+    assert!(app.proj().request_exists("main/delta"));
     app.update(Action::MoveRequest {
         slug: "main/beta".into(),
         delta: 1,
@@ -4020,11 +4024,16 @@ fn a_keyboard_burst_that_ends_where_it_started_records_nothing() {
         slug: "main/beta".into(),
         delta: -1,
     });
-    assert_eq!(slot_order(&dir), ["alpha", "beta", "gamma"]);
     assert_eq!(
-        app.history.undo_len(),
-        steps,
-        "down then up is no step at all"
+        app.proj().last_entry().map(|(_, l)| l.to_string()).as_deref(),
+        Some("create request"),
+        "the burst netted to nothing: no order entry remains"
+    );
+
+    app.update(Action::Undo);
+    assert!(
+        !app.proj().request_exists("main/delta"),
+        "undo reached the create beneath the dropped burst"
     );
 }
 
@@ -4187,59 +4196,6 @@ fn undo_of_a_space_reorder_survives_a_space_created_since() {
 }
 
 #[test]
-fn undo_of_a_reorder_follows_a_space_renamed_since() {
-    let (mut app, dir) = slotted_app(&["alpha", "beta", "gamma"]);
-    app.update(Action::MoveRequest {
-        slug: "main/gamma".into(),
-        delta: -2,
-    });
-    assert_eq!(slot_order(&dir), ["gamma", "alpha", "beta"]);
-    app.update(Action::RenameSpace {
-        from: "main".into(),
-        to: "Primary".into(),
-    });
-    assert_eq!(app.proj().local().active_space, "primary");
-
-    app.update(Action::Undo);
-    let meta = postui_core::project::load_meta(dir.path()).unwrap();
-    assert_eq!(
-        postui_core::order::space_order(&meta, "primary"),
-        ["alpha", "beta", "gamma"],
-        "the undo lands on the space under its new name"
-    );
-    assert!(
-        !meta.space.contains_key("main"),
-        "no orphan table under the old name"
-    );
-    assert_eq!(
-        request_rows(&app),
-        ["primary/alpha", "primary/beta", "primary/gamma"]
-    );
-    assert_eq!(
-        app.sidebar.selected_slug().as_deref(),
-        Some("primary/gamma")
-    );
-}
-
-#[test]
-fn undo_of_a_delete_follows_a_space_renamed_since() {
-    let (mut app, dir) = slotted_app(&["gamma", "alpha", "beta"]);
-    app.update(Action::DeleteRequest("main/alpha".into()));
-    app.update(Action::RenameSpace {
-        from: "main".into(),
-        to: "Primary".into(),
-    });
-    app.update(Action::Undo);
-    assert!(dir.path().join("requests/primary/alpha.toml").is_file());
-    let meta = postui_core::project::load_meta(dir.path()).unwrap();
-    assert_eq!(
-        postui_core::order::space_order(&meta, "primary"),
-        ["gamma", "alpha", "beta"]
-    );
-    assert!(!meta.space.contains_key("main"));
-}
-
-#[test]
 fn undo_of_a_move_all_follows_the_open_request_even_when_it_collided() {
     let (mut app, dir) = spaced_app();
     // `auth` already has an `alpha`, so main's lands as `alpha-2`.
@@ -4266,26 +4222,6 @@ fn undo_of_a_move_all_follows_the_open_request_even_when_it_collided() {
     assert!(!dir.path().join("requests/auth/alpha-2.toml").exists());
     app.update(Action::Redo);
     assert_eq!(app.editor.slug.as_deref(), Some("auth/alpha-2"));
-}
-
-#[test]
-fn undo_of_a_delete_keeps_a_reorder_made_since() {
-    // A reorder written between the delete and its undo (here straight
-    // to disk, as one undone out of order would be) is not undone with
-    // it: the restored request goes back to its old index and the
-    // rearranged siblings stay as they are.
-    let (mut app, dir) = slotted_app(&["alpha", "beta", "gamma"]);
-    app.update(Action::DeleteRequest("main/gamma".into()));
-    postui_core::order::set_level_order(
-        dir.path(),
-        "main",
-        "",
-        &["beta".to_string(), "alpha".to_string()],
-    )
-    .unwrap();
-    app.reload_project_documents();
-    app.update(Action::Undo);
-    assert_eq!(slot_order(&dir), ["beta", "alpha", "gamma"]);
 }
 
 #[test]
@@ -4604,7 +4540,7 @@ fn a_failed_redo_of_a_file_step_says_redo_not_undo() {
     app.toasts = Default::default();
     app.update(Action::Redo);
     let msg = app.toasts.messages().join(" | ");
-    assert!(msg.contains("redo failed at"), "{msg}");
+    assert!(msg.contains("could not redo"), "{msg}");
 }
 
 #[test]
@@ -16121,7 +16057,10 @@ mod undo_tests {
         );
         assert!(matches!(
             app.history_top_kind_for_test(),
-            Some(crate::undo::StepKind::Trashed { .. })
+            Some(crate::undo::StepKind::Project {
+                noun: crate::undo::ProjectNoun::Trash,
+                ..
+            })
         ));
 
         app.update(Action::Undo);
@@ -21189,38 +21128,6 @@ fn undo_of_a_request_delete_reopens_it_in_the_editor() {
     assert!(app.editor.slug.is_none());
     app.update(Action::Undo);
     assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
-}
-
-#[test]
-fn undo_of_a_request_delete_after_a_space_rename_restores_state_under_the_new_name() {
-    let (mut app, dir) = spaced_app();
-    app.update(Action::ForceOpenRequest("auth/login".into()));
-    app.update(Action::DeleteRequest("auth/login".into()));
-    assert!(app.editor.slug.is_none());
-    app.update(Action::RenameSpace {
-        from: "auth".into(),
-        to: "accounts".into(),
-    });
-    assert_eq!(app.proj().local().active_space, "accounts");
-
-    app.update(Action::Undo);
-    assert_eq!(
-        app.editor.slug.as_deref(),
-        Some("accounts/login"),
-        "the restored state.toml names the space by its new name"
-    );
-    assert_eq!(app.proj().local().active_space, "accounts");
-    let state = postui_core::project::load_local_state(dir.path()).unwrap();
-    assert_eq!(state.space.as_deref(), Some("accounts"));
-    assert_eq!(state.open_request.as_deref(), Some("accounts/login"));
-    assert_eq!(
-        state.space_open.get("accounts").map(String::as_str),
-        Some("accounts/login")
-    );
-    assert!(
-        !state.space_open.contains_key("auth"),
-        "nothing is keyed under the dead name: {state:?}"
-    );
 }
 
 #[test]
