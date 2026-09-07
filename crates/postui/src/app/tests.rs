@@ -21269,6 +21269,159 @@ fn reload_from_disk_applies_a_new_keys_toml_end_to_end() {
     );
 }
 
+/// alt+r has to reach the reload from *every* screen, not just Main: the
+/// Manage screen captures all input except the escape whitelist, and the
+/// Environments tab's own `r` opens the Rename prompt — so an unwhitelisted
+/// alt+r would silently rename instead of reloading.
+#[test]
+fn alt_r_reloads_from_every_manage_tab() {
+    for tab in [
+        crate::components::manage::ManageTab::Variables,
+        crate::components::manage::ManageTab::Environments,
+        crate::components::manage::ManageTab::Spaces,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        var_project(dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::with_root(tx, dir.path().to_path_buf());
+        let _cfg = config_at_tempdir(&mut app);
+        app.update(Action::OpenManage { tab: Some(tab) });
+        app.toasts = Default::default();
+
+        app.handle_key(alt('r'));
+
+        assert!(
+            app.modals.is_empty(),
+            "{tab:?}: alt+r opened a modal instead of reloading"
+        );
+        assert!(
+            app.toasts
+                .messages()
+                .iter()
+                .any(|m| m.starts_with("Reloaded")),
+            "{tab:?}: {:?}",
+            app.toasts.messages()
+        );
+    }
+}
+
+/// A project registered in memory only — because the config.toml that
+/// would have recorded it was unwritable at the time — must survive the
+/// reload that replaces the registry, or it vanishes from the chooser
+/// while it is still the open project.
+#[test]
+fn reload_from_disk_keeps_the_open_project_registered() {
+    let mut app = App::new_for_test();
+    let dir = config_at_tempdir(&mut app);
+    std::fs::write(
+        dir.path().join("config.toml"),
+        "[projects]\nknown = [\"/tmp/elsewhere\"]\n",
+    )
+    .unwrap();
+    let root = app.proj().root().to_path_buf();
+
+    app.update(Action::ReloadFromDisk);
+
+    assert!(
+        app.registry.known.contains(&root),
+        "the open project is still known: {:?}",
+        app.registry.known
+    );
+    assert_eq!(app.registry.last.as_ref(), Some(&root));
+    assert!(
+        app.registry
+            .known
+            .contains(&PathBuf::from("/tmp/elsewhere")),
+        "and the file's own entries landed"
+    );
+}
+
+/// The command's stated purpose: fix the file and pick it up without
+/// restarting. A startup that refused its project retries the open.
+#[test]
+fn reload_from_disk_retries_a_project_that_refused_to_open() {
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
+    postui_core::fixtures::save_request(dir.path(), "main/ping", &req("https://x/ping")).unwrap();
+    std::fs::write(dir.path().join("project.toml"), "spaces = [\"main\"\n").unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let _cfg = config_at_tempdir(&mut app);
+    assert!(app.project().is_none(), "the open was refused");
+
+    std::fs::write(dir.path().join("project.toml"), "spaces = [\"main\"]\n").unwrap();
+    app.update(Action::ReloadFromDisk);
+
+    assert_eq!(
+        app.project().map(|p| p.root().to_path_buf()),
+        Some(dir.path().to_path_buf()),
+        "the fixed project opened"
+    );
+    assert!(app.open_error.is_none());
+    assert!(app.sidebar.notice.is_none(), "the sidebar notice is gone");
+}
+
+/// With no project to reload — and none recorded to retry — the toast
+/// must not claim it reloaded one.
+#[test]
+fn reload_from_disk_does_not_claim_a_project_when_none_is_open() {
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, PathBuf::new());
+    let _cfg = config_at_tempdir(&mut app);
+    assert!(app.project().is_none());
+
+    app.update(Action::ReloadFromDisk);
+
+    assert!(
+        app.toasts
+            .messages()
+            .contains(&"Reloaded config (no project is open)"),
+        "{:?}",
+        app.toasts.messages()
+    );
+}
+
+/// When config.toml will not parse, the theme name being re-resolved came
+/// from the running app, not from the file — so a warning about it must
+/// not point at a file that was never read.
+#[test]
+fn reload_from_disk_never_blames_an_unparsable_config_toml_for_a_vanished_theme() {
+    let mut app = App::new_for_test();
+    let dir = config_at_tempdir(&mut app);
+    let themes = dir.path().join("themes");
+    std::fs::create_dir_all(&themes).unwrap();
+    let theme_file = themes.join("mine.toml");
+    std::fs::write(
+        &theme_file,
+        "bg = \"#101418\"\nfg = \"#e2e2e6\"\naccent = \"#0178d4\"\n\
+         success = \"#9ece6a\"\nwarning = \"#e0af68\"\nerror = \"#f7768e\"\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("config.toml"), "theme = \"mine\"\n").unwrap();
+    app.update(Action::ReloadFromDisk);
+    assert_eq!(app.theme_name, "mine");
+
+    // The theme file goes away and config.toml stops parsing in the same
+    // breath: the app keeps its settings, but the theme really is gone.
+    std::fs::remove_file(&theme_file).unwrap();
+    std::fs::write(dir.path().join("config.toml"), "theme = \"mine\n").unwrap();
+    app.toasts = Default::default();
+    app.update(Action::ReloadFromDisk);
+
+    assert_eq!(app.theme_name, "terminal");
+    let warnings = warning_toasts(&app);
+    assert!(
+        warnings
+            .iter()
+            .any(|m| m == "theme \"mine\" is no longer available; using terminal"),
+        "{warnings:?}"
+    );
+    assert!(
+        !warnings.iter().any(|m| m.contains("unknown theme")),
+        "config.toml was never read; it cannot be the one naming a bad theme: {warnings:?}"
+    );
+}
+
 #[test]
 fn reload_from_disk_never_touches_the_editor_buffer() {
     let mut app = App::new_for_test();

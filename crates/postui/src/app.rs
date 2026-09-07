@@ -769,57 +769,59 @@ impl App {
     ) {
         self.clipboard = crate::clipboard::Clipboard::new(&ui_settings);
         self.anims = Anims::new(ui_settings.animations);
-        self.finish_ui_settings(ui_settings, theme_name, theme);
+        self.theme = theme;
+        self.theme_name = theme_name;
+        self.finish_ui_settings(ui_settings);
     }
 
-    /// [`Self::apply_ui_settings`] for a *live* reload: the same settings
-    /// land, but the clipboard and the animation set are reconfigured in
+    /// [`Self::apply_ui_settings`] for a *live* reload, minus the theme
+    /// (the reload arm resolves that through [`Self::set_theme_by_name`],
+    /// which knows what to do when the name no longer names anything).
+    /// The same settings land, but the clipboard and the animation set
+    /// are reconfigured in
     /// place rather than replaced. Rebuilding either mid-session loses
     /// state the user can see — a fresh `Clipboard` drops `arboard`'s
     /// handle (on X11 without a clipboard manager that revokes everything
     /// already copied out of postui), and a fresh `Anims` wipes every
     /// in-flight transition.
-    fn reapply_ui_settings(
-        &mut self,
-        ui_settings: crate::config::UiSettings,
-        theme_name: String,
-        theme: Theme,
-    ) {
+    fn reapply_ui_settings(&mut self, ui_settings: crate::config::UiSettings) {
         self.clipboard.reconfigure(&ui_settings);
         self.anims.set_enabled(ui_settings.animations);
-        self.finish_ui_settings(ui_settings, theme_name, theme);
+        self.finish_ui_settings(ui_settings);
     }
 
-    /// The half both paths share: the theme, the jq tab, and `ui_settings`
-    /// itself. Kept in one place so a new `UiSettings`-derived field can't
-    /// be wired into startup and forgotten on reload (or the reverse).
-    fn finish_ui_settings(
-        &mut self,
-        ui_settings: crate::config::UiSettings,
-        theme_name: String,
-        theme: Theme,
-    ) {
-        self.theme = theme;
-        self.theme_name = theme_name;
+    /// The half both paths share: the jq tab and `ui_settings` itself.
+    /// Kept in one place so a new `UiSettings`-derived field can't be
+    /// wired into startup and forgotten on reload (or the reverse).
+    fn finish_ui_settings(&mut self, ui_settings: crate::config::UiSettings) {
         self.session.response.set_jq_tab(ui_settings.jq_tab);
         self.ui_settings = ui_settings;
     }
 
     /// Applies the named theme from the registry (the Terminal option seeds
     /// from the startup query). An unknown name — a custom file deleted since
-    /// the registry was built — degrades to the terminal theme.
-    fn set_theme_by_name(&mut self, name: &str) {
-        let (resolved, theme) = match self.themes.resolve(name, &self.terminal_colors) {
-            Some(t) => (name.to_string(), t),
-            None => (
-                "terminal".to_string(),
-                self.themes
+    /// the registry was built — degrades to the terminal theme, and comes
+    /// back as the warning to show: this is the one resolve-or-terminal in
+    /// the app, so callers that have a user to tell can tell them without
+    /// hand-rolling the fallback again.
+    fn set_theme_by_name(&mut self, name: &str) -> Option<String> {
+        match self.themes.resolve(name, &self.terminal_colors) {
+            Some(theme) => {
+                self.theme = theme;
+                self.theme_name = name.to_string();
+                None
+            }
+            None => {
+                self.theme = self
+                    .themes
                     .resolve("terminal", &self.terminal_colors)
-                    .expect("terminal is always registered"),
-            ),
-        };
-        self.theme = theme;
-        self.theme_name = resolved;
+                    .expect("terminal is always registered");
+                self.theme_name = "terminal".to_string();
+                Some(format!(
+                    "theme {name:?} is no longer available; using terminal"
+                ))
+            }
+        }
     }
 
     /// Live preview: while the theme picker is open, keep the applied theme
@@ -4009,59 +4011,75 @@ impl App {
                 changed
             }
             Action::ReloadFromDisk => {
-                // The project half: a forced re-read (mtime gates skipped)
-                // plus the sidebar rebuild, so a file another process
-                // wrote a second ago shows up. The editor's buffer is not
-                // part of this — unsaved edits are the user's, and a
-                // reload is not a discard.
-                self.resync_project();
+                // The project half. With a project open it is a forced
+                // re-read (mtime gates skipped) plus the sidebar rebuild,
+                // so a file another process wrote a second ago shows up.
+                // With none open because startup refused one, it is a
+                // retry of that very open — "fix the file and pick it up
+                // without restarting" is the whole point of the command —
+                // through `ForceSwitchProject`, the app's one open path,
+                // which clears `open_error` and the sidebar notice itself.
+                // The editor's buffer is not part of any of this: unsaved
+                // edits are the user's, and a reload is not a discard.
+                match (self.project.is_none(), self.open_error.as_ref()) {
+                    (true, Some(e)) => {
+                        let root = e.root.clone();
+                        self.apply(Action::ForceSwitchProject(root));
+                    }
+                    _ => self.resync_project(),
+                }
 
                 // The config half. Every `None` field means "that file
-                // exists but will not parse": keep what we have, and let
-                // the warning say which file to fix.
+                // exists but could not be read or parsed": keep what we
+                // have, and let the warning say which file to fix.
                 let (reloaded, warnings) = self.config.reload(cfg!(target_os = "macos"));
-                let (registry, ui) = match reloaded.config {
-                    Some((registry, ui)) => (Some(registry), Some(ui)),
-                    None => (None, None),
-                };
                 if let Some(themes) = reloaded.themes {
                     self.themes = themes;
                 }
-                if let Some(registry) = registry {
-                    self.registry = registry;
-                }
+                let ui = match reloaded.config {
+                    Some((registry, ui)) => {
+                        self.registry = registry;
+                        // The registry on disk can legitimately not know
+                        // the open project: it was registered in memory
+                        // only, because the config.toml that would have
+                        // recorded it did not parse at the time. Losing it
+                        // here would drop the *current* project out of the
+                        // chooser. Memory only — the file is not written.
+                        if let Some(root) = self.project.as_ref().map(|p| p.root().to_path_buf()) {
+                            self.registry.register(root);
+                        }
+                        Some(ui)
+                    }
+                    None => None,
+                };
 
                 // The theme name comes from the freshly-read settings when
                 // there are any, and otherwise stays what it is — but it
                 // is always re-resolved, because `themes` was rescanned
                 // and a custom file may have appeared or vanished.
+                let from_config = ui.is_some();
                 let wanted = ui
                     .as_ref()
                     .map(|u| u.theme.clone())
                     .unwrap_or_else(|| self.theme_name.clone());
-                let (theme_name, theme) = match self.themes.resolve(&wanted, &self.terminal_colors)
-                {
-                    Some(t) => (wanted.clone(), t),
-                    None => (
-                        "terminal".to_string(),
-                        self.themes
-                            .resolve("terminal", &self.terminal_colors)
-                            .expect("terminal is always registered"),
-                    ),
-                };
-                let unknown_theme = (theme_name != wanted)
-                    .then(|| format!("unknown theme {wanted:?} in config.toml; using terminal"));
-                match ui {
-                    // The live-reload twin of `App::new`'s call, so every
-                    // `UiSettings`-derived field (clipboard tier,
-                    // animations, the jq tab) follows the file too — but
-                    // without replacing the clipboard handle or the
-                    // in-flight animations.
-                    Some(ui) => self.reapply_ui_settings(ui, theme_name, theme),
-                    None => {
-                        self.theme = theme;
-                        self.theme_name = theme_name;
+                let theme_warning = self.set_theme_by_name(&wanted).map(|gone| {
+                    if from_config {
+                        // The name came out of the config.toml just read,
+                        // so point the user at the line to fix.
+                        format!("unknown theme {wanted:?} in config.toml; using terminal")
+                    } else {
+                        // config.toml was NOT read this time round: the
+                        // name is the app's own live one, and naming the
+                        // file would blame something never opened.
+                        gone
                     }
+                });
+                // The live-reload twin of `App::new`'s call, so every
+                // `UiSettings`-derived field (clipboard tier, animations,
+                // the jq tab) follows the file too — but without replacing
+                // the clipboard handle or the in-flight animations.
+                if let Some(ui) = ui {
+                    self.reapply_ui_settings(ui);
                 }
 
                 // Safe to swap under a key that is being dispatched right
@@ -4072,11 +4090,20 @@ impl App {
                     self.keymap = keymap;
                 }
 
-                for w in warnings.into_iter().chain(unknown_theme) {
+                for w in warnings.into_iter().chain(theme_warning) {
                     self.toasts.push(w, ToastKind::Warning);
                 }
-                self.toasts
-                    .push("Reloaded project and config", ToastKind::Success);
+                // Only claim what was actually reloaded: with no project
+                // open (and none recorded to retry) the config is all
+                // there was.
+                self.toasts.push(
+                    if self.project.is_some() {
+                        "Reloaded project and config"
+                    } else {
+                        "Reloaded config (no project is open)"
+                    },
+                    ToastKind::Success,
+                );
 
                 // The Variable Manager caches the declarations it shows;
                 // like `after_undone`, a reload has to hand it the new ones.
@@ -9520,7 +9547,11 @@ impl App {
 /// input: opening a modal on top of the screen (today, just the command
 /// palette and the theme chooser — the spec's "the modal stack works on
 /// top unchanged"), the
-/// screen open/close actions themselves, quit, cycling the active
+/// screen open/close actions themselves, quit, re-reading the project and
+/// config from disk (alt+r — the files a non-`Main` screen shows are
+/// exactly the ones a user edits in another window, and the Environments
+/// and Spaces tabs bind a bare `r` to Rename, which is what alt+r would
+/// otherwise reach), cycling the active
 /// environment (alt+x) — the one Main shortcut whose target state, the
 /// active env, is also meaningful inside the Variable Manager (it shows
 /// per-env values; `SwitchEnv` re-syncs the Manager) — and the space
@@ -9538,6 +9569,7 @@ fn screen_escape_whitelist(action: &Action) -> bool {
             | Action::OpenThemeChooser
             | Action::OpenManage { .. }
             | Action::CloseScreen
+            | Action::ReloadFromDisk
             | Action::Quit
             | Action::Undo
             | Action::Redo
