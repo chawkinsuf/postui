@@ -16435,8 +16435,14 @@ mod undo_tests {
                         .iter()
                         .find(|(key, _, _)| *key == 's')
                         .expect("dirty gate offers a save-and-retry choice");
-                    let expects_redo = retry.2.contains(&Action::Redo);
-                    let expects_undo = retry.2.contains(&Action::Undo);
+                    // The gate saves through `SaveRequestThen` so the
+                    // retry can ride a drift confirm's Overwrite choice.
+                    let expects_redo = retry
+                        .2
+                        .contains(&Action::SaveRequestThen(Box::new(Action::Redo)));
+                    let expects_undo = retry
+                        .2
+                        .contains(&Action::SaveRequestThen(Box::new(Action::Undo)));
                     assert_eq!(
                         expects_redo, redo,
                         "retry action must match the direction the step was pushed in"
@@ -21333,4 +21339,244 @@ fn undo_of_a_space_delete_restores_the_space_its_request_and_its_memory() {
     app.update(Action::Undo);
     assert_eq!(app.proj().local().active_space, "main");
     assert_eq!(app.editor.slug.as_deref(), Some("main/alpha"));
+}
+
+// ---------------------------------------------------------------------------
+// Save-time drift check: an outside edit to the open request is never
+// silently overwritten (`Project::held_request_drift`).
+// ---------------------------------------------------------------------------
+
+/// Opens `main/ping`, then rewrites its file from outside the app. The
+/// outside URL is a different LENGTH, so the stamp (mtime + len) differs
+/// even on a coarse-mtime filesystem.
+fn app_with_an_outside_edit() -> App {
+    let mut app = App::new_for_test();
+    postui_core::fixtures::save_request(app.proj().root(), "main/ping", &req("https://x/ping"))
+        .unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::OpenRequest("main/ping".into()));
+    postui_core::fixtures::save_request(
+        app.proj().root(),
+        "main/ping",
+        &req("https://x/ping-edited-outside-the-app"),
+    )
+    .unwrap();
+    app
+}
+
+fn on_disk_url(app: &App) -> String {
+    postui_core::fixtures::load_request(app.proj().root(), "main/ping")
+        .unwrap()
+        .url
+}
+
+fn press(app: &mut App, c: char) {
+    app.handle_key(&Keymap::default_bindings(), plain(c));
+}
+
+fn press_esc(app: &mut App) {
+    app.handle_key(
+        &Keymap::default_bindings(),
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+    );
+}
+
+#[test]
+fn saving_over_an_outside_edit_asks_first_and_writes_nothing() {
+    let mut app = app_with_an_outside_edit();
+    dirty_the_editor(&mut app);
+    app.handle_key(&Keymap::default_bindings(), ctrl('s'));
+
+    assert_eq!(
+        on_disk_url(&app),
+        "https://x/ping-edited-outside-the-app",
+        "the drifted file is untouched until the user chooses"
+    );
+    let Some(Modal::Confirm { title, choices, .. }) = app.modals.top() else {
+        panic!("expected the drift confirm on top")
+    };
+    assert!(
+        title.contains("ping"),
+        "the confirm names the file that moved: {title:?}"
+    );
+    assert!(
+        choices.iter().any(|(c, _, _)| *c == 'r'),
+        "a file that still exists can be reloaded"
+    );
+    assert!(app.editor.is_dirty(), "nothing was saved, so nothing is clean");
+}
+
+#[test]
+fn drift_confirm_overwrite_writes_the_editors_version() {
+    let mut app = app_with_an_outside_edit();
+    dirty_the_editor(&mut app);
+    let mine = app.editor.url.text().to_string();
+    app.handle_key(&Keymap::default_bindings(), ctrl('s'));
+    press(&mut app, 'o');
+
+    assert_eq!(on_disk_url(&app), mine, "Overwrite means my edits win");
+    assert!(!app.editor.is_dirty());
+    assert!(
+        app.toasts.messages().iter().any(|m| m.starts_with("Saved")),
+        "the overwrite reports like any other save: {:?}",
+        app.toasts.messages()
+    );
+    assert!(app.modals.is_empty());
+}
+
+#[test]
+fn drift_confirm_reload_replaces_the_editor_from_disk() {
+    let mut app = app_with_an_outside_edit();
+    dirty_the_editor(&mut app);
+    app.handle_key(&Keymap::default_bindings(), ctrl('s'));
+    press(&mut app, 'r');
+
+    assert_eq!(
+        app.editor.url.text(),
+        "https://x/ping-edited-outside-the-app",
+        "Reload means the file wins"
+    );
+    assert!(!app.editor.is_dirty(), "the reloaded buffer matches disk");
+    assert_eq!(
+        on_disk_url(&app),
+        "https://x/ping-edited-outside-the-app",
+        "a reload writes nothing"
+    );
+    assert!(app.editor.table.editing.is_none());
+    assert!(app.modals.is_empty());
+}
+
+#[test]
+fn drift_confirm_esc_keeps_both_versions() {
+    let mut app = app_with_an_outside_edit();
+    dirty_the_editor(&mut app);
+    let mine = app.editor.url.text().to_string();
+    app.handle_key(&Keymap::default_bindings(), ctrl('s'));
+    press_esc(&mut app);
+
+    assert_eq!(
+        on_disk_url(&app),
+        "https://x/ping-edited-outside-the-app",
+        "cancelling writes nothing"
+    );
+    assert_eq!(app.editor.url.text(), mine, "and discards nothing");
+    assert!(app.editor.is_dirty());
+    assert!(app.modals.is_empty());
+}
+
+#[test]
+fn saving_over_an_outside_delete_offers_no_reload_and_recreates_the_file() {
+    let mut app = App::new_for_test();
+    postui_core::fixtures::save_request(app.proj().root(), "main/ping", &req("https://x/ping"))
+        .unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::OpenRequest("main/ping".into()));
+    let path = postui_core::storage::request_path(app.proj().root(), "main/ping");
+    std::fs::remove_file(&path).unwrap();
+
+    dirty_the_editor(&mut app);
+    let mine = app.editor.url.text().to_string();
+    app.handle_key(&Keymap::default_bindings(), ctrl('s'));
+    let Some(Modal::Confirm { choices, .. }) = app.modals.top() else {
+        panic!("expected the drift confirm")
+    };
+    assert!(
+        !choices.iter().any(|(c, _, _)| *c == 'r'),
+        "there is nothing to reload from a file that is gone"
+    );
+
+    press(&mut app, 'o');
+    assert_eq!(on_disk_url(&app), mine, "Overwrite recreates the file");
+}
+
+#[test]
+fn saving_an_unchanged_file_never_asks() {
+    let mut app = App::new_for_test();
+    postui_core::fixtures::save_request(app.proj().root(), "main/ping", &req("https://x/ping"))
+        .unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::OpenRequest("main/ping".into()));
+    dirty_the_editor(&mut app);
+    let mine = app.editor.url.text().to_string();
+    app.handle_key(&Keymap::default_bindings(), ctrl('s'));
+
+    assert!(app.modals.is_empty(), "no drift, no question");
+    assert_eq!(on_disk_url(&app), mine);
+    assert!(!app.editor.is_dirty());
+}
+
+#[test]
+fn saving_after_renaming_the_open_request_never_asks() {
+    let mut app = App::new_for_test();
+    postui_core::fixtures::save_request(app.proj().root(), "main/ping", &req("https://x/ping"))
+        .unwrap();
+    app.update(Action::RefreshSidebar);
+    app.update(Action::OpenRequest("main/ping".into()));
+    app.update(Action::RenameRequest {
+        from: "main/ping".into(),
+        to: "pong".into(),
+    });
+    assert_eq!(app.editor.slug.as_deref(), Some("main/pong"));
+
+    dirty_the_editor(&mut app);
+    let mine = app.editor.url.text().to_string();
+    app.handle_key(&Keymap::default_bindings(), ctrl('s'));
+
+    assert!(
+        app.modals.is_empty(),
+        "the app's own rename is not an outside edit"
+    );
+    assert_eq!(
+        postui_core::fixtures::load_request(app.proj().root(), "main/pong")
+            .unwrap()
+            .url,
+        mine
+    );
+}
+
+#[test]
+fn save_and_quit_with_drift_asks_before_quitting_and_quits_on_overwrite() {
+    let mut app = app_with_an_outside_edit();
+    dirty_the_editor(&mut app);
+    let mine = app.editor.url.text().to_string();
+
+    app.update(Action::Quit);
+    let Some(Modal::Confirm { title, .. }) = app.modals.top() else {
+        panic!("expected the unsaved-changes gate")
+    };
+    assert_eq!(title, "Unsaved changes");
+
+    press(&mut app, 's');
+    let Some(Modal::Confirm { title, .. }) = app.modals.top() else {
+        panic!("expected the drift confirm to interrupt the save")
+    };
+    assert!(title.contains("ping"));
+    assert!(!app.should_quit, "the quit waits on the user's choice");
+
+    press(&mut app, 'o');
+    assert_eq!(on_disk_url(&app), mine);
+    assert!(app.should_quit, "the follow-on rides the Overwrite choice");
+}
+
+#[test]
+fn the_drift_confirm_stacks_on_an_open_modal() {
+    // The palette pops itself before dispatching, so its own Enter never
+    // stacks; a save reaching `update` while another modal is open (a
+    // footer chip, a queued action) is the case that must stack rather
+    // than replace.
+    let mut app = app_with_an_outside_edit();
+    dirty_the_editor(&mut app);
+    app.update(Action::OpenPalette);
+
+    app.update(Action::SaveRequest);
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Confirm { .. })),
+        "the confirm sits on top of the palette"
+    );
+
+    press_esc(&mut app);
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Palette(_))),
+        "Esc returns to the modal it stacked on"
+    );
 }

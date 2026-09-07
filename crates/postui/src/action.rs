@@ -145,8 +145,22 @@ pub enum Action {
     /// (used directly, or as the tail action of a dirty-prompt choice).
     ForceOpenRequest(String),
     /// Save the request currently open in the editor. A no-name editor
-    /// opens the save-as prompt instead of saving directly.
+    /// opens the save-as prompt instead of saving directly. When the file
+    /// has moved on disk since the editor was seeded from it, this asks
+    /// first (the drift confirm) instead of writing.
     SaveRequest,
+    /// `SaveRequest` with a follow-on to run once the save actually
+    /// lands — the dirty gate's "Save & quit/switch/open". The follow-on
+    /// rides the drift confirm's Overwrite choice, so a "Save & quit" that
+    /// hits an outside edit still quits after the user chooses.
+    SaveRequestThen(Box<Action>),
+    /// Write the editor over the open request's file, bypassing the
+    /// drift check (used directly, or as the tail action of the drift
+    /// confirm's "Overwrite" choice). Not bound to a key or a palette row.
+    ForceSaveRequest,
+    /// Re-seed the editor from the open request's file, discarding the
+    /// buffer — the drift confirm's "Reload from disk" choice.
+    ReloadOpenRequest,
     /// Show the stored parse/read error for a broken sidebar row.
     ShowRequestError(String),
     /// Re-read the project directory and rebuild the sidebar listing.
