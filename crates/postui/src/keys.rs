@@ -212,7 +212,10 @@ pub fn fold_text_nav_bytes(ev: KeyEvent, macos: bool) -> KeyEvent {
     }
 }
 
-#[derive(Clone, Debug)]
+/// `PartialEq` compares the bindings: a live reload uses it to tell a
+/// keys.toml that changed from one that was merely re-read, and only
+/// re-issues its advisories for the former.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Keymap {
     bindings: HashMap<KeyCombo, Action>,
 }

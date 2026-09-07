@@ -564,7 +564,15 @@ impl Config {
     /// on because a file grew a syntax error, or because a read failed.
     /// The caller keeps whatever it already has for a `None` field and
     /// shows the accompanying warning.
-    pub fn reload(&mut self, macos: bool) -> (Reloaded, Vec<String>) {
+    /// `current_keys` is the keymap the app is running on: the
+    /// caret-conflict advisories are re-issued only when the file's
+    /// bindings actually differ from it, so re-reading an unchanged
+    /// keys.toml is silent rather than a nag.
+    pub fn reload(
+        &mut self,
+        macos: bool,
+        current_keys: &crate::keys::Keymap,
+    ) -> (Reloaded, Vec<String>) {
         let (read, mut warnings) = self.read_all();
 
         let config = match read.config {
@@ -581,7 +589,9 @@ impl Config {
                 None
             }
         };
-        if let Some(keymap) = &keymap {
+        if let Some(keymap) = &keymap
+            && keymap != current_keys
+        {
             warnings.extend(keymap.caret_warnings(macos));
         }
         // A `themes/` that would not list already warned inside
@@ -1286,7 +1296,7 @@ mod tests {
         .unwrap();
         let mut cfg = Config::at(dir.path().to_path_buf());
 
-        let (reloaded, warnings) = cfg.reload(false);
+        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings());
 
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(reloaded.config.as_ref().unwrap().1.theme, "x");
@@ -1306,7 +1316,7 @@ mod tests {
         .unwrap();
         let mut cfg = Config::at(dir.path().to_path_buf());
 
-        let (reloaded, warnings) = cfg.reload(false);
+        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings());
 
         assert!(reloaded.config.is_none());
         assert_eq!(warnings.len(), 1, "{warnings:?}");
@@ -1324,7 +1334,7 @@ mod tests {
         .unwrap();
         let mut cfg = Config::at(dir.path().to_path_buf());
 
-        let (reloaded, warnings) = cfg.reload(false);
+        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings());
 
         assert!(reloaded.config.is_some(), "valid TOML still parses");
         assert!(
@@ -1338,7 +1348,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut cfg = Config::at(dir.path().to_path_buf());
 
-        let (reloaded, warnings) = cfg.reload(false);
+        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings());
 
         assert_eq!(
             reloaded.config,
@@ -1353,7 +1363,7 @@ mod tests {
         std::fs::write(dir.path().join("keys.toml"), "save = \"alt+shift+s\"\n").unwrap();
         let mut cfg = Config::at(dir.path().to_path_buf());
 
-        let (reloaded, _warnings) = cfg.reload(false);
+        let (reloaded, _warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings());
 
         let keymap = reloaded.keymap.expect("good keys.toml parses");
         let combo = crate::keys::KeyCombo::parse("alt+shift+s").unwrap();
@@ -1369,7 +1379,7 @@ mod tests {
         std::fs::write(dir.path().join("keys.toml"), "save = \"not-a-combo\"\n").unwrap();
         let mut cfg = Config::at(dir.path().to_path_buf());
 
-        let (reloaded, warnings) = cfg.reload(false);
+        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings());
 
         assert!(reloaded.keymap.is_none());
         assert!(
@@ -1388,7 +1398,7 @@ mod tests {
         std::fs::write(themes.join("good.toml"), THEME_TOML).unwrap();
         let mut cfg = Config::at(dir.path().to_path_buf());
 
-        let (reloaded, _warnings) = cfg.reload(false);
+        let (reloaded, _warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings());
 
         let themes = reloaded.themes.expect("the directory listed");
         let customs: Vec<&str> = themes
@@ -1398,6 +1408,31 @@ mod tests {
             .map(|e| e.name.as_str())
             .collect();
         assert_eq!(customs, vec!["good"]);
+    }
+
+    /// The caret-conflict lines are advice about what a keys.toml costs
+    /// on macOS — true the moment the file is written, and no truer the
+    /// tenth time the user reloads. Repeating them on every reload turns
+    /// the reload into a nag.
+    #[test]
+    fn reload_repeats_the_caret_advisories_only_when_the_keys_changed() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("keys.toml"), "save = \"ctrl+a\"\n").unwrap();
+        let mut cfg = Config::at(dir.path().to_path_buf());
+
+        let (first, warnings) = cfg.reload(true, &crate::keys::Keymap::default_bindings());
+        let keymap = first.keymap.expect("the file parsed");
+        assert!(
+            warnings.iter().any(|w| w.contains("shadows")),
+            "the new bindings are worth one warning: {warnings:?}"
+        );
+
+        // Same file, and the app is already running on it.
+        let (_, warnings) = cfg.reload(true, &keymap);
+        assert!(
+            !warnings.iter().any(|w| w.contains("shadows")),
+            "nothing changed, so there is nothing to warn about: {warnings:?}"
+        );
     }
 
     /// An UNREADABLE file is not a MISSING file: reload must not hand the
@@ -1414,7 +1449,7 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
         let mut cfg = Config::at(dir.path().to_path_buf());
 
-        let (reloaded, warnings) = cfg.reload(false);
+        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings());
 
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         if reloaded.config.is_some() {
@@ -1437,7 +1472,7 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
         let mut cfg = Config::at(dir.path().to_path_buf());
 
-        let (reloaded, warnings) = cfg.reload(false);
+        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings());
 
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         if reloaded.keymap.is_some() {
@@ -1464,7 +1499,7 @@ mod tests {
         std::fs::set_permissions(&themes, std::fs::Permissions::from_mode(0o000)).unwrap();
         let mut cfg = Config::at(dir.path().to_path_buf());
 
-        let (reloaded, warnings) = cfg.reload(false);
+        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings());
 
         std::fs::set_permissions(&themes, std::fs::Permissions::from_mode(0o755)).unwrap();
         if reloaded.themes.is_some() {
@@ -1481,7 +1516,7 @@ mod tests {
     fn reload_on_config_none_is_all_defaults_no_warnings() {
         let mut cfg = Config::none();
 
-        let (reloaded, warnings) = cfg.reload(false);
+        let (reloaded, warnings) = cfg.reload(false, &crate::keys::Keymap::default_bindings());
 
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(

@@ -4032,7 +4032,8 @@ impl App {
                 // The config half. Every `None` field means "that file
                 // exists but could not be read or parsed": keep what we
                 // have, and let the warning say which file to fix.
-                let (reloaded, warnings) = self.config.reload(cfg!(target_os = "macos"));
+                let (reloaded, warnings) =
+                    self.config.reload(cfg!(target_os = "macos"), &self.keymap);
                 if let Some(themes) = reloaded.themes {
                     self.themes = themes;
                 }
