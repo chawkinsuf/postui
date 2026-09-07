@@ -415,7 +415,7 @@ pub enum Action {
     /// chooser). A no-op, redraw-wise, when nothing changed.
     ReloadProjectFiles,
     /// The user-triggered reload (`alt+r`, the palette's "Reload from
-    /// disk", the Manage bar's Reload button): a forced re-read of the
+    /// disk", the Manage bar's Reload All button): a forced re-read of the
     /// open project's files *and* of the user-editable XDG config files —
     /// `config.toml`, `keys.toml` and `themes/` — applied live. `ui.toml`
     /// is app-owned state and is not re-read. Unsaved editor edits are

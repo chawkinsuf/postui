@@ -137,7 +137,7 @@ pub fn draw_manage_bar(
     let mut x = bar.x + bar.width;
     // Laid out right-to-left from the bar's right edge, so the first
     // entry is the right-most button: Close stays on the corner and
-    // Reload sits to its left.
+    // Reload All sits to its left.
     let buttons: Vec<(&str, ButtonKind, Hit)> = vec![
         (
             "Close (esc)",
@@ -145,7 +145,7 @@ pub fn draw_manage_bar(
             Hit::FooterChip(Action::CloseScreen),
         ),
         (
-            "Reload (alt+r)",
+            "Reload All (alt+r)",
             ButtonKind::Secondary,
             Hit::FooterChip(Action::ReloadFromDisk),
         ),
@@ -337,7 +337,7 @@ mod tests {
                 assert!(hits.rect_of(&Hit::ManageTab(i)).is_some());
             }
             assert!(content.contains("Close (esc)"), "{content}");
-            assert!(content.contains("Reload (alt+r)"), "{content}");
+            assert!(content.contains("Reload All (alt+r)"), "{content}");
             let close = hits
                 .rect_of(&Hit::FooterChip(Action::CloseScreen))
                 .expect("close is registered");

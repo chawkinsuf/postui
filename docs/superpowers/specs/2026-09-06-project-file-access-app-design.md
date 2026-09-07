@@ -91,7 +91,7 @@ today.
 ### Reload from disk
 
 `Action::ReloadFromDisk` — `alt+r`, the palette's "Reload from disk", and
-the Manage bar's Reload button — is the user's way to pick up edits made
+the Manage bar's Reload All button — is the user's way to pick up edits made
 outside the app without restarting it. It does both halves at once: a
 forced (mtime-gated checks skipped) re-read of the open project's files
 with the sidebar rebuild `ReloadProjectFiles` performs — or, when startup
