@@ -311,10 +311,11 @@ pub struct App {
     /// by `on_hit`, cleared on release; becomes a live row drag the moment
     /// the pointer moves onto another row (see `mouse.rs`).
     pub sidebar_press: Option<(usize, String)>,
-    /// A left press on a Manage screen Spaces row: `(row index, space)`.
-    /// The Spaces-tab twin of `sidebar_press` — armed by `on_hit` (Spaces
-    /// tab only), cleared on release, promoted to a live row drag the
-    /// moment the pointer moves onto another row (see `mouse.rs`).
+    /// A left press on a Manage screen list row (Environments or Spaces
+    /// tab): `(row index, item)`. The Manage-screen twin of
+    /// `sidebar_press` — armed by `on_hit` on either tab, cleared on
+    /// release, promoted to a live row drag the moment the pointer moves
+    /// onto another row (see `mouse.rs`).
     pub manage_press: Option<(usize, String)>,
     /// Whether the active tab's params/headers table body is collapsed
     /// (tab strip + its count chip stay visible; only the table itself is
@@ -4327,8 +4328,8 @@ impl App {
             }
             Action::OpenManage { tab } => {
                 // A tab switch here `reset`s the list, which would drop a
-                // live space drag on the floor with its press still
-                // armed: cancel it first, as `SelectManageTab` does.
+                // live Manage-list row drag on the floor with its press
+                // still armed: cancel it first, as `SelectManageTab` does.
                 self.finish_manage_drag(false);
                 // A toggle: alt+v (and the header Manage chip) close the
                 // screen they opened. A request for the tab that's already
@@ -4357,9 +4358,10 @@ impl App {
                 true
             }
             Action::SelectManageTab(tab) => {
-                // A live space drag belongs to the Spaces tab's list: the
-                // tab strip switching out from under it cancels it (and
-                // `reset` below would drop the drag on the floor anyway).
+                // A live Manage-list row drag belongs to whichever tab's
+                // list it is rearranging: the tab strip switching out from
+                // under it cancels it (and `reset` below would drop the
+                // drag on the floor anyway).
                 self.finish_manage_drag(false);
                 // Each tab lists something else: a cursor (and any name
                 // edit) carried across would point at the wrong item.
@@ -7347,7 +7349,7 @@ impl App {
         // before the root changes, or its working order would be painted over
         // the new space's rows and written to the new space on release.
         self.finish_sidebar_drag(false);
-        // Same for a Manage screen space drag: the list it is rearranging
+        // Same for a Manage screen row drag: the list it is rearranging
         // is about to be re-read under it.
         self.finish_manage_drag(false);
         if let SpaceExit::Remember(slug) = outgoing
@@ -7580,9 +7582,9 @@ impl App {
         true
     }
 
-    /// Pointer motion during a Manage screen space-row drag: maps the
-    /// pointer's screen row to a row index and shows the resulting order
-    /// live.
+    /// Pointer motion during a Manage screen list-row drag (Environments or
+    /// Spaces tab): maps the pointer's screen row to a row index and shows
+    /// the resulting order live.
     ///
     /// Outside the list the working order snaps back to the order the
     /// drag started from — the preview of the cancel a release there
