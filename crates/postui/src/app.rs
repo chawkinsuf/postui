@@ -4019,17 +4019,28 @@ impl App {
                 // With none open because startup refused one, it is a
                 // retry of that very open — "fix the file and pick it up
                 // without restarting" is the whole point of the command —
-                // through `ForceSwitchProject`, the app's one open path,
-                // which clears `open_error` and the sidebar notice itself.
+                // through `SwitchProject`, which clears `open_error` and
+                // the sidebar notice itself. `SwitchProject` and not
+                // `ForceSwitchProject`: opening a project resets the
+                // session and can hand the editor a fresh buffer, and in
+                // this exact state nothing has been saved anywhere, so
+                // that buffer may be the only copy of what the user
+                // typed. The standard unsaved-request confirm stands in
+                // front of it, as it does for every other switch.
+                //
                 // The editor's buffer is not part of any of this: unsaved
                 // edits are the user's, and a reload is not a discard.
-                match (self.project.is_none(), self.open_error.as_ref()) {
+                let retried = match (self.project.is_none(), self.open_error.as_ref()) {
                     (true, Some(e)) => {
                         let root = e.root.clone();
-                        self.apply(Action::ForceSwitchProject(root));
+                        self.apply(Action::SwitchProject(root));
+                        true
                     }
-                    _ => self.resync_project(),
-                }
+                    _ => {
+                        self.resync_project();
+                        false
+                    }
+                };
 
                 // The config half. Every `None` field means "that file
                 // exists but could not be read or parsed": keep what we
@@ -4097,16 +4108,21 @@ impl App {
                     self.toasts.push(w, ToastKind::Warning);
                 }
                 // Only claim what was actually reloaded: with no project
-                // open (and none recorded to retry) the config is all
-                // there was.
-                self.toasts.push(
-                    if self.project.is_some() {
-                        "Reloaded project and config"
-                    } else {
-                        "Reloaded config (no project is open)"
-                    },
-                    ToastKind::Success,
-                );
+                // open (and none recorded to retry, or the retry still
+                // waiting on the unsaved-request confirm) the config is
+                // all there was. And when the retry did open the project,
+                // the open path has already announced it — "Switched to
+                // …" — so a second toast saying the same thing is noise.
+                if !(retried && self.project.is_some()) {
+                    self.toasts.push(
+                        if self.project.is_some() {
+                            "Reloaded project and config"
+                        } else {
+                            "Reloaded config (no project is open)"
+                        },
+                        ToastKind::Success,
+                    );
+                }
 
                 // The Variable Manager caches the declarations it shows;
                 // like `after_undone`, a reload has to hand it the new ones.

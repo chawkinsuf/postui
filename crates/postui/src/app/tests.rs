@@ -21269,6 +21269,48 @@ fn reload_from_disk_retries_a_project_that_refused_to_open() {
     );
     assert!(app.open_error.is_none());
     assert!(app.sidebar.notice.is_none(), "the sidebar notice is gone");
+    // The open path already said "Switched to …"; saying it twice, in two
+    // different wordings, is noise.
+    assert!(
+        !app.toasts
+            .messages()
+            .iter()
+            .any(|m| m.starts_with("Reloaded")),
+        "{:?}",
+        app.toasts.messages()
+    );
+}
+
+/// The retry goes through the project-open path, which resets the session
+/// and can hand the editor a fresh buffer. In the refused-startup state
+/// nothing has been saved anywhere, so that buffer may be the only copy
+/// of what the user typed — the standard unsaved-request confirm has to
+/// stand between them.
+#[test]
+fn reload_from_disk_does_not_discard_an_unsaved_request_when_it_retries() {
+    let dir = tempfile::tempdir().unwrap();
+    postui_core::fixtures::ensure_project(dir.path()).unwrap();
+    std::fs::write(dir.path().join("project.toml"), "spaces = [\"main\"\n").unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    let _cfg = config_at_tempdir(&mut app);
+    assert!(app.project().is_none(), "the open was refused");
+    app.update(Action::FocusUrl);
+    type_chars(&mut app, "https://scratch/typed");
+    assert!(app.editor_holds_unsaved());
+
+    std::fs::write(dir.path().join("project.toml"), "spaces = [\"main\"]\n").unwrap();
+    app.update(Action::ReloadFromDisk);
+
+    assert_eq!(
+        app.editor.url.text(),
+        "https://scratch/typed",
+        "the unsaved request survived the retry"
+    );
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Confirm { .. })),
+        "the user is asked before anything replaces it"
+    );
 }
 
 /// With no project to reload — and none recorded to retry — the toast
