@@ -1,6 +1,20 @@
 //! Requests: the listing (always in memory), requests loaded on demand and
 //! held while open, and the file operations with their order-list
 //! cascades. Request ops journal paths and trash tickets, never content.
+//!
+//! Each held request (`Held`) carries the `Disk::stamp` its file had when
+//! the editor's buffer was last seeded from it: taken before the read in
+//! `open_request`, after the write in `save_request`. `held_request_drift`
+//! compares a fresh stamp against that seed to tell the app whether the
+//! file has moved outside it since. A poll's `reload_held_requests`
+//! re-reads the body to keep the held copy current but keeps the seed
+//! stamp — the editor's own buffer was not re-seeded by the poll, so the
+//! file is still "moved since the editor last saw it" as far as the app's
+//! drift check is concerned. `rename_request` rewrites the file's `name`,
+//! so it re-stamps the held entry — but only when the entry was already
+//! clean before the rename; re-stamping one that had already drifted would
+//! launder an outside edit into "clean" and let the next save overwrite it
+//! silently.
 
 use super::*;
 use crate::journal::Op;

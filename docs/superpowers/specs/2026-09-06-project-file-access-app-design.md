@@ -79,6 +79,16 @@ unpersisted split or expanded set.
    helpers, and the legacy free functions are deleted; test references
    move to `App::proj()` and `Project` accessors.
 
+## Save-time drift check
+
+A later branch closes the "last writer wins" gap this design left open:
+each held request carries the `Disk::stamp` of the file it was seeded
+from, and `Project::held_request_drift` compares a fresh stamp against it
+before the interactive save writes. On drift the app asks — Overwrite,
+Reload from disk, Cancel — instead of writing silently; `save_open_request`
+(promote/extract, which run inside an already-committed manager op) stay
+unchecked. See `docs/superpowers/plans/2026-09-06-save-stamp-check.md`.
+
 ## Config
 
 `Config` in the TUI crate holds `Settings`, `KeyMap`, `ThemeRegistry` and
