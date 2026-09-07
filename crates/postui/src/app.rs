@@ -5844,14 +5844,23 @@ impl App {
                 // committed) — save it synchronously rather than
                 // leaving it save-on-demand, so "extract to
                 // request, then quit" can't lose it.
-                if wrote_to_request && let Err(e) = self.save_open_request() {
-                    self.toasts.push(
-                        format!(
-                            "extracted to {{{{{name}}}}} but {e} \u{2014} save the request manually"
-                        ),
-                        ToastKind::Error,
-                    );
-                    return true;
+                // Nothing has been committed through core on this arm (a
+                // `Request` destination touches no var file), so unlike
+                // promote this save can afford to ask: it goes through the
+                // ordinary checked save, whose confirm carries the same
+                // Overwrite / Reload / Cancel choice ctrl+s offers.
+                if wrote_to_request {
+                    if self.editor.slug.is_some() {
+                        self.save_request_checked(None);
+                    } else if let Err(e) = self.save_open_request() {
+                        self.toasts.push(
+                            format!(
+                                "extracted to {{{{{name}}}}} but {e} \u{2014} save the request manually"
+                            ),
+                            ToastKind::Error,
+                        );
+                        return true;
+                    }
                 }
                 self.toasts
                     .push(format!("extracted to {{{{{name}}}}}"), ToastKind::Success);
@@ -6345,6 +6354,22 @@ impl App {
                 name: name.clone(),
             },
         };
+        // A promote's second half saves the open request file
+        // synchronously, and that save cannot ask (the variable half is
+        // already committed by then, and a modal would strand it). So the
+        // check happens here, BEFORE anything is committed: on drift the
+        // whole op is refused, touching neither file.
+        if let VarStructOp::Promote { .. } = op
+            && let Some(slug) = self.editor.slug.clone()
+            && self
+                .project()
+                .and_then(|p| p.held_request_drift(&slug))
+                .is_some()
+        {
+            return Err(format!(
+                "{slug} changed outside the app — save or reload it first"
+            ));
+        }
         self.project_mut()
             .ok_or_else(|| NO_PROJECT.to_string())?
             .apply_var_edit(&edit)
@@ -6812,10 +6837,15 @@ impl App {
     /// MANAGER-driven mutation — unlike ordinary Vars-tab typing, which
     /// stays save-on-demand (plan-mandated) and never calls this.
     ///
-    /// Unlike the interactive save it does NOT check
-    /// `held_request_drift`: it runs inside a manager op that has already
-    /// committed the variable half, where a modal would strand the write
-    /// mid-op. The drift check is the interactive save's.
+    /// This helper itself does NOT check `held_request_drift` — it is the
+    /// write that runs after a manager op has already committed the
+    /// variable half, where a modal would strand it mid-op. Its callers
+    /// carry the check instead, each in the shape its arm allows: promote
+    /// pre-flights the drift before `apply_var_edit` and refuses the whole
+    /// op, and extract-to-request (which commits nothing through core)
+    /// goes through `save_request_checked` and gets the ordinary confirm.
+    /// The only path still reaching here unchecked is a never-saved
+    /// scratch editor, which has no file to have drifted.
     fn save_open_request(&mut self) -> Result<(), String> {
         let slug = self
             .editor

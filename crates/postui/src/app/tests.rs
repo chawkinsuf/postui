@@ -21698,3 +21698,90 @@ fn undo_of_a_move_all_without_an_outside_edit_saves_without_asking() {
         mine
     );
 }
+
+// ---------------------------------------------------------------------------
+// The two non-interactive writers of the open request file (promote,
+// extract-to-request) are drift-aware too: "last writer wins" is closed
+// for every writer, not just ctrl+s.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn promote_refuses_when_the_open_request_changed_outside_the_app() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    request_with_var(dir.path(), "main/ping", "trace_id", "abc-123");
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("main/ping".into()));
+    postui_core::fixtures::save_request(
+        dir.path(),
+        "main/ping",
+        &req("https://x/ping-edited-outside-the-app"),
+    )
+    .unwrap();
+    let before = std::fs::read_to_string(dir.path().join("variables.toml")).unwrap();
+
+    app.update(Action::VarStruct(VarStructOp::Promote {
+        name: "trace_id".into(),
+        target: postui_core::varedit::PromoteTarget::Default,
+    }));
+
+    assert!(
+        app.toasts
+            .messages()
+            .iter()
+            .any(|m| m.contains("changed outside the app")),
+        "{:?}",
+        app.toasts.messages()
+    );
+    assert!(app.last_action_failed);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("variables.toml")).unwrap(),
+        before,
+        "the variable half never ran"
+    );
+    assert_eq!(
+        postui_core::fixtures::load_request(dir.path(), "main/ping").unwrap().url,
+        "https://x/ping-edited-outside-the-app",
+        "and the request file is untouched"
+    );
+    assert!(
+        app.editor.variables.contains_key("trace_id"),
+        "the buffer keeps the entry the promote would have moved"
+    );
+}
+
+#[test]
+fn extract_to_request_over_an_outside_edit_asks_instead_of_overwriting() {
+    let dir = tempfile::tempdir().unwrap();
+    var_project(dir.path());
+    postui_core::fixtures::save_request(dir.path(), "main/ping", &req("https://x/ping/abc-123"))
+        .unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut app = App::with_root(tx, dir.path().to_path_buf());
+    app.update(Action::ForceOpenRequest("main/ping".into()));
+    app.editor.url = crate::components::line_input::LineInput::new("https://x/ping/abc-123");
+    app.focus = crate::layout::PaneId::Editor;
+    app.editor.sub_focus = crate::components::editor::SubFocus::Url;
+    postui_core::fixtures::save_request(
+        dir.path(),
+        "main/ping",
+        &req("https://x/ping-edited-outside-the-app"),
+    )
+    .unwrap();
+
+    app.update(Action::ConfirmExtractVariable {
+        name: "trace_id".into(),
+        destination: crate::action::ExtractDestination::Request,
+    });
+
+    assert!(
+        matches!(app.modals.top(), Some(Modal::Confirm { .. })),
+        "the ordinary drift confirm handles it"
+    );
+    assert_eq!(
+        postui_core::fixtures::load_request(dir.path(), "main/ping").unwrap().url,
+        "https://x/ping-edited-outside-the-app",
+        "nothing is written until the user chooses"
+    );
+}

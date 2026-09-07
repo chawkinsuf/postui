@@ -85,9 +85,33 @@ A later branch closes the "last writer wins" gap this design left open:
 each held request carries the `Disk::stamp` of the file it was seeded
 from, and `Project::held_request_drift` compares a fresh stamp against it
 before the interactive save writes. On drift the app asks — Overwrite,
-Reload from disk, Cancel — instead of writing silently; `save_open_request`
-(promote/extract, which run inside an already-committed manager op) stay
-unchecked. See `docs/superpowers/plans/2026-09-06-save-stamp-check.md`.
+Reload from disk, Cancel — instead of writing silently.
+
+Every writer of an open request's file is covered, each in the shape its
+call site allows:
+
+- ctrl+s and the dirty gate's "Save & …" go through
+  `save_request_checked`, which shows that confirm.
+- Extract-to-request commits nothing through core before its save, so it
+  goes through `save_request_checked` too and gets the same confirm.
+- Promote's second half must write synchronously after the variable half
+  has committed, where a modal would strand it — so it pre-flights
+  `held_request_drift` *before* `apply_var_edit` and refuses the whole op
+  with an error toast, touching neither file.
+
+The seed stamp survives everything that is not a re-seed of the editor's
+own buffer: a poll or a replay refreshes a held body but keeps the stamp,
+a held entry is never dropped, and an op of the app's own that moves a
+held request re-stamps it only when it was still clean before that op
+(`Project::rekey_held_after_own_op`).
+
+A `Stamp` is mtime + length. On a coarse-mtime filesystem an outside edit
+of the same length in the same clock tick as an open or save is
+undetectable, and a byte-identical rewrite (a git checkout, a formatter,
+`touch`) raises a spurious confirm. A content hash beside the stamp would
+close both and is deliberately deferred.
+
+See `docs/superpowers/plans/2026-09-06-save-stamp-check.md`.
 
 ## Config
 
