@@ -21,6 +21,14 @@ const KEYS_TOML: &str = "keys.toml";
 const UI_TOML: &str = "ui.toml";
 const THEMES_DIR: &str = "themes";
 
+/// The one place the "`config.toml` will not parse" sentence is written.
+/// What was *done* about it differs by caller — startup drops to the
+/// defaults, a reload keeps what it has — so each caller appends its own
+/// clause rather than the sentence being written out again.
+fn config_parse_error(e: &toml::de::Error) -> String {
+    format!("could not parse {CONFIG_TOML}: {e}")
+}
+
 impl ProjectsRegistry {
     /// Parses the registry out of `config.toml`'s text. An empty string
     /// (the missing file) is the empty registry; a mistyped piece of the
@@ -31,10 +39,7 @@ impl ProjectsRegistry {
     pub fn parse(text: &str) -> (Self, Vec<String>) {
         match toml::from_str::<toml::Value>(text) {
             Ok(value) => (Self::from_value(&value), Vec::new()),
-            Err(e) => (
-                Self::default(),
-                vec![format!("could not parse {CONFIG_TOML}: {e}")],
-            ),
+            Err(e) => (Self::default(), vec![config_parse_error(&e)]),
         }
     }
 
@@ -277,9 +282,7 @@ impl UiSettings {
             Ok(value) => Self::from_value(&value),
             Err(e) => (
                 UiSettings::default(),
-                vec![format!(
-                    "could not parse {CONFIG_TOML}: {e}; using default settings"
-                )],
+                vec![format!("{}; using default settings", config_parse_error(&e))],
             ),
         }
     }
@@ -427,9 +430,20 @@ impl Config {
     /// not read or parse yields its defaults and a warning; it is never
     /// written over afterwards (see [`Self::edit`]).
     pub fn load(macos: bool) -> (Config, Loaded, Vec<String>) {
-        let mut cfg = Config {
-            disk: postui_core::config_dir().map(postui_core::disk::Disk::new),
-        };
+        Self::load_from(
+            Config {
+                disk: postui_core::config_dir().map(postui_core::disk::Disk::new),
+            },
+            macos,
+        )
+    }
+
+    /// [`Self::load`] with the config directory already resolved: the half
+    /// that reads and words, split from the half that decides *where*, so
+    /// startup's behaviour — which file failure yields which defaults and
+    /// which sentence — can be tested against a tempdir instead of only
+    /// against the user's real XDG directory.
+    pub(crate) fn load_from(mut cfg: Config, macos: bool) -> (Config, Loaded, Vec<String>) {
         let (read, mut warnings) = cfg.read_all();
 
         // Startup's answer to every failure is the same: run on the
@@ -529,7 +543,7 @@ impl Config {
                     warnings.extend(ui_warnings);
                     Ok((registry, ui))
                 }
-                Err(e) => Err(format!("could not parse {CONFIG_TOML}: {e}")),
+                Err(e) => Err(config_parse_error(&e)),
             },
             Err(e) => Err(e),
         };
@@ -1408,6 +1422,87 @@ mod tests {
             .map(|e| e.name.as_str())
             .collect();
         assert_eq!(customs, vec!["good"]);
+    }
+
+    // --- startup, against a tempdir ------------------------------------
+    //
+    // `Config::load` resolves the real XDG directory, so these go through
+    // `load_from` — the same reading and wording, handed a config dir the
+    // test owns. Startup's contract: every failure runs on the defaults
+    // and says so, and a *missing* file is not a failure at all.
+
+    #[test]
+    fn startup_runs_on_defaults_and_says_so_when_config_toml_will_not_parse() {
+        let dir = tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.toml"),
+            "theme = \"dark\"\nclipboard_cmd = \"xclip\n",
+        )
+        .unwrap();
+
+        let (_cfg, loaded, warnings) =
+            Config::load_from(Config::at(dir.path().to_path_buf()), false);
+
+        assert_eq!(loaded.ui, UiSettings::default());
+        assert_eq!(loaded.registry, ProjectsRegistry::default());
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].starts_with("could not parse config.toml: "), "{warnings:?}");
+        assert!(warnings[0].ends_with("; using default settings"), "{warnings:?}");
+    }
+
+    /// An unreadable config.toml gets the same treatment as an unparsable
+    /// one at startup — the app has to come up on something — but the
+    /// sentence names the read failure rather than a parse error.
+    #[cfg(unix)]
+    #[test]
+    fn startup_runs_on_defaults_and_says_so_when_config_toml_cannot_be_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "theme = \"gruvbox-dark\"\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let (_cfg, loaded, warnings) =
+            Config::load_from(Config::at(dir.path().to_path_buf()), false);
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        if loaded.ui.theme == "gruvbox-dark" {
+            // Running as root: nothing is unreadable. Not a failure.
+            return;
+        }
+        assert_eq!(loaded.ui, UiSettings::default());
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("config.toml"), "{warnings:?}");
+        assert!(warnings[0].ends_with("; using default settings"), "{warnings:?}");
+    }
+
+    #[test]
+    fn startup_with_no_config_files_at_all_is_silent_defaults() {
+        let dir = tempdir().unwrap();
+
+        let (_cfg, loaded, warnings) =
+            Config::load_from(Config::at(dir.path().to_path_buf()), false);
+
+        assert!(warnings.is_empty(), "a missing file is not a problem: {warnings:?}");
+        assert_eq!(loaded.ui, UiSettings::default());
+        assert_eq!(loaded.registry, ProjectsRegistry::default());
+        assert_eq!(loaded.keymap, crate::keys::Keymap::default_bindings());
+    }
+
+    #[test]
+    fn startup_falls_back_to_the_default_keys_and_says_so_on_a_bad_keys_toml() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("keys.toml"), "save = \"not-a-combo\"\n").unwrap();
+
+        let (_cfg, loaded, warnings) =
+            Config::load_from(Config::at(dir.path().to_path_buf()), false);
+
+        assert_eq!(loaded.keymap, crate::keys::Keymap::default_bindings());
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].starts_with("keys.toml ignored, using default keys: "),
+            "{warnings:?}"
+        );
     }
 
     /// The caret-conflict lines are advice about what a keys.toml costs
