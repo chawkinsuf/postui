@@ -14,10 +14,11 @@ mod undo;
 mod varedit_ops;
 mod variables;
 pub use meta::*;
+pub use requests::HeldDrift;
 pub use undo::Undone;
 pub use varedit_ops::VarEdit;
 
-use crate::disk::{Disk, DiskError, RelPath, Ticket};
+use crate::disk::{Disk, DiskError, RelPath, Stamp, Ticket};
 use crate::journal::{Entry, EntryId, EntryMeta, Journal, Op};
 use crate::migrate::MigrationOutcome;
 use crate::storage::RequestListing;
@@ -126,7 +127,7 @@ pub struct Project {
     listing: Vec<RequestListing>,
     listing_warning: Option<String>,
     /// Requests loaded on demand, held while open (Task 7).
-    open_requests: IndexMap<String, crate::model::HttpRequest>,
+    open_requests: IndexMap<String, Held>,
     local: Local,
     journal: Journal,
     /// The ops of the transaction in progress; `None` outside one.
@@ -136,6 +137,26 @@ pub struct Project {
     /// Set by `invalidate_stamps`; forces the next `poll` to reload even
     /// though no watched stamp actually differs.
     force_reload: bool,
+}
+
+/// A request held open in the editor, plus the stamp its file had when the
+/// editor's buffer was last seeded from disk (by `open_request` or
+/// `save_request`). `held_request_drift` compares that seed stamp against a
+/// fresh one to tell whether the file moved outside the app since.
+///
+/// The stamp is mtime + length ([`Stamp`]), deliberately cheap: one stat,
+/// no read. The cost is two known blind spots. On a coarse-mtime
+/// filesystem (HFS+, exFAT, some network mounts), or when `mtime` is
+/// unavailable, an outside write of the same length in the same tick as
+/// our own open or save is invisible — that save overwrites it silently.
+/// The other way round, a byte-identical rewrite (a git checkout, a
+/// formatter, `touch`) raises a "changed outside the app" confirm with
+/// nothing behind it. A content hash kept beside the stamp would close
+/// both; it is deliberately deferred — the extra confirm is harmless, and
+/// the missed write needs a same-length edit inside one mtime tick.
+pub(crate) struct Held {
+    req: crate::model::HttpRequest,
+    stamp: Stamp,
 }
 
 /// A snapshot of every in-memory document `Project` holds, for restoring
@@ -152,8 +173,9 @@ struct Memory {
     spaces: Vec<String>,
     spaces_warning: Option<String>,
     local: Local,
-    /// Slugs held in `open_requests` (keys only; bodies are re-read).
-    open_request_keys: Vec<String>,
+    /// Slugs held in `open_requests` with their seed stamp (bodies are
+    /// re-read by `reload_held_requests`, not snapshotted here).
+    open_request_stamps: Vec<(String, Stamp)>,
 }
 
 pub(crate) const PROJECT_TOML: &str = "project.toml";
@@ -354,7 +376,7 @@ impl Project {
             spaces: self.spaces.clone(),
             spaces_warning: self.spaces_warning.clone(),
             local: self.local.clone(),
-            open_request_keys: self.open_requests.keys().cloned().collect(),
+            open_request_stamps: self.open_requests.iter().map(|(k, h)| (k.clone(), h.stamp)).collect(),
         }
     }
 
@@ -370,32 +392,42 @@ impl Project {
         self.spaces_warning = m.spaces_warning;
         self.local = m.local;
         self.open_requests = m
-            .open_request_keys
+            .open_request_stamps
             .into_iter()
-            .map(|k| (k, crate::model::HttpRequest::default()))
+            .map(|(k, stamp)| {
+                (
+                    k,
+                    Held {
+                        req: crate::model::HttpRequest::default(),
+                        stamp,
+                    },
+                )
+            })
             .collect();
     }
 
-    /// Re-reads every key of `open_requests` from disk (re-parse, or drop
-    /// when it no longer parses or exists). Extracted so both `reload_all`
-    /// and a failed transaction's rollback can use it: the listing and
-    /// every held request are not part of [`Memory`] (they can be large),
-    /// so both are re-derived from disk instead of snapshotted.
+    /// Re-reads every key of `open_requests` from disk. Extracted so both
+    /// `reload_all` and a failed transaction's rollback can use it: the
+    /// listing and every held request are not part of [`Memory`] (they can
+    /// be large), so both are re-derived from disk instead of snapshotted.
+    ///
+    /// An entry is NEVER dropped, whatever the re-read finds: a file that
+    /// vanished or no longer parses keeps its last-good body and, above
+    /// all, its seed stamp — that stamp is what
+    /// [`Project::held_request_drift`] compares, and dropping the entry
+    /// would make the drift check answer "clean" for exactly the two cases
+    /// it exists for, for the rest of the session.
     pub(crate) fn reload_held_requests(&mut self) {
         let held: Vec<String> = self.open_requests.keys().cloned().collect();
         for slug in held {
-            match request_rel(&slug).and_then(|p| Ok(self.disk.read(&p)?)) {
-                Ok(Some(text)) => match crate::model::HttpRequest::from_toml_str(&text) {
-                    Ok(req) => {
-                        self.open_requests.insert(slug, req);
-                    }
-                    Err(_) => {
-                        self.open_requests.shift_remove(&slug);
-                    }
-                },
-                _ => {
-                    self.open_requests.shift_remove(&slug);
-                }
+            // Only the body is refreshed; the seed stamp taken by
+            // `open_request`/`save_request` stays, because the editor's own
+            // buffer was not re-seeded by this reload — the file is still
+            // "moved since the editor last saw it".
+            if let Ok(Some(text)) = request_rel(&slug).and_then(|p| Ok(self.disk.read(&p)?))
+                && let Ok(req) = crate::model::HttpRequest::from_toml_str(&text)
+            {
+                self.open_requests[&slug].req = req;
             }
         }
     }
@@ -1646,7 +1678,11 @@ mod tests {
         p.invalidate_stamps();
         assert!(p.poll().0);
         assert_eq!(p.held_request("main/ping").unwrap().url, "outside");
-        assert!(p.held_request("auth/login").is_none(), "a vanished request is dropped");
+        assert!(
+            p.held_request("auth/login").is_some(),
+            "a vanished request keeps its entry — the seed stamp is what the \
+             drift check needs, and dropping it would answer \"clean\""
+        );
     }
 
     #[test]
@@ -1683,7 +1719,7 @@ mod tests {
     }
 
     #[test]
-    fn reload_all_re_reads_held_requests_and_drops_vanished_ones() {
+    fn reload_all_re_reads_held_requests_and_keeps_vanished_ones() {
         let (dir, mut p) = fixture();
         p.open_request("main/ping").unwrap();
         p.open_request("auth/login").unwrap();
@@ -1691,7 +1727,12 @@ mod tests {
         std::fs::remove_file(dir.path().join("requests/auth/login.toml")).unwrap();
         p.reload_all();
         assert_eq!(p.held_request("main/ping").unwrap().url, "outside");
-        assert!(p.held_request("auth/login").is_none());
+        assert_eq!(
+            p.held_request("auth/login").unwrap().url,
+            "https://{{host}}/login",
+            "the entry and its seed stamp survive; only the body is refreshed"
+        );
+        assert_eq!(p.held_request_drift("auth/login"), Some(HeldDrift::Vanished));
     }
 
     #[test]
@@ -1868,6 +1909,23 @@ mod tests {
         assert_eq!(p.journal_len(), 0);
         assert!(p.held_request("main/ping").is_some(), "the rename was rolled back");
         assert!(p.held_request("main/renamed").is_none());
+    }
+
+    #[test]
+    fn a_failed_transaction_that_never_touched_a_held_request_reports_no_drift() {
+        let (_dir, mut p) = fixture();
+        p.open_request("main/ping").unwrap();
+        let path = RelPath::new("variables.toml").unwrap();
+        let r: Result<(), Error> = p.transaction("t", EntryMeta::default(), |p| {
+            p.fs_write_text(&path, Some("[changed]\n"))?;
+            Err(Error::Conflict("boom".into()))
+        });
+        assert!(r.is_err());
+        assert_eq!(
+            p.held_request_drift("main/ping"),
+            None,
+            "the rollback restores memory with the pre-transaction seed stamp, not a placeholder"
+        );
     }
 
     #[test]

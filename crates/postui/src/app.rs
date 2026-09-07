@@ -14,7 +14,7 @@ use crate::hit::{Hit, HitMap, PointerShape, ScrollbarSpec};
 use crate::keys::{KeyCombo, Keymap};
 use crate::layout::PaneId;
 use crate::theme::Theme;
-use postui_core::project::{OpenError, Project};
+use postui_core::project::{HeldDrift, OpenError, Project};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -1896,14 +1896,7 @@ impl App {
                     return true;
                 }
                 if let (slug, Some(saved)) = (self.editor.slug.clone(), self.editor.saved.clone()) {
-                    // A cell still under the caret is part of what's being
-                    // thrown away — drop it without committing, and clear
-                    // the selection so no stale row index survives the
-                    // reload.
-                    self.editor.table.editing = None;
-                    self.editor.table.selected = None;
-                    self.editor.load(slug, saved);
-                    self.sync_active_tab();
+                    self.reseed_editor(slug, saved);
                     self.toasts.push(
                         format!("Changes discarded{}", self.undo_hint()),
                         ToastKind::Info,
@@ -2492,47 +2485,36 @@ impl App {
                 }
                 true
             }
-            Action::SaveRequest => {
-                if self.refuse_without_project() {
+            Action::SaveRequest => self.save_request_checked(None),
+            Action::SaveRequestThen(then) => self.save_request_checked(Some(*then)),
+            Action::ForceSaveRequest => self.force_save_request(),
+            Action::ReloadOpenRequest => {
+                let Some(slug) = self.editor.slug.clone() else {
                     return true;
-                }
-                // A cell still under the caret is part of the request the
-                // user means to save.
-                self.commit_table_edit();
-                match self.editor.slug.clone() {
-                    Some(slug) => {
-                        let req = self.editor.current_request();
-                        // Not journaled: undoing past a save is the
-                        // editor's own memory-only step.
-                        let saved = match self.project_mut() {
-                            Some(p) => p.save_request(&slug, &req),
-                            None => return true,
-                        };
-                        match saved {
-                            Ok(()) => {
-                                self.mark_saved_after_write();
-                                self.toasts
-                                    .push(format!("Saved {slug}"), ToastKind::Success);
-                                self.refresh_sidebar();
-                            }
-                            Err(e) => {
-                                self.toasts
-                                    .push(format!("could not save {slug}: {e}"), ToastKind::Error);
-                                // A "Save & quit/switch/open" gate queues
-                                // its follow-on behind this save; a save
-                                // that failed must stop it, or the edits
-                                // it was meant to keep are discarded.
-                                self.last_action_failed = true;
-                            }
-                        }
+                };
+                let reread = match self.project_mut() {
+                    Some(p) => p.open_request(&slug).cloned(),
+                    None => return true,
+                };
+                match reread {
+                    Ok(req) => {
+                        // A wholesale replacement is its own undo step, as
+                        // `DiscardChanges` is: typing that follows must
+                        // not merge into it, or one ctrl+z would snap the
+                        // buffer back past the reload.
+                        self.no_coalesce = true;
+                        self.reseed_editor(Some(slug.clone()), req);
+                        self.mark_saved_after_write();
+                        self.refresh_sidebar();
+                        self.toasts.push(
+                            format!("Reloaded {slug}{}", self.undo_hint()),
+                            ToastKind::Info,
+                        );
                     }
-                    None => {
-                        self.push_modal(Modal::Prompt {
-                            title: "Save request as".into(),
-                            input: crate::components::line_input::LineInput::new(""),
-                            kind: PromptKind::SaveAs,
-                            revealed: false,
-                        });
+                    Err(e) => {
+                        self.toasts
+                            .push(format!("could not reload {slug}: {e}"), ToastKind::Error);
+                        self.last_action_failed = true;
                     }
                 }
                 true
@@ -5828,14 +5810,35 @@ impl App {
                 // committed) — save it synchronously rather than
                 // leaving it save-on-demand, so "extract to
                 // request, then quit" can't lose it.
-                if wrote_to_request && let Err(e) = self.save_open_request() {
-                    self.toasts.push(
-                        format!(
-                            "extracted to {{{{{name}}}}} but {e} \u{2014} save the request manually"
-                        ),
-                        ToastKind::Error,
-                    );
-                    return true;
+                // Nothing has been committed through core on this arm (a
+                // `Request` destination touches no var file), so unlike
+                // promote this save can afford to ask: it goes through the
+                // ordinary checked save, whose confirm carries the same
+                // Overwrite / Reload / Cancel choice ctrl+s offers.
+                if wrote_to_request {
+                    if self.editor.slug.is_some() {
+                        // Cleared first so the flag read below is this
+                        // save's own answer. `save_request_checked` sets
+                        // it both when the write failed and when it only
+                        // raised the drift confirm — in either case the
+                        // file has not been written, so the extract must
+                        // not claim it was. The confirm (or the error
+                        // toast) is the feedback; a success toast on top
+                        // of it would be a lie.
+                        self.last_action_failed = false;
+                        self.save_request_checked(None);
+                        if self.last_action_failed {
+                            return true;
+                        }
+                    } else if let Err(e) = self.save_open_request() {
+                        self.toasts.push(
+                            format!(
+                                "extracted to {{{{{name}}}}} but {e} \u{2014} save the request manually"
+                            ),
+                            ToastKind::Error,
+                        );
+                        return true;
+                    }
                 }
                 self.toasts
                     .push(format!("extracted to {{{{{name}}}}}"), ToastKind::Success);
@@ -6329,6 +6332,22 @@ impl App {
                 name: name.clone(),
             },
         };
+        // A promote's second half saves the open request file
+        // synchronously, and that save cannot ask (the variable half is
+        // already committed by then, and a modal would strand it). So the
+        // check happens here, BEFORE anything is committed: on drift the
+        // whole op is refused, touching neither file.
+        if let VarStructOp::Promote { .. } = op
+            && let Some(slug) = self.editor.slug.clone()
+            && self
+                .project()
+                .and_then(|p| p.held_request_drift(&slug))
+                .is_some()
+        {
+            return Err(format!(
+                "{slug} changed outside the app — save or reload it first"
+            ));
+        }
         self.project_mut()
             .ok_or_else(|| NO_PROJECT.to_string())?
             .apply_var_edit(&edit)
@@ -6706,13 +6725,139 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// Synchronously persists the currently open request to disk, mirroring
-    /// `Action::SaveRequest`'s slugged branch (no SaveAs prompt — every
-    /// caller here already knows a slug is open). Used by ops (promote,
-    /// extract-to-request) whose spec-mandated "writes
-    /// immediately" (spec §5) binds the request-file half of a
-    /// MANAGER-driven mutation — unlike ordinary Vars-tab typing, which
-    /// stays save-on-demand (plan-mandated) and never calls this.
+    /// The interactive save (`Action::SaveRequest`, and
+    /// `SaveRequestThen`'s "Save & quit/switch/open"): a no-name editor
+    /// goes to the Save-as prompt; a named one writes only when the file
+    /// still matches the stamp the editor was seeded from.
+    ///
+    /// On drift it writes NOTHING and asks — Overwrite / Reload from disk
+    /// (only when the file still exists) / Cancel — and reports the save
+    /// as failed so a queued follow-on stops: the choice, not the queue,
+    /// decides what happens next. `then` rides the Overwrite choice.
+    /// Replaces the editor's buffer wholesale — the one rule every such
+    /// replacement shares, in one place: a cell still under the caret is
+    /// part of what is being thrown away, so it is dropped WITHOUT being
+    /// committed, the selection into it goes with it (no stale row index
+    /// survives), and the tab bar re-syncs to the request that just
+    /// landed. Shared by `Action::DiscardChanges` and
+    /// `Action::ReloadOpenRequest`; the caller owns the undo bookkeeping
+    /// (`no_coalesce`) and the toast.
+    fn reseed_editor(&mut self, slug: Option<String>, req: postui_core::model::HttpRequest) {
+        self.editor.table.editing = None;
+        self.editor.table.selected = None;
+        self.editor.load(slug, req);
+        self.sync_active_tab();
+    }
+
+    /// Writes the editor over the open request's file with no drift
+    /// check — `Action::ForceSaveRequest`, and the drift confirm's
+    /// "Overwrite". Returns whether the write landed, so a caller holding
+    /// a follow-on (the dirty gate's "Save & quit/switch/open") only
+    /// proceeds on success: a save that failed must stop it, or the edits
+    /// it was meant to keep are discarded.
+    fn force_save_request(&mut self) -> bool {
+        match self.save_open_request() {
+            Ok(()) => {
+                let slug = self.editor.slug.as_deref().unwrap_or_default();
+                self.toasts
+                    .push(format!("Saved {slug}"), ToastKind::Success);
+                true
+            }
+            Err(e) => {
+                self.toasts.push(e, ToastKind::Error);
+                self.last_action_failed = true;
+                false
+            }
+        }
+    }
+
+    fn save_request_checked(&mut self, then: Option<Action>) -> bool {
+        if self.refuse_without_project() {
+            return true;
+        }
+        // A cell still under the caret is part of the request the user
+        // means to save.
+        self.commit_table_edit();
+        let Some(slug) = self.editor.slug.clone() else {
+            self.push_modal(Modal::Prompt {
+                title: "Save request as".into(),
+                input: crate::components::line_input::LineInput::new(""),
+                kind: PromptKind::SaveAs,
+                revealed: false,
+            });
+            return true;
+        };
+        // `held_request_drift` answers `None` both for "the file still
+        // matches" and for a slug the project does not hold at all — and
+        // only the first of those is permission to write. An un-held slug
+        // is re-seeded from disk first (`open_request` stamps honestly),
+        // so the check below is always answering the first question.
+        if self.project().is_some_and(|p| p.held_request(&slug).is_none())
+            && let Some(Err(e)) = self.project_mut().map(|p| p.open_request(&slug).map(|_| ()))
+        {
+            self.toasts
+                .push(format!("could not read {slug}: {e}"), ToastKind::Error);
+            self.last_action_failed = true;
+            return true;
+        }
+        let drift = self.project().and_then(|p| p.held_request_drift(&slug));
+        let Some(drift) = drift else {
+            if self.force_save_request()
+                && let Some(then) = then
+            {
+                self.apply(then);
+            }
+            return true;
+        };
+        let leaf = slug.rsplit('/').next().unwrap_or(&slug);
+        let (title, body) = match drift {
+            HeldDrift::Changed => (
+                format!("{leaf}.toml changed outside the app"),
+                format!("{slug} changed outside the app since you opened it."),
+            ),
+            HeldDrift::Vanished => (
+                format!("{leaf}.toml was deleted outside the app"),
+                format!("{slug} was deleted outside the app since you opened it."),
+            ),
+        };
+        let mut overwrite = vec![Action::ForceSaveRequest];
+        overwrite.extend(then);
+        let mut choices = vec![('o', "Overwrite with my edits".to_string(), overwrite)];
+        if drift == HeldDrift::Changed {
+            choices.push((
+                'r',
+                "Reload from disk".to_string(),
+                vec![Action::ReloadOpenRequest],
+            ));
+        }
+        choices.push(('c', "Cancel".to_string(), vec![]));
+        self.push_modal(Modal::Confirm {
+            title,
+            body,
+            choices,
+        });
+        self.last_action_failed = true;
+        true
+    }
+
+    /// Synchronously persists the currently open request to disk (no
+    /// SaveAs prompt — every caller here already knows a slug is open).
+    /// The single persist path: `force_save_request` wraps it with the
+    /// toasts and the failure flag, and the ops (promote,
+    /// extract-to-request) whose spec-mandated "writes immediately"
+    /// (spec §5) binds the request-file half of a MANAGER-driven mutation
+    /// call it directly — unlike ordinary Vars-tab typing, which stays
+    /// save-on-demand (plan-mandated) and never calls this.
+    ///
+    /// This helper itself does NOT check `held_request_drift` — it is the
+    /// write that runs after a manager op has already committed the
+    /// variable half, where a modal would strand it mid-op. Its callers
+    /// carry the check instead, each in the shape its arm allows: promote
+    /// pre-flights the drift before `apply_var_edit` and refuses the whole
+    /// op, and extract-to-request (which commits nothing through core)
+    /// goes through `save_request_checked` and gets the ordinary confirm.
+    /// The only path still reaching here unchecked is a never-saved
+    /// scratch editor, which has no file to have drifted.
     fn save_open_request(&mut self) -> Result<(), String> {
         let slug = self
             .editor
@@ -6735,8 +6880,8 @@ impl App {
     /// the baseline then always matches disk, keeping the dirty flag an
     /// honest "buffer differs from disk", and the redo stack survives (an
     /// undone edit stays redoable across a save) — matching how desktop
-    /// editors treat save. Shared by `Action::SaveRequest`'s slugged
-    /// branch and `save_open_request`.
+    /// editors treat save. Shared by `save_open_request` (and so by every
+    /// save) and `Action::ReloadOpenRequest`.
     fn mark_saved_after_write(&mut self) {
         self.editor.mark_saved();
         self.history.break_coalescing();
@@ -6936,11 +7081,16 @@ impl App {
                     self.editor.slug = Some(new_slug.clone());
                     // The rename wrote the new display name to disk;
                     // mirror it in both the live fields and the saved
-                    // snapshot so the editor never reads as dirty.
-                    let name = match self.project_mut() {
-                        Some(p) => p.open_request(&new_slug).ok().and_then(|r| r.name.clone()),
-                        None => None,
-                    };
+                    // snapshot so the editor never reads as dirty. Read
+                    // from the listing `reload_all` just rebuilt, NOT
+                    // through `open_request`: that re-stamps the held
+                    // entry without re-seeding the buffer, which would
+                    // launder an outside edit the replay carried along
+                    // into "clean" and let the next save overwrite it.
+                    let name = self
+                        .project()
+                        .and_then(|p| p.requests().iter().find(|l| l.slug == new_slug))
+                        .and_then(|l| l.name.clone());
                     if let Some(name) = name {
                         self.editor.name = Some(name.clone());
                         if let Some(saved) = self.editor.saved.as_mut() {
@@ -7724,9 +7874,11 @@ impl App {
     }
 
     /// Push the standard unsaved-changes confirm. A slugged request's
-    /// "save" path relies on SaveRequest completing synchronously; a
-    /// never-saved scratch has no name yet, so its save path goes through
-    /// the Save-as prompt, with `then` deferred until that save succeeds.
+    /// "save" path completes synchronously unless the file changed outside
+    /// the app, in which case `SaveRequestThen` carries `then` into the
+    /// drift confirm; a never-saved scratch has no name yet, so its save
+    /// path goes through the Save-as prompt, with `then` deferred until
+    /// that save succeeds.
     fn dirty_gate(&mut self, verb: &str, then: Action) {
         if self.editor.slug.is_none() {
             self.push_modal(Modal::Confirm {
@@ -7751,7 +7903,10 @@ impl App {
                 (
                     's',
                     format!("Save & {verb}"),
-                    vec![Action::SaveRequest, then.clone()],
+                    // One action, not `[SaveRequest, then]`: a save that
+                    // finds the file changed outside the app asks first,
+                    // and the follow-on has to ride that answer.
+                    vec![Action::SaveRequestThen(Box::new(then.clone()))],
                 ),
                 ('d', "Discard changes".into(), vec![then]),
             ],

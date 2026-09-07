@@ -86,10 +86,25 @@ impl DiskError {
     }
 }
 
-/// What `changed` compares: mtime and length, or absence.
+/// What `changed` compares: mtime and length, absence, or a stat that
+/// failed for some other reason.
+///
+/// `Present` is mtime + length, which is coarse on purpose: it costs one
+/// stat and no read. On a filesystem with 1-2 s mtime resolution an
+/// outside write of the same length in the same tick as ours is
+/// indistinguishable from no write at all, and a byte-identical rewrite
+/// (a git checkout, a formatter, `touch`) reads as a change. Consumers
+/// that must not be fooled either way need a content hash beside this.
+///
+/// `Unreadable` is kept apart from `Absent` so a consumer can tell "the
+/// file is gone" from "the file is there and something stopped me looking
+/// at it" (EACCES, EIO, ENOTDIR) — the project rule is that a file which
+/// exists but cannot be read is reported truthfully, never treated as
+/// missing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stamp {
     Absent,
+    Unreadable,
     Present { mtime: Option<SystemTime>, len: u64 },
 }
 
@@ -216,9 +231,20 @@ impl Disk {
             std::fs::set_permissions(tmp.path(), existing.permissions())
                 .map_err(DiskError::io("write", rel))?;
         }
+        // Stamped from the staged file BEFORE the rename, which carries
+        // mtime and length across with the inode: the recorded stamp then
+        // describes the bytes this write put there, and an outside write
+        // landing a moment after the rename shows up as a change instead
+        // of quietly becoming the recorded state.
+        let staged = tmp.as_file().metadata().ok().map(|m| Self::stamp_of(&m));
         tmp.persist(&target)
             .map_err(|e| DiskError::io("write", rel)(e.error))?;
-        self.record(rel);
+        match staged {
+            Some(s) => {
+                self.stamps.insert(rel.clone(), s);
+            }
+            None => self.record(rel),
+        }
         Ok(())
     }
 
@@ -286,12 +312,25 @@ impl Disk {
     /// The fresh stamp of `rel`, straight from disk.
     pub fn stamp(&self, rel: &RelPath) -> Stamp {
         match std::fs::metadata(self.abs(rel)) {
-            Ok(m) => Stamp::Present {
-                mtime: m.modified().ok(),
-                len: m.len(),
-            },
-            Err(_) => Stamp::Absent,
+            Ok(m) => Self::stamp_of(&m),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Stamp::Absent,
+            Err(_) => Stamp::Unreadable,
         }
+    }
+
+    fn stamp_of(m: &std::fs::Metadata) -> Stamp {
+        Stamp::Present {
+            mtime: m.modified().ok(),
+            len: m.len(),
+        }
+    }
+
+    /// The stamp recorded at the last read or write of `rel`; `None` for a
+    /// path never recorded. A caller that has just written through this
+    /// `Disk` should read the seed stamp from here rather than statting
+    /// again: this one describes the bytes the write actually put there.
+    pub fn recorded(&self, rel: &RelPath) -> Option<Stamp> {
+        self.stamps.get(rel).copied()
     }
 
     fn record(&mut self, rel: &RelPath) {
@@ -694,6 +733,39 @@ mod tests {
         assert!(disk.changed(&p), "absence is a change");
         disk.forget_stamps();
         assert!(!disk.changed(&p));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_stat_that_fails_for_any_reason_but_absence_stamps_unreadable() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, mut disk) = disk();
+        let p = RelPath::new("requests/locked/a.toml").unwrap();
+        disk.write(&p, "x").unwrap();
+        assert_eq!(disk.stamp(&RelPath::new("nope.toml").unwrap()), Stamp::Absent);
+        let locked = dir.path().join("requests/locked");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let seen = disk.stamp(&p);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            seen,
+            Stamp::Unreadable,
+            "a file that exists but cannot be statted is not the same as a deleted one"
+        );
+    }
+
+    #[test]
+    fn a_write_records_the_stamp_of_the_bytes_it_staged() {
+        // The stamp is taken from the temp file before the rename, which
+        // preserves mtime and length — so it describes exactly what this
+        // write put there, never something that landed a moment later.
+        let (_d, mut disk) = disk();
+        let p = RelPath::new("requests/main/a.toml").unwrap();
+        disk.write(&p, "hello").unwrap();
+        assert_eq!(disk.recorded(&p), Some(disk.stamp(&p)));
+        assert!(matches!(disk.recorded(&p), Some(Stamp::Present { len: 5, .. })));
+        disk.write(&p, "hello again").unwrap();
+        assert_eq!(disk.recorded(&p), Some(disk.stamp(&p)));
     }
 
     #[test]
