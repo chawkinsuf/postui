@@ -12,7 +12,7 @@
 //! left to right until the response-full chip carries no lit mass at
 //! all. The chips sit flush against each other — two glyph cells each,
 //! no padding — so the row fuses into one continuous staircase
-//! (`  ▂▂▄▄▆▆▇▇`) reading left to right as the boundary sliding down;
+//! (`▁▁▂▂▄▄▆▆▇▇`) reading left to right as the boundary sliding down;
 //! the current state's picture lights up accent.
 //!
 //! [`StepControl`] is its one-step sibling on the response header: the
@@ -32,17 +32,23 @@ pub const SPLIT_CONTROL_WIDTH: u16 = SPLIT_SEGMENT_WIDTH * 5 + 2;
 
 /// `stop`'s mini-picture: the response mass painted bottom-up in fg under
 /// the editor-tone bg (the lit share). The lit editor mass runs
-/// `8/8 → 6/8 → 4/8 → 2/8 → 1/8` of the cell, so the tall steps stay
-/// even and the response-full endpoint keeps a one-eighth editor strip
-/// (a `█` there left the chip with no lit mass at all, so it read as an
-/// empty slot rather than the last stop).
+/// `7/8 → 6/8 → 4/8 → 2/8 → 1/8` of the cell: both endpoints keep a
+/// one-eighth strip of the other tone (a `█` or bare cell there left the
+/// chip with a single tone, so it read as an empty slot rather than the
+/// last stop), and the strips match — a full-cell editor-full chip
+/// beside a response-full chip with a strip read as two different kinds
+/// of button. Block glyphs only come in eighths, so with the strips this
+/// thin the steps cannot all be equal: the three settled shares in the
+/// middle (75/25, 50/50, 25/75) step by 2/8, and the endpoints sit 1/8
+/// beyond them. The one fully even ladder, `▂▃▄▅▆`, needs quarter-cell
+/// strips at the ends, which read as too much of the other pane.
 pub fn split_glyph(stop: SplitStop) -> &'static str {
     match stop {
-        SplitStop::EditorFull => "  ",                 // editor takes all
-        SplitStop::EditorBig => "\u{2582}\u{2582}",    // ▂▂ 75/25
-        SplitStop::Even => "\u{2584}\u{2584}",         // ▄▄ 50/50
-        SplitStop::ResponseBig => "\u{2586}\u{2586}",  // ▆▆ 25/75
-        SplitStop::ResponseFull => "\u{2587}\u{2587}", // ▇▇ editor strip
+        SplitStop::EditorFull => "\u{2581}\u{2581}", // ▁▁ editor takes all
+        SplitStop::EditorBig => "\u{2582}\u{2582}",  // ▂▂ 75/25
+        SplitStop::Even => "\u{2584}\u{2584}",       // ▄▄ 50/50
+        SplitStop::ResponseBig => "\u{2586}\u{2586}", // ▆▆ 25/75
+        SplitStop::ResponseFull => "\u{2587}\u{2587}", // ▇▇ response takes all
     }
 }
 
@@ -304,10 +310,11 @@ mod tests {
 
     #[test]
     fn the_boundary_slides_down_across_the_glyph_row() {
-        // The pictures' lit editor mass shrinks chip by chip with even
-        // tall steps — flush, the row fuses into one staircase.
+        // The pictures' lit editor mass shrinks chip by chip, with the
+        // same one-eighth strip of the other tone at both ends — flush,
+        // the row fuses into one staircase.
         let glyphs: Vec<_> = SplitStop::ALL.iter().map(|s| split_glyph(*s)).collect();
-        assert_eq!(glyphs, ["  ", "▂▂", "▄▄", "▆▆", "▇▇"]);
+        assert_eq!(glyphs, ["▁▁", "▂▂", "▄▄", "▆▆", "▇▇"]);
     }
 
     fn paint_step(control: StepControl) -> (Terminal<TestBackend>, [(Rect, i8); 2]) {

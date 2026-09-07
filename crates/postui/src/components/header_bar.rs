@@ -9,17 +9,18 @@ use ratatui::layout::Rect;
 /// bottom — matching the painted 3-row rhythm of buttons/fields elsewhere.
 pub const HEADER_HEIGHT: u16 = 3;
 
-/// The gap after each cycle pill (project → env, env → space, space →
-/// Manage): wide enough against the one-column chip-to-pill gap that each
-/// pill reads as its own chip's shortcut rather than the next chip's, and
-/// no wider — three of them have to fit a 120-column bar beside a
-/// ten-character project name. Collapses to the ordinary one-column chip
-/// gap when the pills yield on a narrow bar.
+/// The gap after each selector chip (project → env pill, env → space
+/// pill, space → Manage pill): wide enough against the one-column
+/// pill-to-chip gap that each pill reads as the shortcut of the chip it
+/// leads rather than of the chip it follows, and no wider — three of
+/// them have to fit a 120-column bar beside a ten-character project name.
+/// Collapses to the ordinary one-column chip gap when the pills yield on
+/// a narrow bar.
 const MANAGE_GROUP_GAP: u16 = 4;
 
 const SAVE_LABEL: &str = " Save ";
 const DISCARD_LABEL: &str = " Discard ";
-/// The dirty bar's save/discard group: ` Discard  alt+d ` + 2 + ` Save  ^S `.
+/// The dirty bar's save/discard group: ` alt+d  Discard ` + 2 + ` ^S  Save `.
 const SAVE_GROUP_W: u16 =
     (DISCARD_LABEL.len() + " alt+d ".len() + 2 + SAVE_LABEL.len() + " ^S ".len()) as u16;
 
@@ -29,15 +30,24 @@ const SAVE_GROUP_W: u16 =
 /// chips with a trailing `▾` marker for the dropdown they anchor.
 /// Registers the [`Hit::HeaderProject`]/[`Hit::HeaderEnv`]/
 /// [`Hit::HeaderSpace`] hits on the chip rects (in that on-screen order),
-/// plus the `alt+z`/`alt+x`/`alt+c` cycle pills beside them
+/// plus the `alt+z`/`alt+x`/`alt+c` cycle pills leading them
 /// ([`Hit::HeaderProjectCycle`]/[`Hit::HeaderEnvCycle`]/
 /// [`Hit::HeaderSpaceCycle`]).
+///
+/// Every keycap on the bar sits *left* of the name it belongs to. The
+/// selector labels change width as they cycle (a longer environment
+/// name, a shorter project name), and a pill trailing its chip would
+/// slide with every cycle — the very button the pointer is parked on to
+/// keep clicking. Leading, each pill holds still while its own chip
+/// grows or shrinks to its right; only the chips further along move.
+/// Manage, Theme, Save and Discard follow the same pill-then-name order
+/// so the bar reads as one idiom.
 ///
 /// Narrow-bar rule: the chip *labels* never yield — their keycaps do, in
 /// order. The left cluster is measured through the Manage chip (the three
 /// chips, each with its pill, then the Manage chip, with the gaps between
 /// them). If it overruns `area`, the three cycle pills are dropped and the
-/// group gaps after them collapse to the ordinary one-column gap. If it still overruns, the Manage chip's own
+/// group gaps after the chips collapse to the ordinary one-column gap. If it still overruns, the Manage chip's own
 /// `alt+v` keycap goes too and the chip becomes a bare ` Manage `. The
 /// keys themselves keep working in every case, and their hints stay in the
 /// footer/palette. If even that doesn't fit, the cluster clips as before.
@@ -72,8 +82,8 @@ pub fn draw_header(
     // name, and the project chip is the bar's first word.
     let mut x = area.x + 3;
 
-    // The three selectors share one idiom — a labelled, bold chip that
-    // opens its picker, then a keycap pill that cycles — because each
+    // The three selectors share one idiom — a keycap pill that cycles,
+    // then a labelled, bold chip that opens its picker — because each
     // shapes what every screen shows (the project, its resolved {{vars}},
     // the visible request set). Only the env and space chips carry the
     // `▾`: they open a dropdown anchored under the chip, while the
@@ -146,29 +156,14 @@ pub fn draw_header(
     let show_manage_pill = show_cycle_pills || cluster_no_cycle_pills <= budget;
 
     for (label, hit, pill, cycle_hit) in chips {
-        let w = label.chars().count() as u16;
-        let rect = Rect {
-            x,
-            y: mid_y,
-            width: w,
-            height: 1,
-        };
-        let bg = if hovered == Some(&hit) {
-            theme.control_hover
-        } else {
-            theme.control
-        };
-        fill(buf, rect, bg);
-        text(buf, rect.x, mid_y, label, theme.text, bg, true);
-        hits.register(rect, hit);
-        x += w + 1;
-
-        // The chip opens the picker; this keycap pill beside it is the
-        // cycle affordance — the footer chips' keycap styling (muted tint
-        // over the control fill, lifting on hover), one gap column off the
-        // chip so it reads as its own button rather than the chip's
-        // opener key. A wider group gap follows it, so the pill keeps
-        // reading as this chip's — not the next chip's — shortcut.
+        // The keycap pill leads: it is the cycle affordance — the footer
+        // chips' keycap styling (muted tint over the control fill,
+        // lifting on hover), one gap column off the chip so it reads as
+        // its own button rather than the chip's opener key. It sits left
+        // of the chip so cycling — which changes the chip's width — never
+        // moves the pill out from under the pointer. The wider group gap
+        // follows the chip, so the pill keeps reading as this chip's —
+        // not the previous chip's — shortcut.
         if show_cycle_pills {
             let on = if hovered == Some(&cycle_hit) {
                 theme.control_hover
@@ -185,12 +180,34 @@ pub fn draw_header(
                 },
                 cycle_hit,
             );
-            x += pill_w + MANAGE_GROUP_GAP;
+            x += pill_w + 1;
         }
+
+        // Then the chip that opens the picker.
+        let w = label.chars().count() as u16;
+        let rect = Rect {
+            x,
+            y: mid_y,
+            width: w,
+            height: 1,
+        };
+        let bg = if hovered == Some(&hit) {
+            theme.control_hover
+        } else {
+            theme.control
+        };
+        fill(buf, rect, bg);
+        text(buf, rect.x, mid_y, label, theme.text, bg, true);
+        hits.register(rect, hit);
+        x += w + if show_cycle_pills {
+            MANAGE_GROUP_GAP
+        } else {
+            1
+        };
     }
 
     // The Manage-screen toggle, in the footer's clickable idiom with
-    // the keycap trailing the name: prominent full name + `alt+v` pill.
+    // the keycap leading the name: `alt+v` pill + prominent full name.
     // While the Manage screen is open the whole chip holds the pressed
     // fill, keeping the old `vars` toggle's stateful read. The name paints
     // unconditionally like the rest of the left cluster (a bar too narrow
@@ -204,14 +221,22 @@ pub fn draw_header(
     } else {
         (theme.control, theme.panel)
     };
-    text(buf, x, mid_y, vm_label, theme.text, vm_label_bg, false);
     // The last keycap to yield on a narrow bar: the name stays clickable
     // (and `alt+v` keeps working) with the pill gone.
     let vm_pill_w = if show_manage_pill {
-        manage_pill.paint(buf, x + vm_label_w, mid_y, vm_pill_on, theme)
+        manage_pill.paint(buf, x, mid_y, vm_pill_on, theme)
     } else {
         0
     };
+    text(
+        buf,
+        x + vm_pill_w,
+        mid_y,
+        vm_label,
+        theme.text,
+        vm_label_bg,
+        false,
+    );
     let vm_rect = Rect {
         x,
         y: mid_y,
@@ -222,15 +247,15 @@ pub fn draw_header(
     x += vm_rect.width + 1;
 
     // The theme-picker chip sits alone at the bar's right edge, mirroring
-    // the left cluster's 3-column margin — same name-plus-trailing-keycap
-    // idiom as the Manage chip.
+    // the left cluster's 3-column margin — same keycap-then-name idiom
+    // as the Manage chip.
     let theme_label = " Theme ";
     let theme_key_w = " alt+t ".chars().count() as u16;
     let theme_w = theme_label.chars().count() as u16 + theme_key_w;
     let theme_x = (area.x + area.width).saturating_sub(theme_w + 3);
 
-    // The save/discard group, in the bar's same name-plus-trailing-keycap
-    // idiom, right-aligned a group gap left of the Theme chip — up here
+    // The save/discard group, in the bar's same keycap-then-name idiom,
+    // right-aligned a group gap left of the Theme chip — up here
     // near the data being saved rather than down in the footer. Present
     // only while there is actually something to save: both chips appear
     // together when the request goes dirty and leave when it's clean
@@ -270,25 +295,19 @@ pub fn draw_header(
             } else {
                 theme.control
             };
+            let key_w = crate::paint::Chip {
+                label: "^S",
+                color: theme.text_muted,
+            }
+            .paint(buf, save_x, mid_y, pill_on, theme);
             text(
                 buf,
-                save_x,
+                save_x + key_w,
                 mid_y,
                 SAVE_LABEL,
                 theme.text,
                 theme.panel,
                 false,
-            );
-            crate::paint::Chip {
-                label: "^S",
-                color: theme.text_muted,
-            }
-            .paint(
-                buf,
-                save_x + SAVE_LABEL.chars().count() as u16,
-                mid_y,
-                pill_on,
-                theme,
             );
             hits.register(
                 Rect {
@@ -305,25 +324,19 @@ pub fn draw_header(
                 } else {
                     theme.control
                 };
+                let key_w = crate::paint::Chip {
+                    label: "alt+d",
+                    color: theme.text_muted,
+                }
+                .paint(buf, discard_x, mid_y, pill_on, theme);
                 text(
                     buf,
-                    discard_x,
+                    discard_x + key_w,
                     mid_y,
                     DISCARD_LABEL,
                     theme.text,
                     theme.panel,
                     false,
-                );
-                crate::paint::Chip {
-                    label: "alt+d",
-                    color: theme.text_muted,
-                }
-                .paint(
-                    buf,
-                    discard_x + DISCARD_LABEL.chars().count() as u16,
-                    mid_y,
-                    pill_on,
-                    theme,
                 );
                 hits.register(
                     Rect {
@@ -352,25 +365,19 @@ pub fn draw_header(
         } else {
             theme.control
         };
+        let key_w = crate::paint::Chip {
+            label: "alt+t",
+            color: theme.text_muted,
+        }
+        .paint(buf, theme_x, mid_y, pill_on, theme);
         text(
             buf,
-            theme_x,
+            theme_x + key_w,
             mid_y,
             theme_label,
             theme.text,
             theme.panel,
             false,
-        );
-        crate::paint::Chip {
-            label: "alt+t",
-            color: theme.text_muted,
-        }
-        .paint(
-            buf,
-            theme_x + theme_label.chars().count() as u16,
-            mid_y,
-            pill_on,
-            theme,
         );
         hits.register(theme_rect, Hit::HeaderTheme);
     }
@@ -487,16 +494,18 @@ mod tests {
         assert!(hits.rect_of(&Hit::HeaderTheme).is_none());
     }
 
-    /// No wordmark: the project chip is the bar's first word, at the
-    /// 3-column margin, and it reads like the other two selectors —
-    /// labelled, bold — but without the `▾`, since it opens the centred
-    /// chooser rather than an anchored dropdown.
+    /// No wordmark: the project chip is the bar's first word (after its
+    /// own cycle pill at the 3-column margin), and it reads like the
+    /// other two selectors — labelled, bold — but without the `▾`, since
+    /// it opens the centred chooser rather than an anchored dropdown.
     #[test]
     fn project_chip_opens_the_bar_labelled_and_without_a_dropdown_marker() {
         let theme = Theme::dark();
         let (term, hits) = render(&theme, "alpha", "qa", None);
         let rect = hits.rect_of(&Hit::HeaderProject).unwrap();
-        assert_eq!(rect.x, 3, "first thing on the bar");
+        let pill = hits.rect_of(&Hit::HeaderProjectCycle).unwrap();
+        assert_eq!(pill.x, 3, "the project pill is the first thing on the bar");
+        assert_eq!(rect.x, pill.x + pill.width + 1, "its chip follows");
         assert_eq!(row_text(&term, &rect), " Project: alpha ");
         let c = cell(&term, rect.x + 1, rect.y);
         assert_eq!(c.fg, theme.text);
@@ -506,17 +515,17 @@ mod tests {
     }
 
     /// The project chip gets the same cycle pill as the other two, one
-    /// column off the chip, reading `alt+z` — the bottom row, in
+    /// column ahead of the chip, reading `alt+z` — the bottom row, in
     /// on-screen order with the env (`alt+x`) and space (`alt+c`) pills.
     #[test]
-    fn project_cycle_pill_trails_the_project_chip() {
+    fn project_cycle_pill_leads_the_project_chip() {
         let theme = Theme::dark();
         let (term, hits) = render(&theme, "alpha", "qa", None);
         let chip = hits.rect_of(&Hit::HeaderProject).unwrap();
         let pill = hits
             .rect_of(&Hit::HeaderProjectCycle)
             .expect("project-cycle pill registered");
-        assert_eq!(pill.x, chip.x + chip.width + 1);
+        assert_eq!(chip.x, pill.x + pill.width + 1);
         assert_eq!(
             row_text(&term, &pill),
             format!(" {}+z ", crate::keys::alt_label())
@@ -564,10 +573,10 @@ mod tests {
         assert!(c.modifier.contains(Modifier::BOLD));
     }
 
-    /// The left cluster reads project (+ pill), env (+ pill), space
-    /// (+ pill), Manage — each chip's pill one column off it and the same
-    /// wide group gap after every pill, so no keycap pill reads as the
-    /// next chip's key.
+    /// The left cluster reads (pill +) project, (pill +) env, (pill +)
+    /// space, (pill +) Manage — each chip's pill one column ahead of it
+    /// and the same wide group gap after every chip, so no keycap pill
+    /// reads as the previous chip's key.
     #[test]
     fn env_then_space_then_manage_each_a_group_gap_apart() {
         let theme = Theme::dark();
@@ -583,22 +592,26 @@ mod tests {
             .rect_of(&Hit::HeaderSpaceCycle)
             .expect("space cycle hit");
         let manage = hits.rect_of(&Hit::HeaderManage).unwrap();
-        assert_eq!(project_cycle.x, project.x + project.width + 1);
+        assert_eq!(project.x, project_cycle.x + project_cycle.width + 1);
+        assert_eq!(
+            env_cycle.x,
+            project.x + project.width + 4,
+            "a group gap after the project chip, same as the others"
+        );
         assert_eq!(
             env.x,
-            project_cycle.x + project_cycle.width + 4,
-            "a group gap after the project pill, same as the others"
+            env_cycle.x + env_cycle.width + 1,
+            "its pill leads it"
         );
-        assert_eq!(env_cycle.x, env.x + env.width + 1, "its pill trails it");
         assert_eq!(
-            space.x,
-            env_cycle.x + env_cycle.width + 4,
-            "a group gap before the space chip"
+            space_cycle.x,
+            env.x + env.width + 4,
+            "a group gap before the space pill"
         );
-        assert_eq!(space_cycle.x, space.x + space.width + 1);
+        assert_eq!(space.x, space_cycle.x + space_cycle.width + 1);
         assert_eq!(
             manage.x,
-            space_cycle.x + space_cycle.width + 4,
+            space.x + space.width + 4,
             "and the same gap before Manage"
         );
         let label: String = (space.x..space.x + space.width)
@@ -714,19 +727,19 @@ mod tests {
         }
     }
 
-    /// The env chip opens the chooser; the keycap pill beside it is the
+    /// The env chip opens the chooser; the keycap pill ahead of it is the
     /// cycle affordance — footer-chip keycap styling (muted tint over the
     /// control fill), one gap column off the chip so it reads as its own
     /// button, lifting on hover like any clickable pill.
     #[test]
-    fn alt_x_keycap_pill_sits_one_column_off_the_env_chip() {
+    fn alt_x_keycap_pill_sits_one_column_ahead_of_the_env_chip() {
         let theme = Theme::dark();
         let (term, hits) = render(&theme, "alpha", "qa", None);
         let env_rect = hits.rect_of(&Hit::HeaderEnv).unwrap();
         let rect = hits
             .rect_of(&Hit::HeaderEnvCycle)
             .expect("env-cycle pill registered");
-        assert_eq!(rect.x, env_rect.x + env_rect.width + 1);
+        assert_eq!(env_rect.x, rect.x + rect.width + 1);
         assert_eq!(
             row_text(&term, &rect),
             format!(" {}+x ", crate::keys::alt_label())
@@ -747,35 +760,40 @@ mod tests {
     }
 
     /// The Manage chip sits in the left cluster — a wide group gap after
-    /// the space-cycle pill, so that pill still clearly belongs to the space
-    /// chip — in the footer's clickable idiom with the keycap trailing
-    /// the name: prominent full name + `alt+v` pill.
+    /// the space chip, so its own pill clearly belongs to it rather than
+    /// to the space chip — in the footer's clickable idiom with the
+    /// keycap leading the name: `alt+v` pill + prominent full name.
     #[test]
-    fn manage_chip_follows_the_env_cluster_with_a_trailing_keycap() {
+    fn manage_chip_follows_the_env_cluster_with_a_leading_keycap() {
         let theme = Theme::dark();
         let (term, hits) = render_wide(&theme, "alpha", "qa", false, None, 130);
         let rect = hits
             .rect_of(&Hit::HeaderManage)
             .expect("manage chip registered");
-        let cycle_rect = hits.rect_of(&Hit::HeaderSpaceCycle).unwrap();
+        let space_rect = hits.rect_of(&Hit::HeaderSpace).unwrap();
         assert_eq!(
             rect.x,
-            cycle_rect.x + cycle_rect.width + 4,
-            "a group gap after the space-cycle pill"
+            space_rect.x + space_rect.width + 4,
+            "a group gap after the space chip"
         );
         assert_eq!(
             row_text(&term, &rect),
-            format!(" Manage  {}+v ", crate::keys::alt_label())
+            format!(" {}+v  Manage ", crate::keys::alt_label())
         );
-        let label_cell = cell(&term, rect.x + 1, rect.y);
+        let label_cell = cell(&term, rect.x + alt_pill_w() + 1, rect.y);
         assert_eq!(label_cell.symbol(), "M");
         assert_eq!(label_cell.fg, theme.text, "prominent label, not muted");
         assert_eq!(label_cell.bg, theme.panel);
         assert_eq!(
-            cell(&term, rect.x + 9, rect.y).bg,
+            cell(&term, rect.x + 1, rect.y).bg,
             theme.tint(theme.text_muted, theme.control),
-            "trailing keycap pill tint matches the footer chips'"
+            "leading keycap pill tint matches the footer chips'"
         );
+    }
+
+    /// Width of a ` alt+? ` keycap pill on this platform.
+    fn alt_pill_w() -> u16 {
+        format!(" {}+v ", crate::keys::alt_label()).chars().count() as u16
     }
 
     /// While the Manage screen is open the whole chip holds the pressed
@@ -786,44 +804,44 @@ mod tests {
         let (term, hits) = render_wide(&theme, "alpha", "qa", true, None, 130);
         let rect = hits.rect_of(&Hit::HeaderManage).unwrap();
         assert_eq!(
-            cell(&term, rect.x + 1, rect.y).bg,
+            cell(&term, rect.x + alt_pill_w() + 1, rect.y).bg,
             theme.control_pressed,
             "label ground shows the pressed state"
         );
         assert_eq!(
-            cell(&term, rect.x + 9, rect.y).bg,
+            cell(&term, rect.x + 1, rect.y).bg,
             theme.tint(theme.text_muted, theme.control_pressed),
             "keycap tint derives from the pressed fill"
         );
     }
 
-    /// The Theme chip gets the same treatment: prominent name + trailing
-    /// `alt+t` keycap pill, right-aligned at the bar's 3-column margin,
+    /// The Theme chip gets the same treatment: leading `alt+t` keycap
+    /// pill + prominent name, right-aligned at the bar's 3-column margin,
     /// the pill lifting on hover.
     #[test]
-    fn theme_chip_shows_its_name_and_trailing_keycap() {
+    fn theme_chip_shows_its_leading_keycap_and_name() {
         let theme = Theme::dark();
         let (term, hits) = render_wide(&theme, "alpha", "qa", false, None, 150);
         let rect = hits.rect_of(&Hit::HeaderTheme).unwrap();
         assert_eq!(rect.x + rect.width, 150 - 3, "right-aligned");
         assert_eq!(
             row_text(&term, &rect),
-            format!(" Theme  {}+t ", crate::keys::alt_label())
+            format!(" {}+t  Theme ", crate::keys::alt_label())
         );
-        let label_cell = cell(&term, rect.x + 1, rect.y);
+        let label_cell = cell(&term, rect.x + alt_pill_w() + 1, rect.y);
         assert_eq!(label_cell.symbol(), "T");
         assert_eq!(label_cell.fg, theme.text, "prominent label, not muted");
         assert_eq!(label_cell.bg, theme.panel);
         assert_eq!(
-            cell(&term, rect.x + 8, rect.y).bg,
+            cell(&term, rect.x + 1, rect.y).bg,
             theme.tint(theme.text_muted, theme.control),
-            "trailing keycap pill tint matches the footer chips'"
+            "leading keycap pill tint matches the footer chips'"
         );
 
         let (term, hits) = render_wide(&theme, "alpha", "qa", false, Some(&Hit::HeaderTheme), 150);
         let rect = hits.rect_of(&Hit::HeaderTheme).unwrap();
         assert_eq!(
-            cell(&term, rect.x + 8, rect.y).bg,
+            cell(&term, rect.x + 1, rect.y).bg,
             theme.tint(theme.text_muted, theme.control_hover),
             "hover lifts the keycap pill fill"
         );
@@ -896,12 +914,12 @@ mod tests {
         );
         assert_eq!(
             row_text(&term, &save),
-            " Save  ^S ",
-            "name + trailing keycap idiom"
+            " ^S  Save ",
+            "keycap-then-name idiom"
         );
         assert_eq!(
             row_text(&term, &discard),
-            format!(" Discard  {}+d ", crate::keys::alt_label())
+            format!(" {}+d  Discard ", crate::keys::alt_label())
         );
     }
 
