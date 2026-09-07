@@ -416,10 +416,18 @@ impl Config {
         };
         warnings.extend(keymap.caret_warnings(macos));
 
-        let usage = cfg
-            .read(UI_TOML, &mut warnings)
-            .map(|text| crate::usage::UsageStore::parse(&text))
-            .unwrap_or_default();
+        let usage = match cfg.read(UI_TOML, &mut warnings) {
+            Some(text) => {
+                let (usage, error) = crate::usage::UsageStore::parse(&text);
+                if let Some(e) = error {
+                    warnings.push(format!(
+                        "could not parse {UI_TOML}: {e}; palette usage stats will not be saved until it is fixed"
+                    ));
+                }
+                usage
+            }
+            None => crate::usage::UsageStore::default(),
+        };
 
         (
             cfg,
@@ -505,15 +513,22 @@ impl Config {
 
     /// Rescans `themes/` and rebuilds the registry, so a custom theme file
     /// added or edited since startup shows up without a restart. A missing
-    /// (or unlistable) directory is silently just the built-ins; a file
-    /// that can't be read or parsed is one warning and is skipped.
+    /// directory is silently just the built-ins; one that can't be listed,
+    /// or a file that can't be read or parsed, is one warning and is
+    /// skipped.
     pub fn reload_themes(&mut self) -> (crate::theme::ThemeRegistry, Vec<String>) {
         let mut files = Vec::new();
         let mut warnings = Vec::new();
         if let Some(disk) = self.disk.as_mut()
             && let Ok(dir) = postui_core::disk::RelPath::new(THEMES_DIR)
-            && let Ok(entries) = disk.list(&dir)
         {
+            let entries = match disk.list(&dir) {
+                Ok(entries) => entries,
+                Err(e) => {
+                    warnings.push(format!("could not list {THEMES_DIR}/: {e}; custom themes unavailable"));
+                    Vec::new()
+                }
+            };
             for entry in entries
                 .into_iter()
                 .filter(|e| !e.is_dir && e.name.ends_with(".toml"))

@@ -22,17 +22,21 @@ impl UsageStore {
     /// errors: an empty string (the missing file), corrupt TOML, or a
     /// malformed entry degrades to an empty store (or just drops that one
     /// malformed entry).
-    pub fn parse(text: &str) -> Self {
+    /// A file that does not parse is the default plus the error: the
+    /// caller reports it, since `Config::edit` will refuse to save over it
+    /// and the user should hear that at startup rather than never.
+    pub fn parse(text: &str) -> (Self, Option<String>) {
         let mut store = Self::default();
-        let Ok(value) = toml::from_str::<toml::Value>(text) else {
-            return store;
+        let value = match toml::from_str::<toml::Value>(text) {
+            Ok(v) => v,
+            Err(e) => return (store, Some(e.to_string())),
         };
         let Some(usage) = value
             .get("palette")
             .and_then(|v| v.get("usage"))
             .and_then(|v| v.as_table())
         else {
-            return store;
+            return (store, None);
         };
         for (id, entry) in usage {
             let Some(table) = entry.as_table() else {
@@ -49,7 +53,7 @@ impl UsageStore {
             };
             store.entries.insert(id.clone(), (count, last_used));
         }
-        store
+        (store, None)
     }
 
     /// Writes the store into `doc`'s `[palette.usage]` table, leaving every
@@ -161,19 +165,24 @@ mod tests {
         let mut doc = toml_edit::DocumentMut::new();
         store.write_into(&mut doc);
 
-        let loaded = UsageStore::parse(&doc.to_string());
+        let (loaded, error) = UsageStore::parse(&doc.to_string());
+        assert!(error.is_none());
         assert_eq!(loaded.score("quit", 5000), store.score("quit", 5000));
         assert_eq!(loaded.score("send", 5000), store.score("send", 5000));
     }
 
     #[test]
     fn missing_file_parses_empty() {
-        assert_eq!(UsageStore::parse("").entries.len(), 0);
+        let (store, error) = UsageStore::parse("");
+        assert_eq!(store.entries.len(), 0);
+        assert!(error.is_none());
     }
 
     #[test]
-    fn corrupt_text_parses_empty() {
-        assert_eq!(UsageStore::parse("not valid { toml").entries.len(), 0);
+    fn corrupt_text_parses_empty_and_reports_the_error() {
+        let (store, error) = UsageStore::parse("not valid { toml");
+        assert_eq!(store.entries.len(), 0);
+        assert!(error.is_some());
     }
 
     #[test]
