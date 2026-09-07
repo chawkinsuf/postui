@@ -209,6 +209,57 @@ mod tests {
         assert!(p.scan_usage("nope").is_empty());
     }
 
+    /// The scan peeks whole request files, so a token counts wherever it
+    /// sits — not just in the url the other tests use. Replaces the
+    /// `varedit::scan_usage_finds_tokens_in_every_field_and_ignores_other_names`
+    /// coverage the free function took with it.
+    #[test]
+    fn scan_usage_finds_tokens_in_every_field_and_ignores_other_names() {
+        let (dir, _p) = fixture();
+        let write = |slug: &str, body: &str| {
+            std::fs::write(
+                dir.path().join(format!("requests/{slug}.toml")),
+                format!("method = \"GET\"\nurl = \"https://x.test\"\n{body}"),
+            )
+            .unwrap();
+        };
+        std::fs::write(
+            dir.path().join("requests/main/in-url.toml"),
+            "method = \"GET\"\nurl = \"https://x.test/{{base_url}}\"\n",
+        )
+        .unwrap();
+        write("main/in-params", "[params]\nq = \"{{base_url}}\"\n");
+        write("main/in-headers", "[headers]\nX-Auth = \"{{base_url}}\"\n");
+        write("main/in-variables", "[variables]\nlocal = \"{{base_url}}\"\n");
+        write(
+            "main/in-body",
+            "[body]\ntype = \"json\"\ntext = \"{\\\"root\\\": \\\"{{base_url}}\\\"}\"\n",
+        );
+        // A different token only, and no token at all: neither is a hit.
+        std::fs::write(
+            dir.path().join("requests/main/unrelated.toml"),
+            "method = \"GET\"\nurl = \"https://x.test/{{other}}\"\n",
+        )
+        .unwrap();
+        write("main/none", "");
+
+        let (p, _w) = Project::open(dir.path().to_path_buf()).unwrap();
+        let mut hits = p.scan_usage("base_url");
+        hits.sort();
+        assert_eq!(
+            hits,
+            [
+                "main/in-body",
+                "main/in-headers",
+                "main/in-params",
+                "main/in-url",
+                "main/in-variables",
+            ]
+        );
+        assert_eq!(p.scan_usage("other"), ["main/unrelated"]);
+        assert!(p.scan_usage("base").is_empty(), "no prefix matching");
+    }
+
     /// The app calls these while it holds the project immutably, and a
     /// scan must not stamp files so that a later `poll` skips them.
     #[test]

@@ -670,6 +670,73 @@ mod tests {
         assert_eq!(themes.entries().len(), 9, "the built-ins");
     }
 
+    /// A valid theme text, as `from_files`' own tests write them.
+    const THEME_TOML: &str = "bg = \"#101418\"\nfg = \"#e2e2e6\"\naccent = \"#0178d4\"\n\
+         success = \"#9ece6a\"\nwarning = \"#e0af68\"\nerror = \"#f7768e\"\n";
+
+    /// `from_files` is unit-tested on pairs it is handed; this covers the
+    /// listing half `Config` does: only `*.toml` *files* in `themes/` are
+    /// read, so a note file and a directory that happens to end in `.toml`
+    /// are both skipped without a warning.
+    #[test]
+    fn reload_themes_reads_only_toml_files_from_the_themes_directory() {
+        let dir = tempdir().unwrap();
+        let themes = dir.path().join("themes");
+        std::fs::create_dir_all(&themes).unwrap();
+        std::fs::write(themes.join("good.toml"), THEME_TOML).unwrap();
+        std::fs::write(themes.join("notes.txt"), "not a theme").unwrap();
+        std::fs::create_dir_all(themes.join("sub.toml")).unwrap();
+
+        let mut cfg = Config {
+            disk: Some(postui_core::disk::Disk::new(dir.path().to_path_buf())),
+        };
+        let (registry, warnings) = cfg.reload_themes();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let customs: Vec<&str> = registry
+            .entries()
+            .iter()
+            .filter(|e| matches!(e.source, crate::theme::ThemeSource::Custom(_)))
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(customs, vec!["good"], "named from the file stem");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reload_themes_warns_and_skips_a_theme_file_it_cannot_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let themes = dir.path().join("themes");
+        std::fs::create_dir_all(&themes).unwrap();
+        std::fs::write(themes.join("good.toml"), THEME_TOML).unwrap();
+        let locked = themes.join("locked.toml");
+        std::fs::write(&locked, THEME_TOML).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let mut cfg = Config {
+            disk: Some(postui_core::disk::Disk::new(dir.path().to_path_buf())),
+        };
+        let (registry, warnings) = cfg.reload_themes();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let customs: Vec<&str> = registry
+            .entries()
+            .iter()
+            .filter(|e| matches!(e.source, crate::theme::ThemeSource::Custom(_)))
+            .map(|e| e.name.as_str())
+            .collect();
+        if customs == vec!["good", "locked"] {
+            // Running as root: nothing is unreadable. Not a failure.
+            return;
+        }
+        assert_eq!(customs, vec!["good"], "the readable one still loads");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].starts_with("theme file locked.toml: unreadable: ")
+                && warnings[0].ends_with("; skipped"),
+            "{warnings:?}"
+        );
+    }
+
     #[test]
     fn save_round_trips_and_preserves_unrelated_keys() {
         let dir = tempdir().unwrap();

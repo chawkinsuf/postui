@@ -879,14 +879,14 @@ impl App {
     // Each answers what the app answered with no project open before
     // project is open, so the no-project screen behaves exactly as before.
 
-    /// The open project's root, or an empty path with no project open (as
-    /// the empty context's root was — never the process's cwd, which is
-    /// what [`Self::refuse_without_project`] guards).
     /// The project's display name — its `name`, else the root's basename.
     pub(crate) fn display_name(&self) -> String {
         self.project().map(|p| p.display_name()).unwrap_or_default()
     }
 
+    /// The open project's root, or an empty path with no project open (as
+    /// the empty context's root was — never the process's cwd, which is
+    /// what [`Self::refuse_without_project`] guards).
     pub(crate) fn root(&self) -> &std::path::Path {
         self.project()
             .map_or_else(|| std::path::Path::new(""), |p| p.root())
@@ -2483,11 +2483,7 @@ impl App {
                         self.refresh_sidebar();
                         self.sidebar.select_slug(&slug);
                         self.retarget_sidebar_travel(prev);
-                        let slug = self.editor.slug.clone();
-                        if let Some(p) = self.project_mut() {
-                            p.record_space_open(slug.as_deref());
-                            p.set_open_request(slug.as_deref());
-                        }
+                        self.persist_open_request();
                     }
                     Err(e) => {
                         self.toasts
@@ -2859,11 +2855,7 @@ impl App {
                 // The entry records the open request as its `reopen`, so
                 // undo puts the editor back rather than leaving it empty:
                 // persist first, so the project's own local state names it.
-                let open = self.editor.slug.clone();
-                if let Some(p) = self.project_mut() {
-                    p.record_space_open(open.as_deref());
-                    p.set_open_request(open.as_deref());
-                }
+                self.persist_open_request();
                 let Some(p) = self.project.as_mut() else {
                     return true;
                 };
@@ -2882,11 +2874,7 @@ impl App {
                             self.editor = Editor::default();
                             self.shadow = None;
                         }
-                        let slug = self.editor.slug.clone();
-                        if let Some(p) = self.project_mut() {
-                            p.record_space_open(slug.as_deref());
-                            p.set_open_request(slug.as_deref());
-                        }
+                        self.persist_open_request();
                     }
                     Err(e) => {
                         self.toasts
@@ -3116,6 +3104,12 @@ impl App {
                 match Project::init(self.root(), None) {
                     Ok((project, warnings)) => {
                         let root = project.root().to_path_buf();
+                        // A new `Project` carries a new journal: every
+                        // `Project` marker in the history points at an
+                        // entry id that no longer means anything, as
+                        // `ForceSwitchProject` does when it swaps one in.
+                        self.history.clear();
+                        self.marked_entry = None;
                         self.project = Some(project);
                         for w in warnings {
                             self.toasts.push(w, ToastKind::Warning);
@@ -4882,11 +4876,7 @@ impl App {
                         self.editor = Editor::default();
                         self.shadow = None;
                         self.sidebar.open_slug = None;
-                        let slug = self.editor.slug.clone();
-                        if let Some(p) = self.project_mut() {
-                            p.record_space_open(slug.as_deref());
-                            p.set_open_request(slug.as_deref());
-                        }
+                        self.persist_open_request();
                         true
                     }
                 }
@@ -5421,11 +5411,7 @@ impl App {
                     // record" branch and forge a phantom edit step.
                     self.apply(Action::ForceOpenRequest(new_slug.clone()));
                 } else {
-                    let slug = self.editor.slug.clone();
-                    if let Some(p) = self.project_mut() {
-                        p.record_space_open(slug.as_deref());
-                        p.set_open_request(slug.as_deref());
-                    }
+                    self.persist_open_request();
                 }
                 true
             }
@@ -6786,15 +6772,18 @@ impl App {
         // journal dropped that entry. Its marker goes with it — the entry
         // now on top already has one. (When something else was recorded
         // in between, the marker is not on top to pop; it is left where
-        // it is and undo skips it as stale.)
-        if let (Some(marked), true) = (
-            self.marked_entry,
-            top.is_none_or(|t| Some(t) < self.marked_entry),
-        ) && matches!(
-            self.history.peek_undo().map(|s| &s.kind),
-            Some(crate::undo::StepKind::Project { id, .. }) if *id == marked
-        ) {
-            self.history.pop_undo();
+        // it is and undo skips it as stale.) Either way this call records
+        // nothing: the entry the journal fell back to already has a
+        // marker somewhere in the stack, and a second one for it would
+        // sit above the step that was recorded in between and undo out of
+        // order.
+        if self.marked_entry.is_some() && top.is_none_or(|t| Some(t) < self.marked_entry) {
+            if matches!(
+                self.history.peek_undo().map(|s| &s.kind),
+                Some(crate::undo::StepKind::Project { id, .. }) if Some(*id) == self.marked_entry
+            ) {
+                self.history.pop_undo();
+            }
             self.marked_entry = top;
             return;
         }
@@ -6986,6 +6975,17 @@ impl App {
         {
             self.apply(Action::ForceOpenRequest(slug));
         }
+        self.persist_open_request();
+    }
+
+    /// Writes whichever request the editor now holds (`None` when it
+    /// holds none) into the project's local state, as both the active
+    /// space's remembered request and the project-wide open one. Every
+    /// route that changes what the editor holds — open, create, delete,
+    /// rename, a space or project switch's landing, an undo's reopen —
+    /// ends with this call, so `state.toml` never disagrees with the
+    /// screen.
+    fn persist_open_request(&mut self) {
         let slug = self.editor.slug.clone();
         if let Some(p) = self.project_mut() {
             p.record_space_open(slug.as_deref());
@@ -7055,11 +7055,7 @@ impl App {
                 self.editor = Editor::default();
                 self.shadow = None;
                 self.sidebar.open_slug = None;
-                let slug = self.editor.slug.clone();
-                if let Some(p) = self.project_mut() {
-                    p.record_space_open(slug.as_deref());
-                    p.set_open_request(slug.as_deref());
-                }
+                self.persist_open_request();
             }
         }
     }
@@ -7794,13 +7790,30 @@ impl App {
         let Some(p) = self.project.as_mut() else {
             return false;
         };
-        // Hold the created request so the editor gets exactly what was
-        // written (display name included).
-        let created = p
-            .create_request(name, req)
-            .and_then(|(slug, leaf)| p.open_request(&slug).cloned().map(|r| (slug, leaf, r)));
-        match created {
-            Ok((slug, leaf, saved)) => {
+        // The create is journaled the moment it succeeds, so its marker
+        // is recorded before anything else can fail: reading the file
+        // back is a separate step, and a read-back failure must not leave
+        // the journal entry without a marker to undo it.
+        match p.create_request(name, req) {
+            Ok((slug, leaf)) => {
+                // Hold the created request so the editor gets exactly
+                // what was written (display name included).
+                let saved = match self.project.as_mut().expect("checked above").open_request(&slug)
+                {
+                    Ok(r) => r.clone(),
+                    Err(e) => {
+                        // The file landed, so the entry is real and keeps
+                        // its marker; the editor was never marked saved,
+                        // so this counts as a failed save and the
+                        // deferred step (quit, switch) does not run.
+                        self.record_project_step();
+                        self.toasts
+                            .push(format!("could not open {slug}: {e}"), ToastKind::Error);
+                        self.refresh_sidebar();
+                        self.last_action_failed = true;
+                        return false;
+                    }
+                };
                 self.editor.load(Some(slug.clone()), saved);
                 self.editor.mark_saved();
                 self.record_project_step();
@@ -7814,11 +7827,7 @@ impl App {
                 self.refresh_sidebar();
                 self.sidebar.select_slug(&slug);
                 self.retarget_sidebar_travel(prev);
-                let slug = self.editor.slug.clone();
-                if let Some(p) = self.project_mut() {
-                    p.record_space_open(slug.as_deref());
-                    p.set_open_request(slug.as_deref());
-                }
+                self.persist_open_request();
                 true
             }
             Err(Error::AlreadyExists(taken)) => {

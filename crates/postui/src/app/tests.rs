@@ -4066,6 +4066,68 @@ fn a_keyboard_reorder_that_returns_to_the_start_leaves_no_step_and_undo_reaches_
 }
 
 #[test]
+fn a_dissolved_burst_with_an_edit_between_its_halves_records_no_second_marker() {
+    // Same dissolving burst, but an `EditorDelta` lands between the two
+    // halves, so the burst's own marker is no longer on top of the
+    // history to pop. The entry the journal falls back to already has a
+    // marker deeper in the stack: recording a second one for it would
+    // put undo out of order and undo the create before the edit.
+    let (mut app, _dir) = slotted_app(&["alpha", "beta", "gamma"]);
+    app.update(Action::CreateRequest("delta".into()));
+    assert!(app.proj().request_exists("main/delta"));
+    app.capture_undo(); // re-seed the shadow on the newly opened request
+    let steps = app.history.undo_len();
+
+    app.update(Action::MoveRequest {
+        slug: "main/beta".into(),
+        delta: 1,
+    });
+    dirty_the_editor(&mut app);
+    app.capture_undo();
+    let url_after_edit = app.editor.url.text().to_string();
+    assert_eq!(
+        app.history.undo_len(),
+        steps + 2,
+        "the move's marker, then the typed character"
+    );
+    app.update(Action::MoveRequest {
+        slug: "main/beta".into(),
+        delta: -1,
+    });
+    assert_eq!(
+        app.proj().last_entry().map(|(_, l)| l.to_string()).as_deref(),
+        Some("create request"),
+        "the burst netted to nothing: no order entry remains"
+    );
+    assert_eq!(
+        app.history.undo_len(),
+        steps + 2,
+        "the burst's own marker is left in place to be skipped as stale, \
+         and no second marker is recorded for the create beneath it"
+    );
+
+    app.update(Action::Undo);
+    assert!(
+        app.proj().request_exists("main/delta"),
+        "undo applied the editor delta, not the create beneath it"
+    );
+    assert_eq!(
+        app.proj().last_entry().map(|(_, l)| l.to_string()).as_deref(),
+        Some("create request"),
+        "the journal did not move: no project entry was replayed"
+    );
+    assert_ne!(
+        app.editor.url.text(),
+        url_after_edit,
+        "the typed character is gone"
+    );
+
+    // Only then does undo reach the create, skipping the stale marker.
+    app.update(Action::Undo);
+    assert!(!app.proj().request_exists("main/delta"));
+}
+
+#[test]
 fn keyboard_moves_of_different_requests_are_separate_steps() {
     let (mut app, _dir) = slotted_app(&["alpha", "beta", "gamma"]);
     let steps = app.history.undo_len();

@@ -701,6 +701,20 @@ impl Project {
                 }
             }
         }
+        // `reload_documents` runs inside `replay`'s recording window, so
+        // this is the one remaining *unrecorded* `state.toml` write in
+        // that window: `prune_stale_selections` persists through
+        // `persist_local`, not `persist_local_journaled`. Tolerated
+        // because it writes only when a reload actually pruned a stale
+        // selection — a selector or option that vanished from the model
+        // or the environment — which no undo/redo of a journaled op
+        // produces on its own. The redo-preflight defect that made
+        // `apply_meta_active_env` journal its write (an unrecorded write
+        // leaves `state.toml` present where the opposite entry's
+        // preflight expects it absent) needs the file to be *created*
+        // here; pruning only ever rewrites a `state.toml` that the
+        // selection it is pruning already put on disk. Journal it if that
+        // ever stops holding.
         warnings.extend(self.prune_stale_selections(legacy_vars));
         self.stamp_watched();
         self.refresh_resolved();
