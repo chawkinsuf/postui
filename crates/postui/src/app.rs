@@ -1896,14 +1896,7 @@ impl App {
                     return true;
                 }
                 if let (slug, Some(saved)) = (self.editor.slug.clone(), self.editor.saved.clone()) {
-                    // A cell still under the caret is part of what's being
-                    // thrown away — drop it without committing, and clear
-                    // the selection so no stale row index survives the
-                    // reload.
-                    self.editor.table.editing = None;
-                    self.editor.table.selected = None;
-                    self.editor.load(slug, saved);
-                    self.sync_active_tab();
+                    self.reseed_editor(slug, saved);
                     self.toasts.push(
                         format!("Changes discarded{}", self.undo_hint()),
                         ToastKind::Info,
@@ -2494,36 +2487,7 @@ impl App {
             }
             Action::SaveRequest => self.save_request_checked(None),
             Action::SaveRequestThen(then) => self.save_request_checked(Some(*then)),
-            Action::ForceSaveRequest => {
-                let Some(slug) = self.editor.slug.clone() else {
-                    return true;
-                };
-                let req = self.editor.current_request();
-                // Not journaled: undoing past a save is the editor's own
-                // memory-only step.
-                let saved = match self.project_mut() {
-                    Some(p) => p.save_request(&slug, &req),
-                    None => return true,
-                };
-                match saved {
-                    Ok(()) => {
-                        self.mark_saved_after_write();
-                        self.toasts
-                            .push(format!("Saved {slug}"), ToastKind::Success);
-                        self.refresh_sidebar();
-                    }
-                    Err(e) => {
-                        self.toasts
-                            .push(format!("could not save {slug}: {e}"), ToastKind::Error);
-                        // A "Save & quit/switch/open" gate queues its
-                        // follow-on behind this save; a save that failed
-                        // must stop it, or the edits it was meant to keep
-                        // are discarded.
-                        self.last_action_failed = true;
-                    }
-                }
-                true
-            }
+            Action::ForceSaveRequest => self.force_save_request(),
             Action::ReloadOpenRequest => {
                 let Some(slug) = self.editor.slug.clone() else {
                     return true;
@@ -2534,16 +2498,18 @@ impl App {
                 };
                 match reread {
                     Ok(req) => {
-                        // The buffer is replaced wholesale, so a live cell
-                        // edit and the selection into it are gone with it.
-                        self.editor.table.editing = None;
-                        self.editor.table.selected = None;
-                        self.editor.load(Some(slug.clone()), req);
+                        // A wholesale replacement is its own undo step, as
+                        // `DiscardChanges` is: typing that follows must
+                        // not merge into it, or one ctrl+z would snap the
+                        // buffer back past the reload.
+                        self.no_coalesce = true;
+                        self.reseed_editor(Some(slug.clone()), req);
                         self.mark_saved_after_write();
-                        self.sync_active_tab();
                         self.refresh_sidebar();
-                        self.toasts
-                            .push(format!("Reloaded {slug}"), ToastKind::Info);
+                        self.toasts.push(
+                            format!("Reloaded {slug}{}", self.undo_hint()),
+                            ToastKind::Info,
+                        );
                     }
                     Err(e) => {
                         self.toasts
@@ -6756,6 +6722,43 @@ impl App {
     /// (only when the file still exists) / Cancel — and reports the save
     /// as failed so a queued follow-on stops: the choice, not the queue,
     /// decides what happens next. `then` rides the Overwrite choice.
+    /// Replaces the editor's buffer wholesale — the one rule every such
+    /// replacement shares, in one place: a cell still under the caret is
+    /// part of what is being thrown away, so it is dropped WITHOUT being
+    /// committed, the selection into it goes with it (no stale row index
+    /// survives), and the tab bar re-syncs to the request that just
+    /// landed. Shared by `Action::DiscardChanges` and
+    /// `Action::ReloadOpenRequest`; the caller owns the undo bookkeeping
+    /// (`no_coalesce`) and the toast.
+    fn reseed_editor(&mut self, slug: Option<String>, req: postui_core::model::HttpRequest) {
+        self.editor.table.editing = None;
+        self.editor.table.selected = None;
+        self.editor.load(slug, req);
+        self.sync_active_tab();
+    }
+
+    /// Writes the editor over the open request's file with no drift
+    /// check — `Action::ForceSaveRequest`, and the drift confirm's
+    /// "Overwrite". Returns whether the write landed, so a caller holding
+    /// a follow-on (the dirty gate's "Save & quit/switch/open") only
+    /// proceeds on success: a save that failed must stop it, or the edits
+    /// it was meant to keep are discarded.
+    fn force_save_request(&mut self) -> bool {
+        match self.save_open_request() {
+            Ok(()) => {
+                let slug = self.editor.slug.as_deref().unwrap_or_default();
+                self.toasts
+                    .push(format!("Saved {slug}"), ToastKind::Success);
+                true
+            }
+            Err(e) => {
+                self.toasts.push(e, ToastKind::Error);
+                self.last_action_failed = true;
+                false
+            }
+        }
+    }
+
     fn save_request_checked(&mut self, then: Option<Action>) -> bool {
         if self.refuse_without_project() {
             return true;
@@ -6787,16 +6790,12 @@ impl App {
         }
         let drift = self.project().and_then(|p| p.held_request_drift(&slug));
         let Some(drift) = drift else {
-            // Cleared first so what the save itself reports is what
-            // decides the follow-on, never a flag left over from before.
-            self.last_action_failed = false;
-            let mut changed = self.apply(Action::ForceSaveRequest);
-            if !self.last_action_failed
+            if self.force_save_request()
                 && let Some(then) = then
             {
-                changed |= self.apply(then);
+                self.apply(then);
             }
-            return changed;
+            return true;
         };
         let leaf = slug.rsplit('/').next().unwrap_or(&slug);
         let (title, body) = match drift {
@@ -6829,13 +6828,14 @@ impl App {
         true
     }
 
-    /// Synchronously persists the currently open request to disk, mirroring
-    /// `Action::ForceSaveRequest` (no SaveAs prompt — every
-    /// caller here already knows a slug is open). Used by ops (promote,
-    /// extract-to-request) whose spec-mandated "writes
-    /// immediately" (spec §5) binds the request-file half of a
-    /// MANAGER-driven mutation — unlike ordinary Vars-tab typing, which
-    /// stays save-on-demand (plan-mandated) and never calls this.
+    /// Synchronously persists the currently open request to disk (no
+    /// SaveAs prompt — every caller here already knows a slug is open).
+    /// The single persist path: `force_save_request` wraps it with the
+    /// toasts and the failure flag, and the ops (promote,
+    /// extract-to-request) whose spec-mandated "writes immediately"
+    /// (spec §5) binds the request-file half of a MANAGER-driven mutation
+    /// call it directly — unlike ordinary Vars-tab typing, which stays
+    /// save-on-demand (plan-mandated) and never calls this.
     ///
     /// This helper itself does NOT check `held_request_drift` — it is the
     /// write that runs after a manager op has already committed the
@@ -6868,8 +6868,8 @@ impl App {
     /// the baseline then always matches disk, keeping the dirty flag an
     /// honest "buffer differs from disk", and the redo stack survives (an
     /// undone edit stays redoable across a save) — matching how desktop
-    /// editors treat save. Shared by `Action::ForceSaveRequest`,
-    /// `Action::ReloadOpenRequest` and `save_open_request`.
+    /// editors treat save. Shared by `save_open_request` (and so by every
+    /// save) and `Action::ReloadOpenRequest`.
     fn mark_saved_after_write(&mut self) {
         self.editor.mark_saved();
         self.history.break_coalescing();

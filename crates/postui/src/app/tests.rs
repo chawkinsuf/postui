@@ -21785,3 +21785,36 @@ fn extract_to_request_over_an_outside_edit_asks_instead_of_overwriting() {
         "nothing is written until the user chooses"
     );
 }
+
+#[test]
+fn a_reload_from_disk_is_its_own_undo_step_and_says_so() {
+    // Parallel features behave the same for undo: Reload replaces the
+    // buffer wholesale exactly as Discard does, so it must break
+    // coalescing too — otherwise typing that follows within the coalesce
+    // window merges into the reload, and one ctrl+z snaps the buffer back
+    // to the pre-reload draft instead of undoing only the typing.
+    let mut app = app_with_an_outside_edit();
+    dirty_the_editor(&mut app);
+    app.capture_undo();
+    app.handle_key(&Keymap::default_bindings(), ctrl('s'));
+    press(&mut app, 'r');
+    assert_eq!(app.editor.url.text(), "https://x/ping-edited-outside-the-app");
+    assert!(
+        rendered_text(&mut app).contains("^Z undoes"),
+        "the toast advertises the escape hatch, as Discard's does"
+    );
+
+    app.capture_undo(); // the reload becomes its own step
+
+    // Type immediately afterwards, inside the coalesce window.
+    app.focus = PaneId::Editor;
+    app.editor.sub_focus = SubFocus::Url;
+    app.handle_key(&Keymap::default_bindings(), plain('!'));
+    app.capture_undo();
+    app.update(Action::Undo);
+    assert_eq!(
+        app.editor.url.text(),
+        "https://x/ping-edited-outside-the-app",
+        "one undo peels the typing, not the reload with it"
+    );
+}
