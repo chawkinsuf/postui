@@ -14,6 +14,7 @@ mod undo;
 mod varedit_ops;
 mod variables;
 pub use meta::*;
+pub use requests::HeldDrift;
 pub use undo::Undone;
 pub use varedit_ops::VarEdit;
 
@@ -161,8 +162,9 @@ struct Memory {
     spaces: Vec<String>,
     spaces_warning: Option<String>,
     local: Local,
-    /// Slugs held in `open_requests` (keys only; bodies are re-read).
-    open_request_keys: Vec<String>,
+    /// Slugs held in `open_requests` with their seed stamp (bodies are
+    /// re-read by `reload_held_requests`, not snapshotted here).
+    open_request_stamps: Vec<(String, Stamp)>,
 }
 
 pub(crate) const PROJECT_TOML: &str = "project.toml";
@@ -363,7 +365,7 @@ impl Project {
             spaces: self.spaces.clone(),
             spaces_warning: self.spaces_warning.clone(),
             local: self.local.clone(),
-            open_request_keys: self.open_requests.keys().cloned().collect(),
+            open_request_stamps: self.open_requests.iter().map(|(k, h)| (k.clone(), h.stamp)).collect(),
         }
     }
 
@@ -379,14 +381,14 @@ impl Project {
         self.spaces_warning = m.spaces_warning;
         self.local = m.local;
         self.open_requests = m
-            .open_request_keys
+            .open_request_stamps
             .into_iter()
-            .map(|k| {
+            .map(|(k, stamp)| {
                 (
                     k,
                     Held {
                         req: crate::model::HttpRequest::default(),
-                        stamp: Stamp::Absent,
+                        stamp,
                     },
                 )
             })
@@ -1889,6 +1891,23 @@ mod tests {
         assert_eq!(p.journal_len(), 0);
         assert!(p.held_request("main/ping").is_some(), "the rename was rolled back");
         assert!(p.held_request("main/renamed").is_none());
+    }
+
+    #[test]
+    fn a_failed_transaction_that_never_touched_a_held_request_reports_no_drift() {
+        let (_dir, mut p) = fixture();
+        p.open_request("main/ping").unwrap();
+        let path = RelPath::new("variables.toml").unwrap();
+        let r: Result<(), Error> = p.transaction("t", EntryMeta::default(), |p| {
+            p.fs_write_text(&path, Some("[changed]\n"))?;
+            Err(Error::Conflict("boom".into()))
+        });
+        assert!(r.is_err());
+        assert_eq!(
+            p.held_request_drift("main/ping"),
+            None,
+            "the rollback restores memory with the pre-transaction seed stamp, not a placeholder"
+        );
     }
 
     #[test]

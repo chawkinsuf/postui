@@ -102,6 +102,12 @@ impl Project {
     /// Parses the request and holds it until `close_request`.
     pub fn open_request(&mut self, slug: &str) -> Result<&HttpRequest, Error> {
         let path = request_rel(slug)?;
+        // Stamped before the read: a write landing between the stamp and
+        // the read would otherwise go undetected forever (fails unsafe —
+        // drift would never report). Stamping first means that same race
+        // instead reports `Changed` on the next check, a harmless extra
+        // prompt.
+        let stamp = self.disk.stamp(&path);
         let text = self
             .disk
             .read(&path)?
@@ -110,7 +116,6 @@ impl Project {
             file: path.to_string(),
             error: e.to_string(),
         })?;
-        let stamp = self.disk.stamp(&path);
         self.open_requests.insert(slug.to_string(), Held { req, stamp });
         Ok(&self.open_requests[slug].req)
     }
