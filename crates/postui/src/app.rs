@@ -3241,7 +3241,12 @@ impl App {
                 for w in warnings {
                     self.toasts.push(w, ToastKind::Warning);
                 }
-                self.themes = themes;
+                // A `themes/` that would not list keeps the registry the
+                // app already has — the warning above says why the
+                // picker's custom entries may be stale.
+                if let Some(themes) = themes {
+                    self.themes = themes;
+                }
                 // The picker opens filtered to the current theme's
                 // polarity: browsing themes must not flash the opposite
                 // polarity's (much brighter/darker) palettes. Left/Right
@@ -4026,8 +4031,14 @@ impl App {
                 // exists but will not parse": keep what we have, and let
                 // the warning say which file to fix.
                 let (reloaded, warnings) = self.config.reload(cfg!(target_os = "macos"));
-                self.themes = reloaded.themes;
-                if let Some(registry) = reloaded.registry {
+                let (registry, ui) = match reloaded.config {
+                    Some((registry, ui)) => (Some(registry), Some(ui)),
+                    None => (None, None),
+                };
+                if let Some(themes) = reloaded.themes {
+                    self.themes = themes;
+                }
+                if let Some(registry) = registry {
                     self.registry = registry;
                 }
 
@@ -4035,8 +4046,7 @@ impl App {
                 // there are any, and otherwise stays what it is — but it
                 // is always re-resolved, because `themes` was rescanned
                 // and a custom file may have appeared or vanished.
-                let wanted = reloaded
-                    .ui
+                let wanted = ui
                     .as_ref()
                     .map(|u| u.theme.clone())
                     .unwrap_or_else(|| self.theme_name.clone());
@@ -4052,7 +4062,7 @@ impl App {
                 };
                 let unknown_theme = (theme_name != wanted)
                     .then(|| format!("unknown theme {wanted:?} in config.toml; using terminal"));
-                match reloaded.ui {
+                match ui {
                     // The live-reload twin of `App::new`'s call, so every
                     // `UiSettings`-derived field (clipboard tier,
                     // animations, the jq tab) follows the file too — but

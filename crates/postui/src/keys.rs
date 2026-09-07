@@ -212,7 +212,7 @@ pub fn fold_text_nav_bytes(ev: KeyEvent, macos: bool) -> KeyEvent {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Keymap {
     bindings: HashMap<KeyCombo, Action>,
 }
@@ -446,20 +446,21 @@ impl Keymap {
         Ok(())
     }
 
-    /// The defaults with `contents` (a `keys.toml`) applied; on a bad file
-    /// the untouched defaults and the error to show.
+    /// The defaults with `contents` (a `keys.toml`) applied, or the error
+    /// text when the file will not apply.
     ///
     /// `apply_overrides` validates the whole file before binding anything,
     /// so one bad entry leaves every default in place — a fact the user
-    /// has to hear, or every rebinding just silently stops working.
-    pub fn from_overrides(contents: &str) -> (Self, Option<String>) {
+    /// has to hear, or every rebinding just silently stops working. What
+    /// "in place" then *means* is the caller's call, not this function's:
+    /// startup falls back to the defaults, a live reload keeps the keys
+    /// the user is already typing with. So the error comes back bare and
+    /// each caller words the consequence itself.
+    pub fn try_from_overrides(contents: &str) -> Result<Self, String> {
         let mut map = Self::default_bindings();
         match map.apply_overrides(contents) {
-            Ok(()) => (map, None),
-            Err(e) => (
-                Self::default_bindings(),
-                Some(format!("keys.toml ignored, using default keys: {e}")),
-            ),
+            Ok(()) => Ok(map),
+            Err(e) => Err(e.to_string()),
         }
     }
 
@@ -573,18 +574,17 @@ fn format_combo(combo: &KeyCombo) -> String {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn a_bad_keys_file_is_reported_and_leaves_the_defaults() {
-        let (map, warning) = super::Keymap::from_overrides("save = \"ctrl+s\"\nnope = \"ctrl+\"\n");
-        let warning = warning.expect("the bad entry is reported");
-        assert!(warning.contains("keys.toml ignored"), "{warning}");
+    fn a_bad_keys_file_is_reported_and_applies_nothing() {
+        let err = super::Keymap::try_from_overrides("save = \"ctrl+s\"\nnope = \"ctrl+\"\n")
+            .expect_err("the bad entry is reported");
+        assert!(err.contains("unknown action"), "{err}");
+        let map = super::Keymap::try_from_overrides("").expect("an empty file is fine");
         let save = super::KeyCombo::parse("ctrl+s").unwrap();
         assert_eq!(
             map.lookup(&save),
             super::Keymap::default_bindings().lookup(&save),
             "nothing from the bad file was applied"
         );
-        let (_, warning) = super::Keymap::from_overrides("");
-        assert!(warning.is_none(), "an empty file is fine");
     }
 
     use super::*;
