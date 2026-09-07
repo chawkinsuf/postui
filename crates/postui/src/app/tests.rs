@@ -22389,5 +22389,5 @@ fn footer_chip_hints_describe_the_action() {
         .unwrap();
     app.handle_mouse(moved(del.x, del.y));
     let row = rendered_row(&mut app, 160, FOOTER_ROW);
-    assert!(row.contains("Delete the selected row"), "{row:?}");
+    assert!(row.contains("Delete this row"), "{row:?}");
 }
